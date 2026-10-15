@@ -314,29 +314,92 @@ def test_search_digg_empty_query_short_circuits(monkeypatch):
     called.assert_not_called()
 
 
-def test_search_digg_empty_local_fallback_reports_error(monkeypatch):
-    """A live search that fell back to an empty local store is not 'no results'."""
-    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
-    monkeypatch.setattr(
-        digg.subproc,
-        "run_with_timeout",
-        lambda *a, **k: _stdout_for(
+_REAL_FALLBACK_STDERR = (
+    "falling back to local FTS5: GET https://di.gg/api/search/stories: HTTP 404: "
+    '<!DOCTYPE html><html data-dpl-id="dpl_x" lang="en" class="font-sans">'
+    + "x" * 500
+    + "\n"
+)
+
+
+def _real_fallback_result() -> subproc.SubprocResult:
+    """digg-pp-cli 2026.9.1 output when the live API 404s: exit 0, no meta.reason."""
+    return subproc.SubprocResult(
+        returncode=0,
+        stdout=json.dumps(
             {
                 "meta": {
                     "count": 0,
                     "query": "openai",
                     "since": "30d",
                     "source": "local",
-                    "reason": "GET https://di.gg/api/search/stories: HTTP 404",
                 },
                 "results": [],
             }
         ),
+        stderr=_REAL_FALLBACK_STDERR,
+    )
+
+
+def test_search_digg_real_fallback_reports_stderr_reason(monkeypatch):
+    """A live search that fell back to an empty local store is not 'no results'."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout", lambda *a, **k: _real_fallback_result()
     )
     out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
     assert out["results"] == []
-    assert "live-search-unavailable" in out["error"]
-    assert "HTTP 404" in out["error"]
+    assert out["error"] == (
+        "live-search-unavailable: GET https://di.gg/api/search/stories: HTTP 404"
+    )
+
+
+def test_real_fallback_reason_reaches_source_outcome(monkeypatch):
+    from lib import pipeline
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout", lambda *a, **k: _real_fallback_result()
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    outcome = pipeline._result_outcome_artifact("digg", out)["_source_outcome"]
+    assert outcome["state"] == "error"
+    assert "HTTP 404" in outcome["detail"]
+    assert "<!DOCTYPE" not in outcome["detail"]
+
+
+def test_local_fallback_reason_bounds_non_http_errors():
+    stderr = "noise\nfalling back to local FTS5: dial tcp: " + "y" * 1000 + "\n"
+    reason = digg._local_fallback_reason(stderr)
+    assert reason.startswith("dial tcp: ")
+    assert len(reason) <= digg._FALLBACK_REASON_MAX
+
+
+def test_search_digg_empty_local_fallback_prefers_meta_reason(monkeypatch):
+    """meta.reason is not emitted by digg-pp-cli 2026.9.1; prefer it if a later release adds it."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: subproc.SubprocResult(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "meta": {
+                        "source": "local",
+                        "reason": "GET https://di.gg/api/search/stories: HTTP 404",
+                    },
+                    "results": [],
+                }
+            ),
+            stderr="falling back to local FTS5: stderr reason\n",
+        ),
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    assert out["results"] == []
+    assert out["error"] == (
+        "live-search-unavailable: GET https://di.gg/api/search/stories: HTTP 404"
+    )
 
 
 def test_search_digg_empty_local_fallback_without_reason_still_errors(monkeypatch):

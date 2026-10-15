@@ -19,9 +19,10 @@ top-ranked X posts to each cluster's ``posts`` field.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from . import log, subproc
@@ -133,7 +134,30 @@ def _build_posts_args(cluster_url_id: str, posts_per: int) -> List[str]:
     ]
 
 
-def _empty_local_fallback_error(data: Dict[str, Any]) -> Optional[str]:
+_LOCAL_FALLBACK_MARKER = "falling back to local FTS5:"
+_FALLBACK_REASON_MAX = 200
+
+
+def _local_fallback_reason(stderr: str) -> str:
+    """Extract the live-search failure from digg-pp-cli's fallback stderr.
+
+    The CLI prints ``falling back to local FTS5: <error>`` and the error can
+    embed the full HTML body of a failed response, so the reason is cut at
+    the HTTP status when present and length-bounded otherwise.
+    """
+    for line in (stderr or "").splitlines():
+        _, marker, rest = line.partition(_LOCAL_FALLBACK_MARKER)
+        if not marker:
+            continue
+        rest = rest.strip()
+        status = re.match(r".*?\bHTTP \d{3}\b", rest)
+        if status:
+            return status.group(0)
+        return rest[:_FALLBACK_REASON_MAX].rstrip()
+    return ""
+
+
+def _empty_local_fallback_error(data: Dict[str, Any], stderr: str = "") -> Optional[str]:
     """Return an error when the CLI answered from an empty local store.
 
     ``digg-pp-cli search`` is live by default, but it falls back to its FTS5
@@ -142,58 +166,72 @@ def _empty_local_fallback_error(data: Dict[str, Any]) -> Optional[str]:
     themselves, which last30days never does - so a broken live search
     reaches the user as ``Digg: 0 items (no results)`` instead of an error.
     A non-empty local store is real data and is left alone.
+
+    The CLI reports the live failure only on stderr; ``meta.reason`` is
+    preferred if a future CLI release adds it to the envelope.
     """
     meta = data.get("meta")
     if not isinstance(meta, dict) or meta.get("source") != "local":
         return None
     if data.get("results"):
         return None
-    reason = str(meta.get("reason") or "").strip()
-    detail = reason or "live search fell back to an empty local store"
+    reason = str(meta.get("reason") or "").strip()[:_FALLBACK_REASON_MAX]
+    detail = (
+        reason
+        or _local_fallback_reason(stderr)
+        or "live search fell back to an empty local store"
+    )
     return f"live-search-unavailable: {detail}"
 
 
-def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
-    """Invoke digg-pp-cli and parse the JSON envelope.
+def _invoke_cli(cmd: List[str], timeout: int) -> Tuple[Dict[str, Any], str]:
+    """Invoke digg-pp-cli and return the parsed envelope with its stderr.
 
-    Returns ``{"results": [...]}`` on success, ``{"results": [], "error": "..."}``
-    on failure. Never raises; the pipeline relies on shape consistency.
+    The envelope is ``{"results": [...]}`` on success and
+    ``{"results": [], "error": "..."}`` on failure. Never raises; the
+    pipeline relies on shape consistency.
     """
     if not _is_available():
-        return {"results": [], "error": f"{CLI_BIN} not on PATH"}
+        return {"results": [], "error": f"{CLI_BIN} not on PATH"}, ""
     try:
         result = subproc.run_with_timeout(cmd, timeout=timeout)
     except subproc.SubprocTimeout as exc:
         _log(f"Timeout: {exc}")
-        return {"results": [], "error": str(exc)}
+        return {"results": [], "error": str(exc)}, ""
     except FileNotFoundError as exc:
         _log(f"Binary missing: {exc}")
-        return {"results": [], "error": str(exc)}
+        return {"results": [], "error": str(exc)}, ""
     except OSError as exc:
         _log(f"Spawn failed: {exc}")
-        return {"results": [], "error": str(exc)}
+        return {"results": [], "error": str(exc)}, ""
 
+    stderr = result.stderr or ""
     if result.returncode != 0:
-        snippet = (result.stderr or "").strip().splitlines()[:1]
+        snippet = stderr.strip().splitlines()[:1]
         first = snippet[0] if snippet else f"exit {result.returncode}"
         _log(f"CLI exit {result.returncode}: {first}")
-        return {"results": [], "error": first}
+        return {"results": [], "error": first}, stderr
 
     stdout = result.stdout or ""
     if not stdout.strip():
-        return {"results": []}
+        return {"results": []}, stderr
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
         _log(f"JSON decode failed: {exc}")
-        return {"results": [], "error": f"json decode: {exc}"}
+        return {"results": [], "error": f"json decode: {exc}"}, stderr
 
     if not isinstance(data, dict):
-        return {"results": []}
+        return {"results": []}, stderr
     results = data.get("results")
     if not isinstance(results, list):
-        return {"results": []}
-    return data
+        return {"results": []}, stderr
+    return data, stderr
+
+
+def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
+    """Invoke digg-pp-cli and return only the parsed envelope."""
+    return _invoke_cli(cmd, timeout)[0]
 
 
 def search_digg(
@@ -219,8 +257,8 @@ def search_digg(
         return {"results": []}
     cmd = _build_search_args(topic, limit)
     _log(f"search '{topic}' (limit={limit}, since=30d)")
-    response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
-    fallback_error = _empty_local_fallback_error(response)
+    response, stderr = _invoke_cli(cmd, timeout=SEARCH_TIMEOUT)
+    fallback_error = _empty_local_fallback_error(response, stderr)
     if fallback_error:
         _log(fallback_error)
         return {"results": [], "error": fallback_error}
