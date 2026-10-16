@@ -94,6 +94,25 @@
     {
       "request": {
         "method": "GET",
+        "url": "https://hacker-news.firebaseio.com/v0/item/comparison-hn-1.json",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "by": "fixture_author_1",
+          "id": "comparison-hn-1",
+          "kids": [
+            42000013,
+            42000011,
+            42000012
+          ],
+          "type": "story"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
         "url": "https://hn.algolia.com/api/v1/items/comparison-hn-2",
         "raw": false
       },
@@ -106,12 +125,50 @@
     {
       "request": {
         "method": "GET",
+        "url": "https://hacker-news.firebaseio.com/v0/item/comparison-hn-2.json",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "by": "fixture_author_2",
+          "id": "comparison-hn-2",
+          "kids": [
+            42000023,
+            42000021,
+            42000022
+          ],
+          "type": "story"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
         "url": "https://hn.algolia.com/api/v1/items/comparison-hn-3",
         "raw": false
       },
       "response": {
         "value": {
           "children": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hacker-news.firebaseio.com/v0/item/comparison-hn-3.json",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "by": "fixture_author_3",
+          "id": "comparison-hn-3",
+          "kids": [
+            42000033,
+            42000031,
+            42000032
+          ],
+          "type": "story"
         }
       }
     }

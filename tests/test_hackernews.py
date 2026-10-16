@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -618,10 +618,6 @@ def test_pipeline_hackernews_reports_failed_comment_enrichment(
     assert artifact["_source_outcome_detail_state"] == schema.RATE_LIMITED
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 # === HN kids ordering (#1285) ===
 
 
@@ -677,3 +673,44 @@ def test_order_comments_by_kids_appends_unknowns():
     ]
     ordered = hackernews._order_comments_by_kids(comments, [2, 1])
     assert [c["id"] for c in ordered] == [2, 1, 99]
+
+
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_firebase_kids_failure_stays_out_of_failure_sink(mock_urlopen, _mock_sleep):
+    """A Firebase outage keeps the Algolia comments and records no run failure."""
+    import urllib.error
+
+    from lib import http as lib_http
+
+    algolia_body = json.dumps({
+        "children": [
+            {"id": 1, "author": "alice", "text": "low", "points": 1},
+            {"id": 2, "author": "bob", "text": "high", "points": 9},
+        ]
+    }).encode("utf-8")
+    firebase_calls = []
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url
+        if url.startswith(hackernews.FIREBASE_ITEM_URL):
+            firebase_calls.append(url)
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", {}, None)
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = algolia_body
+        response.status = 200
+        return response
+
+    mock_urlopen.side_effect = fake_urlopen
+    with lib_http.capture_failures() as failures:
+        result = hackernews._fetch_item_comments("123", max_comments=2)
+
+    assert firebase_calls
+    assert failures == []
+    assert [c["author"] for c in result["comments"]] == ["bob", "alice"]
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

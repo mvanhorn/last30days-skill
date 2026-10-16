@@ -320,9 +320,12 @@ def _fetch_hn_kids(object_id: str) -> Optional[List[Any]]:
     endpoint returns `kids` in the same order the HN thread UI shows.
     """
     url = f"{FIREBASE_ITEM_URL}/{object_id}.json"
+    # Comment order is a refinement over comments Algolia already returned, so a
+    # Firebase failure must not reach the pipeline's sink and mark HN degraded.
     try:
-        data = http.request("GET", url, timeout=15)
-    except Exception as e:
+        with http.capture_failures():
+            data = http.request("GET", url, timeout=15)
+    except http.HTTPError as e:
         _log(f"Failed to fetch HN kids for {object_id}: {e}")
         return None
     if not isinstance(data, dict):

@@ -198,3 +198,46 @@ def test_star_enrichment_apply_map_offline():
     )
     assert enriched == 1
     assert candidate.metadata["github_stars"]["mvanhorn/last30days-skill"] == 51436
+
+
+def test_hn_comment_replay_follows_firebase_kids_order(tmp_path):
+    source = next(f for f in harness.load_fixtures() if f.name == "breaking-event")
+    payload = json.loads((source.path / "http.json").read_text(encoding="utf-8"))
+    story_id = "breaking-event-hn-1"
+    algolia_children = [
+        {"id": 41000101, "author": "posted_first", "text": "<p>First reply.</p>", "points": None},
+        {"id": 41000102, "author": "posted_second", "text": "<p>Second reply.</p>", "points": None},
+        {"id": 41000103, "author": "posted_third", "text": "<p>Third reply.</p>", "points": None},
+    ]
+    kids = [41000103, 41000101, 41000102]
+    patched = {"algolia": False, "firebase": False}
+    for exchange in payload["exchanges"]:
+        url = exchange["request"]["url"]
+        if url == f"https://hn.algolia.com/api/v1/items/{story_id}":
+            exchange["response"]["value"]["children"] = algolia_children
+            patched["algolia"] = True
+        elif url == f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json":
+            exchange["response"]["value"]["kids"] = kids
+            patched["firebase"] = True
+    assert patched == {"algolia": True, "firebase": True}
+    fixture_path = tmp_path / source.name
+    fixture_path.mkdir()
+    (fixture_path / "http.json").write_text(json.dumps(payload), encoding="utf-8")
+    fixture = harness.EvalFixture(
+        name=source.name,
+        path=fixture_path,
+        manifest=deepcopy(source.manifest),
+        input_urls=source.input_urls,
+    )
+
+    report = harness._run_once(fixture)
+
+    story = next(
+        item for item in report.items_by_source["hackernews"]
+        if item.item_id == story_id
+    )
+    assert [c["author"] for c in story.metadata["top_comments"]] == [
+        "posted_third",
+        "posted_first",
+        "posted_second",
+    ]
