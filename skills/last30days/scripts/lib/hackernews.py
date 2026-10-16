@@ -313,6 +313,12 @@ def _hn_item_url(item_id: Any) -> str:
     return f"https://news.ycombinator.com/item?id={item_id}"
 
 
+# Ordering is optional, so a slow Firebase must not hold up the report.
+FIREBASE_KIDS_TIMEOUT = 5
+FIREBASE_KIDS_RETRIES = 2
+FIREBASE_KIDS_BUDGET = 8.0
+
+
 def _fetch_hn_kids(object_id: str) -> Optional[List[Any]]:
     """Return HN's display order for a story's top-level comments, or None on failure.
 
@@ -325,7 +331,13 @@ def _fetch_hn_kids(object_id: str) -> Optional[List[Any]]:
     # Firebase failure must not reach the pipeline's sink and mark HN degraded.
     try:
         with http.capture_failures():
-            data = http.request("GET", url, timeout=15)
+            data = http.request(
+                "GET",
+                url,
+                timeout=FIREBASE_KIDS_TIMEOUT,
+                retries=FIREBASE_KIDS_RETRIES,
+                deadline_monotonic=time.monotonic() + FIREBASE_KIDS_BUDGET,
+            )
     # http.request wraps HTTP and socket errors, but a truncated or non-UTF-8
     # body escapes as IncompleteRead or UnicodeDecodeError.
     except (http.HTTPError, HTTPException, UnicodeDecodeError) as e:

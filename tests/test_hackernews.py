@@ -751,5 +751,41 @@ def test_firebase_kids_unwrapped_read_errors_fall_back(mock_urlopen, _mock_sleep
     assert [c["author"] for c in result["comments"]] == ["bob", "alice"]
 
 
+
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_firebase_kids_timeouts_are_bounded(mock_urlopen, _mock_sleep):
+    """A hanging Firebase gets a short retry budget, not the default five attempts."""
+    from lib import http as lib_http
+
+    algolia_body = json.dumps({
+        "children": [
+            {"id": 1, "author": "alice", "text": "low", "points": 1},
+            {"id": 2, "author": "bob", "text": "high", "points": 9},
+        ]
+    }).encode("utf-8")
+    firebase_timeouts = []
+
+    def fake_urlopen(req, timeout=None):
+        if req.full_url.startswith(hackernews.FIREBASE_ITEM_URL):
+            firebase_timeouts.append(timeout)
+            raise TimeoutError("timed out")
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.status = 200
+        response.read.return_value = algolia_body
+        return response
+
+    mock_urlopen.side_effect = fake_urlopen
+    with lib_http.capture_failures() as failures:
+        result = hackernews._fetch_item_comments("123", max_comments=2)
+
+    assert 1 <= len(firebase_timeouts) <= hackernews.FIREBASE_KIDS_RETRIES
+    assert all(t <= hackernews.FIREBASE_KIDS_TIMEOUT for t in firebase_timeouts)
+    assert failures == []
+    assert [c["author"] for c in result["comments"]] == ["bob", "alice"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
