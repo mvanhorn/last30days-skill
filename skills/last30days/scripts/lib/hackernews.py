@@ -10,6 +10,7 @@ import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.client import HTTPException
 from typing import Any, Dict, List, Optional
 
 import re
@@ -325,7 +326,9 @@ def _fetch_hn_kids(object_id: str) -> Optional[List[Any]]:
     try:
         with http.capture_failures():
             data = http.request("GET", url, timeout=15)
-    except http.HTTPError as e:
+    # http.request wraps HTTP and socket errors, but a truncated or non-UTF-8
+    # body escapes as IncompleteRead or UnicodeDecodeError.
+    except (http.HTTPError, HTTPException, UnicodeDecodeError) as e:
         _log(f"Failed to fetch HN kids for {object_id}: {e}")
         return None
     if not isinstance(data, dict):

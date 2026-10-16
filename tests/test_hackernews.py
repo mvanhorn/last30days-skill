@@ -712,5 +712,44 @@ def test_firebase_kids_failure_stays_out_of_failure_sink(mock_urlopen, _mock_sle
     assert [c["author"] for c in result["comments"]] == ["bob", "alice"]
 
 
+
+@pytest.mark.parametrize("firebase_read", ["incomplete", "non_utf8"])
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_firebase_kids_unwrapped_read_errors_fall_back(mock_urlopen, _mock_sleep, firebase_read):
+    """A truncated or undecodable Firebase body keeps the Algolia comments."""
+    import http.client
+
+    from lib import http as lib_http
+
+    algolia_body = json.dumps({
+        "children": [
+            {"id": 1, "author": "alice", "text": "low", "points": 1},
+            {"id": 2, "author": "bob", "text": "high", "points": 9},
+        ]
+    }).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.status = 200
+        if req.full_url.startswith(hackernews.FIREBASE_ITEM_URL):
+            if firebase_read == "incomplete":
+                response.read.side_effect = http.client.IncompleteRead(b'{"kids": [1')
+            else:
+                response.read.return_value = b"\xff\xfe"
+        else:
+            response.read.return_value = algolia_body
+        return response
+
+    mock_urlopen.side_effect = fake_urlopen
+    with lib_http.capture_failures() as failures:
+        result = hackernews._fetch_item_comments("123", max_comments=2)
+
+    assert failures == []
+    assert [c["author"] for c in result["comments"]] == ["bob", "alice"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
