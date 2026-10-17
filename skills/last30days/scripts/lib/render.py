@@ -851,7 +851,7 @@ def render_compact(
     # unambiguous scope for "pass through verbatim" (the fenced footer block
     # below) vs "synthesize from" (this block).
     lines.append(
-        "<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into `What I learned:` prose per LAW 2. -->"
+        "<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into `What I learned:` prose. -->"
     )
     lines.append("")
     # Echo the synthesis contract early so it survives tail truncation (#726).
@@ -1205,8 +1205,8 @@ def _render_synthesis_directive() -> list[str]:
     return [
         "> **SYNTHESIS CONTRACT — read before emitting anything.** Everything below this",
         "> line, up to where this evidence envelope closes, is raw evidence for you to",
-        "> READ, not text to emit. Transform it into `What I learned:` prose paragraphs",
-        "> per LAW 2. Do NOT pass the `### N.` evidence clusters or the stats and",
+        "> READ, not text to emit. Transform it into `What I learned:` prose paragraphs.",
+        "> Do NOT pass the `### N.` evidence clusters or the stats and",
         "> source-coverage blocks through verbatim. The ONLY block you emit verbatim is",
         "> the fenced `text` footer block (the emoji tree) lower down. The full contract repeats",
         "> at the end-of-output boundary near the bottom; if your captured output was",
@@ -1240,14 +1240,14 @@ def _render_canonical_boundary() -> list[str]:
         "Keep the code fence, so Markdown does not turn `---` into horizontal",
         "rules or distort the tree.",
         "The EVIDENCE FOR SYNTHESIS block above it is raw evidence for your synthesis,",
-        "not output. Transform it into `What I learned:` prose paragraphs per LAW 2.",
+        "not output. Transform it into `What I learned:` prose paragraphs.",
         "",
         "If your response contains the literal string `### 1.` followed by a score",
         "tuple like `(score N, M items, sources: ...)`, you dumped evidence instead",
         "of synthesizing - STOP and regenerate. This is the 2026-04-19 Hermes Agent",
-        "Use Cases failure mode (LAW 6).",
+        "Use Cases failure mode (evidence-dump).",
         "",
-        "Cite web pages inline next to the claims they support (LAW 1), then end at",
+        "Cite web pages inline next to the claims they support, then end at",
         "the invitation, counting web pages in its link line. The emoji-tree footer",
         "above already summarizes the sources, so do not add a `Sources:` list.",
     ]
@@ -1351,7 +1351,7 @@ def _render_degraded_run_warning(report: schema.Report) -> list[str]:
         return []
 
     return [
-        "<!-- USER-VISIBLE BANNER: emit verbatim before synthesis per LAW 5 / LAW 7. -->",
+        "<!-- USER-VISIBLE BANNER: emit verbatim before synthesis. -->",
         "## DEGRADED RUN WARNING",
         "",
         f'⚠️  This run was called BARE on a named-entity topic ("{report.topic}"):',
@@ -1367,12 +1367,12 @@ def _render_degraded_run_warning(report: schema.Report) -> list[str]:
         "generates its own JSON plan upstream and passes it in. That is you.",
         "Generate a plan with `intent` / `freshness_mode` / 3-5 paraphrased",
         "subqueries and re-run with `--plan '$JSON'`. This is not a",
-        "missing-credentials problem; this is a skipped-LAW-7 problem.",
+        "missing-credentials problem; this is a skipped planning step.",
         "",
         "What went wrong: on a named-entity topic, the full contract is",
         "(a) resolve X handles / GitHub repos / subreddits via your runtime's",
         "web-search tool (Step 0.55) and (b) generate a JSON `--plan` yourself",
-        "and pass it via `--plan '$JSON'` (Step 0.75 / LAW 7). Both were skipped.",
+        "and pass it via `--plan '$JSON'` (Step 0.75). Both were skipped.",
         "",
         "**If you are a user reading this:** the assistant skipped its own",
         "planning step. Ask it to regenerate following Step 0.55 and Step 0.75",
@@ -1499,7 +1499,7 @@ def render_comparison_multi(
 
     lines.append(
         "<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into "
-        "`What I learned:` prose per LAW 2. Each entity has its own evidence subsection. -->"
+        "`What I learned:` prose. Each entity has its own evidence subsection. -->"
     )
     lines.append("")
     # Echo the synthesis contract early so it survives tail truncation (#726).
