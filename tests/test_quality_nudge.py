@@ -584,7 +584,7 @@ class TestInstagramSilentFailure:
             ytdlp_installed=True,
             result_overrides={"instagram_items_count": 0},
         )
-        assert "instagram" in q["bonus_errored"]
+        assert any("instagram" in s for s in q["bonus_errored"])
         assert q["nudge_text"] is not None
         assert "Instagram" in q["nudge_text"]
 
@@ -632,7 +632,8 @@ class TestInstagramSilentFailure:
         text_lower = q["nudge_text"].lower()
         assert "instagram" in text_lower
         assert ("0 reels" in text_lower or "silent" in text_lower
-                or "hashtag" in text_lower)
+                or "hashtag" in text_lower or "unavailable" in text_lower
+                or "failed" in text_lower)
 
     def test_bonus_errored_does_not_affect_core_score(self):
         q = _compute(
@@ -644,9 +645,24 @@ class TestInstagramSilentFailure:
             result_overrides={"instagram_items_count": 0},
         )
         assert q["score_pct"] == 100
-        assert "instagram" in q["bonus_errored"]
+        assert "instagram:no_items" in q["bonus_errored"]
         assert q["nudge_text"] is not None
-        assert "Bonus source silent" in q["nudge_text"]
+        assert "Bonus source unavailable" in q["nudge_text"]
+
+    def test_bonus_errored_instagram_http_error_emits_failed_label(self):
+        """When instagram_error is set (HTTP error), nudge says 'Bonus source failed'."""
+        q = _compute(
+            config_overrides={
+                "AUTH_TOKEN": "tok123",
+                "SCRAPECREATORS_API_KEY": "sc_key",
+            },
+            ytdlp_installed=True,
+            result_overrides={"instagram_items_count": 0, "instagram_error": "HTTP 404"},
+        )
+        assert "instagram:failed" in q["bonus_errored"]
+        assert q["nudge_text"] is not None
+        assert "Bonus source failed" in q["nudge_text"]
+        assert "Instagram" in q["nudge_text"]
 
     def test_bonus_errored_field_always_present(self):
         q = _compute()
@@ -696,7 +712,7 @@ class TestInstagramSilentFailure:
             ytdlp_installed=True,
             result_overrides={"instagram_items_count": 0},
         )
-        assert "instagram" in q["bonus_errored"]
+        assert any("instagram" in s for s in q["bonus_errored"])
 
     def test_include_sources_without_instagram_suppresses_silent_failure(self):
         """User set INCLUDE_SOURCES to an opt-in allowlist that omits
@@ -713,7 +729,7 @@ class TestInstagramSilentFailure:
             ytdlp_installed=True,
             result_overrides={"instagram_items_count": 0},
         )
-        assert "instagram" not in q["bonus_errored"]
+        assert not any("instagram" in s for s in q["bonus_errored"])
         assert q["nudge_text"] is None
 
     def test_include_sources_multi_value_without_instagram(self):
@@ -727,7 +743,7 @@ class TestInstagramSilentFailure:
             ytdlp_installed=True,
             result_overrides={"instagram_items_count": 0},
         )
-        assert "instagram" not in q["bonus_errored"]
+        assert not any("instagram" in s for s in q["bonus_errored"])
 
     def test_include_sources_with_instagram_still_flags(self):
         """INCLUDE_SOURCES that explicitly names instagram must not suppress
@@ -743,7 +759,7 @@ class TestInstagramSilentFailure:
             ytdlp_installed=True,
             result_overrides={"instagram_items_count": 0},
         )
-        assert "instagram" in q["bonus_errored"]
+        assert any("instagram" in s for s in q["bonus_errored"])
 
     def test_include_sources_empty_does_not_suppress(self):
         """Empty/unset INCLUDE_SOURCES means no allowlist filter, so the
@@ -758,7 +774,7 @@ class TestInstagramSilentFailure:
             ytdlp_installed=True,
             result_overrides={"instagram_items_count": 0},
         )
-        assert "instagram" in q["bonus_errored"]
+        assert any("instagram" in s for s in q["bonus_errored"])
 
 
 class TestBearerCredential:
