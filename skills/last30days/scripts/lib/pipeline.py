@@ -402,16 +402,23 @@ def available_sources(
     # GitHub is reachable via the unauthenticated REST tier too, so it is
     # available even without a token/gh CLI (a token only raises rate limits).
     available.append("github")
-    # DripStack is opt-in only (owner decision, #791): a commercial
-    # third-party API must never receive default-run traffic. Opt in per run
-    # (--search dripstack) or persistently (INCLUDE_SOURCES=dripstack in
-    # .env, the LinkedIn/Perplexity pattern); the search API is free and
-    # public (no key), so the opt-in itself is the gate.
+    # Trendshift is opt-in (public API, no key, but irrelevant to non-tech
+    # topics). Activate per-run (--search trendshift) or persistently
+    # (INCLUDE_SOURCES=trendshift in .env).
     include_sources = {
         token.strip()
         for token in (config.get("INCLUDE_SOURCES") or "").lower().split(",")
         if token.strip()
     }
+    if "trendshift" in include_sources or (
+        requested_sources and "trendshift" in requested_sources
+    ):
+        available.append("trendshift")
+    # DripStack is opt-in only (owner decision, #791): a commercial
+    # third-party API must never receive default-run traffic. Opt in per run
+    # (--search dripstack) or persistently (INCLUDE_SOURCES=dripstack in
+    # .env, the LinkedIn/Perplexity pattern); the search API is free and
+    # public (no key), so the opt-in itself is the gate.
     if "dripstack" in include_sources or (
         requested_sources and "dripstack" in requested_sources
     ):
