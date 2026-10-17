@@ -80,6 +80,9 @@ def _window_days(from_date: str | None, to_date: str | None) -> int:
     try:
         start = datetime.date.fromisoformat(from_date or "")
         end = datetime.date.fromisoformat(to_date or "") if to_date else datetime.date.today()
+        # Forem counts top=N back from today, including for historical windows.
+        # Keep to_date enforcement in _in_window after fetching the wider range.
+        end = max(end, datetime.date.today())
         return max(1, (end - start).days)
     except ValueError:
         return 30

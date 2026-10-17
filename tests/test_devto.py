@@ -1,10 +1,21 @@
 """dev.to source: tag and search retrieval, relevance gating, comments."""
 
+import datetime
 import urllib.parse
 
 import pytest
 
 from lib import devto, normalize, pipeline
+
+
+@pytest.fixture(autouse=True)
+def _fixed_today(monkeypatch):
+    class FixedDate(datetime.date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 11)
+
+    monkeypatch.setattr(devto.datetime, "date", FixedDate)
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +124,32 @@ def test_articles_outside_the_window_are_dropped(monkeypatch):
     ]}))
     result = devto.search_devto("rust", "2026-09-11", "2026-10-11", tags=["rust"], search_query="")
     assert [article["id"] for article in result["articles"]] == [1]
+
+
+@pytest.mark.parametrize("tags", [None, ["rust"]])
+def test_historical_window_reaches_back_from_today_and_keeps_upper_bound(monkeypatch, tags):
+    historical = _article(1, "Rust async", tags=("rust",), published="2026-08-10T12:00:00Z")
+    recent = _article(2, "Rust async current", tags=("rust",), published="2026-10-10T12:00:00Z")
+    calls = []
+
+    def relative_window_api(method, url, headers=None, **kwargs):
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
+        days = int(query["top"])
+        calls.append(days)
+        cutoff = devto.datetime.date.today() - datetime.timedelta(days=days)
+        return [row for row in (historical, recent)
+                if datetime.date.fromisoformat(row["published_at"][:10]) >= cutoff]
+
+    monkeypatch.setattr(devto.http, "request", relative_window_api)
+    result = devto.search_devto("rust async", "2026-08-01", "2026-08-31", tags=tags)
+    assert [row["id"] for row in result["articles"]] == [1]
+    assert calls and all(days == 71 for days in calls)
+    assert "error" not in result
+
+
+@pytest.mark.parametrize("end", [None, "2026-10-11"])
+def test_current_window_retains_its_server_reach(end):
+    assert devto._window_days("2026-09-11", end) == 30
 
 
 def test_unknown_tag_and_offtopic_search_stay_quiet(monkeypatch):
