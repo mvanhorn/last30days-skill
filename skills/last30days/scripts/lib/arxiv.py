@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any, Dict, List, Optional
 
 from . import log, subproc
@@ -256,18 +256,25 @@ def parse_arxiv_response(
     response: Dict[str, Any],
     query: str = "",
     today: Optional[datetime] = None,
+    to_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Parse an arXiv envelope into normalized item dicts.
 
     Applies the recency cutoff (drops entries older than ``RECENCY_DAYS`` and
     entries with an unparseable date) and computes a token-overlap relevance
     hint. Returns dicts ready for ``normalize._normalize_arxiv``.
+
+    ``to_date`` (the report window's inclusive end, e.g. from ``--as-of``)
+    anchors the cutoff at that day and drops papers published after it.
     """
     raw = response.get("results") if isinstance(response, dict) else None
     if not isinstance(raw, list):
         return []
 
     now = today or _today()
+    end_date = date.fromisoformat(to_date) if to_date else None
+    if end_date is not None:
+        now = min(now, datetime.combine(end_date, time.max, tzinfo=timezone.utc))
     items: List[Dict[str, Any]] = []
     for i, entry in enumerate(raw):
         if not isinstance(entry, dict):
@@ -278,6 +285,8 @@ def parse_arxiv_response(
         published = _parse_published(entry.get("published") or entry.get("updated"))
         if published is None:
             # No usable date -> cannot honor the recency contract; drop.
+            continue
+        if end_date is not None and published.date() > end_date:
             continue
         age_days = (now - published).days
         # Allow a one-day grace on the future side: a paper announced later in

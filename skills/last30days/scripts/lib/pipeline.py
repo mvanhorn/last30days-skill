@@ -6116,7 +6116,7 @@ def _retrieve_stream_impl(
         # search_query, so off-topic narrowing does not let weak matches through.
         relevance_topic = raw_topic or topic or subquery.search_query
         return (
-            arxiv.parse_arxiv_response(result, query=relevance_topic),
+            arxiv.parse_arxiv_response(result, query=relevance_topic, to_date=to_date),
             _result_outcome_artifact(source, result),
         )
     if source == "techmeme":

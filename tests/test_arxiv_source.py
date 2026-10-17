@@ -162,6 +162,47 @@ def test_same_day_future_timestamp_is_kept():
     assert len(items) == 1
 
 
+def test_as_of_window_anchors_recency_and_drops_later_papers(monkeypatch):
+    # An --as-of run ends the window in the past. The adapter must judge
+    # recency from that end date, not from the real clock: a paper published
+    # after the window cannot appear, and one from just inside it must not be
+    # dropped as "older than a year" relative to today.
+    from lib import pipeline, schema
+
+    entries = [
+        _entry("Window paper", "2025-05-20T12:00:00Z"),
+        _entry("End day paper", "2025-06-01T23:30:00Z"),
+        _entry("Later paper", "2025-06-02T00:30:00Z"),
+        _entry("Much later paper", "2026-01-15T12:00:00Z"),
+    ]
+    monkeypatch.setattr(
+        arxiv, "search_arxiv", lambda *_args, **_kwargs: {"results": entries}
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="paper",
+        ranking_query="paper",
+        sources=["arxiv"],
+    )
+
+    items, _ = pipeline._retrieve_stream_impl(
+        topic="paper",
+        subquery=subquery,
+        source="arxiv",
+        config={},
+        depth="quick",
+        date_range=("2025-05-02", "2025-06-01"),
+        runtime=schema.ProviderRuntime(
+            reasoning_provider="none",
+            planner_model="none",
+            rerank_model="none",
+        ),
+        mock=False,
+    )
+
+    assert [item["title"] for item in items] == ["Window paper", "End day paper"]
+
+
 class _Proc:
     def __init__(self, rc, out, err=""):
         self.returncode, self.stdout, self.stderr = rc, out, err
