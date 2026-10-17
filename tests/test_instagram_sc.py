@@ -167,6 +167,62 @@ class TestSearchRetryOn500(unittest.TestCase):
             self.assertIn("SCRAPECREATORS_API_KEY", result["error"])
 
 
+class TestSearchFallbackOn404(unittest.TestCase):
+    """Tests for the 404 -> profiles fallback path.
+
+    When /v2/instagram/reels/search returns HTTP 404 (endpoint gone/changed),
+    search_instagram() falls back to _reels_via_profiles(), which searches
+    for matching creator profiles and fetches their recent reels instead.
+    """
+
+    def test_404_triggers_profiles_fallback(self):
+        """Primary 404 -> profiles fallback is attempted."""
+        from lib import http as http_module
+        error_404 = http_module.HTTPError("HTTP 404: Not Found", 404, "")
+        profile_payload = {"profiles": [{"username": "fitnessguru"}]}
+        user_reels_payload = {"items": [{"id": "r1", "pk": "r1", "taken_at": "2026-09-01T00:00:00.000Z"}]}
+
+        call_payloads = [error_404, profile_payload, user_reels_payload]
+        with patch.object(http_module, "get", side_effect=call_payloads) as mock_get:
+            result = instagram.search_instagram(
+                "fitness", "2026-08-01", "2026-09-30",
+                depth="default", token="fake-token",
+            )
+        self.assertIn("items", result)
+        # Profiles search call should have been made
+        calls = [c.args[0] if c.args else c.kwargs.get("url", "") for c in mock_get.call_args_list]
+        self.assertTrue(any("profile" in str(url) for url in calls), f"No profile search call in {calls}")
+
+    def test_404_with_empty_profiles_returns_error(self):
+        """Primary 404 and no profiles found -> error propagated."""
+        from lib import http as http_module
+        error_404 = http_module.HTTPError("HTTP 404: Not Found", 404, "")
+        empty_profiles = {"profiles": []}
+
+        with patch.object(http_module, "get", side_effect=[error_404, empty_profiles]):
+            result = instagram.search_instagram(
+                "fitness", "2026-08-01", "2026-09-30",
+                depth="default", token="fake-token",
+            )
+        self.assertEqual(result["items"], [])
+        self.assertIn("error", result)
+
+    def test_multiword_500_then_404_triggers_profiles_fallback(self):
+        """Multi-word 500 -> hashtag retry -> 404 -> profiles fallback."""
+        from lib import http as http_module
+        error_500 = http_module.HTTPError("HTTP 500: Server Error", 500, "")
+        error_404 = http_module.HTTPError("HTTP 404: Not Found", 404, "")
+        profile_payload = {"profiles": [{"username": "fitnessking"}]}
+        user_reels_payload = {"items": []}
+
+        with patch.object(http_module, "get", side_effect=[error_500, error_404, profile_payload, user_reels_payload]):
+            result = instagram.search_instagram(
+                "fitness tips", "2026-08-01", "2026-09-30",
+                depth="default", token="fake-token",
+            )
+        self.assertIn("items", result)
+
+
 class TestTranscriptTimeoutConfig(unittest.TestCase):
     """Tests for LAST30DAYS_TRANSCRIPT_TIMEOUT configuration.
 

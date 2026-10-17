@@ -282,6 +282,61 @@ def _user_reels(
     ]
 
 
+def _reels_via_profiles(
+    query: str,
+    token: str,
+    max_profiles: int = 5,
+) -> List[Dict[str, Any]]:
+    """Fallback: search profiles for *query*, then fetch each profile's reels.
+
+    Called when the primary /v2/instagram/reels/search endpoint returns 404.
+    Searches /v2/instagram/profile/search for matching creators, then fetches
+    their recent reels via _user_reels().  Results are not date-filtered here;
+    the caller handles filtering so the fallback path mirrors the primary path.
+
+    Args:
+        query: The search query (core topic or hashtag form).
+        token: ScrapeCreators API key.
+        max_profiles: How many profiles to fetch reels from (default 5).
+
+    Returns:
+        Flat list of raw reel dicts (not yet parsed/normalized).
+    """
+    _log(f"Reels-via-profiles fallback for '{query}' (max_profiles={max_profiles})")
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_BASE}/v2/instagram/profile/search",
+            params={"query": query},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as e:
+        _log(f"Profile search error: {e}")
+        return []
+
+    profiles = data.get("profiles") or data.get("users") or data.get("data") or []
+    _log(f"  -> {len(profiles)} profiles found")
+
+    all_raw: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+    for profile in profiles[:max_profiles]:
+        if not isinstance(profile, dict):
+            continue
+        handle = profile.get("username") or profile.get("handle") or ""
+        if not handle:
+            continue
+        raw_reels = _user_reels(handle, token)
+        for r in raw_reels:
+            rid = str(r.get("id", r.get("pk", "")))
+            if rid and rid not in seen_ids:
+                seen_ids.add(rid)
+                all_raw.append(r)
+
+    _log(f"  -> {len(all_raw)} reels collected via profiles")
+    return all_raw
+
+
 def search_instagram(
     topic: str,
     from_date: str,
@@ -309,6 +364,7 @@ def search_instagram(
 
     _log(f"Searching Instagram for '{core_topic}' (depth={depth}, count={config['results_per_page']})")
 
+    raw_items: List[Dict[str, Any]] = []
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
@@ -317,11 +373,14 @@ def search_instagram(
             timeout=30,
             retries=2,
         )
+        # Items are in the 'reels' array (ScrapeCreators v2 response)
+        raw_items = data.get("reels") or data.get("items") or data.get("data") or []
     except http.HTTPError as e:
-        # SC's v2 reels search wraps Google Search and 500s frequently on
-        # multi-token queries. Single tokens hit the stable hashtag-page
-        # path. Retry once with hashtag form before bubbling up.
-        if getattr(e, "status_code", None) == 500 and ' ' in core_topic:
+        status = getattr(e, "status_code", None)
+        if status == 500 and ' ' in core_topic:
+            # SC's v2 reels search wraps Google Search and 500s frequently on
+            # multi-token queries. Single tokens hit the stable hashtag-page
+            # path. Retry once with hashtag form before falling back.
             _log(f"IG search 500 on '{core_topic}', retrying with hashtag form")
             try:
                 data = http.get(
@@ -331,18 +390,38 @@ def search_instagram(
                     timeout=30,
                     retries=2,
                 )
+                raw_items = data.get("reels") or data.get("items") or data.get("data") or []
+            except http.HTTPError as retry_e:
+                if getattr(retry_e, "status_code", None) == 404:
+                    _log("IG reels/search 404 on hashtag form, trying profiles fallback")
+                    raw_items = _reels_via_profiles(
+                        _to_hashtag_form(core_topic), token,
+                        max_profiles=DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])["results_per_page"] // 4 or 5,
+                    )
+                    if not raw_items:
+                        return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
+                else:
+                    _log(f"IG search retry failed: {retry_e}")
+                    return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
             except Exception as retry_e:
                 _log(f"IG search retry failed: {retry_e}")
                 return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
+        elif status == 404:
+            # Primary endpoint returns 404: fall back to profiles → user/reels
+            _log("IG reels/search 404, trying profiles fallback")
+            raw_items = _reels_via_profiles(
+                core_topic, token,
+                max_profiles=DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])["results_per_page"] // 4 or 5,
+            )
+            if not raw_items:
+                _log(f"ScrapeCreators error: {e}")
+                return {"items": [], "error": f"{type(e).__name__}: {e}"}
         else:
             _log(f"ScrapeCreators error: {e}")
             return {"items": [], "error": f"{type(e).__name__}: {e}"}
     except Exception as e:
         _log(f"ScrapeCreators error: {e}")
         return {"items": [], "error": f"{type(e).__name__}: {e}"}
-
-    # Items are in the 'reels' array (ScrapeCreators v2 response)
-    raw_items = data.get("reels") or data.get("items") or data.get("data") or []
 
     # Limit to configured count
     raw_items = raw_items[:config["results_per_page"]]
