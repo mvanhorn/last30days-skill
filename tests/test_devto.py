@@ -8,14 +8,12 @@ import pytest
 from lib import devto, normalize, pipeline
 
 
+TODAY = datetime.date(2026, 10, 11)
+
+
 @pytest.fixture(autouse=True)
 def _fixed_today(monkeypatch):
-    class FixedDate(datetime.date):
-        @classmethod
-        def today(cls):
-            return cls(2026, 10, 11)
-
-    monkeypatch.setattr(devto.datetime, "date", FixedDate)
+    monkeypatch.setattr(devto, "_today", lambda: TODAY)
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +112,7 @@ def test_tag_feed_and_search_merge_dedupe_and_filter(monkeypatch):
     assert ids == [1, 2, 3]
     assert "error" not in result
     tag_call = next(url for url in api.calls if "tag=" in url)
-    assert "top=30" in tag_call
+    assert "top=31" in tag_call
 
 
 def test_articles_outside_the_window_are_dropped(monkeypatch):
@@ -136,20 +134,106 @@ def test_historical_window_reaches_back_from_today_and_keeps_upper_bound(monkeyp
         query = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
         days = int(query["top"])
         calls.append(days)
-        cutoff = devto.datetime.date.today() - datetime.timedelta(days=days)
+        assert (query["per_page"], query["page"]) == ("1000", "1")
+        cutoff = TODAY - datetime.timedelta(days=days)
         return [row for row in (historical, recent)
                 if datetime.date.fromisoformat(row["published_at"][:10]) >= cutoff]
 
     monkeypatch.setattr(devto.http, "request", relative_window_api)
     result = devto.search_devto("rust async", "2026-08-01", "2026-08-31", tags=tags)
     assert [row["id"] for row in result["articles"]] == [1]
-    assert calls and all(days == 71 for days in calls)
+    assert calls and all(days == 72 for days in calls)
     assert "error" not in result
 
 
 @pytest.mark.parametrize("end", [None, "2026-10-11"])
-def test_current_window_retains_its_server_reach(end):
-    assert devto._window_days("2026-09-11", end) == 30
+def test_current_window_reach_covers_all_of_from_date(end):
+    assert devto._window_days("2026-09-11", end) == 31
+
+
+def _paged_api(pages, calls, fail_page=None, path="/api/articles"):
+    def api(method, url, headers=None, **kwargs):
+        parsed = urllib.parse.urlparse(url)
+        if parsed.path != path:
+            return []
+        query = dict(urllib.parse.parse_qsl(parsed.query))
+        page = int(query.get("page", "1"))
+        calls.append(page)
+        if page == fail_page:
+            raise OSError("page down")
+        return pages[page - 1] if page <= len(pages) else []
+    return api
+
+
+def _filler(start_id, count, published):
+    return [_article(start_id + i, f"Rust filler {i}", tags=("rust",), published=published) for i in range(count)]
+
+
+@pytest.mark.parametrize("tags", [None, ["rust"]])
+def test_historical_window_pages_past_newer_articles(monkeypatch, tags):
+    in_window = _article(1, "Rust async", tags=("rust",), published="2026-08-10T12:00:00Z")
+    calls = []
+    pages = [_filler(1000, devto.HISTORICAL_PER_PAGE, "2026-10-05T12:00:00Z"), [in_window]]
+    path = "/api/articles" if tags else "/api/articles/search"
+    monkeypatch.setattr(devto.http, "request", _paged_api(pages, calls, path=path))
+    result = devto.search_devto("rust async", "2026-08-01", "2026-08-31", tags=tags)
+    assert [row["id"] for row in result["articles"]] == [1]
+    assert calls == [1, 2]
+
+
+def test_historical_paging_stops_at_the_page_cap(monkeypatch):
+    monkeypatch.setattr(devto, "HISTORICAL_MAX_PAGES", 3)
+    calls = []
+    pages = [_filler(1000 * n, devto.HISTORICAL_PER_PAGE, "2026-10-05T12:00:00Z") for n in range(1, 6)]
+    monkeypatch.setattr(devto.http, "request", _paged_api(pages, calls))
+    devto.search_devto("rust", "2026-08-01", "2026-08-31", tags=["rust"], search_query="")
+    assert calls == [1, 2, 3]
+
+
+def test_historical_paging_stops_at_the_time_budget(monkeypatch):
+    monkeypatch.setattr(devto, "HISTORICAL_BUDGET_SECONDS", 0.0)
+    calls = []
+    pages = [_filler(1000 * n, devto.HISTORICAL_PER_PAGE, "2026-10-05T12:00:00Z") for n in range(1, 4)]
+    monkeypatch.setattr(devto.http, "request", _paged_api(pages, calls))
+    devto.search_devto("rust", "2026-08-01", "2026-08-31", tags=["rust"], search_query="")
+    assert calls == [1]
+
+
+def test_one_paging_budget_covers_every_endpoint(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(devto.time, "monotonic", lambda: clock[0])
+    calls = []
+    full = _filler(1000, devto.HISTORICAL_PER_PAGE, "2026-10-05T12:00:00Z")
+    paged = _paged_api([full] * 5, calls)
+
+    def slow_api(method, url, **kwargs):
+        clock[0] += devto.HISTORICAL_BUDGET_SECONDS / 2 + 1
+        return paged(method, url, **kwargs)
+
+    monkeypatch.setattr(devto.http, "request", slow_api)
+    devto.search_devto("rust", "2026-08-01", "2026-08-31", depth="deep", tags=["rust", "go", "zig"], search_query="")
+    assert calls == [1, 2, 1, 1]
+
+
+def test_later_page_failure_keeps_the_pages_already_fetched(monkeypatch):
+    calls = []
+    pages = [_filler(1000, devto.HISTORICAL_PER_PAGE, "2026-08-10T12:00:00Z")]
+    monkeypatch.setattr(devto.http, "request", _paged_api(pages, calls, fail_page=2))
+    result = devto.search_devto("rust", "2026-08-01", "2026-08-31", tags=["rust"], search_query="")
+    assert calls == [1, 2]
+    assert len(result["articles"]) == devto.TAG_PER_PAGE
+    assert "error" not in result
+
+
+def test_historical_window_keeps_the_most_engaged_in_window_articles(monkeypatch):
+    rows = [
+        _article(i, f"Rust post {i}", tags=("rust",), published="2026-08-10T12:00:00Z", reactions=i)
+        for i in range(1, 51)
+    ]
+    rows.append(_article(99, "Rust hot but late", tags=("rust",), published="2026-09-10T12:00:00Z", reactions=500))
+    monkeypatch.setattr(devto.http, "request", _paged_api([rows], []))
+    result = devto.search_devto("rust", "2026-08-01", "2026-08-31", tags=["rust"], search_query="")
+    assert sorted(row["id"] for row in result["articles"]) == list(range(21, 51))
 
 
 def test_unknown_tag_and_offtopic_search_stay_quiet(monkeypatch):

@@ -4,16 +4,21 @@ Uses the public Forem API at dev.to (no key):
 
 - ``/api/articles?tag=<tag>&top=<days>`` returns the most-engaged articles for
   a tag in the window. Precise, but only as good as the tag.
-- ``/api/articles/search?q=<term>&top=<days>`` is free-text search sorted by
-  recency. Single distinctive terms match well; multi-word queries match
-  loosely, so every search hit must pass the engine's token-overlap relevance
-  check before it is kept.
+- ``/api/articles/search?q=<term>&top=<days>`` is free-text search sorted
+  roughly by recency. Single distinctive terms match well; multi-word queries
+  match loosely, so every search hit must pass the engine's token-overlap
+  relevance check before it is kept.
 - ``/api/comments?a_id=<id>`` returns the comment tree for an article.
 
 The source is off by default. Host-inferred tags (``--devto-tags``) turn it
 on for a run; ``INCLUDE_SOURCES=devto`` or ``--search devto`` turn it on
 without tags, in which case only the keyword search runs. An unknown tag
 returns ``[]`` with HTTP 200, so a wrong tag stays quiet instead of failing.
+
+Both endpoints count ``top`` back from now and accept no end date, sort, or
+date-range parameter. A window that ends before today therefore pages
+through everything published since its start and filters locally, within
+``HISTORICAL_MAX_PAGES`` and ``HISTORICAL_BUDGET_SECONDS``.
 """
 
 from __future__ import annotations
@@ -48,6 +53,11 @@ SEARCH_RELEVANCE_FLOOR = 0.25
 # Total wall-clock cap per request. The socket timeout alone bounds each
 # read, so a response trickling in small chunks could otherwise run on.
 REQUEST_DEADLINE_SECONDS = 20.0
+# Forem's per_page ceiling. A busy term ("kubernetes") has ~4,000 search hits
+# over 78 days, about 2 MB and 4-5 s per full page.
+HISTORICAL_PER_PAGE = 1000
+HISTORICAL_MAX_PAGES = 10
+HISTORICAL_BUDGET_SECONDS = 45.0
 ENRICH_WAIT_SECONDS = 25.0
 
 _TAG_RE = re.compile(r"[^a-z0-9]")
@@ -76,14 +86,22 @@ def resolve_tags(tags: list[str] | None, depth: str = "default") -> list[str]:
     return resolved[: TAG_LIMITS.get(depth, TAG_LIMITS["default"])]
 
 
+def _today() -> datetime.date:
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+def _is_historical(to_date: str | None) -> bool:
+    return bool(to_date) and str(to_date) < _today().isoformat()
+
+
 def _window_days(from_date: str | None, to_date: str | None) -> int:
     try:
         start = datetime.date.fromisoformat(from_date or "")
-        end = datetime.date.fromisoformat(to_date or "") if to_date else datetime.date.today()
-        # Forem counts top=N back from today, including for historical windows.
-        # Keep to_date enforcement in _in_window after fetching the wider range.
-        end = max(end, datetime.date.today())
-        return max(1, (end - start).days)
+        # Forem counts top=N back from now, including for historical windows,
+        # so the reach always runs to today and _in_window enforces to_date.
+        # The extra day keeps all of from_date: a now-anchored cutoff of
+        # exactly N days lands partway through it.
+        return max(1, (_today() - start).days + 1)
     except ValueError:
         return 30
 
@@ -101,7 +119,9 @@ def clear_cache() -> None:
         _URL_LOCKS.clear()
 
 
-def _get_list(url: str, headers: dict[str, str] | None = None) -> list[dict[str, Any]]:
+def _get_list(
+    url: str, headers: dict[str, str] | None = None, deadline: float | None = None,
+) -> list[dict[str, Any]]:
     # Concurrent subquery streams can request the same URL; the per-URL lock
     # makes the second caller wait for the first fetch instead of repeating it.
     with _LOCKS_GUARD:
@@ -110,7 +130,10 @@ def _get_list(url: str, headers: dict[str, str] | None = None) -> list[dict[str,
         if url not in _RESPONSE_CACHE:
             data = http.request(
                 "GET", url, headers=headers, timeout=15, retries=2,
-                deadline_monotonic=time.monotonic() + REQUEST_DEADLINE_SECONDS,
+                deadline_monotonic=min(
+                    time.monotonic() + REQUEST_DEADLINE_SECONDS,
+                    deadline if deadline is not None else float("inf"),
+                ),
                 owned_get=True,
             )
             if not isinstance(data, list):
@@ -121,8 +144,58 @@ def _get_list(url: str, headers: dict[str, str] | None = None) -> list[dict[str,
         return [dict(row) for row in _RESPONSE_CACHE[url]]
 
 
+def _published(article: dict[str, Any]) -> str:
+    return str(article.get("published_at") or "")[:10]
+
+
+def _fetch_rows(
+    base_url: str,
+    params: dict[str, Any],
+    to_date: str | None,
+    *,
+    label: str,
+    deadline: float,
+    headers: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch one page for a current window, or page through a past one.
+
+    Every page after the first stops at ``deadline``, which the caller shares
+    across all endpoints so a deep run's tags cannot each spend the budget.
+    """
+    if not _is_historical(to_date):
+        return _get_list(f"{base_url}?{urllib.parse.urlencode(params)}", headers=headers)
+    rows: list[dict[str, Any]] = []
+    for page in range(1, HISTORICAL_MAX_PAGES + 1):
+        if page > 1 and time.monotonic() >= deadline:
+            _log(f"{label}: stopped after {page - 1} pages at the time budget; older in-window articles may be missing")
+            return rows
+        page_params = {**params, "per_page": HISTORICAL_PER_PAGE, "page": page}
+        url = f"{base_url}?{urllib.parse.urlencode(page_params)}"
+        try:
+            batch = _get_list(url, headers=headers, deadline=deadline if page > 1 else None)
+        except Exception as exc:
+            if page == 1:
+                raise
+            _log(f"{label}: page {page} failed ({exc}); keeping the {page - 1} pages fetched")
+            return rows
+        rows.extend(batch)
+        # top=N bounds the result set at from_date, so a short page is the end.
+        if len(batch) < HISTORICAL_PER_PAGE:
+            return rows
+    _log(f"{label}: stopped at {HISTORICAL_MAX_PAGES} pages; older in-window articles may be missing")
+    return rows
+
+
+def _top_engaged(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda row: int(row.get("public_reactions_count") or row.get("positive_reactions_count") or 0),
+        reverse=True,
+    )[:limit]
+
+
 def _in_window(article: dict[str, Any], from_date: str | None, to_date: str | None) -> bool:
-    published = str(article.get("published_at") or "")[:10]
+    published = _published(article)
     if not published:
         return True
     if from_date and published < from_date:
@@ -154,24 +227,28 @@ def search_devto(
     endpoint is recorded in ``errors`` and the other endpoint still counts.
     """
     days = _window_days(from_date, to_date)
+    historical = _is_historical(to_date)
+    paging_deadline = time.monotonic() + HISTORICAL_BUDGET_SECONDS
     resolved_tags = resolve_tags(tags, depth)
     articles: dict[int, dict[str, Any]] = {}
     errors: list[str] = []
 
     for tag in resolved_tags:
-        url = f"{ARTICLES_URL}?{urllib.parse.urlencode({'tag': tag, 'top': days, 'per_page': TAG_PER_PAGE})}"
+        params = {"tag": tag, "top": days, "per_page": TAG_PER_PAGE}
         try:
-            rows = _get_list(url)
+            rows = _fetch_rows(ARTICLES_URL, params, to_date, label=f"tag '{tag}'", deadline=paging_deadline)
         except Exception as exc:
             errors.append(f"tag {tag}: {exc}")
             _log(f"tag feed failed for '{tag}': {exc}")
             continue
+        rows = [row for row in rows if row.get("id") is not None and _in_window(row, from_date, to_date)]
+        if historical:
+            rows = _top_engaged(rows, TAG_PER_PAGE)
         kept = 0
         for row in rows:
-            if row.get("id") is not None and _in_window(row, from_date, to_date):
-                row.setdefault("_devto_match", f"tag:{tag}")
-                articles.setdefault(row["id"], row)
-                kept += 1
+            row.setdefault("_devto_match", f"tag:{tag}")
+            articles.setdefault(row["id"], row)
+            kept += 1
         _log(f"tag '{tag}': {kept} articles in window")
 
     # Planner queries quote phrases for engines with phrase syntax; Forem
@@ -179,21 +256,31 @@ def search_devto(
     query = (search_query or topic or "").replace('"', " ").strip()
     query = " ".join(query.split())
     if query:
-        params = {"q": query, "top": days, "per_page": SEARCH_PER_PAGE.get(depth, SEARCH_PER_PAGE["default"])}
-        url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
+        per_page = SEARCH_PER_PAGE.get(depth, SEARCH_PER_PAGE["default"])
+        params = {"q": query, "top": days, "per_page": per_page}
         try:
-            rows = _get_list(url, headers=_SEARCH_HEADERS)
+            rows = _fetch_rows(
+                SEARCH_URL, params, to_date, label=f"search '{query}'",
+                deadline=paging_deadline, headers=_SEARCH_HEADERS,
+            )
         except Exception as exc:
             errors.append(f"search: {exc}")
             _log(f"search failed for '{query}': {exc}")
             rows = []
         kept = dropped = 0
+        relevant = []
         for row in rows:
             if row.get("id") is None or not _in_window(row, from_date, to_date):
                 continue
             if token_overlap_relevance(topic or query, _article_text(row)) < SEARCH_RELEVANCE_FLOOR:
                 dropped += 1
                 continue
+            relevant.append(row)
+        if historical:
+            # A current window keeps the newest page; a past one keeps the
+            # most-engaged in-window hits so the item count stays comparable.
+            relevant = _top_engaged(relevant, per_page)
+        for row in relevant:
             row.setdefault("_devto_match", "search")
             articles.setdefault(row["id"], row)
             kept += 1
