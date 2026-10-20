@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "scorecard.yml"
@@ -19,6 +21,18 @@ def test_scorecard_runs_ossf_action_and_uploads_sarif() -> None:
     assert "ossf/scorecard-action" in text
     assert "github/codeql-action/upload-sarif" in text
     assert "results_format: sarif" in text
+
+
+def test_scorecard_reads_workflows_excluded_from_archives() -> None:
+    workflow = yaml.safe_load(_workflow_text())
+    scorecard_steps = [
+        step
+        for step in workflow["jobs"]["analysis"]["steps"]
+        if step.get("uses", "").split("@")[0] == "ossf/scorecard-action"
+    ]
+
+    assert len(scorecard_steps) == 1
+    assert scorecard_steps[0]["with"].get("file_mode") == "git"
 
 
 def test_scorecard_runs_on_schedule_and_default_branch() -> None:

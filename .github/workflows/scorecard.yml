@@ -50,6 +50,8 @@ jobs:
         with:
           results_file: scorecard.sarif
           results_format: sarif
+          # Archives omit .github/ via export-ignore, hiding workflows from checks.
+          file_mode: git
           # Publishes results to the OpenSSF REST API for the public badge and
           # trend tracking. Set to false if maintainers prefer to keep the
           # score private (the SARIF upload below still works either way).
