@@ -1,1 +1,0 @@
-dev.to now finds articles for research windows that end before today. It pages back through newer results within a 45-second budget, keeps only articles inside the window, and includes the whole first day of every window.

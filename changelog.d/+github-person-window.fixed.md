@@ -1,1 +1,0 @@
-GitHub person mode (`--github-user`) now counts PRs created inside the research window only, so an `--as-of` run no longer reports every PR up to today, and its velocity summary names the real window length instead of always saying 30 days.
