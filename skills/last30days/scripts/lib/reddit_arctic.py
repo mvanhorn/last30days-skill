@@ -30,13 +30,12 @@ PACE_SECONDS = 0.4  # gap between batches; arctic-shift answers 422 "slow down"
 CACHE_MAX = 4096    # hard size bound so the in-run memo can never grow unbounded
 # Listing-lane knobs. Base limits mirror reddit_listing's DEPTH_LIMITS so callers
 # get the same per-depth volume. The supplement multiplier is applied when the
-# caller requested multiple sorts (top/hot/new) — arctic-shift has no sort lanes,
-# so we fetch more posts to increase the chance of covering what the failed
-# shreddit lanes would have returned.
+# caller requested multiple sorts (top/hot/new) — arctic-shift has no sort lanes
+# (only asc/desc), so we fetch more posts to increase the chance of covering
+# what the failed shreddit lanes would have returned. Windowed runs
+# (from_date/to_date) instead slice the window and keep the highest-scored
+# posts, which recovers window-top engagement without sort lanes.
 #
-# KNOWN LIMITATION: Arctic-shift is recency-only (sort=desc). It has no top/hot/
-# new/rising lanes — failed shreddit sort lanes are supplemented with recent
-# posts, not lane-specific results. This is a fundamental backend constraint.
 _LISTING_DEPTH_LIMITS = {"quick": 10, "default": 25, "deep": 50}
 _LISTING_SUPPLEMENT_MULTIPLIER = 2  # fetch 2x posts when supplementing multi-sort requests
 # Total deadline for listing fetches to prevent unbounded stalls when many
@@ -174,12 +173,13 @@ def fetch_listings(
     partials), which datacenter IPs get HTTP 403 on. Arctic-shift serves recent
     posts with real score/num_comments from any IP.
 
-    Arctic-shift has no top/hot/new lanes, only recency. When ``sorts`` contains
-    multiple entries (e.g., dedicated lanes requesting top+hot+new), we fetch
-    more posts per subreddit to partially compensate for the missing lane
-    coverage — the caller's engagement ranking does the final sorting.
-
-    Best-effort, never raises: returns ``[]`` on any failure.
+    Arctic-shift has no top/hot/new lanes (only asc/desc). Without a date
+    window the fetch is recency-only, and the archive freezes score at ingest,
+    so the freshest ~2-3 days read as 1-point stubs. When the caller supplies
+    ``from_date``/``to_date``, the window is sliced into ~7-day chunks queried
+    with ``after``/``before`` and the highest-scored posts are kept per
+    subreddit, which restores window-top engagement even though shreddit is
+    unavailable. Best-effort, never raises: returns ``[]`` on any failure.
     """
     if not subreddits:
         return []
