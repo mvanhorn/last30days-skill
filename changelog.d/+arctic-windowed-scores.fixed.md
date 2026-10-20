@@ -1,0 +1,1 @@
+Keyless Reddit discovery no longer collapses to 1-point stubs when shreddit is blocked: the arctic-shift supplement now slices the research window with `after`/`before` and keeps the highest-scored posts, restoring real engagement numbers (a 30-day window on the test topic went from 6pts to ~3,000pts).
