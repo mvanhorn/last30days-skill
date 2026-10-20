@@ -432,7 +432,10 @@ class TestScoredListingsFallback:
                                return_value=[arctic_post]) as arctic:
             out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
         assert out == [arctic_post]
-        arctic.assert_called_once_with(["tea"], depth="quick", query="matcha", sorts=None)
+        arctic.assert_called_once_with(
+            ["tea"], depth="quick", query="matcha", sorts=None,
+            from_date=None, to_date=None,
+        )
 
     def test_shreddit_and_arctic_both_called_deduped(self):
         """Shreddit and arctic are both called; arctic supplements missing posts."""
@@ -477,7 +480,8 @@ class TestScoredListingsFallback:
                 ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
             )
         arctic.assert_called_once_with(
-            ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
+            ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"],
+            from_date=None, to_date=None,
         )
 
     def test_arctic_supplements_all_subreddits(self):

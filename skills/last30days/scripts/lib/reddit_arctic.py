@@ -165,6 +165,8 @@ def fetch_listings(
     sorts: Optional[List[str]] = None,
     timeframe: str = "month",
     limit: Optional[int] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Scored subreddit listings from the arctic-shift archive, keyless.
 
@@ -185,6 +187,33 @@ def fetch_listings(
     # When multiple sorts were requested, fetch more posts to compensate for
     # arctic-shift's lack of sort lanes.
     n = base * _LISTING_SUPPLEMENT_MULTIPLIER if sorts and len(sorts) > 1 else base
+    # Window + engagement sort: the archive freezes score at ingest time, so
+    # posts from the last ~2-3 days read as 1-point stubs and `before` ending
+    # today can return null data. Scope the query with after/before, slice the
+    # window into ~7-day chunks (API caps 100 rows/request, newest-first, so
+    # one request only covers the last day of a month window), and keep the
+    # highest-scored n per subreddit (sort has no top lane — only asc/desc).
+    window = bool(from_date or to_date)
+    slices: Optional[List[tuple]] = None
+    if window:
+        from datetime import date as _date, timedelta as _timedelta
+        try:
+            start = _date.fromisoformat(from_date) if from_date else None
+            end = _date.fromisoformat(to_date) if to_date else _date.today()
+        except ValueError:
+            start, end = None, None
+        if end and not start:
+            start = end - _timedelta(days=30)
+        if start and end and start < end:
+            span = (end - start).days
+            n_slices = min(4, max(1, span // 7))
+            step = max(1, -(-span // n_slices))
+            slices = []
+            cursor = start
+            while cursor < end:
+                slices.append((cursor, min(cursor + _timedelta(days=step), end)))
+                cursor += _timedelta(days=step)
+    req_limit = 100 if window else n
     out: List[Dict[str, Any]] = []
     # Process all requested subreddits with pacing and a total deadline to
     # prevent unbounded stalls when arctic is slow or unreachable.
@@ -200,29 +229,48 @@ def fetch_listings(
         if fetched_count:
             time.sleep(PACE_SECONDS)
         fetched_count += 1
-        try:
-            # Use retries=1 (single attempt) so retries don't exceed our deadline.
-            # The deadline handles overall timing; per-request retries would
-            # multiply the delay unpredictably.
-            data = http.get(
-                f"{SEARCH_API}?subreddit={sub}&limit={n}&sort=desc",
-                headers={"User-Agent": http.BROWSER_USER_AGENT},
-                timeout=TIMEOUT,
-                retries=1,
-            )
-        except Exception as e:  # network error / non-200 — degrade, never raise
-            _log(f"listing search failed r/{sub}: {e}")
-            continue
-        rows = (data or {}).get("data")
-        if not isinstance(rows, list):
-            _log(f"unexpected listing response for r/{sub}: {str(data)[:80]}")
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
+        requests = slices or [None]
+        sub_posts: List[Dict[str, Any]] = []
+        seen_urls: set = set()
+        for i, span_pair in enumerate(requests):
+            if i and time.time() >= deadline:
+                _log(f"listing deadline reached mid-r/{sub}; keeping partial slice set")
+                break
+            if i:
+                time.sleep(PACE_SECONDS)
+            if span_pair:
+                win = f"&after={span_pair[0].isoformat()}&before={span_pair[1].isoformat()}"
+            else:
+                win = f"&after={from_date}" if from_date else ""
+                win += f"&before={to_date}" if to_date else ""
+            try:
+                # Use retries=1 (single attempt) so retries don't exceed our deadline.
+                # The deadline handles overall timing; per-request retries would
+                # multiply the delay unpredictably.
+                data = http.get(
+                    f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}",
+                    headers={"User-Agent": http.BROWSER_USER_AGENT},
+                    timeout=TIMEOUT,
+                    retries=1,
+                )
+            except Exception as e:  # network error / non-200 — degrade, never raise
+                _log(f"listing search failed r/{sub}: {e}")
                 continue
-            post = _normalize_listing_row(row, query)
-            if post["url"]:
-                out.append(post)
+            rows = (data or {}).get("data")
+            if not isinstance(rows, list):
+                _log(f"unexpected listing response for r/{sub}: {str(data)[:80]}")
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                post = _normalize_listing_row(row, query)
+                if post["url"] and post["url"] not in seen_urls:
+                    seen_urls.add(post["url"])
+                    sub_posts.append(post)
+        if window:
+            sub_posts.sort(key=lambda p: -(p["score"] or 0))
+            sub_posts = sub_posts[:n]
+        out.extend(sub_posts)
 
     seen: set = set()
     unique: List[Dict[str, Any]] = []
