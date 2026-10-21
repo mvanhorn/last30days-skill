@@ -30,7 +30,7 @@ Agent Skills package for researching any topic across Reddit, X, YouTube, and we
 python3 skills/last30days/scripts/last30days.py "test query" --emit=compact
 npx skills add . -g -y   # copies skill into ~/.agents/skills/<name>/ (frozen at install time); re-run to sync working-tree edits — see Rules below
 
-# Tests (pytest, ~89 files under tests/, configured in pyproject.toml)
+# Tests (pytest; tests/ discovery is configured in pyproject.toml)
 uv run pytest                              # full suite
 uv run pytest tests/test_dedupe_v3.py      # single file
 uv run pytest tests/test_dedupe_v3.py -k some_case   # single case

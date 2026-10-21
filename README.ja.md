@@ -87,9 +87,17 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 | **Xiaohongshu(RED)** | 中国のライフスタイル・プロダクト・クリエイターのシグナル。ログイン済みの x-mcp ブラウザプラグイン、または `xiaohongshu-mcp` サービスがローカルで動いているときに、`--search xhs` で明示的に指定して使います。 |
 | **Bluesky** | 分散型のソーシャル層。Twitter 以後の移住で生まれた AT Protocol の投稿です。 |
 | **Perplexity** | 制御された Agent API の統合、OpenRouter の Sonar フォールバック、Search API の生の結果、明示的な Deep Research。 |
+| **DEV Community (dev.to)** | 公開 API で開発者の記事とトップコメントを検索します。キーは不要です。`--devto-tags`、`--search devto`、または `INCLUDE_SOURCES=devto` で有効にします。 |
+| **Truth Social** | `TRUTHSOCIAL_TOKEN` で投稿を検索します。認証情報の設定後に利用できます。 |
+| **Telegram** | 指定した公開チャンネルの投稿。任意で有効にし、`SCRAPECREATORS_API_KEY` とチャンネル一覧が必要です。キーワードによるチャンネル発見は行いません。 |
+| **Trustpilot** | 企業の TrustScore、レビュー件数、顧客の声の AI 要約。任意で有効にし、PATH 上の `trustpilot-pp-cli` と利用可能なセッションが必要です。 |
+| **Amazon** | 商品の評価、価格、カスタマーレビュー。任意で有効にし、認証済みの `brightdata` CLI が必要です。Bright Data のクレジットを使用します。 |
+| **DripStack** | 公開 API で金融ニュースレターとアナリストの記事を検索します。キーは不要です。`--search dripstack` または `INCLUDE_SOURCES=dripstack` で有効にします。 |
+| **求人 / 採用ページ** | 企業の注力分野を示す公開求人。`--hiring-signals`、`--search jobs`、または調査計画で選択します。 |
+| **ローカルコーパス** | ローカルの Markdown・テキストファイル。`pdftotext` が PATH 上にあれば PDF も対象です。`--corpus` または `LAST30DAYS_CORPUS_DIRS` で有効にします。 |
 | **Web** | 編集記事や、ブログの比較記事。数あるシグナルの1つであって、唯一のものではありません。 |
 
-コミュニティが今も情報源を増やし続けています。Truth Social をはじめとするニッチな情報源もすでにエンジンに入っていて、さらに追加予定です。
+必要な情報源を含めるよう `/last30days` に依頼してください。利用できる情報源は、認証情報、インストール済みのツール、調査対象、明示的な有効化によって異なります。設定方法は[情報源の要件](CONFIGURATION.md#source-requirements)を参照してください。
 
 1,500アップボートの Reddit スレッドは、誰にも読まれなかったブログ記事よりも強いシグナルです。360万回再生の TikTok は、プレスリリースよりも「今、文化的に何が効いているか」を語ります。6.6万ドルの出来高に裏打ちされた Polymarket のオッズは、評論家の当て推量よりも反論しにくいものです。
 
@@ -115,47 +123,9 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 
 ## 最近の変更
 
-5月の v3.3 発表以降、v3.11.1(2026年7月)時点までで、15回のリリースにわたり175本のPRがマージされました。うち122本はコミュニティの52人によるものです。以下がその内容です。
+現在公開されているバージョンは[最新リリース](https://github.com/mvanhorn/last30days-skill/releases/latest)、各バージョンの変更内容は [CHANGELOG.md](CHANGELOG.md) を参照してください。デフォルトブランチの未リリースの変更は [changelog.d/](changelog.d/) に記録されています。
 
-### OpenAI Codex での一級対応
-
-/last30days は、ガイド付きセットアップを備えた Codex のネイティブプラグインになりました。移植版ではなく、一級の対応です。レンダラーを踏まえた引用処理によって、Codex での出力はURLの羅列ではなくブリーフとして読めるようになり(#694)、同じエンジンが Claude Code、Cursor、Copilot、Gemini CLI、Claude Desktop、OpenClaw、そして50以上の Agent Skills ホストで動きます。Codex のプラグインマニフェストは [@rfoust](https://github.com/rfoust)(#686)、Codex の認証まわりの修正は [@tmchow](https://github.com/tmchow)(#698)によるものです。
-
-### arXiv、Techmeme、Digg — 無料、APIキー不要
-
-arXiv は話題の裏側にある論文を、Techmeme はテックニュースの編集レイヤーを持ち込みます。いずれも無料でキーは一切不要、しかも初回セットアップが各CLIをインストールするので自動的に有効になります(#709)。Digg の AI 1000 ストーリークラスターも同じように、X の認証なしで届きます。セットアップが無料の Digg CLI を入れてくれます(#590)。Trustpilot は消費者向けブランドの調査用に、任意で有効にできます。
-
-### 無料の Reddit が、実数のスコアとトップコメント付きで復活
-
-Reddit の公開 .json API は終了しましたが、無料の経路はより強くなって戻ってきました。キー不要の RSS と shreddit のスクレイピング(#457)、arctic-shift 経由で実際のアップボート数まで取れるサブレディット特定(#696)、そして話題から外れたバズ投稿にブリーフを乗っ取られないようにする関連性の下限(#488、[@rzachsmith](https://github.com/rzachsmith) に感謝)。APIキーは不要。スコアは実数。トップコメントも込みです。
-
-### どのブリーフにも最高のコメントを
-
-コメントは今や、どの情報源でも既定で有効なレイヤーです。Instagram のコメントは順位に基づいて分散させ、尖った意見5件が同じ投稿ばかりから出ないようにしています(#751)。YouTube のコメントに加えて、yt-dlp が失敗したときのために ScrapeCreators による文字起こしのバックアップも用意しました(#637)。さらに、コミュニティの投票で支持されたコメントを Best Takes のスコアに反映し、いちばん面白い一言が選別を生き延びるようにしています(#592、#608)。
-
-### doctor コマンド1つで
-
-ヘルスチェックを頼めば、doctor がすべての情報源を試したうえで、必要な対処をそのまま提示します。どのキーが足りないのか、どのCLIが PATH に入っていないのか、どのクッキーが期限切れなのか(#753)。X の結果が薄かった理由を当てずっぽうで探す必要はもうありません。
-
-### X 検索の作り直し
-
-X のパイプラインを一から作り直しました。FROM レーンと ABOUT レーンを設けて、本人の投稿と本人についての会話の両方が順位付けされるようにし(#610)、対象人物に応じてサブクエリの曖昧さを解消し(#611)、本人による投稿かどうかを裏付けたうえでインタラクションのシグナルで順位を付け(#613)、バックエンドを自動で切り替える単一の X ソースにまとめました(#622)。さらに、認証を実際に確かめる正直な `--diagnose` も入っています(#609)。
-
-### 情報源が増えました
-
-ScrapeCreators 経由の LinkedIn。記事は強いシグナルとして扱います([@ravstr](https://github.com/ravstr)、#702)。StockTwits は銘柄コードや暗号資産の話題で自動的に有効になります([@wtiwana](https://github.com/wtiwana)、#658)。Perplexity は直接APIモードと非同期の Deep Research に対応しました([@sk-holmes](https://github.com/sk-holmes)、#629)。
-
-### コミュニティによる堅牢化
-
-セキュリティ面の改善は、ほぼすべてコミュニティの手によるものです。HTML レンダラーの格納型XSSの修正([@iliaal](https://github.com/iliaal)、[@aaronjmars](https://github.com/aaronjmars))、クッキーの一時ファイルの権限強化、OpenSSF Scorecard とビルド来歴の証明を組み込んだサプライチェーン耐性のあるCI([@shaanmajid](https://github.com/shaanmajid)、[@hammadxcm](https://github.com/hammadxcm)、[@aniruddh909](https://github.com/aniruddh909))、Semgrep と OSV-Scanner によるスキャンおよびPRごとの依存関係レビューゲート([@23241a6749](https://github.com/23241a6749))、60%で導入し現在は84%まで引き上げたテストカバレッジの下限([@gourab5139014](https://github.com/gourab5139014))、そして CRITICAL の指摘がゼロになった Hermes のセキュリティスキャン(#768)。
-
-### 届く範囲が広がりました
-
-ヘブライ語をはじめとする非ラテン文字の言語に対応([@dudyme](https://github.com/dudyme))。中国語の情報源向けに CJK を考慮したトークナイズ([@An-idd](https://github.com/An-idd))。Windows 対応の改善もまとめて入りました。Chromium 系ブラウザ全体(Brave、Edge、Vivaldi、Opera、Arc)からのクッキー抽出([@andrey-esipov](https://github.com/andrey-esipov))に加え、macOS のキーチェーンと Linux の pass(1) も認証情報の取得元として使えます。`--as-of` による過去時点の振り返り([@chiyi-creator](https://github.com/chiyi-creator))。uv 経由での Python 3.12 の自動セットアップ([@buntysomroy](https://github.com/buntysomroy))。企業の求人ページを読む `--hiring-signals`。実行と実行のあいだのウォッチリスト差分。
-
-### v3 から引き続き入っているもの
-
-v3 の土台はすべて健在です。APIコールを1件も投げる前に、適切なアカウント・サブレディット・ハッシュタグを特定する事前リサーチの頭脳([@j-sperling](https://github.com/j-sperling) が構築)。関連性だけでなくユーモアやバイラル性も見る Best Takes のスコアリング。情報源をまたいだクラスターの統合。1回のパスで済む比較(「CLI vs MCP」が12分ではなく3分)。自動で候補を見つける `--competitors` 比較。GitHub の人物モード(`--github-user=steipete`)。ELI5 モード(実行後に「eli5 on」)。そして共有できる自己完結型の HTML ブリーフ(`--emit=html`)。設定項目は [CONFIGURATION.md](CONFIGURATION.md) にまとまっています。
+この README は現在のソースコードを説明しています。インストール済みのバージョンとは異なる場合があります。
 
 ## インストール
 
@@ -370,7 +340,9 @@ last30days で、定期的なAIのまとめ、市場ウォッチ、あるいは�
 
 ## オープンソース
 
-MIT ライセンス。トラッキングなし。アナリティクスなし。調査結果はあなたのマシンに残ります。テストは2,700件以上。
+MIT ライセンス。トラッキングなし。アナリティクスなし。調査結果はあなたのマシンに残ります。
+
+テストコマンドは [CONTRIBUTING.md](CONTRIBUTING.md#tests) を参照してください。
 
 Python 3.12以上、yt-dlp、Node.js(X 検索用に同梱した Bird クライアント)、ScrapeCreators API で構築しています。v3 のエンジンアーキテクチャは [@j-sperling](https://github.com/j-sperling) によるものです。
 

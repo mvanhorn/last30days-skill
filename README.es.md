@@ -87,9 +87,17 @@ Si te vas a reunir con un CEO, ¿te has leído todos sus tuits y todas sus trans
 | **Xiaohongshu (RED)** | Señales chinas sobre estilo de vida, productos y creadores. Se pide de forma explícita con `--search xhs` cuando tienes corriendo en local un plugin de navegador x-mcp con sesión iniciada o un servicio `xiaohongshu-mcp`. |
 | **Bluesky** | La capa social descentralizada. Publicaciones de AT Protocol surgidas de la migración posterior a Twitter. |
 | **Perplexity** | Síntesis controlada con la Agent API, alternativa Sonar mediante OpenRouter, resultados en bruto de la Search API y Deep Research explícita. |
+| **DEV Community (dev.to)** | Artículos de desarrolladores y mejores comentarios mediante la API pública, sin clave. Actívalo con `--devto-tags`, `--search devto` o `INCLUDE_SOURCES=devto`. |
+| **Truth Social** | Búsqueda de publicaciones con `TRUTHSOCIAL_TOKEN`; disponible tras autenticarse. |
+| **Telegram** | Publicaciones públicas de canales indicados. Opcional; requiere `SCRAPECREATORS_API_KEY` y una lista de canales. Sin descubrimiento por palabras clave. |
+| **Trustpilot** | TrustScore de la empresa, número de valoraciones y resumen por IA de las opiniones de clientes. Opcional; requiere `trustpilot-pp-cli` en el PATH y una sesión válida. |
+| **Amazon** | Valoraciones, precios y opiniones de clientes sobre productos. Opcional; requiere una CLI `brightdata` autenticada y consume tus créditos de Bright Data. |
+| **DripStack** | Boletines financieros y análisis mediante una API pública, sin clave. Actívalo con `--search dripstack` o `INCLUDE_SOURCES=dripstack`. |
+| **Empleo / páginas de carreras** | Ofertas de empleo públicas como indicios de las prioridades de una empresa. Selección con `--hiring-signals`, `--search jobs` o el plan de investigación. |
+| **Corpus local** | Tus archivos locales Markdown y de texto, además de PDF si `pdftotext` está en el PATH. Actívalo con `--corpus` o `LAST30DAYS_CORPUS_DIRS`. |
 | **Web** | La cobertura editorial, las comparativas de los blogs. Una señal entre muchas, no la única. |
 
-La comunidad no para de sumar fuentes. Truth Social y otras fuentes de nicho ya están en el motor, y vienen más.
+Pide a `/last30days` que incluya las fuentes que necesitas. Su disponibilidad depende de las credenciales, las herramientas instaladas, el tema y la activación explícita. Consulta los [requisitos de las fuentes](CONFIGURATION.md#source-requirements) para configurarlas.
 
 Un hilo de Reddit con 1.500 votos positivos es una señal más fuerte que una entrada de blog que no leyó nadie. Un TikTok con 3,6 millones de visualizaciones dice más sobre lo que es culturalmente relevante que cualquier nota de prensa. Unas cuotas de Polymarket respaldadas por 66.000 dólares de volumen son más difíciles de rebatir que la corazonada de un tertuliano.
 
@@ -115,47 +123,9 @@ La síntesis ordena según aquello con lo que la gente real ha interactuado de v
 
 ## Novedades
 
-Desde el anuncio de la v3.3 en mayo y hasta la v3.11.1 (julio de 2026): 175 PR mergeadas —122 de ellas de 52 colaboradores de la comunidad— repartidas en 15 versiones. Esto es lo que ha entrado.
+Consulta la [última versión](https://github.com/mvanhorn/last30days-skill/releases/latest) para ver la versión publicada actual y [CHANGELOG.md](CHANGELOG.md) para los cambios de cada versión. Los cambios de la rama predeterminada que aún no se han publicado están en [changelog.d/](changelog.d/).
 
-### Ciudadano de primera en OpenAI Codex
-
-/last30days ya es un plugin nativo de Codex con configuración guiada: no es un port, es un ciudadano de primera. Las citas tienen en cuenta el renderizador, así que la salida en Codex se lee como un informe y no como una sopa de URL (#694), y el mismo motor funciona en Claude Code, Cursor, Copilot, Gemini CLI, Claude Desktop, OpenClaw y 50+ hosts de Agent Skills. Manifiesto del plugin de Codex por [@rfoust](https://github.com/rfoust) (#686), corrección de autenticación en Codex por [@tmchow](https://github.com/tmchow) (#698).
-
-### arXiv, Techmeme y Digg: gratis y sin claves de API
-
-arXiv aporta los artículos científicos que hay detrás del ruido y Techmeme la capa editorial de la actualidad tecnológica: gratis, sin una sola clave, y la configuración inicial instala sus CLI para que se activen solas (#709). Los grupos de noticias AI 1000 de Digg llegan igual, sin autenticarte en X: la configuración instala por ti la CLI gratuita de Digg (#590). Trustpilot está disponible como opción para investigar marcas de consumo.
-
-### Reddit gratis, con puntuaciones reales y mejores comentarios
-
-La API pública .json de Reddit desapareció; la vía gratuita volvió más fuerte. RSS sin clave y scraping de shreddit (#457), descubrimiento de subreddits específicos con recuentos reales de votos positivos vía arctic-shift (#696), y un umbral de relevancia para que una publicación viral fuera de tema no secuestre tu informe (#488, gracias [@rzachsmith](https://github.com/rzachsmith)). Sin clave de API. Puntuaciones reales. Con los mejores comentarios incluidos.
-
-### Los mejores comentarios en cada informe
-
-Los comentarios son ya una capa activada por defecto en todas las fuentes: comentarios de Instagram con diversidad basada en el ranking, para que cinco opiniones rotundas no salgan todas de la misma publicación (#751), comentarios de YouTube más un respaldo de transcripción vía ScrapeCreators para cuando yt-dlp falla (#637), y comentarios votados por la comunidad ponderados dentro de Best Takes, para que las mejores frases sobrevivan a la puntuación (#592, #608).
-
-### Un único comando doctor
-
-Pide una revisión y doctor comprueba todas las fuentes y receta los arreglos exactos: qué clave falta, qué CLI no está en el PATH, qué cookie ha caducado (#753). Se acabó adivinar por qué X ha devuelto tan poco.
-
-### La búsqueda en X, reconstruida
-
-El pipeline de X se rehízo de arriba abajo: carriles FROM y ABOUT para que se posicionen tanto las publicaciones de una persona como la conversación sobre ella (#610), desambiguación de subconsultas según la persona buscada (#611), verificación de la autoría de primera mano con ranking por señales de interacción (#613), y una única fuente X con conmutación automática entre backends (#622). Además, un `--diagnose` honesto que comprueba de verdad la autenticación (#609).
-
-### Se han sumado más fuentes
-
-LinkedIn vía ScrapeCreators, con los artículos como señal fuerte ([@ravstr](https://github.com/ravstr), #702). StockTwits se activa automáticamente en temas de tickers y cripto ([@wtiwana](https://github.com/wtiwana), #658). Perplexity ha ganado modos de API directos y Deep Research asíncrono ([@sk-holmes](https://github.com/sk-holmes), #629).
-
-### Endurecido por la comunidad
-
-La oleada de seguridad fue casi por completo trabajo de la comunidad: correcciones de XSS almacenado en el renderizador HTML ([@iliaal](https://github.com/iliaal), [@aaronjmars](https://github.com/aaronjmars)), archivos temporales de cookies blindados, CI endurecida frente a ataques a la cadena de suministro con OpenSSF Scorecard y atestación de procedencia de las builds ([@shaanmajid](https://github.com/shaanmajid), [@hammadxcm](https://github.com/hammadxcm), [@aniruddh909](https://github.com/aniruddh909)), análisis con Semgrep y OSV-Scanner más un control de revisión de dependencias en cada PR ([@23241a6749](https://github.com/23241a6749)), un mínimo de cobertura de pruebas fijado al 60 % y elevado desde entonces al 84 % ([@gourab5139014](https://github.com/gourab5139014)), y un análisis de seguridad de Hermes que ya no arroja ningún hallazgo CRITICAL (#768).
-
-### Llega más lejos
-
-Hebreo y otros idiomas no latinos ([@dudyme](https://github.com/dudyme)). Tokenización adaptada a CJK para las fuentes chinas ([@An-idd](https://github.com/An-idd)). Una oleada de compatibilidad con Windows. Extracción de cookies en toda la familia Chromium —Brave, Edge, Vivaldi, Opera, Arc ([@andrey-esipov](https://github.com/andrey-esipov))— además del llavero de macOS y pass(1) en Linux como orígenes de credenciales. Consulta histórica hacia atrás con `--as-of` ([@chiyi-creator](https://github.com/chiyi-creator)). Instalación automática de Python 3.12 mediante uv ([@buntysomroy](https://github.com/buntysomroy)). `--hiring-signals` para leer las páginas de empleo de una empresa. Diferencias de la lista de seguimiento entre ejecuciones.
-
-### Lo que ya venía de serie desde la v3
-
-Los cimientos de la v3 siguen todos aquí: el cerebro previo a la investigación, que identifica las cuentas, subreddits y hashtags correctos antes de que salga una sola llamada a la API (obra de [@j-sperling](https://github.com/j-sperling)); la puntuación Best Takes, que valora el humor y la viralidad además de la relevancia; la fusión de clústeres entre fuentes; las comparativas en una sola pasada («CLI vs MCP» en 3 minutos, no en 12); las comparativas `--competitors` descubiertas de forma automática; el modo persona de GitHub (`--github-user=steipete`); el modo ELI5 («eli5 on» después de cualquier ejecución); y los informes HTML autocontenidos y compartibles (`--emit=html`). Los ajustes de configuración están en [CONFIGURATION.md](CONFIGURATION.md).
+Este README describe el código fuente actual; tu versión instalada puede ser distinta.
 
 ## Instalación
 
@@ -371,7 +341,9 @@ Los scripts envoltorio por cliente, los subreddits de categoría personalizados 
 
 ## Código abierto
 
-Licencia MIT. Sin rastreo. Sin analíticas. Tu investigación se queda en tu máquina. Más de 2.700 pruebas.
+Licencia MIT. Sin rastreo. Sin analíticas. Tu investigación se queda en tu máquina.
+
+Consulta los comandos de prueba en [CONTRIBUTING.md](CONTRIBUTING.md#tests).
 
 Construido con Python 3.12+, yt-dlp, Node.js (cliente Bird incorporado para la búsqueda en X) y la API de ScrapeCreators. Arquitectura del motor v3 de [@j-sperling](https://github.com/j-sperling).
 

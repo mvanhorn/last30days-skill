@@ -87,9 +87,17 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Xiaohongshu (RED)** | Chinese lifestyle, product, and creator signals. Requested explicitly with `--search xhs` when a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service is running locally. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |
 | **Perplexity** | Controlled Agent API synthesis, OpenRouter Sonar fallback, raw Search API rows, and explicit Deep Research. |
+| **DEV Community (dev.to)** | Developer articles and top comments through the public, keyless API. Opt in with `--devto-tags`, `--search devto`, or `INCLUDE_SOURCES=devto`. |
+| **Truth Social** | Posts searched with `TRUTHSOCIAL_TOKEN`; available when authenticated. |
+| **Telegram** | Public posts from named channels. Opt-in; requires `SCRAPECREATORS_API_KEY` and a channel list. No keyword discovery. |
+| **Trustpilot** | Company TrustScore, review count, and an AI summary of customer feedback. Opt-in; requires `trustpilot-pp-cli` on PATH and a usable session. |
+| **Amazon** | Product ratings, prices, and customer reviews. Opt-in; requires an authenticated `brightdata` CLI and uses your Bright Data credits. |
+| **DripStack** | Financial newsletters and analyst writeups through a public, keyless API. Opt in with `--search dripstack` or `INCLUDE_SOURCES=dripstack`. |
+| **Jobs / careers pages** | Public job postings as evidence of a company's focus. Selected with `--hiring-signals`, `--search jobs`, or the research plan. |
+| **Local corpus** | Your local Markdown and text files, plus PDFs when `pdftotext` is on PATH. Opt in with `--corpus` or `LAST30DAYS_CORPUS_DIRS`. |
 | **Web** | The editorial coverage, the blog comparisons. One signal of many, not the only one. |
 
-Community contributors keep adding more. Truth Social and other niche sources are in the engine with more on the way.
+Ask `/last30days` to include the sources you need. Availability depends on credentials, installed tools, the topic, and explicit opt-ins. See [source requirements](CONFIGURATION.md#source-requirements) for configuration.
 
 A Reddit thread with 1,500 upvotes is a stronger signal than a blog post nobody read. A TikTok with 3.6M views tells you more about what's culturally relevant than a press release. Polymarket odds backed by $66K in volume are harder to argue with than a pundit's guess.
 
@@ -115,47 +123,9 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 ## What's new
 
-Since the v3.3 announcement in May, as of v3.11.1 (July 2026): 175 merged PRs - 122 of them from 52 community contributors - across 15 releases. This is what landed.
+See the [latest release](https://github.com/mvanhorn/last30days-skill/releases/latest) for the current published version and [CHANGELOG.md](CHANGELOG.md) for version-by-version changes. Unreleased changes on the default branch are recorded in [changelog.d/](changelog.d/).
 
-### First-class on OpenAI Codex
-
-/last30days is now a native Codex plugin with guided setup - not a port, a first-class citizen. Renderer-aware citations mean Codex output reads like a brief instead of URL soup (#694), and the same engine runs on Claude Code, Cursor, Copilot, Gemini CLI, Claude Desktop, OpenClaw, and 50+ Agent Skills hosts. Codex plugin manifest by [@rfoust](https://github.com/rfoust) (#686), Codex auth fix by [@tmchow](https://github.com/tmchow) (#698).
-
-### arXiv, Techmeme, and Digg - free, no API keys
-
-arXiv brings the papers behind the hype and Techmeme brings the editorial tech-news layer - free, zero keys, and first-run setup installs their CLIs so they activate automatically (#709). Digg's AI 1000 story clusters arrive without X auth the same way - setup installs the free Digg CLI for you (#590). Trustpilot ships opt-in for consumer-brand research.
-
-### Free Reddit grew real scores and top comments
-
-Reddit's public .json API died; the free path came back stronger. Keyless RSS + shreddit scraping (#457), dedicated-subreddit discovery with real upvote counts via arctic-shift (#696), and a relevance floor so a viral off-topic post can't hijack your brief (#488, thanks [@rzachsmith](https://github.com/rzachsmith)). No API key. Real scores. Top comments included.
-
-### The best comments in every brief
-
-Comments are now a default-on layer across sources: Instagram comments with rank-based diversity so five hot takes don't all come from one post (#751), YouTube comments plus a ScrapeCreators transcript backup for when yt-dlp strikes out (#637), and crowd-voted comments weighted into Best Takes so the community's funniest lines survive scoring (#592, #608).
-
-### One doctor command
-
-Ask for a health check and the doctor runs every source, then prescribes exact fixes - which key is missing, which CLI is off PATH, which cookie expired (#753). No more guessing why X came back thin.
-
-### X search, rebuilt
-
-The X pipeline got a ground-up overhaul: FROM and ABOUT lanes so a person's own posts and the conversation about them both rank (#610), person-aware subquery disambiguation (#611), first-party authorship grounding with interaction-signal ranking (#613), and a single X source with automatic backend failover (#622). Plus an honest `--diagnose` that actually probes auth (#609).
-
-### More sources joined
-
-LinkedIn via ScrapeCreators, with articles as high signal ([@ravstr](https://github.com/ravstr), #702). StockTwits auto-activates for ticker and crypto topics ([@wtiwana](https://github.com/wtiwana), #658). Perplexity grew direct API modes and async Deep Research ([@sk-holmes](https://github.com/sk-holmes), #629).
-
-### Hardened by the community
-
-The security wave was almost entirely community work: stored-XSS fixes in the HTML renderer ([@iliaal](https://github.com/iliaal), [@aaronjmars](https://github.com/aaronjmars)), locked-down cookie temp files, supply-chain-hardened CI with OpenSSF Scorecard and build provenance attestation ([@shaanmajid](https://github.com/shaanmajid), [@hammadxcm](https://github.com/hammadxcm), [@aniruddh909](https://github.com/aniruddh909)), Semgrep and OSV-Scanner scans plus a PR dependency-review gate ([@23241a6749](https://github.com/23241a6749)), a test-coverage floor introduced at 60% and since raised to 84% ([@gourab5139014](https://github.com/gourab5139014)), and a Hermes security scan cleared of every CRITICAL finding (#768).
-
-### Reaches further
-
-Hebrew and non-Latin languages ([@dudyme](https://github.com/dudyme)). CJK-aware tokenization for Chinese sources ([@An-idd](https://github.com/An-idd)). A Windows compatibility wave. Cookie extraction across the full Chromium family - Brave, Edge, Vivaldi, Opera, Arc ([@andrey-esipov](https://github.com/andrey-esipov)) - plus macOS Keychain and Linux pass(1) credential sources. `--as-of` historical lookback ([@chiyi-creator](https://github.com/chiyi-creator)). Auto-provisioned Python 3.12 via uv ([@buntysomroy](https://github.com/buntysomroy)). `--hiring-signals` for reading a company's job pages. Watchlist deltas between runs.
-
-### Still in the box from v3
-
-The v3 foundations are all still here: the pre-research brain that resolves the right handles, subreddits, and hashtags before a single API call fires (built by [@j-sperling](https://github.com/j-sperling)); Best Takes scoring for humor and virality alongside relevance; cross-source cluster merging; single-pass comparisons ("CLI vs MCP" in 3 minutes, not 12); auto-discovered `--competitors` comparisons; GitHub person-mode (`--github-user=steipete`); ELI5 mode ("eli5 on" after any run); and shareable, self-contained HTML briefs (`--emit=html`). Configuration knobs live in [CONFIGURATION.md](CONFIGURATION.md).
+This README describes the current source tree; your installed version may differ.
 
 ## Install
 
@@ -370,7 +340,9 @@ Published a recurring AI update, market watch, or wonderfully narrow obsession w
 
 ## Open source
 
-MIT license. No tracking. No analytics. Your research stays on your machine. 2,700+ tests.
+MIT license. No tracking. No analytics. Your research stays on your machine.
+
+For test commands, see [CONTRIBUTING.md](CONTRIBUTING.md#tests).
 
 Built with Python 3.12+, yt-dlp, Node.js (vendored Bird client for X search), and ScrapeCreators API. v3 engine architecture by [@j-sperling](https://github.com/j-sperling).
 

@@ -90,9 +90,17 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **小红书（RED）** | 来自中国生活方式、产品和创作者的信号。当本机运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务时，通过 `--search xhs` 显式启用。 |
 | **Bluesky** | 去中心化的社交内容层，搜索 Twitter 用户迁移后产生的 AT Protocol 帖子。 |
 | **Perplexity** | 受控 Agent API 综合结果、OpenRouter Sonar 回退、原始 Search API 数据和显式 Deep Research。 |
+| **DEV Community（dev.to）** | 通过无需密钥的公共 API 搜索开发者文章和热门评论。通过 `--devto-tags`、`--search devto` 或 `INCLUDE_SOURCES=devto` 按需启用。 |
+| **Truth Social** | 使用 `TRUTHSOCIAL_TOKEN` 搜索帖子；配置认证信息后可用。 |
+| **Telegram** | 指定公开频道的帖子。按需启用，需要 `SCRAPECREATORS_API_KEY` 和频道列表。不提供关键词发现。 |
+| **Trustpilot** | 企业 TrustScore、评价数量和客户反馈的 AI 摘要。按需启用，需要 PATH 中的 `trustpilot-pp-cli` 和可用会话。 |
+| **Amazon** | 商品评分、价格和客户评价。按需启用，需要已认证的 `brightdata` CLI，并消耗你的 Bright Data 额度。 |
+| **DripStack** | 通过无需密钥的公共 API 搜索金融通讯和分析师文章。通过 `--search dripstack` 或 `INCLUDE_SOURCES=dripstack` 按需启用。 |
+| **招聘 / 职位页面** | 以公开职位信息作为企业重点方向的证据。通过 `--hiring-signals`、`--search jobs` 或研究计划选择。 |
+| **本地语料** | 你的本地 Markdown 和文本文件；PATH 中有 `pdftotext` 时也支持 PDF。通过 `--corpus` 或 `LAST30DAYS_CORPUS_DIRS` 按需启用。 |
 | **Web** | 编辑报道和博客对比。它只是众多信号之一，而不是唯一来源。 |
 
-社区贡献者仍在不断加入更多平台。Truth Social 等垂直来源已经进入引擎，更多来源也在路上。
+你可以让 `/last30days` 使用所需的信息源。可用性取决于凭据、已安装工具、研究主题以及是否明确启用。配置方式请参阅[信息源要求](CONFIGURATION.md#source-requirements)。
 
 一条获得 1,500 个赞同票的 Reddit 帖子，信号强度高于一篇无人阅读的博客；一个拥有 360 万次观看的 TikTok，比新闻稿更能说明当下的文化热点；一个有 6.6 万美元成交量支撑的 Polymarket 概率，也比评论员的猜测更难反驳。
 
@@ -118,47 +126,9 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 ## 最近更新
 
-自 5 月发布 v3.3 公告以来，截至 v3.11.1（2026 年 7 月），项目已在 15 个版本中合并 175 个 PR，其中 122 个来自 52 位社区贡献者。下面是主要变化。
+请查看[最新发布](https://github.com/mvanhorn/last30days-skill/releases/latest)了解当前已发布版本，并在 [CHANGELOG.md](CHANGELOG.md) 中查看各版本的变更。默认分支中尚未发布的变更记录在 [changelog.d/](changelog.d/)。
 
-### 正式支持 OpenAI Codex
-
-`/last30days` 现在是带引导式配置的原生 Codex 插件——不是简单移植，而是一等公民。针对不同渲染器优化的引用格式，让 Codex 输出读起来像简报，而不是一团 URL（#694）。同一套引擎也运行在 Claude Code、Cursor、Copilot、Gemini CLI、Claude Desktop、OpenClaw 以及 50 多个 Agent Skills 宿主上。Codex 插件清单由 [@rfoust](https://github.com/rfoust) 贡献（#686），Codex 认证修复由 [@tmchow](https://github.com/tmchow) 贡献（#698）。
-
-### arXiv、Techmeme 与 Digg——免费，无需 API 密钥
-
-arXiv 提供热点背后的论文，Techmeme 提供科技新闻的编辑视角；二者均免费、无需密钥，首次配置会安装相应 CLI 并自动启用（#709）。Digg 的 AI 1000 话题聚类同样无需 X 认证——配置过程会自动安装免费的 Digg CLI（#590）。此外还加入了可选的 Trustpilot 来源，适合消费品牌研究。
-
-### 免费 Reddit 搜索也有真实评分和热门评论
-
-Reddit 的公开 `.json` API 停止工作后，免费的数据通路以更强的方式回归：无密钥 RSS + shreddit 抓取（#457）、通过 arctic-shift 发现垂直 subreddit 并获取真实赞同数（#696），以及相关性下限，防止病毒式传播但偏题的帖子劫持整份简报（#488，感谢 [@rzachsmith](https://github.com/rzachsmith)）。无需 API 密钥，提供真实评分和热门评论。
-
-### 每份简报都收录最好的评论
-
-评论现在是各来源默认启用的一层：Instagram 评论采用基于排名的多样性机制，避免五条热门观点全来自同一篇帖子（#751）；YouTube 评论配合 ScrapeCreators 字幕回退，以应对 yt-dlp 失效（#637）；经过社区投票的评论还会计入 Best Takes 的权重，让最有趣的金句不会在评分中消失（#592、#608）。
-
-### 一个 doctor 命令解决健康检查
-
-要求执行健康检查时，doctor 会逐一测试所有来源，并给出精确修复建议：缺少哪个密钥、哪个 CLI 不在 PATH、哪个 Cookie 已过期（#753）。不必再猜为什么 X 的结果这么少。
-
-### 重构 X 搜索
-
-X 流水线经过彻底重构：新增 FROM 和 ABOUT 两条通路，让某人的原创帖子和外界对他的讨论都能进入排名（#610）；按人物感知的子查询消歧（#611）；基于第一方作者身份的信息归属，并结合互动信号排序（#613）；统一的 X 来源与自动后端故障转移（#622）。另外，`--diagnose` 现在会真正探测认证状态，如实报告问题（#609）。
-
-### 更多信息源加入
-
-通过 ScrapeCreators 接入 LinkedIn，并将文章视为高价值信号（[@ravstr](https://github.com/ravstr)，#702）。StockTwits 会在股票代码和加密货币主题下自动启用（[@wtiwana](https://github.com/wtiwana)，#658）。Perplexity 新增直接 API 模式和异步 Deep Research（[@sk-holmes](https://github.com/sk-holmes)，#629）。
-
-### 在社区协作下进一步加固
-
-这一轮安全改进几乎全部来自社区：修复 HTML 渲染器中的存储型 XSS（[@iliaal](https://github.com/iliaal)、[@aaronjmars](https://github.com/aaronjmars)）；收紧 Cookie 临时文件权限；通过 OpenSSF Scorecard 和构建来源证明加固 CI 供应链（[@shaanmajid](https://github.com/shaanmajid)、[@hammadxcm](https://github.com/hammadxcm)、[@aniruddh909](https://github.com/aniruddh909)）；增加 Semgrep、OSV-Scanner 扫描以及 PR 依赖审查门禁（[@23241a6749](https://github.com/23241a6749)）；测试覆盖率门槛从 60% 起步，现已提高到 84%（[@gourab5139014](https://github.com/gourab5139014)）；Hermes 安全扫描中的所有 CRITICAL 问题也已清零（#768）。
-
-### 覆盖范围更广
-
-支持希伯来语和其他非拉丁文字语言（[@dudyme](https://github.com/dudyme)）；为中文来源加入 CJK 感知的分词（[@An-idd](https://github.com/An-idd)）；推进一系列 Windows 兼容性改进；支持从完整 Chromium 浏览器家族提取 Cookie——Brave、Edge、Vivaldi、Opera、Arc（[@andrey-esipov](https://github.com/andrey-esipov)）——并接入 macOS Keychain 和 Linux `pass(1)` 凭据来源。此外还有 `--as-of` 历史回溯（[@chiyi-creator](https://github.com/chiyi-creator)）、通过 uv 自动配置 Python 3.12（[@buntysomroy](https://github.com/buntysomroy)）、用于解读公司招聘页面的 `--hiring-signals`，以及多次运行之间的观察列表差异。
-
-### v3 的核心能力仍然完整保留
-
-v3 打下的基础都还在：真正调用 API 前先运行预研究模块，解析正确的账号、subreddit 和话题标签（由 [@j-sperling](https://github.com/j-sperling) 开发）；Best Takes 评分在相关性之外也衡量幽默感和传播力；跨来源故事聚类；单次完成对比研究（例如 “CLI vs MCP” 只需 3 分钟，而不是 12 分钟）；自动发现竞品的 `--competitors` 对比；GitHub 人物模式（`--github-user=steipete`）；任何研究结束后可开启的 ELI5 模式（输入 “eli5 on”）；以及可分享、自包含的 HTML 简报（`--emit=html`）。配置项详见 [CONFIGURATION.md](CONFIGURATION.md)。
+本 README 描述当前源码；你安装的版本可能有所不同。
 
 ## 安装
 
@@ -369,7 +339,9 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 ## 开源
 
-采用 MIT 许可证。无跟踪、无分析，你的研究数据始终留在本机。拥有 2,700 多项测试。
+采用 MIT 许可证。无跟踪、无分析，你的研究数据始终留在本机。
+
+测试命令请参阅 [CONTRIBUTING.md](CONTRIBUTING.md#tests)。
 
 项目基于 Python 3.12+、yt-dlp、Node.js（内置用于 X 搜索的 Bird 客户端）和 ScrapeCreators API 构建。v3 引擎架构由 [@j-sperling](https://github.com/j-sperling) 设计。
 
