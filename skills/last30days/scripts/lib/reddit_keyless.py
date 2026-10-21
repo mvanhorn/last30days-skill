@@ -70,6 +70,8 @@ def _scored_listings(
     depth: str = "default",
     query: str = "",
     sorts: Optional[List[str]] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Scored subreddit listings: shreddit partials, arctic-shift supplement.
 
@@ -91,7 +93,8 @@ def _scored_listings(
     if subreddits:
         try:
             arctic_posts = reddit_arctic.fetch_listings(
-                subreddits, depth=depth, query=query, sorts=sorts
+                subreddits, depth=depth, query=query, sorts=sorts,
+                from_date=from_date, to_date=to_date,
             )
         except Exception as exc:  # the fallback must never break the pipeline
             _log(f"arctic-shift listing supplement failed: {exc}")
@@ -124,7 +127,8 @@ def _discover(
     dedicated_posts: List[Dict[str, Any]] = []
     if dedicated_subreddits:
         dedicated_posts = _scored_listings(
-            dedicated_subreddits, depth=depth, query=topic, sorts=DEDICATED_SORTS
+            dedicated_subreddits, depth=depth, query=topic, sorts=DEDICATED_SORTS,
+            from_date=from_date, to_date=to_date,
         )
         for p in dedicated_posts:
             p["dedicated"] = True
@@ -141,7 +145,11 @@ def _discover(
     # are on-topic; include them as scored discovery. A bare run fetches no
     # listings, so high-upvote off-topic posts cannot flood the results.
     listing_posts = (
-        _scored_listings(subreddits, depth=depth, query=topic) if subreddits else []
+        _scored_listings(
+            subreddits, depth=depth, query=topic, from_date=from_date, to_date=to_date
+        )
+        if subreddits
+        else []
     )
     _log(
         f"Tier 1 (site search) {len(search_posts)} posts; "

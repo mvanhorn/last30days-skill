@@ -6046,6 +6046,11 @@ def _retrieve_stream_impl(
         # Use raw_topic so expand_instagram_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         ig_query = raw_topic or subquery.search_query
+        ig_deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
+        # Leave time to publish collected reels before the outer stream wait expires.
+        remaining = max(0, ig_deadline - time.monotonic())
+        ig_deadline -= min(1.0, remaining / 10)
+        ig_cancel = config.get("_enrich_cancel")
 
         def _fetch_instagram() -> tuple[list[dict], dict]:
             result = instagram.search_and_enrich(
@@ -6055,11 +6060,18 @@ def _retrieve_stream_impl(
                 depth=depth,
                 token=env.get_instagram_token(config),
                 ig_creators=ig_creators,
+                deadline=ig_deadline,
+                cancel=ig_cancel,
             )
             items = instagram.parse_instagram_response(result)
             if items and env.is_instagram_comments_available(config):
                 instagram.enrich_with_comments(
                     items, token=config.get("SCRAPECREATORS_API_KEY", ""),
+                    deadline=ig_deadline, cancel=ig_cancel,
+                )
+            if (ig_cancel is not None and ig_cancel.is_set()) or time.monotonic() >= ig_deadline:
+                return items, _outcome_artifact(
+                    health.PARTIAL if items else health.TIMEOUT, instagram.RESEARCH_TIMEOUT,
                 )
             return items, _result_outcome_artifact(source, result)
 

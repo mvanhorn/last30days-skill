@@ -3238,6 +3238,7 @@ def _quality_research_results(report, diag, yt_fetch_stats):
             if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
         ),
         "youtube_error": report.errors_by_source.get("youtube"),
+        "instagram_error": report.errors_by_source.get("instagram"),
         "x_error": report.errors_by_source.get("x"),
         "x_degraded_error": x_degraded_error,
         "youtube_captions_disabled_count": sum(

@@ -10,8 +10,12 @@ API docs: https://scrapecreators.com/docs
 import os
 import re
 import sys
-from datetime import datetime
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import urlsplit
 
 from . import dates, http, log
 from .query import infer_query_intent
@@ -26,8 +30,18 @@ DEPTH_CONFIG = {
     "deep":    {"results_per_page": 40, "max_captions": 8},
 }
 
+# Keep the Google discovery fallback bounded because each post detail request
+# costs one credit. The page/post totals match the fallback's observed depth
+# budgets: 1 + 9, 2 + 16, and 3 + 27 requests.
+GOOGLE_FALLBACK_BUDGETS = {
+    "quick": (1, 9),
+    "default": (2, 16),
+    "deep": (3, 27),
+}
+
 # Max words to keep from each caption
 CAPTION_MAX_WORDS = 500
+RESEARCH_TIMEOUT = "Instagram research timed out or was cancelled; returning collected reels"
 
 # Default transcript fetch timeout (seconds). SC's
 # /v2/instagram/media/transcript regularly takes >15s on real workloads,
@@ -131,6 +145,23 @@ def expand_instagram_queries(topic: str, depth: str) -> List[str]:
 
 def _log(msg: str):
     log.source_log("Instagram", msg, tty_only=False)
+
+
+def _budget_expired(deadline: float | None, cancel: threading.Event | None) -> bool:
+    return bool(
+        (cancel is not None and cancel.is_set())
+        or (deadline is not None and time.monotonic() >= deadline)
+    )
+
+
+def _request_options(timeout: float, deadline: float | None, cancel: threading.Event | None) -> dict:
+    options = {"timeout": timeout}
+    if deadline is not None:
+        options["timeout"] = min(timeout, max(0.001, deadline - time.monotonic()))
+        options["deadline_monotonic"] = deadline
+    if cancel is not None:
+        options["cancel"] = cancel
+    return options
 
 
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:
@@ -245,6 +276,9 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
 def _user_reels(
     handle: str,
     token: str,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Fetch an Instagram user's recent reels via ScrapeCreators.
 
@@ -255,6 +289,8 @@ def _user_reels(
     Returns:
         List of raw Instagram reel dicts.
     """
+    if _budget_expired(deadline, cancel):
+        return []
     _log(f"User reels: @{handle}")
     reels_url = f"{SCRAPECREATORS_BASE}/v1/instagram/user/reels"
     try:
@@ -262,8 +298,8 @@ def _user_reels(
             reels_url,
             params={"handle": handle},
             headers=http.scrapecreators_headers(token),
-            timeout=30,
             retries=2,
+            **_request_options(30, deadline, cancel),
         )
     except Exception as e:
         _log(f"User reels error for @{handle}: {e}")
@@ -282,13 +318,201 @@ def _user_reels(
     ]
 
 
+def _normalize_google_post(
+    payload: dict[str, Any], url: str
+) -> dict[str, Any] | None:
+    """Convert a ScrapeCreators post detail response to the reels/search shape."""
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    media = data.get("xdt_shortcode_media")
+    if not isinstance(media, dict):
+        return None
+
+    caption = media.get("caption")
+    if not caption:
+        edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
+        if edges and isinstance(edges[0], dict):
+            caption = (edges[0].get("node") or {}).get("text", "")
+
+    likes = (media.get("edge_media_preview_like") or {}).get("count")
+    comments = (media.get("edge_media_to_parent_comment") or {}).get("count")
+    if comments is None:
+        comments = (media.get("edge_media_to_comment") or {}).get("count")
+
+    return {
+        "id": media.get("id", ""),
+        "shortcode": media.get("shortcode", ""),
+        "url": url,
+        "caption": caption or "",
+        "taken_at": media.get("taken_at_timestamp") or media.get("created_at"),
+        "video_play_count": media.get("video_play_count") or 0,
+        "like_count": likes or 0,
+        "comment_count": comments or 0,
+        "owner": media.get("owner") or media.get("user") or {},
+    }
+
+
+def _google_reel_fallback(
+    topic: str,
+    depth: str,
+    token: str,
+    from_date: str,
+    to_date: str,
+    budget: dict[str, int] | None = None,
+    detail_cache: dict[str, dict[str, Any]] | None = None,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
+) -> list[dict[str, Any]]:
+    """Discover Instagram reels through Google and fetch their post details."""
+    if budget is None:
+        pages, max_posts = GOOGLE_FALLBACK_BUDGETS.get(
+            depth, GOOGLE_FALLBACK_BUDGETS["default"]
+        )
+        budget = {"pages": pages, "posts": max_posts}
+    pages = max(0, budget.get("pages", 0))
+    max_posts = max(0, budget.get("posts", 0))
+    if not pages or not max_posts:
+        return []
+    headers = http.scrapecreators_headers(token)
+    detail_cache = detail_cache if detail_cache is not None else {}
+    shortcode_urls: dict[str, str] = {}
+    ordered_shortcodes: list[str] = []
+    end_exclusive = (
+        datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+
+    for page in range(1, pages + 1):
+        if _budget_expired(deadline, cancel):
+            break
+        budget["pages"] -= 1
+        try:
+            data = http.get(
+                f"{SCRAPECREATORS_BASE}/v1/google/search",
+                params={
+                    "query": (
+                        f"site:instagram.com/reel {topic} "
+                        f"after:{from_date} before:{end_exclusive}"
+                    ),
+                    "page": page,
+                },
+                headers=headers,
+                retries=1,
+                **_request_options(30, deadline, cancel),
+            )
+        except Exception as e:
+            _log(f"Google Instagram fallback search failed on page {page}: {e}")
+            break
+        if not isinstance(data, dict):
+            _log(f"Google Instagram fallback returned invalid data on page {page}")
+            break
+
+        results = data.get("results") or data.get("items") or []
+        if not isinstance(results, list):
+            _log(f"Google Instagram fallback returned invalid results on page {page}")
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            url = result.get("url", "")
+            try:
+                parsed_url = urlsplit(url) if isinstance(url, str) else None
+            except ValueError:
+                continue
+            hostname = parsed_url.hostname.lower() if parsed_url and parsed_url.hostname else ""
+            is_instagram = hostname == "instagram.com" or hostname.endswith(".instagram.com")
+            is_reel_path = bool(
+                parsed_url
+                and re.fullmatch(r"/reel/[A-Za-z0-9_-]+/?", parsed_url.path)
+            )
+            shortcode_match = (
+                re.fullmatch(r"/reel/([A-Za-z0-9_-]+)/?", parsed_url.path)
+                if parsed_url
+                else None
+            )
+            if (
+                parsed_url
+                and parsed_url.scheme == "https"
+                and is_instagram
+                and is_reel_path
+            ):
+                shortcode = shortcode_match.group(1)
+                if shortcode not in shortcode_urls and shortcode not in detail_cache:
+                    if len(shortcode_urls) >= max_posts:
+                        continue
+                    shortcode_urls[shortcode] = url
+                if shortcode not in ordered_shortcodes:
+                    ordered_shortcodes.append(shortcode)
+                if len(shortcode_urls) >= max_posts:
+                    break
+        if len(shortcode_urls) >= max_posts:
+            break
+
+    budget["posts"] -= len(shortcode_urls)
+
+    def fetch_post(url: str) -> dict[str, Any] | None:
+        if _budget_expired(deadline, cancel):
+            return None
+        try:
+            payload = http.get(
+                f"{SCRAPECREATORS_BASE}/v1/instagram/post",
+                params={"url": url},
+                headers=headers,
+                retries=1,
+                **_request_options(30, deadline, cancel),
+            )
+        except Exception as e:
+            _log(f"Instagram post detail failed for {url}: {e}")
+            return None
+        try:
+            return _normalize_google_post(payload, url)
+        except (AttributeError, TypeError, ValueError) as e:
+            _log(f"Instagram post detail had an invalid response for {url}: {e}")
+            return None
+
+    if shortcode_urls:
+        executor = ThreadPoolExecutor(max_workers=min(4, len(shortcode_urls)))
+        try:
+            futures = {
+                http.submit_with_context(executor, fetch_post, url): shortcode
+                for shortcode, url in shortcode_urls.items()
+            }
+            pending = set(futures)
+            while pending:
+                remaining = 0.05 if deadline is None else max(0, min(0.05, deadline - time.monotonic()))
+                done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+                for future in done:
+                    reel = future.result()
+                    if reel:
+                        detail_cache[futures[future]] = reel
+                if _budget_expired(deadline, cancel):
+                    break
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    reels = []
+    for shortcode in ordered_shortcodes:
+        reel = detail_cache.get(shortcode)
+        if reel:
+            reels.append(reel)
+    return reels
+
+
 def search_instagram(
     topic: str,
     from_date: str,
     to_date: str,
     depth: str = "default",
     token: str = None,
-) -> Dict[str, Any]:
+    _fallback_budget: dict[str, int] | None = None,
+    _fallback_cache: dict[str, dict[str, Any]] | None = None,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
+) -> dict[str, Any]:
     """Search Instagram Reels via ScrapeCreators API.
 
     Args:
@@ -303,37 +527,54 @@ def search_instagram(
     """
     if not token:
         return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
+    if _budget_expired(deadline, cancel):
+        return {"items": [], "error": RESEARCH_TIMEOUT}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
 
     _log(f"Searching Instagram for '{core_topic}' (depth={depth}, count={config['results_per_page']})")
 
+    primary_error = None
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
             params={"query": core_topic},
             headers=http.scrapecreators_headers(token),
-            timeout=30,
             retries=2,
+            **_request_options(30, deadline, cancel),
         )
     except http.HTTPError as e:
         # SC's v2 reels search wraps Google Search and 500s frequently on
         # multi-token queries. Single tokens hit the stable hashtag-page
         # path. Retry once with hashtag form before bubbling up.
-        if getattr(e, "status_code", None) == 500 and ' ' in core_topic:
+        if (getattr(e, "status_code", None) == 500 and ' ' in core_topic
+                and not _budget_expired(deadline, cancel)):
             _log(f"IG search 500 on '{core_topic}', retrying with hashtag form")
             try:
                 data = http.get(
                     f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
                     params={"query": _to_hashtag_form(core_topic)},
                     headers=http.scrapecreators_headers(token),
-                    timeout=30,
                     retries=2,
+                    **_request_options(30, deadline, cancel),
                 )
             except Exception as retry_e:
-                _log(f"IG search retry failed: {retry_e}")
-                return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
+                if (
+                    isinstance(retry_e, http.HTTPError)
+                    and getattr(retry_e, "status_code", None) == 404
+                ):
+                    primary_error = retry_e
+                    data = {"reels": []}
+                else:
+                    _log(f"IG search retry failed: {retry_e}")
+                    return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
+        elif getattr(e, "status_code", None) == 404:
+            # A 404 is ScrapeCreators' current response for both empty searches
+            # and the reported reels-search outage. Try the independent Google
+            # discovery + post-detail lane before treating Instagram as failed.
+            primary_error = e
+            data = {"reels": []}
         else:
             _log(f"ScrapeCreators error: {e}")
             return {"items": [], "error": f"{type(e).__name__}: {e}"}
@@ -344,6 +585,22 @@ def search_instagram(
     # Items are in the 'reels' array (ScrapeCreators v2 response)
     raw_items = data.get("reels") or data.get("items") or data.get("data") or []
 
+    used_google_fallback = not raw_items
+    if used_google_fallback:
+        if primary_error:
+            _log("IG reels search returned 404; trying Google Search fallback")
+        else:
+            _log("IG reels search returned no results; trying Google Search fallback")
+        raw_items = _google_reel_fallback(
+            core_topic, depth, token, from_date, to_date,
+            _fallback_budget, _fallback_cache,
+            deadline=deadline, cancel=cancel,
+        )
+
+    if not raw_items and primary_error and not _budget_expired(deadline, cancel):
+        _log(f"Google Instagram fallback returned no reels: {primary_error}")
+        return {"items": [], "error": f"{type(primary_error).__name__}: {primary_error}"}
+
     # Limit to configured count
     raw_items = raw_items[:config["results_per_page"]]
 
@@ -353,7 +610,11 @@ def search_instagram(
     # Hard date filter
     in_range = [i for i in items if i["date"] and from_date <= i["date"] <= to_date]
     out_of_range = len(items) - len(in_range)
-    if in_range:
+    if used_google_fallback:
+        items = in_range
+        if out_of_range:
+            _log(f"Filtered {out_of_range} Google reels outside date range")
+    elif in_range:
         items = in_range
         if out_of_range:
             _log(f"Filtered {out_of_range} reels outside date range")
@@ -364,6 +625,8 @@ def search_instagram(
     items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
 
     _log(f"Found {len(items)} Instagram reels")
+    if _budget_expired(deadline, cancel):
+        return {"items": items, "error": RESEARCH_TIMEOUT}
     return {"items": items}
 
 
@@ -373,6 +636,9 @@ def fetch_captions(
     depth: str = "default",
     timeout: Optional[float] = None,
     config: Optional[Dict[str, Any]] = None,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> Dict[str, str]:
     """Fetch transcripts for top N Instagram reels via ScrapeCreators.
 
@@ -418,6 +684,8 @@ def fetch_captions(
 
     # Second pass: try to get spoken-word transcripts (1 credit each)
     for item in top_items:
+        if _budget_expired(deadline, cancel):
+            break
         vid = item["video_id"]
         url = item.get("url", "")
         if not url:
@@ -431,8 +699,8 @@ def fetch_captions(
                     f"{SCRAPECREATORS_BASE}/v2/instagram/media/transcript",
                     params={"url": url},
                     headers=http.scrapecreators_headers(token),
-                    timeout=transcript_timeout,
                     retries=1,
+                    **_request_options(transcript_timeout, deadline, cancel),
                 )
             transcripts = data.get("transcripts") or []
             if transcripts and isinstance(transcripts, list):
@@ -460,6 +728,9 @@ def search_and_enrich(
     depth: str = "default",
     token: str = None,
     ig_creators: List[str] | None = None,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> Dict[str, Any]:
     """Full Instagram search: find reels, then fetch captions for top results.
 
@@ -485,7 +756,9 @@ def search_and_enrich(
     # Step 0: Creator reels (high-signal, runs first)
     if ig_creators and token:
         for creator in ig_creators:
-            raw_items = _user_reels(creator, token)
+            if _budget_expired(deadline, cancel):
+                break
+            raw_items = _user_reels(creator, token, deadline=deadline, cancel=cancel)
             parsed = _parse_items(raw_items, core_topic)
             for item in parsed:
                 vid = item.get("video_id", "")
@@ -495,8 +768,25 @@ def search_and_enrich(
 
     # Step 1: Multi-query keyword search — run ScrapeCreators for each expanded query
     queries = expand_instagram_queries(topic, depth)
-    for q in queries:
-        search_result = search_instagram(q, from_date, to_date, depth, token)
+    fallback_pages, fallback_posts = GOOGLE_FALLBACK_BUDGETS.get(
+        depth, GOOGLE_FALLBACK_BUDGETS["default"]
+    )
+    fallback_cache: dict[str, dict[str, Any]] = {}
+    for index, q in enumerate(queries):
+        if _budget_expired(deadline, cancel):
+            break
+        query_count = len(queries)
+        query_budget = {
+            "pages": fallback_pages // query_count
+            + (1 if index < fallback_pages % query_count else 0),
+            "posts": fallback_posts // query_count
+            + (1 if index < fallback_posts % query_count else 0),
+        }
+        search_result = search_instagram(
+            q, from_date, to_date, depth, token,
+            _fallback_budget=query_budget, _fallback_cache=fallback_cache,
+            deadline=deadline, cancel=cancel,
+        )
         if search_result.get("error"):
             last_error = search_result["error"]
         for item in search_result.get("items", []):
@@ -508,11 +798,13 @@ def search_and_enrich(
     # Sort merged results by views descending
     items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
 
+    if _budget_expired(deadline, cancel):
+        last_error = RESEARCH_TIMEOUT
     if not items:
         return {"items": [], "error": last_error}
 
     # Step 2: Fetch captions for top N
-    captions = fetch_captions(items, token, depth)
+    captions = fetch_captions(items, token, depth, deadline=deadline, cancel=cancel)
 
     # Step 3: Attach captions to items
     for item in items:
@@ -521,6 +813,8 @@ def search_and_enrich(
         if caption:
             item["caption_snippet"] = caption
 
+    if _budget_expired(deadline, cancel):
+        last_error = RESEARCH_TIMEOUT
     return {"items": items, "error": last_error}
 
 
@@ -549,6 +843,9 @@ def enrich_with_comments(
     token: str,
     max_posts: int = 3,
     max_comments: int = 5,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Enrich top Instagram posts with comment data from ScrapeCreators.
 
@@ -556,34 +853,42 @@ def enrich_with_comments(
     for the top N posts by engagement, fetch comments and attach them as a
     ``top_comments`` field (highest-liked first). Failures never crash the run.
     """
-    if not items or not token or max_posts <= 0:
+    if not items or not token or max_posts <= 0 or _budget_expired(deadline, cancel):
         return items
 
     ranked = sorted(items, key=_ig_total_engagement, reverse=True)
     top_items = ranked[:max_posts]
     _log(f"Enriching comments for {len(top_items)} Instagram posts")
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    def _enrich_one(item: dict) -> bool:
+    def _enrich_one(item: dict) -> list[dict]:
         post_url = item.get("url", "")
         if not post_url:
-            return False
+            return []
         try:
-            comments = _fetch_post_comments(post_url, token, max_comments)
-            if comments:
-                item["top_comments"] = comments
-                return True
+            return _fetch_post_comments(
+                post_url, token, max_comments, deadline=deadline, cancel=cancel,
+            )
         except Exception as exc:
             _log(f"Comment enrichment failed for {post_url}: {exc}")
-        return False
+        return []
 
     enriched_count = 0
-    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
+    executor = ThreadPoolExecutor(max_workers=min(4, len(top_items)))
+    try:
         futures = {http.submit_with_context(executor, _enrich_one, item): item for item in top_items}
-        for future in as_completed(futures):
-            if future.result():
-                enriched_count += 1
+        pending = set(futures)
+        while pending:
+            remaining = 0.05 if deadline is None else max(0, min(0.05, deadline - time.monotonic()))
+            done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+            for future in done:
+                comments = future.result()
+                if comments:
+                    futures[future]["top_comments"] = comments
+                    enriched_count += 1
+            if _budget_expired(deadline, cancel):
+                break
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     _log(f"Enriched {enriched_count}/{len(top_items)} posts with comments")
     return items
@@ -593,6 +898,9 @@ def _fetch_post_comments(
     post_url: str,
     token: str,
     max_comments: int = 5,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a single Instagram post/reel via ScrapeCreators.
 
@@ -604,13 +912,15 @@ def _fetch_post_comments(
         List of comment dicts with author, text, comment_like_count (likes), date,
         highest-liked first. Empty list on any error — never crashes the pipeline.
     """
+    if _budget_expired(deadline, cancel):
+        return []
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/v2/instagram/post/comments",
             params={"url": post_url},
             headers=http.scrapecreators_headers(token),
-            timeout=30,
             retries=2,
+            **_request_options(30, deadline, cancel),
         )
     except Exception as exc:
         _log(f"Comment fetch error for {post_url}: {exc}")

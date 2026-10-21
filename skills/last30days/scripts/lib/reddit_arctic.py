@@ -30,13 +30,12 @@ PACE_SECONDS = 0.4  # gap between batches; arctic-shift answers 422 "slow down"
 CACHE_MAX = 4096    # hard size bound so the in-run memo can never grow unbounded
 # Listing-lane knobs. Base limits mirror reddit_listing's DEPTH_LIMITS so callers
 # get the same per-depth volume. The supplement multiplier is applied when the
-# caller requested multiple sorts (top/hot/new) — arctic-shift has no sort lanes,
-# so we fetch more posts to increase the chance of covering what the failed
-# shreddit lanes would have returned.
+# caller requested multiple sorts (top/hot/new) — arctic-shift has no sort lanes
+# (only asc/desc), so we fetch more posts to increase the chance of covering
+# what the failed shreddit lanes would have returned. Windowed runs
+# (from_date/to_date) instead slice the window and keep the highest-scored
+# posts, which recovers window-top engagement without sort lanes.
 #
-# KNOWN LIMITATION: Arctic-shift is recency-only (sort=desc). It has no top/hot/
-# new/rising lanes — failed shreddit sort lanes are supplemented with recent
-# posts, not lane-specific results. This is a fundamental backend constraint.
 _LISTING_DEPTH_LIMITS = {"quick": 10, "default": 25, "deep": 50}
 _LISTING_SUPPLEMENT_MULTIPLIER = 2  # fetch 2x posts when supplementing multi-sort requests
 # Total deadline for listing fetches to prevent unbounded stalls when many
@@ -165,6 +164,8 @@ def fetch_listings(
     sorts: Optional[List[str]] = None,
     timeframe: str = "month",
     limit: Optional[int] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Scored subreddit listings from the arctic-shift archive, keyless.
 
@@ -172,12 +173,15 @@ def fetch_listings(
     partials), which datacenter IPs get HTTP 403 on. Arctic-shift serves recent
     posts with real score/num_comments from any IP.
 
-    Arctic-shift has no top/hot/new lanes, only recency. When ``sorts`` contains
-    multiple entries (e.g., dedicated lanes requesting top+hot+new), we fetch
-    more posts per subreddit to partially compensate for the missing lane
-    coverage — the caller's engagement ranking does the final sorting.
-
-    Best-effort, never raises: returns ``[]`` on any failure.
+    Arctic-shift has no top/hot/new lanes (only asc/desc). Without a date
+    window the fetch is recency-only, and the archive freezes score at ingest,
+    so the freshest ~2-3 days read as 1-point stubs. When the caller supplies
+    ``from_date``/``to_date``, the window is sliced into ~7-day chunks queried
+    with ``after``/``before`` and the highest-scored sampled posts are kept per
+    subreddit. Slice requests rotate across subreddits under a shared deadline;
+    successful partial results survive failures. The 100-row cap per slice
+    means the sample can miss popular posts in busy subreddits. Best-effort,
+    never raises: returns ``[]`` when no requests succeed.
     """
     if not subreddits:
         return []
@@ -185,30 +189,69 @@ def fetch_listings(
     # When multiple sorts were requested, fetch more posts to compensate for
     # arctic-shift's lack of sort lanes.
     n = base * _LISTING_SUPPLEMENT_MULTIPLIER if sorts and len(sorts) > 1 else base
-    out: List[Dict[str, Any]] = []
-    # Process all requested subreddits with pacing and a total deadline to
-    # prevent unbounded stalls when arctic is slow or unreachable.
-    deadline = time.time() + _LISTING_DEADLINE_SECONDS
-    fetched_count = 0
-    for sub in subreddits:
-        if time.time() >= deadline:
-            _log(f"listing deadline reached after {fetched_count} subs; skipping remaining")
-            break
-        sub = sub.removeprefix("r/").strip()
-        if not sub or sub.lower() == "all":
-            continue
-        if fetched_count:
-            time.sleep(PACE_SECONDS)
-        fetched_count += 1
+    # Window + engagement sort: the archive freezes score at ingest time, so
+    # posts from the last ~2-3 days read as 1-point stubs and `before` ending
+    # today can return null data. Scope the query with after/before, slice the
+    # window into ~7-day chunks (API caps 100 rows/request, newest-first, so
+    # one request only covers the last day of a month window), and keep the
+    # highest-scored n per subreddit (sort has no top lane — only asc/desc).
+    window = bool(from_date or to_date)
+    slices: Optional[List[tuple]] = None
+    if window:
+        from datetime import date as _date, timedelta as _timedelta
         try:
-            # Use retries=1 (single attempt) so retries don't exceed our deadline.
-            # The deadline handles overall timing; per-request retries would
-            # multiply the delay unpredictably.
+            start = _date.fromisoformat(from_date) if from_date else None
+            end = _date.fromisoformat(to_date) if to_date else _date.today()
+        except ValueError:
+            start, end = None, None
+        if end and not start:
+            start = end - _timedelta(days=30)
+        if start and end and start < end:
+            span = (end - start).days
+            n_slices = min(4, max(1, span // 7))
+            step = max(1, -(-span // n_slices))
+            slices = []
+            cursor = start
+            while cursor < end:
+                slices.append((cursor, min(cursor + _timedelta(days=step), end)))
+                cursor += _timedelta(days=step)
+    req_limit = 100 if window else n
+    posts_by_sub: Dict[str, List[Dict[str, Any]]] = {}
+    for sub in subreddits:
+        sub = sub.removeprefix("r/").strip()
+        if sub and sub.lower() != "all":
+            posts_by_sub.setdefault(sub, [])
+    seen_by_sub = {sub: set() for sub in posts_by_sub}
+    # Give every subreddit a slice before spending the shared budget on more
+    # slices for any one subreddit.
+    requests = (
+        (sub, span_pair)
+        for span_pair in (slices or [None])
+        for sub in posts_by_sub
+    )
+    deadline = time.monotonic() + _LISTING_DEADLINE_SECONDS
+    for fetched_count, (sub, span_pair) in enumerate(requests):
+        if fetched_count:
+            time.sleep(min(PACE_SECONDS, max(0, deadline - time.monotonic())))
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            _log(f"listing deadline reached after {fetched_count} requests; keeping partial results")
+            break
+        if span_pair:
+            win = f"&after={span_pair[0].isoformat()}&before={span_pair[1].isoformat()}"
+        else:
+            win = f"&after={from_date}" if from_date else ""
+            win += f"&before={to_date}" if to_date else ""
+        try:
+            # DNS recovery may retry even with retries=1. Bound the whole
+            # request so those retries cannot consume other subreddits' time.
             data = http.get(
-                f"{SEARCH_API}?subreddit={sub}&limit={n}&sort=desc",
+                f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}",
                 headers={"User-Agent": http.BROWSER_USER_AGENT},
-                timeout=TIMEOUT,
+                timeout=min(TIMEOUT, remaining),
                 retries=1,
+                deadline_monotonic=min(deadline, now + TIMEOUT),
             )
         except Exception as e:  # network error / non-200 — degrade, never raise
             _log(f"listing search failed r/{sub}: {e}")
@@ -221,8 +264,16 @@ def fetch_listings(
             if not isinstance(row, dict):
                 continue
             post = _normalize_listing_row(row, query)
-            if post["url"]:
-                out.append(post)
+            if post["url"] and post["url"] not in seen_by_sub[sub]:
+                seen_by_sub[sub].add(post["url"])
+                posts_by_sub[sub].append(post)
+
+    out: List[Dict[str, Any]] = []
+    for sub_posts in posts_by_sub.values():
+        if window:
+            sub_posts.sort(key=lambda p: -(p["score"] or 0))
+            sub_posts = sub_posts[:n]
+        out.extend(sub_posts)
 
     seen: set = set()
     unique: List[Dict[str, Any]] = []
