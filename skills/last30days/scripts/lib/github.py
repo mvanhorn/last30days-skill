@@ -169,7 +169,7 @@ def _compute_relevance(
 # GitHub search qualifiers the planner sometimes writes straight into the topic
 # string (e.g. "open source AI stars:>1000 created:>2025-03-20"). They must not
 # reach the query builder in `search_github`: it appends its own
-# `created:>{from_date}`, and when two `created:` qualifiers collide GitHub
+# `created:{from_date}..{to_date}`, and when two `created:` qualifiers collide GitHub
 # honours the FIRST and silently ignores ours. The API then returns
 # out-of-window items that `parse_github_response`'s date filter drops
 # wholesale — a source that fetches results and reports zero (issue #949).
@@ -301,7 +301,7 @@ def search_github(
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
     # Build search query with date filter
-    base_q = f"{core} created:>{from_date}"
+    base_q = f"{core} created:{from_date}..{to_date}"
 
     def _search(qualifier: Optional[str]) -> Optional[Dict[str, Any]]:
         q = f"{base_q} {qualifier}" if qualifier else base_q

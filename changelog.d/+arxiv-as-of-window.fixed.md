@@ -1,1 +1,0 @@
-arXiv no longer returns papers published after the end of an `--as-of` window, and its one-year recency cutoff is now measured from that end date, so historical reports keep in-window papers instead of citing later ones.

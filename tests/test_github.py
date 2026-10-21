@@ -148,6 +148,16 @@ class TestSearchGithub(unittest.TestCase):
         self.assertEqual(item["engagement"]["comments"], 12)
         self.assertFalse(item["metadata"]["is_pr"])
 
+    @patch.object(github, "_fetch_json", return_value={"items": []})
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_search_is_bounded_by_window_end(self, mock_token, mock_fetch):
+        """An --as-of window must not fetch issues created after its end date."""
+        github.search_github("react", "2026-05-31", "2026-06-30")
+        self.assertTrue(mock_fetch.call_args_list)
+        for call in mock_fetch.call_args_list:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(call.args[0]).query)["q"][0]
+            self.assertIn("created:2026-05-31..2026-06-30", q)
+
     @patch.object(github, "_fetch_json", return_value=None)
     @patch.object(github, "_resolve_token", return_value="test-token")
     def test_rate_limit_returns_empty_envelope(self, mock_token, mock_fetch):
@@ -729,7 +739,7 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         # rather than against a single exact string.
         self.assertEqual(len(queries), 2)
         for q in queries:
-            self.assertTrue(q.startswith("open source ai created:>2026-07-01"))
+            self.assertTrue(q.startswith("open source ai created:2026-07-01..2026-07-31"))
             self.assertEqual(q.count("created:"), 1)
             self.assertNotIn("stars:", q)
         self.assertEqual(
@@ -839,7 +849,7 @@ class TestSearchGithubQualifiers(unittest.TestCase):
             )
         q = self._query(captured["url"])
         self.assertEqual(q.count("created:"), 1)
-        self.assertIn("created:>2026-07-01", q)
+        self.assertIn("created:2026-07-01..2026-07-31", q)
         self.assertNotIn("created:>2025-03-20", q)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
@@ -876,9 +886,9 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         queries = [self._query(u) for u in captured["urls"]]
         self.assertEqual(len(queries), 2)
         for q in queries:
-            self.assertTrue(q.startswith("open source ai created:>2026-07-01"))
+            self.assertTrue(q.startswith("open source ai created:2026-07-01..2026-07-31"))
             self.assertEqual(q.count("created:"), 1)
-            self.assertIn("created:>2026-07-01", q)
+            self.assertIn("created:2026-07-01..2026-07-31", q)
             self.assertNotIn("created:>2025-03-20", q)
             self.assertIn("open source", q)
             self.assertIn("ai", q)

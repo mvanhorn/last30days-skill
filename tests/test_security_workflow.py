@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -35,7 +36,12 @@ def test_security_workflow_runs_secret_scan_for_pull_requests_and_main_pushes() 
     assert "workflow_dispatch:" in text
     assert "branches:\n      - main" in text
     assert "trufflesecurity/trufflehog" in secret_scan_job
-    assert "version: 3.97.1" in secret_scan_job
+    action_release = re.search(
+        r"uses: trufflesecurity/trufflehog@[0-9a-f]{40} # v(\d+\.\d+\.\d+)",
+        secret_scan_job,
+    )
+    assert action_release is not None
+    assert f"version: {action_release.group(1)}" in secret_scan_job
     assert "extra_args: --results=verified" in secret_scan_job
     assert "continue-on-error: true" not in secret_scan_job
     assert "if: github.event_name" not in secret_scan_job
@@ -47,7 +53,7 @@ def test_security_workflow_runs_sast_without_unused_code_scanning_permission() -
     sast_job = text.split("sast-scan:", 1)[1]
 
     assert "semgrep/semgrep@sha256:" in sast_job
-    assert "semgrep scan --config=auto" in sast_job
+    assert "semgrep scan --config=p/default" in sast_job
     assert "SEMGREP_SEND_METRICS: off" in sast_job
     assert "continue-on-error: true" in sast_job
     assert "contents: read" in sast_job

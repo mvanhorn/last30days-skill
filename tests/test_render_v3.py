@@ -464,7 +464,7 @@ class OutputEnvelopeTests(unittest.TestCase):
         self.assertIn("Pass through ONLY the fenced `text` footer block above", text)
         # Self-check string is present so the model has a concrete failure signal.
         self.assertIn("### 1.", text)
-        self.assertIn("LAW 6", text)
+        self.assertIn("evidence-dump", text)
         # The prior ambiguous phrasing is gone.
         self.assertNotIn("Pass through the lines ABOVE this boundary verbatim", text)
 
@@ -979,9 +979,9 @@ class DegradedRunBannerTests(unittest.TestCase):
         text = render.render_compact(report)
         self.assertNotIn("## DEGRADED RUN WARNING", text)
 
-    def test_banner_mentions_law_7_and_plan_flag(self):
+    def test_banner_mentions_planning_step_and_plan_flag(self):
         text = render.render_compact(self._bare_named_entity_report())
-        self.assertIn("LAW 7", text)
+        self.assertIn("Step 0.75", text)
         self.assertIn("--plan", text)
 
 

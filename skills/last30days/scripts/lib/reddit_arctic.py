@@ -177,9 +177,11 @@ def fetch_listings(
     window the fetch is recency-only, and the archive freezes score at ingest,
     so the freshest ~2-3 days read as 1-point stubs. When the caller supplies
     ``from_date``/``to_date``, the window is sliced into ~7-day chunks queried
-    with ``after``/``before`` and the highest-scored posts are kept per
-    subreddit, which restores window-top engagement even though shreddit is
-    unavailable. Best-effort, never raises: returns ``[]`` on any failure.
+    with ``after``/``before`` and the highest-scored sampled posts are kept per
+    subreddit. Slice requests rotate across subreddits under a shared deadline;
+    successful partial results survive failures. The 100-row cap per slice
+    means the sample can miss popular posts in busy subreddits. Best-effort,
+    never raises: returns ``[]`` when no requests succeed.
     """
     if not subreddits:
         return []
@@ -214,59 +216,60 @@ def fetch_listings(
                 slices.append((cursor, min(cursor + _timedelta(days=step), end)))
                 cursor += _timedelta(days=step)
     req_limit = 100 if window else n
-    out: List[Dict[str, Any]] = []
-    # Process all requested subreddits with pacing and a total deadline to
-    # prevent unbounded stalls when arctic is slow or unreachable.
-    deadline = time.time() + _LISTING_DEADLINE_SECONDS
-    fetched_count = 0
+    posts_by_sub: Dict[str, List[Dict[str, Any]]] = {}
     for sub in subreddits:
-        if time.time() >= deadline:
-            _log(f"listing deadline reached after {fetched_count} subs; skipping remaining")
-            break
         sub = sub.removeprefix("r/").strip()
-        if not sub or sub.lower() == "all":
-            continue
+        if sub and sub.lower() != "all":
+            posts_by_sub.setdefault(sub, [])
+    seen_by_sub = {sub: set() for sub in posts_by_sub}
+    # Give every subreddit a slice before spending the shared budget on more
+    # slices for any one subreddit.
+    requests = (
+        (sub, span_pair)
+        for span_pair in (slices or [None])
+        for sub in posts_by_sub
+    )
+    deadline = time.monotonic() + _LISTING_DEADLINE_SECONDS
+    for fetched_count, (sub, span_pair) in enumerate(requests):
         if fetched_count:
-            time.sleep(PACE_SECONDS)
-        fetched_count += 1
-        requests = slices or [None]
-        sub_posts: List[Dict[str, Any]] = []
-        seen_urls: set = set()
-        for i, span_pair in enumerate(requests):
-            if i and time.time() >= deadline:
-                _log(f"listing deadline reached mid-r/{sub}; keeping partial slice set")
-                break
-            if i:
-                time.sleep(PACE_SECONDS)
-            if span_pair:
-                win = f"&after={span_pair[0].isoformat()}&before={span_pair[1].isoformat()}"
-            else:
-                win = f"&after={from_date}" if from_date else ""
-                win += f"&before={to_date}" if to_date else ""
-            try:
-                # Use retries=1 (single attempt) so retries don't exceed our deadline.
-                # The deadline handles overall timing; per-request retries would
-                # multiply the delay unpredictably.
-                data = http.get(
-                    f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}",
-                    headers={"User-Agent": http.BROWSER_USER_AGENT},
-                    timeout=TIMEOUT,
-                    retries=1,
-                )
-            except Exception as e:  # network error / non-200 — degrade, never raise
-                _log(f"listing search failed r/{sub}: {e}")
+            time.sleep(min(PACE_SECONDS, max(0, deadline - time.monotonic())))
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            _log(f"listing deadline reached after {fetched_count} requests; keeping partial results")
+            break
+        if span_pair:
+            win = f"&after={span_pair[0].isoformat()}&before={span_pair[1].isoformat()}"
+        else:
+            win = f"&after={from_date}" if from_date else ""
+            win += f"&before={to_date}" if to_date else ""
+        try:
+            # DNS recovery may retry even with retries=1. Bound the whole
+            # request so those retries cannot consume other subreddits' time.
+            data = http.get(
+                f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}",
+                headers={"User-Agent": http.BROWSER_USER_AGENT},
+                timeout=min(TIMEOUT, remaining),
+                retries=1,
+                deadline_monotonic=min(deadline, now + TIMEOUT),
+            )
+        except Exception as e:  # network error / non-200 — degrade, never raise
+            _log(f"listing search failed r/{sub}: {e}")
+            continue
+        rows = (data or {}).get("data")
+        if not isinstance(rows, list):
+            _log(f"unexpected listing response for r/{sub}: {str(data)[:80]}")
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
                 continue
-            rows = (data or {}).get("data")
-            if not isinstance(rows, list):
-                _log(f"unexpected listing response for r/{sub}: {str(data)[:80]}")
-                continue
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                post = _normalize_listing_row(row, query)
-                if post["url"] and post["url"] not in seen_urls:
-                    seen_urls.add(post["url"])
-                    sub_posts.append(post)
+            post = _normalize_listing_row(row, query)
+            if post["url"] and post["url"] not in seen_by_sub[sub]:
+                seen_by_sub[sub].add(post["url"])
+                posts_by_sub[sub].append(post)
+
+    out: List[Dict[str, Any]] = []
+    for sub_posts in posts_by_sub.values():
         if window:
             sub_posts.sort(key=lambda p: -(p["score"] or 0))
             sub_posts = sub_posts[:n]

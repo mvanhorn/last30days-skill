@@ -9,6 +9,32 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.28.1] - 2026-10-20
+
+### Added
+
+- Add `YOUTUBE_PROXY` (alias `YT_PROXY`) env var: when set, passes `--proxy <url>` to all yt-dlp invocations in `youtube_yt.py` (`search_youtube` and `fetch_transcript`), routing only yt-dlp traffic through the proxy. Useful in regions where YouTube is blocked. Documented in CONFIGURATION.md under "YouTube proxy". ([#158](https://github.com/mvanhorn/last30days-skill/issues/158))
+
+### Fixed
+
+- Render the engine footer as a fenced text block so Markdown does not turn `---` into horizontal rules. ([#706](https://github.com/mvanhorn/last30days-skill/issues/706))
+- GitHub searches skip qualifier-only topics with malformed or nested wrappers instead of sending punctuation-only queries. Topics containing real search text keep their existing punctuation. ([#969](https://github.com/mvanhorn/last30days-skill/issues/969))
+- Authenticated Bluesky searches now send RFC3339 date-time bounds, preventing valid date windows from being rejected as malformed requests. ([#984](https://github.com/mvanhorn/last30days-skill/issues/984))
+- Remove "LAW N" framing from model-visible render output: the SYNTHESIS CONTRACT, EVIDENCE FOR SYNTHESIS envelope, and DEGRADED RUN WARNING now use plain descriptive guidance instead of numbered law references. ([#1082](https://github.com/mvanhorn/last30days-skill/issues/1082))
+- The MCP launcher now finds and verifies Python 3.12+ interpreters on PATH when the default python3 is too old. Set LAST30DAYS_PYTHON to select a specific interpreter; invalid explicit choices report an error instead of silently falling back. ([#1140](https://github.com/mvanhorn/last30days-skill/issues/1140))
+- xAI: change the default model from `grok-4-1-fast`, which xAI no longer lists, to `grok-4.20-0309-non-reasoning`. The same default (`XAI_DEFAULT`) drives the xAI X search backend and the xAI planner and rerank models when `LAST30DAYS_REASONING_PROVIDER=xai`, unless `LAST30DAYS_X_MODEL` or `LAST30DAYS_PLANNER_MODEL` / `LAST30DAYS_RERANK_MODEL` pin another model. `CONFIGURATION.md` now documents `LAST30DAYS_X_MODEL` next to `XAI_API_KEY`. ([#1186](https://github.com/mvanhorn/last30days-skill/issues/1186))
+- Reddit comment parsing now matches shreddit attribute names case-insensitively, so markup that carries `thingid` instead of `thingId` no longer yields zero comments. ([#1256](https://github.com/mvanhorn/last30days-skill/issues/1256))
+- Digg now reports an error instead of "no results" when `digg-pp-cli` falls back to its local store after a failed live search (last30days never runs `digg-pp-cli sync`, so the fallback store is always empty). ([#1281](https://github.com/mvanhorn/last30days-skill/issues/1281))
+- Hacker News top comments now follow the thread's display order from the official HN item API instead of Algolia's oldest-first order, so quoted comments are the ones HN ranks highest. If that lookup fails, comments keep the previous order and the Hacker News source is not marked degraded. ([#1285](https://github.com/mvanhorn/last30days-skill/issues/1285))
+- GitHub keyword searches now stop at the research window end, so an `--as-of` run no longer spends its result slots on issues created after the window and then drops them.
+- GitHub person mode (`--github-user`) now counts PRs created inside the research window only, so an `--as-of` run no longer reports every PR up to today, and its velocity summary names the real window length instead of always saying 30 days.
+- Live-edit setup guidance now preserves the installed skill as a backup before replacing its real directory with a working-tree symlink, so development edits reach the active skill.
+- Sources named in `--search` are no longer dropped by intent routing at default and deep depth (for example, Polymarket on a topic classified as a concept or how-to).
+- YouTube no longer keeps videos published after the end of an `--as-of` window, so a historical report cannot cite later videos or spend its transcript budget on them. Cached and concurrent searches use the complete date window, including its inclusive end date.
+- arXiv no longer returns papers published after the end of an `--as-of` window, and its one-year recency cutoff is now measured from that end date, so historical reports keep in-window papers instead of citing later ones.
+- dev.to now finds articles for research windows that end before today. It pages back through newer results within a 45-second budget, keeps only articles inside the window, and includes the whole first day of every window.
+
+
 ## [3.28.0] - 2026-10-11
 
 ### Security
