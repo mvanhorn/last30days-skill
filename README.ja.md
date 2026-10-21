@@ -340,13 +340,21 @@ last30days で、定期的なAIのまとめ、市場ウォッチ、あるいは�
 
 ## オープンソース
 
-MIT ライセンス。トラッキングなし。アナリティクスなし。調査結果はあなたのマシンに残ります。
+MIT ライセンス。トラッキングなし。アナリティクスなし。調査結果はあなたのマシンに残ります（下記「データの取り扱い」を参照）。
 
 テストコマンドは [CONTRIBUTING.md](CONTRIBUTING.md#tests) を参照してください。
 
 Python 3.12以上、yt-dlp、Node.js(X 検索用に同梱した Bird クライアント)、ScrapeCreators API で構築しています。v3 のエンジンアーキテクチャは [@j-sperling](https://github.com/j-sperling) によるものです。
 
 PRの出し方は [CONTRIBUTING.md](CONTRIBUTING.md)、コミュニティの貢献者の一覧は [CONTRIBUTORS.md](CONTRIBUTORS.md)、バージョン履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
+
+## データの取り扱い
+
+デフォルトでは、ツールはすべてあなたのマシン上で動作します。利用する検索API（Reddit、ScrapeCreatorsなど）以外、データは外部に送信されません。
+
+**リランキング。** 推論プロバイダー（`OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY`、`GOOGLE_API_KEY`、`GEMINI_API_KEY`、または `GOOGLE_GENAI_API_KEY`）を設定した場合、エンジンはリリバンスのスコアリングのために研究テーマと取得したコンテンツのスニペットをそのプロバイダーに送信します。これはオプションです：推論キーを設定しない場合、エンジンはローカルスコアリングモデルを使用し、リランキングのための外部呼び出しは行われません。
+
+**ローカルストレージ。** `LAST30DAYS_STORE=1` を設定すると、結果は使用する保存先ディレクトリ内の `research.db` というローカル SQLite データベースに保存されます（`--save-dir` は `LAST30DAYS_MEMORY_DIR` より優先されます）。保存先ディレクトリを使用しない場合、データベースは `~/.local/share/last30days/research.db` に保存されます。ストレージを有効にしても、そのデータベースがリモートサービスにアップロードされることはありません。保存期間と削除方法、および削除前にデータベースを使用するプロセスを停止する手順は [CONFIGURATION.md](CONFIGURATION.md#--store-flag) を参照してください。
 
 ## スター数の推移
 

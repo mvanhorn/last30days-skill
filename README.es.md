@@ -341,13 +341,21 @@ Los scripts envoltorio por cliente, los subreddits de categoría personalizados 
 
 ## Código abierto
 
-Licencia MIT. Sin rastreo. Sin analíticas. Tu investigación se queda en tu máquina.
+Licencia MIT. Sin rastreo. Sin analíticas. Tu investigación se queda en tu máquina (ver Manejo de datos más abajo).
 
 Consulta los comandos de prueba en [CONTRIBUTING.md](CONTRIBUTING.md#tests).
 
 Construido con Python 3.12+, yt-dlp, Node.js (cliente Bird incorporado para la búsqueda en X) y la API de ScrapeCreators. Arquitectura del motor v3 de [@j-sperling](https://github.com/j-sperling).
 
 Consulta [CONTRIBUTING.md](CONTRIBUTING.md) para abrir un PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) para la lista completa de colaboradores de la comunidad y [CHANGELOG.md](CHANGELOG.md) para el historial de versiones.
+
+## Manejo de datos
+
+Por defecto, la herramienta funciona completamente en tu máquina — ningún dato la abandona salvo hacia las APIs de búsqueda que uses (Reddit, ScrapeCreators, etc.).
+
+**Reranking.** Si configuras un proveedor de razonamiento (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` o `GOOGLE_GENAI_API_KEY`), el motor envía tu tema de investigación y fragmentos de contenido recuperado a ese proveedor para puntuar la relevancia. Es opcional: sin clave de razonamiento, el motor usa un modelo de puntuación local sin llamadas externas para el reranking.
+
+**Almacenamiento local.** Con `LAST30DAYS_STORE=1`, los hallazgos se guardan en una base de datos SQLite local llamada `research.db` dentro del directorio de guardado efectivo (`--save-dir` tiene prioridad sobre `LAST30DAYS_MEMORY_DIR`). Si no se usa un directorio de guardado, la base de datos está en `~/.local/share/last30days/research.db`. Activar el almacenamiento no sube su base de datos a ningún servicio remoto. Consulta [CONFIGURATION.md](CONFIGURATION.md#--store-flag) para los detalles de retención e instrucciones de purga, incluido detener los procesos que usan la base de datos antes de borrarla.
 
 ## Evolución de las estrellas
 

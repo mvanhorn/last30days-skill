@@ -643,6 +643,22 @@ Adding `--store` to any run persists every finding to a SQLite database (default
 
 Relevant tables: `topics`, `research_runs`, `findings`, `settings`. Schema: [`scripts/store.py`](skills/last30days/scripts/store.py).
 
+**Retention.** The store has no built-in automatic expiry; rows accumulate until you delete them. Enabling the store does not upload its database to a remote service.
+
+To purge a store, first stop every research, watchlist, and other process using that database, and pause scheduled runs so they cannot reopen it during deletion. The store uses SQLite WAL mode: deleting `research.db` while a process still has it open can leave findings accessible in that process and in `research.db-wal`.
+
+Choose the database for the run you want to purge. It is `research.db` inside the effective save directory: an explicit `--save-dir` takes precedence over `LAST30DAYS_MEMORY_DIR`. If no save directory is in effect, the database is `~/.local/share/last30days/research.db`. An explicitly empty `--save-dir` disables the configured save directory and uses this global store. When `LAST30DAYS_MEMORY_DIR` is set only in `.env`, your shell does not load it. Resolve the chosen directory to an absolute path, including expanding any leading `~`, before using the command below.
+
+Deleting a store is irreversible and removes every table, including topics, run history, findings, settings, and discovery queue entries. If you need a backup, copy the database and any remaining `research.db-wal` and `research.db-shm` files together after stopping all processes. Once they are stopped, remove the chosen database and any remaining sidecars:
+
+```bash
+# Replace this with the resolved absolute path to the database you chose.
+store_db='/absolute/path/to/research.db'
+rm -f -- "$store_db" "${store_db}-wal" "${store_db}-shm"
+```
+
+The engine recreates an empty database on the next `--store` run. This deletes only the chosen store; saved Markdown/JSON reports, library indexes, backups, and stores in other directories remain.
+
 ### Discovery topic queue (`LAST30DAYS_DISCOVERY_QUEUE`)
 
 `--discover` runs remember what they surfaced (table `discovery_topics` in the same research.db). Re-surfaced topics get a `**Pipeline:**` line on their card ("surfaced 2nd time", "marked covered") so the discovery brief doubles as a podcast / X-article content pipeline. On by default for real runs; `--mock` runs never write. With `--save-dir`, queue rows land in that directory's scoped `research.db`, never the global one.

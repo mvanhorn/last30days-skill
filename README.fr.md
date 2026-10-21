@@ -341,13 +341,21 @@ Vous avez publié une veille IA récurrente, un suivi de marché ou une obsessio
 
 ## Open source
 
-Licence MIT. Aucun tracking. Aucune analytics. Vos recherches restent sur votre machine.
+Licence MIT. Aucun tracking. Aucune analytics. Vos recherches restent sur votre machine (voir Gestion des données ci-dessous).
 
 Consultez [CONTRIBUTING.md](CONTRIBUTING.md#tests) pour les commandes de test.
 
 Construit avec Python 3.12+, yt-dlp, Node.js (client Bird intégré pour la recherche X) et l'API ScrapeCreators. Architecture du moteur v3 par [@j-sperling](https://github.com/j-sperling).
 
 Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour ouvrir une PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) pour la liste complète des contributeurs de la communauté, et [CHANGELOG.md](CHANGELOG.md) pour l'historique des versions.
+
+## Gestion des données
+
+Par défaut, l'outil fonctionne entièrement sur votre machine — aucune donnée ne quitte votre appareil, sauf vers les API de recherche que vous appelez (Reddit, ScrapeCreators, etc.).
+
+**Reclassement (reranking).** Si vous configurez un fournisseur de raisonnement (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` ou `GOOGLE_GENAI_API_KEY`), le moteur envoie votre sujet de recherche et des extraits de contenu récupérés à ce fournisseur pour le scoring de pertinence. C'est optionnel : sans clé de raisonnement, le moteur utilise un modèle de scoring local et aucun appel externe n'est effectué pour le reclassement.
+
+**Stockage local.** Avec `LAST30DAYS_STORE=1`, les résultats sont enregistrés dans une base SQLite locale nommée `research.db`, dans le répertoire de sauvegarde utilisé (`--save-dir` prend le pas sur `LAST30DAYS_MEMORY_DIR`). Si aucun répertoire de sauvegarde n'est utilisé, la base se trouve dans `~/.local/share/last30days/research.db`. Activer le stockage n'envoie pas sa base de données à un service distant. Consultez [CONFIGURATION.md](CONFIGURATION.md#--store-flag) pour les détails de conservation et les instructions de purge, notamment l'arrêt des processus qui utilisent la base avant sa suppression.
 
 ## Évolution des étoiles
 

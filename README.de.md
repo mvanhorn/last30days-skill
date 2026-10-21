@@ -341,13 +341,21 @@ Du hast mit last30days ein wiederkehrendes KI-Update, eine Marktbeobachtung oder
 
 ## Open Source
 
-MIT-Lizenz. Kein Tracking. Keine Analytics. Deine Recherche bleibt auf deinem Rechner.
+MIT-Lizenz. Kein Tracking. Keine Analytics. Deine Recherche bleibt auf deinem Rechner (siehe Datenschutzhinweise unten).
 
 Die Testbefehle stehen in [CONTRIBUTING.md](CONTRIBUTING.md#tests).
 
 Gebaut mit Python 3.12+, yt-dlp, Node.js (mitgelieferter Bird-Client für die X-Suche) und der ScrapeCreators-API. Architektur der v3-Engine von [@j-sperling](https://github.com/j-sperling).
 
 Wie du einen PR aufmachst, steht in [CONTRIBUTING.md](CONTRIBUTING.md), die vollständige Liste der Community-Beitragenden in [CONTRIBUTORS.md](CONTRIBUTORS.md) und die Versionshistorie in [CHANGELOG.md](CHANGELOG.md).
+
+## Datenschutzhinweise
+
+Standardmäßig läuft das Tool vollständig auf deinem Rechner — keine Daten verlassen dein Gerät, außer an die von dir genutzten Such-APIs (Reddit, ScrapeCreators usw.).
+
+**Reranking.** Wenn du einen Reasoning-Provider konfigurierst (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` oder `GOOGLE_GENAI_API_KEY`), sendet die Engine dein Recherchethema und abgerufene Inhaltsausschnitte an diesen Provider zum Relevanz-Scoring. Das ist optional: Ohne Reasoning-Key verwendet die Engine ein lokales Scoring-Modell; für das Reranking erfolgen keine externen Aufrufe.
+
+**Lokaler Speicher.** Mit `LAST30DAYS_STORE=1` werden Ergebnisse in einer lokalen SQLite-Datenbank namens `research.db` im verwendeten Speicherverzeichnis gespeichert (`--save-dir` hat Vorrang vor `LAST30DAYS_MEMORY_DIR`). Wenn kein Speicherverzeichnis verwendet wird, liegt die Datenbank unter `~/.local/share/last30days/research.db`. Das Aktivieren des Speichers lädt die Datenbank nicht zu einem Remote-Dienst hoch. Einzelheiten zur Aufbewahrung und zum Löschen findest du in [CONFIGURATION.md](CONFIGURATION.md#--store-flag), einschließlich des vorherigen Beendens aller Prozesse, die die Datenbank verwenden.
 
 ## Sternverlauf
 

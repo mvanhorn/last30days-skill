@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -302,6 +303,11 @@ def _run_npx_install(slug: str) -> Tuple[str, str]:
     npx = shutil.which("npx")
     if npx is None:
         return "no_npx", ""
+    print(
+        f"Installing {slug} CLI via npx ({PRINTING_PRESS_NPM} --cli-only) ...",
+        file=sys.stderr,
+        flush=True,
+    )
     try:
         proc = subprocess.run(
             [npx, "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
