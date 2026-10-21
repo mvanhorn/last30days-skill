@@ -1,0 +1,1 @@
+Handle discovery no longer treats short fragments of a topic word (for example "go" for "Google Gemini") as the topic's subject, now recognizes handles spelled from a name's prefixes (for example "steipete" for "Peter Steinberger"), and no longer gives first-party status to accounts named after query scaffolding words like "review" or "news".

@@ -38,6 +38,46 @@ def test_collector_normalizes_deduplicates_and_requires_corroboration():
     assert output == ["existing", "explicit", "exampledev", "related"]
 
 
+def _resolve(topic, extracted):
+    """Run the Phase 2 collector with a fixed extracted-handle list; return the
+    handles it resolved beyond the explicit anchor handle (the collector returns
+    early with no X items and no explicit handle, so one anchor keeps it running)."""
+    output = []
+    with patch.object(pipeline.entity_extract, "extract_entities", return_value={
+        "x_handles": extracted, "x_hashtags": [], "reddit_subreddits": [],
+    }), patch.object(pipeline.env, "x_backend_chain", return_value=[]):
+        pipeline._run_supplemental_searches(
+            topic=topic, bundle=schema.RetrievalBundle(), plan=_plan(),
+            config={}, depth="default", date_range=("2026-03-01", "2026-03-31"),
+            runtime=providers.mock_runtime({}, "default"), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+            x_handle="anchor_handle", resolved_handles_out=output,
+        )
+    return [h for h in output if h != "anchor_handle"]
+
+
+def test_short_handles_are_not_corroborated_by_substring_overlap():
+    """An extracted handle that is merely a short fragment of a topic word ("go"
+    in "Google", "ai" in "Chair") does not name the topic and must not earn
+    first-party status."""
+    assert _resolve("Google Gemini", ["go", "google_ai_dev"]) == ["google_ai_dev"]
+    assert _resolve("Chair review", ["ai"]) == []
+
+
+def test_handle_containing_a_full_three_letter_topic_word_is_corroborated():
+    """A short subject name ("Vue") inside a longer handle ("vuejs") is still
+    the subject, while a short fragment of a longer topic word ("go" in
+    "Google") is not."""
+    assert _resolve("Vue", ["vuejs", "go"]) == ["vuejs"]
+    assert _resolve("Google Gemini", ["go"]) == []
+    # Scaffolding words never name the subject, even when contained in a handle.
+    assert _resolve("Cursor review", ["reviewbot"]) == []
+
+
+def test_handle_spelled_from_the_topic_name_is_still_corroborated():
+    assert _resolve("Peter Steinberger", ["steipete", "commentator"]) == ["steipete"]
+
+
 def test_discovered_handles_reach_real_fusion_and_reranking():
     raw = [
         {"id": "subject", "text": "A new release shipped today",

@@ -214,7 +214,9 @@ class TestIngestion:
     def test_mention_lane_rows_reach_the_report(self, tmp_path):
         envelope = _read(_write(tmp_path, _envelope([
             _call("topic", posts=[_row(0, "alice", "ai agents review")]),
-            _call("mention", handles=[SUBJECT], posts=[_row(4, "fan", f"@{SUBJECT} love the agent work")]),
+            # On-topic enough to clear the relevance floor: the report's X view is
+            # finalized after that floor, so an off-topic mention row would be pruned.
+            _call("mention", handles=[SUBJECT], posts=[_row(4, "fan", f"@{SUBJECT} love the ai agents work")]),
         ])))
         assert envelope.lane_counts["mention"] == 1
         report = _run(envelope, x_handle=SUBJECT)

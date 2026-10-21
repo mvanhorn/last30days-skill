@@ -8,7 +8,8 @@ from typing import FrozenSet, List, Optional, Set
 PREFIXES = [
     'what are the best', 'what is the best', 'what are the latest',
     'what are people saying about', 'what do people think about',
-    'how do i use', 'how to use', 'how to',
+    'how do i use', 'how do you use', 'how can i use', 'how to use',
+    'how do you', 'how can i', 'how to',
     'what are', 'what is', 'tips for', 'best practices for',
     # Hebrew question/meta prefixes
     'מה יש חדש ב', 'מה יש חדש על', 'מה אנשים אומרים על',

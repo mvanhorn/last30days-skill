@@ -61,7 +61,7 @@ disables it. The knob is registered in `env.get_config`'s keys allowlist
 ```
 
 and read from the resolved config dict, never `os.environ`
-(`skills/last30days/scripts/last30days.py:1312-1314`):
+(`_annotate_and_record_discovery_queue` in `skills/last30days/scripts/last30days.py`):
 
 ```python
 queue_setting = str(config.get("LAST30DAYS_DISCOVERY_QUEUE") or "").strip().lower()
@@ -73,15 +73,15 @@ WHY: `.env`-file users' values only reach the engine through the `get_config`
 allowlist merge - a bare `os.environ` read silently ignores them, a documented
 invisible-failure class in this repo. Scoped runs (`--save-dir`) write the scoped
 research.db via `store.scoped_db(_scoped_store_db(args))`
-(`last30days.py:432-437`, `store.py:41-53`), never the global one; `--mock` runs
-stay 100% side-effect-free (`last30days.py:1505`).
+(`_scoped_store_db` in `last30days.py`, `store.scoped_db`), never the global one; `--mock` runs
+stay 100% side-effect-free (both discovery call sites guard the queue hook with `if not args.mock`).
 
 ### 2. Annotate-only fuzzy matching - a match stamps context, it never merges rows
 
 `store.match_discovery_topic` tries exact normalized-name match first, then the
 best entity-overlap candidate - the better of full `entity_key` token overlap and
 anchor-token overlap - at a conservative floor
-(`skills/last30days/scripts/store.py:810`, `898-938`):
+(`DISCOVERY_QUEUE_OVERLAP_THRESHOLD` and `match_discovery_topic` in `skills/last30days/scripts/store.py`):
 
 ```python
 DISCOVERY_QUEUE_OVERLAP_THRESHOLD = 0.6
@@ -91,8 +91,8 @@ if best is not None and best_overlap >= DISCOVERY_QUEUE_OVERLAP_THRESHOLD:
 ```
 
 A fuzzy match only annotates the rendered card - the `Pipeline: surfaced Nth
-time, marked covered` line (`skills/last30days/scripts/lib/render.py:153-168`) -
-and never merges or rewrites queue rows (`store.py:806-809`, `906-907`).
+time, marked covered` line (`render_discovery` in `skills/last30days/scripts/lib/render.py`) -
+and never merges or rewrites queue rows (see the `record_discovery_surfacing` and `match_discovery_topic` docstrings in `store.py`).
 
 WHY: with annotate-only semantics a false-positive match costs one noisy line on
 one card; a false merge would silently collapse two distinct stories into one
@@ -103,7 +103,7 @@ mislabeling is recoverable and data loss is not.
 
 `_annotate_and_record_discovery_queue` computes priors for every topic first,
 then records surfacings, inside one `store.scoped_db` block
-(`skills/last30days/scripts/last30days.py:1323-1345`):
+(`_annotate_and_record_discovery_queue` in `skills/last30days/scripts/last30days.py`):
 
 ```python
 with store.scoped_db(_scoped_store_db(args)):
@@ -112,7 +112,12 @@ with store.scoped_db(_scoped_store_db(args)):
     # match+record in one loop lets topic N fuzzy-match a same-anchor
     # sibling row this very run recorded seconds earlier, falsely
     # annotating a first-ever topic as "surfaced 2nd time".
-    priors = [store.match_discovery_topic(topic.name) for topic in report.topics]
+    priors = [
+        _pre_run_prior_state(prior, run_ref)
+        for prior in (
+            store.match_discovery_topic(topic.name) for topic in report.topics
+        )
+    ]
     # Phase 2: record this run's surfacings. ...
     for topic, prior in zip(report.topics, priors):
 ```
@@ -122,12 +127,17 @@ WHY: one report often contains same-anchor siblings ("Gemma 4 chat templates" /
 the row topic N-1 wrote seconds earlier, falsely annotating a first-ever topic
 as a repeat. Caught in review; regression-tested.
 
+`_pre_run_prior_state` wraps each match so a finalize retry sees the state from
+BEFORE its own earlier attempt: a row stamped with this run's `run_ref` has its
+own surfacing subtracted (covered state kept), so the retry renders exactly like
+the first attempt instead of annotating "surfaced 2nd time".
+
 ### 4. Covered inheritance: fresh rows born covered, existing rows never mutated
 
 `record_discovery_surfacing(inherit_covered_at=...)` makes a fresh row start in
 `covered` status when its fuzzy-matched prior is covered; the `ON CONFLICT`
 update path deliberately never touches `status`/`covered_at`
-(`skills/last30days/scripts/store.py:842-895`):
+(`record_discovery_surfacing` in `skills/last30days/scripts/store.py`):
 
 ```python
 status = "covered" if inherit_covered_at else "surfaced"
@@ -140,10 +150,11 @@ ON CONFLICT(normalized_name) DO UPDATE SET
 ```
 
 The caller passes it when a topic's prior is covered
-(`last30days.py:1334-1344`). Locked by the flip-flop regression test
-`test_covered_status_survives_judge_rename_across_runs`
-(`tests/test_store.py:1082-1101`) and by
-`tests/test_store.py:1060-1079` (ON CONFLICT ignores `inherit_covered_at`).
+(`_annotate_and_record_discovery_queue`). Locked by the flip-flop regression test
+`test_covered_status_survives_judge_rename_across_runs` and by
+`test_record_discovery_surfacing_inherit_never_alters_existing_row_status`
+(both in `tests/test_store.py`; the second pins that ON CONFLICT ignores
+`inherit_covered_at`).
 
 WHY: the LLM judge renames the same story across runs; without inheritance a
 rename forks a fresh uncovered row and the user's covered mark silently
@@ -152,14 +163,18 @@ user just changed.
 
 ### 5. Guarded, synchronous end-of-run write - never crash a finished pipeline
 
-The hook call in `_run_discover` is wrapped so a broken queue db degrades to a
-stderr warning and an unannotated report
-(`skills/last30days/scripts/last30days.py:1505-1515`):
+Both discovery paths (one-shot `_run_discover` and the protocol's finalize leg)
+call the hook through `_record_discovery_queue_safely`, so a broken queue db
+degrades to a stderr warning and an unannotated report
+(`skills/last30days/scripts/last30days.py`):
 
 ```python
-if not args.mock:
+# call sites: `if not args.mock: report = _record_discovery_queue_safely(...)`
+def _record_discovery_queue_safely(report, args, config, run_ref=None):
     try:
-        report = _annotate_and_record_discovery_queue(report, args, config)
+        return _annotate_and_record_discovery_queue(
+            report, args, config, run_ref=run_ref,
+        )
     except (sqlite3.Error, OSError) as exc:
         # A broken queue db (locked, read-only dir, corrupt) must never
         # destroy a finished multi-minute pipeline run: warn and render
@@ -168,12 +183,13 @@ if not args.mock:
             f"[last30days] Warning: discovery queue unavailable ({exc}); "
             "continuing without queue annotations.\n"
         )
+        return report
 ```
 
 WHY: unguarded, a locked/read-only/corrupt research.db raises AFTER the
 multi-minute research pipeline finished and discards all of its output - the PR
 #852 code review's P0, empirically reproduced. The write also runs synchronously
-after the pipeline returns (`last30days.py:1308-1310` docstring): it touches
+after the pipeline returns (see the `_annotate_and_record_discovery_queue` docstring): it touches
 disk, so the abandon-on-timeout daemon-thread pattern is forbidden here (see
 `docs/solutions/logic-errors/non-daemon-executor-threads-defeat-wall-clock-budget.md`).
 
@@ -213,7 +229,7 @@ Ranked by blast radius when a convention is violated:
 ## Examples
 
 Covered flip-flop, the archetype 3-run scenario (mirrors
-`tests/test_store.py:1082-1101`):
+`test_covered_status_survives_judge_rename_across_runs` in `tests/test_store.py`):
 
 1. Run 1 surfaces "Gemma 4 chat templates"; the user records an episode and
    runs `queue cover "Gemma 4 chat templates"` (row status: covered).

@@ -257,6 +257,16 @@ def test_topic_candidates_exclude_stopwords():
     assert "the" not in got and "of" not in got
 
 
+def test_topic_candidates_exclude_query_scaffolding_words():
+    """Words like "review" or "news" describe the search, not the subject, so an
+    account that happens to be named after one must not get first-party status
+    (rerank._handle_is_topic already excludes the same words)."""
+    from lib import pipeline
+    got = pipeline._topic_first_party_candidates("Cursor review latest news")
+    assert "cursor" in got
+    assert not {"review", "latest", "news"} & got
+
+
 def test_topic_candidates_do_not_exempt_unrelated_authors():
     """Candidates only matter when a post's author matches one, so ordinary
     words cost nothing -- no account is named 'lunch'."""
@@ -376,6 +386,65 @@ def test_deferred_prune_runs_after_resolution_and_before_fusion():
     assert resolve_at < prune_at < fuse_at, (
         "the deferred floor must see resolved handles and still run before fusion"
     )
+
+
+def test_deferred_prune_reaches_the_report_not_just_fusion():
+    """The floor must run before the per-source view is finalized. Pruning only
+    the fusion streams left report.items_by_source and the X source_status
+    count describing the pre-floor pool."""
+    from unittest.mock import patch
+
+    from lib import dates, pipeline
+
+    day = dates.get_date_range(2)[0]
+
+    def _raw(item_id, author, text, likes):
+        return {
+            "id": item_id,
+            "text": text,
+            "url": f"https://x.com/{author}/status/{item_id}",
+            "author_handle": author,
+            "date": day,
+            "engagement": {"likes": likes, "reposts": 0, "replies": 0, "quotes": 0},
+            "relevance": 0.5,
+            "why_relevant": "test",
+        }
+
+    raw_items = [
+        _raw("1", "steipete", "unrelated lunch photo", 500),
+        _raw("2", "dev_a", "agent loops are great, agent loops everywhere", 300),
+        _raw("3", "dev_b", "agent loops need better evals", 200),
+        _raw("4", "spam_acct", "buy cheap watches now", 0),
+    ]
+    plan = {
+        "intent": "general",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "story",
+        "subqueries": [
+            {
+                "label": "primary",
+                "search_query": "agent loops",
+                "ranking_query": "agent loops",
+                "sources": ["x"],
+            }
+        ],
+        "source_weights": {"x": 1.0},
+    }
+    with patch("lib.pipeline._retrieve_stream_impl", return_value=(raw_items, {})):
+        report = pipeline.run(
+            topic="agent loops",
+            config={},
+            depth="quick",
+            requested_sources=["x"],
+            mock=True,
+            x_handle="steipete",
+            external_plan=plan,
+        )
+
+    authors = {item.author for item in report.items_by_source["x"]}
+    assert "steipete" in authors, "first-party post must survive the floor"
+    assert "spam_acct" not in authors, "the floor must reach the report's per-source view"
+    assert report.source_status["x"].items_returned == len(report.items_by_source["x"])
 
 
 def test_non_x_sources_still_prune_in_place():
