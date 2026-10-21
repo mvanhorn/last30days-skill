@@ -1,0 +1,1 @@
+Added FXMacroData as an opt-in source for currency, central-bank and economy topics. With `INCLUDE_SOURCES=fxmacrodata`, a topic such as "Fed rate cut" or "Japan inflation" adds the official releases published in the last 30 days and the headline releases scheduled next. USD works without a key; other currencies use `FXMACRODATA_API_KEY`.
