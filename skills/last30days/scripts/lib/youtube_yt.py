@@ -816,7 +816,7 @@ def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[st
         return None
     url = f"https://www.youtube.com/watch?v={video_id}"
     quoted_url = shlex.quote(url)
-    sub_langs = shlex.quote(_ytdlp_sub_langs())
+    sub_langs = shlex.quote(_ytdlp_request_langs())
     client = _ytdlp_player_client()
     extractor = (
         f"--extractor-args {shlex.quote(f'youtube:player_client={client}')} "
@@ -831,7 +831,7 @@ def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[st
         "yt-dlp --ignore-config --no-cookies-from-browser "
         f"{extractor}"
         f"{proxy_flag}"
-        f"--write-auto-subs --sub-lang {sub_langs} --sub-format vtt "
+        f"--write-subs --write-auto-subs --sub-lang {sub_langs} --sub-format vtt "
         "--skip-download --no-warnings "
         f'-o "$TMPD/%(id)s" {quoted_url} >/dev/null 2>&1 || true; '
         'VTT=$(find "$TMPD" -maxdepth 1 -name "*.vtt" 2>/dev/null | head -1); '
@@ -867,6 +867,25 @@ def _ytdlp_sub_langs() -> str:
     return ",".join(code.strip().lower() for code in raw.split(",") if code.strip()) or "en,es,pt"
 
 
+def _ytdlp_request_langs() -> str:
+    """The ``--sub-lang`` value: each configured language as ``<lang>-orig,<lang>``.
+
+    Auto-dubbed videos expose the original-speech auto track as
+    ``<lang>-orig``, and their plain ``<lang>`` track can 429 every time while
+    ``-orig`` downloads (#1314). yt-dlp downloads languages in order and stops
+    at the first error, so ``-orig`` has to come first; the partial-VTT salvage
+    keeps it when the plain track then fails. yt-dlp skips languages a video
+    does not have, so non-dubbed videos are unaffected.
+    """
+    langs: List[str] = []
+    for code in _ytdlp_sub_langs().split(","):
+        variants = [code] if code.endswith("-orig") else [f"{code}-orig", code]
+        for variant in variants:
+            if variant not in langs:
+                langs.append(variant)
+    return ",".join(langs)
+
+
 def _transcript_fast_timeout() -> float:
     """Return the keyed-run yt-dlp timeout, preserving the 12s default."""
     return _env_positive_float(
@@ -881,11 +900,12 @@ def _pick_ytdlp_vtt(video_id: str, temp_dir: str, priority: List[str]) -> Option
         return None
     priority_index = {code: i for i, code in enumerate(priority)}
 
-    def rank(p: Path) -> int:
+    def rank(p: Path) -> Tuple[int, int]:
         stem = p.stem
         suffix = stem[len(video_id) + 1:] if stem.startswith(video_id + ".") else ""
         code = suffix.split("-")[0].split(".")[0]
-        return priority_index.get(code, len(priority_index))
+        # Within one language, the original-speech track beats a dubbed one.
+        return (priority_index.get(code, len(priority_index)), 0 if suffix.endswith("-orig") else 1)
 
     return sorted(matches, key=rank)[0]
 
@@ -943,8 +963,12 @@ def _fetch_transcript_ytdlp(
         "yt-dlp",
         "--ignore-config",
         "--no-cookies-from-browser",
+        # --write-subs: a video with uploaded subtitles and no auto track
+        # otherwise exits 0 with no file and falls through to paid SC (#1313).
+        # yt-dlp prefers the uploaded track when both exist for a language.
+        "--write-subs",
         "--write-auto-subs",
-        "--sub-lang", _ytdlp_sub_langs(),
+        "--sub-lang", _ytdlp_request_langs(),
         "--sub-format", "vtt",
         "--skip-download",
         "--no-warnings",
@@ -1795,7 +1819,10 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
     transcript = None
     deadline = time.monotonic() + _SC_TRANSCRIPT_TIMEOUT
     # Without a language the endpoint may return an auto-dubbed track (#1169).
-    languages = list(dict.fromkeys(_ytdlp_sub_langs().split(",")))[:_SC_TRANSCRIPT_MAX_LANGUAGES]
+    # SC takes plain codes; a configured `en-orig` means `en` here (#1314).
+    languages = list(dict.fromkeys(
+        code.removesuffix("-orig") for code in _ytdlp_sub_langs().split(",")
+    ))[:_SC_TRANSCRIPT_MAX_LANGUAGES]
     for language in languages:
         if time.monotonic() >= deadline:
             break

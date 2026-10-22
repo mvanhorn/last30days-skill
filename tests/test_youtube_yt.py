@@ -125,7 +125,10 @@ class TestYtDlpSubLangs(unittest.TestCase):
             self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,es,pt")
 
     def test_transcript_cmd_uses_default_sub_langs(self):
-        """Regression: the --sub-lang arg is en,es,pt by default (issue #469)."""
+        """Regression: the --sub-lang arg covers en,es,pt by default (issue #469).
+
+        Each language is requested original-speech first (#1314).
+        """
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.dict(os.environ, {}, clear=False), \
              mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
@@ -137,7 +140,7 @@ class TestYtDlpSubLangs(unittest.TestCase):
         self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
-        self.assertEqual(cmd[idx + 1], "en,es,pt")
+        self.assertEqual(cmd[idx + 1], "en-orig,en,es-orig,es,pt-orig,pt")
 
     def test_transcript_cmd_respects_env_var_override(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
@@ -150,7 +153,64 @@ class TestYtDlpSubLangs(unittest.TestCase):
         self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
-        self.assertEqual(cmd[idx + 1], "fr,de,it")
+        self.assertEqual(cmd[idx + 1], "fr-orig,fr,de-orig,de,it-orig,it")
+
+    def test_transcript_cmd_requests_uploaded_and_auto_subtitles(self):
+        """#1313: manual-only subtitles must not exit 0 with no file."""
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
+            _write_transcript_fixture(temp_dir)
+            youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir)
+
+        cmd = run_mock.call_args_list[0].args[0]
+        self.assertIn("--write-subs", cmd)
+        self.assertIn("--write-auto-subs", cmd)
+
+    def test_ssh_transcript_cmd_requests_uploaded_subs_and_orig_first(self):
+        from lib.subproc import SubprocResult
+        result = SubprocResult(returncode=0, stdout="WEBVTT\n", stderr="")
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "en"}), \
+             mock.patch.object(youtube_yt, "_run_ytdlp", return_value=result) as run_mock:
+            youtube_yt._fetch_transcript_ytdlp_via_ssh("abc123", "macmini")
+
+        remote_script = run_mock.call_args.args[0][-1]
+        self.assertIn("--write-subs --write-auto-subs --sub-lang en-orig,en ", remote_script)
+
+    def test_request_langs_do_not_double_explicit_orig(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,en-orig,en"}):
+            self.assertEqual(youtube_yt._ytdlp_request_langs(), "fr-orig,fr,en-orig,en")
+
+    def test_vtt_matching_prefers_orig_within_a_language(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name in ("abc123.en.vtt", "abc123.en-orig.vtt", "abc123.es-orig.vtt"):
+                (Path(temp_dir) / name).write_text("WEBVTT\n")
+            picked = youtube_yt._pick_ytdlp_vtt("abc123", temp_dir, ["en", "es", "pt"])
+        self.assertEqual(picked.name, "abc123.en-orig.vtt")
+
+    def test_dubbed_video_keeps_orig_track_after_plain_track_429(self):
+        """#1314: `en` 429s after `en-orig` downloaded; keep it, no retry, no SC."""
+        from lib.subproc import SubprocResult
+        failed = SubprocResult(
+            returncode=1, stdout="",
+            stderr="ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            def _run(cmd, timeout):
+                (Path(temp_dir) / "dub123.en-orig.vtt").write_text(
+                    "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nOriginal speech captions.\n",
+                )
+                return failed
+
+            with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+                 mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt, "_ytdlp_ssh_host", return_value=None), \
+                 mock.patch.object(youtube_yt, "_run_ytdlp", side_effect=_run) as run_mock, \
+                 mock.patch.object(youtube_yt, "_sc_fetch_transcript") as sc_mock:
+                transcript = youtube_yt.fetch_transcript("dub123", temp_dir, token="dummy-key")
+
+        self.assertEqual(transcript, "Original speech captions.")
+        self.assertEqual(run_mock.call_count, 1)
+        sc_mock.assert_not_called()
 
     def test_vtt_matching_picks_non_english_track(self):
         """When yt-dlp writes a Spanish track (no English available), we read it."""
@@ -1165,6 +1225,19 @@ class TestScTranscriptParsing(unittest.TestCase):
         self.assertEqual(
             [c.kwargs["params"]["language"] for c in get_mock.call_args_list],
             ["fr", "de", "ja"],
+        )
+
+    def test_orig_codes_are_sent_to_sc_as_plain_languages(self):
+        """#1314: SC never receives a yt-dlp-only `-orig` language code."""
+        with mock.patch.dict(
+            os.environ, {"LAST30DAYS_YT_SUB_LANGS": "en-orig,en,es"},
+        ), mock.patch.object(
+            youtube_yt.http, "get", return_value={"transcript": None},
+        ) as get_mock:
+            youtube_yt._sc_fetch_transcript("vidOrig", "key")
+        self.assertEqual(
+            [c.kwargs["params"]["language"] for c in get_mock.call_args_list],
+            ["en", "es"],
         )
 
     def test_empty_caption_segments_do_not_stop_language_fallback(self):
