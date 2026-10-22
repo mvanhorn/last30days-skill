@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.30.0] - 2026-10-22
+
+### Fixed
+
+- Hosted runs now search installed lanes such as Digg even when the host's plan leaves them out, and stop printing "0 clusters" for sources that were never searched. Entity runs resolve the subject's X handle more reliably: `--official-site` reads the handle from the brand's homepage links with no API key, the runbook restricts X searches with the search tool's domain filter, and a hosted entity run that plans X now exits 2 until it passes `--x-handle` or `--no-x-handle="<reason>"`.
+
+
 ## [3.29.0] - 2026-10-22
 
 ### Security
