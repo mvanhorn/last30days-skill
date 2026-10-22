@@ -556,3 +556,12 @@ def test_drill_gates_subreddit_context_on_source_allowlist(monkeypatch):
 
     assert "reddit" not in (captured.get("requested_sources") or [])
     assert captured.get("subreddits") is None
+
+
+def test_drill_preserves_person_identity_anchors_without_aliasing():
+    report = _report()
+    report.query_plan.person_identity_anchors = ['Northstar Labs', 'Cedar Ventures']
+    drill_plan = planner.build_drill_plan(report, 'cluster 1')
+    assert drill_plan.person_identity_anchors == report.query_plan.person_identity_anchors
+    drill_plan.person_identity_anchors.append('Another Organization')
+    assert report.query_plan.person_identity_anchors == ['Northstar Labs', 'Cedar Ventures']

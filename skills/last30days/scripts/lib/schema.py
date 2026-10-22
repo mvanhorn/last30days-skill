@@ -70,6 +70,7 @@ class QueryPlan:
     subqueries: list[SubQuery]
     source_weights: dict[str, float]
     notes: list[str] = field(default_factory=list)
+    person_identity_anchors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -492,6 +493,7 @@ def query_plan_from_dict(payload: dict[str, Any]) -> QueryPlan:
         subqueries=[subquery_from_dict(item) for item in payload.get("subqueries") or []],
         source_weights=dict(payload.get("source_weights") or {}),
         notes=list(payload.get("notes") or []),
+        person_identity_anchors=list(payload.get("person_identity_anchors") or []),
     )
 
 

@@ -162,3 +162,37 @@ def _extract_subreddits(reddit_items: List[Dict[str, Any]]) -> List[str]:
 
     # Return subreddits ranked by frequency
     return [sub for sub, _ in sub_counts.most_common()]
+
+
+def matches_person_identity(item, anchors: list[str], primary_handle: str | None = None) -> bool:
+    """Fail closed for scoped person evidence; a shared name is insufficient.
+
+    Only the explicitly resolved X subject may omit the identity anchors.
+    Related/discovered handles and other platforms cannot inherit that trust.
+    """
+    if not anchors:
+        return True
+    if (item.source == "x" and primary_handle and item.author
+            and item.author.lstrip("@").lower() == primary_handle.lstrip("@").lower()):
+        return True
+    parts = [item.title or "", item.body or "", item.snippet or ""]
+    metadata = item.metadata or {}
+    transcript = metadata.get("transcript_snippet")
+    if isinstance(transcript, str):
+        parts.append(transcript)
+    for field in ("transcript_highlights", "comment_insights"):
+        parts.extend(value for value in metadata.get(field) or [] if isinstance(value, str))
+    for comment in metadata.get("top_comments") or []:
+        if isinstance(comment, str):
+            parts.append(comment)
+        elif isinstance(comment, dict):
+            text = comment.get("excerpt") or comment.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    normalized = " ".join(re.findall(r"\w+", " ".join(parts).casefold()))
+    return any(
+        re.search(r"(?<!\w)" + re.escape(" ".join(re.findall(r"\w+", anchor.casefold())))
+                  + r"(?!\w)", normalized)
+        for anchor in anchors
+        if re.search(r"\w", anchor)
+    )

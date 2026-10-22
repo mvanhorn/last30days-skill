@@ -3054,6 +3054,7 @@ def run(
         range_from=from_date,
         range_to=to_date,
         first_party_handles=resolved_handles,
+        primary_handle=x_handle,
     )
     private_candidates = [
         candidate
@@ -4385,6 +4386,7 @@ def _run_supplemental_searches(
     x_dicts = [
         {"author_handle": item.author or "", "text": item.body or ""}
         for item in bundle.items_by_source.get("x", [])
+        if entity_extract.matches_person_identity(item, plan.person_identity_anchors, x_handle)
     ]
     reddit_dicts = [
         {
