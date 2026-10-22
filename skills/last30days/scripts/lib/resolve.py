@@ -236,10 +236,15 @@ def _own_account(links: list[tuple[str, bool]], site_label: str) -> str:
     else's. Accept an account only when it is the sole one linked, the sole
     one in the page's header/footer/nav, or the sole one named after the site.
     """
-    distinct = list(dict.fromkeys(name for name, _ in links))
+    # X and GitHub names are case-insensitive: TypeSafeAI and typesafeai are
+    # one account. Keep the first spelling the page uses.
+    spelling: dict[str, str] = {}
+    for name, _ in links:
+        spelling.setdefault(name.lower(), name)
+    distinct = list(spelling.values())
     if len(distinct) <= 1:
         return distinct[0] if distinct else ""
-    chrome = list(dict.fromkeys(name for name, in_chrome in links if in_chrome))
+    chrome = list(dict.fromkeys(spelling[name.lower()] for name, in_chrome in links if in_chrome))
     if len(chrome) == 1:
         return chrome[0]
     named = [

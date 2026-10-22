@@ -126,6 +126,19 @@ def test_official_site_socials_prefers_the_account_named_after_the_site():
         assert resolve.official_site_socials("www.typesafe.ai")["x_handle"] == "TypeSafeAI"
 
 
+def test_official_site_socials_treats_capitalizations_as_one_account():
+    page = """
+    <a href="https://x.com/TypeSafeAI">X</a>
+    <a href="https://twitter.com/typesafeai">Twitter</a>
+    <a href="https://github.com/TypeSafe-AI">GitHub</a>
+    <a href="https://github.com/typesafe-ai/sdk">SDK</a>
+    """
+    with mock.patch.object(resolve.http, "get_text", return_value=page):
+        assert resolve.official_site_socials("example.com") == {
+            "x_handle": "TypeSafeAI", "github_user": "TypeSafe-AI",
+        }
+
+
 def test_official_site_socials_empty_when_page_unreachable():
     with mock.patch.object(resolve.http, "get_text", return_value=None):
         assert resolve.official_site_socials("typesafe.ai") == {"x_handle": "", "github_user": ""}
