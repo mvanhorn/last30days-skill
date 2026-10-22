@@ -9,6 +9,31 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.29.0] - 2026-10-22
+
+### Security
+
+- Add a "Data handling" section to README in all 7 languages disclosing that reranking sends topics and content snippets to the configured reasoning provider when a key is set. Document `LAST30DAYS_STORE` retention, save-directory overrides, and how to purge a database and its WAL sidecars after stopping all users. Log the npm package name to stderr before each `npx` install, preserving machine-readable stdout. These disclosure changes do not add a rerank-disable option, automatic expiry, or a new installation-consent gate. ([#663](https://github.com/mvanhorn/last30days-skill/issues/663))
+
+### Added
+
+- `LAST30DAYS_YOUTUBE_BACKEND=yt-dlp` keeps YouTube on yt-dlp only, with the keyless retry budget, while `SCRAPECREATORS_API_KEY` keeps serving other sources. `LAST30DAYS_YT_TRANSCRIPT_FAST_ATTEMPTS` sets how many keyed yt-dlp transcript attempts run before the paid fallback (default 1). ([#1316](https://github.com/mvanhorn/last30days-skill/issues/1316))
+
+### Fixed
+
+- Instagram keyword search falls back to a bounded Google-indexed reel search and fetches post details when the primary reels search returns no results. Recovery and enrichment share the source deadline, preserve completed results as partial coverage, and stop starting requests after timeout or cancellation. ([#1020](https://github.com/mvanhorn/last30days-skill/issues/1020))
+- Instagram nudge now distinguishes HTTP errors ("Bonus source failed: Instagram") from zero-result runs ("Bonus source unavailable: Instagram") instead of labelling both as "silent". ([#1289](https://github.com/mvanhorn/last30days-skill/issues/1289))
+- Updated the README source tables in all seven languages to include the engine's optional and local sources, with activation requirements. Replaced stale release and test counts with maintained references, and corrected source prerequisites in CONFIGURATION.md. ([#1303](https://github.com/mvanhorn/last30days-skill/issues/1303))
+- YouTube transcripts now request uploaded subtitles alongside auto captions, so videos with manual subtitles and no auto track get a free yt-dlp transcript instead of falling through to a paid ScrapeCreators rescue. ([#1313](https://github.com/mvanhorn/last30days-skill/issues/1313))
+- yt-dlp now asks for each caption language's original-speech track first (`en-orig,en,...`), so auto-dubbed videos whose plain track returns HTTP 429 keep a free transcript. The ScrapeCreators fallback sends plain language codes. ([#1314](https://github.com/mvanhorn/last30days-skill/issues/1314))
+- A YouTube lane still running after the research budget ran out no longer spends ScrapeCreators credits on search, transcripts, or comments, and an interpreter-shutdown error is no longer treated as an empty yt-dlp result. The ScrapeCreators YouTube search also stops buying transcripts once it reaches the depth's target. ([#1315](https://github.com/mvanhorn/last30days-skill/issues/1315))
+- Digg results work again with digg-pp-cli 2026.10.1, which rebuilt search after Digg removed its search API. last30days now searches Digg's AI and Tech sections, keeps an empty answer from a freshly synced copy as "no matches" instead of an error, and marks Digg partial in the brief, with the `digg-pp-cli sync --topics ai,tech` command to run, when the CLI searched only its newest stories.
+- Handle discovery no longer treats short fragments of a topic word (for example "go" for "Google Gemini") as the topic's subject, now recognizes handles spelled from a name's prefixes (for example "steipete" for "Peter Steinberger"), and no longer gives first-party status to accounts named after query scaffolding words like "review" or "news".
+- Keyless Reddit discovery no longer collapses to 1-point stubs when shreddit is blocked: the arctic-shift supplement now slices the research window with `after`/`before` and keeps the highest-scored sampled posts, restoring real engagement numbers (a 30-day window on the test topic went from 6pts to ~3,000pts). Slice requests rotate across subreddits so a slow first subreddit cannot consume the entire discovery budget, and successful partial results survive failed slices or an expired deadline.
+- Search-query cleanup now strips "how do you use", "how can I use", "how do you" and "how can I" openers, so "how do you use Cursor" searches for "cursor" instead of "do you cursor".
+- The deferred X relevance floor now runs before the per-source evidence view is finalized, so the report's X items and X source status count reflect the same post-floor evidence set that ranking sees.
+
+
 ## [3.28.1] - 2026-10-20
 
 ### Added
