@@ -63,11 +63,11 @@ def _planned(report):
     ]
 
 
-def _run_with_plan(topic, plan, **kwargs):
+def _run_with_plan(topic, plan, depth="default", **kwargs):
     with patch.object(pipeline, "_retrieve_stream", return_value=([], {})) as retrieve:
         report = pipeline.run(
             topic=topic, config={}, mock=True, web_backend="none",
-            depth="default", external_plan=plan, **kwargs,
+            depth=depth, external_plan=plan, **kwargs,
         )
     return report, {call.kwargs["source"] for call in retrieve.call_args_list}
 
@@ -166,3 +166,12 @@ def test_exclude_sources_keeps_an_installed_lane_out_of_the_backfill():
     with patch.object(pipeline, "which", side_effect=which):
         assert "digg" in pipeline.available_sources({})
         assert "digg" not in pipeline.available_sources({"EXCLUDE_SOURCES": "digg"})
+
+
+def test_quick_host_plan_keeps_its_source_budget():
+    report, fetched = _run_with_plan(
+        "test topic", plan_with(["reddit", "youtube"]),
+        requested_sources=["reddit", "youtube", "digg", "arxiv"], depth="quick",
+    )
+    assert [sq.sources for sq in report.query_plan.subqueries] == [["reddit", "youtube"]]
+    assert not {"digg", "arxiv"} & fetched

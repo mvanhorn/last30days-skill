@@ -216,12 +216,38 @@ def _official_site_url(site: str) -> str:
     return f"https://{host}/"
 
 
-def _most_linked(names: list[str]) -> str:
-    """The most-linked name, ties broken by first appearance."""
-    counts: dict[str, int] = {}
-    for name in names:
-        counts[name] = counts.get(name, 0) + 1
-    return max(counts, key=lambda name: (counts[name], -names.index(name))) if counts else ""
+_CHROME_REGION = re.compile(
+    r"<(header|footer|nav)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL,
+)
+
+
+def _site_label(url: str) -> str:
+    """The registrable label of a homepage URL: https://www.typesafe.ai/ -> typesafe."""
+    labels = url.split("://", 1)[-1].strip("/").split(":")[0].split(".")
+    labels = [label for label in labels if label not in {"www", "m"}]
+    return re.sub(r"[^a-z0-9]", "", labels[0].lower()) if labels else ""
+
+
+def _own_account(links: list[tuple[str, bool]], site_label: str) -> str:
+    """The site's own account among its profile links, or "" when ambiguous.
+
+    A homepage also links customers, testimonials, and dependencies, so
+    link counts and page order cannot tell the site's account from someone
+    else's. Accept an account only when it is the sole one linked, the sole
+    one in the page's header/footer/nav, or the sole one named after the site.
+    """
+    distinct = list(dict.fromkeys(name for name, _ in links))
+    if len(distinct) <= 1:
+        return distinct[0] if distinct else ""
+    chrome = list(dict.fromkeys(name for name, in_chrome in links if in_chrome))
+    if len(chrome) == 1:
+        return chrome[0]
+    named = [
+        name for name in (chrome or distinct)
+        if site_label and len(site_label) >= 3
+        and site_label in re.sub(r"[^a-z0-9]", "", name.lower())
+    ]
+    return named[0] if len(named) == 1 else ""
 
 
 def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
@@ -242,19 +268,26 @@ def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
     if not html:
         _log(f"Official site {url} could not be fetched")
         return result
-    x_handles: list[str] = []
-    github_owners: list[str] = []
+    chrome_hrefs = {
+        href.strip()
+        for match in _CHROME_REGION.finditer(html)
+        for href in _HREF.findall(match.group(2))
+    }
+    x_links: list[tuple[str, bool]] = []
+    github_links: list[tuple[str, bool]] = []
     for href in _HREF.findall(html):
         href = href.strip()
+        in_chrome = href in chrome_hrefs
         x_match = _X_PROFILE_LINK.match(href)
         if x_match and x_match.group(1).lower() not in _X_NON_ACCOUNTS:
-            x_handles.append(x_match.group(1))
+            x_links.append((x_match.group(1), in_chrome))
             continue
         gh_match = _GITHUB_OWNER_LINK.match(href)
         if gh_match and gh_match.group(1).lower() not in _GITHUB_NON_OWNERS:
-            github_owners.append(gh_match.group(1))
-    result["x_handle"] = _most_linked(x_handles)
-    result["github_user"] = _most_linked(github_owners)
+            github_links.append((gh_match.group(1), in_chrome))
+    label = _site_label(url)
+    result["x_handle"] = _own_account(x_links, label)
+    result["github_user"] = _own_account(github_links, label)
     _log(
         f"Official site {url}: x_handle={result['x_handle']!r}, "
         f"github_user={result['github_user']!r}"

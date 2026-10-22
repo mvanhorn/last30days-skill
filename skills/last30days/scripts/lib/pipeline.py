@@ -2383,7 +2383,9 @@ def run(
             external_plan, topic, available, planner_requested_sources, depth,
             honor_plan_sources=True,
         )
-        _ensure_unplanned_lanes_in_host_plan(plan, available)
+        # Quick runs keep the sanitizer's two-source budget.
+        if depth != "quick":
+            _ensure_unplanned_lanes_in_host_plan(plan, available)
         plan_source = "external"
     else:
         _check_research(config)

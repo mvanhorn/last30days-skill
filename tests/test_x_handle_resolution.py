@@ -57,7 +57,7 @@ class _RetrievalReached(Exception):
     pass
 
 
-def _run_main(monkeypatch, argv, *, host_env=None, socials=None):
+def _run_main(monkeypatch, argv, *, host_env=None, socials=None, diag=None):
     for name in ("LAST30DAYS_API_KEY", "LAST30DAYS_API_BASE", "LAST30DAYS_MEMORY_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
@@ -68,7 +68,7 @@ def _run_main(monkeypatch, argv, *, host_env=None, socials=None):
     socials_mock = mock.Mock(return_value=socials or {"x_handle": "", "github_user": ""})
     err = io.StringIO()
     with mock.patch.object(cli.env, "get_config", return_value=dict(DUMMY_CONFIG)), \
-         mock.patch.object(cli.pipeline, "diagnose", mock.Mock(return_value=dict(DIAG))), \
+         mock.patch.object(cli.pipeline, "diagnose", mock.Mock(return_value=dict(diag or DIAG))), \
          mock.patch.object(cli.pipeline, "run", run_mock), \
          mock.patch("lib.resolve.auto_resolve", mock.Mock(return_value={})), \
          mock.patch("lib.resolve.official_site_socials", socials_mock), \
@@ -94,6 +94,36 @@ def test_official_site_socials_reads_profile_links_only():
         socials = resolve.official_site_socials("typesafe.ai")
     assert socials == {"x_handle": "typesafeai", "github_user": "typesafe-ai"}
     assert get.call_args.args[0] == "https://typesafe.ai/"
+
+
+def test_official_site_socials_leaves_ambiguous_accounts_unresolved():
+    page = """
+    <a href="https://x.com/happycustomer">Customer</a>
+    <a href="https://x.com/someinvestor">Investor</a>
+    <a href="https://github.com/somedependency/lib">Built on</a>
+    <a href="https://github.com/otherdependency">Also</a>
+    """
+    with mock.patch.object(resolve.http, "get_text", return_value=page):
+        assert resolve.official_site_socials("typesafe.ai") == {"x_handle": "", "github_user": ""}
+
+
+def test_official_site_socials_prefers_the_footer_over_a_repeated_testimonial():
+    page = """
+    <a href="https://x.com/happycustomer">quote</a>
+    <a href="https://x.com/happycustomer">quote again</a>
+    <footer><a href="https://x.com/acmehq">X</a></footer>
+    """
+    with mock.patch.object(resolve.http, "get_text", return_value=page):
+        assert resolve.official_site_socials("example.com")["x_handle"] == "acmehq"
+
+
+def test_official_site_socials_prefers_the_account_named_after_the_site():
+    page = """
+    <a href="https://x.com/happycustomer">quote</a>
+    <a href="https://x.com/TypeSafeAI">Follow us</a>
+    """
+    with mock.patch.object(resolve.http, "get_text", return_value=page):
+        assert resolve.official_site_socials("www.typesafe.ai")["x_handle"] == "TypeSafeAI"
 
 
 def test_official_site_socials_empty_when_page_unreachable():
@@ -182,6 +212,16 @@ def test_no_x_handle_reason_satisfies_the_check(monkeypatch):
 )
 def test_check_exempts_runs_that_do_not_need_a_handle(monkeypatch, argv):
     rc, _err, _run, _ = _run_main(monkeypatch, argv, host_env=HOSTED)
+    assert rc is None
+
+
+def test_check_does_not_apply_when_x_will_not_run(monkeypatch):
+    # --search without x, EXCLUDE_SOURCES=x, or no X backend all drop x from
+    # diagnose's available_sources; the plan naming x must not stop the run.
+    no_x = dict(DIAG, available_sources=["reddit", "hackernews"])
+    rc, _err, _run, _ = _run_main(
+        monkeypatch, ["Jev", "--plan", PLAN_WITH_X], host_env=HOSTED, diag=no_x,
+    )
     assert rc is None
 
 

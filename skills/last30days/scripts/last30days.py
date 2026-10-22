@@ -2781,6 +2781,7 @@ X_HANDLE_DECISION_EXIT = 2
 
 def _x_handle_decision_signal(
     args: argparse.Namespace, topic: str, external_plan: object,
+    available_sources: list[str],
 ) -> str:
     """Agent-host marker when a hosted entity run plans X with no handle decision.
 
@@ -2788,7 +2789,8 @@ def _x_handle_decision_signal(
     resolved handle lets X search them. On hosted runs the host model resolves
     handles (the engine's auto-resolve stands down for --plan), so a skipped
     lookup used to cost nothing and went unnoticed. Returns "" when the run
-    is exempt or already decided (--x-handle or --no-x-handle).
+    is exempt or already decided (--x-handle or --no-x-handle), or when X
+    will not run (unavailable, --search without x, or EXCLUDE_SOURCES=x).
     """
     if external_plan is None or args.mock or args.quick:
         return ""
@@ -2797,6 +2799,8 @@ def _x_handle_decision_signal(
     if "@" in topic or _comparison_requested(args, topic):
         return ""
     if not _looks_like_entity_topic(topic):
+        return ""
+    if "x" not in available_sources:
         return ""
     if not pipeline._external_plan_names_source(external_plan, "x"):
         return ""
@@ -4070,7 +4074,9 @@ def _main(
                 sys.stderr.write(f"[Resolve] GitHub user from {official_site}: @{args.github_user}\n")
         if args.no_x_handle and not args.x_handle:
             sys.stderr.write(f"[Resolve] No X handle: {args.no_x_handle.strip()}\n")
-        x_decision_signal = _x_handle_decision_signal(args, topic, external_plan)
+        x_decision_signal = _x_handle_decision_signal(
+            args, topic, external_plan, diag.get("available_sources") or [],
+        )
         if x_decision_signal:
             sys.stderr.write(_x_handle_decision_message(x_decision_signal))
             raise SystemExit(X_HANDLE_DECISION_EXIT)
