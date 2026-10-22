@@ -1,16 +1,20 @@
-"""Digg AI 1000 source for last30days.
+"""Digg source for last30days.
 
 Shells out to ``digg-pp-cli`` (read-only, no auth required) to surface
-clustered stories curated from ~1000 high-signal AI accounts on X. Each
-cluster carries a published TLDR, a curatorial rank, and a list of X
-posts that can be fetched as inline quotes.
+clustered stories from Digg's AI and Tech sections. Each cluster carries
+a published TLDR, a section rank, and a list of X posts that can be
+fetched as inline quotes.
 
 Activation gate: this source is only available when ``digg-pp-cli`` is
 on PATH. ``pipeline.available_sources`` checks ``shutil.which`` before
 including ``digg`` in the source list. The functions below also detect
 the missing-binary case as a defensive fallback.
 
-Primary path: ``digg-pp-cli search <topic> --since 30d --agent --limit N``.
+Primary path: ``digg-pp-cli search <topic> --topic ai,tech --since 30d
+--agent --limit N``. The CLI searches a local copy of each section's feed
+that ``digg-pp-cli sync`` builds. When a section has no recent sync it
+searches only the newest live pages and sets ``meta.stale``; see
+``stale_note``.
 Optional enrichment: ``digg-pp-cli posts <clusterUrlId> --agent --by rank
 --limit M`` for the top K clusters in default/deep depth, attaching the
 top-ranked X posts to each cluster's ``posts`` field.
@@ -31,6 +35,10 @@ from .relevance import token_overlap_relevance
 
 CLI_BIN = "digg-pp-cli"
 
+# Digg sections searched. Digg also covers world-business, sports, science,
+# gaming and entertainment; last30days keeps its Digg lane on AI and tech.
+SECTIONS = "ai,tech"
+
 # Per-depth knobs.
 DEPTH_CONFIG = {
     "quick": 8,
@@ -50,6 +58,8 @@ ENRICH_CONFIG = {
 # Reddit/HN/YouTube/TikTok/GitHub enrichment.
 POSTS_PER_CLUSTER = 5
 
+# A stale section makes the CLI fetch up to 8 live feed pages per section
+# before answering (about 8s for ai,tech), well inside this budget.
 SEARCH_TIMEOUT = 30
 POSTS_TIMEOUT = 15
 
@@ -113,6 +123,8 @@ def _build_search_args(query: str, limit: int) -> List[str]:
         CLI_BIN,
         "search",
         query,
+        "--topic",
+        SECTIONS,
         "--since",
         "30d",
         "--agent",
@@ -167,11 +179,17 @@ def _empty_local_fallback_error(data: Dict[str, Any], stderr: str = "") -> Optio
     reaches the user as ``Digg: 0 items (no results)`` instead of an error.
     A non-empty local store is real data and is left alone.
 
+    CLI builds from 2026.10.1 always send ``meta.stale`` and exit non-zero
+    themselves when they have no usable data, so an empty local answer from
+    them is a real "no matches" and is left alone too.
+
     The CLI reports the live failure only on stderr; ``meta.reason`` is
     preferred if a future CLI release adds it to the envelope.
     """
     meta = data.get("meta")
     if not isinstance(meta, dict) or meta.get("source") != "local":
+        return None
+    if "stale" in meta:
         return None
     if data.get("results"):
         return None
@@ -240,7 +258,7 @@ def search_digg(
     to_date: str,
     depth: str = "default",
 ) -> Dict[str, Any]:
-    """Search Digg AI 1000 clusters via digg-pp-cli.
+    """Search Digg AI and Tech clusters via digg-pp-cli.
 
     Args:
         topic: search query.
@@ -256,7 +274,7 @@ def search_digg(
     if not topic or not topic.strip():
         return {"results": []}
     cmd = _build_search_args(topic, limit)
-    _log(f"search '{topic}' (limit={limit}, since=30d)")
+    _log(f"search '{topic}' (sections={SECTIONS}, limit={limit}, since=30d)")
     response, stderr = _invoke_cli(cmd, timeout=SEARCH_TIMEOUT)
     fallback_error = _empty_local_fallback_error(response, stderr)
     if fallback_error:
@@ -264,7 +282,27 @@ def search_digg(
         return {"results": [], "error": fallback_error}
     n = len(response.get("results") or [])
     _log(f"found {n} clusters")
+    note = stale_note(response)
+    if note:
+        _log(note)
     return response
+
+
+def stale_note(response: Dict[str, Any]) -> Optional[str]:
+    """Describe a search answered from a stale local copy, else None.
+
+    ``digg-pp-cli`` sets ``meta.stale`` when a searched section has no
+    completed sync in the last 6 hours. It then searches only the newest
+    live feed pages, so older stories in the 30-day window can be missing.
+    """
+    meta = response.get("meta") if isinstance(response, dict) else None
+    if not isinstance(meta, dict) or meta.get("stale") is not True:
+        return None
+    # Kept under the 140-character outcome note limit in render.
+    return (
+        "no recent local sync, so only the newest stories were searched; "
+        f"run `{CLI_BIN} sync --topics {SECTIONS}` for full coverage"
+    )
 
 
 def _build_url(cluster_url_id: str) -> str:

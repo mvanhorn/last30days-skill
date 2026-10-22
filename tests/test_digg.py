@@ -267,6 +267,7 @@ def test_search_digg_passes_since_30d(monkeypatch):
     assert captured["cmd"][captured["cmd"].index("--since") + 1] == "30d"
     assert "--agent" in captured["cmd"]
     assert captured["cmd"][:3] == [digg.CLI_BIN, "search", "openclaw"]
+    assert captured["cmd"][captured["cmd"].index("--topic") + 1] == "ai,tech"
 
 
 def test_search_digg_subproc_timeout_returns_empty(monkeypatch):
@@ -616,3 +617,91 @@ class TestLiveDigg:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# === digg-pp-cli 2026.10.1+ envelopes (local feed copy with meta.stale) ===
+
+
+def _feed_envelope(*, source: str, stale: bool, results: list) -> subproc.SubprocResult:
+    return _stdout_for(
+        {
+            "meta": {
+                "count": len(results),
+                "query": "openai",
+                "since": "30d",
+                "source": source,
+                "stale": stale,
+                "topics": ["ai", "tech"],
+            },
+            "results": results,
+        }
+    )
+
+
+def test_search_digg_fresh_local_empty_is_no_matches(monkeypatch):
+    """A synced store with nothing matching is a real empty answer, not a fallback."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: _feed_envelope(source="local", stale=False, results=[]),
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    assert out["results"] == []
+    assert "error" not in out
+    assert digg.stale_note(out) is None
+
+
+def test_search_digg_stale_result_keeps_items_and_notes_sync(monkeypatch):
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: _feed_envelope(
+            source="local+live", stale=True, results=[_cluster()]
+        ),
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    assert len(out["results"]) == 1
+    note = digg.stale_note(out)
+    assert note is not None
+    assert "digg-pp-cli sync --topics ai,tech" in note
+
+
+def test_stale_note_ignores_old_envelopes():
+    assert digg.stale_note({"results": []}) is None
+    assert digg.stale_note({"meta": {"source": "local"}, "results": []}) is None
+    assert digg.stale_note({"meta": {"stale": "true"}, "results": []}) is None
+
+
+def test_stale_search_marks_digg_partial_in_pipeline(monkeypatch):
+    from lib import health, pipeline, schema
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: _feed_envelope(
+            source="local+live", stale=True, results=[_cluster()]
+        ),
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="openai",
+        ranking_query="openai",
+        sources=["digg"],
+    )
+    items, artifact = pipeline._retrieve_stream_impl(
+        topic="openai",
+        subquery=subquery,
+        source="digg",
+        config={},
+        depth="default",
+        date_range=("2026-04-09", "2026-05-09"),
+        runtime=None,
+        mock=False,
+    )
+    assert len(items) == 1
+    outcome = artifact["_source_outcome"]
+    assert outcome["state"] == health.PARTIAL
+    assert "sync --topics ai,tech" in outcome["detail"]

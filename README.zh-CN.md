@@ -79,7 +79,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Hacker News** | 开发者共识：825 分、899 条评论，技术从业者真正交锋的地方。 |
 | **Polymarket** | 不是观点，而是由真金白银支撑的概率：专辑销量 96%，收购概率 4%。 |
 | **GitHub** | 搜人时查看 PR 速度、按 Star 排名的热门仓库和发行说明；搜主题时查看 Issue 与 Discussion。 |
-| **Digg** | 来自 Digg AI 1000 排行榜（约 1,000 个高信号 X 账号）的精选话题聚类，包含可追溯的行内引用，无需 X 认证。当 PATH 中存在 `digg-pp-cli` 时自动启用。 |
+| **Digg** | 来自 Digg AI 与 Tech 板块的话题聚类，包含可追溯的 X 行内引用，无需 X 认证。当 PATH 中存在 `digg-pp-cli` 时自动启用。 |
 | **arXiv** | 热点背后的论文。免费查找时间窗口内的新研究，无需 API 密钥。当 PATH 中存在 `arxiv-pp-cli` 时自动启用（首次配置会安装）。 |
 | **Techmeme** | 科技新闻的编辑视角，并按你设定的 30 天窗口筛选。免费且无需 API 密钥。当 PATH 中存在 `techmeme-pp-cli` 时自动启用（首次配置会安装）。 |
 | **LinkedIn** | 职业领域的信号。搜索帖子和文章，其中文章被视为高价值信号。 |
@@ -112,7 +112,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 **判断招聘信号。** `/last30days Listen Labs --hiring-signals`——把最新职位和招聘页面变成有引用依据的证据，从中判断公司是否正转向企业安全、客户成功、基础设施或产品扩张。报告只解释招聘看起来释放了什么信号，不会武断预测路线图一定会交付什么。
 
-**在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg AI 1000 信息流，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
+**在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg AI 与 Tech 信息流，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
 
 **突发事件发生时。** `/last30days Kanye West`——英国拒绝其签证，Wireless Festival 取消演出，赞助商纷纷离场；但《BULLY》首周登上 Billboard 第二名。Fantano 结束自己的 “Yay sabbatical” 回归评测（65.3 万次观看）；SoFi Homecoming 请来 Lauryn Hill 和 Travis Scott，共演出 44 首歌。Polymarket：“Kanye 还会再发推吗？”86% 认为会。共找到 23 个 Reddit 主题、17 个 YouTube 视频和 8.6 万次赞同。
 

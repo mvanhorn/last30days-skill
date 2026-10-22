@@ -674,7 +674,7 @@ def _fetch_discovery_source(
     if source == "digg":
         result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
         items = digg.parse_digg_response(result, query=plan.domain)
-        # Digg is an AI-focused broad listing, so keep only domain-bearing
+        # Digg's AI and Tech sections are a broad listing, so keep only domain-bearing
         # clusters when scoped; global trending keeps the whole feed.
         if keyword_gate:
             items = [
@@ -6182,6 +6182,9 @@ def _retrieve_stream_impl(
         # Enrichment with attached X posts is deferred to
         # _finalize_items_by_source so it runs on the items that actually
         # survive dedupe rather than on top-K of the raw fanout.
+        stale = digg.stale_note(result)
+        if stale:
+            return items, _outcome_artifact(health.PARTIAL, stale)
         return items, _result_outcome_artifact(source, result)
     if source == "arxiv":
         result = arxiv.search_arxiv(subquery.search_query, from_date, to_date, depth=depth)
