@@ -98,16 +98,16 @@ def test_backfill_spends_transcript_calls_only_on_missing_or_new_videos():
         items, _ = _youtube_stream({"SCRAPECREATORS_API_KEY": "dummy-key"})
 
     search.assert_called_once()
-    # Paid calls skip the free-transcribed video and stop at the default-depth
-    # target of 2 successes instead of spending all 3x headroom (#1315).
-    assert [call.args[0] for call in transcripts.call_args_list] == ["missing", "new0", "new1"]
+    # Paid calls skip the free-transcribed video, and that free transcript
+    # counts toward the default-depth target of 2, so one paid success meets
+    # it instead of two more on top (#1315).
+    assert [call.args[0] for call in transcripts.call_args_list] == ["missing"]
     assert [item["video_id"] for item in items] == video_ids
     assert items[0]["title"] == "free ready"
     assert items[0]["transcript_snippet"] == "free transcript"
     assert items[1]["title"] == "free missing"
     assert items[1]["transcript_snippet"] == "paid transcript for missing"
-    assert items[3]["title"] == "SC new1"
-    assert items[3]["transcript_snippet"] == "paid transcript for new1"
+    assert not items[3].get("transcript_snippet")
     assert not items[-1].get("transcript_snippet")
 
 

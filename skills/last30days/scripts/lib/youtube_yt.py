@@ -933,22 +933,22 @@ def _ytdlp_sub_langs() -> str:
 
 
 def _ytdlp_request_langs() -> str:
-    """The ``--sub-lang`` value: each configured language as ``<lang>-orig,<lang>``.
+    """The ``--sub-lang`` value: every configured ``<lang>-orig``, then the plain codes.
 
     Auto-dubbed videos expose the original-speech auto track as
-    ``<lang>-orig``, and their plain ``<lang>`` track can 429 every time while
-    ``-orig`` downloads (#1314). yt-dlp downloads languages in order and stops
-    at the first error, so ``-orig`` has to come first; the partial-VTT salvage
-    keeps it when the plain track then fails. yt-dlp skips languages a video
-    does not have, so non-dubbed videos are unaffected.
+    ``<lang>-orig``, and their plain ``<lang>`` tracks are translations that
+    can 429 every time while ``-orig`` downloads (#1314). yt-dlp downloads
+    languages in order and stops at the first error, so every ``-orig`` track
+    comes before any plain code: a Spanish video dubbed into English must
+    reach ``es-orig`` before the translated ``en`` can fail. The partial-VTT
+    salvage keeps the ``-orig`` file when a plain track then fails. yt-dlp
+    skips languages a video does not have, so non-dubbed videos are
+    unaffected. A code configured as ``-orig`` stays original-only.
     """
-    langs: List[str] = []
-    for code in _ytdlp_sub_langs().split(","):
-        variants = [code] if code.endswith("-orig") else [f"{code}-orig", code]
-        for variant in variants:
-            if variant not in langs:
-                langs.append(variant)
-    return ",".join(langs)
+    codes = _ytdlp_sub_langs().split(",")
+    originals = [code if code.endswith("-orig") else f"{code}-orig" for code in codes]
+    plain = [code for code in codes if not code.endswith("-orig")]
+    return ",".join(dict.fromkeys(originals + plain))
 
 
 def _transcript_fast_timeout() -> float:
@@ -1144,11 +1144,44 @@ def _should_try_sc_transcript(status: Optional[Dict[str, Any]]) -> bool:
     return not st.get("no_caption_tracks")
 
 
+class _RescueBudget:
+    """Thread-safe cap on successful SC transcript rescues in one batch.
+
+    A call reserves a slot before it is made and settles it afterwards: a
+    transcript fills the slot, an empty result frees it. While every open slot
+    is held by a call still in flight, other workers wait for one to settle
+    instead of skipping their video, so a miss never leaves the target short.
+    """
+
+    def __init__(self, limit: int):
+        self._limit = limit
+        self._filled = 0
+        self._pending = 0
+        self._cond = threading.Condition()
+
+    def reserve(self) -> bool:
+        with self._cond:
+            while self._filled < self._limit and self._filled + self._pending >= self._limit:
+                self._cond.wait()
+            if self._filled >= self._limit:
+                return False
+            self._pending += 1
+            return True
+
+    def settle(self, filled: bool) -> None:
+        with self._cond:
+            self._pending -= 1
+            if filled:
+                self._filled += 1
+            self._cond.notify_all()
+
+
 def fetch_transcript(
     video_id: str,
     temp_dir: str,
     status: Optional[Dict[str, Any]] = None,
     token: Optional[str] = None,
+    rescue_budget: Optional[_RescueBudget] = None,
 ) -> Optional[str]:
     """Fetch auto-generated transcript for a YouTube video.
 
@@ -1169,6 +1202,9 @@ def fetch_transcript(
             failure falls back to the SC transcript endpoint. A credit is only
             spent on a genuine yt-dlp failure, never on success and never on a
             video proven to have no captions. None preserves keyless behavior.
+        rescue_budget: Optional cap shared across a batch. A rescue reserves a
+            slot before the paid call and keeps it only when it returns a
+            transcript; once the cap is filled the video stays without one.
 
     Returns:
         Plaintext transcript string, or None if no captions available.
@@ -1210,8 +1246,17 @@ def fetch_transcript(
     # the video was not proven caption-less, fall back to the SC transcript
     # endpoint (fetched server-side: no 429, cookies, or PO tokens). Returns
     # already-cleaned, word-capped plaintext.
-    if token and _should_try_sc_transcript(status):
-        sc_transcript = _sc_fetch_transcript(video_id, token)
+    if (
+        token
+        and _should_try_sc_transcript(status)
+        and (rescue_budget is None or rescue_budget.reserve())
+    ):
+        sc_transcript = None
+        try:
+            sc_transcript = _sc_fetch_transcript(video_id, token)
+        finally:
+            if rescue_budget is not None:
+                rescue_budget.settle(bool(sc_transcript))
         if sc_transcript:
             # The keyless cascade (yt-dlp / direct HTTP) already logged its
             # failure above. Without this line that failure is the last thing
@@ -1235,6 +1280,7 @@ def fetch_transcripts_parallel(
     max_workers: int = 5,
     out_captions_disabled: Optional[Set[str]] = None,
     token: Optional[str] = None,
+    max_sc_rescues: Optional[int] = None,
 ) -> Dict[str, Optional[str]]:
     """Fetch transcripts for multiple videos in parallel.
 
@@ -1247,12 +1293,17 @@ def fetch_transcripts_parallel(
         token: Optional ScrapeCreators API key, threaded to each
             ``fetch_transcript`` so the per-video SC fallback activates on
             yt-dlp failure. None preserves keyless behavior.
+        max_sc_rescues: Cap on successful SC rescues across the batch,
+            normally the transcript target. Callers try up to 3x the target so
+            free fetches have headroom; without a cap every yt-dlp failure in
+            that headroom was a paid call. None = no cap.
 
     Returns:
         Dict mapping video_id to transcript text (or None).
     """
     if not video_ids:
         return {}
+    rescue_budget = _RescueBudget(max_sc_rescues) if max_sc_rescues is not None else None
 
     _log(f"Fetching transcripts for {len(video_ids)} videos")
 
@@ -1263,6 +1314,7 @@ def fetch_transcripts_parallel(
             futures = {
                 http.submit_with_context(
                     executor, fetch_transcript, vid, temp_dir, statuses[vid], token,
+                    rescue_budget=rescue_budget,
                 ): vid
                 for vid in video_ids
             }
@@ -1337,6 +1389,7 @@ def backfill_transcripts(
         [it.item_id for it in attempts],
         out_captions_disabled=captions_disabled,
         token=token,
+        max_sc_rescues=need,
     )
     for it in attempts:
         if it.item_id in captions_disabled:
@@ -1449,7 +1502,7 @@ def search_and_transcribe(
         _log(f"Fetching transcripts for up to {attempt_count} videos (target: {transcript_limit}): {candidate_ids}")
         transcripts = fetch_transcripts_parallel(
             candidate_ids, out_captions_disabled=captions_disabled_ids,
-            token=token,
+            token=token, max_sc_rescues=transcript_limit,
         )
         # Record fetch outcomes (captions-disabled videos can never succeed,
         # so they don't count as failures) for the stale-yt-dlp nudge.
@@ -1819,7 +1872,10 @@ def search_youtube_sc(
         ]
         attempt_count = min(len(transcript_candidates), transcript_limit * 3)
         _log(f"Fetching SC transcripts for up to {attempt_count} videos (target: {transcript_limit})")
-        got = 0
+        # Transcripts the free search already has count toward the target, so
+        # a thin backfill tops up to it instead of paying for a full target
+        # on top of them.
+        got = len(excluded_ids)
         for item in transcript_candidates[:attempt_count]:
             # Each attempt is paid: stop once the target is met. The 3x
             # headroom is only for videos that come back without captions.

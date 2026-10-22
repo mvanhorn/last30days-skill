@@ -106,7 +106,7 @@ class TestBackfillTranscripts(unittest.TestCase):
 
     def test_marks_newly_discovered_captions_disabled(self):
         """A backfill attempt that reveals no caption tracks feeds quality_nudge."""
-        def fake_fetch(video_ids, out_captions_disabled=None, token=None):
+        def fake_fetch(video_ids, out_captions_disabled=None, token=None, **_kwargs):
             if out_captions_disabled is not None:
                 out_captions_disabled.add("vidA")
             return {"vidA": None, "vidB": TRANSCRIPT}
