@@ -6051,6 +6051,9 @@ def _retrieve_stream_impl(
         tiktok_query = raw_topic or subquery.search_query
 
         def _fetch_tiktok() -> tuple[list[dict], dict]:
+            # Leave time to publish collected videos before the outer stream wait expires.
+            deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS) - 1.0
+            cancel = config.get("_enrich_cancel")
             result = tiktok.search_and_enrich(
                 tiktok_query,
                 from_date,
@@ -6059,11 +6062,20 @@ def _retrieve_stream_impl(
                 token=env.get_tiktok_token(config),
                 hashtags=tiktok_hashtags,
                 creators=tiktok_creators,
+                deadline=deadline,
+                cancel=cancel,
             )
             items = tiktok.parse_tiktok_response(result)
-            if items and env.is_tiktok_comments_available(config):
+            if (
+                items
+                and env.is_tiktok_comments_available(config)
+                and result.get("error") != tiktok.BUDGET_ERROR
+            ):
                 sc_token = config.get("SCRAPECREATORS_API_KEY", "")
-                tiktok.enrich_with_comments(items, token=sc_token)
+                try:
+                    tiktok.enrich_with_comments(items, token=sc_token, deadline=deadline, cancel=cancel)
+                except http.DeadlineExceeded:
+                    result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
 
         return fetch_memo.fetch_once(
