@@ -1,3 +1,4 @@
+import threading
 from unittest import mock
 
 from lib import health, http, pipeline, schema, youtube_yt
@@ -87,22 +88,27 @@ def test_backfill_spends_transcript_calls_only_on_missing_or_new_videos():
         mock.patch.object(youtube_yt, "_sc_youtube_search", return_value=raw_search) as search,
         mock.patch.object(
             youtube_yt, "_sc_fetch_transcript",
-            side_effect=lambda video_id, token: f"paid transcript for {video_id}",
+            # new0 has no captions; the headroom moves on to new1 and new2.
+            side_effect=lambda video_id, token: (
+                None if video_id == "new0" else f"paid transcript for {video_id}"
+            ),
         ) as transcripts,
         mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False),
     ):
         items, _ = _youtube_stream({"SCRAPECREATORS_API_KEY": "dummy-key"})
 
     search.assert_called_once()
-    assert [call.args[0] for call in transcripts.call_args_list] == video_ids[1:]
-    assert len(transcripts.call_args_list) == 6
+    # Paid calls skip the free-transcribed video and stop at the default-depth
+    # target of 2 successes instead of spending all 3x headroom (#1315).
+    assert [call.args[0] for call in transcripts.call_args_list] == ["missing", "new0", "new1"]
     assert [item["video_id"] for item in items] == video_ids
     assert items[0]["title"] == "free ready"
     assert items[0]["transcript_snippet"] == "free transcript"
     assert items[1]["title"] == "free missing"
     assert items[1]["transcript_snippet"] == "paid transcript for missing"
-    assert items[-1]["title"] == "SC new4"
-    assert items[-1]["transcript_snippet"] == "paid transcript for new4"
+    assert items[3]["title"] == "SC new1"
+    assert items[3]["transcript_snippet"] == "paid transcript for new1"
+    assert not items[-1].get("transcript_snippet")
 
 
 def test_keyless_and_disabled_floor_keep_free_results_without_paid_search():
@@ -422,3 +428,91 @@ def test_freshness_mode_reaches_both_youtube_searches():
     assert sc_search.call_count >= 1
     for call in free_search.call_args_list + sc_search.call_args_list:
         assert call.kwargs.get("freshness_mode") == "evergreen_ok"
+
+
+def _run_ends_during(free_result):
+    """A live config whose run is cancelled while yt-dlp is still working.
+
+    The stream starts inside the budget (``_retrieve_stream_impl`` refuses a
+    stopped run up front), then the main thread gives up on it, as when the
+    lane is abandoned at the stream deadline.
+    """
+    cancel = threading.Event()
+    config = {"SCRAPECREATORS_API_KEY": "dummy-key", "_enrich_cancel": cancel}
+
+    def _free_search(*args, **kwargs):
+        cancel.set()
+        return free_result(**kwargs) if callable(free_result) else free_result
+
+    return config, _free_search
+
+
+def test_abandoned_lane_skips_paid_search_after_the_run_ends():
+    """#1315: once the run is over, an empty yt-dlp result buys no SC search."""
+    config, free_search = _run_ends_during({"items": []})
+    with (
+        mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"),
+        mock.patch.object(youtube_yt, "search_and_transcribe", side_effect=free_search) as free,
+        mock.patch.object(youtube_yt, "search_youtube_sc") as sc_search,
+        mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False),
+    ):
+        items, _ = _youtube_stream(config)
+
+    free.assert_called_once()
+    assert items == []
+    sc_search.assert_not_called()
+
+
+def test_interpreter_shutdown_is_not_an_empty_ytdlp_result():
+    """#1315: the straggler's RuntimeError must not trigger a paid search."""
+    shutdown = RuntimeError("cannot schedule new futures after interpreter shutdown")
+    with (
+        mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"),
+        mock.patch.object(youtube_yt, "search_and_transcribe", side_effect=shutdown),
+        mock.patch.object(youtube_yt, "search_youtube_sc") as sc_search,
+        mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False),
+    ):
+        _youtube_stream({"SCRAPECREATORS_API_KEY": "dummy-key"})
+
+    sc_search.assert_not_called()
+
+
+def test_transcript_rescue_inside_an_over_run_spends_nothing():
+    """#1315: per-video SC rescue in pool workers sees the stop gate."""
+    rescued = {}
+
+    def _transcribe(**kwargs):
+        rescued.update(youtube_yt.fetch_transcripts_parallel(["v1", "v2"], token=kwargs["token"]))
+        return {"items": []}
+
+    config, free_search = _run_ends_during(_transcribe)
+    with (
+        mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"),
+        mock.patch.object(youtube_yt, "search_and_transcribe", side_effect=free_search),
+        mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=False),
+        mock.patch.object(youtube_yt, "_fetch_transcript_direct", return_value=None),
+        mock.patch.object(youtube_yt.http, "get") as paid_get,
+        mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False),
+    ):
+        _youtube_stream(config)
+
+    assert rescued == {"v1": None, "v2": None}
+    paid_get.assert_not_called()
+
+
+def test_sc_paid_endpoints_refuse_inside_a_stopped_context():
+    with mock.patch.object(youtube_yt.http, "get") as paid_get, \
+         mock.patch.object(youtube_yt, "_ytdlp_comments_result", return_value=([], False)), \
+         youtube_yt.sc_spend_until(lambda: True):
+        assert youtube_yt._sc_youtube_search("vuori", "dummy-key") == []
+        assert youtube_yt._sc_fetch_transcript("v1", "dummy-key") is None
+        assert youtube_yt._fetch_video_comments("v1", "dummy-key") == []
+    paid_get.assert_not_called()
+
+
+def test_sc_paid_endpoints_still_spend_while_the_run_is_live():
+    with mock.patch.object(
+        youtube_yt.http, "get", return_value={"transcript": "live transcript"},
+    ) as paid_get, youtube_yt.sc_spend_until(lambda: False):
+        assert youtube_yt._sc_fetch_transcript("v1", "dummy-key") == "live transcript"
+    paid_get.assert_called_once()

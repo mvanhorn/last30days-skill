@@ -5424,7 +5424,32 @@ def _fetch_youtube_stream(
     freshness_mode: str | None = None,
 ) -> tuple[list[dict], dict]:
     """Search, backfill, transcribe, and comment-enrich one YouTube query."""
+    # An abandoned lane keeps running after the report is saved; once the
+    # run is over, every ScrapeCreators call in it is wasted credit (#1315).
+    with youtube_yt.sc_spend_until(lambda: _research_stopped(config)):
+        return _fetch_youtube_stream_live(
+            yt_query, from_date, to_date, depth, config,
+            has_ytdlp=has_ytdlp, freshness_mode=freshness_mode,
+        )
+
+
+def _interpreter_shutting_down(exc: BaseException) -> bool:
+    """An abandoned lane outliving main() can no longer start thread pools."""
+    return isinstance(exc, RuntimeError) and "interpreter shutdown" in str(exc)
+
+
+def _fetch_youtube_stream_live(
+    yt_query: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    config: dict[str, Any],
+    *,
+    has_ytdlp: bool,
+    freshness_mode: str | None,
+) -> tuple[list[dict], dict]:
     result = None
+    run_over = False
     youtube_failure: str | None = None
     recovered_failure: str | None = None
     # ScrapeCreators key (when present) is the default-on backup tier: it
@@ -5446,13 +5471,16 @@ def _fetch_youtube_stream(
         except Exception as exc:
             youtube_failure = str(exc)
             result = None
+            # Not an empty yt-dlp result: the process is exiting.
+            run_over = _interpreter_shutting_down(exc)
+    run_over = run_over or _research_stopped(config)
     free_items = list((result or {}).get("items") or [])
     min_items = env.youtube_sc_min_items(config)
     backfill_thin = bool(free_items) and len(free_items) < min_items
     thin_detail: str | None = None
     thin_error = False
     thin_retryable = False
-    if (not free_items or backfill_thin) and sc_token:
+    if (not free_items or backfill_thin) and sc_token and not run_over:
         backfill_scope = (
             http.capture_failures() if free_items else contextlib.nullcontext([])
         )

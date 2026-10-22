@@ -6,6 +6,8 @@ transcript extraction. No API keys needed — just have yt-dlp installed.
 Inspired by Peter Steinberger's toolchain approach (yt-dlp + summarize CLI).
 """
 
+import contextlib
+import contextvars
 import copy
 import json
 import math
@@ -21,7 +23,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 # Depth configurations: how many videos to search / transcribe
 DEPTH_CONFIG = {
@@ -160,6 +162,35 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
 
 def _log(msg: str):
     log.source_log("YouTube", msg, tty_only=False)
+
+
+# A predicate the pipeline sets for the YouTube lane: True once the research
+# run is over (deadline passed or cancelled). An abandoned lane keeps running
+# after the report is saved, and every ScrapeCreators call it made then was a
+# paid result nobody would read (#1315). Pool workers inherit it through
+# http.submit_with_context.
+_sc_spend_stopped: contextvars.ContextVar[Optional[Callable[[], bool]]] = (
+    contextvars.ContextVar("youtube_sc_spend_stopped", default=None)
+)
+
+
+@contextlib.contextmanager
+def sc_spend_until(stopped: Callable[[], bool]) -> Iterator[None]:
+    """Refuse ScrapeCreators YouTube calls in this context once ``stopped()``."""
+    token = _sc_spend_stopped.set(stopped)
+    try:
+        yield
+    finally:
+        _sc_spend_stopped.reset(token)
+
+
+def _sc_spend_blocked(what: str) -> bool:
+    """True (and logged) when the run is over and ``what`` must not be paid for."""
+    stopped = _sc_spend_stopped.get()
+    if stopped is None or not stopped():
+        return False
+    _log(f"Skipping ScrapeCreators {what}: the research run is over")
+    return True
 
 
 def reset_search_cache() -> None:
@@ -1592,7 +1623,7 @@ def _fetch_video_comments(
     if ran_cleanly:
         return []
 
-    if not token:
+    if not token or _sc_spend_blocked(f"comments for {video_id}"):
         return []
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -1747,11 +1778,18 @@ def search_youtube_sc(
         ]
         attempt_count = min(len(transcript_candidates), transcript_limit * 3)
         _log(f"Fetching SC transcripts for up to {attempt_count} videos (target: {transcript_limit})")
+        got = 0
         for item in transcript_candidates[:attempt_count]:
+            # Each attempt is paid: stop once the target is met. The 3x
+            # headroom is only for videos that come back without captions.
+            if got >= transcript_limit:
+                break
             vid = item["video_id"]
             if not vid:
                 continue
             transcript = _sc_fetch_transcript(vid, token)
+            if transcript:
+                got += 1
             item["transcript_snippet"] = transcript or ""
             item["transcript_highlights"] = extract_transcript_highlights(
                 transcript or "", core_topic,
@@ -1775,6 +1813,8 @@ def _sc_youtube_search(keyword: str, token: str) -> List[Dict[str, Any]]:
     Returns:
         List of raw video dicts from the API.
     """
+    if _sc_spend_blocked(f"search for {keyword!r}"):
+        return []
     try:
         # SC's /v1/youtube/search rejects ?keyword= with HTTP 400; the canonical
         # parameter for that endpoint is `query`. Other SC endpoints use their
@@ -1826,6 +1866,8 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
     Returns:
         Plaintext transcript string, or None if unavailable.
     """
+    if _sc_spend_blocked(f"transcript for {video_id}"):
+        return None
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     transcript = None
     deadline = time.monotonic() + _SC_TRANSCRIPT_TIMEOUT
