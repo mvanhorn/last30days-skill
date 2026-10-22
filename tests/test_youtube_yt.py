@@ -180,11 +180,27 @@ class TestYtDlpSubLangs(unittest.TestCase):
         with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,en-orig,en"}):
             self.assertEqual(youtube_yt._ytdlp_request_langs(), "fr-orig,fr,en-orig,en")
 
-    def test_vtt_matching_prefers_orig_within_a_language(self):
+    def test_vtt_matching_prefers_plain_track_within_a_language(self):
+        """A plain track that downloaded may be the uploaded subtitle; keep it."""
         with tempfile.TemporaryDirectory() as temp_dir:
             for name in ("abc123.en.vtt", "abc123.en-orig.vtt", "abc123.es-orig.vtt"):
                 (Path(temp_dir) / name).write_text("WEBVTT\n")
             picked = youtube_yt._pick_ytdlp_vtt("abc123", temp_dir, ["en", "es", "pt"])
+        self.assertEqual(picked.name, "abc123.en.vtt")
+
+    def test_vtt_matching_falls_back_to_orig_track(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name in ("abc123.en-orig.vtt", "abc123.es.vtt"):
+                (Path(temp_dir) / name).write_text("WEBVTT\n")
+            picked = youtube_yt._pick_ytdlp_vtt("abc123", temp_dir, ["en", "es", "pt"])
+        self.assertEqual(picked.name, "abc123.en-orig.vtt")
+
+    def test_configured_orig_code_keeps_its_language_priority(self):
+        """`en-orig` in SUB_LANGS ranks English first, not after every listed code."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name in ("abc123.fr.vtt", "abc123.en-orig.vtt"):
+                (Path(temp_dir) / name).write_text("WEBVTT\n")
+            picked = youtube_yt._pick_ytdlp_vtt("abc123", temp_dir, ["en-orig", "fr"])
         self.assertEqual(picked.name, "abc123.en-orig.vtt")
 
     def test_dubbed_video_keeps_orig_track_after_plain_track_429(self):

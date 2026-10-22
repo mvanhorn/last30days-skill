@@ -1046,6 +1046,14 @@ class TestYouTubeChain:
         assert res.active_backend is None
         assert res.tier == backends.TIER_ERROR
 
+    def test_ytdlp_pin_spelling_matches_runtime_gate(self):
+        """Doctor reads " YTDLP " as the same pin the runtime honors."""
+        config = {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_YOUTUBE_BACKEND": " YTDLP "}
+        with mock.patch("lib.health.probe_dependency", _probe_dep()):
+            res = backends.resolve("youtube", config)
+        assert res.pinned is True
+        assert res.pin == "yt-dlp"
+
     def test_scrapecreators_is_not_a_youtube_pin_value(self):
         config = {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_YOUTUBE_BACKEND": "scrapecreators"}
         with mock.patch("lib.health.probe_dependency", _probe_dep()):

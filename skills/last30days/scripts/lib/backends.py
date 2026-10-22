@@ -681,7 +681,11 @@ def _resolve_alternative(
     if pin and pin not in ("auto", "none") and pin in by_name:
         pin_name = pin
     elif descriptor.pin_var:
-        raw = (config.get(descriptor.pin_var) or "").lower()
+        if descriptor.pin_var == env.YOUTUBE_BACKEND_PIN_VAR:
+            # Same spelling rules as the runtime gate (strip, "ytdlp" alias).
+            raw = env.youtube_backend_pin(config)
+        else:
+            raw = (config.get(descriptor.pin_var) or "").lower()
         if raw in by_name and (
             descriptor.pin_values is None or raw in descriptor.pin_values
         ):

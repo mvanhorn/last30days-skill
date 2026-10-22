@@ -939,14 +939,20 @@ def _pick_ytdlp_vtt(video_id: str, temp_dir: str, priority: List[str]) -> Option
     matches = list(Path(temp_dir).glob(f"{video_id}*.vtt"))
     if not matches:
         return None
-    priority_index = {code: i for i, code in enumerate(priority)}
+    # A configured "en-orig" ranks as "en": files are matched by base code.
+    priority_index: Dict[str, int] = {}
+    for code in priority:
+        priority_index.setdefault(code.removesuffix("-orig"), len(priority_index))
 
     def rank(p: Path) -> Tuple[int, int]:
         stem = p.stem
         suffix = stem[len(video_id) + 1:] if stem.startswith(video_id + ".") else ""
         code = suffix.split("-")[0].split(".")[0]
-        # Within one language, the original-speech track beats a dubbed one.
-        return (priority_index.get(code, len(priority_index)), 0 if suffix.endswith("-orig") else 1)
+        # Within one language, a plain track that downloaded wins: it is the
+        # uploaded subtitle when one exists, and otherwise the same speech
+        # recognition as -orig. The -orig file is the fallback for when the
+        # plain track 429s (#1314).
+        return (priority_index.get(code, len(priority_index)), 1 if suffix.endswith("-orig") else 0)
 
     return sorted(matches, key=rank)[0]
 
