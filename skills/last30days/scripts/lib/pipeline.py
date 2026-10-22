@@ -5426,7 +5426,11 @@ def _fetch_youtube_stream(
     """Search, backfill, transcribe, and comment-enrich one YouTube query."""
     # An abandoned lane keeps running after the report is saved; once the
     # run is over, every ScrapeCreators call in it is wasted credit (#1315).
-    with youtube_yt.sc_spend_until(lambda: _research_stopped(config)):
+    with youtube_yt.sc_spend_until(
+        lambda: _research_stopped(config),
+        cancel=config.get("_enrich_cancel"),
+        deadline=config.get("_research_deadline"),
+    ):
         return _fetch_youtube_stream_live(
             yt_query, from_date, to_date, depth, config,
             has_ytdlp=has_ytdlp, freshness_mode=freshness_mode,

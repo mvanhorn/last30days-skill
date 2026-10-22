@@ -516,3 +516,43 @@ def test_sc_paid_endpoints_still_spend_while_the_run_is_live():
     ) as paid_get, youtube_yt.sc_spend_until(lambda: False):
         assert youtube_yt._sc_fetch_transcript("v1", "dummy-key") == "live transcript"
     paid_get.assert_called_once()
+
+
+def test_sc_transcript_buys_no_next_language_after_the_run_ends():
+    """#1315: the run ends while `en` is in flight; `es` and `pt` are not bought."""
+    stopped = threading.Event()
+
+    def _empty_then_stop(*args, **kwargs):
+        stopped.set()
+        return {"transcript": None}
+
+    with mock.patch.object(youtube_yt.http, "get", side_effect=_empty_then_stop) as paid_get, \
+         mock.patch.dict("os.environ", {"LAST30DAYS_YT_SUB_LANGS": "en,es,pt"}), \
+         youtube_yt.sc_spend_until(stopped.is_set):
+        assert youtube_yt._sc_fetch_transcript("v1", "dummy-key") is None
+    assert [c.kwargs["params"]["language"] for c in paid_get.call_args_list] == ["en"]
+
+
+def test_sc_requests_carry_the_run_cancel_and_deadline():
+    """#1315: retries of a paid request stop at the run's deadline or cancel."""
+    cancel = threading.Event()
+    run_deadline = 1.0  # monotonic; earlier than any per-call deadline below
+    with mock.patch.object(youtube_yt.http, "get", return_value={}) as paid_get, \
+         mock.patch.object(youtube_yt, "_ytdlp_comments_result", return_value=([], False)), \
+         mock.patch.object(youtube_yt.time, "monotonic", return_value=0.0), \
+         youtube_yt.sc_spend_until(lambda: False, cancel=cancel, deadline=run_deadline):
+        youtube_yt._sc_youtube_search("vuori", "dummy-key")
+        youtube_yt._fetch_video_comments("v1", "dummy-key")
+        youtube_yt._sc_fetch_transcript("v1", "dummy-key")
+    assert paid_get.call_count >= 3
+    for call in paid_get.call_args_list:
+        assert call.kwargs["cancel"] is cancel
+        assert call.kwargs["deadline_monotonic"] == run_deadline
+
+
+def test_sc_transcript_keeps_its_own_deadline_outside_a_run():
+    with mock.patch.object(youtube_yt.http, "get", return_value={"transcript": "t"}) as paid_get:
+        assert youtube_yt._sc_fetch_transcript("v1", "dummy-key") == "t"
+    kwargs = paid_get.call_args.kwargs
+    assert "cancel" not in kwargs
+    assert kwargs["deadline_monotonic"] > 0

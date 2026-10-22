@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -164,33 +165,66 @@ def _log(msg: str):
     log.source_log("YouTube", msg, tty_only=False)
 
 
-# A predicate the pipeline sets for the YouTube lane: True once the research
-# run is over (deadline passed or cancelled). An abandoned lane keeps running
-# after the report is saved, and every ScrapeCreators call it made then was a
-# paid result nobody would read (#1315). Pool workers inherit it through
-# http.submit_with_context.
-_sc_spend_stopped: contextvars.ContextVar[Optional[Callable[[], bool]]] = (
-    contextvars.ContextVar("youtube_sc_spend_stopped", default=None)
+# The research run's stop state, set by the pipeline for the YouTube lane:
+# ``stopped()`` is True once the run is over (deadline passed or cancelled),
+# and ``cancel``/``deadline`` bound each paid request and its retries to the
+# same moment. An abandoned lane keeps running after the report is saved, and
+# every ScrapeCreators call it made then was a paid result nobody would read
+# (#1315). Pool workers inherit it through http.submit_with_context.
+@dataclass(frozen=True)
+class _SCSpendLimit:
+    stopped: Callable[[], bool]
+    cancel: Optional[threading.Event] = None
+    deadline: Optional[float] = None
+
+
+_sc_spend_limit: contextvars.ContextVar[Optional[_SCSpendLimit]] = (
+    contextvars.ContextVar("youtube_sc_spend_limit", default=None)
 )
 
 
 @contextlib.contextmanager
-def sc_spend_until(stopped: Callable[[], bool]) -> Iterator[None]:
-    """Refuse ScrapeCreators YouTube calls in this context once ``stopped()``."""
-    token = _sc_spend_stopped.set(stopped)
+def sc_spend_until(
+    stopped: Callable[[], bool],
+    *,
+    cancel: Optional[threading.Event] = None,
+    deadline: Optional[float] = None,
+) -> Iterator[None]:
+    """Refuse ScrapeCreators YouTube calls in this context once ``stopped()``.
+
+    ``cancel`` and ``deadline`` (monotonic) also cut off a request, or its
+    retries, that is still running when the run ends.
+    """
+    token = _sc_spend_limit.set(_SCSpendLimit(stopped, cancel, deadline))
     try:
         yield
     finally:
-        _sc_spend_stopped.reset(token)
+        _sc_spend_limit.reset(token)
 
 
 def _sc_spend_blocked(what: str) -> bool:
     """True (and logged) when the run is over and ``what`` must not be paid for."""
-    stopped = _sc_spend_stopped.get()
-    if stopped is None or not stopped():
+    limit = _sc_spend_limit.get()
+    if limit is None or not limit.stopped():
         return False
     _log(f"Skipping ScrapeCreators {what}: the research run is over")
     return True
+
+
+def _sc_request_bounds(deadline: Optional[float] = None) -> Dict[str, Any]:
+    """``http.get`` kwargs that stop a paid request when the research run ends.
+
+    ``deadline`` is the caller's own monotonic deadline, if any; the earlier
+    of it and the run's deadline wins.
+    """
+    limit = _sc_spend_limit.get()
+    bounds: Dict[str, Any] = {}
+    deadlines = [d for d in (deadline, limit.deadline if limit else None) if d is not None]
+    if deadlines:
+        bounds["deadline_monotonic"] = min(deadlines)
+    if limit is not None and limit.cancel is not None:
+        bounds["cancel"] = limit.cancel
+    return bounds
 
 
 def reset_search_cache() -> None:
@@ -1640,6 +1674,7 @@ def _fetch_video_comments(
             headers=http.scrapecreators_headers(token),
             timeout=30,
             retries=2,
+            **_sc_request_bounds(),
         )
     except Exception as exc:
         _log(f"Comment fetch error for {video_id}: {exc}")
@@ -1831,6 +1866,7 @@ def _sc_youtube_search(keyword: str, token: str) -> List[Dict[str, Any]]:
             headers=http.scrapecreators_headers(token),
             timeout=30,
             retries=2,
+            **_sc_request_bounds(),
         )
         return data.get("videos", data.get("data", data.get("items", [])))
     except Exception as exc:
@@ -1885,6 +1921,10 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
     for language in languages:
         if time.monotonic() >= deadline:
             break
+        # The run can end while an earlier language is in flight; don't
+        # buy the next one.
+        if language != languages[0] and _sc_spend_blocked(f"transcript for {video_id}"):
+            return None
         try:
             # Isolate SC transcript fetch errors from the pipeline-level
             # capture_failures() context.
@@ -1896,8 +1936,8 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
                     timeout=_SC_TRANSCRIPT_TIMEOUT,
                     retries=1,
                     max_429_retries=0,
-                    deadline_monotonic=deadline,
                     owned_get=True,
+                    **_sc_request_bounds(deadline),
                 )
         except Exception as exc:
             _log(f"SC transcript error for {video_id} ({language}): {exc}")
