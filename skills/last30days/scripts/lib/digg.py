@@ -39,6 +39,13 @@ CLI_BIN = "digg-pp-cli"
 # gaming and entertainment; last30days keeps its Digg lane on AI and tech.
 SECTIONS = "ai,tech"
 
+# Outcome note for a search answered from a stale local copy. Kept under the
+# 140-character outcome note limit in render.
+STALE_NOTE = (
+    "no recent local sync, so only the newest stories were searched; "
+    f"run `{CLI_BIN} sync --topics {SECTIONS}` for full coverage"
+)
+
 # Per-depth knobs.
 DEPTH_CONFIG = {
     "quick": 8,
@@ -298,11 +305,12 @@ def stale_note(response: Dict[str, Any]) -> Optional[str]:
     meta = response.get("meta") if isinstance(response, dict) else None
     if not isinstance(meta, dict) or meta.get("stale") is not True:
         return None
-    # Kept under the 140-character outcome note limit in render.
-    return (
-        "no recent local sync, so only the newest stories were searched; "
-        f"run `{CLI_BIN} sync --topics {SECTIONS}` for full coverage"
-    )
+    return STALE_NOTE
+
+
+def is_stale_note(detail: Optional[str]) -> bool:
+    """True when an outcome detail carries the stale-copy note."""
+    return bool(detail) and STALE_NOTE in detail
 
 
 def _build_url(cluster_url_id: str) -> str:

@@ -4162,7 +4162,12 @@ def _finalize_source_status(
         elif state == health.OK and not count:
             state = outcome.lane_failure_state or schema.NO_RESULTS
         elif state == schema.PARTIAL and not count:
-            state = http.classify_failure(message=detail or "")
+            if source == "digg" and digg.is_stale_note(detail):
+                # A stale Digg copy that matched nothing is an empty answer
+                # with a coverage note, not a failed search.
+                state = schema.NO_RESULTS
+            else:
+                state = http.classify_failure(message=detail or "")
         finalized[source] = schema.SourceOutcome(
             source=source,
             state=state,

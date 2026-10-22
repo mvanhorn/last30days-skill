@@ -705,3 +705,29 @@ def test_stale_search_marks_digg_partial_in_pipeline(monkeypatch):
     outcome = artifact["_source_outcome"]
     assert outcome["state"] == health.PARTIAL
     assert "sync --topics ai,tech" in outcome["detail"]
+
+
+def test_stale_partial_with_no_items_finalizes_as_no_results():
+    """A stale search that matched nothing keeps its sync note and is not an error."""
+    from lib import health, pipeline, schema
+
+    outcomes = {
+        "digg": schema.SourceOutcome(
+            source="digg",
+            state=health.PARTIAL,
+            items_returned=0,
+            attempted=True,
+            detail=digg.STALE_NOTE,
+        ),
+        "reddit": schema.SourceOutcome(
+            source="reddit",
+            state=health.PARTIAL,
+            items_returned=0,
+            attempted=True,
+            detail="HTTP 503 from upstream",
+        ),
+    }
+    final = pipeline._finalize_source_status(outcomes, {})
+    assert final["digg"].state == schema.NO_RESULTS
+    assert final["digg"].detail == digg.STALE_NOTE
+    assert final["reddit"].state != schema.NO_RESULTS
