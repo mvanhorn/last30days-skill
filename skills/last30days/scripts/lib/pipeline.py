@@ -5525,9 +5525,7 @@ def _fetch_youtube_stream(
     # Enrich top videos with comments (default-on when a key is present).
     items = youtube_yt.parse_youtube_response(result)
     if items and env.is_youtube_comments_available(config):
-        youtube_yt.enrich_with_comments(
-            items, token=config.get("SCRAPECREATORS_API_KEY", ""),
-        )
+        youtube_yt.enrich_with_comments(items, token=sc_token or "")
     if thin_detail:
         if not thin_error:
             return items, {"_source_outcome_detail": thin_detail}

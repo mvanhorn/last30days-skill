@@ -620,6 +620,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_X_MODEL', None),
         ('LAST30DAYS_X_BACKEND', None),
         ('LAST30DAYS_REDDIT_BACKEND', None),
+        ('LAST30DAYS_YOUTUBE_BACKEND', None),
         # Keyless reddit.com token-bucket rate (req/sec). http.py reads it
         # from os.environ on each acquire, so .env values are exported below.
         ('LAST30DAYS_REDDIT_KEYLESS_RATE', None),
@@ -757,6 +758,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # applied there when the key is absent. Empty disables.
         ('LAST30DAYS_YT_PLAYER_CLIENT', None),
         ('LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT', None),
+        ('LAST30DAYS_YT_TRANSCRIPT_FAST_ATTEMPTS', None),
         ('LAST30DAYS_YT_SEARCH_TIMEOUT', None),
         ('GITHUB_TOKEN', None),
         # Host self-identification. `grok-bot` switches the X policy
@@ -802,6 +804,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     for key in (
         'LAST30DAYS_YT_SUB_LANGS',
         'LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT',
+        'LAST30DAYS_YT_TRANSCRIPT_FAST_ATTEMPTS',
         'LAST30DAYS_YT_SEARCH_TIMEOUT',
         'LAST30DAYS_REDDIT_KEYLESS_RATE',
         'LAST30DAYS_YT_PLAYER_CLIENT',
@@ -1358,6 +1361,10 @@ X_BACKEND_KNOWN = _X_BACKEND_KNOWN
 X_OFFICIAL = _X_OFFICIAL
 X_BACKEND_PIN_VAR = 'LAST30DAYS_X_BACKEND'
 REDDIT_BACKEND_PIN_VAR = 'LAST30DAYS_REDDIT_BACKEND'
+# `yt-dlp` keeps YouTube off ScrapeCreators while the key still serves other
+# sources (#1316). It is the only pin value; anything else means auto.
+YOUTUBE_BACKEND_PIN_VAR = 'LAST30DAYS_YOUTUBE_BACKEND'
+YOUTUBE_BACKEND_PIN_VALUES = ('yt-dlp',)
 REDDIT_SC_MIN_ITEMS_VAR = 'LAST30DAYS_REDDIT_SC_MIN_ITEMS'
 # Keyed runs backfill Reddit from ScrapeCreators when the free path returns
 # fewer than this many items. Thin topics yield 2-3 free results; healthy
@@ -1630,7 +1637,7 @@ def is_youtube_comments_available(config: dict[str, Any]) -> bool:
         return False
     if is_ytdlp_available():
         return True
-    if not config.get('SCRAPECREATORS_API_KEY'):
+    if not is_youtube_sc_available(config):
         return False
     return 'youtube_comments' in _parse_include_sources(config)
 
@@ -1661,11 +1668,23 @@ def is_instagram_comments_available(config: dict[str, Any]) -> bool:
     return 'instagram_comments' in _parse_include_sources(config)
 
 
-def is_youtube_sc_available(config: dict[str, Any]) -> bool:
-    """Check if ScrapeCreators YouTube search fallback is available.
+def youtube_backend_pin(config: dict[str, Any]) -> str:
+    """The normalized ``LAST30DAYS_YOUTUBE_BACKEND`` pin ("" when unset or unknown)."""
+    raw = (config.get(YOUTUBE_BACKEND_PIN_VAR) or '').strip().lower()
+    if raw == 'ytdlp':
+        raw = 'yt-dlp'
+    return raw if raw in YOUTUBE_BACKEND_PIN_VALUES else ''
 
-    Used when yt-dlp is not installed or fails.
+
+def is_youtube_sc_available(config: dict[str, Any]) -> bool:
+    """Check if the YouTube lane may spend ScrapeCreators credits.
+
+    Gates the SC search fallback, the per-video transcript rescue, and SC
+    comments. False without a key, or when ``LAST30DAYS_YOUTUBE_BACKEND=yt-dlp``
+    keeps YouTube keyless while the key still serves other sources.
     """
+    if youtube_backend_pin(config) == 'yt-dlp':
+        return False
     return bool(config.get('SCRAPECREATORS_API_KEY'))
 
 

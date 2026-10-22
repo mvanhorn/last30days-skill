@@ -1034,6 +1034,25 @@ class TestYouTubeChain:
         assert res.active_backend == "scrapecreators"
         assert res.tier == backends.TIER_OK
 
+    def test_ytdlp_pin_never_fails_over_to_sc(self):
+        """#1316: a pinned yt-dlp lane reports its own failure, not SC."""
+        config = {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_YOUTUBE_BACKEND": "yt-dlp"}
+        with mock.patch(
+            "lib.health.probe_dependency", _probe_dep({"yt-dlp": health.MISSING}),
+        ):
+            res = backends.resolve("youtube", config)
+        assert res.pinned is True
+        assert res.pin == "yt-dlp"
+        assert res.active_backend is None
+        assert res.tier == backends.TIER_ERROR
+
+    def test_scrapecreators_is_not_a_youtube_pin_value(self):
+        config = {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_YOUTUBE_BACKEND": "scrapecreators"}
+        with mock.patch("lib.health.probe_dependency", _probe_dep()):
+            res = backends.resolve("youtube", config)
+        assert res.pinned is False
+        assert res.active_backend == "yt-dlp"
+
     def test_neither_available_error_carries_ytdlp_prescription(self):
         with mock.patch(
             "lib.health.probe_dependency", _probe_dep({"yt-dlp": health.MISSING}),

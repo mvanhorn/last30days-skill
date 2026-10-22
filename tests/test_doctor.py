@@ -1392,6 +1392,14 @@ class Postmortem(unittest.TestCase):
 class BackupAndCommentLanes(unittest.TestCase):
     """U7: backup + comment sub-lanes render on their parent source."""
 
+    def test_youtube_pin_disarms_only_the_youtube_backstop(self):
+        report = _build({
+            "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+            "LAST30DAYS_YOUTUBE_BACKEND": "yt-dlp",
+        })
+        self.assertTrue(report["sources"]["reddit"]["backups"][0]["armed"])
+        self.assertFalse(report["sources"]["youtube"]["backups"][0]["armed"])
+
     def test_backups_armed_with_sc_key(self):
         report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
         self.assertTrue(report["sources"]["reddit"]["backups"][0]["armed"])

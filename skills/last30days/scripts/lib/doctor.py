@@ -1168,7 +1168,8 @@ def _sub_lanes_for(source: str, config: Dict[str, Any]):
         backups.append({"name": "ScrapeCreators backfill", "armed": has_sc, "note": note})
     elif source == "youtube":
         backups.append({
-            "name": "ScrapeCreators transcript/search backstop", "armed": has_sc,
+            "name": "ScrapeCreators transcript/search backstop",
+            "armed": env.is_youtube_sc_available(config),
             "note": "used when yt-dlp is rate-limited or bot-gated",
         })
         comments = {"enabled": bool(env.is_youtube_comments_available(config))}
@@ -1681,6 +1682,7 @@ _SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
 _FINGERPRINT_PIN_VARS = (
     env.X_BACKEND_PIN_VAR,
     env.REDDIT_BACKEND_PIN_VAR,
+    env.YOUTUBE_BACKEND_PIN_VAR,
     env.X_HOST_VAR,
     env.X_HOST_LANE_VAR,
 )

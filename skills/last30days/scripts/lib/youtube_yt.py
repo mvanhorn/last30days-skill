@@ -893,6 +893,16 @@ def _transcript_fast_timeout() -> float:
         float(_TRANSCRIPT_FAST_TIMEOUT),
     )
 
+
+def _transcript_fast_attempts() -> int:
+    """Return keyed-run yt-dlp attempts before the SC rescue (default 1, #1316)."""
+    raw = os.environ.get("LAST30DAYS_YT_TRANSCRIPT_FAST_ATTEMPTS", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 1
+    return value if value > 0 else 1
+
 def _pick_ytdlp_vtt(video_id: str, temp_dir: str, priority: List[str]) -> Optional[Path]:
     """Return the best on-disk VTT match for video_id, preferring priority order."""
     matches = list(Path(temp_dir).glob(f"{video_id}*.vtt"))
@@ -951,7 +961,8 @@ def _fetch_transcript_ytdlp(
         fast_fail: When True, a ScrapeCreators fallback is available, so a
             transient failure (429 / bot-gate) should fail over fast rather
             than retry into the same rate limit. Collapses to a single attempt
-            with a shorter per-attempt timeout. The slow thing in a run is
+            (``LAST30DAYS_YT_TRANSCRIPT_FAST_ATTEMPTS`` raises it) with a
+            shorter per-attempt timeout. The slow thing in a run is
             yt-dlp retrying, not the fast SC fetch, so this is what keeps
             "yt-dlp first" from reintroducing the multi-minute hang.
 
@@ -981,7 +992,7 @@ def _fetch_transcript_ytdlp(
         cmd = list(cmd) + ["--proxy", proxy]
 
     timeout = _transcript_fast_timeout() if fast_fail else _TRANSCRIPT_TIMEOUT
-    attempts = 1 if fast_fail else _TRANSCRIPT_MAX_RETRIES + 1
+    attempts = _transcript_fast_attempts() if fast_fail else _TRANSCRIPT_MAX_RETRIES + 1
     last_reason: Optional[str] = None
     for attempt in range(attempts):
         try:

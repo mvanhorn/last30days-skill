@@ -138,8 +138,10 @@ class ChainDescriptor:
     source: str
     mode: str
     backends: Tuple[BackendSpec, ...]
-    pin_var: Optional[str] = None   # env var pin (X, Reddit)
+    pin_var: Optional[str] = None   # env var pin (X, Reddit, YouTube)
     pin_flag: Optional[str] = None  # CLI flag pin (web: --web-backend)
+    # Env pin values the runtime honors; None means any backend name.
+    pin_values: Optional[Tuple[str, ...]] = None
 
 
 @dataclass
@@ -538,7 +540,8 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
             ),
             _SC_SPEC,
         ),
-        pin_var=None,  # no YouTube pin knob exists
+        pin_var=env.YOUTUBE_BACKEND_PIN_VAR,
+        pin_values=env.YOUTUBE_BACKEND_PIN_VALUES,
     ),
     "web": ChainDescriptor(
         source="web",
@@ -679,7 +682,9 @@ def _resolve_alternative(
         pin_name = pin
     elif descriptor.pin_var:
         raw = (config.get(descriptor.pin_var) or "").lower()
-        if raw in by_name:
+        if raw in by_name and (
+            descriptor.pin_values is None or raw in descriptor.pin_values
+        ):
             pin_name = raw
 
     if pin_name:
