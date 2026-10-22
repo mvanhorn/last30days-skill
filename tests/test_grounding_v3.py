@@ -764,5 +764,98 @@ class ParallelMCPRuntimeTests(unittest.TestCase):
         self.assertIsNone(request.call_args.args[0])
 
 
+class KagiSearchTests(unittest.TestCase):
+    def test_kagi_search_returns_in_range_results(self):
+        mock_response = {
+            "data": [
+                {
+                    "t": 0,
+                    "url": "https://example.com/kagi-result",
+                    "title": "Kagi Result",
+                    "snippet": "A snippet from Kagi",
+                    "published": "2026-03-10",
+                },
+                {
+                    "t": 1,
+                    "url": "https://example.com/related",
+                    "title": "Related Search",
+                    "snippet": "Should be skipped (t=1)",
+                },
+                {
+                    "t": 0,
+                    "url": "https://example.com/old",
+                    "title": "Old Article",
+                    "snippet": "Out of range",
+                    "published": "2025-12-01",
+                },
+            ]
+        }
+        with patch.object(grounding.http, "request", return_value=mock_response):
+            items, artifact = grounding.kagi_search("test query", ("2026-03-01", "2026-03-31"), "fake-key")
+        self.assertEqual(1, len(items))
+        self.assertEqual("https://example.com/kagi-result", items[0]["url"])
+        self.assertEqual("Kagi Result", items[0]["title"])
+        self.assertEqual("2026-03-10", items[0]["date"])
+        self.assertEqual("kagi", artifact["label"])
+        self.assertEqual(1, artifact["resultCount"])
+
+    def test_kagi_search_skips_items_without_url(self):
+        mock_response = {
+            "data": [
+                {"t": 0, "url": "", "title": "No URL", "snippet": ""},
+                {"t": 0, "url": "https://example.com/valid", "title": "Valid", "snippet": "ok", "published": "2026-03-10"},
+            ]
+        }
+        with patch.object(grounding.http, "request", return_value=mock_response):
+            items, _ = grounding.kagi_search("test", ("2026-03-01", "2026-03-31"), "fake-key")
+        self.assertEqual(1, len(items))
+        self.assertEqual("https://example.com/valid", items[0]["url"])
+
+    def test_kagi_search_no_published_date_passes_through_current_window(self):
+        mock_response = {
+            "data": [
+                {"t": 0, "url": "https://example.com/nodatearticle", "title": "No Date", "snippet": "x"},
+            ]
+        }
+        # Use a window that ends in the far future to ensure current_window=True
+        # without needing to pin the clock.
+        future_end = "2099-12-31"
+        with patch.object(grounding.http, "request", return_value=mock_response):
+            items, _ = grounding.kagi_search("test", ("2026-03-01", future_end), "fake-key")
+        self.assertEqual(1, len(items))
+        self.assertIsNone(items[0]["date"])
+
+    def test_kagi_search_no_published_date_dropped_on_historical_window(self):
+        mock_response = {
+            "data": [
+                {"t": 0, "url": "https://example.com/nodatearticle", "title": "No Date", "snippet": "x"},
+            ]
+        }
+        with patch.object(grounding.http, "request", return_value=mock_response):
+            items, _ = grounding.kagi_search("test", ("2025-01-01", "2025-01-31"), "fake-key")
+        self.assertEqual(0, len(items))
+
+    def test_web_search_dispatcher_routes_kagi(self):
+        config = {"KAGI_API_KEY": "test-kagi-key"}
+        mock_response = {"data": [{"t": 0, "url": "https://k.com/x", "title": "K", "snippet": "s", "published": "2026-03-10"}]}
+        with patch.object(grounding.http, "request", return_value=mock_response):
+            items, artifact = grounding.web_search("query", ("2026-03-01", "2026-03-31"), config)
+        self.assertEqual("kagi", artifact["label"])
+        self.assertEqual(1, len(items))
+
+    def test_web_search_kagi_explicit_backend(self):
+        config = {"KAGI_API_KEY": "test-kagi-key"}
+        mock_response = {"data": []}
+        with patch.object(grounding.http, "request", return_value=mock_response):
+            items, artifact = grounding.web_search("query", ("2026-03-01", "2026-03-31"), config, backend="kagi")
+        self.assertEqual("kagi", artifact["label"])
+        self.assertEqual([], items)
+
+    def test_web_search_kagi_missing_key_raises(self):
+        config = {}
+        with self.assertRaises(RuntimeError):
+            grounding.web_search("query", ("2026-03-01", "2026-03-31"), config, backend="kagi")
+
+
 if __name__ == "__main__":
     unittest.main()

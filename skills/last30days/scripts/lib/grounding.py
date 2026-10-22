@@ -1,4 +1,4 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, Kagi, or a keyless floor."""
 
 from __future__ import annotations
 
@@ -291,6 +291,64 @@ def _parse_serper_date(raw: str, now: datetime | None = None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Kagi Search API
+# ---------------------------------------------------------------------------
+
+def kagi_search(
+    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+) -> tuple[list[dict], dict]:
+    """Search via the Kagi Search API (https://kagi.com/api/v0/search).
+
+    Kagi returns items with ``t=0`` (web result) or ``t=1`` (related search);
+    only ``t=0`` items are surfaced.  ``published`` is an ISO-8601 date string
+    when available.  The API does not support server-side date filtering, so
+    date bounds are enforced client-side: items with a known out-of-range date
+    are dropped, and undated items are also dropped for historical windows where
+    the window end is in the past.
+    """
+    current_window = date_range[1] >= datetime.now(timezone.utc).date().isoformat()
+    url = (
+        "https://kagi.com/api/v0/search?"
+        + urllib.parse.urlencode({"q": query, "limit": count})
+    )
+    data = http.request(
+        "GET", url,
+        headers={"Authorization": f"Bot {api_key}"},
+        timeout=15,
+    )
+    items = []
+    for i, r in enumerate(data.get("data", [])):
+        if not isinstance(r, dict) or r.get("t") != 0:
+            continue
+        if len(items) >= count:
+            break
+        result_url = r.get("url", "")
+        if not result_url:
+            continue
+        raw_date = r.get("published") or ""
+        pub_date = _normalize_date(raw_date[:10]) if raw_date else None
+        if _known_date_out_of_range(pub_date, date_range):
+            continue
+        if pub_date is None and not current_window:
+            continue
+        items.append({
+            "id": f"WK{i + 1}",
+            "title": r.get("title", ""),
+            "url": result_url,
+            "source_domain": _domain(result_url),
+            "snippet": r.get("snippet", ""),
+            "date": pub_date,
+            "relevance": 0.8,
+            "why_relevant": "Kagi web search",
+            "metadata": {
+                "date_window_basis": "client_filtered_current" if current_window else "client_filtered"
+            },
+        })
+    artifact = {"label": "kagi", "webSearchQueries": [query], "resultCount": len(items)}
+    return items, artifact
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -310,6 +368,8 @@ def web_search(
             backend = "serper"
         elif config.get("PARALLEL_API_KEY"):
             backend = "parallel"
+        elif config.get("KAGI_API_KEY"):
+            backend = "kagi"
         elif env.keyless_web_allowed(config):
             # No paid key and the host has no native search -> use the keyless
             # floor. On a native-search host this branch is skipped (the model
@@ -343,6 +403,11 @@ def web_search(
         items, artifact = parallel_mcp.search(
             query, date_range, config.get("PARALLEL_API_KEY")
         )
+    elif backend == "kagi":
+        key = config.get("KAGI_API_KEY")
+        if not key:
+            raise RuntimeError("KAGI_API_KEY is required when web_backend='kagi'")
+        items, artifact = kagi_search(query, date_range, key)
     elif backend == "keyless":
         items, artifact = web_search_keyless.keyless_search(query, date_range, config)
     elif backend != "none":
