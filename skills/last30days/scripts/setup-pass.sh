@@ -19,6 +19,7 @@
 set -euo pipefail
 
 PREFIX="${LAST30DAYS_PASS_PREFIX:-last30days/}"
+STORE_DIR="${PASSWORD_STORE_DIR:-${HOME}/.password-store}"
 # Mirrors lib/env.py::KEYCHAIN_KEYS — kept in sync via
 # tests/test_env_pass.py::test_pass_keys_match_setup_script.
 ALL_KEYS=(
@@ -99,7 +100,9 @@ fi
 
 added=0; skipped=0; replaced=0
 for key in "${TARGETS[@]}"; do
-  if pass show "${PREFIX}${key}" >/dev/null 2>&1; then
+  # Existence must not depend on GPG decryption or a successful pinentry prompt.
+  entry="${STORE_DIR}/${PREFIX}${key}.gpg"
+  if [[ -e "${entry}" || -L "${entry}" ]]; then
     existing=1
   else
     existing=0
@@ -116,9 +119,19 @@ for key in "${TARGETS[@]}"; do
     skipped=$((skipped + 1))
     continue
   fi
+  # pass treats piped input as overwrite consent, even without --force.
+  if [[ "${REPLACE}" -eq 0 && (-e "${entry}" || -L "${entry}") ]]; then
+    printf "  %-28s (set while prompting, skipping — use --replace to overwrite)\n" "${key}"
+    skipped=$((skipped + 1))
+    continue
+  fi
   # Don't let one failed insert (gpg misconfig, missing store key, disk) abort
   # the whole batch under `set -e`; report it and move on.
-  if ! printf '%s\n' "$value" | pass insert -m -f "${PREFIX}${key}" >/dev/null; then
+  insert_args=(-m)
+  if [[ "${REPLACE}" -eq 1 ]]; then
+    insert_args+=(-f)
+  fi
+  if ! printf '%s\n' "$value" | pass insert "${insert_args[@]}" "${PREFIX}${key}" >/dev/null; then
     echo "  failed: $key (pass insert error)" >&2
     skipped=$((skipped + 1))
     continue

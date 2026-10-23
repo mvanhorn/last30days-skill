@@ -710,11 +710,12 @@ def write_api_key(
 
     Reuses the same secret-safe write path as ``write_setup_config`` so the
     value lands with restrictive permissions and round-trips through
-    ``env.load_env_file``. Idempotent by default: if ``key_name`` is already
-    present in the file, nothing is written and the existing value is
+    ``env.load_env_file``. Idempotent by default: if ``key_name`` already has
+    a nonempty parsed value, nothing is written and the existing value is
     preserved (we never clobber a key the user may have set by hand). With
     ``replace=True`` an existing line is rewritten in place instead, so an
     explicit ``setup --store-key`` can rotate a rejected credential.
+    Empty assignments are replaced so a signup key becomes usable.
 
     Args:
         env_path: Path to the .env file (e.g. ~/.config/last30days/.env).
@@ -739,7 +740,9 @@ def write_api_key(
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
                     if _env_line_key(stripped) == key_name:
-                        if replace:
+                        from .env import load_env_file
+
+                        if replace or not load_env_file(env_path).get(key_name):
                             return _replace_env_line(env_path, existing_content, key_name, api_key)
                         return True  # Already configured; do not duplicate
 

@@ -13,13 +13,13 @@ import functools
 import logging
 import os
 import platform
-import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from .cookie_paths import path_is_dir, path_is_file
+from .sqlite_snapshot import copy_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -252,9 +252,9 @@ def _fallback_find_profile(
 def _query_cookies_db(
     db_path: Path, domain: str, cookie_names: List[str]
 ) -> Optional[Dict[str, str]]:
-    """Copy the cookies database to a temp file and query it.
+    """Snapshot the cookies database to a temp file and query it.
 
-    Firefox locks cookies.sqlite while running, so we copy first.
+    The snapshot includes committed WAL updates while Firefox is running.
     Returns {name: value} dict or None if no matching cookies found.
     """
     if not path_is_file(db_path):
@@ -264,12 +264,8 @@ def _query_cookies_db(
     tmp_path = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
-        # mkstemp creates the file 0600. copy2 would copy the source's mode
-        # (Firefox cookies.sqlite is commonly 0644, looser on WSL /mnt/c) onto
-        # the temp file, leaving live session secrets world-readable in shared
-        # /tmp until the chmod below runs. copyfile writes content only and
-        # leaves the 0600 perms intact, closing that window.
-        shutil.copyfile(str(db_path), tmp_path)
+        # Snapshot content only; preserve mkstemp's 0600 permissions.
+        copy_snapshot(db_path, tmp_path)
         _lock_temp_cookie_copy(tmp_path)
 
         conn = sqlite3.connect(tmp_path)

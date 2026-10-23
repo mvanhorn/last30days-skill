@@ -25,7 +25,7 @@ def test_firefox_database_permission_denial_survives_extractor(tmp_path):
     db = tmp_path / "cookies.sqlite"
     db.touch()
     with patch(
-        "lib.cookie_extract.shutil.copyfile",
+        "lib.cookie_extract.copy_snapshot",
         side_effect=PermissionError(1, "Operation not permitted", str(db)),
     ):
         with pytest.raises(PermissionError):
@@ -194,11 +194,11 @@ class TestExtractFirefoxCookies:
             }
         )
         blocked = profiles_dir / "xyz789.other" / "cookies.sqlite"
-        real_copyfile = cookie_extract.shutil.copyfile
+        real_copyfile = cookie_extract.copy_snapshot
         requested = []
 
         def guarded_copyfile(source, target):
-            if source == str(blocked):
+            if Path(source) == blocked:
                 raise PermissionError(1, "Operation not permitted", str(blocked))
             return real_copyfile(source, target)
 
@@ -207,7 +207,7 @@ class TestExtractFirefoxCookies:
                 requested.append(cookie_names)
             return cookie_extract._try_firefox_dir(profiles_dir, domain, cookie_names)
 
-        with patch("lib.cookie_extract.shutil.copyfile", side_effect=guarded_copyfile), patch(
+        with patch("lib.cookie_extract.copy_snapshot", side_effect=guarded_copyfile), patch(
             "lib.cookie_extract.extract_cookies",
             side_effect=extract_requested,
         ):
@@ -274,14 +274,14 @@ class TestExtractFirefoxCookies:
             }
         )
         blocked = profiles_dir / "abc123.default-release" / "cookies.sqlite"
-        real_copyfile = cookie_extract.shutil.copyfile
+        real_copyfile = cookie_extract.copy_snapshot
 
         def guarded_copyfile(source, target):
-            if source == str(blocked):
+            if Path(source) == blocked:
                 raise PermissionError(1, "Operation not permitted", str(blocked))
             return real_copyfile(source, target)
 
-        with patch("lib.cookie_extract.shutil.copyfile", side_effect=guarded_copyfile):
+        with patch("lib.cookie_extract.copy_snapshot", side_effect=guarded_copyfile):
             found = cookie_extract._try_firefox_dir(
                 profiles_dir, ".x.com", ["auth_token", "ct0"]
             )
@@ -306,7 +306,9 @@ class TestExtractFirefoxCookies:
         real_connect = sqlite3.connect
 
         def assert_temp_copy_locked(path, *args, **kwargs):
-            if Path(str(path)) != db_path:
+            if kwargs.get("uri"):
+                assert path == db_path.resolve().as_uri() + "?mode=ro"
+            elif Path(str(path)) != db_path:
                 assert Path(str(path)).stat().st_mode & 0o777 == 0o600
             return real_connect(path, *args, **kwargs)
 

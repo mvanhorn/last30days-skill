@@ -35,7 +35,7 @@ def test_cookie_copy_permission_denial_is_not_reported_as_missing(tmp_path):
     db = tmp_path / "Cookies"
     db.touch()
     with mock.patch(
-        "lib.chrome_cookies.shutil.copyfile",
+        "lib.chrome_cookies.copy_snapshot",
         side_effect=PermissionError(1, "Operation not permitted", str(db)),
     ):
         with pytest.raises(PermissionError):
@@ -49,7 +49,7 @@ def test_temporary_storage_denial_is_not_blamed_on_browser_access(tmp_path):
     db.touch()
     denied_temp = tmp_path / "temporary.sqlite"
     with mock.patch(
-        "lib.chrome_cookies.shutil.copyfile",
+        "lib.chrome_cookies.copy_snapshot",
         side_effect=PermissionError(13, "Permission denied", str(denied_temp)),
     ):
         assert _extract_chromium_cookies_macos(
@@ -230,14 +230,14 @@ def test_denied_default_copy_uses_complete_pair_in_later_profile(tmp_path):
         (".x.com", "auth_token", "dummy-auth", b""),
         (".x.com", "ct0", "dummy-ct0", b""),
     ])
-    real_copyfile = shutil.copyfile
+    real_copyfile = chrome_cookies.copy_snapshot
 
     def guarded_copyfile(source, target):
-        if source == str(blocked):
+        if Path(source) == blocked:
             raise PermissionError(1, "Operation not permitted", str(blocked))
         return real_copyfile(source, target)
 
-    with mock.patch("lib.chrome_cookies.shutil.copyfile", side_effect=guarded_copyfile):
+    with mock.patch("lib.chrome_cookies.copy_snapshot", side_effect=guarded_copyfile):
         found = chrome_cookies._extract_chromium_cookies_any_profile(
             tmp_path, "Chrome Safe Storage", ".x.com", ["auth_token", "ct0"]
         )
@@ -411,7 +411,9 @@ class TestUnencryptedCookies:
         real_connect = sqlite3.connect
 
         def assert_temp_copy_locked(path, *args, **kwargs):
-            if Path(str(path)) != db_path:
+            if kwargs.get("uri"):
+                assert path == db_path.resolve().as_uri() + "?mode=ro"
+            elif Path(str(path)) != db_path:
                 assert Path(str(path)).stat().st_mode & 0o777 == 0o600
             return real_connect(path, *args, **kwargs)
 

@@ -14,7 +14,6 @@ This is NOT affected by Windows App-Bound Encryption (v20).
 import hashlib
 import logging
 import os
-import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -22,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from .cookie_paths import path_exists, path_is_dir
+from .sqlite_snapshot import copy_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ def _extract_chromium_cookies_macos(
 ) -> Optional[dict[str, str]]:
     """Extract cookies from any Chromium-based browser on macOS.
 
-    Copies the locked Cookies database to a temp file, reads specified cookies,
+    Snapshots committed Cookies database state to a temp file, reads specified cookies,
     and decrypts v10-encrypted values using the Keychain-stored key.
 
     Args:
@@ -231,15 +231,13 @@ def _extract_chromium_cookies_macos(
         logger.info("%s cookies database not found at %s", keychain_service, db_path)
         return None
 
-    # Copy DB to temp file (browser locks the original while running)
+    # The backup includes committed WAL updates while the browser is running.
     tmp_fd = None
     tmp_path = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
-        # mkstemp creates the file 0600. copy2 would copy the source DB's
-        # permission bits onto the temp file before the chmod below runs,
-        # briefly exposing live cookies when the source DB is looser.
-        shutil.copyfile(str(db_path), tmp_path)
+        # Snapshot content only; preserve mkstemp's 0600 permissions.
+        copy_snapshot(db_path, tmp_path)
         _lock_temp_cookie_copy(tmp_path)
     except Exception as e:
         browser_read_denied = isinstance(e, PermissionError) and e.filename == str(db_path)
@@ -260,6 +258,7 @@ def _extract_chromium_cookies_macos(
             import os
             os.close(tmp_fd)
 
+    conn = None
     try:
         conn = sqlite3.connect(tmp_path)
         cursor = conn.cursor()
@@ -309,8 +308,6 @@ def _extract_chromium_cookies_macos(
             elif encrypted_value:
                 logger.debug("Unknown encryption for cookie %s (prefix: %r)", name, encrypted_value[:3])
 
-        conn.close()
-
         if not results:
             logger.info("No matching cookies found in %s for domain %s", keychain_service, domain)
             return None
@@ -324,6 +321,8 @@ def _extract_chromium_cookies_macos(
         logger.info("Unexpected error reading %s cookies: %s", keychain_service, e)
         return None
     finally:
+        if conn is not None:
+            conn.close()
         try:
             Path(tmp_path).unlink(missing_ok=True)
         except Exception:
