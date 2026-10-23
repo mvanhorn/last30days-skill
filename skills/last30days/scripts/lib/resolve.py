@@ -1,6 +1,6 @@
 """Auto-resolve subreddits, X handles, and current events context for a topic.
 
-Uses web search (Brave/Exa/Serper/Parallel) to discover relevant communities and context
+Uses web search (Brave/Exa/Serper/Parallel/Keenable) to discover relevant communities and context
 before the planner runs. This is the engine-side equivalent of SKILL.md Steps
 0.55/0.75 which use Claude Code's WebSearch tool.
 """
@@ -422,7 +422,7 @@ def auto_resolve(topic: str, config: dict) -> dict:
 
     Args:
         topic: The research topic.
-        config: Dict with a Brave, Exa, Serper, or Parallel API key.
+        config: Dict with a Brave, Exa, Serper, Parallel, or Keenable API key.
 
     Returns:
         Dict with keys: subreddits, x_handle, github_user, github_repos,
