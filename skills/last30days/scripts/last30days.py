@@ -1460,6 +1460,7 @@ def _load_last_report_cache(
 
 def _cache_research_options(
     args: argparse.Namespace, config: dict[str, object] | None = None, *, supplied_only: bool = False,
+    resolved_corpus_dirs: list[Path] | None = None,
 ) -> dict[str, object]:
     names = (
         "search", "quick", "deep", "mock", "web_backend", "perplexity_search_type",
@@ -1468,12 +1469,25 @@ def _cache_research_options(
         "tiktok_creators", "ig_creators", "max_results", "max_per_source",
         "max_source_fetches", "auto_resolve", "github_user", "github_repo",
         "trustpilot_domain", "amazon_query", "meta_ads_page", "telegram_sources",
-        "competitors", "competitors_list", "polymarket_keywords", "corpus", "corpus_all_time", "drill",
+        "competitors", "competitors_list", "polymarket_keywords", "corpus_all_time", "drill",
     )
     options = {
         name: getattr(args, name, None) for name in names
         if not supplied_only or name in getattr(args, "_explicit_options", ())
     }
+    if not supplied_only or "corpus" in getattr(args, "_explicit_options", ()):
+        if resolved_corpus_dirs is None:
+            resolved_corpus_dirs = corpus.resolve_directories(
+                args.corpus, (config or {}).get("LAST30DAYS_CORPUS_DIRS")
+            )
+            if "corpus" in {
+                value.strip().lower()
+                for value in str((config or {}).get("EXCLUDE_SOURCES") or "").split(",")
+            }:
+                resolved_corpus_dirs = []
+        options["corpus_sha256"] = hashlib.sha256(json.dumps([
+            os.path.normcase(str(path)) for path in resolved_corpus_dirs
+        ]).encode("utf-8")).hexdigest()
     for name in ("plan", "competitors_plan"):
         raw = getattr(args, name, None)
         if not supplied_only:
@@ -1490,6 +1504,7 @@ def _cache_research_options(
             "FUN_LEVEL", "ELI5_MODE", "LAST30DAYS_REGISTER", "LAST30DAYS_MEMORY_DIR",
             "LAST30DAYS_REPORT_CACHE_TTL_SECONDS", "LAST30DAYS_STORE", "LAST30DAYS_DEBUG",
             "LAST30DAYS_STRICT_EXIT", "LAST30DAYS_VERIFY_FRESHNESS", "LAST30DAYS_PUBLISH_PASSWORD",
+            "LAST30DAYS_CORPUS_DIRS",
         }
         research_keys = {
             "INCLUDE_SOURCES", "EXCLUDE_SOURCES", "TELEGRAM_SOURCES", "BSKY_HANDLE",
@@ -3453,7 +3468,6 @@ def _main(
             return _run_store_key(store_key_name)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
-    research_options = _cache_research_options(args, config, supplied_only=args.cached_report)
     if args.perplexity_search_type is not None:
         config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
@@ -3478,6 +3492,10 @@ def _main(
         config["_CORPUS_DIRS"] = [str(path) for path in resolved_corpus_dirs]
     if _config_truthy(config.get("LAST30DAYS_CORPUS_IN_EXPORT")):
         config["_CORPUS_IN_EXPORT"] = True
+    research_options = _cache_research_options(
+        args, config, supplied_only=args.cached_report,
+        resolved_corpus_dirs=resolved_corpus_dirs,
+    )
     _propagate_config_to_environ(config)
 
     # Env-var fallback for --save-dir, mirroring the LAST30DAYS_STORE pattern below.

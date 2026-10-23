@@ -249,3 +249,95 @@ def test_cache_only_without_topic_rejects_freshness_before_dispatch(monkeypatch,
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 2
+
+
+@pytest.fixture
+def corpus_cache_cli(monkeypatch, tmp_path):
+    projects = {name: tmp_path / name for name in ("project-a", "project-b")}
+    for name, directory in projects.items():
+        notes = directory / "notes"
+        notes.mkdir(parents=True)
+        (notes / "mcp.md").write_text(
+            f"MCP servers provide local tools and resources. Private notes from {name}.",
+            encoding="utf-8",
+        )
+    synthesis = tmp_path / "synthesis.md"
+    synthesis.write_text("# MCP server synthesis", encoding="utf-8")
+    config = {}
+    research = mock.Mock(wraps=cli.pipeline.run)
+    monkeypatch.setattr(cli.pipeline, "run", research)
+    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: _diag())
+    monkeypatch.setattr(cli.env, "get_config", lambda **kwargs: dict(config))
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+
+    def run(project, *, cli_path=None, config_path=None, synthesize=False, cached_only=False):
+        monkeypatch.chdir(projects[project])
+        config.clear()
+        if config_path is not None:
+            config["LAST30DAYS_CORPUS_DIRS"] = config_path
+        argv = [
+            "last30days.py", "MCP servers", "--mock", "--quick", "--search=corpus",
+            "--no-browser-cookies", "--corpus-all-time", "--save-dir=",
+        ]
+        if cli_path is not None:
+            argv += ["--corpus", cli_path]
+        if synthesize:
+            argv += ["--emit=html", "--synthesis-file", str(synthesis)]
+        else:
+            argv += ["--emit=json", "--json-profile=raw"]
+        if cached_only:
+            argv.append("--cached-report")
+        monkeypatch.setattr(sys, "argv", argv)
+        return cli.main()
+
+    return projects, research, run
+
+
+@pytest.mark.parametrize("configured", [False, True], ids=["cli", "config"])
+def test_relative_corpus_cache_cannot_cross_project_directories(corpus_cache_cli, configured, capsys):
+    projects, research, run = corpus_cache_cli
+    scope = {"config_path" if configured else "cli_path": "notes"}
+    assert run("project-a", **scope) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert "project-a" in first["items_by_source"]["corpus"][0]["body"]
+    research.reset_mock()
+
+    assert run("project-b", synthesize=True, **scope) == 0
+    research.assert_called_once()
+    assert research.call_args.kwargs["config"]["_CORPUS_DIRS"] == [str(projects["project-b"] / "notes")]
+    stored = json.loads((cli.env.CONFIG_DIR / "last-report.json").read_text())
+    assert "project-b" in stored["reports"][0]["report"]["items_by_source"]["corpus"][0]["body"]
+
+
+@pytest.mark.parametrize("initial_layer, followup_layer", [
+    ("cli_path", "cli_path"), ("config_path", "config_path"),
+    ("config_path", "cli_path"), ("cli_path", "config_path"),
+])
+def test_corpus_cache_matches_effective_paths_across_aliases_and_layers(
+    corpus_cache_cli, initial_layer, followup_layer,
+):
+    projects, research, run = corpus_cache_cli
+    assert run("project-a", **{initial_layer: "notes"}) == 0
+    research.reset_mock()
+
+    assert run("project-b", synthesize=True, **{followup_layer: str(projects["project-a"] / "notes")}) == 0
+    research.assert_not_called()
+
+
+@pytest.mark.parametrize("explicit, configured, expected", [
+    (None, "notes", 0),
+    ("notes", None, 2),
+    ("absolute-a", None, 0),
+    ("absolute-a", "notes", 2),
+])
+def test_cached_export_corpus_override_matches_effective_directories(
+    corpus_cache_cli, explicit, configured, expected,
+):
+    projects, research, run = corpus_cache_cli
+    assert run("project-a", config_path="notes") == 0
+    research.reset_mock()
+    if explicit == "absolute-a":
+        explicit = str(projects["project-a"] / "notes")
+
+    assert run("project-b", cli_path=explicit, config_path=configured, synthesize=True, cached_only=True) == expected
+    research.assert_not_called()
