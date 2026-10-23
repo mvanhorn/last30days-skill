@@ -85,7 +85,7 @@ from . import (
 from .cluster import cluster_candidates
 from . import fusion
 from . import render
-from .fusion import collapse_duplicate_urls, weighted_rrf
+from .fusion import collapse_duplicate_urls, source_item_key, weighted_rrf
 
 DISCOVERY_SOURCES = ("reddit", "hackernews", "digg", "x")
 _DISCOVERY_GENERIC_DOMAIN_TERMS = {
@@ -2359,10 +2359,14 @@ def run(
         config["_hiring_signals_mode"] = True
         if not requested_sources:
             available = ["jobs"]
+    available = [source for source in available if source not in excluded_sources]
     if not available:
         raise RuntimeError("No sources are available for this run.")
 
-    planner_requested_sources = requested_sources
+    planner_requested_sources = (
+        [source for source in requested_sources if source not in excluded_sources]
+        if requested_sources else None
+    )
     if hiring_signals_mode and not planner_requested_sources:
         planner_requested_sources = ["jobs"]
 
@@ -3045,6 +3049,14 @@ def run(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
         elapsed=time.monotonic() - run_started,
     )
+    retained_markets = {
+        source_item_key(item) for item in items_by_source.get("polymarket", [])
+    }
+    for key, stream in bundle.items_by_source_and_query.items():
+        if key[1] == "polymarket":
+            bundle.items_by_source_and_query[key] = [
+                item for item in stream if source_item_key(item) in retained_markets
+            ]
     source_status = _finalize_source_status(bundle.source_status, items_by_source)
 
     candidates = weighted_rrf(

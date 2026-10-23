@@ -621,16 +621,12 @@ def search_reddit(
         else:
             out_of_range += 1
 
-    if in_range:
-        all_items = in_range
-        if out_of_range:
-            _log(f"Filtered {out_of_range} posts outside date range")
-    else:
-        _log(f"No posts within date range, keeping all {len(all_items)}")
+    all_items = in_range
+    if out_of_range:
+        _log(f"Filtered {out_of_range} posts outside date range")
 
     # === Phase 6: Relevance floor + relevance-weighted ranking ===
-    # Drop the off-topic tail when enough on-topic posts remain (guard mirrors
-    # the date filter: keep all if too few clear the floor). When too few clear
+    # Drop the off-topic tail when enough on-topic posts remain. When too few clear
     # the soft floor, still strip zero-overlap posts (relevance exactly 0 = no
     # title/body token match at all, never on-topic) whenever anything relevant
     # remains, so viral high-upvote junk can't fill the section. Then rank by
