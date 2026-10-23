@@ -40,10 +40,11 @@ Refetcher = Callable[[schema.SourceItem | None, str], RefetchedDatum | dict[str,
 
 _STATUS_PATTERN = re.compile(
     r"\b(?P<subject>[A-Z][A-Za-z0-9&.'’/+_-]*(?:\s+[A-Z0-9][A-Za-z0-9&.'’/+_-]*){0,5})"
-    r"\s+(?:is|was|remains|became|has been)\s+"
+    r"\s+(?P<copula>is|was|remains|became|has been)\s+"
     r"(?P<status>open|closed|active|inactive|available|unavailable|"
     r"approved|rejected|launched|discontinued|online|offline)\b"
 )
+_STATUS_COPULA_PRIORITY = {"was": 0, "became": 0, "has been": 1, "is": 2, "remains": 2}
 _OPPOSITE_STATUS = {
     "open": "closed",
     "closed": "open",
@@ -328,7 +329,7 @@ def _newer_status_contradiction(
     candidates.sort(key=lambda item: item.published_at or "", reverse=True)
     for item in candidates:
         text = f"{item.title} {item.snippet} {item.body}"
-        agrees = False
+        statuses_by_priority: dict[int, set[str]] = defaultdict(set)
         for match in _STATUS_PATTERN.finditer(text):
             asserted_subject = [
                 token.lower()
@@ -337,11 +338,14 @@ def _newer_status_contradiction(
             ]
             if asserted_subject == subject_tokens:
                 status = match.group("status").lower()
-                if status == opposite:
-                    return item
-                if status == claim.original_value:
-                    agrees = True
-        if agrees:
+                if status in {opposite, claim.original_value}:
+                    priority = _STATUS_COPULA_PRIORITY[match.group("copula")]
+                    statuses_by_priority[priority].add(status)
+        if statuses_by_priority:
+            priority = max(statuses_by_priority)
+            statuses = statuses_by_priority[priority]
+            if opposite in statuses and (priority == 0 or len(statuses) == 1):
+                return item
             return None
     return None
 

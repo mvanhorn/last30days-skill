@@ -430,6 +430,157 @@ def test_newest_item_agreement_cannot_hide_its_contradictory_assertion(
     assert verdict.evidence_timestamp == latest.published_at
 
 
+@pytest.mark.parametrize("original_status, opposite_status", [
+    ("open", "closed"), ("closed", "open"),
+])
+@pytest.mark.parametrize("current_field, historical_field", [
+    ("title", "body"), ("body", "title"),
+    ("title", "snippet"), ("snippet", "title"),
+    ("snippet", "body"), ("body", "snippet"),
+])
+def test_current_agreement_is_not_overridden_by_historical_opposite(
+    original_status, opposite_status, current_field, historical_field,
+):
+    original = _item(
+        "reddit", item_id="original", title=f"Widget API is {original_status}",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    fields = {"title": "Status update", "snippet": "", "body": ""}
+    fields[current_field] = f"Widget API is {original_status}"
+    fields[historical_field] = f"Widget API was {opposite_status}"
+    report = _report(original)
+    report.items_by_source["grounding"] = [_item(
+        "grounding", item_id="latest", **fields,
+        published_at="2026-07-09T10:00:00Z",
+    )]
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "unsupported"
+    assert verdict.current_value is None
+    assert verdict.evidence_url == ""
+
+
+@pytest.mark.parametrize("field", ["title", "snippet", "body"])
+@pytest.mark.parametrize("current_first", [True, False])
+@pytest.mark.parametrize("current_status", ["open", "closed"])
+def test_current_status_wins_over_history_within_one_field(field, current_first, current_status):
+    original = _item(
+        "reddit", item_id="original", title="Widget API is open",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    historical_status = "closed" if current_status == "open" else "open"
+    sentences = [f"Widget API is {current_status}.", f"Widget API was {historical_status}."]
+    fields = {"title": "Status update", "snippet": "", "body": ""}
+    fields[field] = " ".join(sentences if current_first else reversed(sentences))
+    latest = _item(
+        "grounding", item_id="latest", **fields,
+        published_at="2026-07-09T10:00:00Z",
+        url="https://status.example.com/widget/latest",
+    )
+    report = _report(original)
+    report.items_by_source["grounding"] = [latest]
+
+    verdict = freshness.verify_report(report)[0]
+
+    if current_status == "open":
+        assert verdict.verdict == "unsupported"
+        assert verdict.current_value is None
+        assert verdict.evidence_url == ""
+    else:
+        assert verdict.verdict == "contradicted"
+        assert verdict.current_value == "closed"
+        assert verdict.evidence_url == latest.url
+        assert verdict.evidence_timestamp == latest.published_at
+
+
+@pytest.mark.parametrize("title, body", [
+    ("Widget API is open", "Widget API is closed"),
+    ("Widget API is closed", "Widget API is open"),
+])
+def test_conflicting_current_statuses_in_latest_item_remain_unsupported(title, body):
+    original = _item(
+        "reddit", item_id="original", title="Widget API is open",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    report = _report(original)
+    report.items_by_source["grounding"] = [
+        _item(
+            "grounding", item_id="intermediate", title="Widget API is closed",
+            published_at="2026-07-05T10:00:00Z",
+        ),
+        _item(
+            "grounding", item_id="latest", title=title, body=body,
+            published_at="2026-07-09T10:00:00Z",
+        ),
+    ]
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "unsupported"
+    assert verdict.current_value is None
+    assert verdict.evidence_url == ""
+
+
+@pytest.mark.parametrize("verb", ["is", "remains", "was", "became", "has been"])
+def test_standalone_supported_copulas_preserve_status_verification(verb):
+    original = _item(
+        "reddit", item_id="original", title="Widget API is open",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    report = _report(original)
+    latest = _item(
+        "grounding", item_id="latest", title=f"Widget API {verb} closed",
+        snippet="Other API is open",
+        published_at="2026-07-09T10:00:00Z",
+        url="https://status.example.com/widget/latest",
+    )
+    report.items_by_source["grounding"] = [latest]
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "contradicted"
+    assert verdict.current_value == "closed"
+    assert verdict.evidence_url == latest.url
+    assert verdict.evidence_timestamp == latest.published_at
+
+
+@pytest.mark.parametrize("current_verb, historical_verb", [
+    ("remains", "was"), ("is", "became"),
+    ("is", "has been"), ("has been", "was"),
+])
+@pytest.mark.parametrize("current_status", ["open", "closed"])
+def test_explicit_current_status_takes_precedence_over_less_current_forms(
+    current_verb, historical_verb, current_status,
+):
+    original = _item(
+        "reddit", item_id="original", title="Widget API is open",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    historical_status = "closed" if current_status == "open" else "open"
+    latest = _item(
+        "grounding", item_id="latest",
+        title=f"Widget API {historical_verb} {historical_status}",
+        body=f"Widget API {current_verb} {current_status}",
+        published_at="2026-07-09T10:00:00Z",
+        url="https://status.example.com/widget/latest",
+    )
+    report = _report(original)
+    report.items_by_source["grounding"] = [latest]
+
+    verdict = freshness.verify_report(report)[0]
+
+    if current_status == "open":
+        assert verdict.verdict == "unsupported"
+        assert verdict.current_value is None
+        assert verdict.evidence_url == ""
+    else:
+        assert verdict.verdict == "contradicted"
+        assert verdict.current_value == "closed"
+        assert verdict.evidence_url == latest.url
+        assert verdict.evidence_timestamp == latest.published_at
+
+
 @pytest.mark.parametrize("unrelated_status", ["closed", "open"])
 def test_newest_item_agreement_ignores_another_subjects_status(unrelated_status):
     original = _item(
