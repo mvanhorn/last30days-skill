@@ -7,9 +7,10 @@ import (
 
 func TestPreflightRunArgsDefaultTextIsSafe(t *testing.T) {
 	t.Setenv("LAST30DAYS_MEMORY_DIR", "")
-	args := preflightRunArgs("text")
+	args := preflightRunArgs("text", "~/Documents/Last30Days")
 	want := []string{
 		"--preflight",
+		"--save-dir", "",
 		"--preflight-report-on-save-dir",
 		"~/Documents/Last30Days",
 	}
@@ -20,9 +21,10 @@ func TestPreflightRunArgsDefaultTextIsSafe(t *testing.T) {
 
 func TestPreflightRunArgsJSONIsSafeAndStructured(t *testing.T) {
 	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/last30days-reports")
-	args := preflightRunArgs("json")
+	args := preflightRunArgs("json", "/tmp/last30days-reports")
 	want := []string{
 		"--preflight",
+		"--save-dir", "",
 		"--preflight-report-on-save-dir",
 		"/tmp/last30days-reports",
 		"--emit=json",

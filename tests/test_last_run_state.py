@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import schema
+from lib import dates, schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LAST30DAYS_SCRIPT = REPO_ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
@@ -30,10 +30,11 @@ def run_last30days(topic: str, env: dict[str, str]) -> subprocess.CompletedProce
 
 
 def _report(topic: str) -> schema.Report:
+    range_from, range_to = dates.get_date_range()
     return schema.Report(
         topic=topic,
-        range_from="2026-05-01",
-        range_to="2026-05-31",
+        range_from=range_from,
+        range_to=range_to,
         generated_at="2026-05-31T00:00:00+00:00",
         provider_runtime=schema.ProviderRuntime(
             reasoning_provider="local",

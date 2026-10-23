@@ -46,9 +46,13 @@ func makePreflightHandler(cfg Config) server.ToolHandlerFunc {
 			)), nil
 		}
 
+		saveDir, err := resolveSaveDir(ctx, cacheDir)
+		if err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
 		res, runErr := engine.Run(ctx, engine.RunOptions{
 			CacheDir: cacheDir,
-			Args:     preflightRunArgs(format),
+			Args:     preflightRunArgs(format, saveDir),
 		})
 		if runErr != nil {
 			return mcplib.NewToolResultError(formatRunError(runErr, res)), nil
@@ -57,8 +61,8 @@ func makePreflightHandler(cfg Config) server.ToolHandlerFunc {
 	}
 }
 
-func preflightRunArgs(format string) []string {
-	runArgs := []string{"--preflight", "--preflight-report-on-save-dir", mcpSaveDir()}
+func preflightRunArgs(format, saveDir string) []string {
+	runArgs := []string{"--preflight", "--save-dir", "", "--preflight-report-on-save-dir", saveDir}
 	if format == "json" {
 		runArgs = append(runArgs, "--emit=json")
 	}

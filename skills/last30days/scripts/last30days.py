@@ -667,6 +667,8 @@ def build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     parser.add_argument("topic", nargs="*", help="Research topic")
+    parser.add_argument("--research-only", action="store_true",
+                        help="Treat the topic as research text, never as an administrative command")
     parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html", "brief"])
     parser.add_argument(
         "--register",
@@ -790,6 +792,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output", help="Optional exact file path for saving the rendered output")
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
+    parser.add_argument("--cached-report", action="store_true",
+                        help="Render --emit=html --synthesis-file from cached research only, without replaying temporary plans")
     parser.add_argument("--publish-html", action="store_true",
                         help="Publish --emit=html output to ht-ml.app (explicit opt-in; public by default)")
     parser.add_argument("--publish", action="store_true",
@@ -1307,7 +1311,7 @@ def _show_runtime_ui(
         progress.show_promo(promo, diag=diag)
 
 
-REPORT_CACHE_VERSION = "last30days-report-cache/v1"
+REPORT_CACHE_VERSION = "last30days-report-cache/v2"
 DEFAULT_REPORT_CACHE_TTL_SECONDS = 3600
 
 
@@ -1339,6 +1343,7 @@ def _write_last_run(
     entity_reports: list[tuple[str, schema.Report]] | None = None,
     *,
     x_envelope_sha256: str | None = None,
+    research_options: dict[str, object] | None = None,
 ) -> bool:
     # ``x_envelope_sha256`` binds the cached report to the --x-posts file it
     # was built from; _load_last_report_cache misses on any mismatch.
@@ -1368,6 +1373,10 @@ def _write_last_run(
             "timestamp": payload["timestamp"],
             "comparison": bool(entity_reports),
             "x_envelope_sha256": x_envelope_sha256 or None,
+            "research_options": (
+                research_options if research_options is not None
+                else _cache_research_options(build_parser().parse_args([]))
+            ),
             "reports": [
                 {"entity": label, "report": schema.to_dict(cached_report)}
                 for label, cached_report in cached_reports
@@ -1390,6 +1399,9 @@ def _load_last_report_cache(
     ttl_seconds: int = DEFAULT_REPORT_CACHE_TTL_SECONDS,
     *,
     x_envelope_sha256: str | None = None,
+    research_options: dict[str, object] | None = None,
+    requested_window: tuple[str, str] | None = None,
+    use_cached_envelopes: bool = False,
 ) -> tuple[schema.Report, list[tuple[str, schema.Report]] | None, Path] | None:
     cache_path = _last_report_cache_path()
     if cache_path is None or not cache_path.exists():
@@ -1406,7 +1418,12 @@ def _load_last_report_cache(
         # same envelope content; a digest on either side that does not match
         # the other is a miss.
         cached_digest = payload.get("x_envelope_sha256") or None
-        if (cached_digest or x_envelope_sha256) and cached_digest != x_envelope_sha256:
+        if not use_cached_envelopes and (cached_digest or x_envelope_sha256) and cached_digest != x_envelope_sha256:
+            return None
+        cached_options = payload.get("research_options") or {}
+        if not isinstance(cached_options, dict):
+            return None
+        if any(cached_options.get(key) != value for key, value in (research_options or {}).items()):
             return None
         cached_topic = str(payload.get("topic") or "").strip().lower()
         if topic is not None and cached_topic != topic.strip().lower():
@@ -1421,6 +1438,11 @@ def _load_last_report_cache(
         ]
         if not entity_reports:
             return None
+        if requested_window is not None and any(
+            (report.range_from, report.range_to) != requested_window
+            for _, report in entity_reports
+        ):
+            return None
         if payload.get("comparison"):
             if len(entity_reports) < 2:
                 return None
@@ -1434,6 +1456,59 @@ def _load_last_report_cache(
             f"{type(exc).__name__}: {exc}\n"
         )
         return None
+
+
+def _cache_research_options(
+    args: argparse.Namespace, config: dict[str, object] | None = None, *, supplied_only: bool = False,
+) -> dict[str, object]:
+    names = (
+        "search", "quick", "deep", "mock", "web_backend", "perplexity_search_type",
+        "hiring_signals", "x_handle", "x_related", "official_site", "no_x_handle",
+        "subreddits", "dedicated_subreddits", "devto_tags", "tiktok_hashtags",
+        "tiktok_creators", "ig_creators", "max_results", "max_per_source",
+        "max_source_fetches", "auto_resolve", "github_user", "github_repo",
+        "trustpilot_domain", "amazon_query", "meta_ads_page", "telegram_sources",
+        "competitors", "competitors_list", "polymarket_keywords", "corpus", "corpus_all_time", "drill",
+    )
+    options = {
+        name: getattr(args, name, None) for name in names
+        if not supplied_only or name in getattr(args, "_explicit_options", ())
+    }
+    for name in ("plan", "competitors_plan"):
+        raw = getattr(args, name, None)
+        if not supplied_only:
+            options[name] = None
+        if raw:
+            try:
+                content = Path(raw).read_text(encoding="utf-8") if os.path.isfile(raw) else raw
+                content = json.dumps(json.loads(content), sort_keys=True)
+            except (OSError, ValueError):
+                content = raw
+            options[name] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if not supplied_only:
+        rendering_keys = {
+            "FUN_LEVEL", "ELI5_MODE", "LAST30DAYS_REGISTER", "LAST30DAYS_MEMORY_DIR",
+            "LAST30DAYS_REPORT_CACHE_TTL_SECONDS", "LAST30DAYS_STORE", "LAST30DAYS_DEBUG",
+            "LAST30DAYS_STRICT_EXIT", "LAST30DAYS_VERIFY_FRESHNESS", "LAST30DAYS_PUBLISH_PASSWORD",
+        }
+        research_keys = {
+            "INCLUDE_SOURCES", "EXCLUDE_SOURCES", "TELEGRAM_SOURCES", "BSKY_HANDLE",
+            "BSKY_SEARCH_HOST", "FROM_BROWSER", "BROWSER_CONSENT", "BROWSER_CDP_URL",
+            "DEGRADED_TRANSCRIPT_THRESHOLD",
+        }
+        relevant_config = {}
+        for key, value in (config or {}).items():
+            if key.startswith("_") or key in rendering_keys:
+                continue
+            if key.endswith(("_KEY", "_TOKEN", "_PASSWORD", "_SECRET", "_COOKIE")) or key == "CT0":
+                if value:
+                    relevant_config[key] = True
+            elif key in research_keys or key.startswith("LAST30DAYS_") or key.endswith(("_BASE_URL", "_MODEL_PIN")):
+                relevant_config[key] = value
+        options["config_sha256"] = hashlib.sha256(
+            json.dumps(relevant_config, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+    return options
 
 
 def _config_truthy(value: object) -> bool:
@@ -1658,7 +1733,7 @@ def _run_drill(
         _verify_report_set(merged, None, allow_network=not args.mock)
     else:
         merged.freshness_verdicts = []
-    if _write_last_run(report.topic, merged):
+    if _write_last_run(report.topic, merged, research_options=_cache_research_options(args, config)):
         sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
     else:
         sys.stderr.write(
@@ -2980,7 +3055,7 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
 
 
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
-    normalized_topic = topic.lower()
+    normalized_topic = "" if args.research_only or args.cached_report else topic.lower()
     is_library_command = (
         normalized_topic == "library feed"
         or normalized_topic == "library search"
@@ -2997,7 +3072,7 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
     if args.no_browser_cookies:
         browser_mode = "off"
     elif (
-        args.diagnose or args.preflight or normalized_topic == "doctor"
+        args.diagnose or args.preflight or args.cached_report or normalized_topic == "doctor"
         or is_library_command or is_queue_command or is_cached_verification
     ):
         # doctor is plan-only like --diagnose: it must never read cookies.
@@ -3280,6 +3355,12 @@ def main() -> int:
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
     # --openclaw) pass through without argparse hard-exiting.
     args, extra_argv = parser.parse_known_args()
+    option_argv = sys.argv[1:sys.argv.index("--")] if "--" in sys.argv else sys.argv[1:]
+    option_tokens = {token.split("=", 1)[0] for token in option_argv}
+    args._explicit_options = {
+        action.dest for action in parser._actions
+        if any(option in option_tokens for option in action.option_strings)
+    }
     if args.record_fixtures:
         with http.recording_requests(Path(args.record_fixtures)):
             return _main(parser, args, extra_argv)
@@ -3327,6 +3408,13 @@ def _main(
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
+    if args.cached_report and (
+        args.emit != "html" or not args.synthesis_file or not args.topic or args.deep_research
+        or args.plan or args.competitors_plan or args.x_posts
+        or args.discover is not None or args.drill or args.diagnose or args.preflight
+        or args.welcome or args.resolve_save_dir or args.verify_freshness is True
+    ):
+        parser.error("--cached-report requires a topic, --emit=html, and --synthesis-file without research input files, --verify-freshness, or other command modes")
     if args.welcome:
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
@@ -3334,7 +3422,15 @@ def _main(
 
     topic = " ".join(args.topic).strip()
     original_topic = topic
-    _validate_extra_argv(parser, topic, extra_argv)
+    requested_window = (
+        dates.get_date_range(
+            30 if args.lookback_days is None else args.lookback_days,
+            as_of_date=args.as_of_date,
+        )
+        if not args.cached_report or args.lookback_days is not None or args.as_of_date is not None else None
+    )
+    command_topic = "" if args.research_only or args.cached_report else topic.lower()
+    _validate_extra_argv(parser, command_topic, extra_argv)
     if args.resolve_save_dir:
         print(env.resolve_memory_dir(args.save_dir))
         return 0
@@ -3344,12 +3440,12 @@ def _main(
             "accepted); write the envelope to a .json file and pass its path.\n"
         )
         return 2
-    if args.publish and topic.lower() != "library feed":
+    if args.publish and command_topic != "library feed":
         sys.stderr.write(
             "[last30days] --publish is only supported by the 'library feed' command.\n"
         )
         return 2
-    if topic.lower() == "setup":
+    if command_topic == "setup":
         # Persisting a credential needs no config load (no Keychain / pass
         # probes, no cookie policy), so it dispatches before get_config.
         store_key_present, store_key_name, _ = _split_store_key(extra_argv)
@@ -3357,6 +3453,7 @@ def _main(
             return _run_store_key(store_key_name)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    research_options = _cache_research_options(args, config, supplied_only=args.cached_report)
     if args.perplexity_search_type is not None:
         config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
@@ -3427,7 +3524,7 @@ def _main(
     # match only, so multi-word research topics containing "doctor" still
     # research normally). Aggregates probes/descriptors/prescriptions into
     # one grouped health surface; always exits 0.
-    if topic.lower() == "doctor":
+    if command_topic == "doctor":
         from lib import doctor
         return doctor.run(
             config,
@@ -3437,18 +3534,18 @@ def _main(
             probe="--probe" in extra_argv,
         )
 
-    if topic.lower() == "library feed":
+    if command_topic == "library feed":
         return _run_library_feed(args, config)
-    if topic.lower() == "library search" or topic.lower().startswith("library search "):
+    if command_topic == "library search" or command_topic.startswith("library search "):
         return _run_library_search(args, config, topic[len("library search") :].strip())
 
-    if topic.lower() == "queue list":
+    if command_topic == "queue list":
         return _run_queue_list(args, config)
-    if topic.lower() == "queue cover" or topic.lower().startswith("queue cover "):
+    if command_topic == "queue cover" or command_topic.startswith("queue cover "):
         return _run_queue_cover(args, config, topic[len("queue cover") :].strip())
 
     # Handle setup subcommand
-    if topic.lower() == "setup":
+    if command_topic == "setup":
         from lib import setup_wizard
         if "--openclaw" in extra_argv:
             results = setup_wizard.run_openclaw_setup(config)
@@ -3726,6 +3823,7 @@ def _main(
     if (
         topic
         and not args.diagnose
+        and not args.cached_report
         and not args.mock
         and not args.record_fixtures
         and env.read_secret_env("LAST30DAYS_API_KEY")
@@ -3893,6 +3991,9 @@ def _main(
             topic,
             ttl_seconds=_report_cache_ttl_seconds(config),
             x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
+            research_options=research_options,
+            requested_window=requested_window,
+            use_cached_envelopes=args.cached_report,
         )
         if cached is not None:
             cached_report, cached_entity_reports, cache_path = cached
@@ -3900,7 +4001,7 @@ def _main(
                 f"[last30days] Reusing cached report data from {cache_path}\n"
             )
             sys.stderr.flush()
-            if _freshness_enabled(args, config):
+            if not args.cached_report and _freshness_enabled(args, config):
                 _verify_report_set(
                     cached_report,
                     cached_entity_reports,
@@ -3914,6 +4015,9 @@ def _main(
             return _render_save_and_print(
                 args, cached_report, cached_entity_reports, synthesis_md, config
             )
+        if args.cached_report:
+            sys.stderr.write("[last30days] No matching cached report data; rerun research with recreated plans before exporting HTML.\n")
+            return 2
         sys.stderr.write(
             "[last30days] No matching cached report data for "
             "--emit=html --synthesis-file; running fresh research.\n"
@@ -4271,8 +4375,8 @@ def _main(
                         "See the skill's references/competitors.md for the full protocol.\n"
                         "\n"
                         "HEADLESS / CRON PATH (no hosting model available): set "
-                        "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "
-                        "PERPLEXITY_API_KEY / OPENROUTER_API_KEY and re-run.\n"
+                        "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY "
+                        "and re-run.\n"
                         "\n"
                         "MINIMUM ESCAPE HATCH: pass --competitors-list 'A,B,C' to skip "
                         "discovery. Without --competitors-plan, peer sub-runs fall back to "
@@ -4338,6 +4442,7 @@ def _main(
                 # An advertiser page is per-entity state by definition: left in
                 # place it would render one brand's ads as every peer's.
                 entity_config.pop("_meta_ads_page", None)
+                entity_config.pop("_dedicated_subreddits", None)
                 plan_entry = comp_plan.get(entity.strip().lower(), {})
                 resolved = {
                     "entity": entity,
@@ -4479,6 +4584,7 @@ def _main(
     _write_last_run(
         original_topic, report, entity_reports=entity_reports,
         x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
+        research_options=research_options,
     )
     # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
     # (for shell-exported users) and config (for users who set it in

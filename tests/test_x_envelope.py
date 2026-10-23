@@ -1293,8 +1293,14 @@ class TestCli:
         cfg_dir = tmp_path / "cfg"
         cfg_dir.mkdir(exist_ok=True)
         entity_reports = [("acme", _fake_report("acme")), ("globex", _fake_report("globex"))]
+        research_options = cli._cache_research_options(
+            cli.build_parser().parse_args(["acme vs globex", "--competitors-plan", plan])
+        )
         with mock.patch.object(cli.env, "CONFIG_DIR", cfg_dir):
-            assert cli._write_last_run("acme vs globex", entity_reports[0][1], entity_reports, x_envelope_sha256=digest)
+            assert cli._write_last_run(
+                "acme vs globex", entity_reports[0][1], entity_reports,
+                x_envelope_sha256=digest, research_options=research_options,
+            )
         argv = ["acme vs globex", "--competitors-plan", plan, "--emit", "html", "--synthesis-file", str(synth)]
         with mock.patch.object(cli, "_render_save_and_print", return_value=0) as render:
             rc, _, err = _cli(argv, tmp_path)

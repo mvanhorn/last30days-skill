@@ -49,6 +49,12 @@ def _engine_command(block):
 def test_documented_local_export_uses_runtime_skill_directory(tmp_path):
     blocks = re.findall(r"```bash\n(.*?)```", reference_text("save-html-brief"), re.DOTALL)
     env, output = _command_environment(tmp_path)
+    initial = subprocess.run(
+        [sys.executable, str(SKILL / "scripts/last30days.py"), env["TOPIC"],
+         "--mock", "--quick", "--search=reddit", "--no-browser-cookies"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert initial.returncode == 0, initial.stderr
     command = _engine_command(blocks[0])
     result = subprocess.run(
         [
@@ -75,7 +81,7 @@ def test_documented_publish_command_reaches_engine_parser(tmp_path):
     blocks = re.findall(r"```bash\n(.*?)```", reference_text("save-html-brief"), re.DOTALL)
     env, _ = _command_environment(tmp_path)
     result = subprocess.run(
-        ["bash", "-ec", "SCOPE_FLAGS=(--help)\n" + blocks[1]],
+        ["bash", "-ec", blocks[1].replace("--emit=html", "--help --emit=html", 1)],
         cwd=tmp_path,
         env=env,
         capture_output=True,

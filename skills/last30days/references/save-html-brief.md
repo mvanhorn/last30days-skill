@@ -47,16 +47,17 @@ KEY PATTERNS from the research:
 SYNTHESIS_EOF
 
 # 2. Convert the synthesis to a self-contained HTML file via the engine.
-#    REPLAY THE SAME SCOPE FLAGS as your original run (--plan, --hiring-signals,
-#    resolved --x-handle/--subreddits/etc). On a same-topic follow-up, the
-#    engine reuses the structured last-report cache at
+#    Use --cached-report with the same topic as your original run. The engine
+#    reuses the original scope and per-entity reports in the structured cache at
 #    ~/.config/last30days/last-report.json to build badge metadata and footer
 #    without re-running source fetchers. That cache is intentionally short-lived
 #    (default: one hour; tune with LAST30DAYS_REPORT_CACHE_TTL_SECONDS, or set
-#    it to 0 to disable reuse). If the cache is stale, missing, or for a
-#    different topic, stderr says "No matching cached report data" and the
-#    engine falls back to a fresh run; the same scope flags keep that fallback
-#    aligned with the synthesis body.
+#    it to 0 to disable reuse). Do not replay --plan, --competitors-plan, or
+#    --x-posts: their temporary files can already be removed. If the cache is
+#    stale, missing, or for a different topic, stderr says
+#    "No matching cached report data" and the command exits without research. Recreate the original
+#    research plans, rerun research with the original scope, and update the
+#    synthesis before retrying this export.
 SLUG=$(printf '%s\n' "${TOPIC}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
 # Render beside the destination, then create a new name atomically. The hard
 # link refuses existing paths even when another exporter wins the same name.
@@ -65,8 +66,8 @@ HTML_PATH=$(
   trap 'rm -f -- "${HTML_TMP}"' EXIT
   "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
     --emit=html \
+    --cached-report \
     --synthesis-file "${SYNTHESIS_FILE}" \
-    "${SCOPE_FLAGS[@]}" \
     >| "${HTML_TMP}" || exit "$?"
   "${LAST30DAYS_PYTHON}" - "${HTML_TMP}" "${LAST30DAYS_MEMORY_DIR}" "${SLUG}" << 'HTML_PATH_PY'
 from datetime import date
@@ -90,10 +91,7 @@ while True:
         break
 HTML_PATH_PY
 ) || exit "$?"
-#    where SCOPE_FLAGS is the same array you passed the first time, e.g.
-#    SCOPE_FLAGS=(--hiring-signals --plan "$QUERY_PLAN_FILE" --x-handle=acme).
-#    For a scoped --hiring-signals brief, --hiring-signals MUST be here too so
-#    the footer reflects the jobs-scoped board, not a generic crawl.
+#    The cached report preserves hiring scope and comparison targeting.
 
 # 3. Finish with the artifact handoff described below. Do not print the saved
 #    path from the shell block; the chat handoff is the single user-visible
@@ -131,10 +129,10 @@ When the user chooses the built-in `ht-ml.app` path, add `--publish-html` to the
 LAST30DAYS_PUBLISH_PASSWORD="${PUBLISH_PASSWORD:-}" \
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
   --emit=html \
+  --cached-report \
   --synthesis-file "$SYNTHESIS_FILE" \
   --output "$HTML_PATH" \
   --publish-html \
-  "${SCOPE_FLAGS[@]}" \
   >/dev/null
 ```
 
@@ -193,15 +191,15 @@ The renderer strips engine-internal noise that doesn't belong in a shareable art
 
 ## Comparison mode
 
-Same flow when the topic is `X vs Y` (or `X vs Y vs Z`). The engine routes through `render_for_html_comparison` internally; you don't need to do anything special. The synthesis temp file should still contain the comparison-shaped synthesis you wrote in chat (`## Quick Verdict`, `## {Entity}` per entity, `## Head-to-Head` table, `## The Bottom Line`, `## The emerging stack` per LAW 4 comparison exception).
+Same flow when the topic is `X vs Y` (or `X vs Y vs Z`). Use `--cached-report` without the deleted `--competitors-plan` and `--plan` files. The engine routes the stored entity reports through `render_for_html_comparison`. The synthesis temp file should still contain the comparison-shaped synthesis you wrote in chat (`## Quick Verdict`, `## {Entity}` per entity, `## Head-to-Head` table, `## The Bottom Line`, `## The emerging stack` per LAW 4 comparison exception).
 
 ## Follow-up turn
 
-If the user runs `/last30days OpenClaw` normally, sees the synthesis in chat, and THEN explicitly refers back to that visible synthesis ("save that as HTML", "make this shareable", "turn the above into HTML"), do the same save flow on the synthesis you wrote in the previous turn. Do not re-research; the synthesis is already in the conversation history. Just write it to the temp file and call the engine with `--emit=html --synthesis-file`, then use the normal-report-plus-HTML artifact block.
+If the user runs `/last30days OpenClaw` normally, sees the synthesis in chat, and THEN explicitly refers back to that visible synthesis ("save that as HTML", "make this shareable", "turn the above into HTML"), do the same save flow on the synthesis you wrote in the previous turn. Write the synthesis to the temp file. Call the engine with `--cached-report --emit=html --synthesis-file`. Use the normal-report-plus-HTML artifact block.
 
 If the follow-up instead asks for a new HTML deliverable ("give it to me in HTML", `--emit=html`, `--html`) rather than referring back to an already-visible report, treat it as HTML-as-deliverable mode.
 
-The engine will try to reuse `~/.config/last30days/last-report.json` for that second invocation when it is still within `LAST30DAYS_REPORT_CACHE_TTL_SECONDS` (default: one hour). If stderr says it is reusing cached report data, continue normally. If stderr says no matching cache exists, the cache may be stale; let the command finish only if you supplied the same scope flags as the original run. Otherwise stop and re-run with the original flags so the HTML footer does not describe a different dataset.
+The engine reuses `~/.config/last30days/last-report.json` when it is still within `LAST30DAYS_REPORT_CACHE_TTL_SECONDS` (default: one hour). If stderr says it is reusing cached report data, continue normally. If no matching cache exists, the command stops before research. Recreate the original plans, rerun the original research scope, and update the synthesis before exporting again.
 
 ## What NOT to do
 

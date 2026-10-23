@@ -107,6 +107,8 @@ def test_html_reference_documents_structured_cache_reuse():
     assert "No matching cached report data" in text
     assert "LAST30DAYS_REPORT_CACHE_TTL_SECONDS" in text
     assert "default: one hour" in text
+    assert "--cached-report" in text
+    assert "Do not replay --plan, --competitors-plan" in text
 
 
 def test_configuration_documents_report_cache_ttl():

@@ -25,7 +25,8 @@ import sys
 import time
 
 assert '--emit=html' in sys.argv
-assert '--hiring-signals' in sys.argv
+assert '--cached-report' in sys.argv
+assert '--plan' not in sys.argv and '--competitors-plan' not in sys.argv
 if ready_dir := os.environ.get('RENDER_READY_DIR'):
     ready = Path(ready_dir)
     (ready / str(os.getpid())).touch()

@@ -84,7 +84,14 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 			)), nil
 		}
 
-		runArgs := researchRunArgs(topic, emit, save)
+		saveDir := ""
+		if save {
+			saveDir, err = resolveSaveDir(ctx, cacheDir)
+			if err != nil {
+				return mcplib.NewToolResultError(err.Error()), nil
+			}
+		}
+		runArgs := researchRunArgs(topic, emit, saveDir)
 
 		res, runErr := engine.Run(ctx, engine.RunOptions{
 			CacheDir: cacheDir,
@@ -98,21 +105,17 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 	}
 }
 
-func researchRunArgs(topic, emit string, save bool) []string {
+func researchRunArgs(topic, emit, saveDir string) []string {
 	// Options first, positional topic last behind a `--` separator: a
 	// dash-prefixed topic must never be parsed as engine flags.
-	runArgs := []string{"--emit=" + emit}
+	runArgs := []string{"--research-only", "--emit=" + emit}
 	if !browserCookiesAllowed() {
 		runArgs = append(runArgs, "--no-browser-cookies")
 	}
 	// Always pass --save-dir explicitly. An empty value skips the engine's
 	// `is None` LAST30DAYS_MEMORY_DIR fallback and is falsy at the save
 	// gate, so declining to save writes nothing even when the env var set.
-	if save {
-		runArgs = append(runArgs, "--save-dir", mcpSaveDir())
-	} else {
-		runArgs = append(runArgs, "--save-dir", "")
-	}
+	runArgs = append(runArgs, "--save-dir", saveDir)
 	return append(runArgs, "--", topic)
 }
 
@@ -128,12 +131,15 @@ func browserCookiesAllowed() bool {
 		strings.EqualFold(raw, "on")
 }
 
-func mcpSaveDir() string {
-	saveDir := os.Getenv("LAST30DAYS_MEMORY_DIR")
-	if saveDir == "" {
-		return "~/Documents/Last30Days"
+func resolveSaveDir(ctx context.Context, cacheDir string) (string, error) {
+	res, err := engine.Run(ctx, engine.RunOptions{
+		CacheDir: cacheDir,
+		Args:     []string{"--resolve-save-dir"},
+	})
+	if err != nil {
+		return "", fmt.Errorf("save directory resolution failed: %s", formatRunError(err, res))
 	}
-	return saveDir
+	return strings.TrimSuffix(strings.TrimSuffix(string(res.Stdout), "\n"), "\r"), nil
 }
 
 func requireString(args map[string]any, name string) (string, error) {
