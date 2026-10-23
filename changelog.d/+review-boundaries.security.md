@@ -1,0 +1,1 @@
+Fixed MCP research dispatch so reserved topic names cannot invoke administrative commands. Protected existing password-store credentials when decryption fails, and sanitized Digg-attached X quotes so external content cannot forge the engine's evidence boundaries.
