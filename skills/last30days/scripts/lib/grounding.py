@@ -294,6 +294,19 @@ def _parse_serper_date(raw: str, now: datetime | None = None) -> str | None:
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+def configured_backend(config: dict) -> str | None:
+    """Return the first configured search API backend, excluding keyless search."""
+    for backend, key in (
+        ("brave", "BRAVE_API_KEY"),
+        ("exa", "EXA_API_KEY"),
+        ("serper", "SERPER_API_KEY"),
+        ("parallel", "PARALLEL_API_KEY"),
+    ):
+        if config.get(key):
+            return backend
+    return None
+
+
 def web_search(
     query: str,
     date_range: tuple[str, str],
@@ -302,21 +315,9 @@ def web_search(
 ) -> tuple[list[dict], dict]:
     """Run web search with the specified or auto-detected backend."""
     if backend == "auto":
-        if config.get("BRAVE_API_KEY"):
-            backend = "brave"
-        elif config.get("EXA_API_KEY"):
-            backend = "exa"
-        elif config.get("SERPER_API_KEY"):
-            backend = "serper"
-        elif config.get("PARALLEL_API_KEY"):
-            backend = "parallel"
-        elif env.keyless_web_allowed(config):
-            # No paid key and the host has no native search -> use the keyless
-            # floor. On a native-search host this branch is skipped (the model
-            # supplies web results itself), so the engine returns nothing here.
-            backend = "keyless"
-        else:
-            return [], {}
+        backend = configured_backend(config) or (
+            "keyless" if env.keyless_web_allowed(config) else "none"
+        )
     items: list[dict] = []
     artifact: dict = {}
     if backend == "brave":

@@ -117,9 +117,9 @@ Known keyword-trap classes and how to handle each:
 - Pattern: topic contains non-Latin characters (Hebrew [\u0590-\u05FF], Arabic [\u0600-\u06FF], CJK [\u4E00-\u9FFF], etc.).
 - Why it fails without intervention: Reddit, HackerNews, GitHub, and Polymarket are English-dominant platforms. A Hebrew brand like "קפה עלית" scores zero entity-matches across all four sources and returns only English-language noise as fallback padding.
 - Action: **Mandatory pre-flight steps for non-English topics:**
-  1. **Force `--web-backend brave`** in the engine command. Brave indexes non-English web (Ynet/Walla/Mako for Hebrew; Haber7/Hurriyet for Turkish; etc.) and is the only available source with real-language coverage.
+  1. **Leave `--web-backend` unset unless the user requested a specific backend.** The engine selects the first configured search API (Brave, Exa, Serper, then Parallel). Without a search API key, use the host's native web search when available; hosts without native search retain the engine's keyless web floor. Never force `--web-backend brave` because the topic is non-Latin; an explicit Brave selection requires a resolved `BRAVE_API_KEY`.
   2. **Skip `--subreddits` targeting unless the topic has a known English-speaking community.** Generic subreddits (r/food, r/Israel) return English noise; omit them or scope tightly to known bilingual communities.
-  3. **Note in the Resolved block:** "Non-English topic detected ([language]). Routing to `--web-backend brave`; Reddit/HN/GitHub will likely return zero on-topic results."
+  3. **Note in the Resolved block:** "Non-English topic detected ([language]). Using available web search in the topic's language; English-dominant sources may have limited on-topic coverage." Name a backend only when the engine or host reports that backend as available.
   4. **X/Twitter and YouTube are the highest-value missing sources for non-English topics.** Surface this clearly in the output so the user knows what would unlock deeper coverage.
 - Do NOT skip this class check for mixed-script queries (e.g. "קפה עלית Elite Coffee") - if any non-Latin characters are present, Class 5 applies.
 
@@ -171,7 +171,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--devto-tags={t1,t2}` | Step 0.55 | Tech topics: 1-3 lowercase tags (`claudecode,ai`); enables dev.to |
 | `--tiktok-creators={c1,c2,...}` | Step 0.55 | Creator / influencer / brand topics |
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
-| `--web-backend brave` | Step 0.45 Class 5 | **MANDATORY** for non-Latin-script topics (Hebrew, Arabic, CJK, etc.) — Brave is the only source that indexes non-English web |
+| `--web-backend {backend}` | Explicit user request | Non-Latin text alone does not require an override. Leave unset for automatic selection; an explicit API backend requires its corresponding resolved credential. |
 | `--web-backend parallel-mcp` | Explicit user request only | Use only when the user asks to use Parallel Search MCP. This opts the run into sending its search objective and queries to `https://search.parallel.ai/mcp`; never select it automatically. Anonymous use sends no authorization header; an existing `PARALLEL_API_KEY` is sent as Bearer auth. |
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
 
