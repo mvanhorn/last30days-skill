@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import log, usage
+from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
 # One copy of the snowflake, handle-grammar, and generated-sequence helpers
 # lives in x_api; grok_x keeps its private names for its callers and
@@ -129,7 +130,7 @@ def _fanout_queries(topic: str, from_date: str, to_date: str, calls: int) -> Lis
     (person/product). "Rome Italy" → no phrase-quote (place/disambiguation).
     "Peter Steinberger" → phrase-quote in one variant (proper name).
     """
-    window = f"since:{from_date} until:{to_date}"
+    window = x_date_filters(from_date, to_date)
     # First variant: unquoted AND (multi-word topics naturally AND their terms)
     variants = [
         f"{topic} {window}",
@@ -424,7 +425,7 @@ def _validate_items(
         created = _decode_snowflake(item.get("post_id"))
         if created is None:
             continue
-        if not (lo <= created <= hi.replace(hour=23, minute=59, second=59)):
+        if not (lo.date() <= created.date() <= hi.date()):
             continue
         kept.append(item)
 
@@ -1133,9 +1134,9 @@ def search_handles(
             continue
         # AND topic only when explicitly requested (extracted handles)
         if and_topic and topic:
-            query = f"from:{clean} {topic} since:{from_date} until:{to_date}"
+            query = f"from:{clean} {topic} {x_date_filters(from_date, to_date)}"
         else:
-            query = f"from:{clean} since:{from_date} until:{to_date}"
+            query = f"from:{clean} {x_date_filters(from_date, to_date)}"
         items, _, revoked = _run_query(
             query,
             from_date, to_date, limit=count_per, relevance_topic=topic,
@@ -1176,7 +1177,7 @@ def search_mentions(
         if not clean:
             continue
         items, _, revoked = _run_query(
-            f"@{clean} -from:{clean} since:{from_date} until:{to_date}",
+            f"@{clean} -from:{clean} {x_date_filters(from_date, to_date)}",
             from_date, to_date, limit=count_per, relevance_topic=topic,
             attempts=1, deadline=deadline, cancel=cancel,
         )
@@ -1225,7 +1226,7 @@ def search_name(
     )
     query = " ".join(
         part for part in
-        [phrase, excludes, f"min_faves:{min_faves}", f"since:{from_date}", f"until:{to_date}"]
+        [phrase, excludes, f"min_faves:{min_faves}", x_date_filters(from_date, to_date)]
         if part
     )
     items, _, revoked = _run_query(

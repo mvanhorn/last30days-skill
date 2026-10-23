@@ -240,8 +240,8 @@ class TestSearchXquik(unittest.TestCase):
         self.assertEqual(
             [parse_qs(urlsplit(call.args[0]).query)["q"][0] for call in mock_get.call_args_list],
             [
-                "test topic since:2026-01-01 until:2026-03-01",
-                "topic variant since:2026-01-01 until:2026-03-01",
+                "test topic since:2026-01-01 until:2026-03-02",
+                "topic variant since:2026-01-01 until:2026-03-02",
             ],
         )
         self.assertEqual(

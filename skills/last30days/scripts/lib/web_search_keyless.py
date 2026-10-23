@@ -161,8 +161,7 @@ def _search_startpage(query: str, count: int) -> list[dict]:
         return []
     items: list[dict] = []
     result_matches = list(_SP_RESULT_RE.finditer(text))
-    desc_matches = list(_SP_DESC_RE.finditer(text))
-    for match in result_matches:
+    for idx, match in enumerate(result_matches):
         if len(items) >= count:
             break
         target = html.unescape(match.group("href"))
@@ -172,12 +171,9 @@ def _search_startpage(query: str, count: int) -> list[dict]:
         title = _strip_html(h2.group("title") if h2 else match.group("inner"))
         if not title:
             continue
-        # First description block that appears after this result's title anchor.
-        snippet = ""
-        for desc in desc_matches:
-            if desc.start() > match.end():
-                snippet = _strip_html(desc.group("snippet"))
-                break
+        next_start = result_matches[idx + 1].start() if idx + 1 < len(result_matches) else len(text)
+        desc = _SP_DESC_RE.search(text, match.end(), next_start)
+        snippet = _strip_html(desc.group("snippet")) if desc else ""
         items.append(_to_item(len(items), title, target, snippet))
     return items
 

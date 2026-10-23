@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from . import http, log
+from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
 from .x_api import is_own_post
 
@@ -88,7 +89,7 @@ def search_xquik(
     Args:
         topic: Search topic
         from_date: Start date (YYYY-MM-DD)
-        to_date: End date (YYYY-MM-DD)
+        to_date: Inclusive end date (YYYY-MM-DD)
         depth: Research depth - "quick", "default", or "deep"
         token: Xquik API key
         deadline: Optional shared wall-clock deadline (``time.monotonic()``
@@ -111,7 +112,7 @@ def search_xquik(
         if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
             _log("chain deadline reached; skipping remaining queries")
             return {"items": all_items, "error": "Xquik research cancelled or timed out"}
-        q = f"{query_text} since:{from_date} until:{to_date}"
+        q = f"{query_text} {x_date_filters(from_date, to_date)}"
         items, auth_error = _execute_search(
             q, cfg["limit"], token,
             label=query_text, id_prefix="XQ",
@@ -256,7 +257,7 @@ def search_handles(
         handle = str(raw).lstrip("@").strip()
         if not handle:
             continue
-        q = f"from:{handle} since:{from_date} until:{to_date}"
+        q = f"from:{handle} {x_date_filters(from_date, to_date)}"
         got, auth_error = _execute_search(
             q, count_per, token,
             label=f"from:{handle}", id_prefix="XF",
@@ -311,7 +312,7 @@ def search_mentions(
         handle = str(raw).lstrip("@").strip()
         if not handle:
             continue
-        q = f"@{handle} since:{from_date} until:{to_date}"
+        q = f"@{handle} {x_date_filters(from_date, to_date)}"
         got, auth_error = _execute_search(
             q, count_per, token,
             label=f"@{handle}", id_prefix="XA",

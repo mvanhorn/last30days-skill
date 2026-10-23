@@ -1,7 +1,16 @@
 """Date utilities for last30days skill."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Tuple
+
+
+def x_date_filters(from_date: str, to_date: str) -> str:
+    """Translate an inclusive research window to X search operators."""
+    filters = f"since:{from_date}"
+    end = date.fromisoformat(to_date)
+    if end != date.max:
+        filters += f" until:{(end + timedelta(days=1)).isoformat()}"
+    return filters
 
 
 def parse_as_of_date(as_of_date: Optional[str]) -> Optional[str]:

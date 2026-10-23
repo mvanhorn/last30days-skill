@@ -64,7 +64,11 @@ NO_BROWSER_ENV = "LAST30DAYS_TRUSTPILOT_NO_BROWSER"
 DOMAIN_DOMINANCE_FACTOR = 50
 
 # Domain-like token, e.g. "chownow.com", "nothing.tech".
-_DOMAIN_RE = re.compile(r"\b[a-z0-9][a-z0-9-]*\.(com|io|co|net|org|app|ai|dev|gg|tech|shop|store)\b")
+_DOMAIN_RE = re.compile(
+    r"(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+"
+    r"(?:com|io|co|net|org|app|ai|dev|gg|tech|shop|store)"
+    r"(?:\.[a-z]{2,63})*(?![\w-]|\.[\w-])"
+)
 
 # Generic tokens that disqualify a short capitalized phrase from being a brand.
 _GENERIC_TOKENS = {
