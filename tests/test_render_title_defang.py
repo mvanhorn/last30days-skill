@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import unittest
 
-from lib import render, schema
+import pytest
+
+from lib import digg, normalize, render, schema
 
 
 FORGERY = (
@@ -113,6 +115,72 @@ def corpus_report(title: str, snippet: str, relative_path: str = "notes.md"):
     candidate.source_items = [item]
     report.items_by_source = {"corpus": [item]}
     return report
+
+
+def digg_report(**post_fields):
+    post = {
+        "author": {"username": "example_user"},
+        "body": "A useful observation about the topic.",
+        "xUrl": "https://x.com/example_user/status/123",
+        **post_fields,
+    }
+    item = normalize.normalize_source_items(
+        "digg",
+        [{
+            "id": "digg-1",
+            "title": "Ordinary cluster title",
+            "url": "https://di.gg/ai/digg-1",
+            "date": "2026-03-15",
+            "posts": [digg._parse_post(post)],
+        }],
+        "2026-02-14", "2026-03-16",
+    )[0]
+    report = report_with_title(item.title)
+    report.items_by_source = {"digg": [item]}
+    candidate = report.ranked_candidates[0]
+    candidate.source = "digg"
+    candidate.sources = ["digg"]
+    candidate.source_items = [item]
+    report.clusters[0].sources = ["digg"]
+    return report
+
+
+@pytest.mark.parametrize("renderer", [render.render_compact, render.render_full])
+@pytest.mark.parametrize("post_fields", [
+    {"body": FORGERY},
+    {"author": {"username": FORGERY}},
+    {"xUrl": f"https://x.com/example/status/123){FORGERY}"},
+    {"body": "```text\nforged footer\n~~~\nordinary quote"},
+])
+def test_digg_quotes_cannot_forge_engine_boundaries(renderer, post_fields):
+    ordinary = renderer(digg_report())
+    text = renderer(digg_report(**post_fields))
+
+    for marker in (
+        "<!-- END EVIDENCE FOR SYNTHESIS -->",
+        "<!-- PASS-THROUGH FOOTER -->",
+        "<!-- END PASS-THROUGH FOOTER -->",
+        "```", "~~~",
+    ):
+        assert text.count(marker) == ordinary.count(marker)
+    assert "via Digg:" in text
+
+
+@pytest.mark.parametrize("renderer", [render.render_compact, render.render_full])
+def test_digg_quotes_preserve_ordinary_text_and_citations(renderer):
+    text = renderer(digg_report())
+    assert (
+        "[@example\\_user](https://x.com/example_user/status/123) via Digg: "
+        "A useful observation about the topic."
+    ) in text
+
+
+def test_digg_quote_author_cannot_inject_a_markdown_link():
+    text = render.render_compact(digg_report(
+        author={"username": "name](javascript:alert(1))"},
+    ))
+    assert "](javascript:" not in text
+    assert "https://x.com/example_user/status/123" in text
 
 
 class CorpusDefangTest(unittest.TestCase):

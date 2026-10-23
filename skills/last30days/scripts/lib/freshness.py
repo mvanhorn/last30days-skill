@@ -334,8 +334,12 @@ def _newer_status_contradiction(
                 for token in re.findall(r"[A-Za-z0-9]+", match.group("subject"))
                 if len(token) >= 3
             ]
-            if asserted_subject == subject_tokens and match.group("status").lower() == opposite:
-                return item
+            if asserted_subject == subject_tokens:
+                status = match.group("status").lower()
+                if status == opposite:
+                    return item
+                if status == claim.original_value:
+                    return None
     return None
 
 

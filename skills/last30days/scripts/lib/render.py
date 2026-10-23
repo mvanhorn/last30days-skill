@@ -1765,7 +1765,7 @@ def _escape_markdown_plain_text(value: str) -> str:
     return _MARKDOWN_PLAIN_TEXT_ESCAPES.sub(r"\\\1", value)
 
 
-def _markdown_url_link(url: str) -> str:
+def _markdown_url_link(url: str, *, label: str | None = None) -> str:
     """Render ``url`` as a markdown link when it's safe to, else escaped text.
 
     Source URLs are untrusted API responses, not authored content: `(`/`)`/
@@ -1800,9 +1800,11 @@ def _markdown_url_link(url: str) -> str:
         except ValueError:
             safe_destination = False
 
+    display = sanitized_url if label is None else _escape_markdown_plain_text(label)
     if safe_destination:
-        return f"[{sanitized_url}]({sanitized_url})"
-    return _escape_markdown_plain_text(sanitized_url)
+        return f"[{display}]({sanitized_url})"
+    escaped_url = _escape_markdown_plain_text(sanitized_url)
+    return escaped_url if label is None else f"{display} ({escaped_url})"
 
 
 def render_full(report: schema.Report, save_path: str | None = None) -> str:
@@ -3721,15 +3723,15 @@ def _digg_posts_for(item: schema.SourceItem | None, limit: int = 3) -> list[dict
 
 def _format_digg_quote(post: dict, body_limit: int = 200) -> str:
     """Format a Digg-attached X post as an inline 'via Digg' quote line."""
-    handle = post.get("username") or ""
-    x_url = post.get("x_url") or ""
-    body = (post.get("body") or "").replace("\n", " ").strip()
-    if len(body) > body_limit:
-        body = body[: body_limit - 1].rstrip() + "…"
+    handle = _safe_title(post.get("username") or "")
+    x_url = _defang_engine_sentinels(post.get("x_url") or "")
+    body = _format_untrusted_evidence(
+        " ".join((post.get("body") or "").split()), body_limit,
+    )
     if x_url and handle:
-        return f"[@{handle}]({x_url}) via Digg: {body}"
+        return f"{_markdown_url_link(x_url, label=f'@{handle}')} via Digg: {body}"
     if handle:
-        return f"@{handle} via Digg: {body}"
+        return f"@{_escape_markdown_plain_text(handle)} via Digg: {body}"
     return f"via Digg: {body}"
 
 

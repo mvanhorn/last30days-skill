@@ -807,25 +807,27 @@ def _candidate_haystack(candidate: schema.Candidate) -> str:
     would see.
     """
     parts: list[str] = [candidate.title or "", candidate.snippet or ""]
-    metadata = candidate.metadata or {}
+    metadata_sources = [candidate.metadata or {}]
+    metadata_sources.extend(item.metadata or {} for item in candidate.source_items)
 
-    transcript_snippet = metadata.get("transcript_snippet") or ""
-    if isinstance(transcript_snippet, str):
-        parts.append(transcript_snippet)
+    for metadata in metadata_sources:
+        transcript_snippet = metadata.get("transcript_snippet") or ""
+        if isinstance(transcript_snippet, str):
+            parts.append(transcript_snippet)
 
-    for hl in metadata.get("transcript_highlights") or []:
-        if isinstance(hl, str):
-            parts.append(hl)
+        for hl in metadata.get("transcript_highlights") or []:
+            if isinstance(hl, str):
+                parts.append(hl)
 
-    for tc in metadata.get("top_comments") or []:
-        if isinstance(tc, dict):
-            parts.append(str(tc.get("excerpt", "") or tc.get("text", "") or ""))
-        elif isinstance(tc, str):
-            parts.append(tc)
+        for tc in metadata.get("top_comments") or []:
+            if isinstance(tc, dict):
+                parts.append(str(tc.get("excerpt", "") or tc.get("text", "") or ""))
+            elif isinstance(tc, str):
+                parts.append(tc)
 
-    for insight in metadata.get("comment_insights") or []:
-        if isinstance(insight, str):
-            parts.append(insight)
+        for insight in metadata.get("comment_insights") or []:
+            if isinstance(insight, str):
+                parts.append(insight)
 
     return " ".join(parts).lower()
 

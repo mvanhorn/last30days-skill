@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import last30days as cli
 from lib import freshness, github, health, hosted, http, planner, polymarket, render, schema, stocktwits
 
@@ -324,6 +326,75 @@ def test_status_assertion_without_positive_rederivation_is_unsupported():
 
     assert verdict.verdict == "unsupported"
     assert "re-derived" in (verdict.detail or "")
+
+
+@pytest.mark.parametrize("original_status, opposite_status", [
+    ("open", "closed"), ("closed", "open"),
+])
+def test_latest_matching_status_blocks_an_intermediate_contradiction(
+    original_status, opposite_status,
+):
+    original = _item(
+        "reddit", item_id="original",
+        title=f"Widget API is {original_status}",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    intermediate = _item(
+        "grounding", item_id="intermediate",
+        title=f"Widget API is {opposite_status}",
+        published_at="2026-07-05T10:00:00Z",
+        url="https://status.example.com/widget/intermediate",
+    )
+    latest = _item(
+        "grounding", item_id="latest",
+        title=f"Widget API is {original_status}",
+        published_at="2026-07-09T10:00:00Z",
+        url="https://status.example.com/widget/latest",
+    )
+    unrelated = _item(
+        "grounding", item_id="unrelated",
+        title=f"Other API is {opposite_status}",
+        published_at="2026-07-10T10:00:00Z",
+    )
+    report = _report(original, latest, intermediate, unrelated)
+
+    verdicts = freshness.verify_report(report)
+    by_item = {verdict.source_item_id: verdict for verdict in verdicts}
+
+    assert by_item[original.item_id].verdict == "unsupported"
+    assert by_item[original.item_id].current_value is None
+    assert by_item[original.item_id].evidence_url == ""
+    assert by_item[intermediate.item_id].verdict == "contradicted"
+    assert by_item[intermediate.item_id].current_value == original_status
+    assert by_item[intermediate.item_id].evidence_url == latest.url
+    assert by_item[intermediate.item_id].evidence_timestamp == latest.published_at
+
+
+def test_newest_opposite_status_wins_over_intermediate_agreement():
+    original = _item(
+        "reddit", item_id="original", title="Widget API is open",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    report = _report(original)
+    latest = _item(
+        "grounding", item_id="latest", title="Widget API is closed",
+        published_at="2026-07-09T10:00:00Z",
+        url="https://status.example.com/widget/latest",
+    )
+    report.items_by_source["grounding"] = [
+        _item(
+            "grounding", item_id="intermediate", title="Widget API is open",
+            published_at="2026-07-05T10:00:00Z",
+        ),
+        latest,
+    ]
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "contradicted"
+    assert verdict.current_value == "closed"
+    assert verdict.evidence_url == latest.url
+    assert verdict.evidence_timestamp == latest.published_at
 
 
 def test_status_contradiction_requires_subject_bound_to_opposite_status():
