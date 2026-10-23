@@ -397,6 +397,65 @@ def test_newest_opposite_status_wins_over_intermediate_agreement():
     assert verdict.evidence_timestamp == latest.published_at
 
 
+@pytest.mark.parametrize("original_status, opposite_status", [
+    ("open", "closed"), ("closed", "open"),
+])
+@pytest.mark.parametrize("agreement_field, contradiction_field", [
+    ("title", "snippet"), ("title", "body"),
+    ("snippet", "body"), ("body", "title"),
+])
+def test_newest_item_agreement_cannot_hide_its_contradictory_assertion(
+    original_status, opposite_status, agreement_field, contradiction_field,
+):
+    original = _item(
+        "reddit", item_id="original", title=f"Widget API is {original_status}",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    fields = {"title": "Status update", "snippet": "", "body": ""}
+    fields[agreement_field] = f"Widget API was {original_status}"
+    fields[contradiction_field] = f"Widget API is {opposite_status}"
+    latest = _item(
+        "grounding", item_id="latest", **fields,
+        published_at="2026-07-09T10:00:00Z",
+        url="https://status.example.com/widget/latest",
+    )
+    report = _report(original)
+    report.items_by_source["grounding"] = [latest]
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "contradicted"
+    assert verdict.current_value == opposite_status
+    assert verdict.evidence_url == latest.url
+    assert verdict.evidence_timestamp == latest.published_at
+
+
+@pytest.mark.parametrize("unrelated_status", ["closed", "open"])
+def test_newest_item_agreement_ignores_another_subjects_status(unrelated_status):
+    original = _item(
+        "reddit", item_id="original", title="Widget API is open",
+        published_at="2026-07-01T10:00:00Z",
+    )
+    report = _report(original)
+    report.items_by_source["grounding"] = [
+        _item(
+            "grounding", item_id="intermediate", title="Widget API is closed",
+            published_at="2026-07-05T10:00:00Z",
+        ),
+        _item(
+            "grounding", item_id="latest", title="Widget API is open",
+            snippet=f"Other API is {unrelated_status}",
+            published_at="2026-07-09T10:00:00Z",
+        ),
+    ]
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "unsupported"
+    assert verdict.current_value is None
+    assert verdict.evidence_url == ""
+
+
 def test_status_contradiction_requires_subject_bound_to_opposite_status():
     original = _item(
         "reddit",

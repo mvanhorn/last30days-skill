@@ -328,6 +328,7 @@ def _newer_status_contradiction(
     candidates.sort(key=lambda item: item.published_at or "", reverse=True)
     for item in candidates:
         text = f"{item.title} {item.snippet} {item.body}"
+        agrees = False
         for match in _STATUS_PATTERN.finditer(text):
             asserted_subject = [
                 token.lower()
@@ -339,7 +340,9 @@ def _newer_status_contradiction(
                 if status == opposite:
                     return item
                 if status == claim.original_value:
-                    return None
+                    agrees = True
+        if agrees:
+            return None
     return None
 
 
