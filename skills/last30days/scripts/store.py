@@ -598,7 +598,7 @@ def store_findings(
             new_engagement = f.get("engagement_score") or 0
             if existing:
                 update_rows.append((
-                    max(new_engagement, existing["engagement_score"] or 0),
+                    new_engagement,
                     run_id,
                     existing["id"],
                 ))
@@ -621,7 +621,7 @@ def store_findings(
                 """UPDATE findings SET
                        last_seen = datetime('now'),
                        sighting_count = sighting_count + 1,
-                       engagement_score = ?,
+                       engagement_score = max(coalesce(engagement_score, 0), ?),
                        run_id = ?
                    WHERE id = ?""",
                 update_rows,
