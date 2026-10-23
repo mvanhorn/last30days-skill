@@ -565,6 +565,33 @@ class TestStaleNudgeRequiresActualFetchFailures:
         assert "youtube" in q["core_degraded"]
 
 
+class TestYouTubeTimeoutIsNotStaleBinary:
+    """An engine timeout must not prescribe a yt-dlp upgrade."""
+
+    def test_timeout_names_the_timeout_without_upgrade_advice(self):
+        from lib import prescriptions
+
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={"youtube_error": "youtube timed out after 180s"},
+        )
+        stale = prescriptions.get("youtube", "ytdlp_stale")
+        assert q["core_errored"] == ["youtube"]
+        assert "youtube timed out after 180s" in q["nudge_text"]
+        assert "update yt-dlp" not in q["nudge_text"]
+        assert stale.fix_cli not in q["nudge_text"]
+
+    def test_other_errors_keep_upgrade_advice(self):
+        from lib import prescriptions
+
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={"youtube_error": "ERROR: Unable to extract video data"},
+        )
+        stale = prescriptions.get("youtube", "ytdlp_stale")
+        assert f"YouTube errored - update yt-dlp: {stale.fix_cli}" in q["nudge_text"]
+
+
 class TestInstagramSilentFailure:
     """Instagram is a `bonus` source via SC. Silent-failure detection: if SC
     is configured but the source returned zero items, surface a nudge so the
