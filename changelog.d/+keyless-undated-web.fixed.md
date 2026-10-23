@@ -1,0 +1,1 @@
+Keyless web results (SearXNG, DuckDuckGo, Startpage) no longer vanish because they carry no date: undated web results are kept and labelled `date unknown [date:low]`, while results with a known out-of-window date are still dropped. Follow-up to #928 / #1038.

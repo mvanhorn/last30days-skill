@@ -101,7 +101,11 @@ def normalize_source_items(
         # Simulation" miss: 26 open roles filtered to 3 by a 30-day window).
         # Keep the full board; recency is annotated, not used to drop.
         return normalized
-    require_date = source == "grounding"
+    # Undated web (grounding) results are kept and labelled date_confidence
+    # "low" like every other source; only a KNOWN out-of-window date drops an
+    # item. Keyless backends (SearXNG/DuckDuckGo/Startpage) never supply dates,
+    # so requiring one emptied the whole web lane (follow-up to #928/#1038).
+    require_date = False
     filtered = filter_by_date_range(
         normalized, from_date, to_date, require_date=require_date
     )
