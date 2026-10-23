@@ -7,6 +7,8 @@ name. The third is not redundant with the second -- most discussion never
 """
 
 import inspect
+import json
+import subprocess
 
 import pytest
 
@@ -78,7 +80,7 @@ def test_name_lane_failure_does_not_abort_the_run():
     assert "NAME-lane" in block
 
 
-def test_by_lane_does_not_and_the_topic_by_default():
+def test_by_lane_does_not_and_the_topic_by_default(monkeypatch):
     """A prior defect emptied the from-lane by ANDing the topic into it.
 
     The `and_topic` parameter now exists for extracted handles that need to
@@ -87,13 +89,35 @@ def test_by_lane_does_not_and_the_topic_by_default():
     from lib import grok_x
     sig = inspect.signature(grok_x.search_handles)
     assert "topic" in sig.parameters
-    # and_topic parameter should default to False
     assert "and_topic" in sig.parameters
     assert sig.parameters["and_topic"].default is False
-    body = inspect.getsource(grok_x.search_handles)
-    assert "from:{clean}" in body
-    # The default path (and_topic=False) should not include {topic} in the query
-    assert 'query = f"from:{clean} since:{from_date}' in body
+    queries = []
+    post_url = "https://x.com/steipete/status/2087568620465607078"
+
+    def run(cmd, **kwargs):
+        if "--version" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "grok 1.0.46 (2765805b9442) [stable]", "")
+        prompt = cmd[cmd.index("-p") + 1]
+        prefix = "Query (JSON string literal): "
+        query_lines = [line[len(prefix):] for line in prompt.splitlines() if line.startswith(prefix)]
+        assert len(query_lines) == 1
+        queries.append(json.loads(query_lines[0]))
+        posts = [{"url": post_url, "text": "Released a new agent toolkit.", "likes": 10}]
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(posts), "")
+
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/dummy/grok")
+    monkeypatch.setattr(grok_x.subprocess, "run", run)
+    for options in ({}, {"and_topic": True}):
+        items, revoked = grok_x.search_handles(
+            ["steipete"], "Peter Steinberger", "2026-07-14", "2026-08-13", **options
+        )
+        assert [item["url"] for item in items] == [post_url]
+        assert revoked is False
+
+    assert queries == [
+        "from:steipete since:2026-07-14 until:2026-08-14",
+        "from:steipete Peter Steinberger since:2026-07-14 until:2026-08-14",
+    ]
 
 
 
