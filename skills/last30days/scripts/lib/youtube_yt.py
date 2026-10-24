@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
@@ -202,6 +203,24 @@ def sc_spend_until(
         _sc_spend_limit.reset(token)
 
 
+# The pipeline discards a lane that is still running at its deadline, so the
+# lane must hand back what it found this long before that moment.
+_LANE_RETURN_MARGIN_SECONDS = 10.0
+
+
+def _lane_seconds_left() -> Optional[float]:
+    """Seconds until this lane must return its results, or None if unbounded."""
+    limit = _sc_spend_limit.get()
+    if limit is None or limit.deadline is None:
+        return None
+    return limit.deadline - _LANE_RETURN_MARGIN_SECONDS - time.monotonic()
+
+
+def _lane_out_of_time() -> bool:
+    seconds_left = _lane_seconds_left()
+    return seconds_left is not None and seconds_left <= 0
+
+
 def _sc_spend_blocked(what: str) -> bool:
     """True (and logged) when the run is over and ``what`` must not be paid for."""
     limit = _sc_spend_limit.get()
@@ -257,9 +276,23 @@ def _search_timeout() -> float:
 
 
 def _run_ytdlp(cmd: List[str], *, timeout: float) -> subproc.SubprocResult:
-    """Run a yt-dlp (or SSH-wrapped) command under the process-wide concurrency gate."""
-    with _ytdlp_slots:
-        return subproc.run_with_timeout(cmd, timeout=timeout)
+    """Run a yt-dlp (or SSH-wrapped) command under the process-wide concurrency gate.
+
+    The wait for a slot and the run itself both end when the lane must return.
+    """
+    seconds_left = _lane_seconds_left()
+    if seconds_left is None:
+        with _ytdlp_slots:
+            return subproc.run_with_timeout(cmd, timeout=timeout)
+    if not _ytdlp_slots.acquire(timeout=max(0.0, seconds_left)):
+        raise subproc.SubprocTimeout("no yt-dlp slot before the lane deadline", started=False)
+    try:
+        seconds_left = _lane_seconds_left() or 0.0
+        if seconds_left <= 0:
+            raise subproc.SubprocTimeout("lane deadline passed", started=False)
+        return subproc.run_with_timeout(cmd, timeout=min(timeout, seconds_left))
+    finally:
+        _ytdlp_slots.release()
 
 
 def _claim_search_slot(
@@ -1210,7 +1243,9 @@ def fetch_transcript(
     # the video was not proven caption-less, fall back to the SC transcript
     # endpoint (fetched server-side: no 429, cookies, or PO tokens). Returns
     # already-cleaned, word-capped plaintext.
-    if token and _should_try_sc_transcript(status):
+    # Past the lane deadline yt-dlp failed because it was not allowed to run,
+    # and nobody will read a transcript bought now.
+    if token and _should_try_sc_transcript(status) and not _lane_out_of_time():
         sc_transcript = _sc_fetch_transcript(video_id, token)
         if sc_transcript:
             # The keyless cascade (yt-dlp / direct HTTP) already logged its
@@ -1249,7 +1284,8 @@ def fetch_transcripts_parallel(
             yt-dlp failure. None preserves keyless behavior.
 
     Returns:
-        Dict mapping video_id to transcript text (or None).
+        Dict mapping video_id to transcript text (or None). A video still
+        fetching when the lane ran out of time has no entry.
     """
     if not video_ids:
         return {}
@@ -1258,24 +1294,36 @@ def fetch_transcripts_parallel(
 
     results = {}
     statuses: Dict[str, Dict[str, Any]] = {vid: {} for vid in video_ids}
-    with tempfile.TemporaryDirectory() as temp_dir:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    unfinished: List[str] = []
+    seconds_left = _lane_seconds_left()
+    # A yt-dlp child killed at the lane deadline can still be writing here.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {
                 http.submit_with_context(
                     executor, fetch_transcript, vid, temp_dir, statuses[vid], token,
                 ): vid
                 for vid in video_ids
             }
-            for future in as_completed(futures):
-                vid = futures[future]
-                try:
-                    results[vid] = future.result()
-                except OSError as exc:
-                    _log(f"Transcript fetch error for {vid}: {exc}")
-                    results[vid] = None
-                except Exception as exc:
-                    _log(f"Unexpected transcript error for {vid}: {type(exc).__name__}: {exc}")
-                    results[vid] = None
+            try:
+                for future in as_completed(
+                    futures, timeout=None if seconds_left is None else max(0.0, seconds_left),
+                ):
+                    vid = futures[future]
+                    try:
+                        results[vid] = future.result()
+                    except OSError as exc:
+                        _log(f"Transcript fetch error for {vid}: {exc}")
+                        results[vid] = None
+                    except Exception as exc:
+                        _log(f"Unexpected transcript error for {vid}: {type(exc).__name__}: {exc}")
+                        results[vid] = None
+            except FuturesTimeout:
+                unfinished = [vid for future, vid in futures.items() if vid not in results]
+                _log(f"Stopped waiting for {len(unfinished)} transcripts: the lane is out of time")
+        finally:
+            executor.shutdown(wait=not unfinished, cancel_futures=bool(unfinished))
 
     if out_captions_disabled is not None:
         for vid, st in statuses.items():
@@ -1411,7 +1459,12 @@ def search_and_transcribe(
     seen_ids: Set[str] = set()
     items: List[Dict[str, Any]] = []
     search_error: Optional[str] = None
-    for q in queries:
+    skipped_queries = 0
+    for done_queries, q in enumerate(queries):
+        if items and _lane_out_of_time():
+            skipped_queries = len(queries) - done_queries
+            _log(f"Skipping {skipped_queries} YouTube searches: the lane is out of time")
+            break
         search_result = search_youtube(
             q, from_date, to_date, depth, freshness_mode=freshness_mode,
         )
@@ -1428,7 +1481,10 @@ def search_and_transcribe(
     items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
 
     if not items:
-        return {"items": [], **({"error": search_error} if search_error else {})}
+        result = {"items": [], **({"error": search_error} if search_error else {})}
+        if _lane_out_of_time():
+            result["out_of_time"] = "no search finished before the stream deadline"
+        return result
 
     # Step 2: Fetch transcripts for top videos.
     # Sort candidates by a combination of views and recency so that recent
@@ -1440,6 +1496,7 @@ def search_and_transcribe(
     transcript_limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
     transcripts: Dict[str, Optional[str]] = {}
     captions_disabled_ids: Set[str] = set()
+    unfinished_ids: Set[str] = set()
     if transcript_limit > 0:
         attempt_count = min(len(items), transcript_limit * 3)
         transcript_candidates = sorted(
@@ -1451,11 +1508,14 @@ def search_and_transcribe(
             candidate_ids, out_captions_disabled=captions_disabled_ids,
             token=token,
         )
+        unfinished_ids = {vid for vid in candidate_ids if vid not in transcripts}
         # Record fetch outcomes (captions-disabled videos can never succeed,
-        # so they don't count as failures) for the stale-yt-dlp nudge.
-        _TRANSCRIPT_FETCH_STATS["attempts"] += len(candidate_ids)
+        # and unfinished ones never ran to an answer, so neither counts as a
+        # failure) for the stale-yt-dlp nudge.
+        finished_ids = [vid for vid in candidate_ids if vid not in unfinished_ids]
+        _TRANSCRIPT_FETCH_STATS["attempts"] += len(finished_ids)
         _TRANSCRIPT_FETCH_STATS["failures"] += sum(
-            1 for vid in candidate_ids
+            1 for vid in finished_ids
             if not transcripts.get(vid) and vid not in captions_disabled_ids
         )
     else:
@@ -1480,6 +1540,17 @@ def search_and_transcribe(
         # Partial coverage: some queries succeeded; keep the failure visible so
         # source_status becomes partial/timeout rather than a quiet OK.
         result["error"] = search_error
+    cut = []
+    if skipped_queries:
+        cut.append(f"skipped {skipped_queries} of {len(queries)} searches")
+    if unfinished_ids:
+        cut.append(f"left {len(unfinished_ids)} of {len(candidate_ids)} transcript fetches unfinished")
+    if cut:
+        result["out_of_time"] = f"{' and '.join(cut)} to return before the stream deadline"
+    elif _lane_out_of_time():
+        # Transcript fetches that hit the deadline answer None instead of
+        # going missing, so the deadline itself is the signal.
+        result["out_of_time"] = "reached the stream deadline while fetching transcripts"
     return result
 
 

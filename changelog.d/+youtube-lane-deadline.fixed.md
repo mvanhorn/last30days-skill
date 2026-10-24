@@ -1,0 +1,1 @@
+A YouTube lane that runs out of time now returns the videos it already found instead of being dropped as a timeout with zero results. A lane that ran out of time is no longer retried or backfilled, so a deep comparison that fills the yt-dlp slots ends at the stream cap instead of running on past it.
