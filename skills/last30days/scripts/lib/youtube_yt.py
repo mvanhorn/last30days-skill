@@ -1800,6 +1800,7 @@ def search_youtube_sc(
     token: str = None,
     skip_transcript_ids: Optional[Set[str]] = None,
     freshness_mode: Optional[str] = None,
+    entity_count: int = 1,
 ) -> Dict[str, Any]:
     """Search YouTube via ScrapeCreators when yt-dlp is absent, empty, or thin.
 
@@ -1815,6 +1816,8 @@ def search_youtube_sc(
         skip_transcript_ids: Video IDs already transcribed by the free search
         freshness_mode: Plan freshness mode; scopes the out-of-window
             fallback (see _apply_date_window). None keeps the soft fallback.
+        entity_count: Comparison entities; each pays for
+            ``comparison_share`` of the transcript target.
 
     Returns:
         Dict with 'items' list of video metadata dicts.
@@ -1880,7 +1883,9 @@ def search_youtube_sc(
     items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
 
     # Step 2: Fetch transcripts for top videos
-    transcript_limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
+    transcript_limit = comparison_share(
+        TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"]), entity_count,
+    )
     if transcript_limit > 0 and items:
         # Same in-window-first ordering as search_and_transcribe(): don't let
         # an out-of-window back-catalog (kept by the soft date filter above)

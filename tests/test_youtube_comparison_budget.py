@@ -91,6 +91,20 @@ def test_backfill_targets_the_entity_share():
     assert len(fetch.call_args.args[0]) == 3
 
 
+def test_thin_result_paid_fallback_targets_the_entity_share():
+    raw = [{"id": f"v{i}", "title": "Widget", "date": "2026-06-20", "views": 100 - i} for i in range(8)]
+    with (
+        mock.patch.object(youtube_yt, "_sc_youtube_search", return_value=raw),
+        mock.patch.object(youtube_yt, "_sc_fetch_transcript", return_value=None) as paid,
+    ):
+        youtube_yt.search_youtube_sc(
+            "Widget", "2026-06-01", "2026-07-01", depth="default", token="sc-key",
+            entity_count=3,
+        )
+
+    assert paid.call_count == 3
+
+
 def test_every_comparison_subrun_learns_the_entity_count(monkeypatch, tmp_path):
     observed = run_competitor_cli(monkeypatch, tmp_path)
 

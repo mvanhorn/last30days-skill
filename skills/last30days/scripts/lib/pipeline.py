@@ -5571,7 +5571,7 @@ def _fetch_youtube_stream_live(
                 sc_result = youtube_yt.search_youtube_sc(
                     yt_query, from_date, to_date, depth=depth, token=sc_token,
                     skip_transcript_ids=transcribed_free_ids,
-                    freshness_mode=freshness_mode,
+                    freshness_mode=freshness_mode, entity_count=entity_count,
                 )
             sc_error = str(sc_result["error"]) if sc_result.get("error") else None
             if backfill_thin:
