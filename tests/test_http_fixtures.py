@@ -278,7 +278,7 @@ def test_post_ranking_cli_enrichment_records_and_replays(
 
         monkeypatch.setattr(pipeline.youtube_yt, "backfill_transcripts", enrich)
         expected_metadata = {"transcript_snippet": "recorded transcript"}
-        expected_kwargs = {"topic": "agents", "depth": "quick", "token": None}
+        expected_kwargs = {"topic": "agents", "depth": "quick", "token": None, "entity_count": 1}
     else:
         def enrich(items, **_kwargs):
             enrichment_calls.append(([entry.item_id for entry in items], _kwargs))

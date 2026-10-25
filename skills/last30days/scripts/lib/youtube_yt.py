@@ -517,7 +517,18 @@ def _extract_core_subject(topic: str) -> str:
     return extract_core_subject(topic, noise=VIRAL_NOISE | _YT_EXTRA)
 
 
-def expand_youtube_queries(topic: str, depth: str) -> List[str]:
+def comparison_share(total: int, entity_count: int) -> int:
+    """One comparison entity's share of a single-topic yt-dlp budget (#1335).
+
+    Every entity's yt-dlp work queues on the same ``_YTDLP_MAX_CONCURRENT``
+    slots, so N full budgets overran the stream wait; each keeps at least one.
+    """
+    if total <= 0 or entity_count <= 1:
+        return total
+    return max(1, -(-total // entity_count))
+
+
+def expand_youtube_queries(topic: str, depth: str, entity_count: int = 1) -> List[str]:
     """Generate multiple YouTube search queries from a topic.
 
     Mirrors reddit.py's expand_reddit_queries() pattern:
@@ -557,7 +568,7 @@ def expand_youtube_queries(topic: str, depth: str) -> List[str]:
 
     # Cap by depth budget
     caps = {"quick": 1, "default": 2, "deep": 3}
-    cap = caps.get(depth, 2)
+    cap = comparison_share(caps.get(depth, 2), entity_count)
     return queries[:cap]
 
 
@@ -1355,7 +1366,7 @@ def fetch_transcripts_parallel(
 
 def backfill_transcripts(
     items: List[Any], topic: str = "", depth: str = "default",
-    token: Optional[str] = None,
+    token: Optional[str] = None, entity_count: int = 1,
 ) -> None:
     """Second-pass transcript fetch for finalized items that lack one (#542).
 
@@ -1363,7 +1374,9 @@ def backfill_transcripts(
     ``fetch_transcripts_parallel`` so the SC fallback covers backfill survivors
     that yt-dlp can't fetch. None preserves keyless behavior.
     """
-    limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
+    limit = comparison_share(
+        TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"]), entity_count,
+    )
     if limit <= 0 or not items or not is_ytdlp_installed():
         return
     have = sum(
@@ -1441,6 +1454,7 @@ def search_and_transcribe(
     depth: str = "default",
     token: Optional[str] = None,
     freshness_mode: Optional[str] = None,
+    entity_count: int = 1,
 ) -> Dict[str, Any]:
     """Full YouTube search: find videos, then fetch transcripts for top results.
 
@@ -1455,12 +1469,14 @@ def search_and_transcribe(
         token: Optional ScrapeCreators key for the per-video transcript
             fallback (threaded to fetch_transcripts_parallel).
         freshness_mode: Plan freshness mode, threaded to search_youtube().
+        entity_count: Comparison entities sharing the yt-dlp slots; each
+            gets ``comparison_share`` of the queries and transcripts.
 
     Returns:
         Dict with 'items' list. Each item has a 'transcript_snippet' field.
     """
     # Step 1: Multi-query search — run yt-dlp for each expanded query
-    queries = expand_youtube_queries(topic, depth)
+    queries = expand_youtube_queries(topic, depth, entity_count)
     seen_ids: Set[str] = set()
     items: List[Dict[str, Any]] = []
     search_error: Optional[str] = None
@@ -1490,7 +1506,9 @@ def search_and_transcribe(
     # Try more candidates than the limit because some videos (music videos,
     # short clips) lack captions. Attempt up to 3x the limit so we have a
     # good chance of reaching the target number of successful transcripts.
-    transcript_limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
+    transcript_limit = comparison_share(
+        TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"]), entity_count,
+    )
     transcripts: Dict[str, Optional[str]] = {}
     captions_disabled_ids: Set[str] = set()
     if transcript_limit > 0:
@@ -1566,6 +1584,7 @@ def enrich_with_comments(
     token: str,
     max_videos: int = 3,
     max_comments: int = 5,
+    entity_count: int = 1,
 ) -> List[Dict[str, Any]]:
     """Enrich top YouTube videos with comment data from ScrapeCreators.
 
@@ -1577,10 +1596,13 @@ def enrich_with_comments(
         token: ScrapeCreators API key
         max_videos: How many videos to enrich with comments
         max_comments: Max comments to keep per video
+        entity_count: Comparison entities sharing the yt-dlp slots; each
+            enriches ``comparison_share`` of ``max_videos``.
 
     Returns:
         Items list (mutated in place) with top_comments added to enriched items.
     """
+    max_videos = comparison_share(max_videos, entity_count)
     if not items or max_videos <= 0:
         return items
     # yt-dlp needs no key, so an empty token is only fatal when it is absent too.

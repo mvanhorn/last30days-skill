@@ -3666,6 +3666,7 @@ def _finalize_items_by_source(
                 )
                 youtube_yt.backfill_transcripts(
                     items, topic=topic, depth=depth, token=sc_token,
+                    entity_count=_comparison_entity_count(config),
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         # Post-merge topic-relevance filter for Polymarket: comparison queries
@@ -5504,6 +5505,10 @@ def _fetch_youtube_stream(
         )
 
 
+def _comparison_entity_count(config: dict[str, Any] | None) -> int:
+    return int((config or {}).get("_comparison_entity_count") or 1)
+
+
 def _interpreter_shutting_down(exc: BaseException) -> bool:
     """An abandoned lane outliving main() can no longer start thread pools."""
     return isinstance(exc, RuntimeError) and "interpreter shutdown" in str(exc)
@@ -5530,12 +5535,13 @@ def _fetch_youtube_stream_live(
         config.get("SCRAPECREATORS_API_KEY", "")
         if env.is_youtube_sc_available(config) else None
     )
+    entity_count = _comparison_entity_count(config)
     # Try yt-dlp first; the SC transcript fallback covers per-video failures.
     if has_ytdlp:
         try:
             result = youtube_yt.search_and_transcribe(
                 yt_query, from_date, to_date, depth=depth, token=sc_token,
-                freshness_mode=freshness_mode,
+                freshness_mode=freshness_mode, entity_count=entity_count,
             )
             if result.get("error"):
                 youtube_failure = str(result["error"])
@@ -5624,7 +5630,9 @@ def _fetch_youtube_stream_live(
     # Enrich top videos with comments (default-on when a key is present).
     items = youtube_yt.parse_youtube_response(result)
     if items and env.is_youtube_comments_available(config):
-        youtube_yt.enrich_with_comments(items, token=sc_token or "")
+        youtube_yt.enrich_with_comments(
+            items, token=sc_token or "", entity_count=entity_count,
+        )
     if thin_detail:
         if not thin_error:
             return items, {"_source_outcome_detail": thin_detail}
@@ -6099,6 +6107,7 @@ def _retrieve_stream_impl(
                 env.is_youtube_sc_available(config),
                 env.youtube_sc_min_items(config),
                 env.is_youtube_comments_available(config),
+                _comparison_entity_count(config),
             ),
             lambda: _fetch_youtube_stream(
                 yt_query, from_date, to_date, depth, config, has_ytdlp=has_ytdlp,
