@@ -3649,6 +3649,7 @@ def _finalize_items_by_source(
             "topic": topic,
             "depth": depth,
         }
+        _key_youtube_fixture_by_entity_count(enrichment_request, source, config)
         if source == "youtube" and items and not mock:
             # Same budget-at-the-survivors principle as the digg branch
             # below: retrieval-time transcripts go to each search's
@@ -5206,6 +5207,7 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         "date_range": list(kwargs.get("date_range") or ()),
         "depth": kwargs.get("depth") or "",
     }
+    _key_youtube_fixture_by_entity_count(fixture_request, source, kwargs.get("config"))
     module_backed = source in {
         "reddit",
         "x",
@@ -5507,6 +5509,16 @@ def _fetch_youtube_stream(
 
 def _comparison_entity_count(config: dict[str, Any] | None) -> int:
     return int((config or {}).get("_comparison_entity_count") or 1)
+
+
+def _key_youtube_fixture_by_entity_count(
+    request: dict[str, Any], source: str, config: dict[str, Any] | None,
+) -> None:
+    # Only comparison runs carry the count, so fixtures already recorded for
+    # single-topic runs keep their original keys.
+    entity_count = _comparison_entity_count(config)
+    if source == "youtube" and entity_count > 1:
+        request["comparison_entity_count"] = entity_count
 
 
 def _interpreter_shutting_down(exc: BaseException) -> bool:

@@ -325,6 +325,30 @@ def test_post_ranking_cli_enrichment_records_and_replays(
     assert enrichment_calls == [(["item-1"], expected_kwargs)]
 
 
+def test_youtube_fixtures_do_not_replay_across_comparison_entity_counts(tmp_path, monkeypatch):
+    fixture_dir = tmp_path / "youtube"
+    item = schema.SourceItem(
+        item_id="item-1", source="youtube", title="Fixture item", body="Fixture body",
+        url="https://example.test/youtube/item-1",
+    )
+    monkeypatch.setattr(pipeline.youtube_yt, "backfill_transcripts", lambda *_a, **_k: None)
+    comparison = {"_comparison_entity_count": 3}
+
+    with http.recording_requests(fixture_dir):
+        pipeline._finalize_items_by_source(
+            {"youtube": [item]}, topic="agents", config=comparison, depth="quick",
+        )
+
+    with http.replaying_requests(fixture_dir):
+        pipeline._finalize_items_by_source(
+            {"youtube": [item]}, topic="agents", config=comparison, depth="quick",
+        )
+        with pytest.raises(AssertionError, match="Unrecorded CLI-backed source request"):
+            pipeline._finalize_items_by_source(
+                {"youtube": [item]}, topic="agents", config={}, depth="quick",
+            )
+
+
 def test_record_fixtures_flag_is_dev_only_and_hidden_from_help():
     parser = cli.build_parser()
     args = parser.parse_args(["topic", "--record-fixtures", "tmp/eval-topic"])
