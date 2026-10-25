@@ -4437,8 +4437,6 @@ def _main(
                 )
                 return 2
             discovered = distinct_peers
-            # Every entity's yt-dlp work shares one process-wide gate; each
-            # sub-run takes its share of a single-topic YouTube budget (#1335).
             config["_comparison_entity_count"] = 1 + len(discovered)
 
             sys.stderr.write(
