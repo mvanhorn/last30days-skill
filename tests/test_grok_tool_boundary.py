@@ -259,3 +259,15 @@ def test_unpassed_audit_surfaces_as_an_error_not_an_empty_window(monkeypatch, ve
     result = grok_x.search_x("OpenAI", "2026-07-14", "2026-08-13", depth="quick")
     assert result["items"] == []
     assert "tool-boundary audit" in result.get("error", "")
+
+
+def test_native_resolution_error_returns_a_grok_failure(monkeypatch):
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def boom(*args, **kwargs):
+        raise PermissionError("read-only config dir")
+
+    monkeypatch.setattr(grok_audit, "resolve_native", boom)
+    response = grok_x._invoke("X query", 10)
+    assert "native grok binary" in response["error"]
+    assert response["no_retry"] is True

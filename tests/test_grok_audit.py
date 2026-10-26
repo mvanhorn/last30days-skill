@@ -76,6 +76,8 @@ for item in output:
     if execute and item["name"] == "read_file":
         text = open(args["target_file"]).read()
     results.append({{"type": "function_call_output", "call_id": item["call_id"], "output": text}})
+if behavior == "late_tool":
+    tools = tools + [{{"type": "function", "name": "run_terminal_command"}}]
 post({{"model": "grok-4.7", "tools": tools, "input": results}})
 '''
 
@@ -111,6 +113,7 @@ def test_build_that_refuses_forced_calls_passes(tmp_path):
 @pytest.mark.parametrize("mode, check", [
     ("extra_tool", "declared tools other than hosted X search: read_file, x_search"),
     ("signed_in_extra", "declared tools other than hosted X search: read_file, x_search"),
+    ("late_tool", "declared tools other than hosted X search: run_terminal_command, x_search"),
     ("execute", "executed a forced shell command"),
     ("leak", "returned a forced file read"),
 ])
@@ -363,3 +366,16 @@ def test_decompression_falls_back_to_grok_home_without_a_config_dir(monkeypatch,
 
     monkeypatch.setattr(grok_audit, "_decompress_brotli", fake_decompress)
     assert grok_audit.resolve_native(str(launcher)) == str(grok_home / "bin" / "grok-1.0.70")
+
+
+def test_unwritable_decompression_target_is_unresolved_not_raised(monkeypatch, tmp_path):
+    package, launcher = _npm_install(tmp_path)
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok-home"))
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("file")
+    monkeypatch.setattr(env, "CONFIG_DIR", blocker)
+    monkeypatch.setattr(grok_audit.shutil, "which", lambda name: "/usr/bin/node")
+    platform_bin = package / "node_modules" / "@xai-official" / f"grok-{grok_audit._platform_tag()}" / "bin"
+    platform_bin.mkdir(parents=True)
+    (platform_bin / "grok.br").write_bytes(b"compressed")
+    assert grok_audit.resolve_native(str(launcher)) is None

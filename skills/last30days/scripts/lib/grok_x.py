@@ -914,7 +914,11 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
     deadline = time.monotonic() + timeout
     # The npm launcher picks its build at run time; audit and run the native
     # build it would pick, so the verdict covers what actually executes.
-    native = grok_audit.resolve_native(binary, timeout=deadline - time.monotonic())
+    try:
+        native = grok_audit.resolve_native(binary, timeout=deadline - time.monotonic())
+    except Exception as exc:  # noqa: BLE001 - search_x must never raise
+        _log(f"could not resolve the native grok binary: {type(exc).__name__}: {exc}")
+        native = None
     if native is None:
         return {"error": "could not locate the native grok binary behind the npm launcher",
                 "no_retry": True}

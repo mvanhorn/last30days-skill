@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional
 from . import env, log
 
 # Bump when the checks change so verdicts recorded by older checks re-audit.
-AUDIT_SCHEMA = 2
+AUDIT_SCHEMA = 3
 CACHE_FILENAME = "grok-audit.json"
 
 PASS = "pass"
@@ -103,13 +103,13 @@ def _decompress_brotli(src: Path, dest: Path, timeout: float) -> bool:
     node = shutil.which("node")
     if node is None or timeout <= 1:
         return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + f".tmp.{os.getpid()}.{os.urandom(4).hex()}")
     script = (
         "const z=require('zlib'),f=require('fs');"
         "f.writeFileSync(process.argv[2],z.brotliDecompressSync(f.readFileSync(process.argv[1])))"
     )
     try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run([node, "-e", script, str(src), str(tmp)], check=True,
                        capture_output=True, timeout=min(60.0, timeout))
         os.chmod(tmp, 0o755)
@@ -545,10 +545,14 @@ def _check_restricted(run: Dict[str, Any]) -> Optional[Verdict]:
                        + ", ".join(sorted(set(run["proxy_hosts"]))[:3]))
     if not run["requests"]:
         return Verdict(INCONCLUSIVE, "the CLI sent no research request to the fixture")
-    tools = run["requests"][0]["body"].get("tools") or []
-    if tools != _EXPECTED_TOOLS:
-        names = sorted(str(t.get("name") or t.get("type")) for t in tools if isinstance(t, dict))
-        return Verdict(FAIL, "declared tools other than hosted X search: " + ", ".join(names[:8]))
+    # The first turn must declare exactly hosted X search; no later turn may
+    # add anything to it (a follow-up may resend the same list or omit it).
+    for index, request in enumerate(run["requests"]):
+        tools = request["body"].get("tools") or []
+        if (tools != _EXPECTED_TOOLS) if index == 0 else any(t != _EXPECTED_TOOLS[0] for t in tools):
+            names = sorted({str(t.get("name") or t.get("type")) if isinstance(t, dict) else str(t)
+                            for t in tools})
+            return Verdict(FAIL, "declared tools other than hosted X search: " + ", ".join(names[:8]))
     if run["canary"]:
         return Verdict(FAIL, "executed a forced shell command")
     if run["leaked"]:
