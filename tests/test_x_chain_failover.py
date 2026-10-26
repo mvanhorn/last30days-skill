@@ -16,7 +16,7 @@ from lib import grok_x, pipeline
 @pytest.fixture(autouse=True)
 def _audited_grok(monkeypatch):
     """Version rejection is exercised separately in test_grok_tool_boundary."""
-    monkeypatch.setattr(grok_x, "_check_cli_version", lambda *args: None)
+    monkeypatch.setattr(grok_x, "_check_cli_version", lambda *args: (None, "grok 1.0.70 (f50904eaee6c)"))
 
 
 def _stub_grok(monkeypatch, stdout="", returncode=0, raises=None):

@@ -2139,6 +2139,16 @@ def run(
             # failure serving the cache falls through to a live run.
             pass
     report = build_report(config)
+    if not cached:
+        # An explicit doctor is how a user asks for a fresh look: the report
+        # above still shows a cached grok audit failure, and dropping it here
+        # makes the next run re-audit the build.
+        try:
+            from . import grok_audit
+
+            grok_audit.clear_failed()
+        except Exception:
+            pass
     report["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     report["from_cache"] = False
 

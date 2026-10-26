@@ -45,6 +45,7 @@ JSON never names a non-official backend there unless it is pinned.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from shutil import which
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -306,13 +307,31 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
                 "then run `grok login`"
             ),
         )
+    from . import grok_audit
+
+    audit = grok_audit.cached_status(os.path.realpath(which("grok")))
+    if audit and audit["verdict"] == grok_audit.FAIL:
+        return BackendFinding(
+            name="grok",
+            status=health.ERROR,
+            requires=requires,
+            detail=f"{audit['version']} failed the grok tool-boundary audit ({audit['check']})",
+            prescription=(
+                "update the grok CLI or use another X backend; "
+                "running `doctor` again clears this result so the next run re-audits"
+            ),
+        )
+    if audit:
+        audit_note = f"; {audit['version']} passed the tool-boundary audit"
+    else:
+        audit_note = "; this grok build is audited on its first run (local, no credits)"
     store_status, store_detail, expires_at = grok_x.stored_auth_status()
     if store_status == grok_x.AUTH_OK:
         return BackendFinding(
             name="grok",
             status=health.OK,
             requires=requires,
-            detail=f"{store_detail} (not live-verified until a run)",
+            detail=f"{store_detail} (not live-verified until a run){audit_note}",
         )
     if store_status == grok_x.AUTH_EXPIRED:
         expiry_str = expires_at.isoformat() if expires_at else "unknown"
