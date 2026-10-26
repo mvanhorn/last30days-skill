@@ -56,9 +56,13 @@ tools = [{{"type": "x_search"}}]
 if not restricted:
     tools = [{{"type": "function", "name": "run_terminal_command"}},
              {{"type": "function", "name": "read_file"}}] + tools
-elif behavior == "extra_tool":
+elif behavior == "extra_tool" or (
+        behavior == "signed_in_extra"
+        and os.path.isfile(os.path.join(os.environ["HOME"], ".grok", "auth.json"))):
     tools = [{{"type": "function", "name": "read_file"}}] + tools
 output = post({{"model": "grok-4.7", "tools": tools, "input": []}})
+if behavior == "crash":
+    sys.exit(1)
 results = []
 execute = (not restricted and behavior == "obey") or behavior in ("execute", "leak")
 for item in output:
@@ -67,7 +71,7 @@ for item in output:
     args = json.loads(item["arguments"])
     text = "Tool not found: " + item["name"]
     if execute and item["name"] == "run_terminal_command" and behavior != "leak":
-        open(args["command"].split(" ", 1)[1], "w").close()
+        open(args["command"].split('"')[1], "w").close()
         text = "exit: 0"
     if execute and item["name"] == "read_file":
         text = open(args["target_file"]).read()
@@ -106,6 +110,7 @@ def test_build_that_refuses_forced_calls_passes(tmp_path):
 
 @pytest.mark.parametrize("mode, check", [
     ("extra_tool", "declared tools other than hosted X search: read_file, x_search"),
+    ("signed_in_extra", "declared tools other than hosted X search: read_file, x_search"),
     ("execute", "executed a forced shell command"),
     ("leak", "returned a forced file read"),
 ])
@@ -121,6 +126,7 @@ def test_traffic_to_another_host_fails(tmp_path):
 
 @pytest.mark.parametrize("mode, control, check", [
     ("silent", "obey", "the CLI sent no research request to the fixture"),
+    ("crash", "obey", "the CLI did not answer the forced calls"),
     ("obey", "silent", "positive control did not execute the forced calls"),
 ])
 def test_unproven_audit_is_inconclusive(tmp_path, mode, control, check):
@@ -317,3 +323,43 @@ def test_explicit_doctor_clears_a_cached_fail(monkeypatch, tmp_path, config_dir)
     doctor.run({}, cached=False)
     stored = json.loads((config_dir / grok_audit.CACHE_FILENAME).read_text())
     assert stored == {}
+
+
+def test_npm_launcher_decompresses_the_shipped_build_once(monkeypatch, tmp_path, config_dir):
+    package, launcher = _npm_install(tmp_path)
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok-home"))
+    platform_bin = package / "node_modules" / "@xai-official" / f"grok-{grok_audit._platform_tag()}" / "bin"
+    platform_bin.mkdir(parents=True)
+    (platform_bin / "grok.br").write_bytes(b"compressed")
+    calls = []
+
+    def fake_decompress(src, dest, timeout):
+        calls.append(timeout)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"native")
+        return True
+
+    monkeypatch.setattr(grok_audit, "_decompress_brotli", fake_decompress)
+    dest = config_dir / "grok-bin" / "grok-1.0.70"
+    assert grok_audit.resolve_native(str(launcher), decompress=False) is None
+    assert grok_audit.resolve_native(str(launcher), timeout=7) == str(dest)
+    assert grok_audit.resolve_native(str(launcher)) == str(dest)
+    assert calls == [7]
+
+
+def test_decompression_falls_back_to_grok_home_without_a_config_dir(monkeypatch, tmp_path):
+    package, launcher = _npm_install(tmp_path)
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    monkeypatch.setattr(env, "CONFIG_DIR", None)
+    platform_bin = package / "node_modules" / "@xai-official" / f"grok-{grok_audit._platform_tag()}" / "bin"
+    platform_bin.mkdir(parents=True)
+    (platform_bin / "grok.br").write_bytes(b"compressed")
+
+    def fake_decompress(src, dest, timeout):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"native")
+        return True
+
+    monkeypatch.setattr(grok_audit, "_decompress_brotli", fake_decompress)
+    assert grok_audit.resolve_native(str(launcher)) == str(grok_home / "bin" / "grok-1.0.70")

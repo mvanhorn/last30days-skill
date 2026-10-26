@@ -369,6 +369,12 @@ def _stage_child_home(workdir: str) -> str:
     return home
 
 
+# Errors that mean grok never ran a search, as opposed to a clean empty window.
+_INVOCATION_FAILURE_MARKERS = (
+    "grok CLI", "not found", "timed out", "exited", "cancelled", "budget exhausted",
+    "tool-boundary audit", "native grok binary",
+)
+
 # Why the most recent parse returned nothing. Lets _run_query distinguish a
 # clean empty window (common, and not worth a second LLM call) from a suspect
 # response (fabricated ids, a generated sequence, a self-reported
@@ -905,14 +911,14 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
         return {"error": "grok CLI not found on PATH"}
     # Keep an updater's symlink swap from changing the build after its check.
     binary = os.path.realpath(binary)
+    deadline = time.monotonic() + timeout
     # The npm launcher picks its build at run time; audit and run the native
     # build it would pick, so the verdict covers what actually executes.
-    native = grok_audit.resolve_native(binary)
+    native = grok_audit.resolve_native(binary, timeout=deadline - time.monotonic())
     if native is None:
         return {"error": "could not locate the native grok binary behind the npm launcher",
                 "no_retry": True}
     binary = native
-    deadline = time.monotonic() + timeout
     try:
         with tempfile.TemporaryDirectory(prefix="last30days-grok-") as workdir:
             remaining = deadline - time.monotonic()
@@ -1105,7 +1111,7 @@ def search_x(
             break
         if error and not items:
             last_error = error
-            if any(marker in error for marker in ("grok CLI", "not found", "timed out", "exited", "cancelled", "budget exhausted")):
+            if any(marker in error for marker in _INVOCATION_FAILURE_MARKERS):
                 invocation_failed = True
         for item in items:
             key = item["url"]

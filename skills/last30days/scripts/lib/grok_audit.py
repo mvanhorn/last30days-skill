@@ -21,6 +21,7 @@ its ``--version`` line, and ``AUDIT_SCHEMA``. Inconclusive results are only
 memoized for this process, so the next run audits again.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -40,7 +41,7 @@ from typing import Any, Dict, List, Optional
 from . import env, log
 
 # Bump when the checks change so verdicts recorded by older checks re-audit.
-AUDIT_SCHEMA = 1
+AUDIT_SCHEMA = 2
 CACHE_FILENAME = "grok-audit.json"
 
 PASS = "pass"
@@ -52,6 +53,8 @@ INCONCLUSIVE = "inconclusive"
 _CHILD_TIMEOUT_SECONDS = 45
 _EXPECTED_TOOLS = [{"type": "x_search"}]
 _DUMMY_KEY = "xai-last30days-audit-dummy"
+# grok's public OIDC client id, used when the user's store names none.
+_DEFAULT_OIDC_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 
 
 def _log(msg: str) -> None:
@@ -95,20 +98,20 @@ def _platform_tag() -> str:
     return f"{sys.platform}-{arch}"
 
 
-def _decompress_brotli(src: Path, dest: Path) -> bool:
+def _decompress_brotli(src: Path, dest: Path, timeout: float) -> bool:
     """Decompress the npm-shipped ``grok.br`` with node (Python has no brotli)."""
     node = shutil.which("node")
-    if node is None:
+    if node is None or timeout <= 1:
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + f".tmp.{os.getpid()}")
+    tmp = dest.with_name(dest.name + f".tmp.{os.getpid()}.{os.urandom(4).hex()}")
     script = (
         "const z=require('zlib'),f=require('fs');"
         "f.writeFileSync(process.argv[2],z.brotliDecompressSync(f.readFileSync(process.argv[1])))"
     )
     try:
         subprocess.run([node, "-e", script, str(src), str(tmp)], check=True,
-                       capture_output=True, timeout=60)
+                       capture_output=True, timeout=min(60.0, timeout))
         os.chmod(tmp, 0o755)
         os.replace(tmp, dest)
         return True
@@ -121,7 +124,7 @@ def _decompress_brotli(src: Path, dest: Path) -> bool:
             pass
 
 
-def resolve_native(binary: str, decompress: bool = True) -> Optional[str]:
+def resolve_native(binary: str, decompress: bool = True, timeout: float = 60.0) -> Optional[str]:
     """The native grok executable that ``binary`` would run, or None.
 
     A native install resolves to itself. The npm package installs a node
@@ -152,19 +155,25 @@ def resolve_native(binary: str, decompress: bool = True) -> Optional[str]:
         if native.is_file():
             return str(native)
         compressed = native.with_name(native.name + ".br")
-        if compressed.is_file() and env.CONFIG_DIR is not None:
-            dest = env.CONFIG_DIR / "grok-bin" / f"grok-{version}{exe}"
-            if dest.is_file() or (decompress and _decompress_brotli(compressed, dest)):
+        if compressed.is_file():
+            # The launcher's own cache dir when last30days has no config dir.
+            cache = env.CONFIG_DIR / "grok-bin" if env.CONFIG_DIR is not None else grok_home / "bin"
+            dest = cache / f"grok-{version}{exe}"
+            if dest.is_file() or (decompress and _decompress_brotli(compressed, dest, timeout)):
                 return str(dest)
     return None
 
 
-def build_key(binary: str, version_line: str) -> str:
+def _file_digest(binary: str) -> str:
     digest = hashlib.sha256()
     with open(binary, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             digest.update(chunk)
-    return f"{digest.hexdigest()}|{version_line}|{AUDIT_SCHEMA}"
+    return digest.hexdigest()
+
+
+def build_key(binary: str, version_line: str) -> str:
+    return f"{_file_digest(binary)}|{version_line}|{AUDIT_SCHEMA}"
 
 
 # --- verdict cache ----------------------------------------------------------
@@ -219,7 +228,7 @@ def cached_status(binary: str) -> Optional[Dict[str, str]]:
     if native is None:
         return None
     try:
-        digest = build_key(native, "").split("|", 1)[0]
+        digest = _file_digest(native)
     except OSError:
         return None
     for key, entry in _read_cache().items():
@@ -403,6 +412,47 @@ class _Fixture:
             server.server_close()
 
 
+def _signed_in_client_id() -> str:
+    """The OIDC client id of the user's own store, so the dummy session takes
+    the same auth path the real one does. Reads the key name only."""
+    from . import grok_x
+
+    try:
+        data = json.loads(grok_x.token_store_path().read_text(encoding="utf-8"))
+        for key in data:
+            if isinstance(key, str) and "::" in key:
+                return key.rsplit("::", 1)[1]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return _DEFAULT_OIDC_CLIENT_ID
+
+
+def _write_dummy_session(home: str) -> None:
+    """A signed-in credential store shaped like the one _stage_child_home
+    copies, holding a fake unexpired token. Production runs in this mode, so
+    the audit must see the tools the build declares when signed in."""
+    def b64(obj: Dict[str, Any]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    client_id = _signed_in_client_id()
+    zero = "00000000-0000-0000-0000-000000000000"
+    token = (b64({"alg": "none", "typ": "JWT"}) + "."
+             + b64({"sub": zero, "exp": 4070908800, "iat": 1761350400,
+                    "iss": "https://auth.x.ai", "aud": client_id}) + ".audit")
+    entry = {
+        "key": token, "auth_mode": "oidc", "create_time": "2026-01-01T00:00:00Z",
+        "user_id": zero, "email": "audit@example.invalid", "first_name": "Audit",
+        "profile_image_asset_id": "", "principal_type": "user", "principal_id": zero,
+        "team_id": zero, "coding_data_retention_opt_out": True,
+        "refresh_token": "last30days-audit-dummy", "expires_at": "2099-01-01T00:00:00Z",
+        "oidc_issuer": "https://auth.x.ai", "oidc_client_id": client_id,
+    }
+    store = Path(home) / ".grok"
+    store.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (store / "auth.json").write_text(json.dumps({f"https://auth.x.ai::{client_id}": entry}),
+                                     encoding="utf-8")
+
+
 def _audit_env(home: str, fixture: _Fixture) -> Dict[str, str]:
     from . import grok_x
 
@@ -423,20 +473,22 @@ def _audit_env(home: str, fixture: _Fixture) -> Dict[str, str]:
     return child_env
 
 
-def _run_child(binary: str, permissive: bool, deadline: float) -> Dict[str, Any]:
+def _run_child(binary: str, permissive: bool, deadline: float, signed_in: bool = False) -> Dict[str, Any]:
     """One forced-call turn. Returns what the fixture observed."""
     from . import grok_x
 
     with tempfile.TemporaryDirectory(prefix="last30days-grok-audit-") as workdir:
         home = os.path.join(workdir, "home")
         os.makedirs(home)
+        if signed_in:
+            _write_dummy_session(home)
         canary = Path(workdir) / "canary"
         secret_value = "l30d-audit-" + os.urandom(8).hex()
         secret = Path(workdir) / "secret.txt"
         secret.write_text(secret_value, encoding="utf-8")
         forced = [
             {"call_id": "call_shell", "name": "run_terminal_command",
-             "arguments": json.dumps({"command": f"touch {canary}", "description": "audit canary"})},
+             "arguments": json.dumps({"command": f'echo audit > "{canary}"', "description": "audit canary"})},
             {"call_id": "call_read", "name": "read_file",
              "arguments": json.dumps({"target_file": str(secret)})},
         ]
@@ -468,30 +520,54 @@ def _run_child(binary: str, permissive: bool, deadline: float) -> Dict[str, Any]
             "proxy_hosts": hosts,
             "canary": canary.exists(),
             "leaked": any(secret_value in r["raw"] for r in requests[1:]),
+            "answered": _answered_call_ids(requests[1:]) >= {c["call_id"] for c in forced},
         }
+
+
+def _answered_call_ids(requests: List[Dict[str, Any]]) -> set:
+    """Forced calls the CLI reported a result for in a follow-up turn."""
+    answered = set()
+    for request in requests:
+        for item in request["body"].get("input") or []:
+            if isinstance(item, dict) and item.get("type") == "function_call_output":
+                answered.add(item.get("call_id"))
+    return answered
+
+
+def _check_restricted(run: Dict[str, Any]) -> Optional[Verdict]:
+    """The verdict one restricted run forces, or None when it refused cleanly."""
+    if run.get("timeout"):
+        return Verdict(INCONCLUSIVE, "audit timed out")
+    if run.get("error"):
+        return Verdict(INCONCLUSIVE, run["error"])
+    if run["proxy_hosts"]:
+        return Verdict(FAIL, "contacted a host other than the local fixture: "
+                       + ", ".join(sorted(set(run["proxy_hosts"]))[:3]))
+    if not run["requests"]:
+        return Verdict(INCONCLUSIVE, "the CLI sent no research request to the fixture")
+    tools = run["requests"][0]["body"].get("tools") or []
+    if tools != _EXPECTED_TOOLS:
+        names = sorted(str(t.get("name") or t.get("type")) for t in tools if isinstance(t, dict))
+        return Verdict(FAIL, "declared tools other than hosted X search: " + ", ".join(names[:8]))
+    if run["canary"]:
+        return Verdict(FAIL, "executed a forced shell command")
+    if run["leaked"]:
+        return Verdict(FAIL, "returned a forced file read")
+    if not run["answered"]:
+        # A crash or early exit is not evidence the boundary refused the calls.
+        return Verdict(INCONCLUSIVE, "the CLI did not answer the forced calls")
+    return None
 
 
 def run_audit(binary: str, deadline: float) -> Verdict:
     """Audit one native build against the local fixture. Never raises."""
     try:
-        restricted = _run_child(binary, permissive=False, deadline=deadline)
-        if restricted.get("timeout"):
-            return Verdict(INCONCLUSIVE, "audit timed out")
-        if restricted.get("error"):
-            return Verdict(INCONCLUSIVE, restricted["error"])
-        if restricted["proxy_hosts"]:
-            return Verdict(FAIL, "contacted a host other than the local fixture: "
-                           + ", ".join(sorted(set(restricted["proxy_hosts"]))[:3]))
-        if not restricted["requests"]:
-            return Verdict(INCONCLUSIVE, "the CLI sent no research request to the fixture")
-        tools = restricted["requests"][0]["body"].get("tools") or []
-        if tools != _EXPECTED_TOOLS:
-            names = sorted(str(t.get("name") or t.get("type")) for t in tools if isinstance(t, dict))
-            return Verdict(FAIL, "declared tools other than hosted X search: " + ", ".join(names[:8]))
-        if restricted["canary"]:
-            return Verdict(FAIL, "executed a forced shell command")
-        if restricted["leaked"]:
-            return Verdict(FAIL, "returned a forced file read")
+        # Production runs signed in; the API-key run covers XAI_API_KEY users.
+        for signed_in in (True, False):
+            verdict = _check_restricted(_run_child(binary, permissive=False, deadline=deadline,
+                                                   signed_in=signed_in))
+            if verdict is not None:
+                return verdict
         control = _run_child(binary, permissive=True, deadline=deadline)
         if control.get("timeout"):
             return Verdict(INCONCLUSIVE, "audit timed out")

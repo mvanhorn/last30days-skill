@@ -245,3 +245,17 @@ def test_npm_launcher_runs_the_native_build_it_resolves(monkeypatch, tmp_path):
     assert grok_x._invoke("X query", 10) == {"text": "fixture response"}
     assert calls == [str(native), str(native)]
     assert audited == [(str(native), "grok 1.0.70 (f50904eaee6c)")]
+
+
+@pytest.mark.parametrize("verdict", [
+    grok_audit.Verdict(grok_audit.FAIL, "executed a forced shell command"),
+    grok_audit.Verdict(grok_audit.INCONCLUSIVE, "audit timed out"),
+])
+def test_unpassed_audit_surfaces_as_an_error_not_an_empty_window(monkeypatch, verdict):
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+    monkeypatch.setattr(grok_audit, "verdict_for", lambda *args: verdict)
+    monkeypatch.setattr(grok_x.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(
+        cmd, 0, "grok 1.0.70 (f50904eaee6c)", ""))
+    result = grok_x.search_x("OpenAI", "2026-07-14", "2026-08-13", depth="quick")
+    assert result["items"] == []
+    assert "tool-boundary audit" in result.get("error", "")
