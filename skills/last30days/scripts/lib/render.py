@@ -3456,7 +3456,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
         ("reactions", "react"),
         ("open_issues", "open"),
         ("total_prs", "PRs"),
-        ("contributed_prs", "PRs"),
+        ("contributed_prs", "contrib"),
         ("comments", "cmt"),
     ],
     "perplexity": [("citations", "cite")],

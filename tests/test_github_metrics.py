@@ -108,3 +108,11 @@ def test_footer_labels_each_counter_and_keeps_real_comments():
         "🐙 GitHub: 4 items │ 1,205 stars │ 3 merged │ 4 reactions │ 17 open issues/PRs"
         " │ 8 total PRs │ 2 contributed PRs │ 9 comments"
     ]
+
+
+def test_aggregate_stats_tell_total_and_contributed_prs_apart():
+    items = [
+        _item("profile", {"merged_prs": 3, "total_prs": 8}, "https://github.com/alice"),
+        _item("ext", {"stars": 5, "contributed_prs": 2}, "https://github.com/other/ext"),
+    ]
+    assert render._aggregate_engagement("github", items) == "5stars, 3merged, 8PRs, 2contrib"
