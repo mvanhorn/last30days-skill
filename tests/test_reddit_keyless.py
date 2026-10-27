@@ -231,7 +231,7 @@ class TestSlotPriority:
         ]
         enriched_urls = []
 
-        def _capture(url):
+        def _capture(url, **_kwargs):
             enriched_urls.append(url)
             return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
@@ -374,7 +374,7 @@ class TestSlotPriority:
         ]
         enriched_urls = []
 
-        def _capture(url):
+        def _capture(url, **_kwargs):
             enriched_urls.append(url)
             return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
@@ -403,7 +403,7 @@ class TestSlotPriority:
         ]
         enriched_urls = []
 
-        def _capture(url):
+        def _capture(url, **_kwargs):
             enriched_urls.append(url)
             return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
@@ -513,3 +513,16 @@ class TestScoredListingsFallback:
         assert shreddit_post["url"] in urls
         assert arctic_post_tea["url"] in urls
         assert arctic_post_coffee["url"] in urls
+
+
+class TestEnrichDeadline:
+    def test_workers_share_the_enrichment_budget_deadline(self):
+        posts = [_post(1), _post(2)]
+        with mock.patch.object(reddit_keyless.time, "monotonic", return_value=1000.0), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               return_value={"top_comments": [], "comment_insights": [],
+                                             "num_comments": None}) as fetch:
+            reddit_keyless._enrich(posts, "quick")
+        assert fetch.call_count == 2
+        assert {c.kwargs["deadline"] for c in fetch.call_args_list} == {
+            1000.0 + reddit_keyless.ENRICH_BUDGET}

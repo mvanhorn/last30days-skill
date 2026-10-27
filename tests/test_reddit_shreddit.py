@@ -224,7 +224,8 @@ class TestFetchCommentsFallback:
         assert out["comment_insights"] == [] or isinstance(out["comment_insights"], list)
         assert out["num_comments"] is None  # archive rows carry no post total
         arctic.assert_called_once_with(
-            "1taeiw0", limit=rs.MAX_COMMENTS, skip_author=rs._is_bot_author)
+            "1taeiw0", limit=rs.MAX_COMMENTS, skip_author=rs._is_bot_author,
+            deadline=None)
 
     def test_shreddit_results_skip_arctic(self):
         with mock.patch.object(rs.http, "get_text", return_value=_html()), \

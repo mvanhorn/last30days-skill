@@ -193,12 +193,14 @@ def _total_comments(html_text: str) -> Optional[int]:
 def fetch_comments(
     post_url: str,
     timeout: int = SVC_TIMEOUT,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Fetch and parse top comments for a Reddit post via the shreddit endpoint.
 
     Args:
         post_url: Reddit thread URL (…/r/{sub}/comments/{id}/…)
         timeout: HTTP timeout in seconds
+        deadline: absolute ``time.monotonic()`` bound; applies only to the archive fallback
 
     Returns:
         Dict with 'top_comments' (list, reddit_enrich shape), 'comment_insights'
@@ -219,7 +221,8 @@ def fetch_comments(
         # from any IP keyless (ranked by score client-side).
         try:
             comments = reddit_arctic.fetch_post_comments(
-                post_id, limit=MAX_COMMENTS, skip_author=_is_bot_author)
+                post_id, limit=MAX_COMMENTS, skip_author=_is_bot_author,
+                deadline=deadline)
         except Exception as exc:  # the fallback must never break enrichment
             _log(f"arctic comment fallback failed: {exc}")
             comments = []

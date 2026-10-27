@@ -292,6 +292,7 @@ def fetch_post_comments(
     post_id: str,
     limit: int = 10,
     skip_author: Optional[Callable[[str], bool]] = None,
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Top comments for a post from the arctic-shift archive, keyless.
 
@@ -299,21 +300,25 @@ def fetch_post_comments(
     where the shreddit comment partials 403 (datacenter egress). Rows carry
     the same dict shape (score/author/body/excerpt/permalink/date/url), are
     ranked by score desc, and capped at ``limit``. ``skip_author`` drops rows
-    before ranking (the caller's bot filter). Best-effort, never raises:
+    before ranking (the caller's bot filter). ``deadline`` is an absolute
+    ``time.monotonic()`` bound shared with the caller's budget. Best-effort, never raises:
     returns ``[]`` on any failure so the caller keeps whatever it had.
     """
     pid = str(post_id or "").removeprefix("t3_")
     if not pid:
         return []
+    now = time.monotonic()
+    end = now + TIMEOUT if deadline is None else min(deadline, now + TIMEOUT)
+    if end - now < 1:
+        _log(f"comments lookup skipped t3_{pid}: enrichment budget spent")
+        return []
     try:
         data = http.get(
             f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}&sort=desc",
             headers={"User-Agent": http.BROWSER_USER_AGENT},
-            timeout=TIMEOUT,
+            timeout=end - now,
             retries=1,
-            # Runs in an enrichment worker; one deadline over every attempt so
-            # optional comment text cannot outlast reddit_keyless.ENRICH_BUDGET.
-            deadline_monotonic=time.monotonic() + TIMEOUT,
+            deadline_monotonic=end,
         )
     except Exception as e:  # network error / non-200 — degrade, never raise
         _log(f"comments lookup failed t3_{pid}: {e}")

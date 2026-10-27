@@ -417,6 +417,19 @@ class TestFetchPostComments:
         assert kwargs["retries"] == 1
         assert kwargs["deadline_monotonic"] == 100.0 + reddit_arctic.TIMEOUT
 
+    def test_caller_deadline_clamps_request(self):
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([])) as g, \
+             mock.patch.object(reddit_arctic.time, "monotonic", return_value=100.0):
+            reddit_arctic.fetch_post_comments("abc123", deadline=105.0)
+        assert g.call_args.kwargs["deadline_monotonic"] == 105.0
+        assert g.call_args.kwargs["timeout"] == 5.0
+
+    def test_spent_budget_skips_request(self):
+        with mock.patch.object(reddit_arctic.http, "get") as g, \
+             mock.patch.object(reddit_arctic.time, "monotonic", return_value=100.0):
+            assert reddit_arctic.fetch_post_comments("abc123", deadline=100.5) == []
+        g.assert_not_called()
+
     def test_strips_t3_prefix_from_post_id(self):
         with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([_comment_row()])) as g:
             reddit_arctic.fetch_post_comments("t3_abc123")
