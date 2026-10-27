@@ -26,7 +26,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Run test suite
-        run: uv run pytest --cov --cov-report=term-missing
+        run: uv run pytest -n auto --dist worksteal --cov --cov-report=term-missing
 
   windows-process-tree:
     runs-on: windows-latest

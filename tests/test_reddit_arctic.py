@@ -120,7 +120,7 @@ class TestFetchListings:
         assert len(out) == 1
         assert g.call_count == 1  # only r/tea fetched; "all"/"" skipped
 
-    def test_processes_all_subreddits_no_cap(self):
+    def test_processes_all_subreddits_no_cap(self, listing_clock):
         """All requested subreddits are processed (no hard cap)."""
         subs = [f"sub{i}" for i in range(20)]
         with mock.patch.object(reddit_arctic.http, "get",

@@ -98,6 +98,19 @@ def _isolated_config(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _unthrottled_reddit_keyless(monkeypatch):
+    """The real limiter is process-global, so tests inherited a drained bucket and slept.
+    Only burst changes (rate stays real for wait-allowance math); throttle tests install their own."""
+    from lib import http
+
+    monkeypatch.setattr(
+        http,
+        "REDDIT_KEYLESS_LIMITER",
+        http.RateLimiter(rate_per_sec=http.DEFAULT_REDDIT_KEYLESS_RATE, burst=10_000),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_arctic_network():
     """Default Arctic transport collaborators to no-ops outside adapter tests."""
     with mock.patch("lib.reddit_arctic.fetch_scores", return_value={}), \
