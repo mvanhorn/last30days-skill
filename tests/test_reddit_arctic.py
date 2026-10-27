@@ -409,6 +409,14 @@ class TestFetchPostComments:
         assert "link_id=t3_abc123" in g.call_args[0][0]
         assert f"limit={reddit_arctic.MAX_COMMENT_ROWS}" in g.call_args[0][0]
 
+    def test_request_bounded_by_single_deadline(self):
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([])) as g, \
+             mock.patch.object(reddit_arctic.time, "monotonic", return_value=100.0):
+            reddit_arctic.fetch_post_comments("abc123")
+        kwargs = g.call_args.kwargs
+        assert kwargs["retries"] == 1
+        assert kwargs["deadline_monotonic"] == 100.0 + reddit_arctic.TIMEOUT
+
     def test_strips_t3_prefix_from_post_id(self):
         with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([_comment_row()])) as g:
             reddit_arctic.fetch_post_comments("t3_abc123")

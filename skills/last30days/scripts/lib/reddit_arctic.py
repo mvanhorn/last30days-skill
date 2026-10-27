@@ -310,6 +310,10 @@ def fetch_post_comments(
             f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}&sort=desc",
             headers={"User-Agent": http.BROWSER_USER_AGENT},
             timeout=TIMEOUT,
+            retries=1,
+            # Runs in an enrichment worker; one deadline over every attempt so
+            # optional comment text cannot outlast reddit_keyless.ENRICH_BUDGET.
+            deadline_monotonic=time.monotonic() + TIMEOUT,
         )
     except Exception as e:  # network error / non-200 — degrade, never raise
         _log(f"comments lookup failed t3_{pid}: {e}")
