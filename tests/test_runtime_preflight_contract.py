@@ -159,7 +159,9 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
             None,
         )
         self.assertIsNotNone(assignment, "preflight must print a reusable shell assignment")
-        self.assertEqual(assignment, f"LAST30DAYS_PYTHON={shlex.quote(str(candidate))}")
+        # Preflight anchors relative paths with `cd -P`, so expect the physical directory (macOS /var -> /private/var).
+        physical = candidate.parent.resolve() / candidate.name
+        self.assertEqual(assignment, f"LAST30DAYS_PYTHON={shlex.quote(str(physical))}")
 
         installed = self.root / "welcome skill"
         (installed / "scripts").mkdir(parents=True)

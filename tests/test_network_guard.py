@@ -374,6 +374,17 @@ def test_owned_loopback_transport_remains_real(tmp_path):
     assert "1 passed" in result.stdout
 
 
+def _can_bind(host):
+    try:
+        with socket.socket() as probe:
+            probe.bind((host, 0))
+    except OSError:
+        return False
+    return True
+
+
+# macOS lo0 carries only 127.0.0.1 unless an alias is added; Linux routes all of 127/8.
+@pytest.mark.skipif(not _can_bind("127.0.0.2"), reason="127.0.0.2 is not bindable on this host")
 def test_owned_port_does_not_authorize_another_loopback_address(tmp_path):
     canary = f"address-{uuid.uuid4().hex}"
     result = _run_probe(tmp_path, f"""
