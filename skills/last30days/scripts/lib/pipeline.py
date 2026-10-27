@@ -2474,6 +2474,7 @@ def run(
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
     deferred_retryable_failures: dict[str, dict[str, Any]] = {}
+    out_of_time_sources: set[str] = set()
     if envelope is not None:
         # The footer names the X provenance (render._render_stats).
         bundle.artifacts["x_provenance"] = envelope.provenance
@@ -2827,6 +2828,7 @@ def run(
                     source == "youtube"
                     and not raw_items
                     and _retryable_youtube_outcome(outcome_note)
+                    and not artifact.get("_source_out_of_time")
                 ):
                     deferred_retryable_failures.setdefault(source, outcome_note)
                 else:
@@ -2836,6 +2838,10 @@ def run(
                         outcome_note["detail"],
                         attempted=outcome_note.get("attempted", True),
                     )
+                # A lane that already ran out of time would only run out
+                # again in the thin-results retry or the transcript backfill.
+                if artifact.pop("_source_out_of_time", False):
+                    out_of_time_sources.add(source)
             if isinstance(artifact, dict) and artifact.get("_source_outcome_detail"):
                 artifact = dict(artifact)
                 detail_rate_limited = _detail_rate_limits_source(source, artifact)
@@ -2947,6 +2953,7 @@ def run(
         first_party_handles=explicit_first_party,
         first_party_by_source=creator_first_party,
         run_started=run_started,
+        out_of_time_sources=out_of_time_sources,
     )
     for source, outcome in deferred_retryable_failures.items():
         if (
@@ -3047,7 +3054,7 @@ def run(
     # source_status counts describe the same post-floor evidence set fusion sees.
     items_by_source = _finalize_items_by_source(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
-        elapsed=time.monotonic() - run_started,
+        elapsed=time.monotonic() - run_started, out_of_time=out_of_time_sources,
     )
     retained_markets = {
         source_item_key(item) for item in items_by_source.get("polymarket", [])
@@ -3066,6 +3073,7 @@ def run(
         range_from=from_date,
         range_to=to_date,
         first_party_handles=resolved_handles,
+        primary_handle=x_handle,
     )
     private_candidates = [
         candidate
@@ -3633,6 +3641,7 @@ def _finalize_items_by_source(
     depth: str = "default",
     mock: bool = False,
     elapsed: float = 0.0,
+    out_of_time: set[str] | None = None,
 ) -> dict[str, list[schema.SourceItem]]:
     finalized = {}
     for source, items in items_by_source_raw.items():
@@ -3649,7 +3658,8 @@ def _finalize_items_by_source(
             "topic": topic,
             "depth": depth,
         }
-        if source == "youtube" and items and not mock:
+        _key_youtube_fixture_by_entity_count(enrichment_request, source, config)
+        if source == "youtube" and items and not mock and source not in (out_of_time or ()):
             # Same budget-at-the-survivors principle as the digg branch
             # below: retrieval-time transcripts go to each search's
             # top-by-views candidates, while final selection ranks by
@@ -3666,6 +3676,7 @@ def _finalize_items_by_source(
                 )
                 youtube_yt.backfill_transcripts(
                     items, topic=topic, depth=depth, token=sc_token,
+                    entity_count=_comparison_entity_count(config),
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         # Post-merge topic-relevance filter for Polymarket: comparison queries
@@ -4397,6 +4408,7 @@ def _run_supplemental_searches(
     x_dicts = [
         {"author_handle": item.author or "", "text": item.body or ""}
         for item in bundle.items_by_source.get("x", [])
+        if entity_extract.matches_person_identity(item, plan.person_identity_anchors, x_handle)
     ]
     reddit_dicts = [
         {
@@ -4897,8 +4909,12 @@ def _retry_thin_sources(
     first_party_handles: Iterable[str] | None = None,
     first_party_by_source: Mapping[str, Iterable[str]] | None = None,
     run_started: float | None = None,
+    out_of_time_sources: set[str] | None = None,
 ) -> None:
-    """Retry sources with thin results using simplified core subject query."""
+    """Retry sources with thin results using simplified core subject query.
+
+    Sources whose retry ran out of time are added to ``out_of_time_sources``.
+    """
     if depth == "quick":
         return
     # No new paid/network work after the enrichment budget expired.
@@ -4945,7 +4961,7 @@ def _retry_thin_sources(
 
     def _retry_one_source(
         source: str,
-    ) -> tuple[str, list[schema.SourceItem], dict[str, Any] | None]:
+    ) -> tuple[str, list[schema.SourceItem], dict[str, Any] | None, tuple, bool]:
         raw_items, artifact = _retrieve_stream(
             topic=topic,
             subquery=retry_subquery,
@@ -4973,6 +4989,7 @@ def _retry_thin_sources(
         outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
         detail_note = artifact.get("_source_outcome_detail") if isinstance(artifact, dict) else None
         detail_state = artifact.get("_source_outcome_detail_state") if isinstance(artifact, dict) else None
+        out_of_time = isinstance(artifact, dict) and bool(artifact.get("_source_out_of_time"))
         normalized = _normalize_score_dedupe(
             source,
             raw_items,
@@ -4990,7 +5007,7 @@ def _retry_thin_sources(
             defer_relevance_prune=(source == "x"),
         )
         if source == "jobs":
-            return source, normalized, outcome_note, (detail_note, detail_state)
+            return source, normalized, outcome_note, (detail_note, detail_state), out_of_time
         normalized = _apply_reddit_stream_keepers(
             source, normalized, settings["per_stream_limit"], topic
         )
@@ -4998,7 +5015,7 @@ def _retry_thin_sources(
             outcome_note = outcome_note or artifact["_source_outcome_deferred"]
         if not normalized and isinstance(artifact, dict):
             outcome_note = outcome_note or artifact.get("_source_outcome_if_empty")
-        return source, normalized, outcome_note, (detail_note, detail_state)
+        return source, normalized, outcome_note, (detail_note, detail_state), out_of_time
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 
@@ -5014,7 +5031,9 @@ def _retry_thin_sources(
         for future in done:
             source = futures[future]
             try:
-                source, normalized, outcome_note, (detail_note, detail_state) = future.result(timeout=0)
+                (
+                    source, normalized, outcome_note, (detail_note, detail_state), out_of_time,
+                ) = future.result(timeout=0)
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
                 state, attempted = _classify_source_failure(exc)
@@ -5025,6 +5044,8 @@ def _retry_thin_sources(
                     attempted=attempted,
                 )
                 continue
+            if out_of_time and out_of_time_sources is not None:
+                out_of_time_sources.add(source)
             try:
                 if outcome_note:
                     bundle.record_failure(
@@ -5205,6 +5226,7 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         "date_range": list(kwargs.get("date_range") or ()),
         "depth": kwargs.get("depth") or "",
     }
+    _key_youtube_fixture_by_entity_count(fixture_request, source, kwargs.get("config"))
     module_backed = source in {
         "reddit",
         "x",
@@ -5493,15 +5515,34 @@ def _fetch_youtube_stream(
     """Search, backfill, transcribe, and comment-enrich one YouTube query."""
     # An abandoned lane keeps running after the report is saved; once the
     # run is over, every ScrapeCreators call in it is wasted credit (#1315).
+    deadline = config.get("_research_deadline")
     with youtube_yt.sc_spend_until(
         lambda: _research_stopped(config),
         cancel=config.get("_enrich_cancel"),
-        deadline=config.get("_research_deadline"),
+        deadline=deadline,
+        return_deadline=(
+            deadline - youtube_yt._LANE_RETURN_MARGIN_SECONDS
+            if deadline is not None else None
+        ),
     ):
         return _fetch_youtube_stream_live(
             yt_query, from_date, to_date, depth, config,
             has_ytdlp=has_ytdlp, freshness_mode=freshness_mode,
         )
+
+
+def _comparison_entity_count(config: dict[str, Any] | None) -> int:
+    return int((config or {}).get("_comparison_entity_count") or 1)
+
+
+def _key_youtube_fixture_by_entity_count(
+    request: dict[str, Any], source: str, config: dict[str, Any] | None,
+) -> None:
+    # Only comparison runs carry the count, so fixtures already recorded for
+    # single-topic runs keep their original keys.
+    entity_count = _comparison_entity_count(config)
+    if source == "youtube" and entity_count > 1:
+        request["comparison_entity_count"] = entity_count
 
 
 def _interpreter_shutting_down(exc: BaseException) -> bool:
@@ -5530,12 +5571,13 @@ def _fetch_youtube_stream_live(
         config.get("SCRAPECREATORS_API_KEY", "")
         if env.is_youtube_sc_available(config) else None
     )
+    entity_count = _comparison_entity_count(config)
     # Try yt-dlp first; the SC transcript fallback covers per-video failures.
     if has_ytdlp:
         try:
             result = youtube_yt.search_and_transcribe(
                 yt_query, from_date, to_date, depth=depth, token=sc_token,
-                freshness_mode=freshness_mode,
+                freshness_mode=freshness_mode, entity_count=entity_count,
             )
             if result.get("error"):
                 youtube_failure = str(result["error"])
@@ -5544,7 +5586,10 @@ def _fetch_youtube_stream_live(
             result = None
             # Not an empty yt-dlp result: the process is exiting.
             run_over = _interpreter_shutting_down(exc)
-    run_over = run_over or _research_stopped(config)
+    out_of_time = (result or {}).get("out_of_time")
+    if not out_of_time and youtube_yt._lane_out_of_time():
+        out_of_time = "lane deadline passed"
+    run_over = run_over or bool(out_of_time) or _research_stopped(config)
     free_items = list((result or {}).get("items") or [])
     min_items = env.youtube_sc_min_items(config)
     backfill_thin = bool(free_items) and len(free_items) < min_items
@@ -5565,7 +5610,7 @@ def _fetch_youtube_stream_live(
                 sc_result = youtube_yt.search_youtube_sc(
                     yt_query, from_date, to_date, depth=depth, token=sc_token,
                     skip_transcript_ids=transcribed_free_ids,
-                    freshness_mode=freshness_mode,
+                    freshness_mode=freshness_mode, entity_count=entity_count,
                 )
             sc_error = str(sc_result["error"]) if sc_result.get("error") else None
             if backfill_thin:
@@ -5623,8 +5668,22 @@ def _fetch_youtube_stream_live(
         result = {"items": []}
     # Enrich top videos with comments (default-on when a key is present).
     items = youtube_yt.parse_youtube_response(result)
-    if items and env.is_youtube_comments_available(config):
-        youtube_yt.enrich_with_comments(items, token=sc_token or "")
+    if not out_of_time and youtube_yt._lane_out_of_time():
+        out_of_time = "lane deadline passed"
+    if items and env.is_youtube_comments_available(config) and not out_of_time:
+        youtube_yt.enrich_with_comments(
+            items, token=sc_token or "", entity_count=entity_count,
+        )
+    if not out_of_time and youtube_yt._lane_out_of_time():
+        out_of_time = "lane deadline passed"
+    if out_of_time:
+        detail = f"youtube timed out: {out_of_time}"
+        if thin_detail or youtube_failure:
+            detail += f"; {thin_detail or youtube_failure}"
+        return items, {
+            **_outcome_artifact(health.TIMEOUT, detail),
+            "_source_out_of_time": True,
+        }
     if thin_detail:
         if not thin_error:
             return items, {"_source_outcome_detail": thin_detail}
@@ -6099,6 +6158,7 @@ def _retrieve_stream_impl(
                 env.is_youtube_sc_available(config),
                 env.youtube_sc_min_items(config),
                 env.is_youtube_comments_available(config),
+                _comparison_entity_count(config),
             ),
             lambda: _fetch_youtube_stream(
                 yt_query, from_date, to_date, depth, config, has_ytdlp=has_ytdlp,
@@ -6113,6 +6173,9 @@ def _retrieve_stream_impl(
         tiktok_query = raw_topic or subquery.search_query
 
         def _fetch_tiktok() -> tuple[list[dict], dict]:
+            # Leave time to publish collected videos before the outer stream wait expires.
+            deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS) - 1.0
+            cancel = config.get("_enrich_cancel")
             result = tiktok.search_and_enrich(
                 tiktok_query,
                 from_date,
@@ -6121,11 +6184,20 @@ def _retrieve_stream_impl(
                 token=env.get_tiktok_token(config),
                 hashtags=tiktok_hashtags,
                 creators=tiktok_creators,
+                deadline=deadline,
+                cancel=cancel,
             )
             items = tiktok.parse_tiktok_response(result)
-            if items and env.is_tiktok_comments_available(config):
+            if (
+                items
+                and env.is_tiktok_comments_available(config)
+                and result.get("error") != tiktok.BUDGET_ERROR
+            ):
                 sc_token = config.get("SCRAPECREATORS_API_KEY", "")
-                tiktok.enrich_with_comments(items, token=sc_token)
+                try:
+                    tiktok.enrich_with_comments(items, token=sc_token, deadline=deadline, cancel=cancel)
+                except http.DeadlineExceeded:
+                    result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
 
         return fetch_memo.fetch_once(

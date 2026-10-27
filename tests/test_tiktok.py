@@ -1,7 +1,9 @@
+import threading
 import unittest
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import MagicMock, patch
 
+from lib import tiktok
 from lib.tiktok import _parse_items
 
 
@@ -268,6 +270,94 @@ class TestTikTokArabicTopicEncoding(unittest.TestCase):
         sent_url = self._sent_url(mock_urlopen)
         sent_url.encode("ascii")
         self.assertEqual(parse_qs(urlsplit(sent_url).query)["query"], [topic])
+
+
+class TestTikTokBudget(unittest.TestCase):
+    def test_expired_or_cancelled_search_starts_no_requests(self):
+        cancel = threading.Event()
+        cancel.set()
+        for budget in ({"deadline": 99.0}, {"cancel": cancel}):
+            with self.subTest(budget=budget), \
+                 patch("lib.tiktok.time.monotonic", return_value=100.0), \
+                 patch.object(tiktok.http, "get") as get:
+                result = tiktok.search_and_enrich(
+                    "travel", "2026-10-01", "2026-10-21", token="dummy-key",
+                    hashtags=["travel"], creators=["traveler"], **budget,
+                )
+            self.assertEqual(result, {"items": [], "error": tiktok.BUDGET_ERROR})
+            get.assert_not_called()
+
+    def test_cancellation_keeps_video_and_skips_remaining_requests(self):
+        cancel = threading.Event()
+
+        def first_response(*args, **kwargs):
+            cancel.set()
+            return {"aweme_list": [{
+                "aweme_id": "1", "desc": "travel storytelling",
+                "author": {"unique_id": "traveler"},
+            }]}
+
+        with patch.object(tiktok.http, "get", side_effect=first_response) as get:
+            result = tiktok.search_and_enrich(
+                "travel", "2026-10-01", "2026-10-21", token="dummy-key",
+                hashtags=["travel", "unused"], creators=["traveler"], cancel=cancel,
+            )
+        self.assertEqual([item["video_id"] for item in result["items"]], ["1"])
+        self.assertEqual(result["error"], tiktok.BUDGET_ERROR)
+        get.assert_called_once()
+        self.assertIs(get.call_args.kwargs["cancel"], cancel)
+
+    def test_transcript_timeout_keeps_earlier_captions_and_videos(self):
+        raw = [{"aweme_id": str(i), "desc": f"travel video {i}",
+                "author": {"unique_id": "traveler"}} for i in range(3)]
+        with patch("lib.tiktok.time.monotonic", return_value=100.0), \
+             patch.object(tiktok.http, "get", side_effect=[
+                 {"search_item_list": [{"aweme_info": item} for item in raw]},
+                 {"transcript": "first spoken caption"},
+                 tiktok.http.DeadlineExceeded(),
+             ]) as get:
+            result = tiktok.search_and_enrich(
+                "travel", "2026-10-01", "2026-10-21", depth="quick",
+                token="dummy-key", deadline=110.0,
+            )
+        self.assertEqual(len(result["items"]), 3)
+        self.assertEqual(result["error"], tiktok.BUDGET_ERROR)
+        self.assertEqual([item["caption_snippet"] for item in result["items"]], [
+            "first spoken caption", "travel video 1", "travel video 2",
+        ])
+        self.assertEqual(get.call_count, 3)
+        self.assertTrue(all(call.kwargs["deadline_monotonic"] == 110.0
+                            for call in get.call_args_list))
+
+    def test_later_keyword_timeout_keeps_deduplicated_results(self):
+        raw = [{"aweme_id": str(i), "desc": f"travel video {i}",
+                "author": {"unique_id": "traveler"},
+                "statistics": {"play_count": i * 100}} for i in range(2)]
+        with patch("lib.tiktok.time.monotonic", return_value=100.0), \
+             patch.object(tiktok, "expand_tiktok_queries", return_value=["one", "two", "unused"]), \
+             patch.object(tiktok.http, "get", side_effect=[
+                 {"search_item_list": [{"aweme_info": item} for item in raw + raw]},
+                 tiktok.http.DeadlineExceeded(),
+             ]) as get:
+            result = tiktok.search_and_enrich(
+                "travel", "2026-10-01", "2026-10-21", token="dummy-key", deadline=110.0,
+            )
+        self.assertEqual([item["video_id"] for item in result["items"]], ["1", "0"])
+        self.assertEqual(result["error"], tiktok.BUDGET_ERROR)
+        self.assertEqual(get.call_count, 2)
+
+    def test_comment_enrichment_skips_expired_or_cancelled_budget(self):
+        cancel = threading.Event()
+        cancel.set()
+        items = [{"video_id": "1", "url": "https://www.tiktok.com/@u/video/1"}]
+        for budget in ({"deadline": 99.0}, {"cancel": cancel}):
+            with self.subTest(budget=budget), \
+                 patch("lib.tiktok.time.monotonic", return_value=100.0), \
+                 patch.object(tiktok.http, "get") as get, \
+                 self.assertRaises(tiktok.http.DeadlineExceeded):
+                tiktok.enrich_with_comments(items, token="dummy-key", **budget)
+            get.assert_not_called()
+            self.assertNotIn("top_comments", items[0])
 
 
 if __name__ == "__main__":

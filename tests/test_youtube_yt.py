@@ -140,7 +140,7 @@ class TestYtDlpSubLangs(unittest.TestCase):
         self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
-        self.assertEqual(cmd[idx + 1], "en-orig,en,es-orig,es,pt-orig,pt")
+        self.assertEqual(cmd[idx + 1], "en-orig,es-orig,pt-orig,en,es,pt")
 
     def test_transcript_cmd_respects_env_var_override(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
@@ -153,7 +153,7 @@ class TestYtDlpSubLangs(unittest.TestCase):
         self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
-        self.assertEqual(cmd[idx + 1], "fr-orig,fr,de-orig,de,it-orig,it")
+        self.assertEqual(cmd[idx + 1], "fr-orig,de-orig,it-orig,fr,de,it")
 
     def test_transcript_cmd_requests_uploaded_and_auto_subtitles(self):
         """#1313: manual-only subtitles must not exit 0 with no file."""
@@ -178,7 +178,7 @@ class TestYtDlpSubLangs(unittest.TestCase):
 
     def test_request_langs_do_not_double_explicit_orig(self):
         with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,en-orig,en"}):
-            self.assertEqual(youtube_yt._ytdlp_request_langs(), "fr-orig,fr,en-orig,en")
+            self.assertEqual(youtube_yt._ytdlp_request_langs(), "fr-orig,en-orig,fr,en")
 
     def test_vtt_matching_prefers_plain_track_within_a_language(self):
         """A plain track that downloaded may be the uploaded subtitle; keep it."""
@@ -607,7 +607,7 @@ class TestTranscriptCandidateSortKey(unittest.TestCase):
 
         call_args_list = []
 
-        def fake_fetch(video_ids, max_workers=5, out_captions_disabled=None, token=None):
+        def fake_fetch(video_ids, max_workers=5, out_captions_disabled=None, token=None, **_kwargs):
             call_args_list.extend(video_ids)
             return {vid: "transcript" for vid in video_ids}
 
@@ -648,7 +648,7 @@ class TestSearchAndTranscribe(unittest.TestCase):
         ]
 
         # fetch_transcripts_parallel returns None for music videos, text for talks
-        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None):
+        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None, **_kwargs):
             result = {}
             for vid in video_ids:
                 if vid.startswith("talk"):
@@ -718,7 +718,7 @@ class TestTranscriptFetchStats(unittest.TestCase):
 
     def _run(self, items, fake_parallel=None):
         if fake_parallel is None:
-            def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None):
+            def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None, **_kwargs):
                 return {vid: "A detailed transcript about the topic." for vid in video_ids}
         with mock.patch.object(youtube_yt, "search_youtube", return_value={"items": items}), \
              mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_parallel):
@@ -733,7 +733,7 @@ class TestTranscriptFetchStats(unittest.TestCase):
             self._make_item("nocap1", 1_000, "2026-03-10"),
         ]
 
-        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None):
+        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None, **_kwargs):
             result = {}
             for vid in video_ids:
                 if vid.startswith("nocap"):
@@ -1046,7 +1046,7 @@ class TestScTranscriptFallback(unittest.TestCase):
         """fetch_transcripts_parallel passes the token to every fetch_transcript."""
         captured = {}
 
-        def _fake_fetch_transcript(video_id, temp_dir, status=None, token=None):
+        def _fake_fetch_transcript(video_id, temp_dir, status=None, token=None, **_kwargs):
             captured[video_id] = token
             return None
 
@@ -1062,7 +1062,7 @@ class TestScTranscriptFallback(unittest.TestCase):
         doesn't look like nothing went wrong."""
         logs = []
 
-        def _rescued_fetch_transcript(video_id, temp_dir, status=None, token=None):
+        def _rescued_fetch_transcript(video_id, temp_dir, status=None, token=None, **_kwargs):
             if status is not None:
                 status["sc_rescued"] = True
             return "rescued transcript"
@@ -1083,7 +1083,7 @@ class TestScTranscriptFallback(unittest.TestCase):
         needed the ScrapeCreators fallback — no rescue tag should appear."""
         logs = []
 
-        def _plain_fetch_transcript(video_id, temp_dir, status=None, token=None):
+        def _plain_fetch_transcript(video_id, temp_dir, status=None, token=None, **_kwargs):
             return "a normal transcript"
 
         with mock.patch.object(youtube_yt, "fetch_transcript",

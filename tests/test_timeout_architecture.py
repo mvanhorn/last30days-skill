@@ -435,6 +435,139 @@ def test_thin_retry_does_not_join_hung_retry(monkeypatch):
     assert bundle.source_status["reddit"].state == health.TIMEOUT
 
 
+@pytest.mark.parametrize("stop_at", ["hashtag", "profile", "keyword", "transcript", "comments", "empty", "complete"])
+def test_tiktok_budget_preserves_results_in_report(monkeypatch, stop_at):
+    """The lane must return its videos before the outer future discards them."""
+    from lib import tiktok
+
+    now = [1000.0]
+    calls = []
+    topic = "travel storytelling"
+    plan = schema.QueryPlan(
+        raw_topic=topic, intent="opinion", freshness_mode="balanced_recent",
+        cluster_mode="debate", source_weights={"tiktok": 1.0},
+        subqueries=[schema.SubQuery(
+            label="primary", search_query=topic, ranking_query=topic, sources=["tiktok"],
+        )],
+    )
+    runtime = schema.ProviderRuntime(
+        reasoning_provider="native", planner_model="", rerank_model="", x_search_backend="none",
+    )
+    raw = {
+        "aweme_id": "1", "desc": topic, "author": {"unique_id": "traveler"},
+        "statistics": {"play_count": 100},
+    }
+    endpoints = {
+        "hashtag": "/search/hashtag", "profile": "/profile/videos",
+        "keyword": "/search/keyword", "transcript": "/video/transcript",
+        "comments": "/video/comments", "empty": "/search/hashtag",
+    }
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        should_stop = url.endswith(endpoints.get(stop_at, "not-an-endpoint"))
+        if stop_at == "hashtag":
+            should_stop = should_stop and len(calls) == 2
+        if should_stop:
+            deadline = kwargs.get("deadline_monotonic")
+            # Without a shared deadline the request finishes after the stream cap.
+            now[0] = deadline if deadline is not None else 1007.0
+            raise http.DeadlineExceeded()
+        if url.endswith("/video/transcript"):
+            return {"transcript": "travel storytelling transcript"}
+        if url.endswith("/video/comments"):
+            return {"comments": [{"text": "great travel storytelling", "digg_count": 5}]}
+        return {"aweme_list": [raw], "search_item_list": [{"aweme_info": raw}]}
+
+    monkeypatch.setattr(pipeline, "STREAM_FUTURE_TIMEOUT_SECONDS", 6.0)
+    monkeypatch.setattr(pipeline.providers, "resolve_runtime", lambda *a: (runtime, None))
+    monkeypatch.setattr(pipeline, "available_sources", lambda *a, **k: ["tiktok"])
+    monkeypatch.setattr(pipeline.planner, "plan_query", lambda **k: plan)
+    monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
+    monkeypatch.setattr(tiktok.http, "get", fake_get)
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    cancel = threading.Event()
+    report = pipeline.run(
+        topic=topic, config={
+            "SCRAPECREATORS_API_KEY": "dummy-key",
+            "INCLUDE_SOURCES": "tiktok,tiktok_comments", "_enrich_cancel": cancel,
+        }, depth="quick", requested_sources=["tiktok"],
+        tiktok_hashtags=["travel", "slow", "unused"], tiktok_creators=["traveler"],
+        internal_subrun=True,
+    )
+    items = report.items_by_source.get("tiktok", [])
+    outcome = report.source_status["tiktok"]
+    if stop_at == "empty":
+        assert items == []
+        assert outcome.state == health.TIMEOUT
+    else:
+        assert len(items) == 1, "videos collected before the slow request must survive"
+        assert outcome.state == (health.OK if stop_at == "complete" else schema.PARTIAL)
+        if stop_at in ("comments", "complete"):
+            assert items[0].snippet == "travel storytelling transcript"
+    assert calls
+    assert all(call[1].get("deadline_monotonic") == 1005.0 for call in calls)
+    assert all(call[1].get("cancel") is cancel for call in calls)
+    if stop_at != "complete":
+        assert "timed out" in outcome.detail.lower()
+        expected_calls = {"empty": 1, "hashtag": 2, "profile": 4, "keyword": 5,
+                          "transcript": 6, "comments": 7}
+        assert len(calls) == expected_calls[stop_at], "no new calls may start after the budget stop"
+    else:
+        assert report.errors_by_source == {}
+        assert items[0].metadata["top_comments"][0]["excerpt"] == "great travel storytelling"
+
+
+def test_tiktok_returns_videos_before_stalled_transport_is_released(monkeypatch):
+    release = threading.Event()
+    transport_finished = threading.Event()
+    calls = []
+    raw = {"aweme_id": "1", "desc": "travel storytelling", "author": {"unique_id": "traveler"}}
+
+    def open_request(request, timeout):
+        calls.append(request.full_url)
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        if len(calls) == 1:
+            response.read.return_value = b'{"aweme_list": [{"aweme_id": "1", "desc": "travel storytelling", "author": {"unique_id": "traveler"}}]}'
+        else:
+            def held_read():
+                try:
+                    release.wait(HANG_SECONDS)
+                    return b"{}"
+                finally:
+                    transport_finished.set()
+            response.read.side_effect = held_read
+        return response
+
+    monkeypatch.setattr(pipeline, "STREAM_FUTURE_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(http, "_open_request", open_request)
+    monkeypatch.setattr(pipeline.providers, "resolve_runtime", lambda *a: (
+        schema.ProviderRuntime(reasoning_provider="native", planner_model="", rerank_model=""), None,
+    ))
+    monkeypatch.setattr(pipeline, "available_sources", lambda *a, **k: ["tiktok"])
+    monkeypatch.setattr(pipeline.planner, "plan_query", lambda **k: schema.QueryPlan(
+        raw_topic=raw["desc"], intent="opinion", freshness_mode="balanced_recent",
+        cluster_mode="debate", source_weights={"tiktok": 1.0},
+        subqueries=[schema.SubQuery(label="primary", search_query=raw["desc"],
+                                   ranking_query=raw["desc"], sources=["tiktok"])],
+    ))
+    monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
+    try:
+        report = pipeline.run(
+            topic=raw["desc"], config={"SCRAPECREATORS_API_KEY": "dummy-key"}, depth="quick",
+            requested_sources=["tiktok"], tiktok_hashtags=["travel", "slow"], internal_subrun=True,
+        )
+        assert not release.is_set()
+        assert len(report.items_by_source.get("tiktok", [])) == 1
+        assert report.source_status["tiktok"].state == schema.PARTIAL
+        assert len(calls) == 2
+    finally:
+        release.set()
+        assert transport_finished.wait(2), "the held transport must finish before the test exits"
+
+
 def _interstitial():
     from lib.subproc import SubprocResult
     return SubprocResult(returncode=0, stdout="<!DOCTYPE html><html>blocked</html>", stderr="")

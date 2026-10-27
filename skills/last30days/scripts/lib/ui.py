@@ -215,7 +215,7 @@ PROMO_SINGLE_KEY = {
     "reddit": "\n💡 Unlock TikTok and Instagram with SCRAPECREATORS_API_KEY - 10,000 free calls, no CC - scrapecreators.com\n",
     "x": "\n💡 Unlock X: log into x.com in your browser, then re-run. "
          "Firefox works on all platforms. Safari works on macOS (detected automatically). "
-         "Chrome, Brave, Edge, Arc, Vivaldi, Opera, or Chromium on macOS require "
+         "Chrome, Brave, Edge, Arc, Dia, Vivaldi, Opera, or Chromium on macOS require "
          "FROM_BROWSER=auto in .env (Keychain dialog). On Windows only Firefox is supported. "
          "Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n",
     "web": "\n💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY.\n",

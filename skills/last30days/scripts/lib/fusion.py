@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from . import schema
+from . import entity_extract, schema
 
 # Standard RRF smoothing constant (Cormack et al. 2009)
 RRF_K = 60
@@ -373,6 +373,7 @@ def weighted_rrf(
     range_from: str | None = None,
     range_to: str | None = None,
     first_party_handles: Iterable[str] | None = None,
+    primary_handle: str | None = None,
 ) -> list[schema.Candidate]:
     """Fuse ranked lists into a single candidate pool.
 
@@ -395,6 +396,10 @@ def weighted_rrf(
         subquery = subqueries[label]
         weight = subquery.weight * plan.source_weights.get(source, 1.0)
         for rank, item in enumerate(items, start=1):
+            # Reject only the unqualified copy before combining its text,
+            # provenance, or votes with qualified evidence at the same URL.
+            if not entity_extract.matches_person_identity(item, plan.person_identity_anchors, primary_handle):
+                continue
             key = candidate_key(item)
             score = weight / (RRF_K + rank)
             item_local_relevance = item.local_relevance if item.local_relevance is not None else float(item.metadata.get("local_relevance", item.relevance_hint))

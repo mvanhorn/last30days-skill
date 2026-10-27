@@ -1,0 +1,1 @@
+A YouTube lane that runs out of time now returns the videos it already found instead of being dropped as a timeout with zero results. Search, transcript, and comment fallbacks share the lane's return deadline, preserving time to hand back partial results. Expired lanes are not retried or backfilled, and no new paid fallback starts after their return deadline.

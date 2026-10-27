@@ -122,6 +122,18 @@ def _no_ambient_grok_cli():
 
 
 @pytest.fixture(autouse=True)
+def _grok_audit_passes():
+    """Tests that fake the grok subprocess fake a build, not a binary on disk,
+    so the per-build tool-boundary audit cannot run against it. Default the
+    verdict to pass; tests/test_grok_audit.py and the boundary tests exercise
+    the real audit and verdict cache themselves."""
+    from lib import grok_audit
+
+    with mock.patch("lib.grok_audit.verdict_for", return_value=grok_audit.Verdict(grok_audit.PASS)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_probe_caches():
     """The doctor stack memoizes probe results in module-level dicts (safe for
     the one-shot CLI process, wrong across tests). Clear them around every test

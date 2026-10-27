@@ -163,6 +163,10 @@ SOURCE_CAPABILITIES = {
 }
 
 
+def _is_identity_anchor(anchor: object) -> bool:
+    return isinstance(anchor, str) and re.search(r"\w", anchor) is not None
+
+
 def validate_external_plan(raw: dict) -> None:
     """Validate explicit-plan structure before permissive sanitization.
 
@@ -177,6 +181,10 @@ def validate_external_plan(raw: dict) -> None:
     for field in ("intent", "freshness_mode", "cluster_mode"):
         if not isinstance(raw[field], str) or not raw[field].strip():
             raise ValueError(f"field '{field}' must be a non-empty string")
+
+    anchors = raw.get("person_identity_anchors", [])
+    if not isinstance(anchors, list) or not all(_is_identity_anchor(a) for a in anchors):
+        raise ValueError("person_identity_anchors must be an array of non-empty strings")
 
     source_weights = raw.get("source_weights")
     if source_weights is not None and not isinstance(source_weights, dict):
@@ -332,6 +340,7 @@ def build_drill_plan(
         freshness_mode=report.query_plan.freshness_mode,
         cluster_mode=report.query_plan.cluster_mode,
         raw_topic=report.topic,
+        person_identity_anchors=list(report.query_plan.person_identity_anchors),
         subqueries=subqueries,
         source_weights={
             source: report.query_plan.source_weights.get(source, 1.0)
@@ -456,10 +465,12 @@ Return JSON only with this shape:
       "weight": 1.0
     }}
   ],
+  "person_identity_anchors": [],
   "notes": ["optional short notes"]
 }}
 
 Rules:
+- for a collision-prone person, preserve specific company/organization identity anchors explicitly supplied in the topic in person_identity_anchors; otherwise use []; never invent affiliations or use the shared name/generic role as an anchor
 - emit 1 to 5 subqueries (how_to/opinion/product/breaking_news intents benefit from 4-5; factual/concept from 2)
 - every subquery must include both search_query and ranking_query
 - sources must be drawn from Available sources only
@@ -565,6 +576,11 @@ def _sanitize_plan(
     if cluster_mode not in ALLOWED_CLUSTER_MODES:
         cluster_mode = _default_cluster_mode(intent)
 
+    # --plan input was already validated strictly; a malformed field from the
+    # internal LLM planner degrades to unscoped instead of discarding its plan.
+    anchors = raw.get("person_identity_anchors")
+    if not isinstance(anchors, list):
+        anchors = []
     return schema.QueryPlan(
         intent=intent,
         freshness_mode=freshness_mode,
@@ -582,6 +598,7 @@ def _sanitize_plan(
         ),
         source_weights=source_weights,
         notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()],
+        person_identity_anchors=[a.strip() for a in anchors if _is_identity_anchor(a)],
     )
 
 

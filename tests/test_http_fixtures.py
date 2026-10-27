@@ -278,7 +278,7 @@ def test_post_ranking_cli_enrichment_records_and_replays(
 
         monkeypatch.setattr(pipeline.youtube_yt, "backfill_transcripts", enrich)
         expected_metadata = {"transcript_snippet": "recorded transcript"}
-        expected_kwargs = {"topic": "agents", "depth": "quick", "token": None}
+        expected_kwargs = {"topic": "agents", "depth": "quick", "token": None, "entity_count": 1}
     else:
         def enrich(items, **_kwargs):
             enrichment_calls.append(([entry.item_id for entry in items], _kwargs))
@@ -323,6 +323,30 @@ def test_post_ranking_cli_enrichment_records_and_replays(
     assert len(replayed[source]) == 1
     assert replayed[source][0].metadata == expected_metadata
     assert enrichment_calls == [(["item-1"], expected_kwargs)]
+
+
+def test_youtube_fixtures_do_not_replay_across_comparison_entity_counts(tmp_path, monkeypatch):
+    fixture_dir = tmp_path / "youtube"
+    item = schema.SourceItem(
+        item_id="item-1", source="youtube", title="Fixture item", body="Fixture body",
+        url="https://example.test/youtube/item-1",
+    )
+    monkeypatch.setattr(pipeline.youtube_yt, "backfill_transcripts", lambda *_a, **_k: None)
+    comparison = {"_comparison_entity_count": 3}
+
+    with http.recording_requests(fixture_dir):
+        pipeline._finalize_items_by_source(
+            {"youtube": [item]}, topic="agents", config=comparison, depth="quick",
+        )
+
+    with http.replaying_requests(fixture_dir):
+        pipeline._finalize_items_by_source(
+            {"youtube": [item]}, topic="agents", config=comparison, depth="quick",
+        )
+        with pytest.raises(AssertionError, match="Unrecorded CLI-backed source request"):
+            pipeline._finalize_items_by_source(
+                {"youtube": [item]}, topic="agents", config={}, depth="quick",
+            )
 
 
 def test_record_fixtures_flag_is_dev_only_and_hidden_from_help():

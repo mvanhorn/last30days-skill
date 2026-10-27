@@ -401,7 +401,7 @@ def cookie_access_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
     if consent is not None:
         return str(consent).strip().lower() in {"1", "true", "yes", "on"}
     requested = {browser.strip() for browser in from_browser.split(",")}
-    return bool(requested & {"auto", "chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"})
+    return bool(requested & {"auto", "chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium"})
 
 
 def read_x_cookies(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:

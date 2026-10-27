@@ -114,6 +114,12 @@ The host-conditional X routing rule that applies when the Harness identifies its
 
 An X result the hosting model fetched itself, through its own X connector, and handed to the Engine as a file (the X connector envelope, passed with `--x-posts`), which then serves as the run's X source in place of the X backend chain. The envelope is strict at the top level (a malformed, stale, or off-topic file fails closed), lenient per row (a bad row is dropped and counted), and trusted for nothing beyond a numeric post id and a grammar-valid handle: citations are rebuilt by the Engine, never copied from the file. It is single-serve (one run, consumed once) and accepted on any host; a session-level lane signal tells planning that X is available before the file exists.
 
+### Comparison sub-run
+
+One full research run for one entity of an "X vs Y" comparison; the Engine runs every entity's sub-run in parallel and renders them side by side. *Avoid: competitor run, peer run (for the run itself; "peer" still names a non-main entity).*
+
+Sub-runs share the process's limits (the YouTube fetch gate, paid-call budgets), so any per-run budget for work behind one of those limits is split across the sub-runs rather than granted to each in full. Otherwise the comparison multiplies the work and every sub-run misses the wait a single run fits inside.
+
 ## Flagged ambiguities
 
 - "Enrichment" is used for two distinct things: Comment-enrichment slots (fetching comments for already-ranked Reddit posts in the Keyless path) and Discovery's Enrichment pass (a full research run per Nomination). Context disambiguates; prefer the full term when writing.

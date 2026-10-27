@@ -4437,6 +4437,7 @@ def _main(
                 )
                 return 2
             discovered = distinct_peers
+            config["_comparison_entity_count"] = 1 + len(discovered)
 
             sys.stderr.write(
                 f"[Competitors] Comparing: {topic} vs " + " vs ".join(discovered) + "\n"

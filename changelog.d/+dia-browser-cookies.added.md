@@ -1,0 +1,1 @@
+Browser-cookie auth now covers **Dia** (The Browser Company) on macOS, alongside the rest of the Chromium family. Use `FROM_BROWSER=dia`, or let `FROM_BROWSER=auto` find it. The first-run setup wizard also scans Dia, so a user whose only X session lives there is detected without setting `FROM_BROWSER` first.

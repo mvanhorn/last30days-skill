@@ -23,6 +23,7 @@ def filter_by_date_range(
                 not require_date
                 or basis == "server_bounds"
                 or basis == "server_start_current"
+                or basis == "keyless_current"
             ):
                 filtered.append(item)
             continue

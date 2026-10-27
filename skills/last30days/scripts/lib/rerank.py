@@ -7,7 +7,7 @@ import math
 import re
 from datetime import datetime
 
-from . import http, providers, relevance, schema, signals
+from . import entity_extract, http, providers, relevance, schema, signals
 
 
 # Penalty applied when a candidate does not mention the primary entity
@@ -281,6 +281,13 @@ def rerank_candidates(
     subject role. Only it can be the topic's own account (_subject_handles);
     ``--x-related`` and discovered handles are first-party but never subjects.
     """
+    # Enforce identity before either scoring path and before first-party/rescue
+    # floors. A high score or a related author's status cannot revive a namesake.
+    if plan.person_identity_anchors:
+        candidates = [candidate for candidate in candidates if candidate.source_items and all(
+            entity_extract.matches_person_identity(item, plan.person_identity_anchors, primary_handle)
+            for item in candidate.source_items
+        )]
     handles = resolved_handles or set()
     shortlisted = candidates[:shortlist_size]
     primary_entity = _primary_entity(topic)

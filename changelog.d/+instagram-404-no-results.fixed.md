@@ -1,0 +1,1 @@
+Classify ScrapeCreators Instagram reels-search 404 responses that explicitly report no matching reels as clean no-results, while preserving errors for other 404s and keeping Google discovery fallback. When the hashtag-form retry answers a reels-search 500, the replaced 500 no longer marks Instagram as failed. Fixes the Instagram portion of #1311.
