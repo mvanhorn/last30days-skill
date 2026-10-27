@@ -34,7 +34,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from . import log, subproc, usage
 
@@ -56,6 +56,12 @@ _CONFIG_DIRNAME = "brightdata-cli"
 # timeout path throws with zero records (verified in its polling module --
 # never partial output), so a timed-out pull is a clean parseable failure.
 _CLI_TIMEOUT_MARGIN = 10
+
+_METHOD = "collect_by_url"
+
+# Printed by pre-0.4 CLIs, which have no `pipelines run` or `--input`.
+_OLD_CLI_MARKERS = ("unknown option '--input'", "Unknown pipeline type")
+_UPGRADE_HINT = "brightdata CLI is older than 0.4.0; upgrade with: npm i -g @brightdata/cli@latest"
 
 
 def _log(msg: str) -> None:
@@ -125,12 +131,12 @@ def gate_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, bool]:
 
 
 def _build_args(
-    pipeline_type: str,
-    params: Sequence[str],
+    dataset_id: str,
+    record: Dict[str, Any],
     *,
     cli_timeout: int,
 ) -> List[str]:
-    """Assemble the CLI invocation.
+    """Assemble a ``pipelines run`` invocation (CLI >= 0.4.0).
 
     The API key is deliberately **absent** here -- it travels in the child's
     environment instead (see ``_child_env``). Process arguments are not a
@@ -141,18 +147,20 @@ def _build_args(
     agent that snapshots ``ps``. Mirrors the ``bird_x`` cookie-injection
     precedent.
 
-    Positional params are fenced behind ``--`` so a keyword that happens to
-    begin with a dash is parsed as a search term rather than as an option.
+    The record goes in as ``--input`` JSON so numbers keep their type: the
+    API rejects ``"1"`` for a number field.
     """
     return [
         CLI_BIN,
         "pipelines",
-        pipeline_type,
+        "run",
+        dataset_id,
+        _METHOD,
+        "--input",
+        json.dumps([record]),
         "--json",
         "--timeout",
         str(cli_timeout),
-        "--",
-        *(str(p) for p in params),
     ]
 
 
@@ -200,13 +208,13 @@ def _extract_records(payload: Any) -> List[Dict[str, Any]]:
 
 
 def run_pipeline(
-    pipeline_type: str,
-    params: Sequence[str],
+    dataset_id: str,
+    record: Dict[str, Any],
     *,
     timeout: int,
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Run one Bright Data pipeline and return ``{"records", "error"}``.
+    """Run one Bright Data scraper on one input and return ``{"records", "error"}``.
 
     Never raises. Every failure mode -- missing binary, spawn failure,
     subprocess timeout, non-zero exit, unparseable stdout -- returns empty
@@ -218,8 +226,8 @@ def run_pipeline(
     mirrored to ``source_log`` so the failure is visible in non-TTY hosts.
 
     Args:
-        pipeline_type: pipeline name, e.g. ``amazon_product_search``.
-        params: positional pipeline params, passed through in order.
+        dataset_id: scraper ID, e.g. ``gd_lwdb4vjm1ehb499uxs``.
+        record: input fields for that scraper, with JSON-native types.
         timeout: subprocess timeout in seconds. The CLI's own polling
             timeout is set just below this so it can fail cleanly first.
         config: resolved config dict, consulted only for the API key.
@@ -232,7 +240,7 @@ def run_pipeline(
 
     cli_timeout = max(5, int(timeout) - _CLI_TIMEOUT_MARGIN)
     key = _api_key(config)
-    cmd = _build_args(pipeline_type, params, cli_timeout=cli_timeout)
+    cmd = _build_args(dataset_id, record, cli_timeout=cli_timeout)
 
     try:
         usage.begin("brightdata")
@@ -253,8 +261,10 @@ def run_pipeline(
     if result.returncode != 0:
         lines = [ln.strip() for ln in stderr.strip().splitlines() if ln.strip()]
         # The CLI narrates polling progress on stderr, so the *last* line is
-        # the actual failure; the first line is "Triggering pipeline...".
+        # the actual failure, not the "Snapshot ... started" narration.
         first = lines[-1] if lines else f"exit {result.returncode}"
+        if any(marker in stderr for marker in _OLD_CLI_MARKERS):
+            first = _UPGRADE_HINT
         _log(f"CLI exit {result.returncode}: {first}")
         return {"records": [], "error": first}
 

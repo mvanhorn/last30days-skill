@@ -1,0 +1,1 @@
+Amazon research works again with Bright Data CLI 0.4.0 and newer, which removed the named pipeline commands the engine called. Older CLIs now get a clear upgrade message (`npm i -g @brightdata/cli@latest`).

@@ -317,12 +317,12 @@ class TestEnrichmentLane:
         assert amazon.MAX_REVIEWS == 50
         import lib.brightdata as bd
         original = bd.run_pipeline
-        bd.run_pipeline = lambda p, params, **k: seen.update(params=params) or {"records": []}
+        bd.run_pipeline = lambda d, record, **k: seen.update(record=record) or {"records": []}
         try:
             amazon.fetch_reviews("https://www.amazon.com/dp/B000000001")
         finally:
             bd.run_pipeline = original
-        assert seen["params"] == ["https://www.amazon.com/dp/B000000001", "50"]
+        assert seen["record"] == {"url": "https://www.amazon.com/dp/B000000001", "max_reviews": 50}
 
     def test_reviews_attach_to_the_right_product(self):
         out, status = amazon.enrich_with_reviews(

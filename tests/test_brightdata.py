@@ -92,7 +92,7 @@ def test_gate_does_not_spawn_a_subprocess(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subproc, "run_with_timeout", _explode)
     brightdata.gate_status({})
-    assert brightdata.run_pipeline("amazon_product_search", ["x"], timeout=30)["records"] == []
+    assert brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)["records"] == []
 
 
 # ------------------------------------------------------------ envelope
@@ -109,7 +109,7 @@ def test_happy_path_parses_a_bare_json_array(monkeypatch):
         subproc, "run_with_timeout",
         lambda *a, **k: _Result(stdout=json.dumps([SEARCH_RECORD, SEARCH_RECORD])),
     )
-    out = brightdata.run_pipeline("amazon_product_search", ["bentgo", "https://www.amazon.com"], timeout=60)
+    out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=60)
     assert "error" not in out
     assert len(out["records"]) == 2
     assert out["records"][0]["asin"] == "B0DWD47BW7"
@@ -122,7 +122,7 @@ def test_dict_envelopes_are_tolerated_for_cli_churn(monkeypatch, wrapper):
         subproc, "run_with_timeout",
         lambda *a, **k: _Result(stdout=json.dumps({wrapper: [SEARCH_RECORD]})),
     )
-    assert len(brightdata.run_pipeline("amazon_product", ["u"], timeout=30)["records"]) == 1
+    assert len(brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)["records"]) == 1
 
 
 def test_auth_401_surfaces_the_cli_error_without_raising(monkeypatch):
@@ -131,7 +131,7 @@ def test_auth_401_surfaces_the_cli_error_without_raising(monkeypatch):
     monkeypatch.setattr(
         subproc, "run_with_timeout", lambda *a, **k: _Result(returncode=1, stderr=stderr)
     )
-    out = brightdata.run_pipeline("amazon_product_search", ["x"], timeout=30)
+    out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)
     assert out["records"] == []
     assert "401" in out["error"]
 
@@ -140,14 +140,15 @@ def test_error_uses_the_last_stderr_line_not_the_polling_narration(monkeypatch):
     """The CLI narrates polling on stderr; the failure is the final line."""
     _installed(monkeypatch)
     stderr = (
-        "Triggering pipeline collection for amazon_product_reviews...\n"
-        "Status: running - polling again (attempt 1/600)\n"
-        "Error: snapshot failed"
+        "Snapshot sd_x started. If you stop waiting, get the data later with: "
+        "brightdata pipelines results sd_x\n"
+        "Waiting for snapshot sd_x: running, 30s\n"
+        "✗ results failed. Error: snapshot failed"
     )
     monkeypatch.setattr(
         subproc, "run_with_timeout", lambda *a, **k: _Result(returncode=1, stderr=stderr)
     )
-    assert brightdata.run_pipeline("amazon_product_reviews", ["u", "50"], timeout=30)["error"] == "Error: snapshot failed"
+    assert brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)["error"] == "✗ results failed. Error: snapshot failed"
 
 
 def test_subprocess_timeout_returns_empty_records_and_error(monkeypatch):
@@ -157,7 +158,7 @@ def test_subprocess_timeout_returns_empty_records_and_error(monkeypatch):
         raise subproc.SubprocTimeout("Command brightdata timed out after 180s")
 
     monkeypatch.setattr(subproc, "run_with_timeout", _timeout)
-    out = brightdata.run_pipeline("amazon_product_reviews", ["u", "50"], timeout=180)
+    out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=180)
     assert out["records"] == []
     assert "timed out" in out["error"]
 
@@ -165,7 +166,7 @@ def test_subprocess_timeout_returns_empty_records_and_error(monkeypatch):
 def test_malformed_json_returns_empty_records_and_error(monkeypatch):
     _installed(monkeypatch)
     monkeypatch.setattr(subproc, "run_with_timeout", lambda *a, **k: _Result(stdout="not json{"))
-    out = brightdata.run_pipeline("amazon_product_search", ["x"], timeout=30)
+    out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)
     assert out["records"] == []
     assert "json decode" in out["error"]
 
@@ -173,7 +174,7 @@ def test_malformed_json_returns_empty_records_and_error(monkeypatch):
 def test_empty_stdout_is_not_an_error(monkeypatch):
     _installed(monkeypatch)
     monkeypatch.setattr(subproc, "run_with_timeout", lambda *a, **k: _Result(stdout="  \n"))
-    out = brightdata.run_pipeline("amazon_product_search", ["x"], timeout=30)
+    out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)
     assert out["records"] == []
     assert "error" not in out
 
@@ -185,7 +186,7 @@ def test_spawn_failures_never_raise(monkeypatch):
             raise __e
 
         monkeypatch.setattr(subproc, "run_with_timeout", _raise)
-        out = brightdata.run_pipeline("amazon_product_search", ["x"], timeout=30)
+        out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)
         assert out["records"] == [] and out["error"]
 
 
@@ -200,23 +201,23 @@ def test_cli_timeout_sits_below_the_subprocess_timeout(monkeypatch):
         subproc, "run_with_timeout",
         lambda cmd, **k: seen.update(cmd=cmd, timeout=k["timeout"]) or _Result(stdout="[]"),
     )
-    brightdata.run_pipeline("amazon_product_reviews", ["u", "50"], timeout=180)
+    brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=180)
     cli_timeout = int(seen["cmd"][seen["cmd"].index("--timeout") + 1])
     assert cli_timeout < seen["timeout"] == 180
 
 
-def test_params_are_passed_positionally_in_order(monkeypatch):
+def test_record_is_sent_as_typed_input_json(monkeypatch):
+    """Numbers must stay JSON numbers: the API rejects "50" for a number field."""
     _installed(monkeypatch)
     seen = {}
     monkeypatch.setattr(
         subproc, "run_with_timeout",
         lambda cmd, **k: seen.update(cmd=cmd) or _Result(stdout="[]"),
     )
-    brightdata.run_pipeline("amazon_product_reviews", ["https://a/dp/X", 50], timeout=60)
+    brightdata.run_pipeline("gd_x", {"url": "https://a/dp/X", "max_reviews": 50}, timeout=60)
     cmd = seen["cmd"]
-    assert cmd[:3] == ["brightdata", "pipelines", "amazon_product_reviews"]
-    # Positionals sit after the option fence, in the order supplied.
-    assert cmd[cmd.index("--") + 1:] == ["https://a/dp/X", "50"]
+    assert cmd[:5] == ["brightdata", "pipelines", "run", "gd_x", "collect_by_url"]
+    assert json.loads(cmd[cmd.index("--input") + 1]) == [{"url": "https://a/dp/X", "max_reviews": 50}]
     assert "--json" in cmd
 
 
@@ -229,9 +230,7 @@ def test_api_key_travels_in_the_environment_never_in_argv(monkeypatch):
         lambda cmd, **k: seen.update(cmd=cmd, env=k.get("env")) or _Result(stdout="[]"),
     )
     monkeypatch.delenv("BRIGHTDATA_API_KEY", raising=False)
-    brightdata.run_pipeline(
-        "amazon_product", ["u"], timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"}
-    )
+    brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"})
     assert "-k" not in seen["cmd"]
     assert "dummy-key" not in " ".join(seen["cmd"])
     assert seen["env"]["BRIGHTDATA_API_KEY"] == "dummy-key"
@@ -244,22 +243,33 @@ def test_no_key_means_the_child_simply_inherits_the_parent_env(monkeypatch):
         subproc, "run_with_timeout",
         lambda cmd, **k: seen.update(env=k.get("env")) or _Result(stdout="[]"),
     )
-    brightdata.run_pipeline("amazon_product", ["u"], timeout=30, config={})
+    brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30, config={})
     assert seen["env"] is None
 
 
-def test_positional_params_are_fenced_behind_a_double_dash(monkeypatch):
-    """A keyword beginning with '-' must not be parsed as an option."""
+def test_option_shaped_values_stay_inside_the_input_json(monkeypatch):
+    """A keyword beginning with '-' must not reach argv as an option."""
     _installed(monkeypatch)
     seen = {}
     monkeypatch.setattr(
         subproc, "run_with_timeout",
         lambda cmd, **k: seen.update(cmd=cmd) or _Result(stdout="[]"),
     )
-    brightdata.run_pipeline("amazon_product_search", ["--help", "https://a"], timeout=30)
-    cmd = seen["cmd"]
-    assert "--" in cmd
-    assert cmd.index("--") < cmd.index("--help")
+    brightdata.run_pipeline("gd_x", {"keyword": "--help"}, timeout=30)
+    assert "--help" not in seen["cmd"]
+
+
+@pytest.mark.parametrize("stderr", [
+    "error: unknown option '--input'\n(Did you mean --output?)",
+    'Error: Unknown pipeline type "run".',
+])
+def test_pre_0_4_cli_error_says_to_upgrade(monkeypatch, stderr):
+    _installed(monkeypatch)
+    monkeypatch.setattr(
+        subproc, "run_with_timeout", lambda *a, **k: _Result(returncode=1, stderr=stderr)
+    )
+    out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)
+    assert "0.4.0" in out["error"] and "@brightdata/cli@latest" in out["error"]
 
 
 def test_the_key_is_scrubbed_out_of_surfaced_stderr(monkeypatch):
@@ -271,9 +281,7 @@ def test_the_key_is_scrubbed_out_of_surfaced_stderr(monkeypatch):
         subproc, "run_with_timeout",
         lambda *a, **k: _Result(returncode=1, stderr="Error: 401 for key dummy-key"),
     )
-    out = brightdata.run_pipeline(
-        "amazon_product", ["u"], timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"}
-    )
+    out = brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"})
     assert "dummy-key" not in out["error"]
     assert not any("dummy-key" in m for m in logged)
 
@@ -286,17 +294,18 @@ def test_credit_and_auth_warnings_pass_through_verbatim(monkeypatch):
     warned = []
     monkeypatch.setattr(brightdata.log, "source_log", lambda name, msg, **k: warned.append(msg))
     stderr = (
-        "Triggering pipeline collection for amazon_product_search...\n"
-        "Status: running - polling again (attempt 1/600)\n"
+        "Snapshot sd_x started. If you stop waiting, get the data later with: "
+        "brightdata pipelines results sd_x\n"
+        "Waiting for snapshot sd_x: running, 30s\n"
         "Warning: only 12 credits remaining on your free tier\n"
     )
     monkeypatch.setattr(
         subproc, "run_with_timeout", lambda *a, **k: _Result(stdout="[]", stderr=stderr)
     )
-    brightdata.run_pipeline("amazon_product_search", ["x"], timeout=30)
+    brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)
     assert "Warning: only 12 credits remaining on your free tier" in warned
     # Routine polling narration stays out of the log.
-    assert not any("polling again" in m for m in warned)
+    assert not any("Waiting for snapshot" in m for m in warned)
 
 
 def test_source_log_is_called_with_tty_only_false(monkeypatch):
@@ -309,5 +318,5 @@ def test_source_log_is_called_with_tty_only_false(monkeypatch):
     monkeypatch.setattr(
         subproc, "run_with_timeout", lambda *a, **k: _Result(returncode=1, stderr="Error: 401")
     )
-    brightdata.run_pipeline("amazon_product_search", ["x"], timeout=30)
+    brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30)
     assert kwargs.get("tty_only") is False

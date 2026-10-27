@@ -2,10 +2,10 @@
 
 Two-stage source, following the digg discover-then-enrich shape:
 
-1. **Discovery** -- one ``amazon_product_search`` per run turns a
+1. **Discovery** -- one product search per run turns a
    model-supplied product keyword into product records carrying live
    aggregate stats (rating, rating count, price). Cheap and fast.
-2. **Enrichment** -- ``amazon_product_reviews`` pulls a capped sample of
+2. **Enrichment** -- review pulls fetch a capped sample of
    written reviews for the top few surviving products, in parallel, under
    a lane deadline. Reviews ride on their product item as metadata
    comments and feed community-voice weaving.
@@ -38,8 +38,9 @@ from . import brightdata, log
 from .relevance import token_overlap_relevance
 
 
-SEARCH_PIPELINE = "amazon_product_search"
-REVIEWS_PIPELINE = "amazon_product_reviews"
+# Bright Data scraper IDs: "Amazon products search" and "Amazon Reviews".
+SEARCH_DATASET = "gd_lwdb4vjm1ehb499uxs"
+REVIEWS_DATASET = "gd_le8e811kzy4ggddlq"
 
 DEFAULT_DOMAIN = "https://www.amazon.com"
 
@@ -267,16 +268,15 @@ def search_products(
     query = (keyword or "").strip()
     if not query:
         return {"records": []}
-    # A leading dash would be parsed as a CLI option rather than a search
-    # term. The keyword is model-supplied and can be influenced by
-    # pre-research over untrusted web content, so reject rather than
-    # sanitize -- a keyword starting with '-' is never a real product.
+    # Model-supplied and shaped by untrusted pre-research. --input JSON already
+    # keeps it out of argv; this is defense in depth, and '-x' is never a product.
     if query.startswith("-"):
         _log(f"rejecting option-shaped keyword: {query!r}")
         return {"records": [], "error": "amazon keyword may not begin with '-'"}
     _log(f"search '{query}' on {domain}")
     response = brightdata.run_pipeline(
-        SEARCH_PIPELINE, [query, domain or DEFAULT_DOMAIN],
+        SEARCH_DATASET,
+        {"keyword": query, "url": domain or DEFAULT_DOMAIN, "pages_to_search": 1},
         timeout=timeout, config=config,
     )
     if response.get("error"):
@@ -473,7 +473,7 @@ def fetch_reviews(
     if not product_url:
         return {"records": []}
     return brightdata.run_pipeline(
-        REVIEWS_PIPELINE, [product_url, str(max_reviews)],
+        REVIEWS_DATASET, {"url": product_url, "max_reviews": int(max_reviews)},
         timeout=timeout, config=config,
     )
 

@@ -108,7 +108,7 @@ def test_transcription_charge_without_usd_remains_unknown(journal, tmp_path, mon
 def test_brightdata_charge_without_usd_remains_unknown(journal, monkeypatch):
     monkeypatch.setattr(brightdata, "is_installed", lambda: True)
     monkeypatch.setattr(brightdata.subproc, "run_with_timeout", lambda *a, **kw: subprocess.CompletedProcess([], 0, "[]", ""))
-    brightdata.run_pipeline("amazon_product_search", [], timeout=1, config={"BRIGHTDATA_API_KEY": "dummy-key"})
+    brightdata.run_pipeline("gd_x", {}, timeout=1, config={"BRIGHTDATA_API_KEY": "dummy-key"})
     assert usage.read_journal(journal)["cost_unknown"] == 1
 
 
