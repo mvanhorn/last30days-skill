@@ -9,6 +9,37 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.31.0] - 2026-10-27
+
+### Security
+
+- Fixed MCP research dispatch so reserved topic names cannot invoke administrative commands. Protected existing password-store credentials when decryption fails, and sanitized Digg-attached X quotes so external content cannot forge the engine's evidence boundaries.
+
+### Added
+
+- Browser-cookie auth now covers **Dia** (The Browser Company) on macOS, alongside the rest of the Chromium family. Use `FROM_BROWSER=dia`, or let `FROM_BROWSER=auto` find it. The first-run setup wizard also scans Dia, so a user whose only X session lives there is detected without setting `FROM_BROWSER` first.
+- Reddit comment enrichment now falls back to the arctic-shift archive when the shreddit comment partials return nothing — hosts on datacenter egress (where Reddit 403s `/svc/shreddit`) keep top-comment text (ranked by score) instead of silently degrading to counts only.
+
+### Fixed
+
+- Preserve explicit person identity anchors through plan replay, X entity expansion, and ranking so same-name evidence cannot become a supplemental target or ranked result. ([#1290](https://github.com/mvanhorn/last30days-skill/issues/1290))
+- TikTok searches now share a deadline across hashtags, creator videos, keyword searches, transcripts, and comments, returning collected videos as partial results instead of losing them at the stream timeout. ([#1311](https://github.com/mvanhorn/last30days-skill/issues/1311))
+- When the YouTube step times out, the footer now names the timeout instead of telling you to update yt-dlp. ([#1327](https://github.com/mvanhorn/last30days-skill/issues/1327))
+- YouTube no longer times out for every entity in "X vs Y vs Z" comparisons. Each entity now takes its share of a single-topic YouTube budget (searches, transcripts, and comments, at least one of each) instead of a full budget apiece, so the parallel sub-runs stop queueing several runs' worth of yt-dlp work on the shared two-slot limit and each one returns videos inside the 180-second lane wait. Single-topic runs are unchanged. ([#1335](https://github.com/mvanhorn/last30days-skill/issues/1335))
+- A YouTube lane that runs out of time now returns the videos it already found instead of being dropped as a timeout with zero results. Search, transcript, and comment fallbacks share the lane's return deadline, preserving time to hand back partial results. Expired lanes are not retried or backfilled, and no new paid fallback starts after their return deadline.
+- Classify ScrapeCreators Instagram reels-search 404 responses that explicitly report no matching reels as clean no-results, while preserving errors for other 404s and keeping Google discovery fallback. When the hashtag-form retry answers a reels-search 500, the replaced 500 no longer marks Instagram as failed. Fixes the Instagram portion of #1311.
+- Fixed cached HTML exports to respect research scope and support comparison exports after temporary plans are removed. Aligned MCP save destinations with preflight and trusted configuration, isolated comparison peers' dedicated subreddits, and honored jobs exclusions throughout source selection.
+
+  Kept rejected Polymarket markets out of ranking, restored enrichment-based entity grounding, selected the newest relevant freshness assertion, included the final requested day in Grok and Xquik searches, and restored Reddit fallback when ScrapeCreators results are all outside the requested window. Corrected non-Latin web-backend guidance and autoresolve backend availability.
+
+  Fixed signup credential persistence over empty configuration assignments, browser cookie snapshots with committed SQLite WAL changes, multipart Trustpilot hostnames, and Startpage snippet association. Preserved maximum observed engagement during concurrent updates.
+- GitHub source footers distinguish open issues/PRs, total PRs, and contributed PRs from discussion comments across compact, HTML, and comparison views. Genuine issue and PR comment counts remain discussion comments.
+- Grok X research works again on current grok CLI releases. Instead of accepting only grok 1.0.46, last30days accepts stable builds at 1.0.46 or newer and audits each new build once, locally, before it receives credentials: the build runs against a fake xAI endpoint on 127.0.0.1 with dummy credentials, signed in and with an API key, must declare hosted X search as its only tool, and must refuse a forced shell command and file read. The audit costs no credits and never contacts xAI. npm installs now run the native binary the package ships, which also skips a roughly 170 MB decompression on every grok call.
+- Keyless web results (DuckDuckGo, Startpage, SearXNG) no longer vanish because they carry no date: when the research window reaches today, undated keyless results are kept and labelled `date unknown [date:low]`. Historical windows still drop them, and keyed backends keep their existing date rules. Follow-up to #928 / #1038.
+- Reddit comment enrichment now stops the arctic-shift archive fallback at the shared enrichment budget instead of giving it a fresh 15 seconds, so a slow archive on a datacenter host can no longer hold up the rest of the research past that budget.
+- YouTube spends fewer ScrapeCreators credits on transcripts. Paid rescues of failed yt-dlp transcript fetches stop once they have filled the depth's transcript target instead of covering every candidate (up to three times the target). The search backfill counts transcripts yt-dlp already fetched toward that target. yt-dlp now requests every original-speech track (`en-orig`, `es-orig`, ...) before any plain language code, so a video dubbed from another language into English no longer stops at a rate-limited translated `en` track before reaching its original.
+
+
 ## [3.30.0] - 2026-10-22
 
 ### Fixed

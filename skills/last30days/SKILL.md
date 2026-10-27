@@ -1,6 +1,6 @@
 ---
 name: last30days
-version: "3.30.0"
+version: "3.31.0"
 description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
@@ -70,7 +70,7 @@ metadata:
 ---
 
 
-# last30days v3.30.0: Research Any Topic from the Last 30 Days
+# last30days v3.31.0: Research Any Topic from the Last 30 Days
 
 ## Skill contract
 

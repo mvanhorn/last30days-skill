@@ -1,1 +1,0 @@
-GitHub source footers distinguish open issues/PRs, total PRs, and contributed PRs from discussion comments across compact, HTML, and comparison views. Genuine issue and PR comment counts remain discussion comments.

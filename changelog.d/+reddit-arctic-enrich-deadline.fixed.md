@@ -1,1 +1,0 @@
-Reddit comment enrichment now stops the arctic-shift archive fallback at the shared enrichment budget instead of giving it a fresh 15 seconds, so a slow archive on a datacenter host can no longer hold up the rest of the research past that budget.
