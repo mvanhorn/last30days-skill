@@ -216,7 +216,7 @@ class TestFetchCommentsFallback:
         with mock.patch.object(rs.http, "get_text", return_value=None), \
              mock.patch.object(rs.reddit_arctic, "fetch_post_comments",
                                return_value=comments) as arctic:
-            out = rs.fetch_comments(self.URL)
+            out = rs.fetch_comments(self.URL, deadline=123.0)
         assert out["top_comments"] == [{
             "score": 42, "date": "2026-07-02", "author": "u",
             "excerpt": "great thread", "url": "https://reddit.com/r/Rakuten/comments/1taeiw0/x/",
@@ -225,7 +225,7 @@ class TestFetchCommentsFallback:
         assert out["num_comments"] is None  # archive rows carry no post total
         arctic.assert_called_once_with(
             "1taeiw0", limit=rs.MAX_COMMENTS, skip_author=rs._is_bot_author,
-            deadline=None)
+            deadline=123.0)
 
     def test_shreddit_results_skip_arctic(self):
         with mock.patch.object(rs.http, "get_text", return_value=_html()), \
