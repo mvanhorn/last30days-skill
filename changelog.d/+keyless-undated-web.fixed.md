@@ -1,0 +1,1 @@
+Keyless web results (DuckDuckGo, Startpage, SearXNG) no longer vanish because they carry no date: when the research window reaches today, undated keyless results are kept and labelled `date unknown [date:low]`. Historical windows still drop them, and keyed backends keep their existing date rules. Follow-up to #928 / #1038.

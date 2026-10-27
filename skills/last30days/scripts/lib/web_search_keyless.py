@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from . import http
@@ -113,6 +114,12 @@ def keyless_search(
         if searxng_url:
             items = _search_searxng(query, count, searxng_url)
             used = "searxng"
+    # These backends never return a publish date, so normalize's grounding
+    # require_date would drop every result. Keep undated links only when the
+    # window reaches today; a historical window can't vouch for them.
+    if date_range[1] >= datetime.now(timezone.utc).date().isoformat():
+        for item in items:
+            item["metadata"] = {"date_window_basis": "keyless_current"}
     artifact = {
         "label": "keyless",
         "webSearchQueries": [query],

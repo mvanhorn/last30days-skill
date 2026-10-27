@@ -19,7 +19,7 @@ from lib import grok_x
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     """Version rejection is exercised separately in test_grok_tool_boundary."""
-    monkeypatch.setattr(grok_x, "_check_cli_version", lambda *args: None)
+    monkeypatch.setattr(grok_x, "_check_cli_version", lambda *args: (None, "grok 1.0.70 (f50904eaee6c)"))
     grok_x.clear_availability_cache()
     yield
     grok_x.clear_availability_cache()

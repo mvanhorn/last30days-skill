@@ -398,10 +398,19 @@ def _build_nudge_text(
 
     if "youtube" in core_missing:
         if "youtube" in core_errored:
-            yt_fix = prescriptions.get("youtube", "ytdlp_stale")
-            free_suggestions.append(
-                f"YouTube errored - update yt-dlp: {yt_fix.fix_cli}"
-            )
+            yt_error = str(research_results.get("youtube_error") or "").strip()
+            # The engine's own stream timeout says nothing about the binary's
+            # age, so it must not prescribe an upgrade.
+            if http.classify_failure(message=yt_error) == health.TIMEOUT:
+                free_suggestions.append(
+                    f"YouTube timed out ({yt_error}) - this is a timeout, "
+                    "not a stale yt-dlp, so updating it won't help."
+                )
+            else:
+                yt_fix = prescriptions.get("youtube", "ytdlp_stale")
+                free_suggestions.append(
+                    f"YouTube errored - update yt-dlp: {yt_fix.fix_cli}"
+                )
         else:
             yt_fix = prescriptions.get("youtube", "ytdlp_missing")
             free_suggestions.append(

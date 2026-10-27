@@ -262,8 +262,8 @@ class NormalizeV3Tests(unittest.TestCase):
             {
                 "id": "g-1",
                 "title": "Undated result",
-                "url": "https://example.com/undated",
-                "snippet": "No date attached.",
+                "url": "https://example.com/post",
+                "snippet": "No date was returned.",
             }
         ]
         normalized = normalize.normalize_source_items(
@@ -273,6 +273,51 @@ class NormalizeV3Tests(unittest.TestCase):
             "2026-03-17",
         )
         self.assertEqual([], normalized)
+
+    def test_grounding_keeps_undated_keyless_current_window_results(self):
+        items = [
+            {
+                "id": "WK1",
+                "title": "Undated keyless result",
+                "url": "https://example.com/post",
+                "snippet": "Keyless backends return no date.",
+                "metadata": {"date_window_basis": "keyless_current"},
+            }
+        ]
+        normalized = normalize.normalize_source_items(
+            "grounding",
+            items,
+            "2026-02-15",
+            "2026-03-17",
+        )
+        self.assertEqual(1, len(normalized))
+        self.assertIsNone(normalized[0].published_at)
+        self.assertEqual("low", normalized[0].date_confidence)
+
+    def test_grounding_still_drops_known_out_of_window_dates(self):
+        items = [
+            {
+                "id": "g-old",
+                "title": "Old dated result",
+                "url": "https://example.com/old",
+                "snippet": "Dated before the window.",
+                "date": "2025-01-10",
+            },
+            {
+                "id": "g-new",
+                "title": "In-window dated result",
+                "url": "https://example.com/new",
+                "snippet": "Dated inside the window.",
+                "date": "2026-03-01",
+            },
+        ]
+        normalized = normalize.normalize_source_items(
+            "grounding",
+            items,
+            "2026-02-15",
+            "2026-03-17",
+        )
+        self.assertEqual(["https://example.com/new"], [item.url for item in normalized])
 
     def test_youtube_recent_modes_drop_transcribed_older_items_when_date_window_is_empty(self):
         """#1043 rescue is scoped to evergreen_ok: recent topics get an honest empty result."""

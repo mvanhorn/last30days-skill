@@ -36,6 +36,16 @@ class TestKeylessSearch:
         required = {"id", "title", "url", "source_domain", "snippet", "date", "relevance", "why_relevant"}
         assert required.issubset(items[0].keys())
 
+    def test_current_window_tags_undated_items_for_normalize(self):
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=_DDG_HTML):
+            items, _ = web_search_keyless.keyless_search("topic", ("2026-02-25", "2999-12-31"), {})
+        assert all(item["metadata"] == {"date_window_basis": "keyless_current"} for item in items)
+
+    def test_historical_window_leaves_items_untagged(self):
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=_DDG_HTML):
+            items, _ = web_search_keyless.keyless_search("topic", ("2020-01-01", "2020-01-31"), {})
+        assert items and all("metadata" not in item for item in items)
+
     def test_count_cap(self):
         with mock.patch.object(web_search_keyless.http, "get_text", return_value=_DDG_HTML):
             items, _ = web_search_keyless.keyless_search("topic", ("2026-02-25", "2026-03-27"), {}, count=1)

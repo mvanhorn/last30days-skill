@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import log, usage
+from . import grok_audit, log, usage
 from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
 # One copy of the snowflake, handle-grammar, and generated-sequence helpers
@@ -368,6 +368,12 @@ def _stage_child_home(workdir: str) -> str:
         _log(f"could not stage Grok credentials for the child: {exc}")
     return home
 
+
+# Errors that mean grok never ran a search, as opposed to a clean empty window.
+_INVOCATION_FAILURE_MARKERS = (
+    "grok CLI", "not found", "timed out", "exited", "cancelled", "budget exhausted",
+    "tool-boundary audit", "native grok binary",
+)
 
 # Why the most recent parse returned nothing. Lets _run_query distinguish a
 # clean empty window (common, and not worth a second LLM call) from a suspect
@@ -745,12 +751,10 @@ _ALLOWED_TOOLS = frozenset({
     "x_user_search",
 })
 
-# Do not widen this allowlist without probing the resulting local registry,
-# forced local tool calls, and hosted x_search with an isolated fixture server.
-_AUDITED_CLI_BUILDS = frozenset({
-    "grok 1.0.46 (2765805b9442)",
-    "grok 1.0.46 (2765805b9442) [stable]",
-})
+# Builds below 1.0.46 predate the agent-profile fields the boundary relies on.
+# Eligible builds still run X research only after grok_audit passes them.
+_MIN_CLI_VERSION = (1, 0, 46)
+_CLI_VERSION_RE = re.compile(r"grok (\d+)\.(\d+)\.(\d+) \(([0-9a-f]{12})\)(?: \[stable\])?")
 
 # Grok rejects an initially empty toolConfig when injection is disabled. Declare
 # one registered tool, then remove it after initialization via the denylist.
@@ -838,8 +842,35 @@ def classify_run_failure(detail: str) -> str:
     return health.ERROR
 
 
-def _check_cli_version(binary: str, workdir: str, timeout: float) -> Optional[str]:
-    """Reject unaudited tool registries before credentials enter the child home."""
+def _write_agent_profile(workdir: str) -> Path:
+    agent_file = Path(workdir) / "x-agent.md"
+    agent_file.write_text(
+        "---\n" + json.dumps(_X_AGENT_PROFILE) + "\n---\nUse native X search only.\n",
+        encoding="utf-8",
+    )
+    return agent_file
+
+
+def _research_argv(binary: str, prompt: str, agent_file: Path) -> List[str]:
+    """The research command line. grok_audit runs this exact argv per build."""
+    return [
+        binary,
+        "-p",
+        prompt,
+        "--permission-mode",
+        "bypassPermissions",
+        "--output-format",
+        "json",
+        "--agent",
+        str(agent_file),
+        "--disallowed-tools",
+        ",".join(_DISALLOWED_TOOLS),
+        "--disable-web-search",
+    ]
+
+
+def _check_cli_version(binary: str, workdir: str, timeout: float) -> Tuple[Optional[str], str]:
+    """Return (error, version line). Rejects builds below the floor or off stable."""
     try:
         result = subprocess.run(
             [binary, "--version"],
@@ -852,18 +883,20 @@ def _check_cli_version(binary: str, workdir: str, timeout: float) -> Optional[st
             env=_subprocess_env(os.path.join(workdir, "home")),
         )
     except subprocess.TimeoutExpired:
-        return "grok CLI version check timed out"
+        return "grok CLI version check timed out", ""
     except OSError as exc:
-        return f"could not verify grok CLI version: {type(exc).__name__}: {exc}"
+        return f"could not verify grok CLI version: {type(exc).__name__}: {exc}", ""
     if result.returncode != 0:
-        return f"grok CLI version check exited {result.returncode}"
-    if result.stdout.strip() not in _AUDITED_CLI_BUILDS:
+        return f"grok CLI version check exited {result.returncode}", ""
+    line = result.stdout.strip()
+    match = _CLI_VERSION_RE.fullmatch(line)
+    if not match or tuple(int(part) for part in match.groups()[:3]) < _MIN_CLI_VERSION:
         return (
-            "unsupported grok CLI version; X research requires the audited "
-            "Grok 1.0.46 stable build (2765805b9442). "
-            "Use another X backend until your CLI build is supported."
+            "unsupported grok CLI version; X research requires a stable Grok "
+            "build at 1.0.46 or newer. Update the grok CLI or use another X backend.",
+            line,
         )
-    return None
+    return None, line
 
 
 def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
@@ -879,39 +912,50 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
     # Keep an updater's symlink swap from changing the build after its check.
     binary = os.path.realpath(binary)
     deadline = time.monotonic() + timeout
+    # The npm launcher picks its build at run time; audit and run the native
+    # build it would pick, so the verdict covers what actually executes.
+    try:
+        native = grok_audit.resolve_native(binary, timeout=deadline - time.monotonic())
+    except Exception as exc:  # noqa: BLE001 - search_x must never raise
+        _log(f"could not resolve the native grok binary: {type(exc).__name__}: {exc}")
+        native = None
+    if native is None:
+        return {"error": "could not locate the native grok binary behind the npm launcher",
+                "no_retry": True}
+    binary = native
     try:
         with tempfile.TemporaryDirectory(prefix="last30days-grok-") as workdir:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return {"error": f"grok CLI timed out after {timeout}s"}
-            version_error = _check_cli_version(binary, workdir, remaining)
+            version_error, version_line = _check_cli_version(binary, workdir, remaining)
             if version_error:
-                return {"error": version_error}
+                return {"error": version_error, "no_retry": True}
+            verdict = grok_audit.verdict_for(binary, version_line, deadline)
+            if verdict.status == grok_audit.FAIL:
+                return {
+                    "error": (
+                        f"{version_line} failed the grok tool-boundary audit ({verdict.check}); "
+                        "use another X backend"
+                    ),
+                    "no_retry": True,
+                }
+            if not verdict.passed:
+                return {
+                    "error": (
+                        f"could not complete the grok tool-boundary audit ({verdict.check}); "
+                        "it will retry next run"
+                    ),
+                    "no_retry": True,
+                }
             child_home = _stage_child_home(workdir)
-            agent_file = Path(workdir) / "x-agent.md"
-            agent_file.write_text(
-                "---\n" + json.dumps(_X_AGENT_PROFILE) + "\n---\nUse native X search only.\n",
-                encoding="utf-8",
-            )
+            agent_file = _write_agent_profile(workdir)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return {"error": f"grok CLI timed out after {timeout}s"}
             usage.begin("grok")
             result = subprocess.run(
-                [
-                    binary,
-                    "-p",
-                    prompt,
-                    "--permission-mode",
-                    "bypassPermissions",
-                    "--output-format",
-                    "json",
-                    "--agent",
-                    str(agent_file),
-                    "--disallowed-tools",
-                    ",".join(_DISALLOWED_TOOLS),
-                    "--disable-web-search",
-                ],
+                _research_argv(binary, prompt, agent_file),
                 capture_output=True,
                 text=True,
                 # X posts are not cp1252. Without this, text=True decodes the CLI's
@@ -994,6 +1038,8 @@ def _run_query(
             last_error = response["error"]
             if response.get("auth_revoked"):
                 return [], last_error, True
+            if response.get("no_retry"):
+                return [], last_error, False
             continue
         items = parse_x_response(
             response,
@@ -1069,7 +1115,7 @@ def search_x(
             break
         if error and not items:
             last_error = error
-            if any(marker in error for marker in ("grok CLI", "not found", "timed out", "exited", "cancelled", "budget exhausted")):
+            if any(marker in error for marker in _INVOCATION_FAILURE_MARKERS):
                 invocation_failed = True
         for item in items:
             key = item["url"]

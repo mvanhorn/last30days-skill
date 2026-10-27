@@ -2927,6 +2927,43 @@ def _footer_line_for_source(
     return f"{emoji} {label}: {count_str} {plural}"
 
 
+def _github_footer_engagement(item: schema.SourceItem) -> dict:
+    """Copy counters and classify old summary aliases, never evidence comments.
+
+    Old caches used ``comments`` for three different summary units. Only a
+    parsed GitHub repository/profile URL plus its internal provenance label
+    can recover the unit. Unknown repository summaries omit the ambiguous
+    alias. Typed keys (even zero) are authoritative; inputs stay untouched.
+    """
+    metrics = dict(item.engagement or {})
+    try:
+        url = urlparse(item.url or "")
+    except ValueError:
+        return metrics
+    if url.scheme not in {"http", "https"} or url.netloc.lower() != "github.com":
+        return metrics
+    repo_root = bool(re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?", url.path))
+    profile_root = bool(re.fullmatch(r"/[A-Za-z0-9_.-]+/?", url.path))
+    if not (repo_root or profile_root):
+        return metrics
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    labels = metadata.get("labels")
+    labels = labels if isinstance(labels, (list, tuple)) else []
+    key = None
+    if repo_root and any(label in labels for label in ("project-mode", "own-repo", "recent-push")):
+        key = "open_issues"
+    elif repo_root and "external-repo" in labels:
+        key = "contributed_prs"
+    elif profile_root and "velocity" in labels:
+        key = "total_prs"
+    if key is not None or repo_root:
+        legacy = metrics.pop("comments", None)
+        if key is not None and not any(field in metrics for field in ("open_issues", "total_prs", "contributed_prs")):
+            if legacy is not None:
+                metrics[key] = legacy
+    return metrics
+
+
 def _build_source_footer_lines(report: schema.Report) -> list[str]:
     """Return emoji-tree lines for populated sources only (>=1 item).
 
@@ -2941,8 +2978,26 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
         if not items:
             continue
         parts: list[str] = []
+        if source_key == "github":
+            engagement_fields = tuple(
+                field for field in engagement_fields if field[0] != "comments"
+            ) + (
+                ("open_issues", "open issues/PRs"),
+                ("total_prs", "total PRs"),
+                ("contributed_prs", "contributed PRs"),
+                ("comments", "comments"),
+            )
+        github_metrics = [_github_footer_engagement(item) for item in items] if source_key == "github" else []
         for eng_key, word in engagement_fields:
-            total = _sum_engagement(items, eng_key)
+            if source_key == "github":
+                total = 0
+                for metrics in github_metrics:
+                    try:
+                        total += int(metrics.get(eng_key) or 0)
+                    except (TypeError, ValueError):
+                        continue
+            else:
+                total = _sum_engagement(items, eng_key)
             if total > 0:
                 total_str = f"{total:,}" if total >= 1000 else str(total)
                 parts.append(f"{total_str} {word}")
