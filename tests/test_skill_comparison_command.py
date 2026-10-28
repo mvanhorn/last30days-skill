@@ -40,7 +40,7 @@ def test_host_comparison_plan_covers_only_the_main_entity():
     assert "`{TOPIC_A} vs {TOPIC_B} comparison {YEAR}`" in comparison
 
 
-def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
+def test_comparison_command_preserves_stdin_plan_and_cleans_up_peer_plan(tmp_path):
     text = reference_text("comparison")
     marker = tmp_path / "must-not-execute"
     untrusted = f"people's choice $(touch {shlex.quote(str(marker))})"
@@ -91,8 +91,8 @@ def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
         "if args[:2] == ['-m', 'json.tool']:\n"
         "    json.loads(pathlib.Path(args[2]).read_text())\n"
         "    raise SystemExit(0)\n"
-        "paths = [pathlib.Path(args[args.index(flag) + 1]) for flag in ('--plan', '--competitors-plan')]\n"
-        "record = {'args': args, 'plans': [json.loads(path.read_text()) for path in paths], 'paths': [str(path) for path in paths]}\n"
+        "peer_path = pathlib.Path(args[args.index('--competitors-plan') + 1])\n"
+        "record = {'args': args, 'plans': [json.load(sys.stdin), json.loads(peer_path.read_text())], 'peer_path': str(peer_path)}\n"
         f"with open({str(capture)!r}, 'a') as out: out.write(json.dumps(record) + '\\n')\n"
     )
     interpreter.chmod(0o755)
@@ -139,12 +139,12 @@ def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
     assert "--subreddits=main_sub" in call["args"]
     parsed = cli.build_parser().parse_args(call["args"][1:])
     assert parsed.emit == "compact"
-    assert parsed.plan == call["paths"][0]
-    assert parsed.competitors_plan == call["paths"][1]
+    assert parsed.plan == "-"
+    assert parsed.competitors_plan == call["peer_path"]
     assert call["plans"][0] == main_plan
     planner.validate_external_plan(call["plans"][0])
     assert call["plans"][1] == peer_plan
-    assert all(not Path(path).exists() for path in call["paths"])
+    assert not Path(call["peer_path"]).exists()
     assert list(temporary.iterdir()) == []
     assert parent_trap_marker.exists()
     assert not envelope_dir.exists()

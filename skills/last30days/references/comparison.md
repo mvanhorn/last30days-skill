@@ -57,12 +57,8 @@ MAIN_TARGETING=()
 [ -n "$TOPIC_A_SUBS" ] && MAIN_TARGETING+=(--subreddits="$TOPIC_A_SUBS")
 
 # BSD/macOS mktemp requires XXXXXX at the end of the template.
-QUERY_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-plan.XXXXXX")
 COMPETITORS_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-competitors.XXXXXX")
-trap 'rm -f "$QUERY_PLAN_FILE" "$COMPETITORS_PLAN_FILE"' EXIT
-cat >| "$QUERY_PLAN_FILE" <<'QUERY_PLAN_EOF'
-{QUERY_PLAN_JSON}
-QUERY_PLAN_EOF
+trap 'rm -f -- "$COMPETITORS_PLAN_FILE"' EXIT
 # >| not >: mktemp already created the file, so a plain > is refused under
 # `set -o noclobber` (leaving the plan empty -> deterministic fallback).
 cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
@@ -72,17 +68,19 @@ PLAN_EOF
 
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$COMPARISON_TOPIC" \
   --emit=compact \
-  --plan "$QUERY_PLAN_FILE" \
+  --plan - \
   --save-dir="${LAST30DAYS_MEMORY_DIR}" \
   --save-suffix=v3 \
   "${MAIN_TARGETING[@]}" \
-  --competitors-plan "$COMPETITORS_PLAN_FILE"
+  --competitors-plan "$COMPETITORS_PLAN_FILE" <<'QUERY_PLAN_EOF'
+{QUERY_PLAN_JSON}
+QUERY_PLAN_EOF
 )
 ```
 
 For any additional outer targeting flag, capture its value through a quoted heredoc and add it to `MAIN_TARGETING` with a quoted variable expansion. Omit unresolved flags. Never paste a topic, handle, subreddit, or fetched context directly into shell command words. The quoted heredocs keep shell-active text literal; `json.tool` rejects malformed peer JSON before the research run.
 
-The cleanup trap removes both plan files after research. For a later HTML export, follow `save-html-brief.md` with `--cached-report` and the original topic. Do not replay the removed plan paths. The cache preserves every entity's report and targeting; if the cache expires, recreate the plans before running research again.
+The cleanup trap removes the competitors plan file after research. For a later HTML export, follow `save-html-brief.md` with `--cached-report` and the original topic. Do not replay the removed plan path. The cache preserves every entity's report and targeting; if the cache expires, recreate the plans before running research again.
 
 ### Without host web search
 
