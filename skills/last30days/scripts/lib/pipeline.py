@@ -3056,6 +3056,16 @@ def run(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
         elapsed=time.monotonic() - run_started, out_of_time=out_of_time_sources,
     )
+    # Fusion gates on identity too, but the footer counts and Top voices read
+    # this per-source view, so a namesake left here still reaches the report.
+    # Gated after enrichment so a backfilled transcript can supply the anchor.
+    items_by_source = {
+        source: [
+            item for item in items
+            if entity_extract.matches_person_identity(item, plan.person_identity_anchors, x_handle)
+        ]
+        for source, items in items_by_source.items()
+    }
     retained_markets = {
         source_item_key(item) for item in items_by_source.get("polymarket", [])
     }
