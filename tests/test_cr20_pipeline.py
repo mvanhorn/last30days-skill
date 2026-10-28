@@ -67,6 +67,25 @@ def test_jobs_only_hiring_run_rejects_excluded_source_before_dispatch(monkeypatc
     assert dispatched == []
 
 
+def test_unconfigured_search_sources_name_the_sources(monkeypatch):
+    dispatched = []
+
+    def retrieve(**kwargs):
+        dispatched.append(kwargs["source"])
+        return [], {}
+
+    monkeypatch.setattr(pipeline, "_retrieve_stream", retrieve)
+    with pytest.raises(pipeline.NoRequestedSourceAvailable, match="--search can run here: telegram, tiktok"):
+        pipeline.run(
+            topic="rust async",
+            config={},
+            depth="quick",
+            requested_sources=["telegram", "tiktok"],
+            web_backend="none",
+        )
+    assert dispatched == []
+
+
 @pytest.mark.parametrize("include_match", [False, True])
 @pytest.mark.parametrize("filter_kind", ["topic", "keywords"])
 def test_polymarket_rejections_are_absent_from_fusion_and_output(
