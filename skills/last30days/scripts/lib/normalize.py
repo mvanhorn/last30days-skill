@@ -56,6 +56,7 @@ def normalize_source_items(
         "devto": _normalize_devto,
         "stocktwits": _normalize_stocktwits,
         "dripstack": _normalize_dripstack,
+        "fxmacrodata": _normalize_fxmacrodata,
         "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(
             s, i, idx, fd, td, "BS", "Bluesky post"
         ),
@@ -311,6 +312,37 @@ def _normalize_dripstack(
             **meta,
             "publication_slug": meta.get("publication_slug"),
         },
+    )
+
+
+def _normalize_fxmacrodata(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for official macro releases and scheduled releases.
+
+    A release is dated by its publication day. A scheduled release has not
+    been published, so it stays undated with ``scheduled_at`` in metadata.
+    """
+    meta = item.get("metadata") or {}
+    return _source_item(
+        item_id=str(item.get("id") or f"FXMD{index + 1}"),
+        source=source,
+        title=str(item.get("title") or ""),
+        body=str(item.get("text") or ""),
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or "") or None,
+        container=str(meta.get("currency") or "") or None,
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement={},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=str(item.get("text") or "")[:400],
+        metadata=meta,
     )
 
 
