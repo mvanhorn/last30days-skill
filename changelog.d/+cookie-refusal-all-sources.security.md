@@ -1,0 +1,1 @@
+Make explicit cookie refusal (`BROWSER_CONSENT=false` or `FROM_BROWSER=off`) disable the agentcookie sidecar as well as native browser and CDP reads, including availability checks. User-supplied credentials and sidecar behavior without an explicit refusal are unchanged.
