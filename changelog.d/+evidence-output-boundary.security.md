@@ -1,0 +1,1 @@
+Keep synthesis, citation, and response-format instructions in the skill and MCP tool description rather than research output. Compact and comparison reports retain source evidence, coverage warnings, footer data, and structural boundaries without commands to override the host's response format.
