@@ -11,9 +11,9 @@ Deliberate constraints (see docs/plans/2026-08-31 X plan):
   resolving on the agent subprocess PATH, exactly like the other CLI-gated
   optional sources (Digg, yt-dlp). A binary that is absent is not an error.
 * **``AGENTCOOKIE=off`` disables it** regardless of PATH.
-* **Independent of ``FROM_BROWSER``.** Reading the sidecar is not a browser
-  extraction, so it runs even when ``FROM_BROWSER`` is unset (the state in
-  which the in-process browser extractor stays off).
+* **Explicit cookie refusal wins.** ``BROWSER_CONSENT=false`` or
+  ``FROM_BROWSER=off`` disables this source, even with ``AGENTCOOKIE=on``.
+  An unset ``FROM_BROWSER`` still permits the sidecar on eligible hosts.
 * We call ``agentcookie cookies --domain .x.com --json`` and parse its stdout.
   We never open ``cookies-plain.db`` directly, never import an ``agentcookie``
   Python package, and never add a Python dependency on it.
@@ -56,13 +56,19 @@ def _log(msg: str) -> None:
 
 
 def is_disabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """True when ``AGENTCOOKIE=off`` in config/env disables the sidecar."""
+    """True when cookie refusal or ``AGENTCOOKIE=off`` disables the sidecar."""
+    from . import env
+
+    consent_config = config if config is not None else {
+        name: env.read_secret_env(name)
+        for name in ("BROWSER_CONSENT", "FROM_BROWSER")
+    }
+    if env.cookie_access_denied(consent_config):
+        return True
     raw = ""
     if config is not None:
         raw = config.get("AGENTCOOKIE") or ""
     if not raw:
-        from . import env
-
         raw = env.read_secret_env("AGENTCOOKIE") or ""
     return str(raw).strip().lower() == "off"
 

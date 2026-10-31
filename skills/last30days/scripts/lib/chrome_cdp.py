@@ -393,10 +393,12 @@ def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
 
 
 def cookie_access_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
+    from . import env
+
     config = config or {}
-    from_browser = str(config.get("FROM_BROWSER") or "").strip().lower()
-    if from_browser == "off":
+    if env.cookie_access_denied(config):
         return False
+    from_browser = str(config.get("FROM_BROWSER") or "").strip().lower()
     consent = config.get("BROWSER_CONSENT")
     if consent is not None:
         return str(consent).strip().lower() in {"1", "true", "yes", "on"}
