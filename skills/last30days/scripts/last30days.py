@@ -4589,6 +4589,11 @@ def _main(
         else:
             entity_reports = None
             report = _main_runner()
+    except pipeline.NoRequestedSourceAvailable as exc:
+        # A setup problem, not a crash: say what to do instead of a traceback
+        progress.end_processing()
+        sys.stderr.write(f"{exc}\n")
+        return 2
     except Exception as exc:
         progress.end_processing()
         progress.show_error(str(exc))

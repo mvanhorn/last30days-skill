@@ -125,6 +125,28 @@ class CliV3Tests(unittest.TestCase):
             cli.parse_search_flag("threads, pinterest"),
         )
 
+    def test_unavailable_requested_sources_exit_cleanly(self):
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", [
+                "last30days.py", "best rust async tools",
+                "--search", "telegram,tiktok", "--quick", "--web-backend", "none",
+            ]),
+            mock.patch.object(cli.env, "get_config", return_value={}),
+            mock.patch.object(cli.pipeline, "diagnose", return_value={}),
+            mock.patch.dict(os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}),
+            redirect_stderr(stderr),
+        ):
+            result = cli.main()
+
+        self.assertEqual(2, result)
+        self.assertIn(
+            "None of the sources in --search can run here: telegram, tiktok",
+            stderr.getvalue(),
+        )
+        self.assertIn("last30days.py doctor", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_explicit_threads_search_uses_scrapecreators_key_without_include_sources(self):
         available = cli.pipeline.available_sources(
             {"SCRAPECREATORS_API_KEY": "test-key", "INCLUDE_SOURCES": ""},

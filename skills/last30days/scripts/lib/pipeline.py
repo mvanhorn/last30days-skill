@@ -342,6 +342,10 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
     return normalized
 
 
+class NoRequestedSourceAvailable(RuntimeError):
+    """None of the sources the user asked for with --search is configured."""
+
+
 def available_sources(
     config: dict[str, Any],
     requested_sources: list[str] | None = None,
@@ -2361,6 +2365,12 @@ def run(
             available = ["jobs"]
     available = [source for source in available if source not in excluded_sources]
     if not available:
+        if requested_sources:
+            raise NoRequestedSourceAvailable(
+                "None of the sources in --search can run here: "
+                + ", ".join(requested_sources)
+                + ". Run `last30days.py doctor` to see what each one needs."
+            )
         raise RuntimeError("No sources are available for this run.")
 
     planner_requested_sources = (
