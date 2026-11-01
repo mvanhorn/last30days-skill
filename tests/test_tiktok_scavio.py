@@ -71,6 +71,20 @@ class TestBackendSelection(unittest.TestCase):
         self.assertNotIn("instagram", sources)
         self.assertNotIn("tiktok", pipeline.available_sources({"SCAVIO_API_KEY": "sv"}, local_only=True))
 
+    def test_scavio_pin_without_its_key_keeps_tiktok_off_even_with_scrapecreators(self):
+        from lib import pipeline
+        sources = pipeline.available_sources(
+            {"SCRAPECREATORS_API_KEY": "sc", "LAST30DAYS_TIKTOK_BACKEND": "scavio"}, local_only=True)
+        self.assertNotIn("tiktok", sources)
+        self.assertIn("instagram", sources)
+
+    def test_default_scrapecreators_config_keeps_tiktok_and_instagram(self):
+        from lib import pipeline
+        sources = pipeline.available_sources({"SCRAPECREATORS_API_KEY": "sc"}, local_only=True)
+        self.assertIn("tiktok", sources)
+        self.assertIn("instagram", sources)
+        self.assertLess(sources.index("tiktok"), sources.index("instagram"))
+
 
 class TestTransport(unittest.TestCase):
     @patch("lib.tiktok_scavio.http.post")
@@ -172,6 +186,14 @@ class TestDoctor(unittest.TestCase):
         from lib import doctor
         record = doctor._tiktok_record({"SCRAPECREATORS_API_KEY": "sc", "SCAVIO_API_KEY": "sv"})
         self.assertIn("SCRAPECREATORS_API_KEY", record["requires"])
+
+    def test_switching_the_tiktok_pin_invalidates_the_doctor_cache(self):
+        from lib import doctor
+        keys = {"SCRAPECREATORS_API_KEY": "sc", "SCAVIO_API_KEY": "sv"}
+        self.assertNotEqual(
+            doctor._config_fingerprint(keys),
+            doctor._config_fingerprint({**keys, "LAST30DAYS_TIKTOK_BACKEND": "scavio"}),
+        )
 
 
 if __name__ == "__main__":

@@ -372,11 +372,14 @@ def available_sources(
         config.get("_CORPUS_DIRS"), config.get("LAST30DAYS_CORPUS_DIRS")
     ):
         available.append("corpus")
-    if config.get("SCRAPECREATORS_API_KEY"):
-        available.extend(["tiktok", "instagram"])
-    elif env.get_tiktok_backend(config) == "scavio":
-        # Scavio covers TikTok only; Instagram still needs ScrapeCreators.
+    # TikTok follows the selected backend, so a pin whose key is missing keeps
+    # it off even when the other service's key is set. Scavio covers TikTok
+    # only; Instagram still needs ScrapeCreators.
+    tiktok_backend = env.get_tiktok_backend(config)
+    if tiktok_backend == "scavio" or (tiktok_backend and config.get("SCRAPECREATORS_API_KEY")):
         available.append("tiktok")
+    if config.get("SCRAPECREATORS_API_KEY"):
+        available.append("instagram")
     if env.get_x_source(config, local_only=local_only):
         available.append("x")
     elif x_envelope or (
@@ -6189,7 +6192,11 @@ def _retrieve_stream_impl(
             # Leave time to publish collected videos before the outer stream wait expires.
             deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS) - 1.0
             cancel = config.get("_enrich_cancel")
-            tiktok_backend = env.get_tiktok_backend(config) or "scrapecreators"
+            tiktok_backend = env.get_tiktok_backend(config)
+            if tiktok_backend is None:
+                # A pin whose key is missing: never fall back to another paid service.
+                result = {"items": [], "error": "TikTok backend pinned without its key"}
+                return [], _result_outcome_artifact(source, result)
             result = tiktok.search_and_enrich(
                 tiktok_query,
                 from_date,

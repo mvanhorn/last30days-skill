@@ -1369,6 +1369,8 @@ REDDIT_BACKEND_PIN_VAR = 'LAST30DAYS_REDDIT_BACKEND'
 # sources (#1316). It is the only pin value; anything else means auto.
 YOUTUBE_BACKEND_PIN_VAR = 'LAST30DAYS_YOUTUBE_BACKEND'
 YOUTUBE_BACKEND_PIN_VALUES = ('yt-dlp',)
+# `scavio` routes TikTok through Scavio; `scrapecreators` keeps the default.
+TIKTOK_BACKEND_PIN_VAR = 'LAST30DAYS_TIKTOK_BACKEND'
 REDDIT_SC_MIN_ITEMS_VAR = 'LAST30DAYS_REDDIT_SC_MIN_ITEMS'
 # Keyed runs backfill Reddit from ScrapeCreators when the free path returns
 # fewer than this many items. Thin topics yield 2-3 free results; healthy
@@ -1782,7 +1784,7 @@ def get_tiktok_backend(config: dict[str, Any]) -> str | None:
     A pin to a backend whose key is missing returns None rather than silently
     falling back.
     """
-    pin = (config.get('LAST30DAYS_TIKTOK_BACKEND') or '').strip().lower()
+    pin = (config.get(TIKTOK_BACKEND_PIN_VAR) or '').strip().lower()
     has_sc = bool(config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN'))
     has_scavio = bool(config.get('SCAVIO_API_KEY'))
     if pin == 'scavio':
