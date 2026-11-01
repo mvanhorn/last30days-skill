@@ -85,6 +85,8 @@ def _run_main(monkeypatch, argv, *, host_env=None, config=None):
             rc = cli.main()
         except _RetrievalReached:
             rc = None
+        except SystemExit as exc:
+            rc = exc.code
     return rc, err.getvalue(), {
         "diagnose": diagnose_mock, "run": run_mock,
         "runtime": runtime_mock, "resolve": resolve_mock,
@@ -149,7 +151,7 @@ def test_agent_hosted_run_without_plan_stops_before_retrieval(monkeypatch, name)
     assert f"({name} is set)" in stderr
     assert "Step 0.75" in stderr
     assert "references/research-runbook.md" in stderr
-    assert '--plan "$QUERY_PLAN_FILE"' in stderr
+    assert "--plan -" in stderr
     assert "<<'PLAN_EOF'" in stderr
     assert "LAST30DAYS_ALLOW_ENGINE_PLAN=1" in stderr
     assert "dummy-openrouter-key-000" not in stderr
@@ -183,6 +185,80 @@ def test_agent_hosted_run_with_plan_reaches_retrieval(monkeypatch, tmp_path):
     assert rc is None
     assert mocks["run"].call_args.kwargs["external_plan"] == VALID_PLAN
     assert "LAW 7" not in stderr
+
+
+def test_agent_hosted_plan_from_stdin_preserves_literal_json(monkeypatch):
+    plan = dict(VALID_PLAN, context="owner's $HOME `echo literal` \\ path café")
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(plan, ensure_ascii=False)))
+    rc, stderr, mocks = _run_main(
+        monkeypatch, [*TOPIC, "--plan", "-"], host_env={"CODEX_THREAD_ID": "test"}
+    )
+    assert rc is None, stderr
+    assert mocks["run"].call_args.kwargs["external_plan"] == plan
+    mocks["runtime"].assert_not_called()
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "utf-8"])
+def test_stdin_plan_decodes_utf8_bytes_once(monkeypatch, encoding):
+    plan = json.loads(json.dumps(VALID_PLAN))
+    plan["subqueries"][0]["search_query"] = "café grinders"
+    stdin = io.TextIOWrapper(
+        io.BytesIO(json.dumps(plan, ensure_ascii=False).encode("utf-8")),
+        encoding=encoding,
+    )
+    monkeypatch.setattr(sys, "stdin", stdin)
+    with mock.patch.object(stdin.buffer, "read", wraps=stdin.buffer.read) as read:
+        rc, stderr, mocks = _run_main(monkeypatch, [*TOPIC, "--plan", "-"])
+    assert rc is None, stderr
+    assert mocks["run"].call_args.kwargs["external_plan"] == plan
+    read.assert_called_once_with()
+
+
+def test_invalid_utf8_stdin_plan_stops_before_retrieval(monkeypatch):
+    stdin = io.TextIOWrapper(io.BytesIO(b'{"context": "\xff"}'), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    rc, stderr, mocks = _run_main(monkeypatch, [*TOPIC, "--plan", "-"])
+    assert rc == 2
+    assert "Cannot read --plan stdin" in stderr
+    mocks["run"].assert_not_called()
+    mocks["runtime"].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "raw,message",
+    [("", "Invalid --plan JSON"), ("{broken", "Invalid --plan JSON"),
+     ('{"queries": {}}', "Invalid --plan schema")],
+)
+def test_invalid_stdin_plan_stops_without_fallback(monkeypatch, raw, message):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(raw))
+    rc, stderr, mocks = _run_main(monkeypatch, [*TOPIC, "--plan", "-"])
+    assert rc == 2
+    assert message in stderr
+    mocks["run"].assert_not_called()
+    mocks["runtime"].assert_not_called()
+
+
+def test_unreadable_stdin_plan_exits_cleanly(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", mock.Mock(spec=["read"], read=mock.Mock(side_effect=OSError("unreadable"))))
+    rc, stderr, mocks = _run_main(monkeypatch, [*TOPIC, "--plan", "-"])
+    assert rc == 2
+    assert "Cannot read --plan stdin" in stderr
+    mocks["run"].assert_not_called()
+
+
+@pytest.mark.parametrize("use_file", [False, True], ids=["inline", "file"])
+def test_existing_plan_inputs_do_not_read_stdin(monkeypatch, tmp_path, use_file):
+    raw = json.dumps(VALID_PLAN)
+    if use_file:
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(raw, encoding="utf-8")
+        raw = str(plan_file)
+    stdin = mock.Mock(read=mock.Mock(side_effect=AssertionError("unexpected stdin read")))
+    monkeypatch.setattr(sys, "stdin", stdin)
+    rc, stderr, mocks = _run_main(monkeypatch, [*TOPIC, "--plan", raw])
+    assert rc is None, stderr
+    assert mocks["run"].call_args.kwargs["external_plan"] == VALID_PLAN
+    stdin.read.assert_not_called()
 
 
 def test_override_restores_engine_planning_under_an_agent(monkeypatch):
