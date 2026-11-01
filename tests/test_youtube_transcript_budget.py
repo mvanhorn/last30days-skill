@@ -1,6 +1,9 @@
 """YouTube keeps time for transcripts and stops hammering yt-dlp after a block."""
 
 import json
+import os
+import shutil
+import sys
 import threading
 
 import pytest
@@ -167,6 +170,120 @@ def test_after_a_block_later_transcripts_skip_ytdlp_for_scrapecreators(monkeypat
     assert ytdlp_calls == ["vidA"]
     assert sc_calls == ["vidA", "vidB", "vidC"]
     assert all(results[video_id] for video_id in ("vidA", "vidB", "vidC"))
+
+
+@pytest.fixture
+def ssh_transcript_runner(monkeypatch, tmp_path):
+    shell = shutil.which("sh", path=os.defpath)
+    if shell is None:
+        pytest.skip("POSIX shell required for the remote SSH script")
+    remote_tmp = tmp_path / "remote-tmp"
+    remote_tmp.mkdir()
+    run = subproc.run_with_timeout
+
+    def install(stderr, returncode=1, vtt=None):
+        executable = tmp_path / "yt-dlp"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"vtt = {vtt!r}\n"
+            "if vtt is not None:\n"
+            "    output = sys.argv[sys.argv.index('-o') + 1]\n"
+            "    Path(output.replace('%(id)s', 'fixture') + '.en.vtt').write_text(vtt)\n"
+            f"sys.stderr.write({stderr!r})\n"
+            f"sys.exit({returncode})\n",
+        )
+        executable.chmod(0o755)
+        env = dict(os.environ, PATH=str(tmp_path) + os.pathsep + os.defpath,
+                   TMPDIR=str(remote_tmp))
+        calls = []
+
+        def run_remote(cmd, *, timeout, **kwargs):
+            assert cmd[:5] == ["ssh", "-o", "BatchMode=yes", "--", "fixture-host"]
+            result = run([shell, "-c", cmd[-1]], timeout=timeout, env=env, **kwargs)
+            calls.append(result)
+            assert list(remote_tmp.iterdir()) == []
+            return result
+
+        monkeypatch.setenv("LAST30DAYS_YOUTUBE_SSH_HOST", "fixture-host")
+        monkeypatch.setattr(subproc, "run_with_timeout", run_remote)
+        return calls
+
+    return install
+
+
+@pytest.mark.parametrize("stderr", [
+    "ERROR: Sign in to confirm you're not a bot",
+    "ERROR: HTTP Error 429: Too Many Requests",
+])
+@pytest.mark.parametrize("vtt", [None, "WEBVTT\n\nSSH caption words\n"])
+def test_ssh_block_skips_later_calls_and_preserves_vtt(
+    monkeypatch, ssh_transcript_runner, stderr, vtt,
+):
+    calls = ssh_transcript_runner(stderr, vtt=vtt)
+    released_block_states = []
+    release = youtube_yt._ytdlp_slots.release
+
+    def record_release():
+        released_block_states.append(youtube_yt._youtube_transcripts_blocked())
+        release()
+
+    sc_calls = []
+
+    def rescue(video_id, _token):
+        sc_calls.append(video_id)
+        return "rescued transcript words"
+
+    monkeypatch.setattr(youtube_yt._ytdlp_slots, "release", record_release)
+    monkeypatch.setattr(youtube_yt, "_sc_fetch_transcript", rescue)
+    monkeypatch.setattr(
+        youtube_yt, "_fetch_transcript_direct",
+        lambda *_a, **_k: pytest.fail("direct HTTP after a keyed SSH block"),
+    )
+
+    results = youtube_yt.fetch_transcripts_parallel(
+        ["vidA", "vidB"], max_workers=1, token="test-key",
+    )
+
+    assert len(calls) == 1
+    assert calls[0].returncode == 1
+    assert calls[0].stderr == stderr
+    assert calls[0].stdout == (vtt or "")
+    assert released_block_states == [True]
+    assert sc_calls == (["vidB"] if vtt else ["vidA", "vidB"])
+    assert results["vidA"] == ("SSH caption words" if vtt else "rescued transcript words")
+    assert results["vidB"] == "rescued transcript words"
+
+
+@pytest.mark.parametrize("stderr,returncode,token", [
+    ("ERROR: Sign in to confirm you're not a bot", 1, None),
+    ("ERROR: connection refused", 1, "test-key"),
+    ("", 0, "test-key"),
+])
+def test_ssh_without_a_key_or_block_keeps_direct_fallback(
+    monkeypatch, ssh_transcript_runner, stderr, returncode, token,
+):
+    calls = ssh_transcript_runner(stderr, returncode=returncode)
+    direct_calls = []
+
+    def direct(video_id, **_kwargs):
+        direct_calls.append(video_id)
+        return "WEBVTT\n\ndirect caption words\n"
+
+    monkeypatch.setattr(youtube_yt, "_fetch_transcript_direct", direct)
+    monkeypatch.setattr(
+        youtube_yt, "_sc_fetch_transcript",
+        lambda *_a, **_k: pytest.fail("paid fallback after a direct transcript"),
+    )
+
+    results = youtube_yt.fetch_transcripts_parallel(
+        ["vidA", "vidB"], max_workers=1, token=token,
+    )
+
+    assert len(calls) == 2
+    assert direct_calls == ["vidA", "vidB"]
+    assert results == {"vidA": "direct caption words", "vidB": "direct caption words"}
 
 
 def test_workers_waiting_for_a_slot_skip_ytdlp_after_a_block(monkeypatch):

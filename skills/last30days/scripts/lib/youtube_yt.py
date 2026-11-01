@@ -1106,15 +1106,16 @@ def _fetch_transcript_ytdlp_via_ssh(
     remote_script = (
         "set -e; "
         "TMPD=$(mktemp -d); "
+        "YTDLP_RC=0; "
         "yt-dlp --ignore-config --no-cookies-from-browser "
         f"{extractor}"
         f"{proxy_flag}"
         f"--write-subs --write-auto-subs --sub-lang {sub_langs} --sub-format vtt "
         "--skip-download --no-warnings "
-        f'-o "$TMPD/%(id)s" {quoted_url} >/dev/null 2>&1 || true; '
+        f'-o "$TMPD/%(id)s" {quoted_url} >/dev/null || YTDLP_RC=$?; '
         'VTT=$(find "$TMPD" -maxdepth 1 -name "*.vtt" 2>/dev/null | head -1); '
         '[ -n "$VTT" ] && cat "$VTT"; '
-        'rm -rf "$TMPD"'
+        'rm -rf "$TMPD"; exit "$YTDLP_RC"'
     )
     cmd = ["ssh", "-o", "BatchMode=yes", "--", ssh_host, remote_script]
     try:
@@ -1452,8 +1453,11 @@ def fetch_transcript(
             skip_ytdlp = True
         else:
             if not raw_vtt:
-                _log(f"SSH yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
-                raw_vtt = _fetch_transcript_direct(video_id, status=status)
+                if token and _youtube_transcripts_blocked():
+                    skip_ytdlp = True
+                else:
+                    _log(f"SSH yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
+                    raw_vtt = _fetch_transcript_direct(video_id, status=status)
     elif is_ytdlp_installed():
         try:
             raw_vtt = _fetch_transcript_ytdlp(
