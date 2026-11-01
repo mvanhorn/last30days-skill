@@ -113,6 +113,68 @@ class CliV3Tests(unittest.TestCase):
         self.assertIn("Invalid --plan schema", result.stderr)
         self.assertNotIn("fallback-plan", result.stderr)
 
+    def test_stdin_plan_cache_tracks_content_across_input_forms(self):
+        plan_a = {
+            "intent": "product",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "market",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "espresso grinders",
+                "ranking_query": "Which grinders do people recommend?",
+                "sources": ["grounding"],
+                "weight": 1.0,
+            }],
+        }
+        plan_b = json.loads(json.dumps(plan_a))
+        plan_b["subqueries"][0]["search_query"] = "café grinders"
+
+        def research(**kwargs):
+            report = self.make_report(topic=kwargs["topic"])
+            report.query_plan.subqueries = [
+                schema.SubQuery(**subquery)
+                for subquery in kwargs["external_plan"]["subqueries"]
+            ]
+            return report
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            synthesis = Path(tmp) / "synthesis.md"
+            synthesis.write_text("# Grinders\nSupported findings.\n", encoding="utf-8")
+            plan_file = Path(tmp) / "plan.json"
+            plan_file.write_text(json.dumps(plan_b), encoding="utf-8")
+            stack.enter_context(mock.patch.dict(os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}))
+            stack.enter_context(mock.patch.object(cli.env, "get_config", return_value={}))
+            stack.enter_context(mock.patch.object(cli.pipeline, "diagnose", return_value={}))
+            stack.enter_context(mock.patch.object(cli.ui, "ProgressDisplay"))
+            stack.enter_context(mock.patch.object(cli, "_show_runtime_ui"))
+            runner = stack.enter_context(mock.patch.object(cli.pipeline, "run", side_effect=research))
+            renderer = stack.enter_context(mock.patch.object(cli, "_render_save_and_print", return_value=0))
+            cases = [
+                ("-", json.dumps(plan_a), "espresso grinders", 1),
+                ("-", json.dumps(plan_a, indent=2, sort_keys=True), "espresso grinders", 1),
+                ("-", json.dumps(plan_b, ensure_ascii=False), "café grinders", 2),
+                (json.dumps(plan_b), "", "café grinders", 2),
+                (str(plan_file), "", "café grinders", 2),
+            ]
+            for plan_arg, raw, expected_query, expected_calls in cases:
+                with self.subTest(plan=plan_arg, query=expected_query):
+                    argv = [
+                        "last30days.py", "espresso grinders", "--mock",
+                        "--as-of", "2026-03-16", "--emit=html",
+                        "--synthesis-file", str(synthesis), "--plan", plan_arg,
+                    ]
+                    stdin = io.StringIO(raw)
+                    with mock.patch.object(sys, "argv", argv), \
+                         mock.patch.object(sys, "stdin", stdin), \
+                         mock.patch.object(stdin, "read", wraps=stdin.read) as read, \
+                         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        rc = cli.main()
+                    self.assertEqual(0, rc)
+                    self.assertEqual(expected_calls, runner.call_count)
+                    report = renderer.call_args.args[1]
+                    self.assertEqual(expected_query, report.query_plan.subqueries[0].search_query)
+                    self.assertEqual(1 if plan_arg == "-" else 0, read.call_count)
+
     def test_parse_search_flag_normalizes_aliases_and_dedupes(self):
         self.assertEqual(
             ["grounding", "reddit", "hackernews"],

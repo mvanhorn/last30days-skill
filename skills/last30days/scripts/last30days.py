@@ -842,7 +842,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Use at most one Perplexity Deep Research run. Direct PERPLEXITY_API_KEY uses the Agent API background path; OPENROUTER_API_KEY keeps the synchronous Sonar fallback; cannot be combined with competitor or vs-mode.")
     parser.add_argument("--hiring-signals", action="store_true",
                         help="Analyze public jobs/careers postings as evidence-backed company focus signals.")
-    parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string or a file path.")
+    parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string, a file path, or - for stdin.")
     parser.add_argument("--save-suffix", help="Suffix for saved output filename (e.g., 'gemini' → kanye-west-raw-gemini.md)")
     parser.add_argument("--subreddits", help="Comma-separated broad/category subreddit names to search (e.g., SaaS,Entrepreneur)")
     parser.add_argument("--dedicated-subreddits", help="Comma-separated entity-home subreddit names (e.g., Kanye,WestSubEver). Pulled in full (top+hot+new) and exempt from the relevance floor since the whole sub is the topic.")
@@ -966,7 +966,7 @@ def build_parser() -> argparse.ArgumentParser:
 def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
     """Parse a --competitors-plan argument into a {entity_name_lower: plan_entry} dict.
 
-    Accepts inline JSON or a file path (matches --plan). Returns {} on None/empty.
+    Accepts inline JSON or a file path. Returns {} on None/empty.
     Validation: top-level must be a dict; each value must be a dict. Unknown fields
     in entry values log a warning but do not abort. Invalid JSON or non-dict shape
     raises SystemExit(2) with a clear stderr message.
@@ -1461,6 +1461,7 @@ def _load_last_report_cache(
 def _cache_research_options(
     args: argparse.Namespace, config: dict[str, object] | None = None, *, supplied_only: bool = False,
     resolved_corpus_dirs: list[Path] | None = None,
+    external_plan: dict | None = None,
 ) -> dict[str, object]:
     names = (
         "search", "quick", "deep", "mock", "web_backend", "perplexity_search_type",
@@ -1494,8 +1495,11 @@ def _cache_research_options(
             options[name] = None
         if raw:
             try:
-                content = Path(raw).read_text(encoding="utf-8") if os.path.isfile(raw) else raw
-                content = json.dumps(json.loads(content), sort_keys=True)
+                if name == "plan" and external_plan is not None:
+                    content = json.dumps(external_plan, sort_keys=True)
+                else:
+                    content = Path(raw).read_text(encoding="utf-8") if os.path.isfile(raw) else raw
+                    content = json.dumps(json.loads(content), sort_keys=True)
             except (OSError, ValueError):
                 content = raw
             options[name] = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -2919,11 +2923,9 @@ def _law7_host_plan_message(signal: str) -> str:
         "call its internal planner. If you are the reasoning model hosting "
         "this skill, YOU ARE the planner; no API key or provider is needed. "
         "Write the JSON query plan (references/research-runbook.md Step 0.75) "
-        "to a tmpfile with a "
-        "quoted heredoc - QUERY_PLAN_FILE=$(mktemp "
-        "\"${TMPDIR:-/tmp}/last30days-plan.XXXXXX\"); "
-        "cat >| \"$QUERY_PLAN_FILE\" <<'PLAN_EOF' ... PLAN_EOF - and re-run "
-        "with --plan \"$QUERY_PLAN_FILE\" (see Research Execution in that "
+        "and pass it on stdin with a "
+        "quoted heredoc: --plan - <<'PLAN_EOF' ... PLAN_EOF "
+        "(see Research Execution in that "
         "runbook). With no "
         "web-search tool, pass --auto-resolve instead. For headless or cron "
         f"runs under an agent, set {env.ALLOW_ENGINE_PLAN_VAR}=1 to let the "
@@ -3492,9 +3494,45 @@ def _main(
         config["_CORPUS_DIRS"] = [str(path) for path in resolved_corpus_dirs]
     if _config_truthy(config.get("LAST30DAYS_CORPUS_IN_EXPORT")):
         config["_CORPUS_IN_EXPORT"] = True
+    external_plan = None
+    if args.plan:
+        import json as _json
+        plan_str = args.plan
+        if plan_str == "-":
+            try:
+                stdin_buffer = getattr(sys.stdin, "buffer", None)
+                plan_str = (
+                    stdin_buffer.read().decode("utf-8")
+                    if stdin_buffer is not None else sys.stdin.read()
+                )
+            except (OSError, UnicodeDecodeError) as exc:
+                sys.stderr.write(f"[Planner] Cannot read --plan stdin: {exc}\n")
+                raise SystemExit(2)
+        elif os.path.isfile(plan_str):
+            try:
+                with open(plan_str, encoding="utf-8") as f:
+                    plan_str = f.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                sys.stderr.write(f"[Planner] Cannot read --plan file: {exc}\n")
+                raise SystemExit(2)
+        try:
+            external_plan = _json.loads(plan_str)
+        except _json.JSONDecodeError as exc:
+            sys.stderr.write(f"[Planner] Invalid --plan JSON: {exc}\n")
+            # Fail fast instead of silently dropping to the internal planner
+            # and burning a paid run the user did not ask for. Mirrors the
+            # --plan file-read branch above and parse_competitors_plan.
+            raise SystemExit(2)
+        from lib import planner as _plan_validator
+        try:
+            _plan_validator.validate_external_plan(external_plan)
+        except ValueError as exc:
+            sys.stderr.write(f"[Planner] Invalid --plan schema: {exc}.\n")
+            raise SystemExit(2)
+
     research_options = _cache_research_options(
         args, config, supplied_only=args.cached_report,
-        resolved_corpus_dirs=resolved_corpus_dirs,
+        resolved_corpus_dirs=resolved_corpus_dirs, external_plan=external_plan,
     )
     _propagate_config_to_environ(config)
 
@@ -4078,33 +4116,6 @@ def _main(
         tiktok_hashtags = [h.strip().lstrip("#") for h in args.tiktok_hashtags.split(",") if h.strip()] if args.tiktok_hashtags else None
         tiktok_creators = [c.strip().lstrip("@") for c in args.tiktok_creators.split(",") if c.strip()] if args.tiktok_creators else None
         ig_creators = [c.strip().lstrip("@") for c in args.ig_creators.split(",") if c.strip()] if args.ig_creators else None
-        # Parse external plan if provided via --plan flag
-        external_plan = None
-        if args.plan:
-            import json as _json
-            plan_str = args.plan
-            if os.path.isfile(plan_str):
-                try:
-                    with open(plan_str, encoding="utf-8") as f:
-                        plan_str = f.read()
-                except (OSError, UnicodeDecodeError) as exc:
-                    sys.stderr.write(f"[Planner] Cannot read --plan file: {exc}\n")
-                    raise SystemExit(2)
-            try:
-                external_plan = _json.loads(plan_str)
-            except _json.JSONDecodeError as exc:
-                sys.stderr.write(f"[Planner] Invalid --plan JSON: {exc}\n")
-                # Fail fast instead of silently dropping to the internal planner
-                # and burning a paid run the user did not ask for. Mirrors the
-                # --plan file-read branch above and parse_competitors_plan.
-                raise SystemExit(2)
-            from lib import planner as _plan_validator
-            try:
-                _plan_validator.validate_external_plan(external_plan)
-            except ValueError as exc:
-                sys.stderr.write(f"[Planner] Invalid --plan schema: {exc}.\n")
-                raise SystemExit(2)
-
         # Auto-resolve: use web search to discover subreddits/handles before planning.
         # This is the engine-side equivalent of SKILL.md Steps 0.55/0.75 for platforms
         # without WebSearch (OpenClaw, Codex, raw CLI).
