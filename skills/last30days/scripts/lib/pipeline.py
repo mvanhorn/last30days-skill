@@ -374,6 +374,9 @@ def available_sources(
         available.append("corpus")
     if config.get("SCRAPECREATORS_API_KEY"):
         available.extend(["tiktok", "instagram"])
+    elif env.get_tiktok_backend(config) == "scavio":
+        # Scavio covers TikTok only; Instagram still needs ScrapeCreators.
+        available.append("tiktok")
     if env.get_x_source(config, local_only=local_only):
         available.append("x")
     elif x_envelope or (
@@ -6186,6 +6189,7 @@ def _retrieve_stream_impl(
             # Leave time to publish collected videos before the outer stream wait expires.
             deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS) - 1.0
             cancel = config.get("_enrich_cancel")
+            tiktok_backend = env.get_tiktok_backend(config) or "scrapecreators"
             result = tiktok.search_and_enrich(
                 tiktok_query,
                 from_date,
@@ -6196,6 +6200,7 @@ def _retrieve_stream_impl(
                 creators=tiktok_creators,
                 deadline=deadline,
                 cancel=cancel,
+                backend=tiktok_backend,
             )
             items = tiktok.parse_tiktok_response(result)
             if (
@@ -6203,9 +6208,14 @@ def _retrieve_stream_impl(
                 and env.is_tiktok_comments_available(config)
                 and result.get("error") != tiktok.BUDGET_ERROR
             ):
-                sc_token = config.get("SCRAPECREATORS_API_KEY", "")
+                comment_token = (
+                    env.get_tiktok_token(config) if tiktok_backend == "scavio"
+                    else config.get("SCRAPECREATORS_API_KEY", "")
+                )
                 try:
-                    tiktok.enrich_with_comments(items, token=sc_token, deadline=deadline, cancel=cancel)
+                    tiktok.enrich_with_comments(
+                        items, token=comment_token, deadline=deadline, cancel=cancel, backend=tiktok_backend,
+                    )
                 except http.DeadlineExceeded:
                     result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
@@ -6213,7 +6223,7 @@ def _retrieve_stream_impl(
         return fetch_memo.fetch_once(
             (
                 "tiktok", tiktok_query, from_date, to_date, depth,
-                bool(env.get_tiktok_token(config)),
+                bool(env.get_tiktok_token(config)), env.get_tiktok_backend(config),
                 tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
                 env.is_tiktok_comments_available(config),
             ),
