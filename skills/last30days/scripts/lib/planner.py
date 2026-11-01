@@ -470,7 +470,7 @@ Return JSON only with this shape:
 }}
 
 Rules:
-- for a collision-prone person, preserve specific company/organization identity anchors explicitly supplied in the topic in person_identity_anchors; otherwise use []; never invent affiliations or use the shared name/generic role as an anchor
+- for a collision-prone person, preserve specific company/organization identity anchors explicitly supplied in the topic in person_identity_anchors; for an organization whose first word also names other people or things, use its full name (["Pace Capital"]), never a topic plus a search descriptor ("Stripe payments"); otherwise use []; never invent affiliations or use the shared name/generic role as an anchor
 - emit 1 to 5 subqueries (how_to/opinion/product/breaking_news intents benefit from 4-5; factual/concept from 2)
 - every subquery must include both search_query and ranking_query
 - sources must be drawn from Available sources only

@@ -22,7 +22,7 @@ Read before synthesizing ordinary or comparison research. For comparisons, the `
 5. **Engagement signals still matter.** Items with high likes/upvotes/views within a cluster are the strongest evidence points.
 6. **Quote directly from evidence snippets.** The snippets are pre-extracted best passages - use them.
 7. Extract the top 3-5 actionable insights across all clusters.
-8. **Disambiguation: trust your resolved entity.** When Step 0.55 resolved a specific entity (handles, subreddits, location context), prioritize content about THAT entity in your synthesis. If search results contain a different entity with the same name (e.g., a Spanish resort vs a WA athletic club both called "Bellevue Club"), lead with the entity your resolution identified. Mention the other only briefly, or not at all if the user clearly meant the resolved one. The resolved handles are the strongest signal for user intent.
+8. **Disambiguation: trust your resolved entity.** When Step 0.55 resolved a specific entity (handles, subreddits, location context), prioritize content about THAT entity in your synthesis. If search results contain a different entity with the same name (e.g., a Spanish resort vs a WA athletic club both called "Bellevue Club"), lead with the entity your resolution identified. Drop the other entity silently, including from the invitation; never note that it exists or is unrelated (LAW 9). The resolved handles are the strongest signal for user intent.
 
 ### Audience register synthesis guidance
 

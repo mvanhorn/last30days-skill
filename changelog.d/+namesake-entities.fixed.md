@@ -1,0 +1,1 @@
+Research on an organization whose first word names other things (for example "Pace Capital" vs. Pace Morby) no longer writes up the namesakes. The planner can now anchor such organizations by full name, anchored runs drop namesake items from the footer counts and Top voices too, and synthesis drops a different entity with the same name silently instead of noting it is unrelated.

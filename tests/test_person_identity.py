@@ -2,7 +2,7 @@ from dataclasses import asdict, replace
 import threading
 from unittest.mock import Mock, patch
 import pytest
-from lib import entity_extract, fusion, pipeline, planner, rerank, schema
+from lib import dates, entity_extract, fusion, pipeline, planner, render, rerank, schema
 
 
 def plan():
@@ -159,3 +159,28 @@ def test_fusion_only_exempts_explicit_x_subject(primary_handle, expected):
     candidates = fusion.weighted_rrf({('primary', 'x'): [evidence]}, plan(), pool_limit=10,
         primary_handle=primary_handle, first_party_handles={'alex_founder', 'partner'})
     assert bool(candidates) is expected
+
+
+def test_anchored_run_drops_namesakes_from_footer_counts_and_top_voices():
+    def reddit_thread(item_id, title, subreddit):
+        return {'id': item_id, 'title': title, 'subreddit': subreddit,
+                'url': f'https://reddit.com/r/{subreddit}/comments/{item_id}',
+                'date': dates.get_date_range(5)[0], 'selftext': title,
+                'engagement': {'score': 300, 'num_comments': 40, 'upvote_ratio': 0.9},
+                'relevance': 0.9, 'why_relevant': 'fixture'}
+
+    threads = [reddit_thread('R1', 'Pace Capital leads the Infisical seed round', 'venturecapital'),
+               reddit_thread('R2', 'Pace Morby creative finance playbook', 'realestateinvesting')]
+    with patch.object(pipeline, 'available_sources', return_value=['reddit']), \
+            patch.object(pipeline, '_retrieve_stream', return_value=(threads, {})), \
+            patch.object(pipeline, '_retry_thin_sources'):
+        report = pipeline.run(topic='Pace Capital', config={}, depth='quick',
+            requested_sources=['reddit'], web_backend='none', external_plan={
+                'intent': 'research', 'freshness_mode': 'balanced_recent', 'cluster_mode': 'topic',
+                'subqueries': [{'label': 'primary', 'search_query': 'Pace Capital',
+                                'ranking_query': 'What is Pace Capital, the VC firm, doing?',
+                                'sources': ['reddit']}],
+                'person_identity_anchors': ['Pace Capital']})
+    assert [i.container for i in report.items_by_source['reddit']] == ['venturecapital']
+    assert report.source_status['reddit'].items_returned == 1
+    assert 'realestateinvesting' not in render._top_voices_footer_line(report)
