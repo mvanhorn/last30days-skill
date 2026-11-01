@@ -1,5 +1,8 @@
 """YouTube keeps time for transcripts and stops hammering yt-dlp after a block."""
 
+import json
+import threading
+
 import pytest
 
 from lib import subproc, youtube_yt
@@ -166,6 +169,94 @@ def test_after_a_block_later_transcripts_skip_ytdlp_for_scrapecreators(monkeypat
     assert all(results[video_id] for video_id in ("vidA", "vidB", "vidC"))
 
 
+def test_workers_waiting_for_a_slot_skip_ytdlp_after_a_block(monkeypatch):
+    # Five workers, two slots. The two that hold a slot must not finish until
+    # the other three are queued in acquire, so every worker has already passed
+    # the check that happens before the wait.
+    videos = ["vidA", "vidB", "vidC", "vidD", "vidE"]
+    state = {"inside": 0, "waiting": 0, "timed_acquires": 0}
+    lock = threading.Lock()
+    queued = threading.Event()
+    ytdlp_calls = []
+
+    def _note_progress():
+        if state["inside"] >= 2 and state["waiting"] >= 3:
+            queued.set()
+
+    class _Gate:
+        def __init__(self):
+            self._sem = threading.Semaphore(2)
+
+        def acquire(self, blocking=True, timeout=None):
+            with lock:
+                state["waiting"] += 1
+                if timeout is not None:
+                    state["timed_acquires"] += 1
+                _note_progress()
+            try:
+                if timeout is None:
+                    return self._sem.acquire(blocking=blocking)
+                return self._sem.acquire(blocking=blocking, timeout=timeout)
+            finally:
+                with lock:
+                    state["waiting"] -= 1
+
+        def release(self):
+            self._sem.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self.release()
+            return False
+
+    def fake_run(cmd, timeout=30, **_kwargs):
+        video_id = next(
+            (str(part).rsplit("v=", 1)[-1] for part in cmd if "watch?v=" in str(part)),
+            "",
+        )
+        with lock:
+            state["inside"] += 1
+            inside = state["inside"]
+            _note_progress()
+        if inside <= 2 and not queued.wait(5):
+            raise AssertionError("transcript workers did not queue for a yt-dlp slot")
+        ytdlp_calls.append(video_id)
+        return subproc.SubprocResult(
+            returncode=1,
+            stdout="",
+            stderr="ERROR: Sign in to confirm you're not a bot",
+        )
+
+    def fake_sc(video_id, _token):
+        sc_calls.append(video_id)
+        return "placeholder transcript words about the topic"
+
+    sc_calls = []
+    monkeypatch.setattr(youtube_yt, "_ytdlp_slots", _Gate())
+    monkeypatch.setattr(youtube_yt, "is_ytdlp_installed", lambda: True)
+    monkeypatch.setattr(youtube_yt, "_ytdlp_ssh_host", lambda: None)
+    monkeypatch.setattr(youtube_yt.subproc, "run_with_timeout", fake_run)
+    monkeypatch.setattr(youtube_yt, "_sc_fetch_transcript", fake_sc)
+    monkeypatch.setattr(
+        youtube_yt, "_fetch_transcript_direct",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("direct HTTP after a block")),
+    )
+
+    deadline = youtube_yt.time.monotonic() + youtube_yt._LANE_RETURN_MARGIN_SECONDS + 100.0
+    with youtube_yt.sc_spend_until(lambda: False, deadline=deadline):
+        results = youtube_yt.fetch_transcripts_parallel(
+            videos, max_workers=5, token="test-key",
+        )
+
+    assert state["timed_acquires"] == 5
+    assert len(ytdlp_calls) == 2
+    assert sorted(sc_calls) == videos
+    assert all(results[video_id] for video_id in videos)
+
+
 def test_timeout_does_not_send_later_transcripts_straight_to_scrapecreators(monkeypatch):
     ytdlp_calls = []
 
@@ -211,39 +302,64 @@ def test_block_without_a_scrapecreators_key_still_tries_ytdlp(monkeypatch):
 
 
 def test_search_bot_check_sends_transcripts_straight_to_scrapecreators(monkeypatch):
+    # yt-dlp prints a video, then exits on a bot-check. search_youtube keeps
+    # the video and does not return an error, so the block has to come from stderr.
     ytdlp_calls = []
     direct_calls = []
     sc_calls = []
+    video = {
+        "id": "vidA",
+        "title": "Placeholder video",
+        "view_count": 10,
+        "like_count": 1,
+        "comment_count": 0,
+        "upload_date": "20261001",
+        "description": "placeholder",
+        "channel": "Placeholder",
+    }
 
-    def fake_search(*_args, **_kwargs):
-        return {
-            "items": [_item("vidA")],
-            "error": "yt-dlp search failed: Sign in to confirm you're not a bot",
-        }
-
-    def fake_ytdlp(video_id, *_args, **_kwargs):
+    def fake_run(cmd, timeout=30, **_kwargs):
+        blob = " ".join(str(part) for part in cmd)
+        if "ytsearch" in blob:
+            return subproc.SubprocResult(
+                returncode=1,
+                stdout=json.dumps(video) + "\n",
+                stderr="ERROR: Sign in to confirm you're not a bot",
+            )
+        video_id = next(
+            (str(part).rsplit("v=", 1)[-1] for part in cmd if "watch?v=" in str(part)),
+            "",
+        )
         ytdlp_calls.append(video_id)
-        return None
+        return subproc.SubprocResult(
+            returncode=1,
+            stdout="",
+            stderr="ERROR: Sign in to confirm you're not a bot",
+        )
 
     def fake_sc(video_id, _token):
         sc_calls.append(video_id)
         return "placeholder transcript words about the topic"
 
     monkeypatch.setattr(youtube_yt, "expand_youtube_queries", lambda *_a, **_k: ["one"])
-    monkeypatch.setattr(youtube_yt, "search_youtube", fake_search)
     monkeypatch.setattr(youtube_yt, "is_ytdlp_installed", lambda: True)
     monkeypatch.setattr(youtube_yt, "_ytdlp_ssh_host", lambda: None)
-    monkeypatch.setattr(youtube_yt, "_fetch_transcript_ytdlp", fake_ytdlp)
+    monkeypatch.setattr(youtube_yt.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(
         youtube_yt, "_fetch_transcript_direct",
         lambda video_id, *_a, **_k: direct_calls.append(video_id),
     )
     monkeypatch.setattr(youtube_yt, "_sc_fetch_transcript", fake_sc)
+    youtube_yt.reset_search_cache()
+    try:
+        result = youtube_yt.search_and_transcribe(
+            "placeholder topic", "2026-09-01", "2026-10-23", depth="default", token="test-key",
+        )
+    finally:
+        youtube_yt.reset_search_cache()
 
-    result = youtube_yt.search_and_transcribe(
-        "placeholder topic", "2026-09-01", "2026-10-23", depth="default", token="test-key",
-    )
-
+    assert [item["video_id"] for item in result["items"]] == ["vidA"]
+    assert "error" not in result
     assert ytdlp_calls == []
     assert direct_calls == []
     assert sc_calls == ["vidA"]
