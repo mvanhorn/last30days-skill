@@ -379,24 +379,52 @@ def _search_timeout() -> float:
     return _env_positive_float("LAST30DAYS_YT_SEARCH_TIMEOUT", float(_SEARCH_TIMEOUT))
 
 
-def _run_ytdlp(cmd: List[str], *, timeout: float) -> subproc.SubprocResult:
+class _YtdlpBlocked(Exception):
+    """A keyed transcript got a free slot only after YouTube was already blocked."""
+
+
+def _remember_youtube_block(result: subproc.SubprocResult) -> subproc.SubprocResult:
+    """Record a bot-check or 429 before this worker gives up its yt-dlp slot.
+
+    The next worker rechecks the flag after acquire. The slot has to still be
+    held here, or that worker starts yt-dlp before this one records the block.
+    """
+    if result.returncode != 0:
+        _note_youtube_block(result.stderr or "")
+    return result
+
+
+def _run_ytdlp(
+    cmd: List[str],
+    *,
+    timeout: float,
+    abort_if_blocked: bool = False,
+) -> subproc.SubprocResult:
     """Run a yt-dlp (or SSH-wrapped) command under the process-wide concurrency gate.
 
     The wait for a slot and the run itself both end when the lane must return.
+    A keyed transcript checks the bot-check flag again after the wait. It may
+    have been clear when the worker queued and set while the worker was waiting.
     """
+    def _abort_if_blocked() -> None:
+        if abort_if_blocked and _youtube_transcripts_blocked():
+            raise _YtdlpBlocked()
+
     seconds_left = _lane_seconds_left()
     if seconds_left is None:
         with _ytdlp_slots:
-            return subproc.run_with_timeout(cmd, timeout=timeout)
+            _abort_if_blocked()
+            return _remember_youtube_block(subproc.run_with_timeout(cmd, timeout=timeout))
     if not _ytdlp_slots.acquire(timeout=max(0.0, seconds_left)):
         raise subproc.SubprocTimeout("no yt-dlp slot before the lane deadline", started=False)
     try:
+        _abort_if_blocked()
         seconds_left = _lane_seconds_left() or 0.0
         if seconds_left <= 0:
             raise subproc.SubprocTimeout("lane deadline passed", started=False)
         bounded = min(timeout, seconds_left)
         try:
-            return subproc.run_with_timeout(cmd, timeout=bounded)
+            result = subproc.run_with_timeout(cmd, timeout=bounded)
         except subproc.SubprocTimeout as exc:
             # The attempt cap was not what stopped the process. The lane
             # deadline was shorter, so don't report the full cap.
@@ -405,6 +433,7 @@ def _run_ytdlp(cmd: List[str], *, timeout: float) -> subproc.SubprocResult:
                     "lane deadline reached", started=exc.started,
                 ) from exc
             raise
+        return _remember_youtube_block(result)
     finally:
         _ytdlp_slots.release()
 
@@ -826,6 +855,12 @@ def search_youtube(
             return published
 
         stdout = result.stdout
+        # A bot-check can land after yt-dlp has already printed some videos.
+        # Keep those videos. Still record the block so later transcripts in
+        # this search do not start another yt-dlp call. An empty stdout keeps
+        # going through the error path below.
+        if result.returncode != 0:
+            _note_youtube_block(result.stderr or "")
         if result.returncode != 0 and not stdout.strip():
             stderr_first = (result.stderr or "").strip().splitlines()
             first_line = stderr_first[0] if stderr_first else "(no stderr)"
@@ -1048,7 +1083,12 @@ def _fetch_transcript_direct(
     return vtt_text
 
 
-def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[str]:
+def _fetch_transcript_ytdlp_via_ssh(
+    video_id: str,
+    ssh_host: str,
+    *,
+    abort_if_blocked: bool = False,
+) -> Optional[str]:
     """Fetch transcript via yt-dlp on a remote SSH host (mktemp + cat pipeline)."""
     if not _SSH_HOST_ALIAS_RE.match(ssh_host):
         return None
@@ -1078,7 +1118,7 @@ def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[st
     )
     cmd = ["ssh", "-o", "BatchMode=yes", "--", ssh_host, remote_script]
     try:
-        result = _run_ytdlp(cmd, timeout=45)
+        result = _run_ytdlp(cmd, timeout=45, abort_if_blocked=abort_if_blocked)
     except subproc.SubprocTimeout:
         _log(f"SSH yt-dlp transcript timed out for {video_id} via {ssh_host!r}")
         return None
@@ -1240,7 +1280,9 @@ def _fetch_transcript_ytdlp(
     last_reason: Optional[str] = None
     for attempt in range(attempts):
         try:
-            result = _run_ytdlp(cmd, timeout=timeout)
+            result = _run_ytdlp(
+                cmd, timeout=timeout, abort_if_blocked=fast_fail,
+            )
         except subproc.SubprocTimeout as exc:
             if "lane deadline" in str(exc).lower():
                 last_reason = "lane deadline reached"
@@ -1390,40 +1432,58 @@ def fetch_transcript(
         Plaintext transcript string, or None if no captions available.
     """
     raw_vtt = None
+    skip_ytdlp = False
     ssh_host = _ytdlp_ssh_host()
     # A bot-check or 429 already happened in this search. More yt-dlp calls
     # hit the same wall, so a keyed run goes straight to ScrapeCreators.
-    # With no key, every video still tries yt-dlp.
+    # With no key, every video still tries yt-dlp. Workers that queued for a
+    # slot before the flag flipped raise _YtdlpBlocked once the slot is free.
     if token and _youtube_transcripts_blocked():
+        skip_ytdlp = True
+    elif ssh_host and is_ytdlp_installed():
+        try:
+            if token:
+                raw_vtt = _fetch_transcript_ytdlp_via_ssh(
+                    video_id, ssh_host, abort_if_blocked=True,
+                )
+            else:
+                raw_vtt = _fetch_transcript_ytdlp_via_ssh(video_id, ssh_host)
+        except _YtdlpBlocked:
+            skip_ytdlp = True
+        else:
+            if not raw_vtt:
+                _log(f"SSH yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
+                raw_vtt = _fetch_transcript_direct(video_id, status=status)
+    elif is_ytdlp_installed():
+        try:
+            raw_vtt = _fetch_transcript_ytdlp(
+                video_id, temp_dir, status=status, fast_fail=bool(token),
+            )
+        except _YtdlpBlocked:
+            skip_ytdlp = True
+        else:
+            if not raw_vtt:
+                ytdlp_error = (status or {}).get("ytdlp_error")
+                if ytdlp_error:
+                    # Hard failure (429 / bot-gate / timeout). The direct-HTTP
+                    # fallback is also YouTube-blocked, so skip it and let the
+                    # ScrapeCreators fallback below handle it when a key is present.
+                    # A 429 or bot-check also stops later videos in this search
+                    # from starting another yt-dlp call.
+                    _note_youtube_block(ytdlp_error)
+                    _log(f"Transcript fetch failed for {video_id}: {ytdlp_error}")
+                else:
+                    _log(f"yt-dlp found no captions for {video_id}, trying direct HTTP fallback")
+                    raw_vtt = _fetch_transcript_direct(video_id, status=status)
+    else:
+        _log("yt-dlp not installed, using direct HTTP transcript fetch")
+        raw_vtt = _fetch_transcript_direct(video_id, status=status)
+
+    if skip_ytdlp:
         _log(
             f"Skipping yt-dlp transcript for {video_id} after a YouTube "
             f"bot-check or rate limit"
         )
-    elif ssh_host and is_ytdlp_installed():
-        raw_vtt = _fetch_transcript_ytdlp_via_ssh(video_id, ssh_host)
-        if not raw_vtt:
-            _log(f"SSH yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
-            raw_vtt = _fetch_transcript_direct(video_id, status=status)
-    elif is_ytdlp_installed():
-        raw_vtt = _fetch_transcript_ytdlp(
-            video_id, temp_dir, status=status, fast_fail=bool(token),
-        )
-        if not raw_vtt:
-            ytdlp_error = (status or {}).get("ytdlp_error")
-            if ytdlp_error:
-                # Hard failure (429 / bot-gate / timeout). The direct-HTTP
-                # fallback is also YouTube-blocked, so skip it and let the
-                # ScrapeCreators fallback below handle it when a key is present.
-                # A 429 or bot-check also stops later videos in this search
-                # from starting another yt-dlp call.
-                _note_youtube_block(ytdlp_error)
-                _log(f"Transcript fetch failed for {video_id}: {ytdlp_error}")
-            else:
-                _log(f"yt-dlp found no captions for {video_id}, trying direct HTTP fallback")
-                raw_vtt = _fetch_transcript_direct(video_id, status=status)
-    else:
-        _log("yt-dlp not installed, using direct HTTP transcript fetch")
-        raw_vtt = _fetch_transcript_direct(video_id, status=status)
 
     if raw_vtt:
         transcript = _clean_vtt(raw_vtt)

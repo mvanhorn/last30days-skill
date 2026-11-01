@@ -211,7 +211,7 @@ class TestYtDlpSubLangs(unittest.TestCase):
             stderr="ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            def _run(cmd, timeout):
+            def _run(cmd, timeout, **_kwargs):
                 (Path(temp_dir) / "dub123.en-orig.vtt").write_text(
                     "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nOriginal speech captions.\n",
                 )
