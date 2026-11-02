@@ -403,6 +403,7 @@ def _google_reel_fallback(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    error_out: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Discover Instagram reels through Google and fetch their post details."""
     if budget is None:
@@ -441,7 +442,14 @@ def _google_reel_fallback(
                 **_request_options(30, deadline, cancel),
             )
         except Exception as e:
-            _log(f"Google Instagram fallback search failed on page {page}: {e}")
+            detail = f"Google Instagram discovery fallback failed on page {page}: {e}"
+            # The transport already captured this same exception. Add stage
+            # context in place without losing its HTTP status or outcome type.
+            if isinstance(e, http.HTTPError):
+                e.args = (detail,)
+            if error_out is not None:
+                error_out.append(detail)
+            _log(detail)
             break
         if not isinstance(data, dict):
             _log(f"Google Instagram fallback returned invalid data on page {page}")
@@ -620,6 +628,7 @@ def search_instagram(
     raw_items = data.get("reels") or data.get("items") or data.get("data") or []
 
     used_google_fallback = not raw_items
+    fallback_errors: list[str] = []
     if used_google_fallback:
         if primary_error:
             _log("IG reels search returned 404; trying Google Search fallback")
@@ -629,11 +638,15 @@ def search_instagram(
             core_topic, depth, token, from_date, to_date,
             _fallback_budget, _fallback_cache,
             deadline=deadline, cancel=cancel,
+            error_out=fallback_errors,
         )
 
     if not raw_items and primary_error and not _budget_expired(deadline, cancel):
         _log(f"Google Instagram fallback returned no reels: {primary_error}")
-        return {"items": [], "error": f"{type(primary_error).__name__}: {primary_error}"}
+        detail = f"{type(primary_error).__name__}: {primary_error}"
+        if fallback_errors:
+            detail += f"; {fallback_errors[0]}"
+        return {"items": [], "error": detail}
 
     # Limit to configured count
     raw_items = raw_items[:config["results_per_page"]]
@@ -661,6 +674,8 @@ def search_instagram(
     _log(f"Found {len(items)} Instagram reels")
     if _budget_expired(deadline, cancel):
         return {"items": items, "error": RESEARCH_TIMEOUT}
+    if not items and fallback_errors:
+        return {"items": [], "error": fallback_errors[0]}
     return {"items": items}
 
 
