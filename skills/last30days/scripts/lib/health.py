@@ -42,6 +42,17 @@ UNREACHABLE = "unreachable"
 SCHEMA_DRIFT = "schema-drift"
 SKIPPED_UNCONFIGURED = "skipped-unconfigured"
 
+# Prefer the failure whose remediation matters most when several requests fail.
+FAILURE_SPECIFICITY = {
+    AUTH_FAILED: 0,
+    PAYMENT_REQUIRED: 1,
+    RATE_LIMITED: 2,
+    SCHEMA_DRIFT: 3,
+    TIMEOUT: 4,
+    UNREACHABLE: 5,
+    ERROR: 6,
+}
+
 
 def credits_exhausted_label(source: str) -> str:
     """Human label for a ``PAYMENT_REQUIRED`` outcome on ``source``.
