@@ -1584,10 +1584,11 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     "available pending browser auth" state without reading a single cookie — it
     keys only on the resolved browser list (``cookie_extraction_browsers``
     derives it from ``FROM_BROWSER`` alone, no secrets) OR — on extra hosts
-    only (``x_extras_enabled``) — the agentcookie sidecar being on PATH (a plain
-    ``which`` lookup), bird being installed, and X having a cookie-domain
-    mapping. A plain MacBook must NOT predict bird from an agentcookie binary on
-    PATH (R18), so the sidecar leg is gated behind ``x_extras_enabled``.
+    only (``x_extras_enabled``) — the agentcookie sidecar having explicit consent
+    and being on PATH (a plain ``which`` lookup), bird being installed, and X
+    having a cookie-domain mapping. A plain MacBook must NOT predict bird from
+    an agentcookie binary on PATH (R18), so the sidecar leg is gated behind
+    ``x_extras_enabled``.
     Side-effect free, so the safe-inspection contract of diagnose/preflight is
     preserved.
 

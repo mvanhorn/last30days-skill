@@ -7,13 +7,13 @@ this engine's stdlib extractor). This module shells out to it and pulls the
 
 Deliberate constraints (see docs/plans/2026-08-31 X plan):
 
-* **Soft dependency.** Activation is gated on ``shutil.which("agentcookie")``
-  resolving on the agent subprocess PATH, exactly like the other CLI-gated
-  optional sources (Digg, yt-dlp). A binary that is absent is not an error.
+* **Soft dependency, explicit consent.** Activation requires ``AGENTCOOKIE=on``
+  or affirmative ``BROWSER_CONSENT``, plus ``shutil.which("agentcookie")``
+  resolving on the agent subprocess PATH. A binary that is absent is not an error.
 * **``AGENTCOOKIE=off`` disables it** regardless of PATH.
 * **Explicit cookie refusal wins.** ``BROWSER_CONSENT=false`` or
   ``FROM_BROWSER=off`` disables this source, even with ``AGENTCOOKIE=on``.
-  An unset ``FROM_BROWSER`` still permits the sidecar on eligible hosts.
+  A native ``FROM_BROWSER`` selection alone does not authorize the sidecar.
 * We call ``agentcookie cookies --domain .x.com --json`` and parse its stdout.
   We never open ``cookies-plain.db`` directly, never import an ``agentcookie``
   Python package, and never add a Python dependency on it.
@@ -56,7 +56,7 @@ def _log(msg: str) -> None:
 
 
 def is_disabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """True when cookie refusal or ``AGENTCOOKIE=off`` disables the sidecar."""
+    """True when sidecar consent is absent or explicitly refused."""
     from . import env
 
     consent_config = config if config is not None else {
@@ -70,11 +70,16 @@ def is_disabled(config: Optional[Dict[str, Any]] = None) -> bool:
         raw = config.get("AGENTCOOKIE") or ""
     if not raw:
         raw = env.read_secret_env("AGENTCOOKIE") or ""
-    return str(raw).strip().lower() == "off"
+    setting = str(raw).strip().lower()
+    # Host eligibility and binary presence are not permission to read cookies.
+    # Keep prediction and acquisition behind this same positive admission gate.
+    return setting == "off" or not (
+        setting == "on" or env._truthy(consent_config.get("BROWSER_CONSENT"))
+    )
 
 
 def is_available(config: Optional[Dict[str, Any]] = None) -> bool:
-    """True when the sidecar could be used: on PATH and not disabled.
+    """True when the sidecar could be used: consented, on PATH, not refused.
 
     PATH-only, side-effect free (no subprocess). Safe for the doctor /
     preflight prediction path — it reads no cookies, only whether the binary
