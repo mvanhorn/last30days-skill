@@ -49,7 +49,9 @@ def test_sidecar_prediction_and_read_require_positive_consent(config, allowed, f
 @pytest.mark.parametrize("refusal", [
     {"BROWSER_CONSENT": "false"},
     {"BROWSER_CONSENT": " NO "},
+    {"BROWSER_CONSENT": "unknown"},
     {"FROM_BROWSER": " OFF ", "BROWSER_CONSENT": "true"},
+    {"AGENTCOOKIE": "off", "BROWSER_CONSENT": "true"},
 ])
 @pytest.mark.parametrize("from_environment", [False, True])
 def test_cookie_refusal_disables_sidecar_even_when_explicitly_enabled(
@@ -61,12 +63,15 @@ def test_cookie_refusal_disables_sidecar_even_when_explicitly_enabled(
             monkeypatch.setenv(key, value)
         config = None
     with (
-        mock.patch("shutil.which", return_value="/mock/agentcookie"),
+        mock.patch("lib.agentcookie.role_is_sink", return_value=True) as sink,
+        mock.patch("shutil.which", return_value="/mock/agentcookie") as which,
         mock.patch("subprocess.run") as run,
     ):
         assert agentcookie.is_available(config) is False
         assert agentcookie.read_x_cookies(config) is None
     run.assert_not_called()
+    sink.assert_not_called()
+    which.assert_not_called()
 
 
 def _run_ok(stdout):
