@@ -101,6 +101,10 @@ def extract_core_subject(
     text = topic.lower().strip()
     if not text:
         return text
+    # Drop the question's closing punctuation first, so that it neither keeps
+    # the last word from matching a suffix or noise word nor survives the
+    # max_words path ("What is Claude Code?" -> "claude code", not "claude code?")
+    text = text.rstrip('?!.').strip() or text
 
     # Phase 1: Strip multi-word prefixes (longest first, stop after first match)
     for p in PREFIXES:

@@ -78,6 +78,13 @@ class TestMaxWords(unittest.TestCase):
         result = extract_core_subject("cursor IDE react native components")
         self.assertEqual(result, "cursor ide react native components")
 
+    def test_max_words_strips_trailing_punctuation(self):
+        self.assertEqual(extract_core_subject("What is Claude Code?", max_words=5), "claude code")
+
+    def test_trailing_punctuation_does_not_hide_last_noise_word(self):
+        result = extract_core_subject("Claude Code best practices?", max_words=5, strip_suffixes=True)
+        self.assertEqual(result, "claude code")
+
     def test_max_words_fallback_on_empty(self):
         # All words filtered + max_words should fall back to original
         result = extract_core_subject("best top latest", max_words=3)
