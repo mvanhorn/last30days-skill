@@ -2269,7 +2269,7 @@ def _render_hiring_signals(
         return out
 
     out.append(
-        "- Interpret these as focus or priority signals, not exact roadmap predictions."
+        "- These are inferred focus or priority signals, not exact roadmap predictions."
     )
     for signal in signals[:4]:
         evidence = signal.get("evidence") or []
@@ -2292,9 +2292,10 @@ def _render_hiring_signals(
     if strategic:
         out.append("")
         out.append(
-            "- Strategic single-role signals (judge novelty yourself - a founding "
-            "or first-of-function role can outweigh a whole department; in synthesis, "
-            'distinguish "new bets" from "doubling down"):'
+            "- Strategic single-role signals: founding or first-of-function roles "
+            "can indicate a strategic shift even when role counts are small. "
+            "Flags alone do not establish whether a role represents "
+            "a new capability or expansion of an existing one."
         )
         for cand in strategic[:8]:
             title = cand.get("title") or "Job posting"

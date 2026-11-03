@@ -2,7 +2,8 @@
 
 import pytest
 
-from lib import render
+from lib import hiring_signals, render
+from tests.test_hiring_signals import job
 from tests.test_render_v3 import sample_report
 
 
@@ -51,6 +52,36 @@ def test_saved_full_report_keeps_evidence_and_provenance():
         assert candidate.snippet in text
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_hiring_output_preserves_evidence_and_caveats_without_synthesis_commands(explicit):
+    report = sample_report()
+    report.topic = "Listen Labs"
+    jobs = [
+        job("Founding Enterprise Solutions Engineer", "SSO SOC 2 procurement enterprise", "Sales"),
+        job("Security Platform Engineer", "enterprise security audit admin", "Engineering"),
+    ]
+    report.items_by_source["jobs"] = jobs
+    report.artifacts["hiring_signals"] = hiring_signals.analyze(
+        jobs, explicit=explicit, topic=report.topic,
+    )
+
+    text = render.render_compact(report)
+
+    assert "## Hiring Signals" in text
+    assert f"Mode: {'explicit' if explicit else 'standard'}; company-size tier: startup" in text
+    assert "enterprise readiness" in text
+    assert "confidence: high; evidence: 2 roles" in text
+    assert "Strategic single-role signals" in text
+    assert "[founding]" in text
+    for item in jobs:
+        assert f"[{item.title}]({item.url})" in text
+    commands = ("Interpret these", "judge novelty yourself", "in synthesis, distinguish")
+    assert not any(command in text for command in commands)
+    assert "inferred focus or priority signals, not exact roadmap predictions" in text
+    assert "Flags alone do not establish" in text
+    assert "a new capability or expansion of an existing one" in text
+
+
 def test_skill_guidance_is_available_without_report_tail():
     from tests.skill_contract import reference_text, root_text
 
@@ -59,3 +90,6 @@ def test_skill_guidance_is_available_without_report_tail():
     assert "preserve uncertainty and coverage limits" in guidance
     assert "retain required citations" in guidance
     assert "NO RAW RANKED EVIDENCE CLUSTERS IN BODY" in root_text()
+    hiring_guidance = reference_text("hiring-signals")
+    assert 'distinguish "new bets" from "doubling down"' in hiring_guidance
+    assert "The output must distinguish evidence from interpretation" in hiring_guidance
