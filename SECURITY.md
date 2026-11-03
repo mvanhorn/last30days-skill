@@ -70,7 +70,7 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 - The engine reads only `auth_token` and `ct0` for `.x.com`, and `_session_id` for `.truthsocial.com`. It filters by domain and cookie name before it decrypts anything.
 - The Firefox and Chromium readers query a copy of the browser's whole cookie database, written to a temporary file with `0600` permissions and deleted afterward.
 - Cookie values stay in memory and pass to the X client through its environment. The engine doesn't save them to `.env` or any other file.
-- On Linux and agent hosts, if the `agentcookie` binary is on your `PATH`, the engine asks it for `.x.com` cookies, unless cookie access was explicitly refused. Set `AGENTCOOKIE=off` to disable only the sidecar.
+- On eligible hosts (Linux, Mac mini, Darwin agentcookie sink, or any host with `AGENTCOOKIE=on`), the engine asks the sidecar for `.x.com` cookies only after `AGENTCOOKIE=on` or affirmative `BROWSER_CONSENT`. An installed binary alone grants no access. Explicit refusal still wins; set `AGENTCOOKIE=off` to disable only the sidecar.
 - The MCP server disables browser cookies unless you set `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES`.
 
 ### Installs and external programs

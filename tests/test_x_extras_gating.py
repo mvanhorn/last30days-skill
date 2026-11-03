@@ -5,18 +5,57 @@ Locks the acceptance examples:
   * AE7  Linux, no bird cookies, grok AUTH_OK + XAI_API_KEY -> xai (not grok).
   * AE8  MacBook (hw.model MacBookPro), FROM_BROWSER unset, agentcookie on PATH,
          grok AUTH_OK + XAI_API_KEY -> xai; NO agentcookie subprocess, NO CDP.
-  * AE10 Darwin Mac mini (hw.model Macmini9,1), agentcookie sidecar pair,
+  * AE10 Darwin Mac mini (hw.model Macmini9,1), consented agentcookie sidecar pair,
          FROM_BROWSER unset -> bird from agentcookie. ~/.hermes never flips a
          MacBook into extras.
 
 Only obvious dummy cookie values are used (test-auth-token / test-ct0).
 """
 
+import json
 from unittest import mock
+
+import pytest
 
 from lib import env
 
 _PAIR = {"auth_token": "test-auth-token", "ct0": "test-ct0"}
+
+
+@pytest.mark.parametrize("system,model,sink", [
+    ("Linux", "", False),
+    ("Darwin", "Macmini9,1", False),
+    ("Darwin", "MacBookPro18,2", True),
+])
+@pytest.mark.parametrize("settings,allowed", [
+    ({}, False),
+    ({"AGENTCOOKIE": "on"}, True),
+    ({"BROWSER_CONSENT": "true"}, True),
+    ({"AGENTCOOKIE": "on", "BROWSER_CONSENT": "false"}, False),
+])
+def test_host_eligibility_does_not_replace_sidecar_consent(system, model, sink, settings, allowed):
+    config = dict(settings)
+    with (
+        mock.patch("platform.system", return_value=system),
+        mock.patch.object(env, "_mac_model", return_value=model),
+        mock.patch("lib.agentcookie.role_is_sink", return_value=sink),
+        mock.patch("shutil.which", return_value="/mock/agentcookie"),
+        mock.patch("subprocess.run", return_value=mock.Mock(
+            returncode=0, stdout=json.dumps(_PAIR), stderr="",
+        )) as run,
+        mock.patch.object(env, "get_x_source", return_value=None),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        mock.patch("lib.chrome_cdp.read_x_cookies") as cdp,
+        _no_extract(),
+    ):
+        pending = env.x_pending_browser_auth({**config, "_BROWSER_COOKIE_MODE": "plan_only"})
+        run.assert_not_called()
+        env._discover_and_apply_x_credentials(config)
+    assert run.call_count == int(allowed)
+    assert pending is allowed
+    assert config.get("AUTH_TOKEN") == (_PAIR["auth_token"] if allowed else None)
+    assert config.get("CT0") == (_PAIR["ct0"] if allowed else None)
+    cdp.assert_not_called()
 
 
 def _no_extract():
@@ -130,7 +169,7 @@ def test_ae8_macbook_no_extras_no_subprocess_and_picks_xai():
 
 
 def test_ae10_mac_mini_reads_bird_pair_from_agentcookie():
-    config = {}  # FROM_BROWSER unset
+    config = {"BROWSER_CONSENT": "true"}  # FROM_BROWSER unset
     with (
         mock.patch("platform.system", return_value="Darwin"),
         mock.patch.object(env, "_mac_model", return_value="Macmini9,1"),
