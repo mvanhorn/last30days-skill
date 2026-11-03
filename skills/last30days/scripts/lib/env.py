@@ -1031,7 +1031,7 @@ def _discover_and_apply_x_credentials(config: dict[str, Any]) -> None:
     this returns before ANY leg, for every cookie domain, unless the pin is
     ``bird`` (the one path that re-enables discovery for that run).
     """
-    if not x_policy(config).cookie_discovery:
+    if not x_policy(config).cookie_discovery or cookie_access_denied(config):
         return
 
     from . import agentcookie, chrome_cdp
@@ -1087,6 +1087,21 @@ COOKIE_BROWSER_NAMES = (
 )
 
 
+def cookie_access_denied(config: dict[str, Any]) -> bool:
+    """An explicit refusal blocks native, CDP, and sidecar cookie discovery.
+
+    Missing consent keeps each source's existing opt-in/default policy.
+    A present but unrecognized consent value fails closed, as native reads do.
+    This does not disable credentials supplied directly by the user.
+    """
+    if str(config.get("FROM_BROWSER") or "").strip().lower() == "off":
+        return True
+    consent = config.get("BROWSER_CONSENT")
+    return consent is not None and str(consent).strip().lower() not in {
+        "1", "true", "yes", "on",
+    }
+
+
 def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
     """Browsers to try for cookie extraction, honoring FROM_BROWSER.
 
@@ -1110,10 +1125,7 @@ def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
     unrequested Keychain prompt. On an official-only host (``x_policy``) the
     list is empty regardless of ``FROM_BROWSER`` unless ``bird`` is pinned.
     """
-    if not x_policy(config).cookie_discovery:
-        return []
-    consent = config.get("BROWSER_CONSENT")
-    if consent is not None and str(consent).strip().lower() not in {"1", "true", "yes", "on"}:
+    if not x_policy(config).cookie_discovery or cookie_access_denied(config):
         return []
     silent_browsers = list(COOKIE_BROWSER_NAMES[:2])
     chromium_browsers = list(COOKIE_BROWSER_NAMES[2:])

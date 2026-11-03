@@ -9,9 +9,34 @@ import json
 import subprocess
 from unittest import mock
 
+import pytest
+
 from lib import agentcookie
 
 _DUMMY = {"auth_token": "test-auth-token", "ct0": "test-ct0"}
+
+
+@pytest.mark.parametrize("refusal", [
+    {"BROWSER_CONSENT": "false"},
+    {"BROWSER_CONSENT": " NO "},
+    {"FROM_BROWSER": " OFF ", "BROWSER_CONSENT": "true"},
+])
+@pytest.mark.parametrize("from_environment", [False, True])
+def test_cookie_refusal_disables_sidecar_even_when_explicitly_enabled(
+    refusal, from_environment, monkeypatch,
+):
+    config = {"AGENTCOOKIE": "on", **refusal}
+    if from_environment:
+        for key, value in config.items():
+            monkeypatch.setenv(key, value)
+        config = None
+    with (
+        mock.patch("shutil.which", return_value="/mock/agentcookie"),
+        mock.patch("subprocess.run") as run,
+    ):
+        assert agentcookie.is_available(config) is False
+        assert agentcookie.read_x_cookies(config) is None
+    run.assert_not_called()
 
 
 def _run_ok(stdout):

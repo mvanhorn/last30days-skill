@@ -11,6 +11,46 @@ import last30days as cli
 from lib import chrome_cdp, env, setup_wizard
 
 
+@pytest.mark.parametrize("settings", [
+    "BROWSER_CONSENT=false\nFROM_BROWSER=chrome\n",
+    "BROWSER_CONSENT=true\nFROM_BROWSER=off\n",
+])
+def test_refusal_blocks_all_discovery_and_pending_auth(browser_session, settings):
+    env_path, cdp, native, _ = browser_session
+    env_path.write_text(settings + "AGENTCOOKIE=on\n")
+    with (
+        mock.patch("lib.agentcookie.read_x_cookies", return_value={
+            "auth_token": "test-auth-token", "ct0": "test-ct0",
+        }) as sidecar,
+        mock.patch("lib.agentcookie.shutil.which", return_value="/mock/agentcookie"),
+        mock.patch.object(env, "get_x_source", return_value=None),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+    ):
+        for _ in range(2):
+            config = env.get_config(env.ConfigLoadPolicy(browser_cookies="read"))
+            assert not config.get("AUTH_TOKEN")
+            assert not config.get("CT0")
+        inspection = env.get_config(env.ConfigLoadPolicy(browser_cookies="skip"))
+        assert env.x_pending_browser_auth(inspection, local_only=True) is False
+    sidecar.assert_not_called()
+    cdp.assert_not_called()
+    native.assert_not_called()
+
+
+def test_refusal_keeps_explicit_credentials(browser_session, monkeypatch):
+    env_path, cdp, native, _ = browser_session
+    env_path.write_text("BROWSER_CONSENT=false\nFROM_BROWSER=off\nAGENTCOOKIE=on\n")
+    monkeypatch.setenv("AUTH_TOKEN", "test-explicit-auth")
+    monkeypatch.setenv("CT0", "test-explicit-ct0")
+    with mock.patch("lib.agentcookie.read_x_cookies") as sidecar:
+        config = env.get_config(env.ConfigLoadPolicy(browser_cookies="read"))
+    assert config["AUTH_TOKEN"] == "test-explicit-auth"
+    assert config["CT0"] == "test-explicit-ct0"
+    sidecar.assert_not_called()
+    cdp.assert_not_called()
+    native.assert_not_called()
+
+
 @pytest.fixture
 def browser_session(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"

@@ -60,11 +60,11 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 
 ### Browser cookies
 
-- Direct reads from your browser's cookie store are off by default and require your consent during setup. To withdraw consent, set `BROWSER_CONSENT=false` or `FROM_BROWSER=off`. These settings don't cover the `agentcookie` path described below, so also set `AGENTCOOKIE=off` to stop all cookie reads.
+- Direct reads from your browser's cookie store are off by default and require your consent during setup. To withdraw consent, set `BROWSER_CONSENT=false` or `FROM_BROWSER=off`. Either setting also disables the `agentcookie` sidecar, even with `AGENTCOOKIE=on`. Credentials supplied directly by the user remain usable.
 - The engine reads only `auth_token` and `ct0` for `.x.com`, and `_session_id` for `.truthsocial.com`. It filters by domain and cookie name before it decrypts anything.
 - The Firefox and Chromium readers query a copy of the browser's whole cookie database, written to a temporary file with `0600` permissions and deleted afterward.
 - Cookie values stay in memory and pass to the X client through its environment. The engine doesn't save them to `.env` or any other file.
-- On Linux and agent hosts, if the `agentcookie` binary is on your `PATH`, the engine asks it for `.x.com` cookies, even when `BROWSER_CONSENT=false` or `FROM_BROWSER=off`. Set `AGENTCOOKIE=off` to disable this.
+- On Linux and agent hosts, if the `agentcookie` binary is on your `PATH`, the engine asks it for `.x.com` cookies, unless cookie access was explicitly refused. Set `AGENTCOOKIE=off` to disable only the sidecar.
 - The MCP server disables browser cookies unless you set `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES`.
 
 ### Installs and external programs
