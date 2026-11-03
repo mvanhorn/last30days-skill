@@ -238,6 +238,8 @@ CDP endpoint resolution (extra hosts only, no port scan): `BROWSER_CDP_URL` if s
 
 CDP reads require `BROWSER_CONSENT=true`, or an explicit Chromium browser / `auto` selection in `FROM_BROWSER` when no consent marker exists. A running debugging browser or `BROWSER_CDP_URL` alone grants no access. `BROWSER_CONSENT=false` and `FROM_BROWSER=off` each block CDP before endpoint discovery. Both refusal settings also block the `agentcookie` sidecar, even with `AGENTCOOKIE=on`. With neither refusal set, sidecar defaults are unchanged.
 
+**Sidecar-only migration.** If you previously combined `AGENTCOOKIE=on` with `BROWSER_CONSENT=false` or `FROM_BROWSER=off`, automatic sidecar reads now stop. To permit only the sidecar, keep `AGENTCOOKIE=on` and remove both `BROWSER_CONSENT` and `FROM_BROWSER` from the process environment, the active global `.env`, and any trusted project `.claude/last30days.env`. The global file is `~/.config/last30days/.env` unless `LAST30DAYS_CONFIG_DIR` selects another directory. With both settings absent, native browser and CDP reads stay disabled. Setting `BROWSER_CONSENT=true` also permits CDP reads, so do not use it merely to restore sidecar access.
+
 **Example `.env` skeleton** (placeholders only - replace with your own values):
 
 ```bash
