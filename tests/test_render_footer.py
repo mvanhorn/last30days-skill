@@ -97,7 +97,7 @@ def test_footer_omits_errored_zero_item_source_but_keeps_evidence():
     assert "🔵 X: rate-limited" not in text
     # ... but its failure is still visible to synthesis in the evidence blocks (R7).
     assert "## Partial Coverage" in text
-    assert "Do not interpret a failed source as no discussion" in text
+    assert "A failed source is not evidence of no discussion" in text
 
 
 def test_footer_preserves_save_path_when_all_sources_empty():

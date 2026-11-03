@@ -466,7 +466,7 @@ def test_footer_and_synthesis_note_surface_failed_source():
     # evidence blocks (## Partial Coverage), NOT as a user-facing footer line -
     # zero-item sources are dropped from the emoji tree (see test_render_footer).
     assert "## Partial Coverage" in text
-    assert "Do not interpret a failed source as no discussion" in text
+    assert "A failed source is not evidence of no discussion" in text
     assert "🔵 X: rate-limited: HTTP 429 after retry budget (run doctor for fixes)" not in text
 
 

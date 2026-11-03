@@ -457,16 +457,12 @@ class OutputEnvelopeTests(unittest.TestCase):
         self.assertIn("9cmt", text)
         self.assertNotIn("- Linkedin:", text)
 
-    def test_canonical_boundary_scopes_pass_through_to_footer(self):
+    def test_canonical_boundary_ends_report_without_response_instructions(self):
         text = render.render_compact(sample_report())
-        # Boundary text scopes verbatim to the fenced footer block,
-        # not everything above.
-        self.assertIn("Pass through ONLY the fenced `text` footer block above", text)
-        # Self-check string is present so the model has a concrete failure signal.
+        self.assertTrue(text.rstrip().endswith("# END OF last30days CANONICAL OUTPUT"))
+        self.assertIn("```text", text)
         self.assertIn("### 1.", text)
-        self.assertIn("evidence-dump", text)
-        # The prior ambiguous phrasing is gone.
-        self.assertNotIn("Pass through the lines ABOVE this boundary verbatim", text)
+        self.assertNotIn("Pass through ONLY", text)
 
     def test_envelopes_appear_in_md_emit_mode(self):
         # --emit md and --emit compact both route to render_compact, so the
@@ -493,63 +489,6 @@ class OutputEnvelopeTests(unittest.TestCase):
         self.assertEqual(
             text.count("\n---\n```\n\n---\n# END OF last30days CANONICAL OUTPUT"),
             1,
-        )
-
-
-class SynthesisDirectiveSurvivesTruncationTests(unittest.TestCase):
-    """Issue #726: a host that truncates the engine's stdout (`| head -N`,
-    timeout-backgrounding, scrollback caps) used to lose the synthesis
-    instructions entirely, because the only strong directive lived at the
-    `# END OF last30days CANONICAL OUTPUT` boundary AFTER the whole evidence
-    block. Left holding only raw `### N.` clusters with no directive, the host
-    dumps them — the LAW 6 failure mode. A concise synthesis contract must
-    therefore ALSO appear at the TOP of the evidence, in the region that
-    survives head-truncation.
-    """
-
-    def _head_before_clusters(self, text: str) -> str:
-        # Everything a `engine | head -N` capture keeps when N lands inside the
-        # evidence block: the badge, metadata, and the directive must live here.
-        return text[: text.index("## Ranked Evidence Clusters")]
-
-    def test_synthesis_contract_present_before_evidence_block(self):
-        head = self._head_before_clusters(render.render_compact(sample_report()))
-        self.assertIn("SYNTHESIS CONTRACT", head)
-
-    def test_early_directive_restates_what_i_learned_and_dump_self_check(self):
-        head = self._head_before_clusters(render.render_compact(sample_report()))
-        # LAW 2 target shape...
-        self.assertIn("What I learned:", head)
-        # ...and the concrete "do not emit the cluster headings" self-check, so
-        # the directive is actionable without the tail boundary.
-        self.assertIn("### N.", head)
-        self.assertIn("fenced `text` footer block", head)
-        self.assertNotIn("PASS-THROUGH FOOTER", head)
-
-    def test_early_directive_sits_inside_evidence_envelope(self):
-        # It is a model instruction, not user output, so it belongs in the
-        # read-don't-emit zone (after the open comment, before the close).
-        text = render.render_compact(sample_report())
-        open_idx = text.index("<!-- EVIDENCE FOR SYNTHESIS:")
-        close_idx = text.index("<!-- END EVIDENCE FOR SYNTHESIS -->")
-        marker = text.index("SYNTHESIS CONTRACT")
-        self.assertLess(open_idx, marker)
-        self.assertLess(marker, close_idx)
-
-    def test_comparison_render_also_carries_early_directive(self):
-        report = sample_report()
-        text = render.render_comparison_multi([("Topic A", report), ("Topic B", report)])
-        self.assertIn("SYNTHESIS CONTRACT", text)
-        # Survive head-truncation: the directive must precede the FIRST entity
-        # evidence cluster heading (H3 in the comparison path), not merely the
-        # envelope close tag — that is the real point a `| head -N` capture cuts.
-        self.assertLess(
-            text.index("SYNTHESIS CONTRACT"),
-            text.index("### Ranked Evidence Clusters"),
-        )
-        self.assertLess(
-            text.index("SYNTHESIS CONTRACT"),
-            text.index("<!-- END EVIDENCE FOR SYNTHESIS -->"),
         )
 
 
@@ -942,7 +881,7 @@ class DegradedRunBannerTests(unittest.TestCase):
         self.assertIn("## DEGRADED RUN WARNING", text)
         self.assertIn("<!-- USER-VISIBLE BANNER:", text)
         self.assertIn("<!-- END USER-VISIBLE BANNER -->", text)
-        self.assertIn("YOU ARE", text)
+        self.assertIn("No host-authored query plan", text)
         # Runtime-agnostic enumeration: all host runtimes appear.
         for runtime_name in ("Claude Code", "Codex", "Hermes", "Gemini"):
             self.assertIn(runtime_name, text)
@@ -1409,7 +1348,7 @@ class TestRenderTopCommentsBlock(unittest.TestCase):
              self._cand("b", "reddit", 50, "second funny line here")],
             representative_ids=["a"])
         text = render.render_compact(report)
-        open_i = text.index("EVIDENCE FOR SYNTHESIS: read this")
+        open_i = text.index("EVIDENCE FOR SYNTHESIS: ranked source data.")
         end_i = text.index("END EVIDENCE FOR SYNTHESIS")
         blk_i = text.index("## Top Community Comments")
         self.assertTrue(open_i < blk_i < end_i, "block must sit inside the EVIDENCE envelope")
