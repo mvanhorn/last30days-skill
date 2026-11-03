@@ -319,6 +319,39 @@ def test_findings_from_report_handles_missing_fields():
     assert f["relevance_score"] == 0.5
     assert f["summary"] == "Content"  # Falls back to body
 
+
+def test_findings_from_report_merges_duplicate_url_scores(sample_report):
+    """Duplicate candidate URLs merge higher engagement and relevance into the first finding."""
+    duplicate_candidate = schema.Candidate(
+        candidate_id="c-r2",
+        item_id="R2",
+        source="reddit",
+        title="Duplicate Reddit Post",
+        url="https://reddit.com/r/test/1",
+        snippet="Higher engagement copy",
+        subquery_labels=["secondary"],
+        native_ranks={"reddit": 2},
+        local_relevance=0.95,
+        freshness=100,
+        engagement=125.0,
+        source_quality=0.8,
+        rrf_score=0.9,
+        final_score=0.95,
+        explanation="Duplicate copy with higher engagement",
+        source_items=[],
+    )
+    sample_report.ranked_candidates.append(duplicate_candidate)
+
+    findings = store.findings_from_report(sample_report)
+    reddit_findings = [
+        f for f in findings if f["source_url"] == "https://reddit.com/r/test/1"
+    ]
+    assert len(reddit_findings) == 1
+    assert reddit_findings[0]["source_title"] == "Test Reddit Post"
+    assert reddit_findings[0]["engagement_score"] == 125.0
+    assert reddit_findings[0]["relevance_score"] == 0.95
+
+
 # === Tests for store_findings() ===
 
 
@@ -480,6 +513,119 @@ def test_store_findings_upserts_on_concurrent_duplicate_url(temp_db, monkeypatch
     assert rows[0][0] == 9.0  # engagement upgraded via max()
     assert rows[0][1] == 2  # sighting_count bumped by the conflict update
     assert run_counts == (0, 1)  # research_runs counters not inflated
+
+
+def test_store_findings_collapses_duplicate_urls_within_batch(temp_db):
+    """Duplicate URLs within the same batch must not self-conflict or inflate sighting_count."""
+    topic = store.add_topic("Test Topic")
+    run1 = store.record_run(topic["id"], source_mode="v3")
+    batch = [
+        {
+            "source": "reddit",
+            "source_url": "https://reddit.com/dup",
+            "source_title": "First",
+            "engagement_score": 25.0,
+            "relevance_score": 0.6,
+        },
+        {
+            "source": "reddit",
+            "source_url": "https://reddit.com/dup",
+            "source_title": "Second",
+            "engagement_score": 10.0,
+            "relevance_score": 0.9,
+        },
+    ]
+
+    counts1 = store.store_findings(run1, topic["id"], batch)
+    assert counts1 == {"new": 1, "updated": 0}
+
+    conn = sqlite3.connect(str(temp_db))
+    finding_row = conn.execute(
+        "SELECT source_title, engagement_score, relevance_score, sighting_count "
+        "FROM findings WHERE source_url = ?",
+        ("https://reddit.com/dup",),
+    ).fetchone()
+    sighting_row = conn.execute(
+        "SELECT engagement_score, relevance_score FROM finding_sightings WHERE source_url = ?",
+        ("https://reddit.com/dup",),
+    ).fetchone()
+    conn.close()
+
+    assert finding_row == ("First", 25.0, 0.9, 1)
+    assert sighting_row == (25.0, 0.9)
+
+    run2 = store.record_run(topic["id"], source_mode="v3")
+    counts2 = store.store_findings(run2, topic["id"], batch)
+    assert counts2 == {"new": 0, "updated": 1}
+
+    conn = sqlite3.connect(str(temp_db))
+    sighting_count = conn.execute(
+        "SELECT sighting_count FROM findings WHERE source_url = ?",
+        ("https://reddit.com/dup",),
+    ).fetchone()[0]
+    conn.close()
+    assert sighting_count == 2
+
+
+def test_store_findings_conflict_upsert_coalesces_null_engagement(temp_db, monkeypatch):
+    """Conflict upsert against a row with NULL engagement_score must upgrade to the new score."""
+    topic = store.add_topic("Test Topic")
+    run1 = store.record_run(topic["id"], source_mode="v3")
+    conn = sqlite3.connect(str(temp_db))
+    conn.execute(
+        "INSERT INTO findings (run_id, topic_id, source, source_url, source_title, engagement_score) "
+        "VALUES (?, ?, 'reddit', 'https://reddit.com/null-eng', 'Null Eng', NULL)",
+        (run1, topic["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    real_connect = store._connect
+    dedup_prefix = (
+        "SELECT id, source_url, engagement_score FROM findings WHERE source_url IN"
+    )
+
+    class StaleReadConn:
+        def __init__(self, wrapped):
+            self._conn = wrapped
+
+        def execute(self, sql, params=()):
+            if sql.strip().startswith(dedup_prefix):
+                return self._conn.execute(
+                    "SELECT id, source_url, engagement_score FROM findings WHERE 0"
+                )
+            return self._conn.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(
+        store, "_connect", lambda *a, **k: StaleReadConn(real_connect(*a, **k))
+    )
+
+    run2 = store.record_run(topic["id"], source_mode="v3")
+    counts = store.store_findings(
+        run2,
+        topic["id"],
+        [
+            {
+                "source": "reddit",
+                "source_url": "https://reddit.com/null-eng",
+                "source_title": "Null Eng",
+                "engagement_score": 14.0,
+            }
+        ],
+    )
+    assert counts == {"new": 0, "updated": 1}
+
+    conn = sqlite3.connect(str(temp_db))
+    score = conn.execute(
+        "SELECT engagement_score FROM findings WHERE source_url = ?",
+        ("https://reddit.com/null-eng",),
+    ).fetchone()[0]
+    conn.close()
+    assert score == 14.0
+
 
 
 def test_store_findings_skips_items_without_url(temp_db):
