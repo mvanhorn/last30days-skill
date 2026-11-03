@@ -63,6 +63,41 @@ def _no_extract():
     return mock.patch.object(env, "extract_browser_credentials", return_value={})
 
 
+@pytest.mark.parametrize("refusal", [
+    {"BROWSER_CONSENT": "false"},
+    {"BROWSER_CONSENT": "unknown"},
+    {"FROM_BROWSER": "off"},
+    {"AGENTCOOKIE": "off"},
+])
+def test_refused_sidecar_prediction_skips_role_path_and_host_probes(refusal):
+    with (
+        mock.patch.object(env, "get_x_source", return_value=None),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        mock.patch("platform.system", return_value="Darwin"),
+        mock.patch.object(env, "_mac_model", return_value="MacBookPro18,2") as model,
+        mock.patch("lib.agentcookie.role_is_sink", return_value=True) as sink,
+        mock.patch("shutil.which", return_value="/mock/agentcookie") as which,
+        mock.patch("subprocess.run") as run,
+    ):
+        assert env.x_pending_browser_auth(refusal, local_only=True) is False
+    model.assert_not_called()
+    sink.assert_not_called()
+    which.assert_not_called()
+    run.assert_not_called()
+
+
+def test_sidecar_off_does_not_disable_selected_native_browser_prediction():
+    with (
+        mock.patch.object(env, "get_x_source", return_value=None),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        mock.patch("lib.agentcookie.is_available") as sidecar,
+    ):
+        assert env.x_pending_browser_auth(
+            {"AGENTCOOKIE": "off", "FROM_BROWSER": "firefox"}, local_only=True
+        ) is True
+    sidecar.assert_not_called()
+
+
 def _stub_backends():
     """Local-only backend probes so get_x_source touches no network.
 

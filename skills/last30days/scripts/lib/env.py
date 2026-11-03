@@ -1620,10 +1620,11 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     # The agentcookie sidecar is a run-time cookie source ONLY on extra hosts
     # (Linux / Mac mini / Darwin sink / AGENTCOOKIE=on). Gating this keeps a
     # plain MacBook from predicting bird off a stray agentcookie binary (R18).
-    if x_extras_enabled(config):
-        from . import agentcookie
-        if agentcookie.is_available(config):
-            return True
+    # Admission precedes host classification so a refused sidecar never reads
+    # its role file or probes the hardware model merely to predict availability.
+    from . import agentcookie
+    if agentcookie.is_available(config) and x_extras_enabled(config):
+        return True
     return False
 
 
