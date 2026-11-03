@@ -136,8 +136,10 @@ def test_doctor_returns_before_held_response_is_released(local_http, children):
 ])
 def test_short_doctor_budget_preserves_completed_reddit_status(local_http, children, status, expected_audit):
     url, _, _, _ = local_http
+    probe_time = SimpleNamespace(monotonic=time.monotonic, sleep=time.sleep)
     with patch.dict(doctor._HTTP_PROBE_URLS, {"reddit": f"{url}/status/{status}"}), \
-         patch.object(doctor.time, "sleep") as sleep:
+         patch.object(doctor, "time", probe_time), \
+         patch.object(probe_time, "sleep") as sleep:
         result = doctor._probe_source("reddit", {}, 1)
     assert not result["ok"]
     assert result["probed"]
