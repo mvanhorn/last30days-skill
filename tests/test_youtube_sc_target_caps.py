@@ -1,6 +1,6 @@
 """Follow-up to #1319: paid YouTube transcript spend stops at the target (#1314, #1315)."""
 
-import time
+import threading
 from unittest import mock
 
 import pytest
@@ -130,22 +130,33 @@ def test_an_empty_rescue_gives_its_slot_back():
     assert sum(1 for value in results.values() if value) == 2
 
 
+@pytest.mark.usefixtures("_all_ytdlp_fetches_fail")
 def test_slots_held_by_slow_empty_rescues_go_to_waiting_videos():
     """Two slow paid misses hold both default-depth slots; later videos wait for them, then fill the target."""
-    def _ytdlp(video_id, temp_dir, status=None, fast_fail=False):
-        if video_id not in ("v0", "v1"):
-            time.sleep(0.05)
-        return _ytdlp_rate_limited(video_id, temp_dir, status=status)
+    budget = youtube_yt._RescueBudget(2)
+    waiting_threads = set()
+    all_waiting = threading.Event()
+    condition_wait = budget._cond.wait
+    calls = []
+    calls_lock = threading.Lock()
+
+    def _wait(timeout=None):
+        waiting_threads.add(threading.get_ident())
+        if len(waiting_threads) == 3:
+            all_waiting.set()
+        return condition_wait(timeout)
 
     def _sc(vid, token):
-        if vid in ("v0", "v1"):
-            time.sleep(0.3)
+        with calls_lock:
+            calls.append(vid)
+            empty = len(calls) <= 2
+        if empty:
+            assert all_waiting.wait(5), "other workers never waited for the two held slots"
             return ""
         return f"text {vid}"
 
-    with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
-         mock.patch.object(youtube_yt, "_ytdlp_ssh_host", return_value=None), \
-         mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp", side_effect=_ytdlp), \
+    with mock.patch.object(youtube_yt, "_RescueBudget", return_value=budget), \
+         mock.patch.object(budget._cond, "wait", side_effect=_wait), \
          mock.patch.object(youtube_yt, "_sc_fetch_transcript", side_effect=_sc) as sc_mock:
         results = youtube_yt.fetch_transcripts_parallel(
             [f"v{i}" for i in range(6)], token="sc-key", max_sc_rescues=2, max_workers=5,

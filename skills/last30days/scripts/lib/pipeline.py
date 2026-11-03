@@ -218,15 +218,7 @@ def _lift_stream_artifacts(bundle) -> None:
                 bundle.artifacts[key] = value
 
 
-_FAILURE_SPECIFICITY = {
-    health.AUTH_FAILED: 0,
-    health.PAYMENT_REQUIRED: 1,
-    health.RATE_LIMITED: 2,
-    health.SCHEMA_DRIFT: 3,
-    health.TIMEOUT: 4,
-    health.UNREACHABLE: 5,
-    health.ERROR: 6,
-}
+_FAILURE_SPECIFICITY = health.FAILURE_SPECIFICITY
 
 
 @dataclass

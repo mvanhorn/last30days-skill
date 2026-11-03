@@ -307,13 +307,18 @@ class TestGoogleSearchFallback(unittest.TestCase):
         response.__exit__.return_value = False
         return response
 
-    def _search_with_captured_failures(self, topic, reels_responses):
+    def _search_with_captured_failures(self, topic, reels_responses, google_response=None):
         """Run a search over the real transport; reels_responses maps query -> (status, body)."""
         from lib import http as http_module
 
         def urlopen(request, *args, **kwargs):
             url = request.full_url
             if "/reels/search" not in url:
+                if google_response is not None:
+                    status, body = google_response
+                    if status != 200:
+                        raise urllib.error.HTTPError(url, status, "Error", {}, io.BytesIO(body))
+                    return self._http_response(status, body)
                 return self._http_response(200, b'{"results": []}')
             query = parse_qs(urlsplit(url).query)["query"][0]
             status, body = reels_responses[query]
@@ -338,6 +343,51 @@ class TestGoogleSearchFallback(unittest.TestCase):
 
         self.assertEqual({"items": []}, result)
         self.assertEqual([], failures)
+
+    def test_google_discovery_failure_is_explicit_and_keeps_its_typed_outcome(self):
+        from lib import health, pipeline
+
+        no_reels = self._no_reels_error().body.encode("utf-8")
+        for status, state in [(404, health.ERROR), (401, health.AUTH_FAILED), (429, health.RATE_LIMITED)]:
+            with self.subTest(status=status):
+                result, failures = self._search_with_captured_failures(
+                    "unknown niche topic", {"unknown niche topic": (404, no_reels)},
+                    google_response=(status, b'{}'),
+                )
+
+                self.assertEqual([], result["items"])
+                self.assertIn("Google Instagram discovery fallback", result.get("error", ""))
+                self.assertIn(str(status), result["error"])
+                self.assertEqual(1, len(failures))
+                self.assertEqual(status, failures[0].status_code)
+                self.assertEqual("{}", failures[0].body)
+                self.assertEqual(state, failures[0].outcome_state)
+                self.assertIn("Google Instagram discovery fallback", str(failures[0]))
+                outcome = pipeline._resolve_stream_outcome(
+                    "instagram", pipeline._result_outcome_artifact("instagram", result), failures,
+                )
+                self.assertEqual(state, outcome["state"])
+                self.assertIn("Google Instagram discovery fallback", outcome["detail"])
+
+    def test_google_discovery_network_failure_is_not_a_clean_empty(self):
+        from lib import http as http_module
+
+        def urlopen(request, *args, **kwargs):
+            if "/reels/search" in request.full_url:
+                return self._http_response(200, b'{"reels": []}')
+            raise urllib.error.URLError("timed out")
+
+        with patch("lib.http.urllib.request.urlopen", side_effect=urlopen), \
+                patch("lib.http.time.sleep"), http_module.capture_failures() as failures:
+            result = instagram.search_instagram(
+                "unknown niche topic", "2026-08-01", "2026-08-31",
+                depth="quick", token="fake-token",
+            )
+
+        self.assertEqual([], result["items"])
+        self.assertIn("Google Instagram discovery fallback", result.get("error", ""))
+        self.assertEqual(1, len(failures))
+        self.assertIn("Google Instagram discovery fallback", str(failures[0]))
 
     def test_404_with_other_not_found_message_remains_error(self):
         from lib import http as http_module
@@ -463,6 +513,26 @@ class TestGoogleSearchFallback(unittest.TestCase):
 
         self.assertEqual(1, len(result["items"]))
         self.assertEqual(3, mock_http_get.call_count)
+
+    def test_later_discovery_failure_keeps_recovered_reels_usable(self):
+        from lib import http as http_module
+
+        failure = http_module.HTTPError("HTTP 503: unavailable", 503, "")
+        with patch.object(http_module, "get", side_effect=[
+            {"reels": []},
+            {"results": [{"url": "https://www.instagram.com/reel/ABC1020/"}]},
+            failure,
+            self._post_payload(),
+        ]):
+            result = instagram.search_instagram(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="default", token="fake-token",
+            )
+
+        self.assertEqual(1, len(result["items"]))
+        self.assertNotIn("error", result)
+        self.assertIn("Google Instagram discovery fallback failed on page 2", str(failure))
+        self.assertEqual(503, failure.status_code)
 
     def test_default_depth_fallback_searches_the_second_page(self):
         from lib import http as http_module
