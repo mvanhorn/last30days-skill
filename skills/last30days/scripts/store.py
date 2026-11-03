@@ -554,18 +554,38 @@ def get_latest_completed_runs(topic_id: int, limit: int = 2) -> List[Dict[str, A
 # --- Findings ---
 
 
+def _merge_finding_scores(target: Dict[str, Any], incoming: Dict[str, Any]) -> None:
+    """Keep the higher engagement and relevance scores when collapsing duplicate URLs."""
+    prev_eng = target.get("engagement_score") or 0
+    new_eng = incoming.get("engagement_score") or 0
+    if new_eng > prev_eng:
+        target["engagement_score"] = new_eng
+    prev_rel = target.get("relevance_score") or 0
+    new_rel = incoming.get("relevance_score") or 0
+    if new_rel > prev_rel:
+        target["relevance_score"] = new_rel
+
+
 def store_findings(
     run_id: int,
     topic_id: int,
     findings: List[Dict[str, Any]],
 ) -> Dict[str, int]:
     """Store findings with URL-based dedup. Returns counts of new/updated."""
-    # Collect findings that have a URL, preserving order.
-    with_urls: List[tuple[str, Dict[str, Any]]] = []
+    # Collect findings that have a URL, preserving first-seen order while
+    # collapsing same-batch duplicate URLs so one run never self-conflicts on
+    # source_url or double-increments sighting_count.
+    by_url: Dict[str, Dict[str, Any]] = {}
     for f in findings:
         url = f.get("source_url") or f.get("url")
-        if url:
-            with_urls.append((url, f))
+        if not url:
+            continue
+        existing_in_batch = by_url.get(url)
+        if existing_in_batch is None:
+            by_url[url] = dict(f)
+        else:
+            _merge_finding_scores(existing_in_batch, f)
+    with_urls: List[tuple[str, Dict[str, Any]]] = list(by_url.items())
 
     if not with_urls:
         conn = _connect()
@@ -640,7 +660,7 @@ def store_findings(
                        last_seen = datetime('now'),
                        sighting_count = sighting_count + 1,
                        engagement_score = max(
-                           engagement_score, excluded.engagement_score),
+                           coalesce(engagement_score, 0), excluded.engagement_score),
                        run_id = excluded.run_id""",
                 insert_rows,
             )
@@ -1303,12 +1323,17 @@ def findings_from_report(
     (degraded path — rerank failed or was skipped), falls back to supplementing
     all sources from items_by_source so findings aren't silently dropped.
     """
-    findings = []
-    seen_urls = set()
+    findings: List[Dict[str, Any]] = []
+    seen_by_url: Dict[str, Dict[str, Any]] = {}
 
     for candidate in report.ranked_candidates:
-        findings.append(finding_from_candidate(candidate))
-        seen_urls.add(candidate.url)
+        converted = finding_from_candidate(candidate)
+        if candidate.url and candidate.url in seen_by_url:
+            _merge_finding_scores(seen_by_url[candidate.url], converted)
+            continue
+        findings.append(converted)
+        if candidate.url:
+            seen_by_url[candidate.url] = converted
 
     supplement_sources = (
         list(report.items_by_source)
@@ -1319,9 +1344,7 @@ def findings_from_report(
         if source_name not in report.items_by_source:
             continue
         for item in report.items_by_source[source_name]:
-            if item.url in seen_urls:
-                continue
-            findings.append({
+            converted = {
                 "source": source_name,
                 "source_url": item.url,
                 "source_title": item.title,
@@ -1330,8 +1353,13 @@ def findings_from_report(
                 "summary": item.snippet or (item.body[:500] if item.body else ""),
                 "engagement_score": item.engagement_score or 0.0,
                 "relevance_score": item.local_relevance or 0.5,
-            })
-            seen_urls.add(item.url)
+            }
+            if item.url and item.url in seen_by_url:
+                _merge_finding_scores(seen_by_url[item.url], converted)
+                continue
+            findings.append(converted)
+            if item.url:
+                seen_by_url[item.url] = converted
 
     return findings[:limit] if limit is not None else findings
 
