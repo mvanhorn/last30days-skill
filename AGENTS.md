@@ -36,7 +36,7 @@ uv run pytest                              # full suite
 uv run pytest tests/test_dedupe_v3.py      # single file
 uv run pytest tests/test_dedupe_v3.py -k some_case   # single case
 uv run pytest --cov                        # with coverage (skips lib/vendor/)
-uv run python -m unittest tests.test_subproc -v   # subprocess tests (separate CI job)
+PYTHONPATH=skills/last30days/scripts uv run python -m unittest tests.test_subproc -v   # subprocess tests (Windows CI job; unittest skips conftest.py, so set the path)
 uv run pytest tests/eval -x -s             # research-quality eval (separate CI job)
 
 # MCP server (Go, under mcp/)
