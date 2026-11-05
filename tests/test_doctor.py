@@ -428,6 +428,79 @@ class CookieBackedXReadiness(unittest.TestCase):
         self.assertEqual("unconfigured", record["status"])
 
 
+class SidecarOptInHint(unittest.TestCase):
+    """A present, unadmitted sidecar has an actionable, no-cookie-read hint."""
+
+    def _record(self, config=None, *, present=True, system="Linux", probe_map=None):
+        with (
+            _Hermetic(probe_map=probe_map),
+            mock.patch("platform.system", return_value=system),
+            mock.patch("lib.env._mac_model", return_value="MacBookPro18,2"),
+            mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+            mock.patch("shutil.which", side_effect=lambda name: (
+                "/mock/agentcookie" if name == "agentcookie" and present else None
+            )),
+            mock.patch("lib.agentcookie.read_x_cookies") as cookies,
+            mock.patch("subprocess.run") as run,
+        ):
+            record = doctor._x_record(dict(config or {}))
+        cookies.assert_not_called()
+        run.assert_not_called()
+        return record
+
+    def test_present_unadmitted_sidecar_has_could_be_on_hint(self):
+        record = self._record()
+        self.assertEqual(doctor.AUDIT_COULD_BE_ON, doctor.audit_state("x", record))
+        self.assertIsNone(record["active_backend"])
+        self.assertIn("agentcookie", record["note"])
+        self.assertIn("AGENTCOOKIE=on", record["fix"])
+        line = doctor._audit_source_line("x", record, doctor.AUDIT_COULD_BE_ON)
+        self.assertIn("AGENTCOOKIE=on", line)
+
+    def test_refusal_never_offers_sidecar_opt_in(self):
+        for config in (
+            {"BROWSER_CONSENT": "false"},
+            {"BROWSER_CONSENT": "unknown"},
+            {"FROM_BROWSER": "off"},
+            {"AGENTCOOKIE": "off"},
+        ):
+            with self.subTest(config=config):
+                record = self._record(config)
+                self.assertNotIn("AGENTCOOKIE=on", record["fix"])
+
+    def test_absent_binary_or_non_extra_host_has_no_sidecar_hint(self):
+        for options in ({"present": False}, {"system": "Darwin"}):
+            with self.subTest(options=options):
+                self.assertNotIn("AGENTCOOKIE=on", self._record(**options)["fix"])
+
+    def test_admitted_sidecar_predicts_browser_auth_without_opt_in_hint(self):
+        record = self._record({"AGENTCOOKIE": "on"})
+        self.assertEqual("ok", record["tier"])
+        self.assertIn("not verified", record["note"])
+        self.assertEqual("", record["fix"])
+
+    def test_backend_connector_and_pin_diagnoses_keep_precedence(self):
+        for config, active in (
+            ({"XAI_API_KEY": "dummy-xai-key"}, "xai"),
+            ({"LAST30DAYS_X_HOST_LANE": "1"}, "connector"),
+            ({"LAST30DAYS_X_BACKEND": "xurl"}, None),
+            ({"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "bird"}, None),
+        ):
+            with self.subTest(config=config):
+                record = self._record(config)
+                self.assertEqual(active, record["active_backend"])
+                self.assertNotIn("AGENTCOOKIE=on", record["fix"])
+
+    def test_broken_configured_backend_keeps_its_repair(self):
+        record = self._record(
+            {"AUTH_TOKEN": "dummy-auth-token", "CT0": "dummy-ct0"},
+            probe_map={"node": health.BROKEN},
+        )
+        self.assertEqual("broken", record["status"])
+        self.assertIn("node", record["fix"])
+        self.assertNotIn("AGENTCOOKIE=on", record["fix"])
+
+
 class LibraryDoctorLine(unittest.TestCase):
     """U5: doctor reports the local research library so the report's
     'From your library' block is explained on the health surface."""
@@ -1121,6 +1194,31 @@ class JsonContract(unittest.TestCase):
             self.assertIsNotNone(doctor.read_cached_report(config))
             self.assertIsNone(doctor.read_cached_report({**config, "BROWSER_CONSENT": "false"}))
             self.assertIsNone(doctor.read_cached_report({**config, "FROM_BROWSER": "off"}))
+
+    def test_sidecar_opt_in_invalidates_cached_advice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "doctor-cache.json"
+            with _Hermetic(), mock.patch("lib.doctor.cache_path", return_value=path):
+                report = doctor.build_report({})
+                self.assertTrue(doctor._write_cache(report, {}))
+                self.assertIsNotNone(doctor.read_cached_report({}))
+                self.assertIsNone(doctor.read_cached_report({"AGENTCOOKIE": "on"}))
+                self.assertTrue(doctor._write_cache(report, {"AGENTCOOKIE": "on"}))
+                self.assertIsNone(doctor.read_cached_report({"AGENTCOOKIE": "off"}))
+
+    def test_sidecar_environment_fallback_invalidates_cached_advice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "doctor-cache.json"
+            with _Hermetic(), mock.patch("lib.doctor.cache_path", return_value=path):
+                report = doctor.build_report({})
+                with mock.patch.dict(os.environ, {"AGENTCOOKIE": "off"}):
+                    self.assertTrue(doctor._write_cache(report, {}))
+                with mock.patch.dict(os.environ, {"AGENTCOOKIE": "on"}):
+                    self.assertTrue(doctor.read_cached_report({}) is None)
+                    self.assertTrue(doctor._write_cache(report, {}))
+                with mock.patch.dict(os.environ, {"AGENTCOOKIE": "off"}):
+                    self.assertTrue(doctor.read_cached_report({}) is None)
+                    self.assertIsNotNone(doctor.read_cached_report({"AGENTCOOKIE": "on"}))
 
 
 class LiveProbe(unittest.TestCase):
