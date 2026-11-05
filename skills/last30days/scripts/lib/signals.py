@@ -14,6 +14,7 @@ SOURCE_QUALITY = {
     "hackernews": 0.8,
     "devto": 0.78,
     "youtube": 0.85,
+    "podcasts": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
     "techmeme": 0.85,
@@ -324,7 +325,7 @@ _ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
 #   arxiv, techmeme, dripstack, corpus - no engagement fields at all
 _NO_ENGAGEMENT_SCORE_SOURCES = frozenset({
     "jobs", "meta_ads", "grounding", "perplexity", "stocktwits", "telegram",
-    "arxiv", "techmeme", "dripstack", "corpus",
+    "arxiv", "techmeme", "dripstack", "corpus", "podcasts",
 })
 
 

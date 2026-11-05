@@ -50,6 +50,7 @@ metadata:
       - linkedin
       - hackernews
       - devto
+      - podcasts
       - polymarket
       - digg
       - bluesky
@@ -233,6 +234,7 @@ After the response and required citations, stop and wait unless governing instru
 - Sends search queries to X/Twitter via the official X API v2 (`api.x.com`, app-only bearer from `X_BEARER_TOKEN`, sent only in the Authorization header; the engine's default X path on a Grok Bot host next to xAI's API), optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated)
 - Accepts a host-provided `--x-posts` envelope (a `.json` file of posts the hosting model fetched through its own X connector) as untrusted input: it replaces the engine's X fetch for that run, every row is validated and its citation URL rebuilt from the post id, and no X backend is called
 - Sends search queries to Algolia HN Search API (`hn.algolia.com`) for Hacker News story and comment discovery (free, no auth)
+- Exa podcasts on `INCLUDE_SOURCES=podcasts`
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
 - Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction market discovery (free, no auth)
 - Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)
