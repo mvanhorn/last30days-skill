@@ -163,7 +163,10 @@ _HEADLINE_INDICATORS = frozenset({
     "policy_rate", "inflation", "core_inflation", "gdp", "unemployment",
     "non_farm_payrolls", "retail_sales", "pce", "core_pce",
 })
-_PAIR_RE = re.compile(r"\b([A-Za-z]{3})\s*[/\-]?\s*([A-Za-z]{3})\b")
+_PAIR_CODES = "|".join(sorted(SUPPORTED_CURRENCIES))
+_PAIR_RE = re.compile(
+    rf"\b({_PAIR_CODES})\s*[/\-]?\s*({_PAIR_CODES})\b", re.IGNORECASE
+)
 _CODE_RE = re.compile(r"\b[A-Z]{3}\b")
 
 

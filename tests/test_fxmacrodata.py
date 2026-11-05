@@ -652,3 +652,38 @@ def test_string_false_does_not_promote_calendar_tier(monkeypatch):
 
 def test_boolean_tier_is_not_headline():
     assert not fxmacrodata._is_headline("housing_starts", True)
+
+
+@pytest.mark.parametrize("topic", ["outlook for eur/usd", "view on eur-usd", "for eurusd"])
+def test_lowercase_pairs_after_three_letter_words(topic):
+    assert fxmacrodata.resolve_currencies(topic) == ["EUR", "USD"]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_host_plan_backfills_only_an_enabled_macro_source(enabled):
+    plan = _plan(["reddit"])
+    available = ["reddit", "fxmacrodata"] if enabled else ["reddit"]
+    pipeline._ensure_unplanned_lanes_in_host_plan(plan, available)
+    assert ("fxmacrodata" in plan.subqueries[0].sources) is enabled
+    assert ("fxmacrodata" in plan.source_weights) is enabled
+
+
+def test_distinct_releases_survive_pipeline_text_deduplication(monkeypatch):
+    from lib import dedupe
+
+    releases = [
+        _indicator("inflation", "Inflation (CPI)", "2026-10-10T12:30:00", val=3.1),
+        _indicator("core_inflation", "Core Inflation (CPI)", "2026-10-10T12:30:00", val=3.2),
+    ]
+    _install(monkeypatch, FakeApi({"usd": ({"currency": "USD", "data": releases}, {"data": []})}))
+    raw = fxmacrodata.parse_fxmacrodata_response(_search("US inflation"), query="US inflation")
+    normalized = pipeline._normalize_score_dedupe(
+        "fxmacrodata", raw, FROM, TO, freshness_mode="balanced_recent",
+        ranking_query="US inflation", defer_relevance_prune=True,
+    )
+    assert {item.metadata["indicator"] for item in normalized} == {"inflation", "core_inflation"}
+    assert len(dedupe.dedupe_items(normalized + [normalized[0]])) == 2
+    finalized = pipeline._finalize_items_by_source(
+        {"fxmacrodata": normalized}, topic="US inflation", mock=True,
+    )
+    assert len(finalized["fxmacrodata"]) == 2

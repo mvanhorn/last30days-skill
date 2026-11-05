@@ -3825,6 +3825,7 @@ HOST_PLAN_BACKFILL_SOURCES = (
     "bluesky",
     "truthsocial",
     "stocktwits",
+    "fxmacrodata",
     "linkedin",
     "dripstack",
     "devto",

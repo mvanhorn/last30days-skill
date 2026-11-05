@@ -120,7 +120,16 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
     kept: list[schema.SourceItem] = []
     kept_prepared: list[_PreparedText] = []
     seen_job_urls: set[str] = set()
+    seen_fxmacrodata_events: set[str] = set()
     for item in items:
+        # Similar wording does not make two economic releases the same event.
+        if item.source == "fxmacrodata" and item.metadata.get("event_key"):
+            event_key = item.metadata["event_key"]
+            if event_key in seen_fxmacrodata_events:
+                continue
+            seen_fxmacrodata_events.add(event_key)
+            kept.append(item)
+            continue
         if item.source == "jobs":
             url = (item.url or "").strip()
             if url and url in seen_job_urls:
