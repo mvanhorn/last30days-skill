@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, List, Optional, Set
 
 from . import dates, http, log
+from . import tiktok_scavio
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/tiktok"
 
@@ -190,6 +191,7 @@ def _hashtag_search(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    backend: str = "scrapecreators",
 ) -> List[Dict[str, Any]]:
     """Search TikTok by hashtag via ScrapeCreators.
 
@@ -202,6 +204,16 @@ def _hashtag_search(
     """
     _check_budget(deadline, cancel)
     _log(f"Hashtag search: #{hashtag}")
+    if backend == "scavio":
+        try:
+            raw_items = tiktok_scavio.hashtag_items(hashtag, token, deadline=deadline, cancel=cancel)
+        except http.DeadlineExceeded:
+            raise
+        except Exception as e:
+            _log(f"Hashtag search error for #{hashtag}: {e}")
+            return []
+        _log(f"  -> {len(raw_items)} results for #{hashtag}")
+        return raw_items
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/search/hashtag",
@@ -230,8 +242,9 @@ def _profile_videos(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    backend: str = "scrapecreators",
 ) -> List[Dict[str, Any]]:
-    """Fetch a TikTok creator's recent videos via ScrapeCreators.
+    """Fetch a TikTok creator's recent videos via ScrapeCreators (or Scavio).
 
     Args:
         handle: TikTok username (without @)
@@ -243,6 +256,16 @@ def _profile_videos(
     """
     _check_budget(deadline, cancel)
     _log(f"Profile videos: @{handle}")
+    if backend == "scavio":
+        try:
+            raw_items = tiktok_scavio.profile_items(handle, token, count, deadline=deadline, cancel=cancel)
+        except http.DeadlineExceeded:
+            raise
+        except Exception as e:
+            _log(f"Profile videos error for @{handle}: {e}")
+            return []
+        _log(f"  -> {len(raw_items)} videos from @{handle}")
+        return raw_items
     profile_url = "https://api.scrapecreators.com/v3/tiktok/profile/videos"
     try:
         data = http.get(
@@ -274,8 +297,9 @@ def search_tiktok(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    backend: str = "scrapecreators",
 ) -> Dict[str, Any]:
-    """Search TikTok via ScrapeCreators API.
+    """Search TikTok via ScrapeCreators API (or Scavio when ``backend="scavio"``).
 
     Args:
         topic: Search topic
@@ -288,7 +312,8 @@ def search_tiktok(
         Dict with 'items' list and optional 'error'.
     """
     if not token:
-        return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
+        key = "SCAVIO_API_KEY" if backend == "scavio" else "SCRAPECREATORS_API_KEY"
+        return {"items": [], "error": f"No {key} configured"}
 
     _check_budget(deadline, cancel)
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
@@ -296,29 +321,40 @@ def search_tiktok(
 
     _log(f"Searching TikTok for '{core_topic}' (depth={depth}, count={config['results_per_page']})")
 
-    try:
-        data = http.get(
-            f"{SCRAPECREATORS_BASE}/search/keyword",
-            params={"query": core_topic, "sort_by": "relevance"},
-            headers=http.scrapecreators_headers(token),
-            timeout=30,
-            retries=2,
-            deadline_monotonic=deadline,
-            cancel=cancel,
-        )
-    except http.DeadlineExceeded:
-        raise
-    except Exception as e:
-        _log(f"ScrapeCreators error: {e}")
-        return {"items": [], "error": f"{type(e).__name__}: {e}"}
+    if backend == "scavio":
+        try:
+            raw_items = tiktok_scavio.keyword_search(
+                core_topic, token, config["results_per_page"], deadline=deadline, cancel=cancel,
+            )
+        except http.DeadlineExceeded:
+            raise
+        except Exception as e:
+            _log(f"Scavio error: {e}")
+            return {"items": [], "error": f"{type(e).__name__}: {e}"}
+    else:
+        try:
+            data = http.get(
+                f"{SCRAPECREATORS_BASE}/search/keyword",
+                params={"query": core_topic, "sort_by": "relevance"},
+                headers=http.scrapecreators_headers(token),
+                timeout=30,
+                retries=2,
+                deadline_monotonic=deadline,
+                cancel=cancel,
+            )
+        except http.DeadlineExceeded:
+            raise
+        except Exception as e:
+            _log(f"ScrapeCreators error: {e}")
+            return {"items": [], "error": f"{type(e).__name__}: {e}"}
 
-    # Items are nested under aweme_info
-    raw_entries = data.get("search_item_list") or data.get("data") or []
-    raw_items = []
-    for entry in raw_entries:
-        if isinstance(entry, dict):
-            info = entry.get("aweme_info", entry)
-            raw_items.append(info)
+        # Items are nested under aweme_info
+        raw_entries = data.get("search_item_list") or data.get("data") or []
+        raw_items = []
+        for entry in raw_entries:
+            if isinstance(entry, dict):
+                info = entry.get("aweme_info", entry)
+                raw_items.append(info)
 
     # Limit to configured count
     raw_items = raw_items[:config["results_per_page"]]
@@ -350,6 +386,7 @@ def fetch_captions(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    backend: str = "scrapecreators",
 ) -> Dict[str, str]:
     """Fetch transcripts for top N TikTok videos via ScrapeCreators.
 
@@ -401,16 +438,19 @@ def fetch_captions(
             # capture_failures() context so an individual video's 400
             # doesn't poison the entire source outcome.
             with http.capture_failures() as _tf:
-                data = http.get(
-                    f"{SCRAPECREATORS_BASE}/video/transcript",
-                    params={"url": url},
-                    headers=http.scrapecreators_headers(token),
-                    timeout=15,
-                    retries=1,
-                    deadline_monotonic=deadline,
-                    cancel=cancel,
-                )
-            transcript = data.get("transcript")
+                if backend == "scavio":
+                    transcript = tiktok_scavio.transcript(vid, token, deadline=deadline, cancel=cancel)
+                else:
+                    data = http.get(
+                        f"{SCRAPECREATORS_BASE}/video/transcript",
+                        params={"url": url},
+                        headers=http.scrapecreators_headers(token),
+                        timeout=15,
+                        retries=1,
+                        deadline_monotonic=deadline,
+                        cancel=cancel,
+                    )
+                    transcript = data.get("transcript")
             if transcript:
                 if isinstance(transcript, list):
                     transcript = " ".join(str(s) for s in transcript)
@@ -442,6 +482,7 @@ def search_and_enrich(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    backend: str = "scrapecreators",
 ) -> Dict[str, Any]:
     """Full TikTok search: find videos, then fetch captions for top results.
 
@@ -471,7 +512,7 @@ def search_and_enrich(
         # Step 0a: Hashtag search (high-signal, runs first)
         if hashtags and token:
             for hashtag in hashtags:
-                raw_items = _hashtag_search(hashtag, token, deadline=deadline, cancel=cancel)
+                raw_items = _hashtag_search(hashtag, token, deadline=deadline, cancel=cancel, backend=backend)
                 parsed = _parse_items(raw_items, core_topic)
                 for item in parsed:
                     vid = item.get("video_id", "")
@@ -482,7 +523,7 @@ def search_and_enrich(
         # Step 0b: Creator profile videos (high-signal)
         if creators and token:
             for creator in creators:
-                raw_items = _profile_videos(creator, token, deadline=deadline, cancel=cancel)
+                raw_items = _profile_videos(creator, token, deadline=deadline, cancel=cancel, backend=backend)
                 parsed = _parse_items(raw_items, core_topic)
                 for item in parsed:
                     vid = item.get("video_id", "")
@@ -494,7 +535,7 @@ def search_and_enrich(
         queries = expand_tiktok_queries(topic, depth)
         for q in queries:
             search_result = search_tiktok(
-                q, from_date, to_date, depth, token, deadline=deadline, cancel=cancel,
+                q, from_date, to_date, depth, token, deadline=deadline, cancel=cancel, backend=backend,
             )
             if search_result.get("error"):
                 last_error = search_result["error"]
@@ -515,7 +556,7 @@ def search_and_enrich(
     # Attach captions as they arrive so a later timeout cannot discard them.
     if last_error != BUDGET_ERROR:
         try:
-            fetch_captions(items, token, depth, deadline=deadline, cancel=cancel)
+            fetch_captions(items, token, depth, deadline=deadline, cancel=cancel, backend=backend)
         except http.DeadlineExceeded:
             last_error = BUDGET_ERROR
 
@@ -545,8 +586,9 @@ def enrich_with_comments(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    backend: str = "scrapecreators",
 ) -> List[Dict[str, Any]]:
-    """Enrich top TikTok posts with comment data from ScrapeCreators.
+    """Enrich top TikTok posts with comment data from ScrapeCreators (or Scavio).
 
     For the top N posts by engagement, fetches comments via the SC API
     and attaches them as a ``top_comments`` field on each item. Mirrors
@@ -579,6 +621,7 @@ def enrich_with_comments(
         try:
             comments = _fetch_post_comments(
                 post_url, token, max_comments, deadline=deadline, cancel=cancel,
+                backend=backend, video_id=item.get("video_id", ""),
             )
             if comments:
                 item["top_comments"] = comments
@@ -607,8 +650,10 @@ def _fetch_post_comments(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    backend: str = "scrapecreators",
+    video_id: str = "",
 ) -> List[Dict[str, Any]]:
-    """Fetch comments for a single TikTok post via ScrapeCreators.
+    """Fetch comments for a single TikTok post via ScrapeCreators (or Scavio).
 
     SC endpoint: GET /v1/tiktok/video/comments?url=<video_url>
     Response shape: { comments: [{text, user.nickname, digg_count, create_time, ...}], cursor, total }
@@ -623,23 +668,35 @@ def _fetch_post_comments(
         Empty list on provider errors; DeadlineExceeded propagates to the lane.
     """
     _check_budget(deadline, cancel)
-    try:
-        data = http.get(
-            f"{SCRAPECREATORS_BASE}/video/comments",
-            params={"url": post_url, "trim": "true"},
-            headers=http.scrapecreators_headers(token),
-            timeout=30,
-            retries=2,
-            deadline_monotonic=deadline,
-            cancel=cancel,
-        )
-    except http.DeadlineExceeded:
-        raise
-    except Exception as exc:
-        _log(f"Comment fetch error for {post_url}: {exc}")
-        return []
+    if backend == "scavio":
+        if not video_id:
+            return []
+        try:
+            raw_comments = tiktok_scavio.comments(video_id, token, deadline=deadline, cancel=cancel)
+        except http.DeadlineExceeded:
+            raise
+        except Exception as exc:
+            _log(f"Comment fetch error for {post_url}: {exc}")
+            return []
+    else:
+        try:
+            data = http.get(
+                f"{SCRAPECREATORS_BASE}/video/comments",
+                params={"url": post_url, "trim": "true"},
+                headers=http.scrapecreators_headers(token),
+                timeout=30,
+                retries=2,
+                deadline_monotonic=deadline,
+                cancel=cancel,
+            )
+        except http.DeadlineExceeded:
+            raise
+        except Exception as exc:
+            _log(f"Comment fetch error for {post_url}: {exc}")
+            return []
 
-    raw_comments = data.get("comments") or data.get("data") or []
+        raw_comments = data.get("comments") or data.get("data") or []
+
     # Sort by digg_count desc so normalize sees the highest-signal first.
     raw_comments = sorted(
         raw_comments,

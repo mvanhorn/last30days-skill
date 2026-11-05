@@ -1,0 +1,1 @@
+Scavio as an opt-in TikTok backend: set `SCAVIO_API_KEY` and `LAST30DAYS_TIKTOK_BACKEND=scavio` to run TikTok search, hashtag and creator lanes, transcripts and top comments through Scavio. ScrapeCreators remains the default and the key alone never selects Scavio.

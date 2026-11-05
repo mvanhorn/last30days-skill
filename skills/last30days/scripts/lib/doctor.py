@@ -205,6 +205,7 @@ KEY_PRESENCE_VARS = (
     "SCRAPECREATORS_API_KEY",
     "XAI_API_KEY",
     "XQUIK_API_KEY",
+    "SCAVIO_API_KEY",
     "X_BEARER_TOKEN",
     "BRAVE_API_KEY",
     "EXA_API_KEY",
@@ -779,6 +780,11 @@ def _amazon_record(config):
 
 
 def _tiktok_record(config):
+    # Scavio serves TikTok only when it is the active backend (see
+    # env.get_tiktok_backend); otherwise this is the ScrapeCreators record.
+    if env.get_tiktok_backend(config) == "scavio":
+        return _record(status=health.OK, requires="SCAVIO_API_KEY",
+                       detail="SCAVIO_API_KEY present (tiktok)")
     return _sc_gated_record(config, "tiktok")
 
 
@@ -1683,6 +1689,7 @@ _FINGERPRINT_PIN_VARS = (
     env.X_BACKEND_PIN_VAR,
     env.REDDIT_BACKEND_PIN_VAR,
     env.YOUTUBE_BACKEND_PIN_VAR,
+    env.TIKTOK_BACKEND_PIN_VAR,
     env.X_HOST_VAR,
     env.X_HOST_LANE_VAR,
 )
