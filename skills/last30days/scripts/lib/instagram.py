@@ -442,6 +442,13 @@ def _google_reel_fallback(
                 **_request_options(30, deadline, cancel),
             )
         except Exception as e:
+            # A 404 from the Google fallback means the search found nothing,
+            # the same clean miss the primary reels search reports with its
+            # documented not_found payload. Don't record it as a failure or
+            # it resurfaces as an error on an otherwise empty result.
+            if isinstance(e, http.HTTPError) and e.status_code == 404:
+                _log(f"Google Instagram discovery fallback found no reels on page {page}")
+                break
             detail = f"Google Instagram discovery fallback failed on page {page}: {e}"
             # The transport already captured this same exception. Add stage
             # context in place without losing its HTTP status or outcome type.
