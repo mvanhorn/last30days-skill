@@ -162,6 +162,7 @@ SOURCE_ORDER = (
     "polymarket",
     "github",
     "devto",
+    "fxmacrodata",
     "digg",
     "techmeme",
     "arxiv",
@@ -686,6 +687,17 @@ def _devto_record(config):
     )
 
 
+def _fxmacrodata_record(config):
+    requires = "none for USD (public API); FXMACRODATA_API_KEY for other currencies"
+    if "fxmacrodata" in env.include_sources(config):
+        return _record(status=health.OK, requires=requires)
+    return _record(
+        status="opt-in", requires=requires,
+        fix="add fxmacrodata to INCLUDE_SOURCES (or request it via --search fxmacrodata)",
+        note="off by default; quiet for topics without a currency, central bank or economy",
+    )
+
+
 def _polymarket_record(config):
     return _record(status=health.OK, requires="none (public API)")
 
@@ -998,6 +1010,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "polymarket": _polymarket_record,
     "github": _github_record,
     "devto": _devto_record,
+    "fxmacrodata": _fxmacrodata_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,

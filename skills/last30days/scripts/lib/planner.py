@@ -147,6 +147,7 @@ SOURCE_CAPABILITIES = {
     "polymarket": {"market"},
     "stocktwits": {"social", "market", "finance_social"},
     "dripstack": {"reference", "analysis", "link"},
+    "fxmacrodata": {"reference", "market"},
     "digg": {"discussion", "social", "link"},
     "arxiv": {"reference", "analysis", "link"},
     "techmeme": {"discussion", "link", "reference"},

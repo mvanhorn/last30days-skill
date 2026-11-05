@@ -42,6 +42,11 @@ def _normalize_url(url: str) -> str:
 
 
 def candidate_key(item: schema.SourceItem) -> str:
+    # An FXMacroData item cites its publisher's page, and one page serves many
+    # events (every scheduled release on a calendar, each print of a series),
+    # so the release event is the identity and the URL stays the citation.
+    if item.source == "fxmacrodata" and item.metadata.get("event_key"):
+        return f"fxmacrodata:{item.metadata['event_key']}"
     if item.url:
         return _normalize_url(item.url)
     return f"{item.source}:{item.item_id}"
@@ -55,6 +60,7 @@ def source_item_key(item: schema.SourceItem) -> tuple[str, str]:
     several times as distinct stories with their own points and comments, so
     HN identity is the discussion URL. ``candidate_key`` still clusters those
     submissions (and other sources linking the article) into one candidate.
+    FXMacroData items are keyed by release event in ``candidate_key`` itself.
     """
     if item.source == "hackernews":
         hn_url = item.metadata.get("hn_url")
@@ -214,8 +220,10 @@ _MAX_ITEMS_PER_FIRST_PARTY_AUTHOR = 8
 def _extract_author(candidate: schema.Candidate) -> str | None:
     """Return a normalized author key from a candidate's source items."""
     for item in candidate.source_items:
-        # Jobs use the ATS provider as author, not an individual contributor.
-        if item.source != "jobs" and item.author:
+        # Jobs use the ATS provider as author, not an individual contributor;
+        # FXMacroData uses the statistics office or central bank publishing
+        # the release, which is one source of record, not a voice to cap.
+        if item.source not in {"jobs", "fxmacrodata"} and item.author:
             return item.author.strip().lower()
     return None
 

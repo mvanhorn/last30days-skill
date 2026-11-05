@@ -16,6 +16,8 @@ SOURCE_QUALITY = {
     "youtube": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
+    # Official statistics and central-bank releases, cited to the publisher.
+    "fxmacrodata": 0.9,
     "techmeme": 0.85,
     "trustpilot": 0.78,
     # Verified-purchase reviews on a live aggregate rating: high-quality
@@ -321,10 +323,10 @@ _ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
 #   grounding, perplexity - web results; counts are citations, not readers
 #   stocktwits - the author's follower count dominates sparse likes/reshares
 #   telegram   - the channel's subscriber count dominates per-post views
-#   arxiv, techmeme, dripstack, corpus - no engagement fields at all
+#   arxiv, techmeme, dripstack, fxmacrodata, corpus - no engagement fields at all
 _NO_ENGAGEMENT_SCORE_SOURCES = frozenset({
     "jobs", "meta_ads", "grounding", "perplexity", "stocktwits", "telegram",
-    "arxiv", "techmeme", "dripstack", "corpus",
+    "arxiv", "techmeme", "dripstack", "fxmacrodata", "corpus",
 })
 
 
