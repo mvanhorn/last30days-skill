@@ -344,11 +344,29 @@ class TestGoogleSearchFallback(unittest.TestCase):
         self.assertEqual({"items": []}, result)
         self.assertEqual([], failures)
 
+    def test_google_discovery_404_is_clean_no_results(self):
+        """A fallback 404 after a documented primary 404 is a clean miss.
+
+        Both searches found nothing, so the result is an empty list with no
+        error and nothing captured as a source failure (issue #1356).
+        """
+        no_reels = self._no_reels_error().body.encode("utf-8")
+        result, failures = self._search_with_captured_failures(
+            "unknown niche topic", {"unknown niche topic": (404, no_reels)},
+            google_response=(404, b'{}'),
+        )
+
+        self.assertEqual({"items": []}, result)
+        self.assertEqual([], failures)
+
     def test_google_discovery_failure_is_explicit_and_keeps_its_typed_outcome(self):
         from lib import health, pipeline
 
+        # A fallback 404 is a clean miss, not an explicit failure (see
+        # test_google_discovery_404_is_clean_no_results below), so only
+        # non-404 failures are asserted here.
         no_reels = self._no_reels_error().body.encode("utf-8")
-        for status, state in [(404, health.ERROR), (401, health.AUTH_FAILED), (429, health.RATE_LIMITED)]:
+        for status, state in [(401, health.AUTH_FAILED), (429, health.RATE_LIMITED)]:
             with self.subTest(status=status):
                 result, failures = self._search_with_captured_failures(
                     "unknown niche topic", {"unknown niche topic": (404, no_reels)},
