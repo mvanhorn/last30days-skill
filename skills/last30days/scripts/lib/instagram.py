@@ -428,19 +428,23 @@ def _google_reel_fallback(
             break
         budget["pages"] -= 1
         try:
-            data = http.get(
-                f"{SCRAPECREATORS_BASE}/v1/google/search",
-                params={
-                    "query": (
-                        f"site:instagram.com/reel {topic} "
-                        f"after:{from_date} before:{end_exclusive}"
-                    ),
-                    "page": page,
-                },
-                headers=headers,
-                retries=1,
-                **_request_options(30, deadline, cancel),
-            )
+            # A 404 here means the search found nothing. Mark it an expected
+            # miss so the pipeline's failure sink doesn't brand the source
+            # with a swallowed 404 once the adapter reports a clean result.
+            with http.expected_misses(404):
+                data = http.get(
+                    f"{SCRAPECREATORS_BASE}/v1/google/search",
+                    params={
+                        "query": (
+                            f"site:instagram.com/reel {topic} "
+                            f"after:{from_date} before:{end_exclusive}"
+                        ),
+                        "page": page,
+                    },
+                    headers=headers,
+                    retries=1,
+                    **_request_options(30, deadline, cancel),
+                )
         except Exception as e:
             # A 404 from the Google fallback means the search found nothing,
             # the same clean miss the primary reels search reports with its
