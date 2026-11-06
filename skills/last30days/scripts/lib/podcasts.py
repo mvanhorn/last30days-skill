@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from urllib.parse import urlparse
 
 from . import grounding, http, log
@@ -22,6 +23,7 @@ def _header_names(header: str, field: str) -> list[str]:
 
 def search_podcasts(
     query: str, date_range: tuple[str, str], api_key: str, count: int = 8,
+    deadline_monotonic: float | None = None, cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
     data = http.request(
         "POST", "https://api.exa.ai/search",
@@ -39,6 +41,8 @@ def search_podcasts(
             },
         },
         timeout=15,
+        deadline_monotonic=deadline_monotonic,
+        cancel=cancel,
     )
     items = []
     seen_urls: set[str] = set()

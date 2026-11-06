@@ -5785,7 +5785,10 @@ def _retrieve_stream_impl(
         return _mock_stream_results(source, subquery)
     if source == "podcasts":
         return podcasts.search_podcasts(
-            subquery.search_query, date_range, config["EXA_API_KEY"])
+            subquery.search_query, date_range, config["EXA_API_KEY"],
+            deadline_monotonic=config.get("_research_deadline"),
+            cancel=config.get("_enrich_cancel"),
+        )
     if source == "grounding":
         return grounding.web_search(
             subquery.search_query, date_range, config, backend=web_backend)

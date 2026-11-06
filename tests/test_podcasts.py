@@ -62,6 +62,8 @@ def test_exact_request_and_artifact(monkeypatch):
                 "text": {"maxCharacters": 1000},
             },
         }, timeout=15,
+        deadline_monotonic=None,
+        cancel=None,
     )
     assert items[0]["id"] == "PC1"
     assert artifact == {"label": "exa-podcasts", "webSearchQueries": ["workout"], "resultCount": 1}
@@ -283,3 +285,20 @@ def test_explicit_search_survives_web_backend_none():
         requested_sources=["podcasts"], web_backend="none", as_of_date="2026-07-10",
     )
     assert "podcasts" in report.items_by_source
+
+
+def test_dispatch_passes_run_deadline_and_cancel_to_http(monkeypatch):
+    request = Mock(return_value={"results": []})
+    monkeypatch.setattr(podcasts.http, "request", request)
+    cancel = threading.Event()
+    deadline = time.monotonic() + 60
+    pipeline._retrieve_stream_impl(
+        source="podcasts",
+        subquery=schema.SubQuery(label="primary", search_query="workout", ranking_query="workout", sources=["podcasts"]),
+        date_range=WINDOW,
+        config={"EXA_API_KEY": "dummy-key", "_enrich_cancel": cancel, "_research_deadline": deadline},
+        depth="quick", mock=False, topic="workout",
+        runtime=pipeline.providers.mock_runtime({}, "quick"),
+    )
+    assert request.call_args.kwargs["deadline_monotonic"] == deadline
+    assert request.call_args.kwargs["cancel"] is cancel
