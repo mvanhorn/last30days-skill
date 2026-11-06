@@ -129,7 +129,6 @@ def _build_search_args(query: str, limit: int) -> List[str]:
     return [
         CLI_BIN,
         "search",
-        query,
         "--topic",
         SECTIONS,
         "--since",
@@ -137,6 +136,9 @@ def _build_search_args(query: str, limit: int) -> List[str]:
         "--agent",
         "--limit",
         str(limit),
+        # "--" ends flag parsing so a topic starting with "-" stays a query.
+        "--",
+        query,
     ]
 
 

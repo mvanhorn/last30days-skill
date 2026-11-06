@@ -474,6 +474,13 @@ def _publish_password_for_args(
     args: argparse.Namespace,
     config: dict[str, object] | None = None,
 ) -> str | None:
+    if args.publish_password:
+        # Deprecated: a password in argv is visible to other local users (ps)
+        # and lands in shell history. Still honored for compatibility.
+        sys.stderr.write(
+            "[last30days] warning: --publish-password exposes the password in the "
+            "process list and shell history; set LAST30DAYS_PUBLISH_PASSWORD instead.\n"
+        )
     return (
         args.publish_password
         or env.read_secret_env("LAST30DAYS_PUBLISH_PASSWORD")

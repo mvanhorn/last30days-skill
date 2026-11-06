@@ -381,17 +381,42 @@ class TestKeychainDenied:
             assert result is None
 
 # ---------------------------------------------------------------------------
-# openssl not found → returns None
+# Decryption is in-process: no subprocess, so the key never reaches argv
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl not installed")
-class TestOpensslNotFound:
-    def test_openssl_missing(self):
+class TestDecryptionIsInProcess:
+    def test_decrypt_spawns_no_subprocess(self):
         encrypted = _encrypt_value_v10("test", KNOWN_AES_KEY)
-        with mock.patch("lib.chrome_cookies.subprocess.run", side_effect=FileNotFoundError):
-            result = _decrypt_v10_value(encrypted, KNOWN_AES_KEY, db_version=20)
-            assert result is None
+        with mock.patch("lib.chrome_cookies.subprocess.run",
+                        side_effect=AssertionError("key would be exposed in argv")):
+            assert _decrypt_v10_value(encrypted, KNOWN_AES_KEY, db_version=20) == "test"
+
+    def test_misaligned_ciphertext_returns_none(self):
+        assert _decrypt_v10_value(b"v10" + b"x" * 17, KNOWN_AES_KEY, db_version=20) is None
+
+
+class TestAesCbcVectors:
+    def test_fips197_c1(self):
+        from lib import aes_cbc
+        key = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+        ct = bytes.fromhex("69c4e0d86a7b0430d8cdb78070b4c55a")
+        assert aes_cbc.decrypt_cbc(key, bytes(16), ct).hex() == "00112233445566778899aabbccddeeff"
+
+    def test_sp800_38a_f22_cbc(self):
+        from lib import aes_cbc
+        key = bytes.fromhex("2b7e151628aed2a6abf7158809cf4f3c")
+        iv = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+        ct = bytes.fromhex(
+            "7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b2"
+            "73bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7"
+        )
+        pt = bytes.fromhex(
+            "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51"
+            "30c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710"
+        )
+        assert aes_cbc.decrypt_cbc(key, iv, ct) == pt
 
 # ---------------------------------------------------------------------------
 # Unencrypted cookie values → returned as-is

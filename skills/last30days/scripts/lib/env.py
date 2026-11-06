@@ -1087,6 +1087,14 @@ COOKIE_BROWSER_NAMES = (
 )
 
 
+def cookie_access_granted(config: dict[str, Any]) -> bool:
+    """True only for an explicit, truthy ``BROWSER_CONSENT`` (and no refusal)."""
+    if cookie_access_denied(config):
+        return False
+    consent = config.get("BROWSER_CONSENT")
+    return consent is not None and str(consent).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def cookie_access_denied(config: dict[str, Any]) -> bool:
     """An explicit refusal blocks native, CDP, and sidecar cookie discovery.
 

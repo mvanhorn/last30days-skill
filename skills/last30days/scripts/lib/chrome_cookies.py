@@ -1,7 +1,7 @@
 """Chromium-family cookie extraction for macOS.
 
 Extracts cookies from Chromium-based browser SQLite databases using only
-stdlib modules and the system openssl CLI (ships with macOS). Zero pip
+stdlib modules and the in-process lib.aes_cbc decryptor. Zero pip
 dependencies.
 
 Chromium on macOS uses v10 encryption (AES-128-CBC with Keychain-stored key).
@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from . import aes_cbc
 from .cookie_paths import path_exists, path_is_dir
 from .sqlite_snapshot import copy_snapshot
 
@@ -114,37 +115,20 @@ def _derive_aes_key(passphrase: bytes) -> bytes:
 def _decrypt_v10_value(encrypted_value: bytes, aes_key: bytes, db_version: int) -> Optional[str]:
     """Decrypt a Chrome v10-encrypted cookie value.
 
-    Uses system openssl CLI for AES-128-CBC decryption (zero pip deps).
+    Decrypts AES-128-CBC in-process with the stdlib-only ``lib.aes_cbc``
+    (zero pip deps). The key never leaves this process -- the former
+    ``openssl enc -K <hex>`` subprocess exposed it in argv to other local users.
     For Chrome 130+ (db_version >= 24), strips 32-byte SHA-256 prefix after decryption.
 
     Returns decrypted string or None on failure.
     """
     # Strip the 'v10' prefix
     ciphertext = encrypted_value[3:]
-    if not ciphertext:
+    if not ciphertext or len(ciphertext) % 16:
         return None
 
-    hex_key = aes_key.hex()
-
     try:
-        result = subprocess.run(
-            [
-                "openssl", "enc", "-aes-128-cbc", "-d",
-                "-K", hex_key,
-                "-iv", CHROME_IV_HEX,
-                "-nopad",
-            ],
-            input=ciphertext,
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            logger.debug("openssl decryption failed: %s", result.stderr.decode(errors="replace").strip())
-            return None
-
-        decrypted = result.stdout
-        if not decrypted:
-            return None
+        decrypted = aes_cbc.decrypt_cbc(aes_key, bytes.fromhex(CHROME_IV_HEX), ciphertext)
 
         # Remove PKCS7 padding
         decrypted = _remove_pkcs7_padding(decrypted)
@@ -156,13 +140,6 @@ def _decrypt_v10_value(encrypted_value: bytes, aes_key: bytes, db_version: int) 
             decrypted = decrypted[32:]
 
         return decrypted.decode("utf-8", errors="replace")
-
-    except FileNotFoundError:
-        logger.info("openssl not found — cannot decrypt Chrome cookies")
-        return None
-    except subprocess.TimeoutExpired:
-        logger.info("openssl decryption timed out")
-        return None
     except Exception as e:
         logger.debug("Chrome cookie decryption error: %s", e)
         return None

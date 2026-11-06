@@ -218,7 +218,7 @@ def test_explicit_domain_used_verbatim(monkeypatch):
     out = trustpilot.search_trustpilot(
         "ThriftBooks", D1, D2, explicit_domain="www.thriftbooks.com")
     assert out["results"][0]["name"] == "ThriftBooks"
-    assert _info_args(calls)[0][2] == "www.thriftbooks.com"
+    assert _info_args(calls)[0][-1] == "www.thriftbooks.com"
     assert _search_args(calls) == []  # flag set -> no search call fires
 
 
@@ -230,14 +230,14 @@ def test_explicit_domain_bypasses_brand_gate(monkeypatch):
         "Stanley Steemer carpet cleaning", D1, D2,
         explicit_domain="stanleysteemer.com")
     assert len(out["results"]) == 1
-    assert _info_args(calls)[0][2] == "stanleysteemer.com"
+    assert _info_args(calls)[0][-1] == "stanleysteemer.com"
 
 
 def test_explicit_domain_beats_domain_shaped_topic(monkeypatch):
     calls = _capture_cli(monkeypatch, {"info": INFO_OK})
     trustpilot.search_trustpilot(
         "chownow.com", D1, D2, explicit_domain="www.thriftbooks.com")
-    assert _info_args(calls)[0][2] == "www.thriftbooks.com"
+    assert _info_args(calls)[0][-1] == "www.thriftbooks.com"
 
 
 def test_user_domain_is_verbatim_final_no_retry(monkeypatch):
@@ -261,8 +261,8 @@ def test_hint_domain_retries_via_search_on_miss(monkeypatch):
         explicit_domain="getthriftbooks.io", domain_is_hint=True)
     assert len(out["results"]) == 1
     infos = _info_args(calls)
-    assert infos[0][2] == "getthriftbooks.io"
-    assert infos[1][2] == "www.thriftbooks.com"
+    assert infos[0][-1] == "getthriftbooks.io"
+    assert infos[1][-1] == "www.thriftbooks.com"
 
 
 # ---- name -> domain search fallback ----
@@ -271,8 +271,8 @@ def test_bare_name_resolves_via_search(monkeypatch):
     calls = _capture_cli(monkeypatch, {"search": THRIFTBOOKS_HITS, "info": INFO_OK})
     out = trustpilot.search_trustpilot("ThriftBooks", D1, D2)
     assert len(out["results"]) == 1
-    assert _search_args(calls)[0][2] == "ThriftBooks"
-    assert _info_args(calls)[0][2] == "www.thriftbooks.com"
+    assert _search_args(calls)[0][-1] == "ThriftBooks"
+    assert _info_args(calls)[0][-1] == "www.thriftbooks.com"
 
 
 def test_ambiguous_hits_fall_back_to_topic(monkeypatch):
@@ -284,7 +284,7 @@ def test_ambiguous_hits_fall_back_to_topic(monkeypatch):
     ]}
     calls = _capture_cli(monkeypatch, {"search": hits, "info": INFO_OK})
     trustpilot.search_trustpilot("Mercury", D1, D2)
-    assert _info_args(calls)[0][2] == "Mercury"  # legacy fallback identifier
+    assert _info_args(calls)[0][-1] == "Mercury"  # legacy fallback identifier
 
 
 def test_review_count_never_overrides_name_mismatch(monkeypatch):
@@ -293,21 +293,21 @@ def test_review_count_never_overrides_name_mismatch(monkeypatch):
     ]}
     calls = _capture_cli(monkeypatch, {"search": hits, "info": INFO_OK})
     trustpilot.search_trustpilot("Bolt", D1, D2)
-    assert _info_args(calls)[0][2] == "Bolt"
+    assert _info_args(calls)[0][-1] == "Bolt"
 
 
 def test_search_error_falls_back_to_topic(monkeypatch):
     calls = _capture_cli(monkeypatch, {"search": {"error": "boom"}, "info": INFO_OK})
     out = trustpilot.search_trustpilot("ChowNow", D1, D2)
     assert len(out["results"]) == 1
-    assert _info_args(calls)[0][2] == "ChowNow"
+    assert _info_args(calls)[0][-1] == "ChowNow"
 
 
 def test_domain_shaped_topic_never_searches(monkeypatch):
     calls = _capture_cli(monkeypatch, {"info": INFO_OK})
     trustpilot.search_trustpilot("chownow.com", D1, D2)
     assert _search_args(calls) == []
-    assert _info_args(calls)[0][2] == "chownow.com"
+    assert _info_args(calls)[0][-1] == "chownow.com"
 
 
 def test_search_cached_per_topic_not_per_process(monkeypatch):
@@ -508,3 +508,8 @@ def test_definitive_no_match_is_cached(monkeypatch):
     assert trustpilot._search_domain("ChowNow") is None
     assert trustpilot._search_domain("ChowNow") is None
     assert len(_search_args(calls)) == 1
+
+
+def test_user_text_follows_end_of_options_marker():
+    """A topic or domain starting with "-" must never be parsed as a flag."""
+    assert trustpilot._build_info_args("-evil")[-2:] == ["--", "-evil"]

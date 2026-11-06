@@ -64,14 +64,14 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 - The engine reads only `auth_token` and `ct0` for `.x.com`, and `_session_id` for `.truthsocial.com`. It filters by domain and cookie name before it decrypts anything.
 - The Firefox and Chromium readers query a copy of the browser's whole cookie database, written to a temporary file with `0600` permissions and deleted afterward.
 - Cookie values stay in memory and pass to the X client through its environment. The engine doesn't save them to `.env` or any other file.
-- On Linux and agent hosts, if the `agentcookie` binary is on your `PATH`, the engine asks it for `.x.com` cookies, unless cookie access was explicitly refused. Set `AGENTCOOKIE=off` to disable only the sidecar.
+- On Linux and agent hosts, the engine asks the `agentcookie` sidecar (if it is on your `PATH`) for `.x.com` cookies **only with explicit permission**: `BROWSER_CONSENT=true` (given in setup) or `AGENTCOOKIE=on`. Missing consent means no sidecar read. Set `AGENTCOOKIE=off` to disable only the sidecar.
 - The MCP server disables browser cookies unless you set `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES`.
 
 ### Installs and external programs
 
 - First-run setup installs `yt-dlp` with Homebrew when it's missing on macOS (a well-known package from a standard package manager). It installs nothing else: it never runs `npx`, `npm`, `curl | sh`, or `git clone`, and never downloads or builds third-party CLIs.
 - arXiv and Techmeme are built-in stdlib HTTP clients. The optional Digg and Trustpilot CLIs are only *detected*; when missing, setup prints `bash scripts/build-pp-cli.sh <slug>`, a user-run script that builds the CLI from a pinned commit of a reviewed fork (`GOTOOLCHAIN=local`, `-mod=readonly`, checksum-verified dependencies) and refuses to build if the fetched commit doesn't match the pin. `tests/test_no_runtime_installs.py` enforces that the engine spawns no installers.
-- During research, the engine can run `node` (the vendored X client), `yt-dlp`, `gh`, the Printing Press CLIs, `brightdata`, `grok`, `xurl`, `pass`, and `pdftotext`, depending on which sources you turned on. On macOS it also runs `security` and `openssl` to decrypt Chromium cookies.
+- During research, the engine can run `node` (the vendored X client), `yt-dlp`, `gh`, the Printing Press CLIs, `brightdata`, `grok`, `xurl`, `pass`, and `pdftotext`, depending on which sources you turned on. On macOS it also runs `security` to read the Chromium Safe Storage passphrase; cookie values are decrypted in-process (stdlib AES, `lib/aes_cbc.py`), so the derived key never appears in any process's arguments.
 
 ### Local files
 

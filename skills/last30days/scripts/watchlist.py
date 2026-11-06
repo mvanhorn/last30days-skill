@@ -204,7 +204,6 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             [
                 sys.executable,
                 str(SCRIPT_DIR / "last30days.py"),
-                search_term,
                 "--emit=json",
                 "--json-profile=raw",
                 "--quick",
@@ -215,6 +214,10 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
                 # read / unattended macOS Keychain prompt when a user has set
                 # FROM_BROWSER=auto for interactive use.
                 "--no-browser-cookies",
+                # "--" ends option parsing: a stored topic that starts with
+                # "-" can never be read as an engine flag.
+                "--",
+                search_term,
             ],
             capture_output=True,
             text=True,

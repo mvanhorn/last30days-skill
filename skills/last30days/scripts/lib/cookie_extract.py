@@ -431,7 +431,7 @@ def extract_chrome_cookies(
 ) -> Optional[Dict[str, str]]:
     """Extract cookies from Chrome for the given domain and cookie names.
 
-    macOS only — uses Keychain + system openssl for AES-128-CBC decryption.
+    macOS only — uses Keychain + in-process AES-128-CBC decryption (lib.aes_cbc).
     Linux/Windows not supported (Chrome uses platform-specific encryption).
 
     Returns:

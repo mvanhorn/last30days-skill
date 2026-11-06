@@ -1,0 +1,1 @@
+Install-time scans now cover every executable file in the skill. The vendored X client is no longer excluded from scans. It reads credentials from its environment only and has a checksum-pinned manifest; its write endpoints are removed.

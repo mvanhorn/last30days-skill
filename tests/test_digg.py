@@ -266,7 +266,8 @@ def test_search_digg_passes_since_30d(monkeypatch):
     assert "--since" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--since") + 1] == "30d"
     assert "--agent" in captured["cmd"]
-    assert captured["cmd"][:3] == [digg.CLI_BIN, "search", "openclaw"]
+    assert captured["cmd"][:2] == [digg.CLI_BIN, "search"]
+    assert captured["cmd"][-2:] == ["--", "openclaw"]
     assert captured["cmd"][captured["cmd"].index("--topic") + 1] == "ai,tech"
 
 

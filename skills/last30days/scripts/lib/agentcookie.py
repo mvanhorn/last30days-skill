@@ -56,21 +56,33 @@ def _log(msg: str) -> None:
 
 
 def is_disabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """True when cookie refusal or ``AGENTCOOKIE=off`` disables the sidecar."""
+    """True unless the user explicitly allowed the sidecar cookie read.
+
+    The sidecar reads live x.com session cookies, so it is opt-in: it runs
+    only with ``BROWSER_CONSENT=true`` (consented setup) or ``AGENTCOOKIE=on``.
+    An explicit refusal (``BROWSER_CONSENT=false`` / ``FROM_BROWSER=off``)
+    and ``AGENTCOOKIE=off`` always win; ``AGENTCOOKIE=on`` cannot override a
+    refusal. Missing consent means disabled.
+    """
     from . import env
 
-    consent_config = config if config is not None else {
-        name: env.read_secret_env(name)
-        for name in ("BROWSER_CONSENT", "FROM_BROWSER")
+    def _value(name: str) -> str:
+        raw = config.get(name) if config is not None else None
+        if raw is None or raw == "":
+            raw = env.read_secret_env(name)
+        return "" if raw is None else str(raw)
+
+    consent_config = {
+        name: (_value(name) or None) for name in ("BROWSER_CONSENT", "FROM_BROWSER")
     }
     if env.cookie_access_denied(consent_config):
         return True
-    raw = ""
-    if config is not None:
-        raw = config.get("AGENTCOOKIE") or ""
-    if not raw:
-        raw = env.read_secret_env("AGENTCOOKIE") or ""
-    return str(raw).strip().lower() == "off"
+    toggle = _value("AGENTCOOKIE").strip().lower()
+    if toggle == "off":
+        return True
+    if toggle == "on":
+        return False
+    return not env.cookie_access_granted(consent_config)
 
 
 def is_available(config: Optional[Dict[str, Any]] = None) -> bool:

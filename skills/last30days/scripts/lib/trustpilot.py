@@ -155,7 +155,7 @@ def _company_identifier(topic: str) -> str:
 
 
 def _build_info_args(identifier: str) -> List[str]:
-    return [CLI_BIN, "info", identifier, "--agent"]
+    return [CLI_BIN, "info", "--agent", "--", identifier]
 
 
 def _normalize_name(text: str) -> str:
@@ -258,7 +258,7 @@ def _search_domain(topic: str) -> Optional[str]:
         if key in _domain_cache:
             return _domain_cache[key]
     data = _run_cli(
-        [CLI_BIN, "search", topic.strip(), "--limit", "5", "--agent"],
+        [CLI_BIN, "search", "--limit", "5", "--agent", "--", topic.strip()],
         timeout=SEARCH_TIMEOUT,
     )
     if not isinstance(data, dict) or "error" in data:
