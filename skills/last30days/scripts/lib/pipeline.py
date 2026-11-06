@@ -54,6 +54,7 @@ from . import (
     perplexity,
     pinterest,
     planner,
+    podcasts,
     polymarket,
     providers,
     query,
@@ -104,6 +105,7 @@ SEARCH_ALIAS = {
     "bsky": "bluesky",
     "truth": "truthsocial",
     "web": "grounding",
+    "podcast": "podcasts",
     "xhs": "xiaohongshu",
     "meta": "meta_ads",
     "meta-ads": "meta_ads",
@@ -120,7 +122,7 @@ SEARCH_ALIAS = {
 # resolved per run, so every subquery would issue the identical page fetch.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
-    "telegram": 1, "meta_ads": 1, "devto": 1,
+    "telegram": 1, "meta_ads": 1, "devto": 1, "podcasts": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -132,7 +134,8 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
 #   meta_ads resolves one advertiser page per run, so a brand that genuinely
 #   ran two creatives this month is complete; a retry would re-resolve the
 #   page and re-spend the discovery credit.
-THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads"})
+#   podcasts often has few episodes in the window; a retry doubles Exa spend.
+THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads", "podcasts"})
 
 # Stream-artifact keys promoted to named top-level report artifacts. A stream
 # artifact only ever reaches the report as an anonymous entry in the grounding
@@ -320,6 +323,7 @@ MOCK_AVAILABLE_SOURCES = [
     "dripstack",
     "telegram",
     "devto",
+    "podcasts",
 ]
 
 
@@ -443,6 +447,11 @@ def available_sources(
             or config.get("SERPER_API_KEY") or config.get("PARALLEL_API_KEY")
             or env.keyless_web_allowed(config)):
         available.append("grounding")
+    if config.get("EXA_API_KEY") and (
+        "podcasts" in include_sources
+        or (requested_sources and "podcasts" in requested_sources)
+    ) and (not requested_sources or "podcasts" in requested_sources):
+        available.append("podcasts")
     if requested_sources and "jobs" in requested_sources:
         available.append("jobs")
     # Perplexity Agent API: opt-in additive source via INCLUDE_SOURCES=perplexity
@@ -2313,6 +2322,8 @@ def run(
         runtime = providers.mock_runtime(config, depth)
         reasoning_provider = None
         available = list(requested_sources or MOCK_AVAILABLE_SOURCES)
+        if not requested_sources and "podcasts" not in env.include_sources(config):
+            available = [s for s in available if s != "podcasts"]
         if corpus_enabled and "corpus" not in available:
             available.append("corpus")
         if not corpus_enabled and not corpus_requested:
@@ -2335,6 +2346,8 @@ def run(
         available.append("corpus")
     if web_backend == "none":
         available = [s for s in available if s != "grounding"]
+        if not (requested_sources and "podcasts" in requested_sources):
+            available = [s for s in available if s != "podcasts"]
     elif web_backend in ("brave", "exa", "serper", "parallel", "parallel-mcp", "keyless") and "grounding" not in available:
         available.append("grounding")
     if (
@@ -2432,6 +2445,7 @@ def run(
         # jobs injection must not widen either.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
         _ensure_devto_in_plan(plan, available)
+        _ensure_podcasts_in_plan(plan, available)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -3785,6 +3799,17 @@ def _apply_hiring_signal_gate(
     return summary
 
 
+def _ensure_podcasts_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
+    """Keep an opted-in source from disappearing in a default-source plan."""
+    if "podcasts" not in available or not plan.subqueries:
+        return
+    if not any("podcasts" in subquery.sources for subquery in plan.subqueries):
+        plan.subqueries[0].sources.append("podcasts")
+    if "podcasts" not in plan.source_weights:
+        plan.source_weights["podcasts"] = 1.0
+        plan.source_weights = planner._normalize_weights(plan.source_weights)
+
+
 def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
     """Give an activated dev.to source the primary subquery.
 
@@ -3819,6 +3844,7 @@ HOST_PLAN_BACKFILL_SOURCES = (
     "linkedin",
     "dripstack",
     "devto",
+    "podcasts",
     "telegram",
     "trustpilot",
 )
@@ -5757,6 +5783,12 @@ def _retrieve_stream_impl(
     from_date, to_date = date_range
     if mock:
         return _mock_stream_results(source, subquery)
+    if source == "podcasts":
+        return podcasts.search_podcasts(
+            subquery.search_query, date_range, config["EXA_API_KEY"],
+            deadline_monotonic=config.get("_research_deadline"),
+            cancel=config.get("_enrich_cancel"),
+        )
     if source == "grounding":
         return grounding.web_search(
             subquery.search_query, date_range, config, backend=web_backend)
@@ -6560,6 +6592,19 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "why_relevant": "Mock X result",
             }
         ],
+        "podcasts": [
+            {
+                "id": "PC1",
+                "title": f"{subquery.search_query} podcast episode",
+                "url": "https://exa.ai/library/podcast/example/episode/mock-1",
+                "source_domain": "exa.ai",
+                "snippet": f"A transcript passage about {subquery.search_query} from the show.",
+                "date": dates.get_date_range(3)[0],
+                "relevance": 0.85,
+                "why_relevant": "Exa podcast search",
+                "metadata": {"show": "Example Show", "hosts": ["Example Host"], "guests": []},
+            }
+        ],
         "grounding": [
             {
                 "id": "WB1",
@@ -6805,9 +6850,9 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
             },
         ],
     }
-    if source == "grounding":
+    if source in {"grounding", "podcasts"}:
         return payloads.get(source, []), {
-            "label": subquery.label,
+            "label": "exa-podcasts" if source == "podcasts" else subquery.label,
             "mock": True,
             "webSearchQueries": [subquery.search_query],
             "resultCount": 1,

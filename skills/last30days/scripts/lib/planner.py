@@ -157,6 +157,7 @@ SOURCE_CAPABILITIES = {
     "telegram": {"discussion", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
+    "podcasts": {"discussion", "reference", "analysis"},
     "perplexity": {"web", "reference", "analysis"},
     "jobs": {"jobs", "company_signal", "link"},
     "corpus": {"reference", "analysis"},

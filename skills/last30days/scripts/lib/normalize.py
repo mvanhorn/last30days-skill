@@ -78,6 +78,7 @@ def normalize_source_items(
         "amazon": _normalize_amazon,
         "meta_ads": _normalize_meta_ads,
         "grounding": _normalize_grounding,
+        "podcasts": _normalize_podcasts,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
         "perplexity": _normalize_grounding,
@@ -102,7 +103,7 @@ def normalize_source_items(
         # Simulation" miss: 26 open roles filtered to 3 by a 30-day window).
         # Keep the full board; recency is annotated, not used to drop.
         return normalized
-    require_date = source == "grounding"
+    require_date = source in {"grounding", "podcasts"}
     filtered = filter_by_date_range(
         normalized, from_date, to_date, require_date=require_date
     )
@@ -1046,6 +1047,18 @@ def _normalize_github(
             "date_is_snapshot": bool(metadata.get("date_is_snapshot")),
         },
     )
+
+
+def _normalize_podcasts(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    normalized = _normalize_grounding(source, item, index, from_date, to_date)
+    normalized.container = normalized.metadata.get("show") or normalized.container
+    return normalized
 
 
 def _normalize_grounding(

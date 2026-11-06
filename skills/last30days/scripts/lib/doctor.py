@@ -162,6 +162,7 @@ SOURCE_ORDER = (
     "polymarket",
     "github",
     "devto",
+    "podcasts",
     "digg",
     "techmeme",
     "arxiv",
@@ -675,6 +676,17 @@ def _hackernews_record(config):
     return _record(status=health.OK, requires="none (free Algolia API)")
 
 
+def _podcasts_record(config):
+    if not config.get("EXA_API_KEY"):
+        return _record(status="unconfigured", requires="EXA_API_KEY",
+                       fix="set EXA_API_KEY and add podcasts to INCLUDE_SOURCES")
+    if "podcasts" in env.include_sources(config):
+        return _record(status=health.OK, requires="EXA_API_KEY")
+    return _record(status="opt-in", requires="EXA_API_KEY",
+                   fix="add podcasts to INCLUDE_SOURCES (or request --search=podcasts)",
+                   note="off by default")
+
+
 def _devto_record(config):
     requires = "none (public Forem API)"
     if "devto" in env.include_sources(config):
@@ -998,6 +1010,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "polymarket": _polymarket_record,
     "github": _github_record,
     "devto": _devto_record,
+    "podcasts": _podcasts_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,
