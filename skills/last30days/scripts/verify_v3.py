@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import tempfile
 import json
 import os
 import statistics
@@ -168,7 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-latency", action="store_true", help="Skip live latency sampling")
     parser.add_argument("--baseline", default="HEAD~1")
     parser.add_argument("--candidate", default="WORKTREE")
-    parser.add_argument("--output-dir", default="/tmp/last30days-v3-verify")
+    parser.add_argument("--output-dir", default=None,
+                        help="Defaults to a fresh private mkdtemp directory")
     parser.add_argument("--quick-eval", action="store_true", help="Use evaluator quick mode")
     parser.add_argument("--eval-limit", type=int, default=20)
     parser.add_argument("--eval-timeout", type=int, default=240)
@@ -187,7 +189,7 @@ def main() -> int:
         summary["eval"] = verify_eval(
             baseline=args.baseline,
             candidate=args.candidate,
-            output_dir=args.output_dir,
+            output_dir=args.output_dir or tempfile.mkdtemp(prefix="last30days-v3-verify-"),
             quick=args.quick_eval,
             limit=args.eval_limit,
             timeout=args.eval_timeout,

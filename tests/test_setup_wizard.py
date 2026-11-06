@@ -1171,3 +1171,32 @@ class TestDeviceIntervalClamp:
 
         assert setup_wizard.poll_device_auth("dc", raw, timeout=30) == "tok"
         mock_sleep.assert_called_once_with(expected)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership/permissions")
+class TestPrivateTmpDir:
+    def test_no_config_device_handle_lives_in_private_dir(self, tmp_path, monkeypatch):
+        import stat
+        import tempfile
+
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        monkeypatch.setattr(setup_wizard_env_module(), "CONFIG_FILE", None)
+        path = setup_wizard._device_handle_path()
+        assert path.parent == tmp_path / f"last30days-{os.getuid()}"
+        assert stat.S_IMODE(os.stat(path.parent).st_mode) == 0o700
+
+    def test_private_tmp_dir_refuses_symlink(self, tmp_path, monkeypatch):
+        import tempfile
+
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (tmp_path / f"last30days-{os.getuid()}").symlink_to(elsewhere)
+        with pytest.raises(OSError):
+            setup_wizard.private_tmp_dir()
+
+
+def setup_wizard_env_module():
+    from lib import env
+
+    return env

@@ -17,7 +17,9 @@ GEMINI_PRO = "gemini-3.1-pro-preview"
 OPENAI_DEFAULT = "gpt-5.4-nano"
 XAI_DEFAULT = "grok-4.20-0309-non-reasoning"
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+# The API key travels in the x-goog-api-key header, never the URL query
+# string (URLs end up in logs, proxies, and error messages).
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 XAI_RESPONSES_URL = "https://api.x.ai/v1/responses"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -254,9 +256,9 @@ class GeminiClient(ReasoningClient):
         if tools:
             body["tools"] = tools
         return self._post(
-            GEMINI_URL.format(model=model, api_key=self.api_key),
+            GEMINI_URL.format(model=model),
             body,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key},
             timeout=90,
         )
 

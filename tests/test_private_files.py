@@ -54,3 +54,16 @@ def test_permission_failure_closes_descriptor_without_writing(tmp_path):
     with pytest.raises(OSError):
         os.fstat(descriptor)
     assert path.read_text(encoding="utf-8") == "old content"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink semantics")
+def test_refuses_to_write_through_a_planted_symlink(tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("original")
+    link = tmp_path / "state.json"
+    link.symlink_to(victim)
+
+    with pytest.raises(OSError):
+        private_files.write_private_text(link, "attacker-controlled destination")
+
+    assert victim.read_text() == "original"

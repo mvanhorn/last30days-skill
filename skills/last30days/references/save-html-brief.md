@@ -28,9 +28,14 @@ The contract has two modes:
 #      wrote in chat.
 #    In both modes, do not paraphrase, summarize, or reorder. The HTML must read
 #    identically to the intended report in voice and citations.
-SYNTHESIS_FILE="/tmp/last30days-synthesis-${CLAUDE_SESSION_ID}.md"
-# >| not >: fixed path may already exist on a same-session re-run; a plain >
-# is refused under `set -o noclobber`.
+#    The file lives in a private per-user directory (mode 0700), never in a
+#    shared /tmp, so another local user cannot pre-create, read, or symlink it.
+#    The name is stable per session so a later publish step can reuse it.
+SYNTHESIS_DIR="${HOME}/.config/last30days/tmp"
+mkdir -p "${SYNTHESIS_DIR}" && chmod 700 "${SYNTHESIS_DIR}"
+SYNTHESIS_FILE="${SYNTHESIS_DIR}/synthesis-${CLAUDE_SESSION_ID:-session}.md"
+# >| not >: a same-session re-run rewrites this private file; a plain > is
+# refused under `set -o noclobber`.
 cat >| "${SYNTHESIS_FILE}" << 'SYNTHESIS_EOF'
 What I learned:
 

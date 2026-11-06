@@ -98,7 +98,7 @@ def test_main_exec_spawns_box_chrome_on_extras_with_18800():
         mock.patch("lib.env.x_extras_enabled", return_value=True),
         mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
         mock.patch.object(bcl.env, "get_config", return_value={}),
-        mock.patch("os.makedirs"),
+        mock.patch.object(bcl, "prepare_private_profile_dir", return_value=None),
         mock.patch("subprocess.Popen", popen),
     ):
         rc = bcl.main(["--exec"])
@@ -196,3 +196,49 @@ def test_skill_md_pins_browser_cdp_url_not_raw_cookies():
     assert "BROWSER_CDP_URL=http://127.0.0.1:18800" in text
     # The recipe must forbid writing the raw cookie pair to .env.
     assert "never `AUTH_TOKEN`/`CT0`" in text or "Do NOT write `AUTH_TOKEN`" in text
+
+
+def test_default_profile_dir_is_private_not_shared_tmp():
+    assert not bcl.DEFAULT_PROFILE_DIR.startswith("/tmp")
+    assert bcl.DEFAULT_PROFILE_DIR.endswith("x-chrome-profile")
+
+
+def test_prepare_private_profile_dir_creates_0700(tmp_path):
+    import os
+    import stat
+
+    target = tmp_path / "cfg" / "x-chrome-profile"
+    assert bcl.prepare_private_profile_dir(str(target)) is None
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o700
+
+
+def test_prepare_private_profile_dir_tightens_existing(tmp_path):
+    import os
+    import stat
+
+    target = tmp_path / "x-chrome-profile"
+    target.mkdir(mode=0o755)
+    assert bcl.prepare_private_profile_dir(str(target)) is None
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o700
+
+
+def test_prepare_private_profile_dir_refuses_symlink(tmp_path):
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    link = tmp_path / "x-chrome-profile"
+    link.symlink_to(real)
+    assert "symlink" in bcl.prepare_private_profile_dir(str(link))
+
+
+def test_exec_refuses_launch_when_profile_dir_unsafe():
+    popen = mock.MagicMock()
+    with (
+        mock.patch("lib.env.x_extras_enabled", return_value=True),
+        mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+        mock.patch.object(bcl.env, "get_config", return_value={}),
+        mock.patch.object(bcl, "prepare_private_profile_dir", return_value="x is a symlink"),
+        mock.patch("subprocess.Popen", popen),
+    ):
+        rc = bcl.main(["--exec"])
+    assert rc == 1
+    popen.assert_not_called()

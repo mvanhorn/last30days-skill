@@ -118,7 +118,19 @@ for key in "${TARGETS[@]}"; do
     skipped=$((skipped + 1))
     continue
   fi
-  security add-generic-password -U -a "$USER" -s "${PREFIX}${key}" -w "$value"
+  # Feed the command to `security -i` on stdin so the secret never appears in
+  # any process's argv (visible to other local users via `ps`). Backslashes and
+  # double quotes are escaped for security's interactive tokenizer.
+  escaped=${value//\\/\\\\}
+  escaped=${escaped//\"/\\\"}
+  if ! printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' \
+      "$USER" "${PREFIX}${key}" "$escaped" | security -i >/dev/null; then
+    echo "  failed: $key (security add-generic-password error)" >&2
+    unset value escaped
+    skipped=$((skipped + 1))
+    continue
+  fi
+  unset value escaped
   if [[ "$existed" -eq 1 ]]; then
     replaced=$((replaced + 1))
   else

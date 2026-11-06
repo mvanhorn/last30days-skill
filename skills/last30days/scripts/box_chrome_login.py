@@ -43,7 +43,12 @@ from lib import chrome_cdp, env  # noqa: E402
 
 # The last30days extras NUX port — single source of truth is chrome_cdp.
 EXTRAS_CDP_PORT = chrome_cdp._BOX_CHROME_PORT
-DEFAULT_PROFILE_DIR = "/tmp/last30days-x-chrome"
+# The login profile holds a live x.com session, so it lives in a private,
+# per-user directory (0700) under the config dir -- never a shared /tmp path
+# that another local user could pre-create, read, or symlink.
+DEFAULT_PROFILE_DIR = str(
+    (env.CONFIG_DIR or Path.home() / ".config" / "last30days") / "x-chrome-profile"
+)
 LOGIN_URL = "https://x.com/login"
 BOX_CHROME_BIN = "box-chrome"
 # Printed on an official-only host instead of the MacBook note. Names no
@@ -140,6 +145,31 @@ def build_recipe(
     }
 
 
+def prepare_private_profile_dir(path: str) -> Optional[str]:
+    """Create ``path`` as a private (0700) directory owned by this user.
+
+    Returns None on success, else a one-line reason to refuse the launch: the
+    path is a symlink, is not a directory, or is owned by another user.
+    """
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        if os.path.islink(path):
+            return f"{path} is a symlink"
+        if not os.path.exists(path):
+            os.mkdir(path, 0o700)
+        st = os.lstat(path)
+        import stat as _stat
+
+        if not _stat.S_ISDIR(st.st_mode):
+            return f"{path} is not a directory"
+        if hasattr(os, "getuid") and st.st_uid != os.getuid():
+            return f"{path} is owned by another user"
+        os.chmod(path, 0o700)
+    except OSError as exc:
+        return f"cannot prepare {path}: {exc}"
+    return None
+
+
 def render_recipe(recipe: Dict[str, Any]) -> str:
     """Human-readable recipe. Contains no cookie values (none are read)."""
     lines: List[str] = []
@@ -160,7 +190,7 @@ def render_recipe(recipe: Dict[str, Any]) -> str:
     cmd = " ".join(recipe["command"])
     lines.append("[box-chrome login] Extras host. Launch the throwaway login Chrome:")
     lines.append("")
-    lines.append(f"  mkdir -p {recipe['profile_dir']}")
+    lines.append(f"  mkdir -p -m 700 {recipe['profile_dir']}")
     lines.append(f"  {env_prefix} {cmd}")
     lines.append("")
     lines.append(recipe["note"])
@@ -190,10 +220,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Refuse to spawn on a non-extras host, or when box-chrome is missing.
         if not recipe["applies"] or not recipe["command"]:
             return 0
-        try:
-            os.makedirs(recipe["profile_dir"], exist_ok=True)
-        except OSError:
-            pass
+        problem = prepare_private_profile_dir(recipe["profile_dir"])
+        if problem:
+            print(f"[box-chrome login] refusing to launch: {problem}", file=sys.stderr)
+            return 1
         launch_env = os.environ.copy()
         launch_env.update(recipe["env"])
         try:

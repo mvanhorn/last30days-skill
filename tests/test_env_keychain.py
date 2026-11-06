@@ -59,10 +59,13 @@ def test_setup_presence_and_counters_use_stub_security(tmp_path, existed, replac
     stub = tmp_path / "security"
     stub.write_text(
         '#!/bin/sh\n'
-        'printf "%s\\n" "$1" >> "$STUB_LOG"\n'
+        'printf "%s\\n" "$*" >> "$STUB_ARGV"\n'
         'case "$1" in\n'
-        '  find-generic-password) exit "$STUB_STATUS" ;;\n'
-        '  add-generic-password) exit 0 ;;\n'
+        '  -i) while IFS= read -r line; do\n'
+        '        printf "%s\\n" "${line%% *}" >> "$STUB_LOG"\n'
+        '        printf "%s\\n" "$line" >> "$STUB_STDIN"\n'
+        '      done; exit 0 ;;\n'
+        '  find-generic-password) printf "%s\\n" "$1" >> "$STUB_LOG"; exit "$STUB_STATUS" ;;\n'
         '  *) exit 99 ;;\n'
         'esac\n', encoding="utf-8",
     )
@@ -75,13 +78,18 @@ def test_setup_presence_and_counters_use_stub_security(tmp_path, existed, replac
     result = subprocess.run(
         command, input=value, text=True, capture_output=True, timeout=5,
         env={"PATH": str(tmp_path), "USER": "fixture-user", "OSTYPE": "darwin",
-             "STUB_LOG": str(log_path), "STUB_STATUS": "0" if existed else "44"},
+             "STUB_LOG": str(log_path), "STUB_STATUS": "0" if existed else "44",
+             "STUB_ARGV": str(tmp_path / "argv"), "STUB_STDIN": str(tmp_path / "stdin")},
     )
     assert result.returncode == 0, result.stderr
     assert summary in result.stdout
     assert "DUMMY-VALUE" not in result.stdout + result.stderr
     calls = log_path.read_text().splitlines()
     assert calls == ["find-generic-password"] + ([] if existed and not replace else ["add-generic-password"])
+    # The secret reaches `security` only on stdin, never in argv.
+    assert "DUMMY-VALUE" not in (tmp_path / "argv").read_text()
+    if not (existed and not replace):
+        assert '-w "DUMMY-VALUE"' in (tmp_path / "stdin").read_text()
 
 # ---------------------------------------------------------------------------
 # _load_keychain unit tests
@@ -397,3 +405,12 @@ def test_x_bearer_token_is_a_keychain_key():
     the setup-keychain.sh helper (parity is enforced above)."""
     assert "X_BEARER_TOKEN" in env.KEYCHAIN_KEYS
     assert _parse_all_keys_from_shell(SETUP_KEYCHAIN_SH).count("X_BEARER_TOKEN") == 1
+
+
+def test_setup_keychain_never_passes_secret_in_argv():
+    """`security add-generic-password -w "$value"` exposes the secret to every
+    local user via `ps`; the script must feed it to `security -i` on stdin."""
+    text = SETUP_KEYCHAIN_SH.read_text(encoding="utf-8")
+    code = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any('-w "$value"' in ln or "-w $value" in ln for ln in code)
+    assert any("security -i" in ln for ln in code)

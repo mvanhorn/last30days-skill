@@ -9,7 +9,8 @@ def write_private_text(path: Path, content: str, *, encoding: str | None = None)
     if os.name != "posix":
         return path.write_text(content, encoding=encoding)
 
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
+    # O_NOFOLLOW: never write through a symlink planted at ``path``.
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         os.fchmod(fd, 0o600)
         stream = os.fdopen(fd, "w", encoding=encoding)

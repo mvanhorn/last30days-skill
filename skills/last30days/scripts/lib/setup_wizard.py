@@ -1157,8 +1157,9 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
 def _device_handle_path() -> Path:
     """Where run_github_start persists the device_code/interval for run_github_poll.
 
-    Kept next to the .env in the config dir; falls back to the OS temp dir when
-    no config dir is resolvable (clean/no-config mode).
+    Kept next to the .env in the config dir; in clean/no-config mode it falls
+    back to a private per-user directory (0700, owner-checked) under the OS
+    temp dir -- never a fixed, shared-``/tmp`` file name.
     """
     try:
         from . import env as _env
@@ -1167,9 +1168,28 @@ def _device_handle_path() -> Path:
             return _env.CONFIG_FILE.parent / ".github-device-handle.json"
     except Exception:
         pass
+    return private_tmp_dir() / "github-device-handle.json"
+
+
+def private_tmp_dir() -> Path:
+    """A per-user 0700 directory under the OS temp dir. Raises OSError when
+    the path is a symlink, not a directory, or owned by someone else."""
+    import stat
     import tempfile
 
-    return Path(tempfile.gettempdir()) / "last30days-github-device-handle.json"
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    path = Path(tempfile.gettempdir()) / f"last30days-{uid}"
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"{path} is not a private directory")
+    if hasattr(os, "getuid") and st.st_uid != uid:
+        raise OSError(f"{path} is owned by another user")
+    os.chmod(path, 0o700)
+    return path
 
 
 def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
@@ -1292,8 +1312,8 @@ def run_github_start() -> Dict[str, Any]:
         # Persist the poll handle (0o600) so a separate --github-poll process can
         # resume it. Best-effort: the in-memory one-shot path does not depend on
         # this write succeeding.
-        path = _device_handle_path()
         try:
+            path = _device_handle_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             write_private_text(path, json.dumps(handle), encoding="utf-8")
             if os.name != "posix":
