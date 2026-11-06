@@ -193,15 +193,15 @@ def source_coverage_recall(ranking: list[dict[str, Any]], judged_pool: list[dict
     return len(hit_sources & good_sources) / len(good_sources)
 
 
+_GOOGLE_JUDGE_KEY_NAMES = ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY")
+
+
 def resolve_google_judge_api_key(config: dict[str, Any]) -> str | None:
-    return (
-        os.environ.get("GOOGLE_API_KEY")
-        or config.get("GOOGLE_API_KEY")
-        or os.environ.get("GEMINI_API_KEY")
-        or config.get("GEMINI_API_KEY")
-        or os.environ.get("GOOGLE_GENAI_API_KEY")
-        or config.get("GOOGLE_GENAI_API_KEY")
-    )
+    for name in _GOOGLE_JUDGE_KEY_NAMES:
+        value = os.environ.get(name) or config.get(name)
+        if value:
+            return value
+    return None
 
 
 def extract_gemini_text(payload: dict[str, Any]) -> str:

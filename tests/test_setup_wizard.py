@@ -370,7 +370,7 @@ class TestYtdlpAutoInstall:
 
 
 class TestDiggAutoInstall:
-    """Tests for digg-pp-cli auto-install via npx in run_auto_setup()."""
+    """digg-pp-cli is detected, never installed, by run_auto_setup()."""
 
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("shutil.which")
@@ -400,103 +400,19 @@ class TestDiggAutoInstall:
 
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("shutil.which")
-    def test_digg_no_npx(self, mock_which, mock_extract, tmp_path, monkeypatch):
-        """digg-pp-cli missing + npx missing -> no_npx, no subprocess."""
+    def test_digg_missing_never_runs_npx(self, mock_which, mock_extract, tmp_path, monkeypatch):
+        """digg-pp-cli missing -> not_installed and NO subprocess, even when
+        npx is on PATH: setup never downloads or builds third-party code."""
         self._empty_home(tmp_path, monkeypatch)
-        mock_which.return_value = None
+        mock_which.side_effect = lambda cmd: "/opt/homebrew/bin/npx" if cmd == "npx" else None
 
         with patch("subprocess.run") as mock_subproc:
             results = setup_wizard.run_auto_setup({})
             mock_subproc.assert_not_called()
 
         assert results["digg_installed"] is False
-        assert results["digg_action"] == "no_npx"
-
-    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_digg_install_succeeds(self, mock_which, mock_subproc, mock_extract, tmp_path, monkeypatch):
-        """npx present + install succeeds + binary verifiable -> installed."""
-        self._empty_home(tmp_path, monkeypatch)
-        # First which("digg-pp-cli") (pre-install) -> None, npx -> present,
-        # then post-install which("digg-pp-cli") -> resolves.
-        calls = {"digg": 0}
-
-        def which_side_effect(cmd):
-            if cmd == "digg-pp-cli":
-                calls["digg"] += 1
-                return None if calls["digg"] == 1 else "/Users/me/go/bin/digg-pp-cli"
-            if cmd == "npx":
-                return "/opt/homebrew/bin/npx"
-            return None
-        mock_which.side_effect = which_side_effect
-        mock_subproc.return_value = MagicMock(returncode=0, stderr="")
-
-        results = setup_wizard.run_auto_setup({})
-
-        # The wizard now also best-effort-installs the additional default-on
-        # Printing Press sources (arxiv/techmeme/trustpilot), so digg is one of
-        # several install calls rather than the only one. Argv[0] must be the
-        # *resolved* npx path (mirroring shutil.which's return value), not the
-        # bare "npx" string -- passing the bare name breaks Windows, where
-        # shutil.which resolves PATHEXT (npx.CMD) but subprocess.run does not.
-        mock_subproc.assert_any_call(
-            ["/opt/homebrew/bin/npx", "-y", setup_wizard.PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
-            capture_output=True, text=True, timeout=setup_wizard.DIGG_INSTALL_TIMEOUT,
-        )
-        assert results["digg_installed"] is True
-        assert results["digg_action"] == "installed"
-
-    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_digg_install_uses_resolved_windows_npx_path(
-        self, mock_which, mock_subproc, mock_extract, tmp_path, monkeypatch
-    ):
-        """Regression for #904: a Windows-style resolved npx path (PATHEXT
-        resolution, e.g. npx.CMD) must be passed to subprocess.run verbatim --
-        not the bare string "npx", which fails with WinError 2 on Windows
-        because CreateProcess does not do PATHEXT resolution the way
-        shutil.which does."""
-        self._empty_home(tmp_path, monkeypatch)
-        calls = {"digg": 0}
-        windows_npx = r"C:\Program Files\nodejs\npx.CMD"
-
-        def which_side_effect(cmd):
-            if cmd == "digg-pp-cli":
-                calls["digg"] += 1
-                return None if calls["digg"] == 1 else r"C:\Users\me\.local\bin\digg-pp-cli"
-            if cmd == "npx":
-                return windows_npx
-            return None
-        mock_which.side_effect = which_side_effect
-        mock_subproc.return_value = MagicMock(returncode=0, stderr="")
-
-        results = setup_wizard.run_auto_setup({})
-
-        mock_subproc.assert_any_call(
-            [windows_npx, "-y", setup_wizard.PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
-            capture_output=True, text=True, timeout=setup_wizard.DIGG_INSTALL_TIMEOUT,
-        )
-        assert results["digg_installed"] is True
-        assert results["digg_action"] == "installed"
-
-    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_digg_install_fails_nonzero(self, mock_which, mock_subproc, mock_extract, tmp_path, monkeypatch):
-        """npx install returns non-zero -> install_failed with stderr."""
-        self._empty_home(tmp_path, monkeypatch)
-        def which_side_effect(cmd):
-            return "/opt/homebrew/bin/npx" if cmd == "npx" else None
-        mock_which.side_effect = which_side_effect
-        mock_subproc.return_value = MagicMock(returncode=1, stderr="npm ERR! boom")
-
-        results = setup_wizard.run_auto_setup({})
-
-        assert results["digg_installed"] is False
-        assert results["digg_action"] == "install_failed"
-        assert "boom" in results["digg_stderr"]
+        assert results["digg_action"] == "not_installed"
+        assert "digg_stderr" not in results
 
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("shutil.which")
@@ -517,48 +433,6 @@ class TestDiggAutoInstall:
         assert results["digg_installed"] is False
         assert results["digg_action"] == "installed_off_path"
         assert results["digg_path"] == str(binary)
-
-    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_digg_install_zero_but_not_on_path(self, mock_which, mock_subproc, mock_extract, tmp_path, monkeypatch):
-        """rc=0, binary at $HOME/.local/bin but not on PATH -> installed_off_path."""
-        self._empty_home(tmp_path, monkeypatch)
-        def which_side_effect(cmd):
-            return "/opt/homebrew/bin/npx" if cmd == "npx" else None
-        mock_which.side_effect = which_side_effect
-
-        local_bin = tmp_path / ".local" / "bin"
-
-        def fake_install(*args, **kwargs):
-            local_bin.mkdir(parents=True, exist_ok=True)
-            binary = local_bin / "digg-pp-cli"
-            binary.write_text("#!/bin/sh\n")
-            binary.chmod(0o755)
-            return MagicMock(returncode=0, stderr="")
-        mock_subproc.side_effect = fake_install
-
-        results = setup_wizard.run_auto_setup({})
-
-        assert results["digg_installed"] is False
-        assert results["digg_action"] == "installed_off_path"
-        assert results["digg_path"] == str(local_bin / "digg-pp-cli")
-
-    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_digg_install_timeout_does_not_raise(self, mock_which, mock_subproc, mock_extract, tmp_path, monkeypatch):
-        """subprocess raising (e.g. timeout) -> install_failed, no exception escapes."""
-        self._empty_home(tmp_path, monkeypatch)
-        def which_side_effect(cmd):
-            return "/opt/homebrew/bin/npx" if cmd == "npx" else None
-        mock_which.side_effect = which_side_effect
-        mock_subproc.side_effect = subprocess.TimeoutExpired(cmd="npx", timeout=300)
-
-        results = setup_wizard.run_auto_setup({})
-
-        assert results["digg_installed"] is False
-        assert results["digg_action"] == "install_failed"
 
 
 class TestWriteSetupConfig:
@@ -939,24 +813,19 @@ class TestGetSetupStatusText:
         assert "yt-dlp install failed" in text
         assert "manually" in text
 
-    def test_status_text_digg_installed(self):
-        results = {"cookies_found": {}, "ytdlp_action": "already_installed",
-                   "digg_action": "installed", "env_written": False}
-        text = setup_wizard.get_setup_status_text(results)
-        assert "Installed Digg CLI" in text
-
     def test_status_text_digg_already_installed(self):
         results = {"cookies_found": {}, "ytdlp_action": "already_installed",
                    "digg_action": "already_installed", "env_written": False}
         text = setup_wizard.get_setup_status_text(results)
         assert "Digg CLI already installed" in text
 
-    def test_status_text_digg_install_failed(self):
+    def test_status_text_digg_not_installed_prints_pinned_build(self):
         results = {"cookies_found": {}, "ytdlp_action": "already_installed",
-                   "digg_action": "install_failed", "env_written": False}
+                   "digg_action": "not_installed", "env_written": False}
         text = setup_wizard.get_setup_status_text(results)
-        assert "Digg CLI install failed" in text
-        assert "printing-press-library" in text
+        assert "Digg CLI not installed" in text
+        assert "build-pp-cli.sh" in text
+        assert "npx" not in text
 
     def test_status_text_digg_installed_off_path(self):
         home = Path.home()
@@ -1004,12 +873,6 @@ class TestGetSetupStatusText:
         expected = str(home / ".local" / "bin")
         with patch.object(setup_wizard.os, "name", "nt"):
             assert setup_wizard._digg_bin_dir_hint(digg_path) == expected
-
-    def test_status_text_digg_no_npx(self):
-        results = {"cookies_found": {}, "ytdlp_action": "already_installed",
-                   "digg_action": "no_npx", "env_written": False}
-        text = setup_wizard.get_setup_status_text(results)
-        assert "Digg CLI not installed" in text
 
     def test_status_text_digg_absent_key_renders(self):
         """No digg_action key (defensive) -> no Digg line, no error."""
@@ -1068,8 +931,8 @@ class TestSetupSubcommand:
         ), patch.object(cli.env, "CONFIG_FILE", env_path), patch(
             "lib.cookie_extract.extract_cookies_with_source",
             side_effect=AssertionError("browser read despite FROM_BROWSER=off"),
-        ), patch.object(setup_wizard, "_install_digg_cli", return_value=(False, "no_npx", "", None)), patch.object(
-            setup_wizard, "install_default_pp_sources", return_value={}
+        ), patch.object(setup_wizard, "_detect_digg_cli", return_value=(False, "not_installed", "")), patch.object(
+            setup_wizard, "detect_default_pp_sources", return_value={}
         ), patch("shutil.which", return_value=None):
             assert cli.main() == 0
         content = env_path.read_text()

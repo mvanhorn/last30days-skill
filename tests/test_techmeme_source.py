@@ -1,73 +1,87 @@
 """Tests for the Techmeme source adapter (lib/techmeme.py).
 
-Covers the --json (not --agent) surface choice, header-row filtering,
-field mapping, date windowing to the research range, old-binary prose
-tolerance, and graceful degradation.
+Covers the native search-page client (URL, ported HTML parser against a
+recorded fixture), header-row filtering, field mapping, date windowing to the
+research range, and graceful degradation.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from lib import techmeme
+from lib import http, techmeme
 
 
-class _FakeProc:
-    returncode = 0
-    stdout = "{}"
-    stderr = ""
-
-    def __init__(self, stdout: str = "{}", returncode: int = 0, stderr: str = ""):
-        self.stdout = stdout
-        self.returncode = returncode
-        self.stderr = stderr
+SEARCH_FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "techmeme_search_nvidia.html"
 
 
-# ---- surface choice ----
+# ---- request + native parser ----
 
-def test_search_args_use_json_not_agent():
-    args = techmeme._build_search_args("AI agents")
-    assert "--json" in args
-    # --agent implies --compact, which blanked records pre-PR-1383.
-    assert "--agent" not in args
-    assert "--compact" not in args
-    # Techmeme `search` has no result-limit flag; --max-results breaks it.
-    assert "--max-results" not in args
-    assert "search" in args and "AI agents" in args
+def test_search_url_targets_archive_search_without_limit():
+    parts = urlsplit(techmeme._build_search_url("AI agents"))
+    assert (parts.scheme, parts.hostname, parts.path) == (
+        "https", "www.techmeme.com", "/search/d3results.jsp",
+    )
+    assert parse_qs(parts.query) == {"q": ["AI agents"], "wm": ["false"]}
 
 
-def test_search_invokes_only_search_no_sync(monkeypatch):
-    """search_techmeme must issue exactly one subprocess call -- the search --
-    and never a `sync` (search hits Techmeme's live archive, not the cache)."""
+def test_search_issues_exactly_one_request(monkeypatch):
     calls = []
 
-    def fake_run(cmd, timeout):
-        calls.append(list(cmd))
-        return _FakeProc(stdout=json.dumps([
-            {"num": 1, "source": "a.com",
-             "headline": "A real in-window headline about the topic",
-             "link": "https://t.co/a", "date": "2026-06-15"},
-        ]))
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url))
+        assert kwargs.get("raw") is True
+        return SEARCH_FIXTURE.read_text()
 
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
-    monkeypatch.setattr(techmeme.subproc, "run_with_timeout", fake_run)
-    out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27")
-    assert len(out["results"]) == 1
-    assert calls == [[techmeme.CLI_BIN, "search", "topic", "--json"]]
-    assert not any("sync" in c for c in calls)
+    monkeypatch.setattr(techmeme.http, "request", fake_request)
+    out = techmeme.search_techmeme("nvidia", "2026-10-07", "2026-11-06")
+    assert len(calls) == 1 and calls[0][0] == "GET"
+    assert out["results"]
+
+
+def test_parse_search_page_fixture():
+    records, markup_shift = techmeme.parse_search_page(SEARCH_FIXTURE.read_text())
+    assert not markup_shift
+    assert len(records) == 10
+    first = records[0]
+    assert first["num"] == 1
+    assert first["source"] == "bloomberg.com"
+    assert first["link"].startswith("https://www.bloomberg.com/news/articles/2026-11-06/")
+    assert first["headline"].startswith("Sources: Nvidia is requiring")
+    assert first["date"] == "2026-11-06"
+    assert all(r["date"] for r in records)
+
+
+def test_parse_search_page_no_results_is_empty():
+    assert techmeme.parse_search_page("<html><body>No results</body></html>") == ([], False)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Nov 6, 2026, 6:30 AM", "2026-11-06"),
+    ("November 6, 2026", "2026-11-06"),
+    ("garbage", ""),
+])
+def test_parse_date_layouts(text, expected):
+    assert techmeme._parse_date(text) == expected
+
+
+def test_http_error_returns_error(monkeypatch):
+    def boom(method, url, **kwargs):
+        raise http.HTTPError("boom", status_code=503)
+
+    monkeypatch.setattr(techmeme.http, "request", boom)
+    resp = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27")
+    assert resp["results"] == [] and "boom" in resp["error"]
 
 
 # ---- date windowing ----
 
 def _search_with_records(monkeypatch, records, from_date="2026-06-01", to_date="2026-06-27"):
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
-    monkeypatch.setattr(
-        techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout=json.dumps(records)),
-    )
+    monkeypatch.setattr(techmeme, "_fetch", lambda url, timeout: {"results": list(records)})
     return techmeme.search_techmeme("topic", from_date, to_date)
 
 
@@ -148,22 +162,18 @@ def test_non_string_and_whitespace_dates(monkeypatch):
 
 def test_dropped_records_logged(monkeypatch):
     logs = []
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
     monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
-    monkeypatch.setattr(
-        techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout=json.dumps([
-            {"num": 1, "source": "a.com",
-             "headline": "Stale story from the deep archive years back",
-             "link": "https://t.co/old", "date": "2022-12-02"},
-        ])),
-    )
+    monkeypatch.setattr(techmeme, "_fetch", lambda url, timeout: {"results": [
+        {"num": 1, "source": "a.com",
+         "headline": "Stale story from the deep archive years back",
+         "link": "https://t.co/old", "date": "2022-12-02"},
+    ]})
     techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27")
     assert "dropped 1 records outside 2026-06-01..2026-06-27" in logs
 
 
 def test_undated_records_kept_and_never_stamped_today(monkeypatch):
-    """Old binaries emit no date key; unparseable dates come through as "" or
+    """Records may lack a date key; unparseable dates come through as "" or
     junk. All are kept by the window, and parse yields date None -- never
     today's date."""
     out = _search_with_records(monkeypatch, [
@@ -184,42 +194,6 @@ def test_undated_records_kept_and_never_stamped_today(monkeypatch):
     for item in items:
         assert item["date"] is None
         assert item["date"] != today
-
-
-# ---- old-binary prose tolerance ----
-
-def test_no_results_prose_parses_as_empty_without_error(monkeypatch):
-    """Old binaries print `No results for "q"` prose to stdout with exit 0 in
-    JSON mode. That is a zero-hit response, not a decode failure."""
-    logs = []
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
-    monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
-    monkeypatch.setattr(
-        techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout='No results for "whatever query"\n'),
-    )
-    resp = techmeme._run_cli([techmeme.CLI_BIN, "search", "whatever query", "--json"],
-                             timeout=techmeme.SEARCH_TIMEOUT)
-    assert resp == {"results": []}
-    assert "error" not in resp
-    assert not any("decode" in m.lower() for m in logs)
-
-
-def test_malformed_stdout_still_yields_decode_error(monkeypatch):
-    """Genuinely malformed non-JSON stdout (not the prose sentinel) keeps the
-    existing decode-error envelope."""
-    logs = []
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
-    monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
-    monkeypatch.setattr(
-        techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout="garbage <<<"),
-    )
-    resp = techmeme._run_cli([techmeme.CLI_BIN, "search", "topic", "--json"],
-                             timeout=techmeme.SEARCH_TIMEOUT)
-    assert resp["results"] == []
-    assert "json decode" in resp.get("error", "")
-    assert any("decode" in m.lower() for m in logs)
 
 
 # ---- header-row filtering ----
@@ -274,14 +248,6 @@ def test_more_relevant_headline_ranks_higher():
     assert by_url["https://t.co/b"] > by_url["https://t.co/a"]
 
 
-# ---- envelope tolerance ----
-
-def test_coerce_list_handles_bare_array_and_wrapped():
-    assert techmeme._coerce_list([{"a": 1}]) == [{"a": 1}]
-    assert techmeme._coerce_list({"results": [{"a": 1}]}) == [{"a": 1}]
-    assert techmeme._coerce_list({"nope": 1}) == []
-
-
 # ---- depth cap + degradation ----
 
 @pytest.mark.parametrize("depth,cap", [("quick", 8), ("default", 16), ("deep", 30)])
@@ -294,8 +260,7 @@ def test_depth_cap_truncates_client_side(monkeypatch, depth, cap):
          "link": f"https://t.co/{i}", "date": "2026-06-15"}
         for i in range(cap + 12)
     ]
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
-    monkeypatch.setattr(techmeme, "_run_cli", lambda cmd, timeout: {"results": list(records)})
+    monkeypatch.setattr(techmeme, "_fetch", lambda url, timeout: {"results": list(records)})
     out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27", depth=depth)
     assert len(out["results"]) == cap
 
@@ -315,9 +280,8 @@ def test_depth_cap_applies_after_windowing(monkeypatch):
          "link": f"https://t.co/new{i}", "date": "2026-06-15"}
         for i in range(cap)
     ]
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
-    monkeypatch.setattr(techmeme, "_run_cli",
-                        lambda cmd, timeout: {"results": stale + fresh})
+    monkeypatch.setattr(techmeme, "_fetch",
+                        lambda url, timeout: {"results": stale + fresh})
     out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27", depth="quick")
     links = [r["link"] for r in out["results"]]
     assert links == [f"https://t.co/new{i}" for i in range(cap)]
@@ -337,10 +301,9 @@ def test_dated_records_take_cap_slots_before_undated(monkeypatch):
          "link": f"https://t.co/d{i}", "date": "2026-06-15"}
         for i in range(cap)
     ]
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
     # Undated arrive first in CLI order; dated in-window must still win the cap.
-    monkeypatch.setattr(techmeme, "_run_cli",
-                        lambda cmd, timeout: {"results": undated + dated})
+    monkeypatch.setattr(techmeme, "_fetch",
+                        lambda url, timeout: {"results": undated + dated})
     out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27", depth="quick")
     links = [r["link"] for r in out["results"]]
     assert links == [f"https://t.co/d{i}" for i in range(cap)]
@@ -356,9 +319,8 @@ def test_all_undated_flood_capped_with_windowing_inactive_hint(monkeypatch):
          "link": f"https://t.co/{i}"}
         for i in range(cap + 12)
     ]
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
     monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
-    monkeypatch.setattr(techmeme, "_run_cli", lambda cmd, timeout: {"results": records})
+    monkeypatch.setattr(techmeme, "_fetch", lambda url, timeout: {"results": records})
     out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27", depth="quick")
     assert len(out["results"]) == cap
     assert any("date windowing inactive" in m for m in logs)
@@ -368,9 +330,8 @@ def test_windowing_inactive_hint_absent_when_dates_present(monkeypatch):
     """The hint must not fire when the binary emits dates -- even if every
     dated record is out of window (windowing IS active there)."""
     logs = []
-    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
     monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
-    monkeypatch.setattr(techmeme, "_run_cli", lambda cmd, timeout: {"results": [
+    monkeypatch.setattr(techmeme, "_fetch", lambda url, timeout: {"results": [
         {"num": 1, "source": "a.com", "headline": "Stale but properly dated archive story",
          "link": "https://t.co/old", "date": "2022-12-02"},
         {"num": 2, "source": "b.com", "headline": "Undated companion record from mixed output",
@@ -389,13 +350,6 @@ def test_story_headline_word_count_boundary(words, expected):
 def test_story_headline_rejects_when_equal_to_source():
     # A >=4-word headline that exactly equals its source is still a header row.
     assert not techmeme._is_story_headline("the daily example tribune", "the daily example tribune")
-
-
-def test_binary_absent_returns_empty(monkeypatch):
-    monkeypatch.setattr(techmeme.shutil, "which", lambda _bin: None)
-    resp = techmeme.search_techmeme("anything", "2026-06-01", "2026-06-27")
-    assert resp["results"] == []
-    assert "error" in resp
 
 
 def test_empty_topic_returns_empty():

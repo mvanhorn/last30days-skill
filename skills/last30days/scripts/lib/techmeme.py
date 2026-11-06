@@ -1,48 +1,36 @@
 """Techmeme tech-news source for last30days.
 
-Shells out to ``techmeme-pp-cli`` (no auth). The CLI's ``search`` command hits
-Techmeme's live archive search endpoint (results back to ~2005) -- it never
-reads the locally synced headline cache, so the adapter performs no ``sync``.
+Fetches Techmeme's live archive search page (``/search/d3results.jsp``, back
+to ~2005, no auth) directly with the stdlib -- no third-party binary -- and
+parses it with a port of the reviewed techmeme-pp-cli parser (anchor + iinf
+date-block pairing). Each record is ``{num, source, headline, link, date}``,
+where ``date`` is ISO ``YYYY-MM-DD`` or ``""`` when the markup was
+unparseable.
 
-Activation gate: only available when ``techmeme-pp-cli`` is on PATH.
-``pipeline.available_sources`` checks ``shutil.which`` before including
-``techmeme``. The functions below also detect the missing-binary case.
+Activation: always available (keyless, no install).
 
-Surface choice: ``search "<topic>" --json`` (NOT ``--agent``). ``--agent``
-implies ``--compact``, which on older binaries stripped headline records to
-``{}`` (fixed upstream in printing-press-library PR #1383); ``--json`` without
-``--compact`` returns the populated record shape on every binary version, so
-the adapter is robust regardless of the installed build.
-
-Dates: current binaries emit ``{num, source, headline, link, date}`` where
-``date`` is ISO ``YYYY-MM-DD`` (or ``""`` when Techmeme's markup was
-unparseable). The adapter windows records to the research range
+Dates: the adapter windows records to the research range
 (``from_date <= date <= to_date``) so archive hits from years past never
-masquerade as current news. Records with no usable date -- old binaries emit
-no ``date`` key at all -- are kept but flow downstream with no date, so
-``normalize._normalize_techmeme`` assigns ``date_confidence: low``. Headlines
-are never stamped with today's date. (This deliberately diverges from
-``lib/arxiv.py``, which drops entries with unparseable dates -- arXiv's feed
-reliably carries dates, so an unparseable one is anomalous; Techmeme's old
-binaries emit no ``date`` key at all, so dropping would zero out the source
-for every user on an old binary.) Old binaries also print prose
-(``No results for "q"``) to stdout on zero hits; that parses as an empty
-result set, not a decode failure. Publication-name header rows (very short
-``headline`` values) are dropped; ranking is topic relevance plus rank decay.
+masquerade as current news. Records with no usable date are kept but flow
+downstream with no date, so ``normalize._normalize_techmeme`` assigns
+``date_confidence: low``. Headlines are never stamped with today's date.
+Publication-name header rows (very short ``headline`` values) are dropped;
+ranking is topic relevance plus rank decay.
 """
 
 from __future__ import annotations
 
-import json
+import html as _html
 import re
-import shutil
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Any, Dict, List, Tuple
+from urllib.parse import urlencode, urlsplit
 
-from . import log, subproc
+from . import http, log
 from .relevance import token_overlap_relevance
 
 
-CLI_BIN = "techmeme-pp-cli"
+SEARCH_URL = "https://www.techmeme.com/search/d3results.jsp"
 
 DEPTH_CONFIG = {
     "quick": 8,
@@ -57,9 +45,17 @@ MIN_HEADLINE_WORDS = 4
 
 SEARCH_TIMEOUT = 30
 
-# Old binaries print this prose to stdout (exit 0) on zero hits, even in JSON
-# mode. It is a zero-result response, not malformed output.
-_NO_RESULTS_PREFIX = "No results"
+# Ported from techmeme-pp-cli internal/cli/search.go (pinned fork commit).
+_ANCHOR_RE = re.compile(r'<A\s+[^>]*?HREF="([^"]+)"[^>]*>([^<]+)</A>', re.IGNORECASE)
+_IINF_DATE_RE = re.compile(
+    r'<div class="iinf">\s*<span class="idate">([^<]*)</span>', re.IGNORECASE | re.DOTALL
+)
+_PREVNEXT_RE = re.compile(r'<div class="prevnext">', re.IGNORECASE)
+_PERMALINK_RE = re.compile(r"techmeme\.com/\d{6}/p\d+", re.IGNORECASE)
+_CANVAS_RE = re.compile(r'class="resultscanvas"', re.IGNORECASE)
+_SPONSORS_RE = re.compile(r'class="sponsorscanvas"', re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+_DATE_LAYOUTS = ("%B %d, %Y, %I:%M %p", "%b %d, %Y, %I:%M %p", "%B %d, %Y", "%b %d, %Y")
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -68,35 +64,92 @@ def _log(msg: str) -> None:
     log.source_log("Techmeme", msg, tty_only=False)
 
 
-def _is_available() -> bool:
-    """True when the techmeme-pp-cli binary is on PATH."""
-    return shutil.which(CLI_BIN) is not None
+def _build_search_url(topic: str) -> str:
+    # Techmeme's search has no result-limit parameter, so the depth cap is
+    # applied client-side after windowing.
+    return f"{SEARCH_URL}?{urlencode({'q': topic, 'wm': 'false'})}"
 
 
-def _build_search_args(topic: str) -> List[str]:
-    # --json (not --agent) avoids --compact, which blanks headline records on
-    # pre-PR-1383 binaries. Techmeme's `search` has no result-limit flag, so the
-    # depth cap is applied client-side after windowing.
-    return [CLI_BIN, "search", topic, "--json"]
+def _clean_title(text: str) -> str:
+    text = _TAG_RE.sub("", text).replace("&nbsp;", " ")
+    return _html.unescape(text).strip()
 
 
-def _coerce_list(data: Any) -> List[Dict[str, Any]]:
-    """Techmeme search returns a bare JSON array; tolerate a results-wrapped
-    envelope too."""
-    if isinstance(data, list):
-        return [r for r in data if isinstance(r, dict)]
-    if isinstance(data, dict):
-        results = data.get("results")
-        if isinstance(results, list):
-            return [r for r in results if isinstance(r, dict)]
-    return []
+def _parse_date(text: str) -> str:
+    text = " ".join(text.split())
+    for layout in _DATE_LAYOUTS:
+        try:
+            return datetime.strptime(text, layout).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return ""
+
+
+def _domain(url: str) -> str:
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return url
+    return host[4:] if host.startswith("www.") else host
+
+
+def parse_search_page(page: str) -> Tuple[List[Dict[str, Any]], bool]:
+    """Parse a Techmeme search results page into records.
+
+    Returns ``(records, markup_shift)``. ``markup_shift`` is True when story
+    anchors and date blocks did not pair up (Techmeme markup may have changed).
+    """
+    m = _CANVAS_RE.search(page)
+    if m:
+        page = page[m.end():]
+    m = _SPONSORS_RE.search(page)
+    if m:
+        page = page[: m.start()]
+    m = _PREVNEXT_RE.search(page)
+    if m:
+        page = page[: m.start()]
+
+    anchors: List[Tuple[int, str, str]] = []
+    for am in _ANCHOR_RE.finditer(page):
+        href = am.group(1)
+        title = _clean_title(am.group(2))
+        if "/r2/" in href or _PERMALINK_RE.search(href):
+            continue
+        if "techmeme.com/" in href and "context" in title:
+            continue
+        anchors.append((am.start(), _html.unescape(href), title))
+
+    dates = list(_IINF_DATE_RE.finditer(page))
+    if not dates:
+        return [], bool(anchors)
+
+    records: List[Dict[str, Any]] = []
+    ai = 0
+    for dm in dates:
+        story = None
+        while ai < len(anchors) and anchors[ai][0] < dm.start():
+            story = anchors[ai]
+            ai += 1
+        if story is None:
+            continue
+        _, href, title = story
+        records.append(
+            {
+                "num": len(records) + 1,
+                "source": _domain(href),
+                "headline": title,
+                "link": href,
+                "date": _parse_date(dm.group(1)),
+            }
+        )
+    return records, len(records) < len(dates)
 
 
 def _record_iso_date(rec: Dict[str, Any]) -> str | None:
     """The record's ``date`` as a valid ISO YYYY-MM-DD string, else None.
 
-    Old binaries emit no ``date`` key; current binaries emit ``""`` when
-    Techmeme's markup was unparseable. Anything that isn't a clean ISO date is
+    The parser emits ``""`` when Techmeme's date markup was unparseable.
+    Anything that isn't a clean ISO date is
     treated as absent."""
     value = rec.get("date")
     if isinstance(value, str) and _ISO_DATE_RE.match(value.strip()):
@@ -104,43 +157,30 @@ def _record_iso_date(rec: Dict[str, Any]) -> str | None:
     return None
 
 
-def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
-    """Invoke techmeme-pp-cli and return ``{"results": [...records...]}``.
+def _fetch(url: str, timeout: int) -> Dict[str, Any]:
+    """GET the search page and return ``{"results": [...records...]}``.
     Never raises."""
-    if not _is_available():
-        return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     try:
-        result = subproc.run_with_timeout(cmd, timeout=timeout)
-    except subproc.SubprocTimeout as exc:
-        _log(f"Timeout: {exc}")
+        page = http.request(
+            "GET",
+            url,
+            headers={"Accept": "text/html", "User-Agent": http.BROWSER_USER_AGENT},
+            timeout=timeout,
+            retries=2,
+            raw=True,
+        )
+    except http.HTTPError as exc:
+        _log(f"request failed: {exc}")
         return {"results": [], "error": str(exc)}
-    except FileNotFoundError as exc:
-        _log(f"Binary missing: {exc}")
-        return {"results": [], "error": str(exc)}
-    except OSError as exc:
-        _log(f"Spawn failed: {exc}")
-        return {"results": [], "error": str(exc)}
-
-    if result.returncode != 0:
-        snippet = (result.stderr or "").strip().splitlines()[:1]
-        first = snippet[0] if snippet else f"exit {result.returncode}"
-        _log(f"CLI exit {result.returncode}: {first}")
-        return {"results": [], "error": first}
-
-    stdout = result.stdout or ""
-    if not stdout.strip():
+    if not isinstance(page, str) or not page.strip():
         return {"results": []}
-    # Old binaries print `No results for "q"` prose (exit 0) even in JSON
-    # mode: a legitimate zero-hit response, not a decode failure.
-    if stdout.strip().startswith(_NO_RESULTS_PREFIX):
-        return {"results": []}
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        _log(f"JSON decode failed: {exc}")
-        return {"results": [], "error": f"json decode: {exc}"}
-
-    return {"results": _coerce_list(data)}
+    records, markup_shift = parse_search_page(page)
+    if markup_shift:
+        _log(
+            "search results region shape unrecognized (anchors and date blocks "
+            "did not pair); Techmeme markup may have changed"
+        )
+    return {"results": records}
 
 
 def search_techmeme(
@@ -149,7 +189,7 @@ def search_techmeme(
     to_date: str,
     depth: str = "default",
 ) -> Dict[str, Any]:
-    """Search Techmeme's live archive via techmeme-pp-cli.
+    """Search Techmeme's live archive.
 
     Windows records to ``from_date..to_date`` on each record's own ISO date
     (lexicographic compare is exact for ISO strings). Records with no usable
@@ -161,16 +201,13 @@ def search_techmeme(
     """
     if not topic or not topic.strip():
         return {"results": []}
-    if not _is_available():
-        return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    cmd = _build_search_args(topic)
     _log(f"search '{topic}' (cap={limit})")
-    response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
+    response = _fetch(_build_search_url(topic), timeout=SEARCH_TIMEOUT)
     records = response.get("results") or []
     if isinstance(records, list):
         # Hard date window: drop records whose date falls outside the research
-        # range; keep undated records (old binaries / unparseable markup).
+        # range; keep undated records (unparseable markup).
         dated_in_window = []
         undated = []
         dropped = 0
@@ -185,13 +222,11 @@ def search_techmeme(
         if dropped:
             _log(f"dropped {dropped} records outside {from_date}..{to_date}")
         if records and not dated_in_window and not dropped:
-            # Every record lacks a usable date: old techmeme-pp-cli (no date
-            # key) or a Techmeme markup change upstream. Windowing is inactive.
+            # Every record lacks a usable date: a Techmeme markup change
+            # upstream. Windowing is inactive.
             _log(
                 "no records carry usable dates; date windowing inactive "
-                "(old techmeme-pp-cli binary or upstream markup change; upgrade "
-                "via `npx -y @mvanhorn/printing-press-library install techmeme "
-                "--cli-only`)"
+                "(Techmeme date markup may have changed)"
             )
         # Techmeme returns all matches; apply the depth cap after windowing.
         # Dated in-window records take cap slots first so undated archive

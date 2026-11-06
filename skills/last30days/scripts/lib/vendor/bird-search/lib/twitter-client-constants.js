@@ -2,9 +2,7 @@
 import queryIds from './query-ids.json' with { type: 'json' };
 export const TWITTER_API_BASE = 'https://x.com/i/api/graphql';
 export const TWITTER_GRAPHQL_POST_URL = 'https://x.com/i/api/graphql';
-export const TWITTER_UPLOAD_URL = 'https://upload.twitter.com/i/media/upload.json';
-export const TWITTER_MEDIA_METADATA_URL = 'https://x.com/i/api/1.1/media/metadata/create.json';
-export const TWITTER_STATUS_UPDATE_URL = 'https://x.com/i/api/1.1/statuses/update.json';
+// last30days: upstream write endpoints (tweet/media upload) removed; search-only subset.
 export const SETTINGS_SCREEN_NAME_REGEX = /"screen_name":"([^"]+)"/;
 export const SETTINGS_USER_ID_REGEX = /"user_id"\s*:\s*"(\d+)"/;
 export const SETTINGS_NAME_REGEX = /"name":"([^"\\]*(?:\\.[^"\\]*)*)"/;

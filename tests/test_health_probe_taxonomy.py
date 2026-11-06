@@ -66,9 +66,10 @@ class TestMissing:
              mock.patch.object(health, "_off_path_candidate_dirs", return_value=[]):
             probe = health.probe_dependency("digg-pp-cli")
         assert probe.status == health.MISSING
-        assert "printing-press-library" in probe.prescription
-        assert "install digg --cli-only" in probe.prescription
-        assert probe.owner_pkg_manager == "npx"
+        assert "build-pp-cli.sh" in probe.prescription
+        assert probe.prescription.endswith(" digg")
+        assert "npx" not in probe.prescription
+        assert probe.owner_pkg_manager == ""
 
     def test_node_missing_nvm_prescription_when_no_brew(self, monkeypatch, tmp_path):
         monkeypatch.setenv("NVM_DIR", str(tmp_path))
@@ -123,8 +124,9 @@ class TestBroken:
              mock.patch.object(health.subproc, "run_with_timeout", side_effect=OSError("bad exec")):
             probe = health.probe_dependency("digg-pp-cli")
         assert probe.status == health.BROKEN
-        assert "printing-press-library" in probe.prescription
-        assert "install digg --cli-only" in probe.prescription
+        assert "build-pp-cli.sh" in probe.prescription
+        assert probe.prescription.endswith(" digg")
+        assert "npx" not in probe.prescription
 
     def test_real_stale_shim_on_disk(self, tmp_path, monkeypatch):
         """Integration: a real file whose shebang interpreter is gone (#692)."""
@@ -135,7 +137,7 @@ class TestBroken:
         probe = health.probe_dependency("fake-pp-cli")
         assert probe.status == health.BROKEN
         fix = probe.prescription.lower()
-        assert "reinstall" in fix or "re-run" in fix
+        assert "reinstall" in fix or "re-run" in fix or "rebuild" in fix
 
 
 class TestTimeout:
@@ -243,8 +245,8 @@ class TestCachingAndRegistry:
              mock.patch.object(health, "_off_path_candidate_dirs", return_value=[]):
             probe = health.probe_dependency("espn-pp-cli")
         assert probe.status == health.MISSING
-        assert "install espn --cli-only" in probe.prescription
-        assert probe.owner_pkg_manager == "npx"
+        assert probe.prescription.endswith("build-pp-cli.sh\" espn")
+        assert probe.owner_pkg_manager == ""
 
 
 class TestWindowsPrintingPressCandidates:

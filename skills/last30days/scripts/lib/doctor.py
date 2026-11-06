@@ -190,8 +190,6 @@ SOURCE_ORDER = (
 CLI_DEPENDENCIES = {
     "youtube": "yt-dlp",
     "digg": "digg-pp-cli",
-    "techmeme": "techmeme-pp-cli",
-    "arxiv": "arxiv-pp-cli",
     "trustpilot": "trustpilot-pp-cli",
     # The only entry that also needs auth; _amazon_record reports the
     # installed-but-unauthenticated state the shared CLI helper cannot.
@@ -734,11 +732,11 @@ def _cli_gated_record(config, cli_name: str, purpose: str):
 
 
 def _techmeme_record(config):
-    return _cli_gated_record(config, "techmeme-pp-cli", "techmeme")
+    return _record(status=health.OK, requires="none (public search page)")
 
 
 def _arxiv_record(config):
-    return _cli_gated_record(config, "arxiv-pp-cli", "arxiv")
+    return _record(status=health.OK, requires="none (public Atom API)")
 
 
 def _trustpilot_record(config):

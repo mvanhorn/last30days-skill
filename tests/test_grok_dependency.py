@@ -49,7 +49,9 @@ def test_broken_binary_yields_a_reinstall_prescription(monkeypatch):
 
 def test_fallback_prescription_names_the_official_installer():
     install, reinstall = health._FALLBACK_PRESCRIPTIONS["grok"]
-    assert "x.ai/cli/install.sh" in install
+    assert "https://x.ai/cli" in install
+    # Advice only: never a pipe-to-shell the model might run.
+    assert "| bash" not in install and "| bash" not in reinstall
     assert "grok login" in install
     assert "reinstall" in reinstall.lower()
 

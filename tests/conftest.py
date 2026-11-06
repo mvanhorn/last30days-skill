@@ -119,6 +119,22 @@ def _no_arctic_network():
         yield
 
 
+_NATIVE_FEED_ADAPTER_TESTS = {"test_arxiv_source", "test_techmeme_source"}
+
+
+@pytest.fixture(autouse=True)
+def _no_native_feed_network(request):
+    """arXiv and Techmeme are always-available native clients. Default their
+    HTTP fetchers to empty outside their own adapter tests, so pipeline tests
+    never reach the network (mirrors ``_no_arctic_network``)."""
+    if request.module.__name__.rsplit(".", 1)[-1] in _NATIVE_FEED_ADAPTER_TESTS:
+        yield
+        return
+    with mock.patch("lib.arxiv._fetch_feed", return_value={"results": []}), \
+         mock.patch("lib.techmeme._fetch", return_value={"results": []}):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _no_ambient_grok_cli():
     """Default the grok CLI to absent so no test resolves it from the developer's

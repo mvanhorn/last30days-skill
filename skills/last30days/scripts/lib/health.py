@@ -153,8 +153,10 @@ def probe_command(
 PROBE_TIMEOUT = 5.0
 
 _PP_CLI_SUFFIX = "-pp-cli"
-# Matches setup_wizard.PRINTING_PRESS_NPM (pinned catalog installer).
-_PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.16"
+# The ONLY supported way to obtain a Printing Press CLI: a user-run script that
+# builds it from a pinned commit of the maintainer-controlled fork. The skill
+# never downloads, builds, or installs these binaries itself.
+PP_BUILD_SCRIPT = Path(__file__).resolve().parent.parent / "build-pp-cli.sh"
 
 # Dependencies the doctor probes by default.
 KNOWN_DEPENDENCIES: Tuple[str, ...] = ("yt-dlp", "digg-pp-cli", "node", "ffmpeg", "grok")
@@ -208,8 +210,8 @@ _FALLBACK_PRESCRIPTIONS: Dict[str, Tuple[str, str]] = {
         "reinstall ffmpeg (https://ffmpeg.org/download.html); the current binary won't run",
     ),
     "grok": (
-        "install the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash, then run `grok login`",
-        "reinstall the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash; the current binary won't run",
+        "install the Grok CLI yourself from xAI's official instructions (https://x.ai/cli), then run `grok login`",
+        "reinstall the Grok CLI from xAI's official instructions (https://x.ai/cli); the current binary won't run",
     ),
 }
 
@@ -267,11 +269,12 @@ def _is_pp_cli(name: str) -> bool:
 
 def _pp_install_cmd(name: str) -> str:
     slug = name[: -len(_PP_CLI_SUFFIX)]
-    return f"npx -y {_PRINTING_PRESS_NPM} install {slug} --cli-only"
+    return f'bash "{PP_BUILD_SCRIPT}" {slug}'
 
 
 def pp_install_cmd(slug: str) -> str:
-    """Public catalog-install command for the Printing Press CLI ``<slug>-pp-cli``."""
+    """User-run build command for the Printing Press CLI ``<slug>-pp-cli``
+    (pinned fork commit; see ``scripts/build-pp-cli.sh``)."""
     return _pp_install_cmd(f"{slug}{_PP_CLI_SUFFIX}")
 
 
@@ -288,7 +291,7 @@ def _prescription(name: str, kind: str) -> Tuple[str, str]:
     """Return ``(prescription, owner_pkg_manager)`` for install/reinstall.
 
     ``kind`` is "install" (MISSING) or "reinstall" (BROKEN). Printing Press
-    CLIs always re-run the catalog installer; other deps pick the first
+    CLIs point at the user-run pinned build script; other deps pick the first
     detected manager from their preference table, falling back to a generic
     but still actionable instruction.
     """
@@ -296,8 +299,8 @@ def _prescription(name: str, kind: str) -> Tuple[str, str]:
     if _is_pp_cli(name):
         cmd = _pp_install_cmd(name)
         if kind == "reinstall":
-            return f"re-run the Printing Press install: {cmd}", "npx"
-        return cmd, "npx"
+            return f"rebuild it from the pinned source (needs Go): {cmd}", ""
+        return f"build it yourself from the pinned source (needs Go): {cmd}", ""
     for manager, prescriptions in _MANAGER_PRESCRIPTIONS.get(name, {}).items():
         if _manager_available(manager):
             return prescriptions[idx], manager

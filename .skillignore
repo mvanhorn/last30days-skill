@@ -53,18 +53,9 @@ SKILL-original.md
 SPEC.md
 TASKS.md
 
-# Dev/eval scripts shipped inside the skill tree but not needed at runtime
-skills/last30days/scripts/build-skill.sh
-skills/last30days/scripts/compare.sh
-skills/last30days/scripts/evaluate_search_quality.py
-skills/last30days/scripts/setup-keychain.sh
-skills/last30days/scripts/setup-pass.sh
-skills/last30days/scripts/test_device_auth.py
-skills/last30days/scripts/test-v1-vs-v2.sh
-skills/last30days/scripts/verify_v3.py
-
 # Keep visible: optional runtime watchlist/store/briefing feature scripts
 # (`watchlist.py`, `store.py`, and `briefing.py`).
 
-# Vendored third-party X-search client (node_modules analog); excluded from scan, still installed.
-skills/last30days/scripts/lib/vendor/
+# NOTE: nothing executable under skills/last30days/ is excluded -- the
+# vendored X client and the dev/eval/keychain helper scripts that ship in the
+# skill tree are all scanned, so a clean scan covers the whole installed runtime.

@@ -69,7 +69,8 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 
 ### Installs and external programs
 
-- First-run setup installs `yt-dlp` with Homebrew when it's missing on macOS. It also installs the Digg, arXiv, and Techmeme CLIs with `npx -y @mvanhorn/printing-press-library@0.1.16`, by default into `~/.local/bin`. That package and the CLIs it installs come from outside this repository.
+- First-run setup installs `yt-dlp` with Homebrew when it's missing on macOS (a well-known package from a standard package manager). It installs nothing else: it never runs `npx`, `npm`, `curl | sh`, or `git clone`, and never downloads or builds third-party CLIs.
+- arXiv and Techmeme are built-in stdlib HTTP clients. The optional Digg and Trustpilot CLIs are only *detected*; when missing, setup prints `bash scripts/build-pp-cli.sh <slug>`, a user-run script that builds the CLI from a pinned commit of a reviewed fork (`GOTOOLCHAIN=local`, `-mod=readonly`, checksum-verified dependencies) and refuses to build if the fetched commit doesn't match the pin. `tests/test_no_runtime_installs.py` enforces that the engine spawns no installers.
 - During research, the engine can run `node` (the vendored X client), `yt-dlp`, `gh`, the Printing Press CLIs, `brightdata`, `grok`, `xurl`, `pass`, and `pdftotext`, depending on which sources you turned on. On macOS it also runs `security` and `openssl` to decrypt Chromium cookies.
 
 ### Local files

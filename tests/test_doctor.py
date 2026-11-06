@@ -339,8 +339,8 @@ class CookieBackedXReadiness(unittest.TestCase):
                 Path, "stat", guarded_stat
             ), mock.patch.object(Path, "is_file", simulated_py314_is_file), mock.patch(
                 "lib.setup_wizard.shutil.which", return_value="/usr/bin/fake"
-            ), mock.patch("lib.setup_wizard._install_digg_cli", return_value=(True, "already_installed", "", "")), mock.patch(
-                "lib.setup_wizard.install_default_pp_sources", return_value={}
+            ), mock.patch("lib.setup_wizard._detect_digg_cli", return_value=(True, "already_installed", "")), mock.patch(
+                "lib.setup_wizard.detect_default_pp_sources", return_value={}
             ), mock.patch("lib.setup_wizard.brightdata_status", return_value={}):
                 results = setup_wizard.run_auto_setup(
                     {"FROM_BROWSER": "firefox"}, allow_browser_cookies=True
@@ -1491,14 +1491,15 @@ class CliHealth(unittest.TestCase):
         report = _build(
             {},
             probe_map={
-                "techmeme-pp-cli": health.OK,
-                "arxiv-pp-cli": health.OK,
                 "trustpilot-pp-cli": health.OK,
             },
         )
-        for src in ("techmeme", "arxiv", "trustpilot"):
+        self.assertIn("trustpilot", report["sources"])
+        self.assertEqual("ok", report["sources"]["trustpilot"]["cli"]["status"])
+        # arXiv and Techmeme are native clients now: present, keyless, no CLI.
+        for src in ("techmeme", "arxiv"):
             self.assertIn(src, report["sources"], src)
-            self.assertEqual("ok", report["sources"][src]["cli"]["status"], src)
+            self.assertNotIn("cli", report["sources"][src], src)
 
     def test_cli_marker_and_block_for_ytdlp(self):
         report = _build({}, probe_map={"yt-dlp": health.OK})

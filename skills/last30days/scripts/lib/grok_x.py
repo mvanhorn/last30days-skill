@@ -5,7 +5,8 @@ The `grok` CLI (https://x.ai/cli) exposes X search tools natively
 Reaching X through it needs no X account, no browser cookies, and no
 `XAI_API_KEY` — only an installed and signed-in `grok`.
 
-Install: curl -fsSL https://x.ai/cli/install.sh | bash   (or npm i -g @xai-official/grok)
+Install: by the user, from xAI's official instructions (https://x.ai/cli).
+         The skill never installs it.
 Auth:    grok login
 
 Invocation constraints, all measured, all load-bearing:

@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>nvidia - Techmeme</title>
+<meta http-equiv="Expires" CONTENT="now" />
+<link rel="shortcut icon" HREF="/img/favicon.ico" />
+<link rel="image_src" href="https://www.techmeme.com/m/config/tech/iicon.gif" />
+<link rel="apple-touch-icon" href="https://www.techmeme.com/m/config/tech/iicon.gif" />
+
+<style type="text/css" media="all">
+html, body, div, span, applet, object, iframe,
+h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+a, abbr, acronym, address, big, cite, code,
+del, dfn, em, img, ins, kbd, q, s, samp,
+small, strike, strong, sub, sup, tt, var,
+b, u, i, center,
+dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend,
+table, caption, tbody, tfoot, thead, tr, th, td,
+article, aside, canvas, details, embed,
+figure, figcaption, footer, header, hgroup,
+menu, nav, output, ruby, section, summary,
+time, mark, audio, video {margin:0;padding:0;border:0;font-size:100%;font:inherit;vertical-align:baseline}
+article, aside, details, figcaption, figure,
+footer, header, hgroup, menu, nav, section {display:block}
+body {line-height:1}
+ol, ul {list-style:none}
+blockquote, q {quotes:none}
+blockquote:before, blockquote:after,
+q:before, q:after {content:'';content:none}
+table {border-collapse:collapse;border-spacing:0}
+input, select, textarea{font:inherit;}
+body {font-family:Optima, "Microsoft Sans Serif", sans-serif}
+.ii strong {font-family:Optima, "Trebuchet MS", sans-serif;}
+.drhed {font-family:Optima, "Trebuchet MS", sans-serif;}
+cite {font-family:Optima, "Trebuchet MS", sans-serif;}
+.nfdl {font-family:Optima, "Trebuchet MS", sans-serif;}
+.navbar {font-family:Optima, "Century Gothic", sans-serif;}
+.prenavbar {font-family:Optima, "Century Gothic", sans-serif;}
+H2 {font-family:Optima, "Century Gothic", sans-serif;}
+H3 {font-family:Optima, "Century Gothic", sans-serif;}
+H3 .def {font-weight:normal;font-size:0.8em;padding-left:0.4em;}
+b {font-weight:bold}
+body {margin:0 auto 0 auto;max-width:84em;min-width:61em;font-size:0.89em;line-height:120%;background:#fff}
+.pagecont {margin-bottom:2.5em;}
+A:link {text-decoration:none;}
+A:visited {text-decoration:none;}
+.ed A {position:relative;z-index:10;}
+.ed A:hover {z-index:1}
+CITE {position:relative;z-index:10;}
+.item .di A {font-size:1.1em}
+.item .di CITE A {font-size:1.00em}
+.item .di CITE {font-size:1.00em}
+.item CITE {font-size:1em}
+CITE {font-size:0.93em}
+.ed STRONG A:link {color:#004860;}
+.ed STRONG A:visited {color:#a04860;}
+.ed A:link {color:#002848;}
+.ed A:visited {color:#902050;}
+.ed A:hover {text-decoration:underline;background:#d0e8f4}
+.ed CITE {font-weight:bold;font-style:normal;}
+.ed CITE {color:#686860;}
+.ed CITE A:link {color:#686860;}
+.ed CITE A:visited {color:#686860;}
+.cnvl {text-align:center;}
+.ed .cnvl A:visited {color:#002848;}
+H2 {font-weight:bold;color:#455;font-size:1.4em;padding:0.7em 0 0.6em;}
+H3 {font-weight:bold;color:#455;font-size:1.25em;padding:0.7em 0 0.2em;}
+#topcol1 H2 {padding-left:1.45em;}
+#botcol1 H2 {padding-left:1.45em;}
+#botcol2 H2 {padding-left:1.45em;}
+.drhed {color:#408840;font-weight:bold;margin-right:0.3em;}
+.moreat {background:#efd;padding:0 0.2em;border-bottom:solid 1px #ded;white-space:nowrap}
+.new {margin-left:1em;background:#a56;color:#fff;padding:1px 3px 0 4px;font-weight:bold;font-size:0.8em;position:relative;top:-0.2em;border-top:solid 1px #ecc;border-bottom:solid 1px #945;letter-spacing:1px}
+.bls {margin-left:-0.1em}
+.bls A {white-space:nowrap;padding-left:0.1em;padding-right:0.1em}
+.ago {color:#444;font-size:0.9em;padding-top:0.8em;}
+#topcol3 A.nfdl {font-weight:bold;margin-right:1em;line-height:1.2em}
+#topcol3 A.nfdl {color:#004860;}
+#topcol3 A.nfdl:visited {color:#a04860;}
+#topcol3 .fromsis A {margin:0;}
+.fromsis {padding:4em 0}
+#topcol2 H2 {padding-bottom:0.9em}
+#topcol3 H2 {padding-bottom:0.5em;}
+#topcol3 .fromsis H2 {padding-bottom:1.1em;}
+#topcol3 a.f {color:#555}
+#topcol3 a.f:hover {color:#555}
+#topcol3 .ii {padding-top:0.5em}
+p {padding-bottom:0.7em;}
+p A {font-weight:bold;}
+strong {font-weight:bold;font-size:1.2em;line-height:1.15em}
+.L1 {font-size:1.3em;}
+.L2 {font-size:1.4em;}
+.L3 {font-size:1.5em;letter-spacing:-0.01em;}
+.L4 {font-size:1.7em;letter-spacing:-0.02em;}
+.L5 {font-size:1.9em;letter-spacing:-0.03em;}
+.item {padding-top:0.3em;padding-bottom:1.0em;clear:both;}
+#topcol3 .item {padding:0.8em 0;}
+.clus {padding-bottom:0.5em;}
+.item {border-bottom:solid 1px #ccc;}
+.item:after {content:"";display:block;height:0;clear:both;}
+.dbpt {padding-top:0.4em;}
+.dbptb {padding:0.4em 0 0.4em;}
+.di {margin-left:1em;text-indent:-1em;padding-left:1em}
+.last {border:none;}
+.relitems {margin-bottom:1em;}
+.itc1 {padding-left:2em;}
+.relitems .itc1 {padding-left:4em;}
+.prenavbar {margin-left:2em;}
+.navbar {margin-left:2em;}
+.pagecont {margin-right:2em;}
+.itc2 {margin-left:-1em;padding-left:1em;margin-right:-1em;padding-right:1em;}
+.ill {float:right;padding:0.1em 0 0.5em 0.5em;}
+#topcol1 {float:left;width:50%;margin-top:1em;padding-right:1%;}
+#topcol23 {float:left;width:47.4%;margin-left:1.5%;}
+#topcol2 {float:left;width:66%;margin-top:1em;}
+#dbbtghgtq {padding:0 1em 1em;background:#f4f4f4;border-radius:3px;-webkit-border-radius:3px;-moz-border-radius:3px}
+#topcol3 {float:right;width:32%;margin-top:1em;margin-left:1.9%;}
+#botcol1 {float:left;width:46.9%;padding-right:1%;margin-bottom:2em;margin-top:1em;}
+#botcol2 {float:left;width:46.9%;padding-left:1%;margin-bottom:2em;margin-top:1em;}
+.quartercol {float:left;width:24.9%;}
+.abotcols {clear:both;width:97.5%;border-bottom:solid 2px #e8e8e8;margin-left:2.5%;padding-top:1em;margin-bottom:1em}
+.ifsp {background:#f4f4f4;margin:-0.45em;padding:0.45em}
+.ifsp .item {border:none}
+.itc1 .ifsp {margin-bottom:0.5em;}
+.ifsp .ii {padding-top:0.5em}
+.ifspd {color:#777;font-weight:bold;font-size:0.9em;text-align:right;text-transform:uppercase;}
+.topline {border-bottom:solid 1px #ccc;margin-top:0.2em;line-height:1.6em}
+.topllinks {margin-top:0em;}
+.topllinks A {padding-right:1.2em;}
+.toplbut {float:left;padding-right:1.2em;margin-top:-1px}
+.toprbut {float:right;padding-left:1.2em;width:60px;height:30px;text-align:right;}
+.toplelt {float:left;}
+.toprelt {float:right;}
+.prenavbar A {font-size:0.85em;color:#777;}
+.prenavbar .logobox A {padding-left:0}
+.prenavbar A:link {color:#777;}
+.prenavbar A:visited {color:#777;}
+.prenavbar A:hover {text-decoration:underline;color:#000;}
+.logobox img {height:45px}
+.topline img {position:relative;top:1px}
+.topline input {position:relative;left:0.9em}
+.navbar {background:#174a61;text-transform:uppercase;clear:both;line-height:1.5em;font-size:0.85em;}
+.navbar img {position:relative;top:2px}
+.navtabs span.iamhere A {background:#578aa1;color:#fff;}
+.navtabs span.iamhere A:visited {color:#fff}
+.navtabs A {padding:0.12em 0.7em;}
+.navtabs A:link {color:#ddd;}
+.navtabs A:visited {color:#ddd;}
+.navtabs A:hover {background:#578aa1;color:#fff;}
+.sisnav {float:right;}
+.sisnav A:link {color:#ddd;}
+.sisnav A:visited {color:#ddd;}
+.sisnav A:hover {color:#fff;}
+.logotab {width:100%;}
+.logotab td {vertical-align:middle}
+.logotab td {width:33%}
+td.logobox {padding:0.7em 0}
+td.datebox {text-align:center;color:#444}
+td.datebox A {padding-left:0.5em;font-weight:bold}
+td.searchbox {text-align:right}
+.dtbi {color:#555;line-height:1.3em;}
+#dateform input {width:14.5em;border:1px solid #ccc;border-radius:3px;-webkit-border-radius:3px;-moz-border-radius:3px}
+.sbti {width:10.5em;border:1px solid #ccc;border-radius:3px;-webkit-border-radius:3px;-moz-border-radius:3px}
+.cosp A:link {color:#000;}
+.cosp A:visited {color:#000;}
+.cosp A:hover {color:#000;}
+.cosp A {padding:1px}
+.cosp img {position:relative;top:2px;width:16px}
+.cosp span {font-weight:bold;}
+.cosp {padding-top:0.3em;padding-bottom:0.3em}
+.cosp {text-indent:-1.6em;padding-left:1.6em;}
+.dxd {position:absolute;margin-left:-1.6em}
+.dxd table {height:100%}
+.dxd {border:solid 1px #ccc;border-radius:3px;-webkit-border-radius:3px;-moz-border-radius:3px;background:#f4f4f4}
+.dxd:hover {border-color:#78a}
+.dxcol {padding:7px;background:url(/img/arrd.png) no-repeat center}
+.dxcol.up {background:url(/img/arru.png) no-repeat center}
+.exm {margin-top:1em;}
+.ed .exm a {border:solid 1px #ccc;border-radius:3px;-webkit-border-radius:3px;-moz-border-radius:3px;background:#f4f4f4;color:#777;padding:0.1em 0.3em;text-decoration:none;}
+.ed .exm a:hover {border-color:#78a}
+#dbbtghgtq .item {border:none;}
+#river_timeline {float:left;width:67%;margin:1em 1.9% 1em 0;}
+#river_timeline td {font-size:1.1em}
+#river_timeline CITE {font-size:0.9em}
+#river_timeline tr > td:first-child {font-size:1.0em}
+#river_timeline tr > td:first-child {width:6em;text-align:right}
+#river_timeline tr > td:first-child + td {padding-left:1.5em;text-indent:-1em}
+#river_timeline td {padding-bottom:0.5em;}
+#river_timeline H2 {padding:1.5em 0 1em}
+#sxdvc {float:right;width:31%;margin-top:1em}
+#sxdvc H2 {padding-top:1.5em}
+#lb_maincol {float:left;width:64%;margin:1em 1.9% 1em 0;}
+#lb_rightcol {float:right;width:34%;margin-top:1em}
+#lb_rightcol #dbbtghgtq {margin-top:2em;}
+.lbtable {padding:1.5em 1em 1em 0}
+.lbtable td {padding:0.2em 0.5em 0.1em;border-left:1px #aaa dotted;border-top:1px #aaa dotted}
+.lbtable tr > td:first-child {border-left:none}
+.lbtable tr > td:first-child {text-align:center}
+.lbh td {border-top:none}
+.lbtable tr > td:first-child + td {width:12em}
+.lbh {font-weight:bold;color:#455;font-size:1.08em;}
+#lb_about_area {float:right;width:29%;margin-top:1em}
+#lb_main_area {float:left;width:69%;margin:1em 1.9% 1em 0;}
+.tabset {margin-top:1em}
+.tabset button {margin:0;font-size:1.1em;font-family:Optima, "Microsoft Sans Serif", sans-serif;float:left;border:solid 1px #a0d0e4;outline:none;cursor:pointer;padding:0.5em 1em;background-color:#b8f0f4}
+.tabset button.active {background-color:#e4fcff;border-color:#70a0b0}
+.endtabset {clear:both;margin-bottom:1.5em}
+.preview_rephead {font-weight:bold;font-size:1.1em;color:#800;margin-top:3em;padding:1em 0.5em 1em 0.5em;background-color:#ffa}
+.purchased_rephead {padding:0.5em;font-style:italic;color:#888}
+.purchased_rephead A {font-weight:bold}
+#lbcontent th {text-align:left;font-weight:bold;color:#455;font-size:1.08em;}
+#lbcontent tr {border-bottom:1px #ddd solid}
+#lbcontent tr > td:first-child {text-align:center;}
+#lbcontent tr > th:first-child {text-align:center;}
+#lbcontent th {padding:0.2em 0.5em 0.1em;border-left:1px #ddd solid;border-bottom:2px #aaa solid}
+#lbcontent td {padding:0.2em 0.5em 0.1em;border-left:1px #ddd solid;}
+#lbcontent tr > th:first-child {border-left:none}
+#lbcontent tr > td:first-child {border-left:none}
+#lbcontent table tr td[colspan="7"] {text-align:left;font-size:0.9em;border-bottom:2px #ccc solid}
+#lbcontent tr.headlines td {background:#f4f4f4;padding:0.5em;}
+#lbcontent tr.headlines td a {display:block;padding:0.2em;padding-left:0.5em;text-indent:-0.5em;}
+#lbcontent tr.headlines td div {padding:0.2em;padding-left:0.5em;text-indent:-0.5em;}
+#lbcontent header {padding:2em 0 3em;clear:both;}
+#lbcontent header h2 {padding:0;margin:0;float:left;}
+#lbcontent header button {float:right;border:solid 1px #a0d0e4;background-color:#b8f0f4;cursor:pointer;margin-bottom:1em}
+.fakedata {color:transparent;text-shadow:rgba(0, 0, 0, 0.6) 0px 0px 6px}
+h4 {font-family:Optima, "Century Gothic", sans-serif;}
+h4 {font-weight:bold;color:#455;font-size:1.1em;padding:0;}
+h4 span {font-size:0.9em;font-weight:normal;padding-left:0.3em;}
+.tabset h4 {padding-bottom:0.3em;}
+#lb_main_area h2 span {font-size:.75em;font-weight:normal;padding-left:0.2em;}
+.onphone {display:none;}
+#whatisthis {float:right;background-color:#eee;border:#888 solid 1px;padding:0.6em;margin-top:1em;font-size:1.5em}
+#dbbtghgtq .ii {padding-top:0.5em}
+.icon16cont a {float:right;margin-left:1em;outline:0.8ex solid transparent;}
+.icon16cont a:hover {background:#d0e8f4;outline:0.8ex solid #d0e8f4;}
+.icon16cont img {height:16px}
+.shrtbl {width:100%}
+.shrtbl tr > td:first-child {vertical-align:middle}
+.shrtbl tr > td:first-child + td {text-align:right;white-space:nowrap;min-width:124px;vertical-align:middle;padding-bottom:2px}
+.shrtbl tr > td:first-child + td a {text-decoration:none !important}
+.shrtbl td {height:26px}
+.shrfb {float:right;width:78px}
+.shrrt {float:right;width:37px}
+.shrrtimg {background:white url('/img/shr.png') no-repeat -28px 0;width:37px;height:20px;float:right}
+.shrrtimg:hover {background:white url('/img/shr.png') no-repeat -28px -20px !important}
+
+.shrpmlimg {background:white url('/img/shr.png') no-repeat 0 0;}
+.shrpmlimg:hover {background:url('/img/shr.png') no-repeat 0 -20px !important}
+.shrrtimg {background:white url('/img/shr.png') no-repeat -28px 0;}
+.shrrtimg:hover {background:white url('/img/shr.png') no-repeat -28px -20px !important}
+
+#s_s_h #hiring {margin-top:2em;}
+#s_s_h {float:right;width:31%;margin:1em 0}
+#s_a {padding:0 1em 1em; background: #f4f4f4;}
+
+.advbox {background:#f4f4f4;border:4px solid #9dacce;-webkit-border-radius:6px;-moz-border-radius:6px;border-radius:6px;z-index:20;position:fixed;top:145px;left:auto;width:60em;margin-left:11em;}
+.advbox b {font-weight:bold !important;}
+.advbox em {font-style:italic !important;}
+
+.advcont {padding:1.5em 1.5em 1em;font-size:0.95em;}
+
+.advegs {margin:0.5em 0 0.8em;}
+.advegs tr {border-bottom:1px #aaa dotted;}
+.advegs tr:last-child {border-bottom:none;}
+.advegs tr > td:first-child {border-right:1px #aaa dotted;}
+.advegs tr > td {padding:0.1em 0.5em 0.05em;}
+
+.advbox a[id="advclose"] {position:absolute;right:0;top:0;color: transparent;}
+.advbox a[id="advclose"]:focus {outline: none;}
+.advbox a[id="advclose"]:after {font-size:12px;line-height:12px;content:'X';display:block;
+	position:absolute;right:-12px;top:-12px;width:12px;padding:2px 1px 1px 1px;
+	text-decoration: none;text-shadow: none;text-align: center;font-weight: bold;background: #9dacce;color: #fff;border: 3px solid #fff;-moz-border-radius: 20px;border-radius: 20px;-webkit-box-shadow: 0 1px 3px rgba(0,0,0,0.5);-moz-box-shadow: 0 1px 3px rgba(0,0,0,0.5);box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+
+td.logobox {width:220px;}
+td.logobox img {height:45px;}
+.sbti {width:25.5em;border:1px solid #ccc;border-radius:3px;-webkit-border-radius:3px;-moz-border-radius:3px}
+.results {float:left;width:67%;margin:1em 1.9% 1em 0;} 
+.resultscanvas {padding-left:2em;}
+.item:last-child {border-bottom:none !important;}
+.iinf {padding-top:0.4em;}
+.idate {color:#306038;font-weight:bold;padding-right:0.3em;}
+.item {padding-top:0.9em;padding-bottom:0.9em;clear:both;}
+
+.subscribe {float:right;}
+
+div.prevnext {padding:2.5em 0 2em; text-align:center;}
+a.go {text-decoration:none;padding:0em 0.3em;border:1px solid white}
+a.go:hover {background-color:white;text-decoration:none;border-radius:3px;-webkit-border-radius:3px;-moz-border-radius:3px;border:1px solid #9dacce;}
+a.stay {font-weight:bold;text-decoration:none;padding:0em 0.3em;border:1px solid white;}
+a.stay:hover {text-decoration:none;background:white;border:1px solid white;}
+
+@media only screen and (max-device-width:900px) {
+    body {font-size:1em;}
+    .topllinks {font-size:1.8em;line-height:1em;}
+    .toprlinks {display:none;}
+    .icon16cont img {height:28px;padding-left:6px;}
+    .icon16cont a:hover {background:white;outline:none;}
+    .logobox img {height:65px !important;}
+    .searchbox tr:last-child {display:none;}
+    .searchbox {width:45%;font-size:1.8em;}
+    .sbti {width:10em;}
+    .ifjs {display:none;}
+    .navtabs {font-size:1.3em;line-height:1.5em;}
+    
+    .item {font-size:1.8em; line-height:1.15em;}
+    .L2 {line-height:1.15em;}
+    .ill {width:20% !important;}
+    .sisnav {display:none;}
+    .results {float:none;width:100%;margin:1em 0;}
+    
+    .prevnext {font-size:1.6em;}
+    
+    .shrtbl td:last-child {display:none;}
+    
+    .sponsorscanvas {margin:0 0 0 2em;}
+    #s_s_h {float:none;width:100%;}
+}
+
+</style>
+
+<SCRIPT TYPE="text/javascript">
+<!--
+
+// share
+
+function shareOff(itemId) {
+	document.getElementById(itemId).style.display = 'none';
+}
+
+function shareOn(itemId) {
+	var shareLine = document.getElementById(itemId);
+	if (!shareLine.getAttribute('init')) {
+		shareLine.innerHTML = getShareLineHtml(shareLine);
+		shareLine.setAttribute('init','true');
+	}
+	shareLine.style.display = 'block';
+}
+
+
+function getShareLineHtml(shareLine) {
+	var permalink = shareLine.getAttribute('permalink');
+	var target = nwcbe.checked? '_blank' : '_self';
+	var html = '';
+	html = '<span class="icon16cont">';
+	html = html + '<a href="' + permalink + '" target="' + target + '" title="Permalink"><img src="https://www.techmeme.com/img/link_icon.png"></a>';
+	var twurl = shareLine.getAttribute('twid');
+	if (twurl) {
+	html = html + '<a href="' + twurl + '" target="' + target + '" title="Visit tweet"><img src="https://www.techmeme.com/img/x_icon.png"></a>';
+	}
+	html = html + '</span>';
+	return html;
+}
+
+// open links in new tab
+
+var nwcbe;
+function rnwcb() {
+var where;
+if (nwcbe.checked)
+where = "_blank";
+else
+where = "_self";
+var jump_prefix = location.href.substring(0, location.href.length - location.hash.length) + '#';
+for (var i=0; i<=(document.links.length-1); i++) {
+var href = document.links[i].href;
+if ((href.indexOf("javascript:") != 0) && (href.indexOf(jump_prefix) != 0) && (!(/^https?:\/\/([a-z]+\.)?techmeme\.com\//.test(href)) || /^https?:\/\/([a-z]+\.)?techmeme\.com\/goto/.test(href))) {
+document.links[i].target = where;
+}
+}
+}
+var ckd;
+function set_ckd() {
+var dd = document.domain;
+if (dd) {
+var da = dd.split('.');
+var rd=da[da.length-2]+'.'+da[da.length-1];
+ckd='; domain=.'+rd;
+}
+}
+function createCookie(name,value) {
+document.cookie = name+"="+value+"; expires=Tue, 19 Jan 2038 03:14:07 GMT; path=/"+ckd;
+}
+function eraseCookie(name) {
+document.cookie = name+"=; expires=Thu, 01-Jan-70 00:00:01 GMT; path=/"+ckd;
+}
+function svprefs() {
+var cookie_val = '';
+if (nwcbe.checked) {
+cookie_val += 'new_window';
+}
+if (cookie_val == '') {
+eraseCookie('myprefs');
+} else {
+createCookie('myprefs', cookie_val);
+}
+}
+function readCookie(name) {
+var nameEQ = name + "=";
+var ca = document.cookie.split(';');
+for(var i=0;i < ca.length;i++) {
+var c = ca[i];
+while (c.charAt(0)==' ') c = c.substring(1,c.length);
+if (c.indexOf(nameEQ) == 0) return c.substring(nameEQ.length,c.length);
+}
+return null;
+}
+function rdprefs() {
+var cookie_val = readCookie('myprefs');
+nwcbe.checked = false;
+if (cookie_val) {
+var va = cookie_val.split('+');
+for(var i=0;i < va.length;i++) {
+var val = va[i];
+if (val == 'new_window') {
+nwcbe.checked = true;
+}
+}
+}
+}
+function xnwcb() { rnwcb(); svprefs(); }
+function td(id) {
+var e = document.getElementById(id);
+if (e.style.display == 'none') {
+e.style.display = 'block';
+} else {
+e.style.display = 'none';
+}
+}
+
+function init_all() {
+	nwcbe = document.getElementById('nwcb');
+	set_ckd();
+	rdprefs();
+	rnwcb();
+}
+-->
+</SCRIPT>
+
+<NOSCRIPT>
+<STYLE TYPE="text/css" MEDIA="all">
+.ifjs {display:none}
+</STYLE>
+</NOSCRIPT>
+
+</head>
+
+<body onload="init_all();">
+
+<!-- advanced -->
+<div id="advbox" class="advbox" style="display:none;">
+<div class="advcont">
+<P><B>Techmeme Search</B> finds "items", i.e. blog posts, news stories and tweets, that have appeared as headlines on <a href="https://www.techmeme.com/">Techmeme</a>.  
+Items listed only in the "More" areas are excluded from results.</P>
+<P>By default, only the title and first few sentences are searched.  Unchecking "<B>Search title &amp; summary only</B>" extends the search to the full body text.</P>
+<P>Quoted <B>phrases</B>, <B>wildcards</B>, and standard search operators like <B>+ (plus)</B>, <B>- (minus)</B>, <B>AND</B>, <B>OR</B>, <B>NOT</B>, and <B>parenthesis</B> are all supported.</P>
+<P>Narrowing searches based on url, author, date, and other attributes is also possible. For instance, the query [&nbsp;Streisand&nbsp;sourcename:Techdirt&nbsp;] restricts searches for "Streisand" to items from the blog "Techdirt".
+Examples of other operators follow:</P>
+<TABLE class="advegs" style="width:100%;">
+<TR>
+<TD><B>sourceurl:</B>http://www.theverge.com/</TD>
+<TD>items from the blog http://www.theverge.com/</TD>
+</TR><TR>
+<TD><B>sourcename</B>:"New York"</TD>
+<TD>items from blogs with "New York" in the name</TD>
+</TR><TR>
+<TD><B>date:</B>10/20/11</TD>
+<TD>items that appeared on 10/20/11</TD>
+</TR><TR>
+<TD><B>date:</B>[10/1/11 TO 10/20/11]</TD>
+<TD>items appearing between 10/1/11 and 10/20/11</TD>
+</TR><TR>
+<TD><B>author</B>:"Bill Gates"</TD>
+<TD>items by author "Bill Gates"</TD>
+</TR><TR>
+<TD><B>title</B>:unsubstantiated</TD>
+<TD>items with "unsubstantiated" in the title</TD>
+</TR><TR>
+<TD><B>body</B>:"severely polluted"</TD>
+<TD>items with "severely polluted" in the body</TD>
+</TR><TR>
+<TD><B>link:</B>http://www.marco.org/2011/04/16/rumored-apple-hdtv</TD>
+<TD>items linking to http://www.marco.org/2011/04/16/rumored-apple-hdtv</TD>
+</TR>
+</TABLE>
+<P><EM>Note:</EM> all operators that take urls will accept simple <B>domain names</B>, which match any item at that domain, or complete item urls.</P>
+<a id="advclose" href="javascript:td('advbox');" title="Close"></a>
+</div>
+</div> <!-- end advanced -->
+
+<div class="pagecont">
+
+<DIV CLASS="prenavbar">
+
+<!--  topline -->
+<DIV CLASS="topline">
+
+<DIV CLASS="icon16cont">
+<A HREF="https://twitter.com/Techmeme" title="Follow on X"><IMG SRC="https://www.techmeme.com/img/x_icon.png"></A>
+<A HREF="https://techhub.social/@Techmeme" title="Follow on Mastodon"><IMG SRC="https://www.techmeme.com/img/mastodon_icon.png"></A>
+<A HREF="https://www.threads.net/@techmeme" title="Follow on Threads"><IMG SRC="https://www.techmeme.com/img/threads_icon.png"></A>
+<A HREF="https://bsky.app/profile/techmeme.com" title="Follow on Bluesky"><IMG SRC="https://www.techmeme.com/img/bluesky_icon.png"></A>
+<A HREF="https://www.techmeme.com/feed.xml" title="RSS Feed"><IMG SRC="https://www.techmeme.com/img/rss_icon.png"></A>
+<span style="float:right" class="ifjs"><INPUT TYPE="checkbox" ID="nwcb" ONCLICK="xnwcb();"><A HREF="javascript:nwcbe.checked=!nwcbe.checked;xnwcb();">Open Links In New Tab</A></span>
+</DIV>
+
+<DIV CLASS="topllinks">
+<A HREF="/m" TITLE="Techmeme for smartphones">Mobile</A>
+<A HREF="/about#advertise" TITLE="How to advertise on Techmeme">Advertise</A>
+</DIV> <!-- topllinks -->
+
+</DIV> <!-- topline -->
+
+<table class="logotab">
+<tr>
+<td class="logobox">
+<A HREF="/"><IMG src="/img/techmeme135.png" ALT="Techmeme"></A>
+</td>
+<td class="searchbox">
+<form name="input" action="/search/query" method="get">
+<table>
+<tr>
+<td><span class="ifjs" style="padding-right:0.9em;"><a href="javascript:td('advbox');">Advanced</a></span></td>
+<td><input class="sbti" type="text" name="q" value="nvidia"></td>
+<td style="padding-left:0.3em;"><input style="font-size:0.95em" type="submit" value="Search "></td>
+</tr>
+<tr>
+<td></td>
+<td><input type="checkbox" name="wm" value="false" id="wm-top" checked="checked"><label style="font-size:0.95em;" for="wm-top">Search title &amp; summary only</label></td>
+<td>&nbsp;</td>
+</tr>
+</table>
+</form>
+</td>
+</tr>
+</table>
+</DIV> <!-- prenavbar -->
+
+<!-- navbar -->
+<DIV CLASS="navbar">
+<DIV CLASS="navtabs">
+<DIV CLASS="sisnav">
+<A HREF="http://www.mediagazer.com/"><IMG src="https://techmeme.com/img/mg16.png"> Mediagazer</A>
+<A HREF="http://www.memeorandum.com/"><IMG src="https://techmeme.com/img/mo16.png"> memeorandum</A>
+<A HREF="http://www.wesmirch.com/"><IMG src="https://techmeme.com/img/ws16.png"> WeSmirch</A>
+</DIV>
+<A HREF="/" TITLE="<%=configurationManager.getVerticalName() %> main page">Home</A>
+<A HREF="/river" TITLE="<%=configurationManager.getVerticalName() %> in pure reverse chronological order">River</A>
+<A HREF="/lb" TITLE="<%=configurationManager.getVerticalName() %>'s top authors and sources">Leaderboard</A>
+<A HREF="/about" TITLE="About <%=configurationManager.getVerticalName() %>">About</A>
+<A HREF="/events" TITLE="Full list of tech events %>">Events</A>
+<A ID="froma1" HREF="/newsletter?from=tmd" TITLE="Sign up for Techmeme's newsletter">Newsletter</A>
+</DIV>
+</DIV>
+
+<!-- main -->
+
+<DIV CLASS="ed">
+<DIV class="results">
+<DIV class="resultscanvas">
+
+
+<H2>Results 1 - 10 of about 2930:</H2>    					
+
+<div class="items">
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s1');" ONMOUSEOUT="shareOff('s1');">
+<table class="shrtbl"><tr>
+<td><CITE>Mackenzie Hawkins / <A HREF="https://www.bloomberg.com/">Bloomberg</A>:</CITE></td>
+<td><span class="sline" id="s1" permalink="https://www.techmeme.com/261106/p8#a261106p8" twid="2118667419845840942"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.bloomberg.com/news/articles/2026-11-06/nvidia-boosts-chip-tracking-in-southeast-asia-to-fight-smuggling"><IMG CLASS="ill" src="/261106/i8.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.bloomberg.com/news/articles/2026-11-06/nvidia-boosts-chip-tracking-in-southeast-asia-to-fight-smuggling">Sources: Nvidia is requiring Southeast Asian customers seeking Nvidia Cloud Partner status to enroll in a program that tracks the locations of their AI chips</A></STRONG>
+&nbsp; &mdash;&nbsp; Nvidia Corp. is stepping up monitoring of AI accelerators sold in Southeast Asia, a strategic step to curtail semiconductor smuggling &hellip; 
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 6, 2026, 6:30 AM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261106/p8#a261106p8">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s2');" ONMOUSEOUT="shareOff('s2');">
+<table class="shrtbl"><tr>
+<td><CITE>Kevin Breuninger / <A HREF="http://www.cnbc.com/">CNBC</A>:</CITE></td>
+<td><span class="sline" id="s2" permalink="https://www.techmeme.com/261105/p54#a261105p54" twid="2118458658631938505"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.cnbc.com/2026/11/05/nvidia-jensen-huang-china-spy-congress.html"><IMG CLASS="ill" src="/261105/i54.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.cnbc.com/2026/11/05/nvidia-jensen-huang-china-spy-congress.html">GOP leaders of three House committees ask Jensen Huang for a closed-door briefing on his ties with Megaspeed executive Alice Huang, reportedly a Chinese asset</A></STRONG>
+&nbsp; &mdash;&nbsp; Three House Republican committee leaders asked Nvidia CEO Jensen Huang to sit for a closed-door briefing on his relationship &hellip; 
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 5, 2026, 4:40 PM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261105/p54#a261105p54">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s3');" ONMOUSEOUT="shareOff('s3');">
+<table class="shrtbl"><tr>
+<td><CITE><A HREF="https://www.theinformation.com/">The Information</A>:</CITE></td>
+<td><span class="sline" id="s3" permalink="https://www.techmeme.com/261105/p50#a261105p50" twid="2118437205559664657"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.theinformation.com/articles/nvidias-workaround-data-center-backlash-retrofitting-old-telephone-buildings"><IMG CLASS="ill" src="/261105/i50.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.theinformation.com/articles/nvidias-workaround-data-center-backlash-retrofitting-old-telephone-buildings">Sources: Nvidia approached Apollo about retrofitting some of the 130+ buildings of the PE firm's struggling ISP Brightspeed into a network of small data centers</A></STRONG>
+&nbsp; &mdash;&nbsp; Nvidia is looking for a faster way to get its chips turned on: old telecom company buildings.
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 5, 2026, 3:15 PM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261105/p50#a261105p50">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s4');" ONMOUSEOUT="shareOff('s4');">
+<table class="shrtbl"><tr>
+<td><CITE><A HREF="http://www.reuters.com/">Reuters</A>:</CITE></td>
+<td><span class="sline" id="s4" permalink="https://www.techmeme.com/261105/p47#a261105p47" twid="2118423414780334503"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.reuters.com/world/china/nvidia-chips-pile-up-hong-kong-china-withholds-import-approval-2026-11-05/"><IMG CLASS="ill" src="/261105/i47.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.reuters.com/world/china/nvidia-chips-pile-up-hong-kong-china-withholds-import-approval-2026-11-05/">Sources: about 600,000 of Nvidia's H200 chips are stored in Hong Kong awaiting shipment to mainland China, as Beijing withholds approval for large-scale imports</A></STRONG>
+&nbsp; &mdash;&nbsp; About 600,000 of Nvidia's advanced artificial intelligence chips are stored in Hong Kong awaiting shipment to mainland China &hellip; 
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 5, 2026, 2:20 PM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261105/p47#a261105p47">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s5');" ONMOUSEOUT="shareOff('s5');">
+<table class="shrtbl"><tr>
+<td><CITE>Samantha Kelly / <A HREF="https://www.bloomberg.com/">Bloomberg</A>:</CITE></td>
+<td><span class="sline" id="s5" permalink="https://www.techmeme.com/261105/p23#a261105p23" twid="2118322848167293163"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.bloomberg.com/news/articles/2026-11-05/nvidia-backed-humanoid-maker-agility-goes-public-in-first-for-the-us"><IMG CLASS="ill" src="/261105/i23.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.bloomberg.com/news/articles/2026-11-05/nvidia-backed-humanoid-maker-agility-goes-public-in-first-for-the-us">Agility Robotics begins trading on the Nasdaq under the ticker AGLT after a SPAC merger, the first dedicated humanoid robotics company to go public in the US</A></STRONG>
+&nbsp; &mdash;&nbsp; Agility Robotics Inc. is set to become the first dedicated humanoid company to go public in the US, marking a major milestone &hellip; 
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 5, 2026, 7:40 AM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261105/p23#a261105p23">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s6');" ONMOUSEOUT="shareOff('s6');">
+<table class="shrtbl"><tr>
+<td><CITE><A HREF="https://www.wsj.com/">Wall Street Journal</A>:</CITE></td>
+<td><span class="sline" id="s6" permalink="https://www.techmeme.com/261105/p16#a261105p16" twid="2118303849014558791"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.wsj.com/tech/ai/the-election-day-revolt-that-threatens-americas-ai-boom-03a53b52"><IMG CLASS="ill" src="/261105/i16.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.wsj.com/tech/ai/the-election-day-revolt-that-threatens-americas-ai-boom-03a53b52">Sources: at Jensen Huang's midterms event, tech executives expressed concern over anti-data center results; OpenAI discussed resetting its 2027 capacity plans</A></STRONG>
+&nbsp; &mdash;&nbsp; Americans' vote for anti-data center candidates and ballot measures could rein in AI's expansion and hobble economic growth
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 5, 2026, 6:25 AM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261105/p16#a261105p16">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s7');" ONMOUSEOUT="shareOff('s7');">
+<table class="shrtbl"><tr>
+<td><CITE>Ben Thompson / <A HREF="https://stratechery.com/">Stratechery</A>:</CITE></td>
+<td><span class="sline" id="s7" permalink="https://www.techmeme.com/261104/p20#a261104p20" twid="2117946560466272573"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+
+<STRONG CLASS="L2"><A HREF="https://stratechery.com/2026/ai-on-the-ballot/">Democrats' US midterms victory is a win for hyperscalers and AI labs, a mixed bag for Nvidia, an advantage to China, and may make space data centers attractive</A></STRONG>
+&nbsp; &mdash;&nbsp; Data Centers were on the ballot, and they lost in a major way; what does it mean if American opposition to building is permanent?
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 4, 2026, 6:45 AM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261104/p20#a261104p20">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s8');" ONMOUSEOUT="shareOff('s8');">
+<table class="shrtbl"><tr>
+<td><CITE><A HREF="https://www.bloomberg.com/">Bloomberg</A>:</CITE></td>
+<td><span class="sline" id="s8" permalink="https://www.techmeme.com/261104/p1#a261104p1" twid="2117858447119331800"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.bloomberg.com/news/articles/2026-11-04/nvidia-china-clients-to-get-1-of-70-billion-rtx-chips-ordered"><IMG CLASS="ill" src="/261104/i1.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.bloomberg.com/news/articles/2026-11-04/nvidia-china-clients-to-get-1-of-70-billion-rtx-chips-ordered">Sources: Alibaba, Tencent, ByteDance, and other Chinese AI companies ordered ~6M Nvidia RTX Pro 5500 chips, worth ~$70B, but expect only ~1% within four months</A></STRONG>
+&nbsp; &mdash;&nbsp; Chinese AI developers expect to receive just a small fraction of the advanced Nvidia Corp. chips they've ordered over the next several months &hellip; 
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 4, 2026, 12:55 AM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261104/p1#a261104p1">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s9');" ONMOUSEOUT="shareOff('s9');">
+<table class="shrtbl"><tr>
+<td><CITE><A HREF="https://www.theinformation.com/">The Information</A>:</CITE></td>
+<td><span class="sline" id="s9" permalink="https://www.techmeme.com/261103/p42#a261103p42" twid="2117774096893383091"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.theinformation.com/articles/nvidia-uses-soft-power-influence-customers-shape-policy"><IMG CLASS="ill" src="/261103/i42.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.theinformation.com/articles/nvidia-uses-soft-power-influence-customers-shape-policy">How Nvidia uses soft power to influence customers and shape US chip policy; sources: OpenAI took no public stance on China chip exports to avoid angering Nvidia</A></STRONG>
+&nbsp; &mdash;&nbsp; Last month, OpenAI Senior Research Scientist Noam Brown posted a link in a company Slack channel to a news story &hellip; 
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 3, 2026, 7:20 PM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261103/p42#a261103p42">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+<DIV CLASS="item" ONMOUSEOVER="shareOn('s10');" ONMOUSEOUT="shareOff('s10');">
+<table class="shrtbl"><tr>
+<td><CITE><A HREF="https://www.ft.com/">Financial Times</A>:</CITE></td>
+<td><span class="sline" id="s10" permalink="https://www.techmeme.com/261103/p1#a261103p1" twid="2117497356296102037"></span></td>
+</tr></table>
+<DIV CLASS="ii">
+<A HREF="https://www.ft.com/content/1902df70-1380-4588-bad5-171352b575f2"><IMG CLASS="ill" src="/261103/i1.jpg"></A>
+
+<STRONG CLASS="L2"><A HREF="https://www.ft.com/content/1902df70-1380-4588-bad5-171352b575f2">Sources: Nvidia verbally told cloud compute clients they must sell 51%+ of their services to non-Chinese companies, as the US further limits China's chip access</A></STRONG>
+&nbsp; &mdash;&nbsp; Nvidia is ordering its data centre partners to reduce exposure to Chinese customers in a move that further restrains China's ability &hellip; 
+</DIV><!--end ii-->
+
+<div class="iinf">
+<SPAN CLASS="idate">Nov 3, 2026, 1:00 AM</SPAN>&ndash;
+<span class="icontext"><a href="https://www.techmeme.com/261103/p1#a261103p1">In&nbsp;context</a></span>
+</div>
+</DIV>
+
+</div> <!-- items -->	
+
+
+<div class="prevnext">
+
+<a class="stay" title="First item from Nov 6, 2026, 6:30 AM"> 1</a>
+
+<a class="go" href="https://www.techmeme.com/search/d3results.jsp?q=nvidia&wm=false&start=10" title="First item from Nov 2, 2026, 10:20 AM"> 2</a>
+
+<a class="go" href="https://www.techmeme.com/search/d3results.jsp?q=nvidia&wm=false&start=20" title="First item from Oct 28, 2026, 7:00 PM"> 3</a>
+
+<a class="go" href="https://www.techmeme.com/search/d3results.jsp?q=nvidia&wm=false&start=30" title="First item from Oct 22, 2026, 7:10 AM"> 4</a>
+
+<a class="go" href="https://www.techmeme.com/search/d3results.jsp?q=nvidia&wm=false&start=40" title="First item from Oct 20, 2026, 9:55 AM"> 5</a>
+
+<a class="go" href="https://www.techmeme.com/search/d3results.jsp?q=nvidia&wm=false&start=50" title="First item from Oct 18, 2026, 3:55 PM"> 6</a>
+
+&nbsp;&nbsp;<a class="go" href="https://www.techmeme.com/search/d3results.jsp?q=nvidia&wm=false&start=10" title="First item from Nov 2, 2026, 10:20 AM">Next &gt;</a>
+
+</DIV> <!-- prev - next -->
+  		
+</DIV> <!-- resultscanvas -->
+</DIV> <!-- results -->
+
+<DIV class="sponsorscanvas">
+<DIV ID="s_s_h">
+<DIV ID="s_a">
+<H2>Sponsor Posts</H2>
+<DIV CLASS="item">
+<CITE><A HREF="/r2/subq.ai_-uzNhs6fN.htm">Subquadratic</A>:</CITE>
+<DIV CLASS="ii"><A HREF="/r2/subq.ai_-uzNhs6fN.htm"><IMG CLASS="ill" STYLE="width:140px" SRC="/simg/subqsnap_280px.png"></A>
+<STRONG CLASS="L1"><A HREF="/r2/subq.ai_-uzNhs6fN.htm">SubQ Snap 1.1: the first long-context decision model for real enterprise work</A></STRONG>&nbsp; &mdash;&nbsp; Tied for #1 on the AA Decision Index, Snap is a multimodal model with a 384k-token context window for fast reasoning and agentic decisions.</DIV>
+</DIV>
+<DIV CLASS="item">
+<CITE><A HREF="/r2/www.zoho.com_blog-OOqiKhIh.htm">Zoho</A>:</CITE>
+<DIV CLASS="ii"><A HREF="/r2/www.zoho.com_blog_writer_label-automation.html-NeHWt9EF.htm"><IMG CLASS="ill" STYLE="width:124px" SRC="/simg/zoho-EplOzah5_248px.png"></A>
+<STRONG CLASS="L1"><A HREF="/r2/www.zoho.com_blog_writer_label-automation.html-NeHWt9EF.htm">Labels that build themselves: Simplified Label Automation in Zoho Writer</A></STRONG>&nbsp; &mdash;&nbsp; Anyone who ships every day knows this feeling.&nbsp; Forty orders, each with a different number of items, and every item needs its own label.</DIV>
+</DIV>
+<DIV CLASS="item">
+<CITE><A HREF="/r2/www.idrive.com_idrive_signup_c2c_landing-oJFzBY2N.htm">IDrive</A>:</CITE>
+<DIV CLASS="ii"><A HREF="/r2/www.idrive.com_idrive_signup_c2c_landing-oJFzBY2N.htm"><IMG CLASS="ill" STYLE="width:124px" SRC="/simg/idrive-hvnuOGua_248px.png"></A>
+<STRONG CLASS="L1"><A HREF="/r2/www.idrive.com_idrive_signup_c2c_landing-oJFzBY2N.htm">Protecting your Cloud Applications Data</A></STRONG>&nbsp; &mdash;&nbsp; Backing up Office 365, Google Workspace, Dropbox &amp; Salesforce data is critical to preventing data loss or corruption, complying with laws and avoiding critical downtime in case of a disaster.</DIV>
+</DIV>
+<DIV CLASS="item">
+<CITE><A HREF="/r2/www.webbrain.one_-DaJVEkef.htm">WebBrain</A>:</CITE>
+<DIV CLASS="ii"><A HREF="/r2/www.webbrain.one_-DaJVEkef.htm"><IMG CLASS="ill" STYLE="width:78px" SRC="/simg/webbrain_156px.png"></A>
+<STRONG CLASS="L1"><A HREF="/r2/www.webbrain.one_-DaJVEkef.htm">WebBrain: an open-source AI agent for your browser</A></STRONG>&nbsp; &mdash;&nbsp; Read pages, fill forms and automate tasks in Chrome or Firefox.&nbsp; Use local models or your preferred AI provider.&nbsp; Get started free.</DIV>
+</DIV>
+
+</DIV>
+</DIV>
+</DIV>
+
+
+<!-- navbar -->
+<DIV CLASS="navbar">
+<DIV CLASS="navtabs">
+<DIV CLASS="sisnav">
+<A HREF="http://www.mediagazer.com/"><IMG src="https://techmeme.com/img/mg16.png"> Mediagazer</A>
+<A HREF="http://www.memeorandum.com/"><IMG src="https://techmeme.com/img/mo16.png"> memeorandum</A>
+<A HREF="http://www.wesmirch.com/"><IMG src="https://techmeme.com/img/ws16.png"> WeSmirch</A>
+</DIV>
+<A HREF="/" TITLE="<%=configurationManager.getVerticalName() %> main page">Home</A>
+<A HREF="/river" TITLE="<%=configurationManager.getVerticalName() %> in pure reverse chronological order">River</A>
+<A HREF="/lb" TITLE="<%=configurationManager.getVerticalName() %>'s top authors and sources">Leaderboard</A>
+<A HREF="/about" TITLE="About <%=configurationManager.getVerticalName() %>">About</A>
+<A HREF="/events" TITLE="Full list of tech events %>">Events</A>
+<A ID="froma1" HREF="/newsletter?from=tmd" TITLE="Sign up for Techmeme's newsletter">Newsletter</A>
+</DIV>
+</DIV>
+
+
+</DIV> <!-- ed -->
+</DIV> <!-- pagecont -->
+
+</body>
+<script>!function(d,s,id){var js,fjs=d.getElementsByTagName(s)[0];if(!d.getElementById(id)){js=d.createElement(s);js.id=id;js.src="//platform.twitter.com/widgets.js";fjs.parentNode.insertBefore(js,fjs);}}(document,"script","twitter-wjs");</script>
+</html>	
+  		

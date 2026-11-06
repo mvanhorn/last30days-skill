@@ -1,13 +1,13 @@
 """arXiv research-paper source for last30days.
 
-Shells out to ``arxiv-pp-cli`` (open Atom API, no auth) to surface recent
+Queries arXiv's open Atom API (``export.arxiv.org/api/query``, no auth)
+directly with the stdlib -- no third-party binary -- to surface recent
 research papers relevant to a topic. arXiv carries no engagement signal, so
-ranking leans on relevance (the CLI's own relevance sort plus token overlap)
+ranking leans on relevance (arXiv's own relevance sort plus token overlap)
 and recency.
 
-Activation gate: this source is only available when ``arxiv-pp-cli`` is on
-PATH. ``pipeline.available_sources`` checks ``shutil.which`` before including
-``arxiv``. The functions below also detect the missing-binary case defensively.
+Activation: always available (keyless, no install). The relevance and
+recency gates below keep it quiet on off-topic queries.
 
 Default-on safety (two gates, both required):
   1. Query construction. arXiv is queried with a *quoted* phrase and
@@ -22,16 +22,17 @@ Default-on safety (two gates, both required):
 
 from __future__ import annotations
 
-import json
-import shutil
+import xml.etree.ElementTree as ET
 from datetime import date, datetime, time, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
-from . import log, subproc
+from . import http, log
 from .relevance import token_overlap_relevance
 
 
-CLI_BIN = "arxiv-pp-cli"
+API_URL = "https://export.arxiv.org/api/query"
+_ATOM = "{http://www.w3.org/2005/Atom}"
 
 # Per-depth result counts.
 DEPTH_CONFIG = {
@@ -50,11 +51,6 @@ SEARCH_TIMEOUT = 30
 
 def _log(msg: str) -> None:
     log.source_log("arXiv", msg, tty_only=False)
-
-
-def _is_available() -> bool:
-    """True when the arxiv-pp-cli binary is on PATH."""
-    return shutil.which(CLI_BIN) is not None
 
 
 def _today() -> datetime:
@@ -83,98 +79,85 @@ def _clean_phrase(topic: str) -> str:
     return " ".join(topic.replace('"', " ").split())
 
 
-def _build_search_args(topic: str, limit: int, *, quoted: bool = True) -> List[str]:
-    return [
-        CLI_BIN,
-        "query",
-        "--search-query",
-        _build_search_query(topic, quoted=quoted),
-        "--sort-by",
-        "relevance",
-        "--max-results",
-        str(limit),
-        "--agent",
-    ]
+def _build_search_url(topic: str, limit: int, *, quoted: bool = True) -> str:
+    """The Atom API URL for a relevance-sorted search of ``topic``."""
+    params = {
+        "search_query": _build_search_query(topic, quoted=quoted),
+        "sortBy": "relevance",
+        "sortOrder": "descending",
+        "start": "0",
+        "max_results": str(limit),
+    }
+    return f"{API_URL}?{urlencode(params)}"
 
 
-def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
-    """Invoke arxiv-pp-cli and parse the JSON envelope.
+def _text(el: Optional[ET.Element]) -> str:
+    return (el.text or "").strip() if el is not None else ""
 
-    arXiv returns ``{"meta": ..., "results": {"entries": [...]}}``. This
-    normalizes to ``{"results": [...entries...]}`` so the parse step sees a
-    flat list, matching the other sources' shape. Never raises.
+
+def _parse_atom(xml_text: str) -> List[Dict[str, Any]]:
+    """Parse an arXiv Atom feed into entry dicts.
+
+    Shape: ``{id, title, summary, published, updated, authors: [{name}],
+    links: [{rel, href, type}]}``. Raises ``ET.ParseError`` on malformed XML.
+    ElementTree never resolves external entities, and the stdlib expat parser
+    rejects entity-expansion bombs.
     """
-    if not _is_available():
-        return {"results": [], "error": f"{CLI_BIN} not on PATH"}
-    try:
-        result = subproc.run_with_timeout(cmd, timeout=timeout)
-    except subproc.SubprocTimeout as exc:
-        _log(f"Timeout: {exc}")
-        return {"results": [], "error": str(exc)}
-    except FileNotFoundError as exc:
-        _log(f"Binary missing: {exc}")
-        return {"results": [], "error": str(exc)}
-    except OSError as exc:
-        _log(f"Spawn failed: {exc}")
-        return {"results": [], "error": str(exc)}
-
-    if result.returncode != 0:
-        snippet = (result.stderr or "").strip().splitlines()[:1]
-        first = snippet[0] if snippet else f"exit {result.returncode}"
-        _log(f"CLI exit {result.returncode}: {first}")
-        return {"results": [], "error": first}
-
-    stdout = result.stdout or ""
-    if not stdout.strip():
-        _log("CLI returned empty stdout")
-        return {"results": [], "error": "empty stdout"}
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        _log(f"JSON decode failed: {exc}")
-        return {"results": [], "error": f"json decode: {exc}"}
-
-    if not _is_entry_envelope(data):
-        _log("CLI returned an unrecognized JSON response")
-        return {"results": [], "error": "unrecognized JSON response"}
-
-    return {"results": _extract_entries(data)}
+    root = ET.fromstring(xml_text)
+    if root.tag != f"{_ATOM}feed":
+        raise ET.ParseError(f"unexpected root element {root.tag!r}")
+    entries: List[Dict[str, Any]] = []
+    for node in root.findall(f"{_ATOM}entry"):
+        entries.append(
+            {
+                "id": _text(node.find(f"{_ATOM}id")),
+                "title": _text(node.find(f"{_ATOM}title")),
+                "summary": _text(node.find(f"{_ATOM}summary")),
+                "published": _text(node.find(f"{_ATOM}published")),
+                "updated": _text(node.find(f"{_ATOM}updated")),
+                "authors": [
+                    {"name": _text(a.find(f"{_ATOM}name"))}
+                    for a in node.findall(f"{_ATOM}author")
+                ],
+                "links": [
+                    {
+                        "rel": link.get("rel", ""),
+                        "href": link.get("href", ""),
+                        "type": link.get("type", ""),
+                    }
+                    for link in node.findall(f"{_ATOM}link")
+                ],
+            }
+        )
+    return entries
 
 
-def _extract_entries(data: Any) -> List[Dict[str, Any]]:
-    """Pull the entries list out of arXiv's nested envelope.
+def _fetch_feed(url: str, timeout: int) -> Dict[str, Any]:
+    """GET the Atom feed and return ``{"results": [...entries...]}``.
 
-    Tolerates ``{"results": {"entries": [...]}}`` (current shape),
-    ``{"entries": [...]}``, and a bare list.
+    Never raises: network/HTTP failures and malformed XML come back as
+    ``{"results": [], "error": "<one line>"}``.
     """
-    if isinstance(data, list):
-        return [e for e in data if isinstance(e, dict)]
-    if isinstance(data, dict):
-        results = data.get("results")
-        if isinstance(results, dict):
-            entries = results.get("entries")
-            if isinstance(entries, list):
-                return [e for e in entries if isinstance(e, dict)]
-        if isinstance(results, list):
-            return [e for e in results if isinstance(e, dict)]
-        entries = data.get("entries")
-        if isinstance(entries, list):
-            return [e for e in entries if isinstance(e, dict)]
-    return []
-
-
-def _is_entry_envelope(data: Any) -> bool:
-    """Return whether ``data`` has one of the supported entry-list shapes."""
-    if isinstance(data, list):
-        return True
-    if not isinstance(data, dict):
-        return False
-    results = data.get("results")
-    return (
-        isinstance(results, list)
-        or (isinstance(results, dict) and isinstance(results.get("entries"), list))
-        or isinstance(data.get("entries"), list)
-    )
+    try:
+        body = http.request(
+            "GET",
+            url,
+            headers={"Accept": "application/atom+xml"},
+            timeout=timeout,
+            retries=2,
+            raw=True,
+        )
+    except http.HTTPError as exc:
+        _log(f"request failed: {exc}")
+        return {"results": [], "error": str(exc)}
+    if not isinstance(body, str) or not body.strip():
+        _log("API returned an empty body")
+        return {"results": [], "error": "empty response"}
+    try:
+        return {"results": _parse_atom(body)}
+    except ET.ParseError as exc:
+        _log(f"Atom parse failed: {exc}")
+        return {"results": [], "error": f"atom parse: {exc}"}
 
 
 def search_arxiv(
@@ -183,7 +166,7 @@ def search_arxiv(
     to_date: str,
     depth: str = "default",
 ) -> Dict[str, Any]:
-    """Search arXiv via arxiv-pp-cli using a quoted, relevance-sorted query.
+    """Search arXiv's Atom API using a quoted, relevance-sorted query.
 
     Returns a dict with a flat ``results`` list of entry dicts. On failure,
     ``results`` is empty and an ``error`` key carries a one-line description.
@@ -195,16 +178,16 @@ def search_arxiv(
     if not _clean_phrase(topic):
         return {"results": []}
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    cmd = _build_search_args(topic, limit)
+    url = _build_search_url(topic, limit)
     _log(f"query '{topic}' (relevance, max={limit})")
-    response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
+    response = _fetch_feed(url, timeout=SEARCH_TIMEOUT)
     _log(f"found {len(response.get('results') or [])} entries")
     # Retry a clean zero-result phrase match with individually quoted AND terms.
-    # CLI failures, malformed responses, and missing binaries skip the retry.
+    # Request failures and malformed responses skip the retry.
     if not response.get("error") and not response.get("results"):
-        retry_cmd = _build_search_args(topic, limit, quoted=False)
+        retry_url = _build_search_url(topic, limit, quoted=False)
         _log(f"quoted phrase matched nothing; retrying unquoted for '{topic}'")
-        response = _run_cli(retry_cmd, timeout=SEARCH_TIMEOUT)
+        response = _fetch_feed(retry_url, timeout=SEARCH_TIMEOUT)
         _log(f"unquoted retry found {len(response.get('results') or [])} entries")
     return response
 

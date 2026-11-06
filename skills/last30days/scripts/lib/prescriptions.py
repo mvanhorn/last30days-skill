@@ -133,8 +133,8 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         "x", "grok_cli_missing",
         cause="the Grok CLI is not installed, so the keyless X path is unavailable",
         fix_nl=(
-            "install the Grok CLI (curl -fsSL https://x.ai/cli/install.sh | bash) "
-            "and sign in with `grok login` to search X without any X credential"
+            "install the Grok CLI yourself from xAI's official instructions "
+            "(https://x.ai/cli) and sign in with `grok login` to search X without any X credential"
         ),
         fix_cli="npm install -g @xai-official/grok",
         anchor="api-keys-env",

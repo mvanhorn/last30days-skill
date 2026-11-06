@@ -1,5 +1,7 @@
-"""Tests for setup-wizard auto-install of the default-on Printing Press sources
-(arxiv, techmeme, trustpilot) -- lib/setup_wizard.py."""
+"""Tests for setup-wizard detection of Printing Press CLIs -- lib/setup_wizard.py.
+
+Setup never downloads, builds, or installs these binaries: it only detects
+them and, when missing, prints the user-run pinned build command."""
 
 from __future__ import annotations
 
@@ -10,113 +12,65 @@ from lib import setup_wizard as sw
 
 @pytest.fixture
 def no_off_path(monkeypatch):
-    # Default: no binary present on disk in known dirs.
     monkeypatch.setattr(sw, "_pp_off_path_binary", lambda bin_name: None)
 
 
-def test_already_installed_when_on_path(monkeypatch):
+@pytest.fixture
+def no_subprocess(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"setup must not spawn installers: {args!r}")
+
+    monkeypatch.setattr(sw.subprocess, "run", refuse)
+    monkeypatch.setattr(sw.subprocess, "Popen", refuse)
+
+
+def test_already_installed_when_on_path(monkeypatch, no_subprocess):
     monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
-    installed, action, stderr, off = sw._install_pp_cli("arxiv", "arxiv-pp-cli")
-    assert installed is True
-    assert action == "already_installed"
+    assert sw._detect_pp_cli("trustpilot-pp-cli") == (True, "already_installed", "")
 
 
-def test_installed_off_path(monkeypatch, no_off_path):
+def test_installed_off_path(monkeypatch, no_subprocess):
     monkeypatch.setattr(sw.shutil, "which", lambda name: None)
     monkeypatch.setattr(sw, "_pp_off_path_binary", lambda bin_name: "/home/u/.local/bin/" + bin_name)
-    installed, action, stderr, off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
-    assert installed is False
-    assert action == "installed_off_path"
-    assert off.endswith("techmeme-pp-cli")
+    installed, action, off = sw._detect_pp_cli("trustpilot-pp-cli")
+    assert (installed, action) == (False, "installed_off_path")
+    assert off.endswith("trustpilot-pp-cli")
 
 
-def test_no_npx(monkeypatch, no_off_path):
-    monkeypatch.setattr(sw.shutil, "which", lambda name: None)  # neither bin nor npx
-    installed, action, stderr, off = sw._install_pp_cli("trustpilot", "trustpilot-pp-cli")
-    assert installed is False
-    assert action == "no_npx"
+def test_missing_is_not_installed_and_never_runs_npx(monkeypatch, no_off_path, no_subprocess):
+    # Even with npx on PATH, nothing is spawned.
+    monkeypatch.setattr(sw.shutil, "which", lambda name: "/usr/bin/npx" if name == "npx" else None)
+    assert sw._detect_pp_cli("trustpilot-pp-cli") == (False, "not_installed", "")
 
 
-def test_install_success(monkeypatch, no_off_path):
-    # npx present; binary absent before, resolves after the install.
-    calls = {"n": 0}
-
-    def fake_which(name):
-        if name == "npx":
-            return "/usr/bin/npx"
-        if name == "arxiv-pp-cli":
-            # absent on first check, present after install
-            calls["n"] += 1
-            return None if calls["n"] == 1 else "/home/u/.local/bin/arxiv-pp-cli"
-        return None
-
-    monkeypatch.setattr(sw.shutil, "which", fake_which)
-    monkeypatch.setattr(sw.subprocess, "run",
-                        lambda *a, **k: type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})())
-    installed, action, stderr, off = sw._install_pp_cli("arxiv", "arxiv-pp-cli")
-    assert installed is True
-    assert action == "installed"
+def test_digg_detect_never_installs(monkeypatch, no_off_path, no_subprocess):
+    monkeypatch.setattr(sw.shutil, "which", lambda name: "/usr/bin/npx" if name == "npx" else None)
+    monkeypatch.setattr(sw, "_digg_off_path_binary", lambda: None)
+    assert sw._detect_digg_cli() == (False, "not_installed", "")
 
 
-def test_install_uses_resolved_windows_npx_path(monkeypatch, no_off_path):
-    """Regression for #904: subprocess.run must receive the resolved npx
-    path (e.g. a Windows PATHEXT-resolved npx.CMD), not the bare "npx"
-    string -- bare "npx" fails with WinError 2 on Windows."""
-    calls = {"n": 0}
-    windows_npx = r"C:\Program Files\nodejs\npx.CMD"
-
-    def fake_which(name):
-        if name == "npx":
-            return windows_npx
-        if name == "techmeme-pp-cli":
-            calls["n"] += 1
-            return None if calls["n"] == 1 else r"C:\Users\me\.local\bin\techmeme-pp-cli"
-        return None
-
-    run_calls = []
-
-    def fake_run(cmd, **kwargs):
-        run_calls.append(cmd)
-        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    monkeypatch.setattr(sw.shutil, "which", fake_which)
-    monkeypatch.setattr(sw.subprocess, "run", fake_run)
-    installed, action, stderr, off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
-    assert installed is True
-    assert action == "installed"
-    assert run_calls[0][0] == windows_npx
+def test_default_pp_sources_empty_now_arxiv_techmeme_are_native():
+    slugs = {slug for _, slug, _ in sw.PP_DEFAULT_SOURCES}
+    assert "arxiv" not in slugs and "techmeme" not in slugs
+    assert sw.detect_default_pp_sources() == {} or all(
+        entry["action"] in {"already_installed", "installed_off_path", "not_installed"}
+        for entry in sw.detect_default_pp_sources().values()
+    )
 
 
-def test_install_failed_nonzero_rc(monkeypatch, no_off_path):
-    def fake_which(name):
-        return "/usr/bin/npx" if name == "npx" else None
-
-    monkeypatch.setattr(sw.shutil, "which", fake_which)
-    monkeypatch.setattr(sw.subprocess, "run",
-                        lambda *a, **k: type("P", (), {"returncode": 1, "stdout": "", "stderr": "boom"})())
-    installed, action, stderr, off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
-    assert installed is False
-    assert action == "install_failed"
-    assert "boom" in stderr
+def test_build_command_points_at_pinned_script():
+    cmd = sw.pp_build_command("digg")
+    assert cmd.startswith("bash ") and cmd.endswith(" digg")
+    assert "build-pp-cli.sh" in cmd
+    assert "npx" not in cmd and "printing-press-library@" not in cmd
+    assert sw.DIGG_INSTALL_CMD == cmd
 
 
-def test_install_default_pp_sources_covers_default_on_pair(monkeypatch):
-    # Only the zero-auth default-on sources are auto-installed. Trustpilot is
-    # opt-in (INCLUDE_SOURCES=trustpilot) and intentionally excluded here.
-    monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
-    out = sw.install_default_pp_sources()
-    assert set(out.keys()) == {"arxiv", "techmeme"}
-    assert "trustpilot" not in out
-    for entry in out.values():
-        assert entry["action"] == "already_installed"
-        assert entry["installed"] is True
-
-
-def test_install_is_idempotent(monkeypatch):
-    monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
-    run_calls = []
-    monkeypatch.setattr(sw.subprocess, "run", lambda *a, **k: run_calls.append(a))
-    sw.install_default_pp_sources()
-    sw.install_default_pp_sources()
-    # All already on PATH -> npx install never invoked.
-    assert run_calls == []
+def test_not_installed_summary_prints_build_command_without_running_it():
+    text = sw.get_setup_status_text({"digg_action": "not_installed", "pp_sources": {
+        "trustpilot": {"installed": False, "action": "not_installed",
+                       "build_cmd": sw.pp_build_command("trustpilot")},
+    }})
+    assert sw.DIGG_INSTALL_CMD in text
+    assert sw.pp_build_command("trustpilot") in text
+    assert "npx" not in text

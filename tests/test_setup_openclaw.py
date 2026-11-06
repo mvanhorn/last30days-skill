@@ -19,10 +19,10 @@ class TestRunOpenclawSetup:
 
     @staticmethod
     def _patch_digg_noop(func):
-        """Keep OpenClaw setup tests free of real digg-pp-cli / npx side effects."""
+        """Keep OpenClaw setup tests independent of a real digg-pp-cli."""
         return patch(
-            "lib.setup_wizard._install_digg_cli",
-            return_value=(False, "no_npx", "", ""),
+            "lib.setup_wizard._detect_digg_cli",
+            return_value=(False, "not_installed", ""),
         )(func)
 
     @_patch_digg_noop
@@ -40,7 +40,8 @@ class TestRunOpenclawSetup:
         assert all(v is False for v in result["keys"].values())
         assert result["x_method"] is None
         assert result["digg_cli"] is False
-        assert result["digg_action"] == "no_npx"
+        assert result["digg_action"] == "not_installed"
+        assert "build-pp-cli.sh" in result["digg_build_cmd"]
 
     @_patch_digg_noop
     @patch("shutil.which")
@@ -147,12 +148,12 @@ class TestRunOpenclawSetup:
         assert parsed["yt_dlp"] is True
         assert parsed["keys"]["xai"] is True
 
-    @patch("lib.setup_wizard._install_digg_cli")
+    @patch("lib.setup_wizard._detect_digg_cli")
     @patch("shutil.which")
     def test_digg_cli_on_path(self, mock_which, mock_digg_install):
         """OpenClaw JSON reports digg_cli when PATH resolves digg-pp-cli."""
         mock_which.side_effect = lambda cmd: f"/usr/bin/{cmd}"
-        mock_digg_install.return_value = (True, "already_installed", "", "")
+        mock_digg_install.return_value = (True, "already_installed", "")
 
         result = setup_wizard.run_openclaw_setup({})
 
@@ -160,7 +161,7 @@ class TestRunOpenclawSetup:
         assert result["digg_action"] == "already_installed"
         assert "digg_path" not in result
 
-    @patch("lib.setup_wizard._install_digg_cli")
+    @patch("lib.setup_wizard._detect_digg_cli")
     @patch("shutil.which")
     def test_digg_cli_off_path(self, mock_which, mock_digg_install):
         """OpenClaw JSON surfaces off-PATH installs from prior pp-digg setup."""
@@ -168,7 +169,6 @@ class TestRunOpenclawSetup:
         mock_digg_install.return_value = (
             False,
             "installed_off_path",
-            "",
             "/Users/me/.local/bin/digg-pp-cli",
         )
 

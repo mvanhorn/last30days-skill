@@ -87,7 +87,7 @@ DIAGNOSE_TOP_KEYS = {
 DIAGNOSE_PROVIDERS_KEYS = {"google", "openai", "xai", "openrouter", "perplexity"}
 DIAGNOSE_BROWSER_COOKIES_KEYS = {"mode", "browsers", "reads_values"}
 DIAGNOSE_EXTERNAL_COMMANDS_KEYS = {
-    "yt-dlp", "digg-pp-cli", "arxiv-pp-cli", "techmeme-pp-cli", "trustpilot-pp-cli",
+    "yt-dlp", "digg-pp-cli", "trustpilot-pp-cli",
     "brightdata", "gh",
 }
 DIAGNOSE_CREDENTIAL_DESTINATIONS_KEYS = {"global_env"}

@@ -264,8 +264,17 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("Digg", self.modal)
         self.assertIn("Digg", self.prose)
         self.assertIn("Digg", self.manual)
-        # The Auto-setup modal option names every installed CLI, not just two.
-        self.assertIn("yt-dlp (YouTube), Digg, arXiv, Techmeme", self.modal)
+        # Auto setup installs only yt-dlp (a well-known package); arXiv and
+        # Techmeme are built in; Digg is detect-only with a user-run build.
+        self.assertIn("install yt-dlp (YouTube)", self.modal)
+        self.assertIn("build-pp-cli.sh", self.modal)
+        self.assertIn("build-pp-cli.sh", self.manual)
+
+    def test_onboarding_never_installs_from_npm_or_pipe_to_shell(self):
+        for text in (self.step0, self.modal, self.prose, self.manual):
+            self.assertNotIn("npx ", text)
+            self.assertNotIn("printing-press-library", text)
+            self.assertNotIn("| bash", text)
 
     # --- Credit count = 10,000, no conflicting numbers in onboarding ---
 

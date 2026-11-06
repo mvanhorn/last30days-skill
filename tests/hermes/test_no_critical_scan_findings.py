@@ -35,11 +35,8 @@ CRITICAL_RULES = [
 
 # Scan-root .skillignore excludes (directory prefixes + explicit files). Mirrors
 # skills/last30days/.skillignore so this test scans exactly what Hermes scans.
-IGNORE_DIRS = ("assets/", "agents/", "scripts/lib/vendor/")
-IGNORE_FILES = {
-    "scripts/build-skill.sh", "scripts/compare.sh", "scripts/evaluate_search_quality.py",
-    "scripts/test_device_auth.py", "scripts/test-v1-vs-v2.sh", "scripts/verify_v3.py",
-}
+IGNORE_DIRS = ("assets/", "agents/")  # vendor/ is scanned too
+IGNORE_FILES: set[str] = set()  # nothing executable is excluded
 
 
 def _scanned_files():

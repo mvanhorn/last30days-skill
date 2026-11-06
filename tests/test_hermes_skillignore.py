@@ -13,23 +13,21 @@ def _skillignore_entries() -> set[str]:
     }
 
 
-def test_hermes_skillignore_excludes_non_runtime_scan_surface() -> None:
-    entries = _skillignore_entries()
+def test_hermes_skillignore_excludes_only_non_executable_media() -> None:
+    """Nothing executable that ships with the skill may be hidden from the
+    install-time scan -- a clean verdict must cover the whole runtime."""
+    assert _skillignore_entries() == {"assets/", "agents/"}
+    for entry in ("assets", "agents"):
+        assert (SKILL_ROOT / entry).exists()
 
-    expected = {
-        "assets/",
-        "agents/",
-        "scripts/build-skill.sh",
-        "scripts/compare.sh",
-        "scripts/evaluate_search_quality.py",
-        "scripts/test_device_auth.py",
-        "scripts/test-v1-vs-v2.sh",
-        "scripts/verify_v3.py",
-    }
 
-    assert expected <= entries
-    for entry in sorted(expected):
-        assert (SKILL_ROOT / entry.rstrip("/")).exists()
+def test_vendored_client_is_scanned_at_both_scan_roots() -> None:
+    for ignore in (ROOT / ".skillignore", ROOT / ".clawhubignore"):
+        rules = [
+            line.strip() for line in ignore.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert not any(rule.startswith("skills/last30days/scripts") for rule in rules), ignore.name
 
 
 def test_hermes_skillignore_keeps_runtime_contract_scannable() -> None:

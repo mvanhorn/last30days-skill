@@ -1,0 +1,86 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/Jfd+AY+DUC1NyiNJzjSGc4rz5fc</id>
+  <title>arXiv Query: search_query=all:"llm inference"&amp;id_list=&amp;start=0&amp;max_results=3</title>
+  <updated>2026-11-06T14:31:41Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=all:%22llm+inference%22&amp;start=0&amp;max_results=3&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>3</opensearch:itemsPerPage>
+  <opensearch:totalResults>2050</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2609.05565v1</id>
+    <title>Toward Sustainable Distributed LLM Inference: A Systems Synthesis and Research Agenda for an Energy-, Carbon-, and Cache-Aware llm-d Control Plane</title>
+    <updated>2026-09-03T21:56:54Z</updated>
+    <link href="https://arxiv.org/abs/2609.05565v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2609.05565v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Large language model (LLM) sustainability is increasingly a serving-systems problem, not only a training problem. In production, energy and carbon impact depend on more than model size: workload shape, batching, key-value (KV) cache reuse, prefill/decode placement, model and accelerator choice, power state, geographic carbon intensity, and service-level objectives (SLOs) all matter. Recent systems papers study many of these factors separately. This paper connects those results and asks a practical engineering question: what do they imply when the decision point is a distributed inference control plane such as llm-d?
+  The contribution here is synthesis, not a new set of benchmark results. Reported performance, energy, carbon, and cost improvements remain the results of the cited papers and systems. I group the literature into recurring design patterns and use those patterns to sketch a Sustainable Inference Control Plane (SICP) for llm-d. The proposed control plane would consider latency, energy, carbon, cache reuse, serving cost, and quality when routing and scaling, while keeping TTFT/TPOT SLOs as hard constraints. I also outline an evaluation framework based on SLO-satisfied goodput per joule and per gram CO2e, together with a reproducible experimental plan. The main observation from connecting the literature is that sustainable LLM inference is unlikely to come from one "green" model or one accelerator; it is more naturally treated as a control problem across model, phase, cache, hardware, replica, region, and time.</summary>
+    <category term="cs.DC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-09-03T21:56:54Z</published>
+    <arxiv:comment>13 pages, 1 figure, 1 table. Systems synthesis and research agenda for sustainability-aware distributed LLM inference. No new experimental measurements are claimed; reported results are attributed to the cited work</arxiv:comment>
+    <arxiv:primary_category term="cs.DC"/>
+    <author>
+      <name>Twinkll Sisodia</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2506.09713v2</id>
+    <title>A First Look at Bugs in LLM Inference Engines</title>
+    <updated>2026-01-09T07:16:47Z</updated>
+    <link href="https://arxiv.org/abs/2506.09713v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2506.09713v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Large language model-specific inference engines (in short as \emph{LLM inference engines}) have become a fundamental component of modern AI infrastructure, enabling the deployment of LLM-powered applications (LLM apps) across cloud and local devices. Despite their critical role, LLM inference engines are prone to bugs due to the immense resource demands of LLMs and the complexities of cross-platform compatibility. However, a systematic understanding of these bugs remains lacking. To bridge this gap, we present the first empirical study on bugs in LLM inference engines. We mine official repositories of 5 widely adopted LLM inference engines, constructing a comprehensive dataset of 929 real-world bugs. Through a rigorous open coding process, we analyze these bugs to uncover their symptoms, root causes, commonality, fix effort, fix strategies, and temporal evolution. Our findings reveal six bug symptom types and a taxonomy of 28 root causes, shedding light on the key challenges in bug detection and location within LLM inference engines. Based on these insights, we propose a series of actionable implications for researchers, inference engine vendors, and LLM app developers, along with general guidelines for developing LLM inference engines.</summary>
+    <category term="cs.SE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-06-11T13:25:36Z</published>
+    <arxiv:comment>Accepted by ACM Transactions on Software Engineering and Methodology</arxiv:comment>
+    <arxiv:primary_category term="cs.SE"/>
+    <author>
+      <name>Mugeng Liu</name>
+    </author>
+    <author>
+      <name>Siqi Zhong</name>
+    </author>
+    <author>
+      <name>Weichen Bi</name>
+    </author>
+    <author>
+      <name>Yixuan Zhang</name>
+    </author>
+    <author>
+      <name>Zhiyang Chen</name>
+    </author>
+    <author>
+      <name>Zhenpeng Chen</name>
+    </author>
+    <author>
+      <name>Xuanzhe Liu</name>
+    </author>
+    <author>
+      <name>Yun Ma</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2410.02425v1</id>
+    <title>LLM-Pilot: Characterize and Optimize Performance of your LLM Inference Services</title>
+    <updated>2024-10-03T12:19:06Z</updated>
+    <link href="https://arxiv.org/abs/2410.02425v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2410.02425v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>As Large Language Models (LLMs) are rapidly growing in popularity, LLM inference services must be able to serve requests from thousands of users while satisfying performance requirements. The performance of an LLM inference service is largely determined by the hardware onto which it is deployed, but understanding of which hardware will deliver on performance requirements remains challenging. In this work we present LLM-Pilot - a first-of-its-kind system for characterizing and predicting performance of LLM inference services. LLM-Pilot performs benchmarking of LLM inference services, under a realistic workload, across a variety of GPUs, and optimizes the service configuration for each considered GPU to maximize performance. Finally, using this characterization data, LLM-Pilot learns a predictive model, which can be used to recommend the most cost-effective hardware for a previously unseen LLM. Compared to existing methods, LLM-Pilot can deliver on performance requirements 33% more frequently, whilst reducing costs by 60% on average.</summary>
+    <category term="cs.DC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-10-03T12:19:06Z</published>
+    <arxiv:comment>Accepted to the International Conference for High Performance Computing, Networking, Storage and Analysis (SC '24)</arxiv:comment>
+    <arxiv:primary_category term="cs.DC"/>
+    <author>
+      <name>Małgorzata Łazuka</name>
+    </author>
+    <author>
+      <name>Andreea Anghel</name>
+    </author>
+    <author>
+      <name>Thomas Parnell</name>
+    </author>
+  </entry>
+</feed>

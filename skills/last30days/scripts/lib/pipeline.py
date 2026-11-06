@@ -423,14 +423,11 @@ def available_sources(
         available.append("devto")
     if which("digg-pp-cli"):
         available.append("digg")
-    # arXiv is default-on when its Printing Press CLI is installed (zero auth).
-    # The adapter relevance-and-recency gates so it stays quiet off-topic.
-    if which("arxiv-pp-cli"):
-        available.append("arxiv")
-    # Techmeme is default-on when its CLI is installed (zero auth; sub-second
-    # local sync before each run's first search).
-    if which("techmeme-pp-cli"):
-        available.append("techmeme")
+    # arXiv and Techmeme are native stdlib clients (zero auth, no binary), so
+    # they are always available. The arXiv adapter relevance-and-recency gates
+    # so it stays quiet off-topic; Techmeme windows to the research range.
+    available.append("arxiv")
+    available.append("techmeme")
     if env.is_bluesky_available(config):
         available.append("bluesky")
     if env.is_truthsocial_available(config):
@@ -2046,8 +2043,6 @@ def diagnose(
     external_commands = {
         "yt-dlp": bool(which("yt-dlp")),
         "digg-pp-cli": bool(which("digg-pp-cli")),
-        "arxiv-pp-cli": bool(which("arxiv-pp-cli")),
-        "techmeme-pp-cli": bool(which("techmeme-pp-cli")),
         "trustpilot-pp-cli": bool(which("trustpilot-pp-cli")),
         "brightdata": bool(which("brightdata")),
         "gh": bool(which("gh")),
