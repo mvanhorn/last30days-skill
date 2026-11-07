@@ -1,0 +1,1 @@
+A keyless Reddit request that Reddit's edge answers with HTTP 403 and its "blocked by network security" page is now reported as `unreachable`, not `auth-failed`. The keyless lanes send no credentials, so the old state pointed users at a re-login that cannot help. A plain 403 still reports `auth-failed`.

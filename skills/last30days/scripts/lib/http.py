@@ -613,6 +613,7 @@ class HTTPError(Exception):
         self.outcome_state = outcome_state or classify_failure(
             status_code=status_code,
             message=message,
+            body=body.decode("utf-8", "replace") if isinstance(body, bytes) else (body or ""),
         )
 
 
@@ -694,9 +695,15 @@ def _raise(error: HTTPError) -> None:
     raise error
 
 
-def classify_failure(*, status_code: Optional[int] = None, message: str = "") -> str:
+def classify_failure(
+    *, status_code: Optional[int] = None, message: str = "", body: str = ""
+) -> str:
     """Map a request failure to the doctor-aligned per-run vocabulary."""
     text = message.lower()
+    # An edge block page on a 403 means this host is blocked, not that a
+    # credential failed: re-authenticating cannot fix it.
+    if status_code == 403 and "blocked by network security" in body.lower():
+        return health.UNREACHABLE
     if status_code == 429 or any(
         marker in text for marker in ("http 429", "status 429", "rate limit", "too many requests")
     ):
