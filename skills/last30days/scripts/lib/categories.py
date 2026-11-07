@@ -270,7 +270,8 @@ def detect_category(topic: Optional[str]) -> Optional[str]:
             # Word-boundary match: "ai agent" must not fire on "Dubai agents"
             # or "Thai agents". Substring matching classified those as
             # ai_agent_framework and routed discovery to LangChain subreddits.
-            if re.search(rf"(?<![a-z0-9]){re.escape(pattern)}(?![a-z0-9])", lowered):
+            # A trailing "s" is allowed so "coding agents" still matches.
+            if re.search(rf"(?<![a-z0-9]){re.escape(pattern)}s?(?![a-z0-9])", lowered):
                 return category_id
     return None
 
