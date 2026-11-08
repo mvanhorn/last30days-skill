@@ -613,7 +613,7 @@ class HTTPError(Exception):
         self.outcome_state = outcome_state or classify_failure(
             status_code=status_code,
             message=message,
-            body=body.decode("utf-8", "replace") if isinstance(body, bytes) else (body or ""),
+            body=body or "",
         )
 
 

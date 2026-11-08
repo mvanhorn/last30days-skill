@@ -142,7 +142,7 @@ def test_items_delivered_with_swallowed_lane_403_are_not_branded():
     lane_error = http.HTTPError(
         "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
         status_code=403,
-        body=b"Blocked",
+        body="Blocked",
     )
     subquery = schema.SubQuery(
         label="primary",
@@ -183,7 +183,7 @@ def test_swallowed_lane_403_still_brands_when_no_items_returned():
     lane_error = http.HTTPError(
         "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
         status_code=403,
-        body=b"Blocked",
+        body="Blocked",
     )
     subquery = schema.SubQuery(
         label="primary",
@@ -220,7 +220,7 @@ def test_items_delivered_with_swallowed_lane_failure_carry_detail():
     lane_error = http.HTTPError(
         "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
         status_code=429,
-        body=b"Too Many Requests",
+        body="Too Many Requests",
     )
     subquery = schema.SubQuery(
         label="primary",
@@ -282,7 +282,7 @@ def test_postmortem_shows_lane_detail_on_succeeded_source():
 
 def test_swallowed_429s_flag_the_source_as_rate_limited_for_thin_retry():
     lane_error = http.HTTPError(
-        "https://www.reddit.com/svc/shreddit/search/", status_code=429, body=b"Too Many Requests"
+        "https://www.reddit.com/svc/shreddit/search/", status_code=429, body="Too Many Requests"
     )
     subquery = schema.SubQuery(
         label="primary", search_query="matcha", ranking_query="matcha", sources=["reddit"],
