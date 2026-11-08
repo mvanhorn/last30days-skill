@@ -73,6 +73,27 @@ def test_parallel_historical_window_drops_undated_result():
     assert artifact["resultCount"] == 0
 
 
+def test_outcrawl_undated_result_survives_only_for_current_window():
+    today = datetime.now(timezone.utc).date()
+    current = ((today - timedelta(days=30)).isoformat(), today.isoformat())
+    payload = {"hits": [{
+        "rank": 1, "title": "Undated", "url": "https://example.com/outcrawl",
+        "snippet": "No age label here",
+    }]}
+    with patch("lib.grounding.http.request", return_value=payload):
+        raw, _ = grounding.outcrawl_search("test", current, "fake-key")
+    normalized = normalize.normalize_source_items("grounding", raw, *current)
+    assert len(normalized) == 1
+    assert normalized[0].published_at is None
+    assert normalized[0].date_confidence == "low"
+    assert render._format_date(normalized[0]) == "date unknown [date:low]"
+
+    with patch("lib.grounding.http.request", return_value=payload):
+        historical, artifact = grounding.outcrawl_search("test", DATE_RANGE, "fake-key")
+    assert historical == []
+    assert artifact["resultCount"] == 0
+
+
 def test_parallel_undated_result_survives_utc_midnight_between_stages():
     today = datetime.now(timezone.utc).date()
     date_range = (

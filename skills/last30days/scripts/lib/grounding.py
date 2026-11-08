@@ -1,4 +1,4 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, Outcrawl, or a keyless floor."""
 
 from __future__ import annotations
 
@@ -218,6 +218,67 @@ def parallel_search(
     return items, artifact
 
 
+# ---------------------------------------------------------------------------
+# Outcrawl web search (https://outcrawl.ai)
+# ---------------------------------------------------------------------------
+
+_OUTCRAWL_SEARCH_URL = "https://api.outcrawl.ai/v1/search"
+# Outcrawl prefixes a result's snippet with its age ("2 days ago - ...") when
+# the page has a publish date. There is no provider-side date filter, so that
+# prefix is the only date signal.
+_OUTCRAWL_AGE_PREFIX_RE = re.compile(
+    r"^((?:about\s+)?\d{1,4}\s+(?:minute|min|hour|hr|day|week|month|year)s?\s+ago)"
+    r"\s+-\s+(.*)$",
+    re.I | re.S,
+)
+
+
+def outcrawl_search(
+    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+) -> tuple[list[dict], dict]:
+    """Search the web with Outcrawl; the API has no date filter, so the window is enforced here."""
+    current_window = date_range[1] >= datetime.now(timezone.utc).date().isoformat()
+    data = http.request(
+        "POST", _OUTCRAWL_SEARCH_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_data={"query": query, "limit": count},
+        timeout=20,
+    )
+    items = []
+    for i, r in enumerate((data.get("hits") or [])[:count]):
+        if not isinstance(r, dict):
+            continue
+        url = r.get("url") or ""
+        if not url:
+            continue
+        snippet = r.get("snippet") or ""
+        pub_date = None
+        age = _OUTCRAWL_AGE_PREFIX_RE.match(snippet)
+        if age:
+            pub_date = _parse_serper_date(age.group(1))
+            if pub_date is None:
+                # An age too large to resolve cannot vouch for the window.
+                continue
+            snippet = age.group(2)
+        if _known_date_out_of_range(pub_date, date_range):
+            continue
+        if pub_date is None and not current_window:
+            continue
+        items.append({
+            "id": f"WO{i + 1}",
+            "title": r.get("title", ""),
+            "url": url,
+            "source_domain": _domain(url),
+            "snippet": snippet[:500],
+            "date": pub_date,
+            "relevance": 0.8,
+            "why_relevant": "Outcrawl web search",
+            "metadata": {"date_window_basis": "undated_current"} if current_window else {},
+        })
+    artifact = {"label": "outcrawl", "webSearchQueries": [query], "resultCount": len(items)}
+    return items, artifact
+
+
 _SERPER_RELATIVE_RE = re.compile(
     r"^(?:about\s+)?(\d+)\s+(minute|min|hour|hr|day|week|month|year)s?\s+ago$", re.I
 )
@@ -301,6 +362,7 @@ def configured_backend(config: dict) -> str | None:
         ("exa", "EXA_API_KEY"),
         ("serper", "SERPER_API_KEY"),
         ("parallel", "PARALLEL_API_KEY"),
+        ("outcrawl", "OUTCRAWL_API_KEY"),
     ):
         if config.get(key):
             return backend
@@ -340,6 +402,11 @@ def web_search(
         if not key:
             raise RuntimeError("PARALLEL_API_KEY is required when web_backend='parallel'")
         items, artifact = parallel_search(query, date_range, key)
+    elif backend == "outcrawl":
+        key = config.get("OUTCRAWL_API_KEY")
+        if not key:
+            raise RuntimeError("OUTCRAWL_API_KEY is required when web_backend='outcrawl'")
+        items, artifact = outcrawl_search(query, date_range, key)
     elif backend == "parallel-mcp":
         items, artifact = parallel_mcp.search(
             query, date_range, config.get("PARALLEL_API_KEY")

@@ -833,7 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--web-backend", default="auto",
-                        choices=["auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "keyless", "none"],
+                        choices=["auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "outcrawl", "keyless", "none"],
                         help="Web search backend (default: auto; parallel-mcp explicitly opts into the "
                              "anonymous hosted MCP; keyless forces the zero-key floor)")
     parser.add_argument("--perplexity-search-type", choices=["web", "fast"],
@@ -4404,7 +4404,7 @@ def _main(
                         "See the skill's references/competitors.md for the full protocol.\n"
                         "\n"
                         "HEADLESS / CRON PATH (no hosting model available): set "
-                        "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY "
+                        "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / OUTCRAWL_API_KEY "
                         "and re-run.\n"
                         "\n"
                         "MINIMUM ESCAPE HATCH: pass --competitors-list 'A,B,C' to skip "
