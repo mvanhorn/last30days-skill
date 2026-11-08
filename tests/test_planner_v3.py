@@ -698,16 +698,35 @@ class EnablementIntentTests(unittest.TestCase):
             "get claude to control my browser",
             "how to make chatgpt use my mac",
             "agent that automates the desktop",
+            "let codex drive my desktop",
+            "get claude code to use my terminal",
         ):
             with self.subTest(topic=topic):
                 self.assertEqual("how_to", planner._infer_intent(topic))
 
     def test_near_misses_keep_their_intent(self):
         self.assertEqual("concept", planner._infer_intent("best wireless earbuds"))
-        for topic in ("best browser for privacy", "make sure I use the right charger"):
+        for topic in (
+            "best browser for privacy",
+            "make sure I use the right charger",
+            "how to get users to use my app",
+            "should I let my kid use the phone",
+            "make kids use the computer less",
+            "AI drives the PC upgrade cycle",
+        ):
             with self.subTest(topic=topic):
-                self.assertNotEqual("how_to", planner._infer_intent(topic))
+                self.assertFalse(planner._is_enablement(topic))
         self.assertEqual("comparison", planner._infer_intent("Grok vs Claude to control my computer"))
+
+    def test_ordinary_device_use_is_not_enablement(self):
+        for topic in (
+            "how to use my computer for video editing",
+            "how to use the browser devtools",
+            "Chrome uses the browser sandbox",
+            "teens use the phone too much",
+        ):
+            with self.subTest(topic=topic):
+                self.assertFalse(planner._is_enablement(topic))
 
     def test_llm_comparison_verdict_becomes_how_to(self):
         plan = planner._sanitize_plan(self._raw(), self.TOPIC, self.SOURCES, None, "default")

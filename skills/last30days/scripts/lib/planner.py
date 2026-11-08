@@ -813,20 +813,22 @@ def _fallback_plan(
 _SLASH_COMPARISON = re.compile(r"\b[A-Z][a-z]{2,}(?:/[A-Z][a-z]{2,})+\b")
 
 
-_CAPABILITY_VERB = r"(?:control(?:s|ling)?|operat(?:e|es|ing)|drives?|automat(?:e|es|ing)|uses?)"
-# "grok bot control my computer", "agent that automates the browser": a
-# capability aimed at a device the person owns. Mirrors the hosted worker's
-# detect_enablement_intent.
+_DEVICE = r"(?:my|the|your|our)\s+(?:own\s+)?(?:computer|mac|pc|desktop|laptop|browser|screen|phone|terminal)s?\b"
+# Mirrors the hosted worker's detect_enablement_intent (last30days-com).
+# A tool acting on a device the person owns: "grok bot control my computer",
+# "agent that automates the browser". Plain "use the browser" is ordinary use.
 _ENABLEMENT_TARGET_RE = re.compile(
-    r"\b" + _CAPABILITY_VERB + r"\s+(?:my|the)\s+(?:own\s+)?"
-    r"(?:computer|mac|pc|desktop|laptop|browser|screen|phone)s?\b",
+    r"\b(?:control(?:s|ling)?|operat(?:e|es|ing)|automat(?:e|es|ing))\s+" + _DEVICE,
     re.IGNORECASE,
 )
-# "get claude to control ...", "make chatgpt use my ...". The excluded words
-# keep idioms such as "make sure I use the" and "get the most use out" out.
+# A named tool made to act on the device: "get claude to control my browser",
+# "make chatgpt use my mac". The lookahead keeps people and idioms out, as in
+# "let my kid use the phone", "make kids use the computer", "make sure I use".
 _ENABLEMENT_AGENT_RE = re.compile(
-    r"\b(?:get|make|let|have)\s+(?!(?:to|me|us|them|you|sure|the\s+most)\b)"
-    r"[\w.-]+(?:\s+[\w.-]+){0,2}?\s+(?:to\s+)?" + _CAPABILITY_VERB + r"\s+(?:my|the|your|our)\b",
+    r"\b(?:get|make|let|have)\s+"
+    r"(?!(?:to|me|us|them|you|sure|my|your|our|his|her|their|the\s+most|kids?|children|teens?|users?|people|customers?|employees?|students?|staff|team)\b)"
+    r"[\w.-]+(?:\s+[\w.-]+){0,2}?\s+(?:to\s+)?"
+    r"(?:control(?:s|ling)?|operat(?:e|es|ing)|drives?|automat(?:e|es|ing)|uses?)\s+" + _DEVICE,
     re.IGNORECASE,
 )
 
