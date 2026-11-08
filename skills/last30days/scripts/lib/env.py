@@ -73,7 +73,7 @@ KEYCHAIN_KEYS = (
     "AUTH_TOKEN", "CT0", "BSKY_HANDLE", "BSKY_APP_PASSWORD",
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
-    "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
+    "KEENABLE_API_KEY", "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
     "X_BEARER_TOKEN",
 )
 
@@ -691,6 +691,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_PERPLEXITY_REASONING_EFFORT', None),
         ('LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS', '600'),
         ('PARALLEL_API_KEY', None),
+        ('KEENABLE_API_KEY', None),
         ('XQUIK_API_KEY', None),
         # Bright Data CLI. Optional: the CLI normally owns its own auth via
         # `brightdata login`, so this only matters for users who prefer an

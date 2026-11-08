@@ -62,10 +62,10 @@ TIER_WARN = "warn"
 TIER_ERROR = "error"
 
 # Web search backend order. grounding.web_search's auto branch owns the
-# runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
+# runtime behavior (brave -> exa -> serper -> parallel -> keenable -> keyless floor);
 # there is no importable constant there, so this declaration is guarded by
 # the grounding-auto parity test rather than an import.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless")
+WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keenable", "keyless")
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -504,9 +504,10 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "exa": _key_probe("exa", "EXA_API_KEY", "EXA_API_KEY"),
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
+    "keenable": _key_probe("keenable", "KEENABLE_API_KEY", "KEENABLE_API_KEY"),
     "keyless": _probe_web_keyless,
 }
-_WEB_KEYED = {"brave", "exa", "serper", "parallel"}
+_WEB_KEYED = {"brave", "exa", "serper", "parallel", "keenable"}
 
 _SC_SPEC = BackendSpec(
     name="scrapecreators",

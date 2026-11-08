@@ -1,0 +1,1 @@
+Keenable web search backend: set `KEENABLE_API_KEY` (or pass `--web-backend keenable`) to search Keenable's index with the research window enforced server-side via `published_after`/`published_before`. Auto-detected after Brave, Exa, Serper, and Parallel.
