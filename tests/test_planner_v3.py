@@ -666,3 +666,70 @@ class FallbackDefaultsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnablementIntentTests(unittest.TestCase):
+    """Issue Esper-Labs/last30days-com#616: "best Grok AI bot to control my
+    computer agent" was planned as a strict-recent comparison about Grok, so
+    retrieval never looked for the tools that give Grok that capability."""
+
+    TOPIC = "best Grok AI bot to control my computer agent"
+    SOURCES = ["reddit", "x", "youtube", "hackernews", "github"]
+
+    def _raw(self, intent="comparison", cluster_mode="debate"):
+        return {
+            "intent": intent,
+            "freshness_mode": "strict_recent",
+            "cluster_mode": cluster_mode,
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "Grok computer control",
+                    "ranking_query": "How can Grok control my computer?",
+                    "sources": ["reddit", "github"],
+                }
+            ],
+        }
+
+    def test_enablement_phrasing_infers_how_to(self):
+        for topic in (
+            self.TOPIC,
+            "best grok bot control my computer agent",
+            "get claude to control my browser",
+            "how to make chatgpt use my mac",
+            "agent that automates the desktop",
+        ):
+            with self.subTest(topic=topic):
+                self.assertEqual("how_to", planner._infer_intent(topic))
+
+    def test_near_misses_keep_their_intent(self):
+        self.assertEqual("concept", planner._infer_intent("best wireless earbuds"))
+        for topic in ("best browser for privacy", "make sure I use the right charger"):
+            with self.subTest(topic=topic):
+                self.assertNotEqual("how_to", planner._infer_intent(topic))
+        self.assertEqual("comparison", planner._infer_intent("Grok vs Claude to control my computer"))
+
+    def test_llm_comparison_verdict_becomes_how_to(self):
+        plan = planner._sanitize_plan(self._raw(), self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual("how_to", plan.intent)
+        self.assertEqual("evergreen_ok", plan.freshness_mode)
+        self.assertEqual("workflow", plan.cluster_mode)
+
+    def test_explicit_plan_keeps_its_intent(self):
+        plan = planner._sanitize_plan(
+            self._raw(), self.TOPIC, self.SOURCES, None, "default", honor_plan_sources=True
+        )
+        self.assertEqual("comparison", plan.intent)
+        self.assertEqual("debate", plan.cluster_mode)
+
+    def test_explicit_comparison_is_not_overridden(self):
+        topic = "Grok vs Claude to control my computer"
+        plan = planner._sanitize_plan(self._raw(), topic, self.SOURCES, None, "default")
+        self.assertEqual("comparison", plan.intent)
+
+    def test_ordinary_topic_keeps_llm_intent(self):
+        plan = planner._sanitize_plan(
+            self._raw(intent="product", cluster_mode="none"), "best wireless earbuds", self.SOURCES, None, "default"
+        )
+        self.assertEqual("product", plan.intent)
+        self.assertEqual("none", plan.cluster_mode)

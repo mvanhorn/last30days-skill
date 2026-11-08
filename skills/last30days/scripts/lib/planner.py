@@ -477,6 +477,7 @@ Rules:
 - use cluster_mode=none for factual or many how-to queries
 - use strict_recent for breaking news and most predictions
 - use debate for comparison/opinion, market for prediction, workflow for how_to, story for breaking_news
+- ENABLEMENT: when the topic asks how to make a named tool or agent control, operate, drive, automate, or use a computer, browser, desktop, laptop, screen, or phone ("X control my computer", "get X to use my browser"), use intent=how_to and cluster_mode=workflow, never comparison. Emit 4-5 subqueries that find what gives the named tool that capability: its own built-in route, plus third-party MCP servers, CLIs, browser or desktop automation tools, and extensions it can use. Keep the named tool in two or three search_query strings, and make at least one search_query capability-only without the named tool (e.g. 'computer use MCP server', 'browser automation CLI agent').
 - search_query should be concise and keyword-heavy
 - ranking_query should read like a natural-language question
 - preserve exact proper nouns and entity strings from the topic
@@ -501,6 +502,17 @@ def _sanitize_plan(
     intent_hint = str(raw.get("intent") or _infer_intent(topic)).strip()
     if intent_hint not in ALLOWED_INTENTS:
         intent_hint = _infer_intent(topic)
+    # The LLM planner reads "best X to control my computer" as a comparison
+    # and plans a strict-recent debate about X. An enablement topic without an
+    # explicit comparison is a how-to; an explicit --plan keeps its intent.
+    enablement_override = (
+        not honor_plan_sources
+        and intent_hint != "how_to"
+        and _is_enablement(topic)
+        and _infer_intent(topic) == "how_to"
+    )
+    if enablement_override:
+        intent_hint = "how_to"
     requested = set(requested_sources or [])
     available = set(available_sources)
     eligible_sources = [
@@ -573,6 +585,8 @@ def _sanitize_plan(
     if intent == "how_to":
         freshness_mode = "evergreen_ok"
     cluster_mode = str(raw.get("cluster_mode") or _default_cluster_mode(intent)).strip()
+    if enablement_override:
+        cluster_mode = _default_cluster_mode(intent)
     if cluster_mode not in ALLOWED_CLUSTER_MODES:
         cluster_mode = _default_cluster_mode(intent)
 
@@ -799,6 +813,30 @@ def _fallback_plan(
 _SLASH_COMPARISON = re.compile(r"\b[A-Z][a-z]{2,}(?:/[A-Z][a-z]{2,})+\b")
 
 
+_CAPABILITY_VERB = r"(?:control(?:s|ling)?|operat(?:e|es|ing)|drives?|automat(?:e|es|ing)|uses?)"
+# "grok bot control my computer", "agent that automates the browser": a
+# capability aimed at a device the person owns. Mirrors the hosted worker's
+# detect_enablement_intent.
+_ENABLEMENT_TARGET_RE = re.compile(
+    r"\b" + _CAPABILITY_VERB + r"\s+(?:my|the)\s+(?:own\s+)?"
+    r"(?:computer|mac|pc|desktop|laptop|browser|screen|phone)s?\b",
+    re.IGNORECASE,
+)
+# "get claude to control ...", "make chatgpt use my ...". The excluded words
+# keep idioms such as "make sure I use the" and "get the most use out" out.
+_ENABLEMENT_AGENT_RE = re.compile(
+    r"\b(?:get|make|let|have)\s+(?!(?:to|me|us|them|you|sure|the\s+most)\b)"
+    r"[\w.-]+(?:\s+[\w.-]+){0,2}?\s+(?:to\s+)?" + _CAPABILITY_VERB + r"\s+(?:my|the|your|our)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_enablement(topic: str) -> bool:
+    """The topic asks how to give a named tool a capability, such as
+    controlling the person's computer. That is a how-to, not a comparison."""
+    return bool(_ENABLEMENT_TARGET_RE.search(topic) or _ENABLEMENT_AGENT_RE.search(topic))
+
+
 def _infer_intent(topic: str) -> str:
     text = topic.lower().strip()
     if re.search(r"\b(vs|versus|compare|compared to|difference between)\b", text):
@@ -808,7 +846,7 @@ def _infer_intent(topic: str) -> str:
         return "comparison"
     if re.search(r"\b(odds|predict|prediction|forecast|chance|probability|will .* win)\b", text):
         return "prediction"
-    if re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install)\b", text):
+    if _is_enablement(topic) or re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install)\b", text):
         return "how_to"
     if re.search(r"\b(what is|what are|who is|who acquired|when did|parameter count|release date)\b", text):
         return "factual"
