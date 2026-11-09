@@ -12,20 +12,25 @@ from tests.skill_contract import reference_text
 
 
 def _item(source, day, url, *, title="Widget leak thread", author="someone",
-          confidence="high", container=""):
+          confidence="high", container="", engagement=0, metadata=None):
     return SimpleNamespace(
         source=source, published_at=day, url=url, title=title, author=author,
-        container=container, date_confidence=confidence,
+        container=container, date_confidence=confidence, engagement=engagement,
+        metadata=metadata or {},
     )
 
 
 def _candidate(engagement, *items):
-    return SimpleNamespace(engagement=engagement, source_items=list(items))
+    """A candidate whose items default to the given engagement."""
+    for item in items:
+        if not item.engagement:
+            item.engagement = engagement
+    return SimpleNamespace(source_items=list(items))
 
 
 def _build(candidates, range_from="2026-10-10", range_to="2026-11-09", incomplete=()):
     return origin.build_timeline(
-        candidates, range_from, range_to, lambda c: c.engagement, incomplete_sources=incomplete,
+        candidates, range_from, range_to, lambda item: item.engagement, incomplete_sources=incomplete,
     )
 
 
@@ -60,6 +65,40 @@ def test_timeline_orders_first_sightings_and_finds_the_peak():
     assert timeline["sighting_count"] == 5
     assert timeline["undated_count"] == 3
     assert timeline["at_window_edge"] is False
+
+
+def test_each_post_keeps_its_own_engagement():
+    merged = SimpleNamespace(source_items=[
+        _item("web", "2026-10-20", "https://blog.test/post", engagement=0),
+        _item("hackernews", "2026-10-21", "https://blog.test/post", engagement=640,
+              metadata={"hn_url": "https://news.ycombinator.com/item?id=2"}),
+    ])
+    timeline = _build([merged])
+    assert [(h["source"], h["engagement"]) for h in timeline["hops"]] == [("web", 0.0), ("hackernews", 640.0)]
+    assert timeline["peak_day"].isoformat() == "2026-10-21"
+    assert timeline["breakout"]["url"] == "https://news.ycombinator.com/item?id=2"
+
+
+def test_separate_hacker_news_submissions_of_one_article_are_separate_posts():
+    late = _candidate(900, _item("hackernews", "2026-10-25", "https://blog.test/post", author="late",
+                                 metadata={"hn_url": "https://news.ycombinator.com/item?id=2"}))
+    early = _candidate(3, _item("hackernews", "2026-10-15", "https://blog.test/post", author="early",
+                                metadata={"hn_url": "https://news.ycombinator.com/item?id=1"}))
+    timeline = _build([late, early])
+    assert timeline["sighting_count"] == 2
+    assert timeline["earliest"]["author"] == "early"
+    assert timeline["earliest"]["url"] == "https://news.ycombinator.com/item?id=1"
+    # Without a discussion URL the article URL is still a usable identity.
+    assert _build([_candidate(1, _item("hackernews", "2026-10-15", "https://blog.test/post"))])["earliest"]["url"] == "https://blog.test/post"
+
+
+def test_every_platform_is_listed_however_many_report():
+    sources = [f"source{n:02d}" for n in range(14)]
+    timeline = _build([
+        _candidate(1, _item(source, f"2026-10-{11 + n}", f"https://{source}.test/1"))
+        for n, source in enumerate(sources)
+    ])
+    assert [hop["source"] for hop in timeline["hops"]] == sources
 
 
 def test_market_and_listing_dates_never_anchor_an_origin():
@@ -120,6 +159,15 @@ def test_trace_origin_adds_the_block_inside_the_evidence_envelope(monkeypatch, c
     assert rc == 0 and "## Spread Timeline" not in plain
     rc, traced, _ = _run(monkeypatch, capsys, [*base, "--trace-origin"])
     assert rc == 0
+    for register in ("exec", "dev", "creator", "eli5"):
+        rc, voiced, _ = _run(monkeypatch, capsys, [*base, "--trace-origin", f"--register={register}"])
+        assert rc == 0 and "## Spread Timeline" in voiced, register
+    # Reserved words research normally under --research-only, trace included.
+    rc, reserved, _ = _run(monkeypatch, capsys, [
+        "--research-only", "--mock", "--emit=compact", "--save-dir", "",
+        "--no-browser-cookies", "--trace-origin", "--", "setup",
+    ])
+    assert rc == 0 and "## Spread Timeline" in reserved
     envelope = traced.split("<!-- EVIDENCE FOR SYNTHESIS", 1)[1].split("<!-- END EVIDENCE FOR SYNTHESIS -->", 1)[0]
     assert "## Spread Timeline" in envelope
     assert "First sighting per platform, in order:" in envelope
@@ -138,11 +186,30 @@ def test_trace_origin_adds_the_block_inside_the_evidence_envelope(monkeypatch, c
     ["library", "search", "widget"],
     ["forecast", "scorecard"],
     ["--diagnose"],
+    ["widget", "--diagnose"],
+    ["widget", "--preflight"],
+    ["widget", "--resolve-save-dir"],
+    ["--welcome"],
+    ["setup"],
 ])
 def test_trace_origin_is_never_a_silent_no_op(monkeypatch, capsys, argv):
     with mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("research ran")):
-        rc, _, err = _run(monkeypatch, capsys, [*argv, "--trace-origin", "--mock", "--save-dir", ""])
-    assert rc == 2 and "--trace-origin applies to single-topic research runs" in err
+        rc, out, err = _run(monkeypatch, capsys, [*argv, "--trace-origin", "--mock", "--save-dir", ""])
+    assert rc == 2 and "--trace-origin applies to single-topic research runs" in err and not out
+
+
+def test_off_topic_cluster_members_cannot_lead_the_timeline(monkeypatch):
+    from lib import render, schema
+
+    on_topic = SimpleNamespace(source_items=[_item("x", "2026-10-20", "https://x.test/on")])
+    off_topic = SimpleNamespace(source_items=[_item("x", "2026-10-12", "https://x.test/off")])
+    monkeypatch.setattr(render, "_best_take_relevance_ok", lambda candidate: candidate is on_topic)
+    monkeypatch.setattr(schema, "item_headline_engagement", lambda item: 1.0)
+    report = SimpleNamespace(range_from="2026-10-01", range_to="2026-10-31", source_status={})
+    text = "\n".join(render._render_spread_timeline(report, [off_topic, on_topic]))
+    assert "https://x.test/on" in text and "https://x.test/off" not in text
+    empty = "\n".join(render._render_spread_timeline(report, [off_topic]))
+    assert "no trail to trace" in empty
 
 
 # --- skill contract ----------------------------------------------------------------

@@ -896,11 +896,6 @@ def render_compact(
             if top_comments:
                 lines.extend([""] + top_comments)
 
-            if report.artifacts.get("trace_origin"):
-                spread_timeline = _render_spread_timeline(evidence_report, aux_candidates)
-                if spread_timeline:
-                    lines.extend([""] + spread_timeline)
-
         outcome_note = _render_source_outcome_note(report)
         if outcome_note:
             lines.extend([""] + outcome_note)
@@ -912,6 +907,10 @@ def render_compact(
                 evidence_report, audience, fun_params, cluster_limit
             )
         )
+    if report.artifacts.get("trace_origin") and not no_solid_evidence:
+        # Outside the audience branch: a requested trace is evidence for every
+        # register, not a default-voice section.
+        lines.extend(["", *_render_spread_timeline(evidence_report, aux_candidates)])
     corpus_section = _render_corpus_section(report)
     if corpus_section:
         lines.extend(["", *corpus_section])
@@ -958,11 +957,13 @@ def _render_spread_timeline(
         for source, outcome in report.source_status.items()
         if outcome.attempted and outcome.state not in _CLEAN_SOURCE_STATES
     ]
+    # The pool keeps every member of an accepted cluster; an off-topic member
+    # must not become the "earliest found" post, so re-apply the shared check.
     timeline = origin.build_timeline(
-        candidates,
+        [candidate for candidate in candidates if _best_take_relevance_ok(candidate)],
         report.range_from,
         report.range_to,
-        schema._headline_engagement,
+        schema.item_headline_engagement,
         incomplete_sources=incomplete,
     )
     if timeline is None:

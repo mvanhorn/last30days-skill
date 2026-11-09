@@ -3055,6 +3055,47 @@ def _x_envelope_digest(
 FORECAST_COMMANDS = ("add", "list", "due", "settle", "grade", "scorecard")
 
 
+def _trace_origin_misuse(
+    args: argparse.Namespace,
+    topic: str,
+    command_topic: str,
+    is_forecast_command: bool,
+) -> bool:
+    """Whether --trace-origin was passed to something that cannot trace.
+
+    Checked before every dispatch and never a silent no-op: a caller who
+    asked for a trace and got output without one would read its absence as
+    "no trail found". ``command_topic`` is empty under --research-only, so
+    the topic test uses ``topic`` and reserved words still research there.
+    """
+    if not args.trace_origin:
+        return False
+    return bool(
+        not topic
+        or args.resolve_save_dir
+        or args.preflight
+        or args.diagnose
+        or args.cached_report
+        or args.discover is not None
+        or args.drill
+        or args.emit not in {"compact", "md"}
+        or is_forecast_command
+        or command_topic in {"setup", "doctor", "library feed", "queue list"}
+        or command_topic.startswith(("library search", "queue cover"))
+        or _comparison_requested(args, topic)
+    )
+
+
+def _reject_trace_origin() -> int:
+    sys.stderr.write(
+        "[last30days] --trace-origin applies to single-topic research runs "
+        "with --emit=compact or --emit=md; it cannot be combined with "
+        "comparison, discovery, drill, administrative or inspection "
+        "commands, or other emit modes.\n"
+    )
+    return 2
+
+
 def _forecast_command(command_topic: str) -> tuple[str, int] | None:
     """Recognize ``forecast <command>`` and return (command, prefix length).
 
@@ -3650,6 +3691,8 @@ def _main(
     ):
         parser.error("--cached-report requires a topic, --emit=html, and --synthesis-file without research input files, --verify-freshness, or other command modes")
     if args.welcome:
+        if args.trace_origin:
+            return _reject_trace_origin()
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
         return 0
@@ -3676,26 +3719,8 @@ def _main(
             "'forecast grade'.\n"
         )
         return 2
-    if args.trace_origin and (
-        not command_topic
-        or forecast_command is not None
-        or command_topic in {"setup", "doctor", "library feed", "queue list"}
-        or command_topic.startswith(("library search", "queue cover"))
-        or args.discover is not None
-        or args.drill
-        or args.emit not in {"compact", "md"}
-        or _comparison_requested(args, topic)
-    ):
-        # Checked before every dispatch and never a silent no-op: a caller
-        # who asked for a trace and got output without one would read its
-        # absence as "no trail found".
-        sys.stderr.write(
-            "[last30days] --trace-origin applies to single-topic research "
-            "runs with --emit=compact or --emit=md; it cannot be combined "
-            "with comparison, discovery, drill, administrative commands, or "
-            "other emit modes.\n"
-        )
-        return 2
+    if _trace_origin_misuse(args, topic, command_topic, forecast_command is not None):
+        return _reject_trace_origin()
     if args.resolve_save_dir:
         print(env.resolve_memory_dir(args.save_dir))
         return 0

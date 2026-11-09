@@ -21,7 +21,6 @@ EXCLUDED_SOURCES = frozenset({
 # An earliest sighting this close to the window start means the search was
 # cut off by the window, not that the story began there.
 WINDOW_EDGE_DAYS = 2
-MAX_HOPS = 10
 _TITLE_LIMIT = 110
 
 
@@ -34,6 +33,22 @@ def _parse_day(value: str | None) -> _dt.date | None:
         return None
 
 
+def _post_url(item: Any, source: str) -> str:
+    """The URL of the post itself, which is also its identity.
+
+    A Hacker News item's ``url`` is the article it links to, shared by every
+    submission of that article; the submission lives at ``hn_url``. Keying on
+    the article would collapse separate submissions (hiding the earliest)
+    and link to the article instead of the post being described.
+    """
+    if source == "hackernews":
+        metadata = getattr(item, "metadata", None) or {}
+        hn_url = str(metadata.get("hn_url") or "").strip()
+        if hn_url:
+            return hn_url
+    return str(getattr(item, "url", "") or "")
+
+
 def _sightings(
     candidates: Iterable[Any],
     engagement_of: Callable[[Any], float],
@@ -43,12 +58,14 @@ def _sightings(
     undated = 0
     seen: set[tuple[str, str]] = set()
     for candidate in candidates:
-        engagement = engagement_of(candidate)
         for item in getattr(candidate, "source_items", None) or []:
             source = str(getattr(item, "source", "") or "")
-            url = str(getattr(item, "url", "") or "")
+            url = _post_url(item, source)
             if not source or source in EXCLUDED_SOURCES or not url:
                 continue
+            # Each post carries its own counts: a candidate can merge a web
+            # page with the thread discussing it, and they are not one number.
+            engagement = float(engagement_of(item) or 0.0)
             if (source, url) in seen:
                 continue
             seen.add((source, url))
@@ -91,7 +108,7 @@ def build_timeline(
     hops = sorted(
         first_by_source.values(),
         key=lambda s: (s["day"], -s["engagement"], s["source"]),
-    )[:MAX_HOPS]
+    )
 
     by_day: dict[_dt.date, dict[str, float]] = {}
     for sighting in sightings:

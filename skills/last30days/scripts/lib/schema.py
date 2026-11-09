@@ -826,10 +826,8 @@ def _is_counter_field(field: str) -> bool:
     )
 
 
-def _headline_engagement(candidate: Candidate) -> float:
-    """Return the primary item's largest native engagement counter."""
-    engagement = _agent_engagement(candidate)
-    preferred_fields = _HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE.get(candidate.source, ())
+def _largest_engagement_counter(source: str, engagement: dict[str, Any]) -> float:
+    preferred_fields = _HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE.get(source, ())
     preferred_values = [
         float(engagement[field])
         for field in preferred_fields
@@ -847,6 +845,16 @@ def _headline_engagement(candidate: Candidate) -> float:
         and not isinstance(value, bool)
     ]
     return max(values, default=0.0)
+
+
+def _headline_engagement(candidate: Candidate) -> float:
+    """Return the primary item's largest native engagement counter."""
+    return _largest_engagement_counter(candidate.source, _agent_engagement(candidate))
+
+
+def item_headline_engagement(item: SourceItem) -> float:
+    """Return one source item's own largest native engagement counter."""
+    return _largest_engagement_counter(item.source, dict(item.engagement or {}))
 
 
 def _window_days(report: Report) -> int:
