@@ -9,6 +9,27 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.32.0] - 2026-11-09
+
+### Security
+
+- Keep synthesis, citation, and response-format instructions in the skill and MCP tool description rather than research output. Compact and comparison reports retain source evidence, coverage warnings, footer data, and structural boundaries without commands to override the host's response format.
+- Make explicit cookie refusal (`BROWSER_CONSENT=false` or `FROM_BROWSER=off`) disable the agentcookie sidecar as well as native browser and CDP reads, including availability checks. User-supplied credentials and sidecar behavior without an explicit refusal are unchanged.
+
+  Existing sidecar users with either refusal setting must remove both `BROWSER_CONSENT` and `FROM_BROWSER` from the process environment, the active global `.env` (including a custom `LAST30DAYS_CONFIG_DIR`), and any trusted project `.claude/last30days.env`, then set `AGENTCOOKIE=on` to restore sidecar-only access. Native browser and CDP reads remain disabled with both settings absent; `BROWSER_CONSENT=true` would also permit CDP reads.
+
+### Fixed
+
+- Accept query plans from standard input with `--plan -` and use a quoted heredoc in the research runbook, so Codex can start research without a temporary-plan cleanup trap. ([#1346](https://github.com/mvanhorn/last30days-skill/issues/1346))
+- Identify Google discovery fallback failures in Instagram search results and Source Coverage, preserving clean no-reels responses, recovered reels across queries or creators, and the most specific typed HTTP failure. ([#1356](https://github.com/mvanhorn/last30days-skill/issues/1356))
+- A YouTube lane keeps 60 to 75 seconds for transcripts before it starts another expanded search. After yt-dlp hits a bot-check or HTTP 429, including over SSH, the rest of that search's transcripts go to ScrapeCreators when a key is set, and a transcript cut off by the lane deadline is logged as that deadline.
+- Amazon research works again with Bright Data CLI 0.4.0 and newer, which removed the named pipeline commands the engine called. Older CLIs now get a clear upgrade message (`npm i -g @brightdata/cli@latest`).
+- Research on an organization whose first word names other things (for example "Pace Capital" vs. Pace Morby) no longer writes up the namesakes. The planner can now anchor such organizations by full name, anchored runs drop namesake items from the footer counts and Top voices too, and synthesis drops a different entity with the same name silently instead of noting it is unrelated.
+- X, Threads and planner searches no longer keep a question's closing "?" in the core subject: "What is Claude Code?" now searches for "claude code" instead of "claude code?", and a noise word or suffix right before the "?" is stripped as it is without one.
+- `--search` with only sources that can't run here (for example telegram or tiktok without a ScrapeCreators key) now names those sources and exits 2 instead of ending in a traceback.
+- `store.store_findings` now collapses duplicate URLs within a single batch and coalesces null engagement scores during conflict upserts so a single run never inflates `sighting_count` or `findings_updated` for a newly discovered URL.
+
+
 ## [3.31.0] - 2026-10-27
 
 ### Security
