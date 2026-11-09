@@ -101,7 +101,7 @@ def test_standalone_auto_raises_first_denial_after_trying_every_browser(standalo
 
 @pytest.mark.parametrize("system", ["Linux", "Windows"])
 def test_standalone_auto_other_platforms_only_try_firefox(standalone_browsers, monkeypatch, system):
-    results, calls, _ = standalone_browsers
+    _results, calls, _ = standalone_browsers
     monkeypatch.setattr(cookie_extract.platform, "system", lambda: system)
     assert cookie_extract.extract_cookies_with_source("auto", ".x.com", ["auth_token", "ct0"]) is None
     assert calls == ["firefox"]
