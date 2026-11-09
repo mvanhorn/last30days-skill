@@ -268,11 +268,12 @@ def _extract_chromium_cookies_macos(
         logger.debug("%s cookie DB version: %d", keychain_service, db_version)
 
         placeholders = ",".join("?" for _ in cookie_names)
+        host = domain.lstrip(".")
         query = (
             f"SELECT name, value, encrypted_value FROM cookies "
-            f"WHERE host_key LIKE ? AND name IN ({placeholders})"
+            f"WHERE (host_key = ? OR host_key LIKE ?) AND name IN ({placeholders})"
         )
-        params = [f"%{domain}"] + list(cookie_names)
+        params = [host, f"%.{host}"] + list(cookie_names)
         cursor.execute(query, params)
 
         results: dict[str, str] = {}

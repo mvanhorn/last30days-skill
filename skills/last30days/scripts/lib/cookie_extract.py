@@ -273,13 +273,13 @@ def _query_cookies_db(
             # Build parameterized query — SQLite doesn't support array params,
             # so we build the IN clause with individual placeholders.
             placeholders = ",".join("?" for _ in cookie_names)
+            host = domain.lstrip(".")
             query = (
                 f"SELECT name, value FROM moz_cookies "
-                f"WHERE host LIKE ? AND name IN ({placeholders})"
+                f"WHERE (host = ? OR host LIKE ?) AND name IN ({placeholders})"
             )
-            # domain pattern: match .x.com, x.com, etc.
-            domain_pattern = f"%{domain}"
-            params = [domain_pattern] + list(cookie_names)
+            # Match host-only cookies, domain cookies, and subdomains.
+            params = [host, f"%.{host}"] + list(cookie_names)
 
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
@@ -674,14 +674,29 @@ def extract_cookies_with_source(
     else:
         order = ["firefox"]
 
+    fallback = None
+    first_denial = None
     for name in order:
-        if name == "firefox":
-            result = _extract_firefox_with_source(domain, cookie_names)
-            if result is not None:
+        try:
+            if name == "firefox":
+                result = _extract_firefox_with_source(domain, cookie_names)
+            else:
+                cookies = extractors[name](domain, cookie_names)
+                result = (cookies, name) if cookies is not None else None
+        except PermissionError as exc:
+            if first_denial is None:
+                first_denial = exc
+            continue
+
+        if result is not None:
+            if has_complete_pair(result[0], cookie_names):
                 return result
-        else:
-            result = extractors[name](domain, cookie_names)
-            if result is not None:
-                return (result, name)
+            if fallback is None:
+                fallback = result
+
+    if fallback is not None:
+        return fallback
+    if first_denial is not None:
+        raise first_denial
 
     return None
