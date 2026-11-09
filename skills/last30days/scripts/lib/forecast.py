@@ -80,7 +80,10 @@ def _http_url(value: Any, field: str, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ForecastError(f"{where}: {field} must be an http(s) URL")
     url = value.strip()
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:  # e.g. an unterminated IPv6 bracket
+        raise ForecastError(f"{where}: {field} must be an http(s) URL, got {value!r}") from exc
     if parts.scheme not in ("http", "https") or not parts.netloc or any(c.isspace() for c in url):
         raise ForecastError(f"{where}: {field} must be an http(s) URL, got {value!r}")
     return url
@@ -118,13 +121,18 @@ def parse_market_url(url: str) -> tuple[str, str | None]:
     return match.group(1), match.group(2)
 
 
-def validate_predictions(payload: dict[str, Any], today: _dt.date) -> list[dict[str, Any]]:
+def validate_predictions(
+    payload: dict[str, Any],
+    today: _dt.date,
+    now: _dt.datetime | None = None,
+) -> list[dict[str, Any]]:
     """Turn a host-written forecast file into rows ready for the ledger.
 
     The whole file is rejected on the first problem: a partial write would
     leave the host unsure which calls were logged.
     """
     topic = _text(payload.get("topic"), "topic", "forecast", 200, minimum=2)
+    logged_at = (now or _dt.datetime.now(_dt.timezone.utc)).astimezone(_dt.timezone.utc)
     predictions = payload.get("predictions")
     if not isinstance(predictions, list) or not predictions:
         raise ForecastError("forecast: predictions must be a non-empty list")
@@ -169,6 +177,7 @@ def validate_predictions(payload: dict[str, Any], today: _dt.date) -> list[dict[
             "claim": claim,
             "probability": probability,
             "created_on": today.isoformat(),
+            "created_at": logged_at.isoformat(timespec="seconds"),
             "resolve_by": resolve_by.isoformat(),
             "resolution": resolution,
             "basis": basis,
@@ -280,6 +289,40 @@ def _pick_market(event: dict[str, Any], market_slug: str | None) -> dict[str, An
     return markets[0] if len(markets) == 1 else None
 
 
+def _parse_instant(value: Any) -> _dt.datetime | None:
+    """Parse Gamma's ``2026-08-08 20:31:58+00`` or an ISO timestamp to UTC."""
+    text = str(value or "").strip().replace(" ", "T", 1)
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    elif len(text) > 3 and text[-3] in "+-" and text[-2:].isdigit():
+        text += ":00"
+    try:
+        parsed = _dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    return parsed.astimezone(_dt.timezone.utc)
+
+
+def _closed_before_logging(closed_time: Any, row: dict[str, Any]) -> bool:
+    """Whether the market's result was already in when the call was logged.
+
+    Compared to the second: a market that closed at 08:00 and was "predicted"
+    at noon the same day is a known result. When either timestamp cannot be
+    read, fall back to dates and treat a same-day close as already known,
+    since the order within the day cannot be established.
+    """
+    closed_at = _parse_instant(closed_time)
+    logged_at = _parse_instant(row.get("created_at"))
+    if closed_at is not None and logged_at is not None:
+        return closed_at <= logged_at
+    closed_on = str(closed_time or "")[:10]
+    return bool(closed_on) and closed_on <= row["created_on"]
+
+
 def settle_from_event(row: dict[str, Any], events: Any) -> tuple[str, str] | None:
     """Derive (verdict, note) from a Gamma ``/events?slug=`` payload.
 
@@ -287,6 +330,12 @@ def settle_from_event(row: dict[str, Any], events: Any) -> tuple[str, str] | Non
     cannot be trusted to: still open, wrong event, ambiguous market, unknown
     outcome label. None always means "leave it for a human-readable grade",
     never "miss".
+
+    A resolved market settles the call whenever it resolves, including a
+    miss before ``resolve_by``. The host-grading rule that a miss must wait
+    for the deadline exists because an unfinished claim can still come true;
+    a market that has resolved against the call cannot, and holding the miss
+    back would show a lost call as open.
     """
     event_slug, market_slug = parse_market_url(row["market_url"])
     if isinstance(events, dict):
@@ -309,8 +358,7 @@ def settle_from_event(row: dict[str, Any], events: Any) -> tuple[str, str] | Non
     if market is None or not market.get("closed"):
         return None
     question = str(market.get("question") or event.get("title") or "market").strip()
-    closed_on = str(market.get("closedTime") or "")[:10]
-    if closed_on and closed_on < row["created_on"]:
+    if _closed_before_logging(market.get("closedTime"), row):
         # Calling a result that is already in is not a forecast. Void keeps
         # it out of the hit rate instead of padding the record.
         return "void", f"Polymarket had already closed '{question}' when this was logged"
@@ -425,7 +473,10 @@ def _pct(value: float) -> str:
 
 def render_prediction(row: dict[str, Any], today: _dt.date) -> str:
     if row.get("verdict"):
-        status = f"{row['verdict'].upper()} (graded {row.get('graded_on')}, by {row.get('graded_by')})"
+        status = (
+            f"{row['verdict'].upper()} (due {row['resolve_by']}, graded "
+            f"{row.get('graded_on')} by {row.get('graded_by')})"
+        )
     elif is_overdue(row, today):
         status = f"OVERDUE (was due {row['resolve_by']})"
     else:

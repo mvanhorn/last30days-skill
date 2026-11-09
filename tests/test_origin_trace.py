@@ -132,11 +132,17 @@ def test_trace_origin_adds_the_block_inside_the_evidence_envelope(monkeypatch, c
     ["widget vs gadget"],
     ["widget", "--competitors"],
     ["--discover"],
+    ["--drill", "3"],
+    ["doctor"],
+    ["queue", "list"],
+    ["library", "search", "widget"],
+    ["forecast", "scorecard"],
+    ["--diagnose"],
 ])
 def test_trace_origin_is_never_a_silent_no_op(monkeypatch, capsys, argv):
     with mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("research ran")):
         rc, _, err = _run(monkeypatch, capsys, [*argv, "--trace-origin", "--mock", "--save-dir", ""])
-    assert rc == 2 and "--trace-origin applies to single-topic runs" in err
+    assert rc == 2 and "--trace-origin applies to single-topic research runs" in err
 
 
 # --- skill contract ----------------------------------------------------------------
