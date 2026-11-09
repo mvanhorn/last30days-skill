@@ -8,7 +8,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1] / "skills" / "last30days"
 ROUTES = {
     "Before any engine command": ("runtime",),
     "Library search, feed, or queue intent": ("library-queue",),
-    "Forecast, prediction, or scorecard intent": ("forecast",),
+    "Forecast, scorecard, or launch-rehearsal intent": ("forecast",),
     "First-run setup is required": ("setup-wizard",),
     "Source repair requested or indicated by doctor": ("setup-wizard",),
     "Trending/discovery intent": ("discovery",),

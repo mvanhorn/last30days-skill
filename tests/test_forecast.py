@@ -454,3 +454,21 @@ def test_reference_teaches_every_command_and_the_honesty_rules():
     for block in text.split("<<'")[1:]:
         body = block.split("\n", 1)[1].split("_EOF", 1)[0].rsplit("\n", 1)[0]
         json.loads(body)
+
+
+def test_rehearsal_keeps_the_draft_private_and_the_predictions_grounded():
+    text = reference_text("forecast")
+    rehearsal = text.split("## Rehearsal:", 1)[1].split("\n## ", 1)[0]
+    for rule in (
+        "**Keep the draft private.**",
+        "Never place the draft's text, the unannounced product or company name",
+        "Search for the category and for the analogs only",
+        "do not rehearse against invented or older launches",
+        "A predicted reaction with no supporting comment is cut",
+        "What the evidence cannot tell you",
+        "Never log a prediction about reception without the user's yes",
+        "a codename, never the real name",
+        "Criticize the draft, never the person",
+    ):
+        assert rule in rehearsal, rule
+    assert "Rehearsal section below" in text.split("\n## ", 1)[0]

@@ -1,6 +1,6 @@
 # Next30Days: forecasts and the scorecard
 
-Read for forecast, prediction, or scorecard intent: "what happens next with X", "forecast X", "predict the next 30 days for X", "next30 X", "how accurate are your forecasts", "show my scorecard", "grade your predictions". The runtime interpreter bootstrap still runs first.
+Read for forecast, prediction, or scorecard intent: "what happens next with X", "forecast X", "predict the next 30 days for X", "next30 X", "how accurate are your forecasts", "show my scorecard", "grade your predictions". Also read for launch-rehearsal intent ("how will this land", "roast my launch post", "what will people say about this draft"); that procedure is the Rehearsal section below. The runtime interpreter bootstrap still runs first.
 
 Research says what happened in the last 30 days. A forecast commits to what happens in the next 30, in writing, with a probability and a date, and the ledger grades it later. You write the predictions; the engine validates, stores, settles, and scores them. Every ledger command takes the same `--save-dir="${LAST30DAYS_MEMORY_DIR}"` as the library and queue commands.
 
@@ -76,6 +76,25 @@ FORECAST_EOF
 On exit 2 the engine names the failing prediction and writes nothing; fix the file and resubmit once. Never present a prediction as logged unless the engine printed it with an id.
 
 6. After the research synthesis and its footer, present the forecast under the prose label `Next 30 days:` as a numbered list. Each item gives the claim, the probability as a percentage, the resolve date, one sentence of reasoning tied to cited evidence, and the market price when anchored. Follow it with the scorecard's hit rate and Brier lines when the ledger already has graded calls, then one line saying these are logged and will be graded on their dates. The root output laws still apply: no em or en dashes, no `##` headers.
+
+## Rehearsal: forecast the reception of the user's own draft
+
+Read this section for launch-rehearsal intent: the user supplies something they have not shipped yet (a launch post, tweet or thread, landing page, README, pitch, product name, pricing page) and asks how it will land, what people will say, to roast it, to pressure-test it, or to rehearse the launch. A rehearsal is a forecast whose subject is the user's own draft. It answers from how real communities reacted to comparable things in the last 30 days, never from general intuition about audiences.
+
+**Keep the draft private.** Unreleased work is confidential by default. Never place the draft's text, the unannounced product or company name, pricing, or any distinctive phrase from it into an engine topic, a query plan, a WebSearch query, or any other outbound request. Search for the category and for the analogs only. The single exception is a name the user says is already public. Do not save, publish, or export the draft, and do not log it to the ledger verbatim.
+
+1. **Read the draft and state the pitch.** In two or three sentences: what it is, who it is for, the one claim it leads with, the price or ask, and where the user plans to post it. If the draft is a file or URL, read it with the host's own tools. If the venues are unknown, ask once which communities they are launching to, then continue with the likely ones when there is no answer.
+2. **Pick 2 or 3 analogs.** An analog is a real, named launch or announcement from the last 30 days in the same category, aimed at the same communities, that people actually discussed. Find candidates with host web search on the category (not the draft), or from this conversation's research. Prefer one that landed well and one that landed badly. If no analog from the window can be found, say so and stop; do not rehearse against invented or older launches.
+3. **Research how the analogs landed.** Run them as a comparison (`{Analog A} vs {Analog B}`), returning to the root to load the comparison route, or as ordinary topic runs when there is only one. Resolve handles and subreddits for the venues the user is launching to, so the evidence comes from the rooms the draft will enter.
+4. **Mine the reactions, per venue.** From the top-voted comments and replies, collect: the objections that recur and how many votes they drew, what earned praise, what the launcher's own replies did to the thread, and what separated the launch that landed from the one that did not. Count votes, not mentions.
+5. **Present the rehearsal** after the comparison synthesis, under the prose label `Rehearsal:`.
+   - **One paragraph per venue** the user named: the likely reception there and the two or three specific things people will say. Every predicted reaction cites a real comment on an analog, quoted verbatim with its link and vote count, under the root citation law. A predicted reaction with no supporting comment is cut.
+   - **What will work**, on the same evidence standard.
+   - **The single change with the most leverage**, stated as an edit to the draft: the objection it removes and the analog thread that shows it.
+   - **What the evidence cannot tell you.** Name the venues with thin or no analog evidence and say the rehearsal is silent on them. Analog reactions are evidence about the room, not a guarantee about this launch.
+6. **Offer to put it on the record.** Ask whether to log the rehearsal's predictions so they can be graded after launch. On yes, write them as ordinary forecast predictions using the ledger procedure above, with these differences: the `topic` is a neutral label the user approves (for an unannounced product, a codename, never the real name), each `claim` describes an observable outcome within 30 days of the planned launch date ("the top-voted comment on the launch thread raises pricing"), and `basis` holds the analog comment URLs. Never log a prediction about reception without the user's yes.
+
+Be direct about weaknesses; a rehearsal that flatters is worthless. Criticize the draft, never the person, and do not invent hostility the analog threads do not show.
 
 ## What a forecast is not
 
