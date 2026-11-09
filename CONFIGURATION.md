@@ -46,7 +46,7 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--save-dir <path>` - one-off output location. **Flag wins over env var.** If neither flag nor env var is set, the engine does not write a file (DB persistence is independent — see `LAST30DAYS_STORE` below).
 - `--resolve-save-dir` - print the absolute save directory selected for the skill and exit without research, browser-cookie reads, credential-store lookups, or file writes. It honors `--save-dir`, process environment, and trusted config files, preserving empty values. For memory directories, whole unresolved host placeholders such as `${user_config.memory_dir}` are absent at each configuration layer: a process placeholder falls back to trusted project then global configuration, and a project placeholder preserves the global value, including an empty value that disables saving. The bare engine uses the same placeholder precedence. Explicit `--save-dir` values remain literal paths. Only this query supplies the skill's `~/Documents/Last30Days` fallback; it does not change the bare research engine's no-save default. Shell wrappers capture this output without sourcing `.env` files.
 - `--output <file>` - write the rendered output to an exact file path, using the format selected by `--emit`.
-- `--research-only` - treat the positional topic as research text, including reserved names such as `setup`, `doctor`, `library`, and `queue`. Programmatic wrappers such as MCP use this flag to prevent topics from invoking administrative commands. Omit it when you intend to run an administrative command.
+- `--research-only` - treat the positional topic as research text, including reserved names such as `setup`, `doctor`, `library`, `queue`, and `forecast`. Programmatic wrappers such as MCP use this flag to prevent topics from invoking administrative commands. Omit it when you intend to run an administrative command.
 - `--cached-report` - render a saved research result with `--emit=html --synthesis-file <file>` without repeating retrieval or reopening temporary research plans. The topic and any explicit research flags must match the cached report. Omitted research flags use the saved provenance. If no compatible cache exists, the command fails so you can run research again explicitly.
 - `--json-profile {agent,raw}` - select the research JSON shape used with `--emit=json`. `agent` is the default, versioned workflow contract; `raw` preserves the full internal `Report` dump for debugging and power users. See the [JSON export reference](docs/reference/json-export.md).
 - `--corpus <dir>` - add a local `.md`/`.txt` directory as a private ranked source; repeat the flag for multiple directories. PDFs are extracted only when `pdftotext` is on PATH and otherwise skip with a note. File modification time supplies recency, so the normal research window applies.
@@ -59,6 +59,7 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--judgments <path>` - leg 2: resume from the nominations bundle, applying the host judgments file (`{"bundle_id": "...", "judgments": [{"id", "name", "junk", "worthiness"}, ...]}`, bound to the bundle by `bundle_id`). Runs the per-topic research passes (deep tier by default; budget tunable via `LAST30DAYS_ENRICH_BUDGET_SECONDS` below), writes the pending report (`discover-pending.json`), and prints per-topic angle inputs. Requires `--discover`.
 - `--finalize` - leg 3: apply optional host angles to the pending report, render the final discovery brief, save artifacts, and record the topic queue (retries are idempotent - the pending file stays in place within its TTL). Offline; requires `--discover`.
 - `--angles <path>` - optional host angles file for `--discover --finalize` (`{"bundle_id": "...", "angles": [{"id", "podcast", "x_article"}, ...]}`, sentences capped at 200 chars); omitting it ships the brief without angle lines. All three protocol legs must share one `--save-dir` (handoff files live there, else in `~/.config/last30days/`); contract failures (missing/stale/unbound handoff files) exit 2 with the remedy on stderr, and `--mock` protocol legs require `--save-dir` to stay side-effect-free.
+- `--forecast-file <path>` - JSON input for the `forecast add` (predictions) and `forecast grade` (verdicts) ledger commands; `-` reads stdin. Any other use exits 2. See [Forecast ledger](#forecast-ledger-next30days).
 - `--drill <target>` - deep follow-up over the fresh `~/.config/last30days/last-report.json` cache. Accepts a 1-based index (`--drill "cluster 3"` or `--drill "3"`) or a fuzzy cluster title/entity description. It re-fetches only sources that contributed to the matched cluster, enables their deep comment/transcript enrichment paths, merges/dedupes the evidence, and replaces the cache so drills can chain. Run it without a positional topic; if the cache is absent or expired, run a normal research pass first.
 - `--verify-freshness` - opt into an act-time verification pass for conservatively extracted, source-grounded claims (Polymarket odds/end dates, GitHub stars, StockTwits sentiment ratios, and explicit status assertions). With a topic, verification runs after research; without a topic, it re-verifies the fresh `last-report.json` cache without repeating research. Verdicts are `current`, `stale`, `contradicted`, or `unsupported` and include evidence timestamps. Set `LAST30DAYS_VERIFY_FRESHNESS=on` in `.env` to make the pass default for normal research runs.
 - `--save-suffix <name>` - distinguish runs of the same topic (e.g. per client: `--save-suffix=acme`).
@@ -697,6 +698,32 @@ python3 skills/last30days/scripts/last30days.py queue cover "Gemma 4 chat templa
 ```
 
 Both respect `--save-dir` scoping.
+
+### Forecast ledger (Next30Days)
+
+Ask `/last30days what happens next with <topic>?` and the skill logs 3-5 dated, falsifiable predictions after its research, then grades them when their dates arrive. `/last30days scorecard` shows the record. Predictions live in table `forecasts` in the same research.db and never leave your machine.
+
+The ledger is append-only: a prediction cannot be edited or deleted, and a verdict (`hit`, `miss`, or `void`) is written once. A `hit` or `miss` requires an evidence URL, and a `miss` cannot be written before the prediction's date. Deleting the store (above) is the only way to clear it.
+
+Dev/fallback engine commands (the skill drives these for you):
+
+```bash
+# Log predictions: {"topic": "...", "predictions": [{"claim", "probability" (0.5-0.99),
+#   "resolve_by" (YYYY-MM-DD, within 90 days; default 30), "resolution", "basis": [urls],
+#   "market": {"url", "outcome", "price"} (optional Polymarket anchor)}]} - max 5 per file
+python3 skills/last30days/scripts/last30days.py forecast add --forecast-file forecast.json
+
+python3 skills/last30days/scripts/last30days.py forecast list [topic]   # every prediction with id and status
+python3 skills/last30days/scripts/last30days.py forecast due            # date arrived, no verdict yet
+python3 skills/last30days/scripts/last30days.py forecast settle         # grade market-anchored calls from resolved Polymarket markets
+
+# Grade the rest: {"grades": [{"id", "verdict": "hit|miss|void", "evidence_url", "note"}]}
+python3 skills/last30days/scripts/last30days.py forecast grade --forecast-file grades.json
+
+python3 skills/last30days/scripts/last30days.py forecast scorecard      # hit rate, Brier score, calibration, vs market
+```
+
+All respect `--save-dir` scoping. `forecast settle` is the only one that uses the network: it reads public market data from `gamma-api.polymarket.com` and sends no prediction text. The scorecard reports overdue ungraded predictions and flags samples under 10 graded calls, so a thin or unfinished record cannot read as a strong one.
 
 ### `watchlist.py` - recurring topics
 

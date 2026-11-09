@@ -246,6 +246,32 @@ CREATE INDEX IF NOT EXISTS idx_discovery_topics_status_surfaced
 ALTER TABLE research_runs ADD COLUMN cost_unknown INTEGER NOT NULL DEFAULT 1;
 UPDATE research_runs SET cost_unknown = 0 WHERE token_cost > 0;
 """,
+    5: """
+CREATE TABLE IF NOT EXISTS forecasts (
+    id INTEGER PRIMARY KEY,
+    topic TEXT NOT NULL,
+    normalized_topic TEXT NOT NULL,
+    claim TEXT NOT NULL,
+    normalized_claim TEXT NOT NULL,
+    probability REAL NOT NULL CHECK(probability >= 0.5 AND probability <= 0.99),
+    created_on TEXT NOT NULL,
+    resolve_by TEXT NOT NULL,
+    resolution TEXT NOT NULL,
+    basis TEXT NOT NULL,
+    market_url TEXT,
+    market_outcome TEXT,
+    market_price REAL,
+    verdict TEXT CHECK(verdict IN ('hit','miss','void')),
+    graded_on TEXT,
+    graded_by TEXT CHECK(graded_by IN ('host','market')),
+    evidence_url TEXT,
+    note TEXT,
+    UNIQUE(normalized_topic, normalized_claim, resolve_by)
+);
+
+CREATE INDEX IF NOT EXISTS idx_forecasts_open_due
+    ON forecasts(verdict, resolve_by);
+""",
 }
 
 
@@ -1136,6 +1162,123 @@ def mark_discovery_covered(name: str, as_of: str) -> Optional[Dict[str, Any]]:
             (normalized,),
         ).fetchone()
         return dict(row)
+    finally:
+        conn.close()
+
+
+# --- Forecast ledger ---
+#
+# The ledger is append-only by design: a prediction's claim, probability, and
+# resolve-by date can never be edited or deleted after it is logged, and a
+# verdict can be written exactly once. That immutability is what makes the
+# scorecard worth reading, so no update/delete helper exists here on purpose.
+
+
+def add_forecast(row: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    """Insert one validated prediction. Returns (row, created).
+
+    A retry of the same topic + claim + resolve-by returns the existing row
+    with ``created`` False instead of logging a duplicate (or silently
+    replacing the original probability).
+    """
+    init_db()
+    normalized_topic = dedupe.normalize_text(row["topic"])
+    normalized_claim = dedupe.normalize_text(row["claim"])
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO forecasts
+               (topic, normalized_topic, claim, normalized_claim, probability,
+                created_on, resolve_by, resolution, basis, market_url,
+                market_outcome, market_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["topic"], normalized_topic, row["claim"], normalized_claim,
+                row["probability"], row["created_on"], row["resolve_by"],
+                row["resolution"], json.dumps(row["basis"]),
+                row.get("market_url"), row.get("market_outcome"),
+                row.get("market_price"),
+            ),
+        )
+        conn.commit()
+        stored = conn.execute(
+            """SELECT * FROM forecasts
+               WHERE normalized_topic = ? AND normalized_claim = ? AND resolve_by = ?""",
+            (normalized_topic, normalized_claim, row["resolve_by"]),
+        ).fetchone()
+        return _forecast_row(stored), cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _forecast_row(row: sqlite3.Row) -> Dict[str, Any]:
+    data = dict(row)
+    try:
+        data["basis"] = json.loads(data.get("basis") or "[]")
+    except json.JSONDecodeError:
+        data["basis"] = []
+    return data
+
+
+def get_forecast(forecast_id: int) -> Optional[Dict[str, Any]]:
+    init_db()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM forecasts WHERE id = ?", (forecast_id,)
+        ).fetchone()
+        return _forecast_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_forecasts(topic: Optional[str] = None) -> List[Dict[str, Any]]:
+    """All predictions, oldest first, optionally limited to one topic."""
+    init_db()
+    conn = _connect()
+    try:
+        if topic:
+            rows = conn.execute(
+                "SELECT * FROM forecasts WHERE normalized_topic = ? ORDER BY id",
+                (dedupe.normalize_text(topic),),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM forecasts ORDER BY id").fetchall()
+        return [_forecast_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def grade_forecast(
+    forecast_id: int,
+    verdict: str,
+    graded_on: str,
+    graded_by: str,
+    evidence_url: Optional[str] = None,
+    note: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Write a verdict exactly once.
+
+    Returns the graded row, or None when the id is unknown or the prediction
+    already carries a verdict - the WHERE clause makes grade-once atomic, so
+    two concurrent graders cannot both win.
+    """
+    init_db()
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            """UPDATE forecasts
+               SET verdict = ?, graded_on = ?, graded_by = ?, evidence_url = ?, note = ?
+               WHERE id = ? AND verdict IS NULL""",
+            (verdict, graded_on, graded_by, evidence_url, note, forecast_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM forecasts WHERE id = ?", (forecast_id,)
+        ).fetchone()
+        return _forecast_row(row)
     finally:
         conn.close()
 

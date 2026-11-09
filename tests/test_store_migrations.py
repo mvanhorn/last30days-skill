@@ -42,7 +42,7 @@ def test_failed_version_write_rolls_back_schema_and_retry_succeeds(version_three
     store.init_db()
     conn = store._connect()
     try:
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 4
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
         assert "cost_unknown" in {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
     finally:
         conn.close()
@@ -59,7 +59,7 @@ def test_concurrent_initialization_applies_each_version_once(version_three):
         assert list(executor.map(initialize, range(8))) == [version_three] * 8
     conn = store._connect()
     try:
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4]
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_version ORDER BY version")] == [1, 2, 3, 4, 5]
     finally:
         conn.close()
 
@@ -76,7 +76,7 @@ def test_current_schema_check_succeeds_while_another_connection_holds_writer(ver
         store._run_migrations(reader)
 
         assert not reader.in_transaction
-        assert reader.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 4
+        assert reader.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
         assert reader.execute("SELECT value FROM settings WHERE key = 'held-writer'").fetchone() is None
     finally:
         writer.rollback()
@@ -93,7 +93,7 @@ def test_pending_migration_after_committed_default_seeding(version_three):
 
         store._run_migrations(conn)
 
-        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 4
+        assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
         assert conn.execute("SELECT value FROM settings WHERE key = 'daily_budget'").fetchone()[0] == "9.25"
         assert "cost_unknown" in {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
     finally:

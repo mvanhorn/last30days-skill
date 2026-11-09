@@ -758,6 +758,14 @@ def build_parser() -> argparse.ArgumentParser:
             "ships the brief without angle lines)"
         ),
     )
+    parser.add_argument(
+        "--forecast-file",
+        metavar="PATH",
+        help=(
+            "JSON input for 'forecast add' (predictions) or 'forecast grade' "
+            "(verdicts); '-' reads stdin"
+        ),
+    )
     parser.add_argument("--debug", action="store_true", help="Enable HTTP debug logging")
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
     parser.add_argument(
@@ -3033,6 +3041,196 @@ def _x_envelope_digest(
     return _combine_envelope_digests(main.sha256 if main is not None else None, entity_sha256)
 
 
+FORECAST_COMMANDS = ("add", "list", "due", "settle", "grade", "scorecard")
+
+
+def _forecast_command(command_topic: str) -> tuple[str, int] | None:
+    """Recognize ``forecast <command>`` and return (command, prefix length).
+
+    Only ``list`` takes trailing words (a topic filter). Every other command
+    must be the whole topic, so "forecast add ons for Shopify" still
+    researches normally.
+    """
+    words = command_topic.split()
+    if len(words) < 2 or words[0] != "forecast" or words[1] not in FORECAST_COMMANDS:
+        return None
+    if len(words) > 2 and words[1] != "list":
+        return None
+    return words[1], len("forecast") + 1 + len(words[1])
+
+
+def _read_forecast_file(args: argparse.Namespace, command: str) -> dict | None:
+    from lib import forecast
+
+    source = args.forecast_file
+    if not source:
+        sys.stderr.write(
+            f"[last30days] forecast {command} requires --forecast-file <path> "
+            "(or '-' for stdin).\n"
+        )
+        return None
+    try:
+        if source == "-":
+            text = sys.stdin.read(forecast.MAX_PAYLOAD_BYTES + 1)
+        else:
+            path = Path(source).expanduser()
+            if path.stat().st_size > forecast.MAX_PAYLOAD_BYTES:
+                raise forecast.ForecastError(
+                    f"forecast file exceeds {forecast.MAX_PAYLOAD_BYTES} bytes"
+                )
+            text = path.read_text(encoding="utf-8")
+        return forecast.parse_payload(text)
+    except (OSError, UnicodeDecodeError, forecast.ForecastError) as exc:
+        sys.stderr.write(f"[last30days] forecast {command}: {exc}\n")
+        return None
+
+
+def _fetch_polymarket_events(event_slug: str) -> object:
+    from lib import http, polymarket
+
+    return http.request(
+        "GET", polymarket.GAMMA_EVENTS_URL, params={"slug": event_slug},
+        timeout=10, retries=2,
+    )
+
+
+def _run_forecast(
+    args: argparse.Namespace,
+    config: dict[str, object],
+    command: str,
+    topic_filter: str,
+) -> int:
+    """Next30Days ledger commands: local SQLite, plus Polymarket for settle."""
+    import store
+    from lib import forecast
+
+    today = datetime.date.today()
+    db_path = _scoped_store_db(args)
+    read_only = command in ("list", "due", "scorecard")
+    if read_only and not Path(db_path or store.DB_PATH).exists():
+        # Reading must not create a database as a side effect.
+        rows: list[dict] = []
+        return _print_forecast_view(command, rows, today, topic_filter)
+
+    if command == "add":
+        payload = _read_forecast_file(args, command)
+        if payload is None:
+            return 2
+        try:
+            new_rows = forecast.validate_predictions(payload, today)
+        except forecast.ForecastError as exc:
+            sys.stderr.write(f"[last30days] forecast add: {exc}\n")
+            return 2
+        with store.scoped_db(db_path):
+            store.ensure_private_db_files()
+            results = [store.add_forecast(row) for row in new_rows]
+            store.ensure_private_db_files()
+        logged = [row for row, created in results if created]
+        repeats = [row for row, created in results if not created]
+        if logged:
+            print(forecast.render_list(logged, today, "Logged to the forecast ledger"))
+        if repeats:
+            if logged:
+                print()
+            print(forecast.render_list(
+                repeats, today, "Already in the ledger (kept as first logged, not changed)",
+            ))
+        return 0
+
+    if command == "grade":
+        payload = _read_forecast_file(args, command)
+        if payload is None:
+            return 2
+        try:
+            grades = forecast.validate_grades(payload)
+        except forecast.ForecastError as exc:
+            sys.stderr.write(f"[last30days] forecast grade: {exc}\n")
+            return 2
+        with store.scoped_db(db_path):
+            # Refuse the whole file before writing anything: a half-applied
+            # grade file cannot be retried, because verdicts are write-once.
+            refusals = [
+                reason for grade in grades
+                if (reason := forecast.grade_refusal(
+                    store.get_forecast(grade["id"]), grade, today,
+                ))
+            ]
+            if refusals:
+                for reason in refusals:
+                    sys.stderr.write(f"[last30days] forecast grade: {reason}\n")
+                sys.stderr.write("[last30days] forecast grade: nothing was written.\n")
+                return 2
+            graded = []
+            for grade in grades:
+                row = store.grade_forecast(
+                    grade["id"], grade["verdict"], today.isoformat(), "host",
+                    evidence_url=grade["evidence_url"], note=grade["note"],
+                )
+                if row is not None:
+                    graded.append(row)
+            all_rows = store.list_forecasts()
+        print(forecast.render_list(graded, today, "Graded"))
+        print()
+        print(forecast.render_scorecard(forecast.scorecard(all_rows, today), today))
+        return 0
+
+    if command == "settle":
+        with store.scoped_db(db_path):
+            open_rows = [
+                row for row in store.list_forecasts()
+                if not row.get("verdict") and row.get("market_url")
+            ]
+            settled, unreachable = forecast.settle_open_markets(
+                open_rows, _fetch_polymarket_events,
+            )
+            graded = []
+            for row, verdict, note in settled:
+                written = store.grade_forecast(
+                    row["id"], verdict, today.isoformat(), "market",
+                    evidence_url=row["market_url"], note=note,
+                )
+                if written is not None:
+                    graded.append(written)
+        print(
+            f"Checked {len(open_rows)} open market-anchored prediction(s): "
+            f"{len(graded)} settled, {len(unreachable)} unreachable, "
+            f"{len(open_rows) - len(graded) - len(unreachable)} still open."
+        )
+        if graded:
+            print()
+            print(forecast.render_list(graded, today, "Settled by Polymarket"))
+        for row, reason in unreachable:
+            sys.stderr.write(
+                f"[last30days] forecast settle: could not check prediction "
+                f"#{row['id']} ({reason}); it stays open.\n"
+            )
+        return 0
+
+    with store.scoped_db(db_path):
+        rows = store.list_forecasts(topic_filter or None)
+    return _print_forecast_view(command, rows, today, topic_filter)
+
+
+def _print_forecast_view(
+    command: str, rows: list[dict], today: datetime.date, topic_filter: str,
+) -> int:
+    from lib import forecast
+
+    if command == "scorecard":
+        print(forecast.render_scorecard(forecast.scorecard(rows, today), today))
+    elif command == "due":
+        due = [
+            row for row in rows
+            if not row.get("verdict")
+            and datetime.date.fromisoformat(row["resolve_by"]) <= today
+        ]
+        print(forecast.render_list(due, today, "Due for grading"))
+    else:
+        heading = f"Forecast ledger for {topic_filter!r}" if topic_filter else "Forecast ledger"
+        print(forecast.render_list(rows, today, heading))
+    return 0
+
+
 def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
     if not extra_argv:
         return
@@ -3085,6 +3283,9 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         or normalized_topic == "queue cover"
         or normalized_topic.startswith("queue cover ")
     )
+    # Forecast commands touch the local ledger and, for settle, Polymarket's
+    # public API - never a cookie-backed source.
+    is_queue_command = is_queue_command or _forecast_command(normalized_topic) is not None
     is_cached_verification = bool(getattr(args, "verify_freshness", None)) and not normalized_topic
     if args.no_browser_cookies:
         browser_mode = "off"
@@ -3599,6 +3800,19 @@ def _main(
         return _run_queue_list(args, config)
     if command_topic == "queue cover" or command_topic.startswith("queue cover "):
         return _run_queue_cover(args, config, topic[len("queue cover") :].strip())
+
+    forecast_command = _forecast_command(command_topic)
+    if forecast_command is not None:
+        return _run_forecast(
+            args, config, forecast_command[0],
+            " ".join(topic.split())[forecast_command[1]:].strip(),
+        )
+    if args.forecast_file:
+        sys.stderr.write(
+            "[last30days] --forecast-file only applies to 'forecast add' and "
+            "'forecast grade'.\n"
+        )
+        return 2
 
     # Handle setup subcommand
     if command_topic == "setup":

@@ -114,6 +114,8 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 **在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg AI 与 Tech 信息流，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
 
+**预测接下来会发生什么。** 输入 `/last30days what happens next with OpenClaw?`，Skill 在完成常规研究后，会给出 3 到 5 条带日期、可证伪的预测，每条都附有概率和所依据的证据，并写入本地账本。到期后它会自行评分：锚定 Polymarket 市场的预测自动结算，其余预测需要一条能证明结果的链接。输入 `/last30days scorecard` 查看战绩——命中率、Brier 分数、校准情况，以及与市场价格的对比。预测不能修改或删除，裁定只能写入一次，所以猜错的也会一直留在榜上。这些是记录在案的预测，不是建议。
+
 **突发事件发生时。** `/last30days Kanye West`——英国拒绝其签证，Wireless Festival 取消演出，赞助商纷纷离场；但《BULLY》首周登上 Billboard 第二名。Fantano 结束自己的 “Yay sabbatical” 回归评测（65.3 万次观看）；SoFi Homecoming 请来 Lauryn Hill 和 Travis Scott，共演出 44 首歌。Polymarket：“Kanye 还会再发推吗？”86% 认为会。共找到 23 个 Reddit 主题、17 个 YouTube 视频和 8.6 万次赞同。
 
 **比较工具。** `/last30days OpenClaw vs Hermes vs Paperclip`——“它们并非竞品，而是处于不同层次。”OpenClaw 是执行层（GitHub 35.1 万 Star，已上线），Hermes 是会自我改进的大脑（3.1 万 Star），Paperclip 是组织结构图（4.9 万 Star）。Star 数来自 GitHub API 的实时数据，不是过期博客。报告会提供架构、记忆、安全性和适用场景的横向表格。正如 @IMJustinBrooke 所说：“OpenClaw = 小火龙，Hermes = 喷火龙。”

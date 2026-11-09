@@ -1033,7 +1033,7 @@ def test_get_new_findings_filters_by_date(temp_db, sample_report):
 # === Tests for the discovery topic queue (migration 3, U6) ===
 
 
-def test_init_db_reaches_migration_4_with_discovery_topics_table(temp_db):
+def test_init_db_reaches_latest_migration_with_discovery_topics_table(temp_db):
     """A fresh database lands on migration 4 with the queue table present."""
     conn = sqlite3.connect(str(temp_db))
     version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
@@ -1045,7 +1045,7 @@ def test_init_db_reaches_migration_4_with_discovery_topics_table(temp_db):
     }
     conn.close()
 
-    assert version == 4
+    assert version == 5
     assert table is not None
     assert {
         "id", "name", "normalized_name", "entity_key", "domain",
@@ -1054,7 +1054,7 @@ def test_init_db_reaches_migration_4_with_discovery_topics_table(temp_db):
     } <= columns
 
 
-def test_migration_2_db_upgrades_to_4_without_data_loss(tmp_path, monkeypatch):
+def test_migration_2_db_upgrades_to_latest_without_data_loss(tmp_path, monkeypatch):
     """A database built at migration 2 gains the queue table without losing rows."""
     db_path = tmp_path / "research.db"
     monkeypatch.setattr(store, "_db_override", db_path)
@@ -1086,7 +1086,7 @@ def test_migration_2_db_upgrades_to_4_without_data_loss(tmp_path, monkeypatch):
     store.init_db()
 
     conn = sqlite3.connect(str(db_path))
-    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 4
+    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='discovery_topics'"
     ).fetchone() is not None

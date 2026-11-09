@@ -12,13 +12,13 @@ from tests.competitor_cli_audit_helpers import run_competitor_cli
 
 @pytest.mark.parametrize("topic", [
     "setup", "doctor", "library feed", "library search example", "queue list",
-    "queue cover example", "ordinary research", "--mock",
+    "queue cover example", "forecast scorecard", "forecast list example", "ordinary research", "--mock",
 ])
 def test_research_only_dispatches_reserved_topics_as_research(monkeypatch, topic, capsys):
     research = mock.Mock(side_effect=lambda **kwargs: _report(kwargs["topic"]))
     monkeypatch.setattr(cli.pipeline, "run", research)
     monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: _diag())
-    for name in ("_run_library_feed", "_run_library_search", "_run_queue_list", "_run_queue_cover"):
+    for name in ("_run_library_feed", "_run_library_search", "_run_queue_list", "_run_queue_cover", "_run_forecast"):
         monkeypatch.setattr(cli, name, mock.Mock(side_effect=AssertionError("administrative dispatch")))
     monkeypatch.setattr(setup_wizard, "run_auto_setup", mock.Mock(side_effect=AssertionError("setup invoked")))
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")

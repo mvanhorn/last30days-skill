@@ -335,6 +335,7 @@ def test_gate_function_blocks_a_plain_topic(monkeypatch):
         (["library", "search", "espresso"], "last30days._run_library_search"),
         (["library", "feed"], "last30days._run_library_feed"),
         (["queue", "list"], "last30days._run_queue_list"),
+        (["forecast", "scorecard"], "last30days._run_forecast"),
         (["--discover"], "last30days._run_discover"),
         (["--discover", "ai", "--discover-shallow"], "last30days._run_discover"),
         (["--discover", "--nominate-only"], "last30days._run_discover_protocol_leg"),
@@ -343,7 +344,7 @@ def test_gate_function_blocks_a_plain_topic(monkeypatch):
         (["--verify-freshness"], "last30days._run_cached_freshness"),
     ],
     ids=[
-        "doctor", "setup", "library-search", "library-feed", "queue-list",
+        "doctor", "setup", "library-search", "library-feed", "queue-list", "forecast-scorecard",
         "discover", "discover-shallow", "nominate-only", "finalize", "drill",
         "verify-freshness-cached",
     ],
