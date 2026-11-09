@@ -535,6 +535,8 @@ def test_rehearsal_keeps_the_draft_private_and_the_predictions_grounded():
         "A predicted reaction with no supporting comment is cut",
         "What the evidence cannot tell you",
         "Never log a prediction about reception without the user's yes",
+        "never supply a number",
+        "set every `resolve_by` explicitly to a date after it",
         "a codename, never the real name",
         "Criticize the draft, never the person",
     ):
