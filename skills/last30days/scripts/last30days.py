@@ -759,6 +759,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--trace-origin",
+        action="store_true",
+        help=(
+            "Add a Spread Timeline to a single-topic compact/md report: the "
+            "earliest post found, each platform's first sighting in order, "
+            "and the peak day"
+        ),
+    )
+    parser.add_argument(
         "--forecast-file",
         metavar="PATH",
         help=(
@@ -2553,6 +2562,8 @@ def _render_save_and_print(
     synthesis_md: str | None,
     config: dict[str, object],
 ) -> int:
+    if getattr(args, "trace_origin", False) and report is not None and not entity_reports:
+        report.artifacts["trace_origin"] = True
     fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
     try:
         audience = _audience_register_for_run(args, config, entity_reports)
@@ -3807,6 +3818,19 @@ def _main(
             args, config, forecast_command[0],
             " ".join(topic.split())[forecast_command[1]:].strip(),
         )
+    if args.trace_origin and (
+        args.discover is not None
+        or args.emit not in {"compact", "md"}
+        or (bool(topic) and _comparison_requested(args, topic))
+    ):
+        # Never a silent no-op: a caller who asked for a trace and got a
+        # report without one would read its absence as "no trail found".
+        sys.stderr.write(
+            "[last30days] --trace-origin applies to single-topic runs with "
+            "--emit=compact or --emit=md; it cannot be combined with "
+            "comparison, discovery, or other emit modes.\n"
+        )
+        return 2
     if args.forecast_file:
         sys.stderr.write(
             "[last30days] --forecast-file only applies to 'forecast add' and "

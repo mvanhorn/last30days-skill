@@ -118,6 +118,8 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 **为发布做一次彩排。** 粘贴你的草稿并输入 `/last30days how will this land?`（发布帖、推文、落地页或融资陈述）。Skill 会找出过去 30 天内两三个可比的发布，阅读同一批社区的真实反应，然后告诉你每个社区会怎么评价你的草稿，每一条预测的反应都有一条带票数的真实评论作为依据。你会得到一处最值得修改的地方，以及证据不足之处的明确说明。草稿始终保密：正文和任何未公开的名称都不会进入搜索。可以把预测记入账本，发布后再评分。
 
+**追查一个话题从哪里开始。** 输入 `/last30days where did the Widget leak start?`，Skill 会追溯它的传播路径：能找到的最早帖子、各平台首次出现的时间顺序及间隔（先是 Hacker News 的一条评论，两天后是 X 上的一个帖子串，然后是 Reddit、TikTok）、峰值日，以及引爆话题的那一条帖子。它只说“找到的最早帖子”，不说“源头”，因为搜索结果只是样本；它还会列出追溯的局限：线索超出搜索窗口、部分来源未完整返回、帖子没有可靠日期。
+
 **突发事件发生时。** `/last30days Kanye West`——英国拒绝其签证，Wireless Festival 取消演出，赞助商纷纷离场；但《BULLY》首周登上 Billboard 第二名。Fantano 结束自己的 “Yay sabbatical” 回归评测（65.3 万次观看）；SoFi Homecoming 请来 Lauryn Hill 和 Travis Scott，共演出 44 首歌。Polymarket：“Kanye 还会再发推吗？”86% 认为会。共找到 23 个 Reddit 主题、17 个 YouTube 视频和 8.6 万次赞同。
 
 **比较工具。** `/last30days OpenClaw vs Hermes vs Paperclip`——“它们并非竞品，而是处于不同层次。”OpenClaw 是执行层（GitHub 35.1 万 Star，已上线），Hermes 是会自我改进的大脑（3.1 万 Star），Paperclip 是组织结构图（4.9 万 Star）。Star 数来自 GitHub API 的实时数据，不是过期博客。报告会提供架构、记忆、安全性和适用场景的横向表格。正如 @IMJustinBrooke 所说：“OpenClaw = 小火龙，Hermes = 喷火龙。”

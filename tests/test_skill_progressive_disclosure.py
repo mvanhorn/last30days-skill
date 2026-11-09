@@ -52,10 +52,11 @@ def test_configured_user_without_global_marker_has_a_bounded_setup_check():
     total = len((SKILL_ROOT / "SKILL.md").read_bytes()) + sum(
         len(reference_text(name).encode("utf-8")) for name in names
     )
-    # Raised from 190,000 with the forecast route: the root had 64 bytes of
-    # headroom, less than any routing row costs. The 32,000-byte root budget
-    # and the 180,000-byte standard path above are unchanged.
-    assert total <= 190_200, f"configured path without a global marker loads {total} bytes"
+    # Raised from 190,000 with the forecast and origin-trace routes: the root
+    # had 64 bytes of headroom, less than any routing row costs. The
+    # 32,000-byte root budget and the 180,000-byte standard path above are
+    # unchanged.
+    assert total <= 190_400, f"configured path without a global marker loads {total} bytes"
 
 
 def test_existing_users_can_load_repair_without_restarting_onboarding():

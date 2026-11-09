@@ -896,6 +896,11 @@ def render_compact(
             if top_comments:
                 lines.extend([""] + top_comments)
 
+            if report.artifacts.get("trace_origin"):
+                spread_timeline = _render_spread_timeline(evidence_report, aux_candidates)
+                if spread_timeline:
+                    lines.extend([""] + spread_timeline)
+
         outcome_note = _render_source_outcome_note(report)
         if outcome_note:
             lines.extend([""] + outcome_note)
@@ -935,6 +940,38 @@ def render_compact(
     lines.extend(_render_canonical_boundary())
 
     return "\n".join(lines).strip() + "\n"
+
+
+# Outcome states that establish a source was searched and reported in full.
+_CLEAN_SOURCE_STATES = frozenset({"ok", "no-results"})
+
+
+def _render_spread_timeline(
+    report: schema.Report,
+    candidates: list[schema.Candidate],
+) -> list[str]:
+    """Origin trace over the relevance-qualified pool (``--trace-origin``)."""
+    from . import origin
+
+    incomplete = [
+        source
+        for source, outcome in report.source_status.items()
+        if outcome.attempted and outcome.state not in _CLEAN_SOURCE_STATES
+    ]
+    timeline = origin.build_timeline(
+        candidates,
+        report.range_from,
+        report.range_to,
+        schema._headline_engagement,
+        incomplete_sources=incomplete,
+    )
+    if timeline is None:
+        return [
+            "## Spread Timeline",
+            "",
+            "No dated, on-topic posts were found, so there is no trail to trace.",
+        ]
+    return origin.render_timeline(timeline, _source_label)
 
 
 def render_for_html(

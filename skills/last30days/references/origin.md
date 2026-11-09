@@ -1,0 +1,17 @@
+# Patient Zero: trace where a story started and how it spread
+
+Read for origin-trace intent: "where did this start", "who started X", "patient zero for X", "how did X spread", "trace X back", "who broke this first". The subject is a story, meme, claim, rumor, or controversy, not a person or product in general.
+
+1. Run ordinary topic research through the research-runbook route with every applicable resolution and planning step, and add `--trace-origin` to the engine command. Plan the subqueries around the story's distinctive phrase, name, or claim so early posts match before the story had a headline. The flag applies to single-topic `--emit=compact` runs; the engine exits 2 on comparison, discovery, or other emit modes instead of silently omitting the trace.
+2. Read the engine's `## Spread Timeline` block: the earliest post found, each platform's first sighting in date order with the gap between them, the peak day, the biggest single post, and a `Limits of this trace` list.
+3. If the limits say the earliest post sits at the start of the search window, the story is older than the window. Re-run once with `--lookback-days 90` and the same plan and flags, and use the longer trace. If it still sits at the window edge, say the trail runs past what was searched; do not re-run again.
+4. Open the earliest found post and each platform's first sighting when the host can fetch pages, and check that each is actually about this story. Drop a post that is an unrelated early match and say that you dropped it; the next sighting on that platform then stands in.
+5. Present the ordinary synthesis under the root output laws, then the trace under the prose label `How it spread:`.
+   - **Earliest found.** Who posted what, where, and when, linked. Always the words "earliest found" or "earliest we could find". Never "the origin", "the source", "started by", "first to post", or "patient zero is" as a statement of fact.
+   - **The path.** One line per platform in the engine's order with the date and the gap, each linked to its first sighting. Name the post or account that carried the story onto each new platform only when the evidence shows the link (a quote, a screenshot, a cited URL). Order in time is not proof that one post caused the next; say "then appeared on", not "spread from".
+   - **The breakout.** The peak day and the single post that drew the most engagement, and what changed between the earliest sighting and the breakout (who amplified it, what framing stuck).
+   - **Limits.** Relay every line of the engine's `Limits of this trace` in plain words. They are part of the answer, not a footnote to drop.
+
+**Naming people.** The earliest found post is often an ordinary account with a small following. Report what was posted and link it, as the evidence requires. Do not characterize that person, speculate about their motives, or present them as responsible for what happened after others amplified it. If the story is an accusation, a leak, a harassment campaign, or a false claim about a private individual, trace the path through the accounts and outlets that amplified it and do not single out a private person as its author.
+
+A trace is a lower bound. Search results are a sample, deleted and private posts are invisible, and dates are day-resolution, so two posts from the same day cannot be ordered. An earlier post may exist on a platform that was not searched or did not report cleanly.

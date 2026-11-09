@@ -9,6 +9,7 @@ ROUTES = {
     "Before any engine command": ("runtime",),
     "Library search, feed, or queue intent": ("library-queue",),
     "Forecast, scorecard, or launch-rehearsal intent": ("forecast",),
+    "Origin-trace intent": ("origin",),
     "First-run setup is required": ("setup-wizard",),
     "Source repair requested or indicated by doctor": ("setup-wizard",),
     "Trending/discovery intent": ("discovery",),
