@@ -92,6 +92,17 @@ Identity in the queue is annotate-only: a new topic name that closely matches an
 
 The user-set status on a Topic queue row meaning "I already produced content for this story." Set by marking a topic covered by its exact name; surfaced is the only other status. A resurfacing never un-covers a row, and a new name that fuzzily matches a Covered row is born Covered - so the mark survives the judge (now the hosting model) renaming the same story across runs instead of silently re-pitching it.
 
+## Forecasting
+
+### Open question
+A dated, unresolved item about the topic that a run can make a prediction on: a live prediction market, a scheduled event, a pending decision, or an expected release. The engine builds the run's list from markets and forward-looking evidence, gives each entry an id, and accepts a prediction only when it names one. A question about a death, a person's health, violence against a person, or a private individual's personal life is never an Open question.
+
+### Baseline
+What a prediction is measured against: the market price for a market question, otherwise the status-quo outcome and its probability. A prediction that only restates its Baseline is refused, and the scorecard reports skill relative to it rather than raw hit rate.
+
+### Earlier call
+A prediction logged by a previous run on the same topic. A later run settles the market-anchored ones and shows every one that has come due, with its outcome, before making new predictions.
+
 ## X source routing
 
 ### X backend chain
