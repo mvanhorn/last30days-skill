@@ -52,7 +52,8 @@ def _event(*, closed=True, prices=("0", "1"), created="2026-07-01T00:00:00Z",
 
 def _market_row(**overrides):
     row = {
-        "id": 1, "created_on": "2026-11-09", "resolve_by": "2026-12-31",
+        "id": 1, "created_on": "2026-11-09", "created_at": "2026-11-09T12:00:00+00:00",
+        "resolve_by": "2026-12-31",
         "market_url": MARKET_URL, "market_outcome": "No", "verdict": None,
     }
     row.update(overrides)
@@ -66,6 +67,11 @@ def test_valid_prediction_becomes_a_ledger_row():
     [row] = forecast.validate_predictions(_payload(), TODAY)
     assert row["topic"] == "Widget Co"
     assert row["created_on"] == "2026-11-09"
+    assert forecast._parse_instant(row["created_at"]) is not None
+    stamped = forecast.validate_predictions(
+        _payload(), TODAY, now=dt.datetime(2026, 11, 9, 7, 30, tzinfo=dt.timezone(dt.timedelta(hours=-8))),
+    )[0]
+    assert stamped["created_at"] == "2026-11-09T15:30:00+00:00"
     assert row["resolve_by"] == "2026-12-09"
     assert row["market_url"] is None
 
@@ -91,6 +97,7 @@ def test_resolve_by_defaults_to_thirty_days():
     ({"basis": []}, "at least one evidence URL"),
     ({"basis": ["not a url"]}, "http(s) URL"),
     ({"basis": ["javascript:alert(1)"]}, "http(s) URL"),
+    ({"basis": ["https://[invalid"]}, "http(s) URL"),
     ({"basis": ["https://example.com/a"] * 7}, "at most 6"),
     ({"market": {"url": "https://example.com/event/x", "outcome": "Yes"}}, "Polymarket event URL"),
     ({"market": {"url": MARKET_URL}}, "market.outcome"),
@@ -184,6 +191,31 @@ def test_market_already_closed_when_logged_is_void():
         _market_row(), _event(closed_time="2026-08-08 20:31:58+00"),
     )
     assert verdict == "void" and "already closed" in note
+
+
+@pytest.mark.parametrize("closed_time,row_overrides,expected", [
+    # Same day, but the market closed four hours before the call was logged.
+    ("2026-11-09 08:00:00+00", {}, "void"),
+    ("2026-11-09T12:00:00Z", {}, "void"),
+    # Same day, closed after logging: a real forecast.
+    ("2026-11-09 18:00:00+00", {}, "hit"),
+    # Order within the day unknowable: treat a same-day close as known.
+    ("2026-11-09", {}, "void"),
+    ("2026-11-09 18:00:00+00", {"created_at": None}, "void"),
+    ("2026-11-10 00:00:01+00", {"created_at": None}, "hit"),
+    ("", {}, "hit"),
+])
+def test_same_day_known_results_do_not_count(closed_time, row_overrides, expected):
+    result = forecast.settle_from_event(
+        _market_row(**row_overrides), _event(closed_time=closed_time),
+    )
+    assert result[0] == expected
+
+
+def test_market_miss_is_final_before_the_deadline():
+    row = _market_row(market_outcome="Yes", resolve_by="2026-12-31")
+    verdict, _ = forecast.settle_from_event(row, _event(closed_time="2026-11-20 10:00:00+00"))
+    assert verdict == "miss"
 
 
 @pytest.mark.parametrize("row,events", [
@@ -290,16 +322,35 @@ def test_ledger_logs_once_and_grades_once(ledger):
     assert store.list_forecasts("someone else") == []
     assert store.get_forecast(99) is None
 
-    graded = store.grade_forecast(1, "hit", "2026-11-20", "host", evidence_url="https://example.com/proof")
+    [graded] = store.grade_forecasts(
+        [{"id": 1, "verdict": "hit", "evidence_url": "https://example.com/proof"}],
+        "2026-11-20", "host",
+    )
     assert graded["verdict"] == "hit" and graded["graded_by"] == "host"
-    assert store.grade_forecast(1, "miss", "2026-12-10", "host") is None
+    with pytest.raises(store.ForecastGradeConflict):
+        store.grade_forecasts([{"id": 1, "verdict": "miss"}], "2026-12-10", "host")
     assert store.get_forecast(1)["verdict"] == "hit"
-    assert store.grade_forecast(99, "hit", "2026-11-20", "host") is None
+    with pytest.raises(store.ForecastGradeConflict):
+        store.grade_forecasts([{"id": 99, "verdict": "hit"}], "2026-11-20", "host")
+
+
+def test_grade_batch_is_all_or_nothing(ledger):
+    for claim in ("Widget Co ships release one", "Widget Co ships release two", "Widget Co ships release three"):
+        [row] = forecast.validate_predictions(_payload(_prediction(claim=claim)), TODAY)
+        store.add_forecast(row)
+    # Prediction 2 gets settled by another run after the caller's checks.
+    store.grade_forecasts([{"id": 2, "verdict": "void", "note": "settled elsewhere"}], "2026-11-15", "market")
+    batch = [{"id": n, "verdict": "hit", "evidence_url": "https://example.com/p"} for n in (1, 2, 3)]
+    with pytest.raises(store.ForecastGradeConflict) as conflict:
+        store.grade_forecasts(batch, "2026-11-20", "host")
+    assert conflict.value.forecast_id == 2
+    assert store.get_forecast(1)["verdict"] is None
+    assert store.get_forecast(3)["verdict"] is None
 
 
 def test_ledger_has_no_edit_or_delete_surface():
     names = {name for name in dir(store) if "forecast" in name and not name.startswith("_")}
-    assert names == {"add_forecast", "get_forecast", "list_forecasts", "grade_forecast"}
+    assert names == {"add_forecast", "get_forecast", "list_forecasts", "grade_forecasts"}
 
 
 # --- engine commands ------------------------------------------------------------------
@@ -362,7 +413,7 @@ def test_add_settle_grade_scorecard_round_trip(monkeypatch, capsys, tmp_path):
         rc, out, _ = _run(monkeypatch, capsys, ["forecast", "settle", *save])
     fetch.assert_called_once_with(EVENT_SLUG)
     assert rc == 0 and "1 settled, 0 unreachable, 0 still open" in out
-    assert f"#2 [HIT (graded {today}, by market)]" in out
+    assert f"#2 [HIT (due {_future(40)}, graded {today} by market)]" in out
 
     # A miss before the deadline is refused and writes nothing.
     grade_file = tmp_path / "grades.json"
@@ -380,6 +431,11 @@ def test_add_settle_grade_scorecard_round_trip(monkeypatch, capsys, tmp_path):
 
     rc, _, err = _run(monkeypatch, capsys, ["forecast", "grade", "--forecast-file", str(grade_file), *save])
     assert rc == 2 and "written once" in err
+
+    # A concurrent settle between the checks and the write rolls the file back.
+    with mock.patch.object(forecast, "grade_refusal", return_value=None):
+        rc, _, err = _run(monkeypatch, capsys, ["forecast", "grade", "--forecast-file", str(grade_file), *save])
+    assert rc == 2 and "unknown or already graded; nothing was written" in err
 
     rc, out, _ = _run(monkeypatch, capsys, ["forecast", "list", "Widget", "Co", *save])
     assert rc == 0 and "Forecast ledger for 'Widget Co' (2)" in out
@@ -423,9 +479,21 @@ def test_only_exact_forecast_commands_are_reserved(topic, expected):
     assert cli._forecast_command(topic) == expected
 
 
-def test_forecast_file_outside_a_forecast_command_is_an_error(monkeypatch, capsys, tmp_path):
-    rc, _, err = _run(monkeypatch, capsys, ["widget co", "--forecast-file", "-", "--mock", "--save-dir", str(tmp_path)])
-    assert rc == 2 and "only applies to 'forecast add'" in err
+@pytest.mark.parametrize("argv", [
+    ["widget co", "--mock"],
+    ["forecast", "list"],
+    ["forecast", "due"],
+    ["forecast", "settle"],
+    ["forecast", "scorecard"],
+    ["queue", "list"],
+    ["library", "search", "widget"],
+    ["doctor"],
+])
+def test_forecast_file_is_never_accepted_and_ignored(monkeypatch, capsys, tmp_path, argv):
+    with mock.patch.object(cli, "_fetch_polymarket_events", side_effect=AssertionError("network")):
+        rc, out, err = _run(monkeypatch, capsys, [*argv, "--forecast-file", "-", "--save-dir", str(tmp_path)])
+    assert rc == 2 and "only applies to 'forecast add'" in err and not out
+    assert not (tmp_path / "research.db").exists()
 
 
 def test_forecast_commands_never_read_browser_cookies():

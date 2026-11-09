@@ -3160,14 +3160,15 @@ def _run_forecast(
                     sys.stderr.write(f"[last30days] forecast grade: {reason}\n")
                 sys.stderr.write("[last30days] forecast grade: nothing was written.\n")
                 return 2
-            graded = []
-            for grade in grades:
-                row = store.grade_forecast(
-                    grade["id"], grade["verdict"], today.isoformat(), "host",
-                    evidence_url=grade["evidence_url"], note=grade["note"],
+            try:
+                graded = store.grade_forecasts(grades, today.isoformat(), "host")
+            except store.ForecastGradeConflict as exc:
+                # Graded by another run (e.g. forecast settle) between the
+                # checks above and this write; the batch rolled back.
+                sys.stderr.write(
+                    f"[last30days] forecast grade: {exc}; nothing was written.\n"
                 )
-                if row is not None:
-                    graded.append(row)
+                return 2
             all_rows = store.list_forecasts()
         print(forecast.render_list(graded, today, "Graded"))
         print()
@@ -3185,12 +3186,16 @@ def _run_forecast(
             )
             graded = []
             for row, verdict, note in settled:
-                written = store.grade_forecast(
-                    row["id"], verdict, today.isoformat(), "market",
-                    evidence_url=row["market_url"], note=note,
-                )
-                if written is not None:
-                    graded.append(written)
+                # One prediction per transaction: each market verdict stands
+                # alone, so a call graded concurrently is skipped, not fatal.
+                try:
+                    graded.extend(store.grade_forecasts(
+                        [{"id": row["id"], "verdict": verdict,
+                          "evidence_url": row["market_url"], "note": note}],
+                        today.isoformat(), "market",
+                    ))
+                except store.ForecastGradeConflict:
+                    continue
         print(
             f"Checked {len(open_rows)} open market-anchored prediction(s): "
             f"{len(graded)} settled, {len(unreachable)} unreachable, "
@@ -3649,6 +3654,17 @@ def _main(
     )
     command_topic = "" if args.research_only or args.cached_report else topic.lower()
     _validate_extra_argv(parser, command_topic, extra_argv)
+    forecast_command = _forecast_command(command_topic)
+    if args.forecast_file and (
+        forecast_command is None or forecast_command[0] not in ("add", "grade")
+    ):
+        # Checked before every dispatch so no command can accept the file and
+        # ignore it, which would look like a submitted forecast.
+        sys.stderr.write(
+            "[last30days] --forecast-file only applies to 'forecast add' and "
+            "'forecast grade'.\n"
+        )
+        return 2
     if args.resolve_save_dir:
         print(env.resolve_memory_dir(args.save_dir))
         return 0
@@ -3801,18 +3817,11 @@ def _main(
     if command_topic == "queue cover" or command_topic.startswith("queue cover "):
         return _run_queue_cover(args, config, topic[len("queue cover") :].strip())
 
-    forecast_command = _forecast_command(command_topic)
     if forecast_command is not None:
         return _run_forecast(
             args, config, forecast_command[0],
             " ".join(topic.split())[forecast_command[1]:].strip(),
         )
-    if args.forecast_file:
-        sys.stderr.write(
-            "[last30days] --forecast-file only applies to 'forecast add' and "
-            "'forecast grade'.\n"
-        )
-        return 2
 
     # Handle setup subcommand
     if command_topic == "setup":

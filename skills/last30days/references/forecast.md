@@ -36,7 +36,7 @@ GRADE_EOF
 Grading rules, enforced by the engine:
 
 - `hit` and `miss` require an `evidence_url` you actually opened. Never guess, reconstruct, or reuse the prediction's own basis URL as proof of the outcome.
-- A `miss` cannot be written before the prediction's date. A `hit` can land early.
+- A `miss` cannot be written before the prediction's date. A `hit` can land early. The one exception is `forecast settle`: a market that has resolved against the call is final, so that miss is recorded when the market resolves.
 - A verdict is written once and cannot be changed, and predictions cannot be edited or deleted. Grade only what the evidence settles. If you cannot establish the outcome, leave the prediction ungraded and say so; it stays visible as overdue.
 - `void` is for a claim that became unjudgeable, never for a call that went badly. A wrong prediction is a `miss`.
 - Grade against the claim as written. Close does not count: "by Dec 1" that happened Dec 3 is a miss.
