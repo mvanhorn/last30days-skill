@@ -703,7 +703,7 @@ Both respect `--save-dir` scoping.
 
 Ask `/last30days what happens next with <topic>?` and the skill logs 3-5 dated, falsifiable predictions after its research, then grades them when their dates arrive. `/last30days scorecard` shows the record. Predictions live in table `forecasts` in the same research.db and never leave your machine.
 
-The ledger is append-only: a prediction cannot be edited or deleted, and a verdict (`hit`, `miss`, or `void`) is written once. A `hit` or `miss` requires an evidence URL, and a `miss` cannot be written before the prediction's date. Deleting the store (above) is the only way to clear it.
+The ledger is append-only: a prediction cannot be edited or deleted, and a verdict (`hit`, `miss`, or `void`) is written once. A `hit` or `miss` requires an evidence URL, and a `miss` cannot be written before the prediction's date, except by `forecast settle` when the anchored market has already resolved against the call. Deleting the store (above) is the only way to clear it.
 
 Dev/fallback engine commands (the skill drives these for you):
 

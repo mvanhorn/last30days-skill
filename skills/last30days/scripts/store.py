@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
     normalized_claim TEXT NOT NULL,
     probability REAL NOT NULL CHECK(probability >= 0.5 AND probability <= 0.99),
     created_on TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     resolve_by TEXT NOT NULL,
     resolution TEXT NOT NULL,
     basis TEXT NOT NULL,
@@ -1189,12 +1190,12 @@ def add_forecast(row: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
         cursor = conn.execute(
             """INSERT OR IGNORE INTO forecasts
                (topic, normalized_topic, claim, normalized_claim, probability,
-                created_on, resolve_by, resolution, basis, market_url,
+                created_on, created_at, resolve_by, resolution, basis, market_url,
                 market_outcome, market_price)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 row["topic"], normalized_topic, row["claim"], normalized_claim,
-                row["probability"], row["created_on"], row["resolve_by"],
+                row["probability"], row["created_on"], row["created_at"], row["resolve_by"],
                 row["resolution"], json.dumps(row["basis"]),
                 row.get("market_url"), row.get("market_outcome"),
                 row.get("market_price"),
@@ -1249,36 +1250,56 @@ def list_forecasts(topic: Optional[str] = None) -> List[Dict[str, Any]]:
         conn.close()
 
 
-def grade_forecast(
-    forecast_id: int,
-    verdict: str,
+class ForecastGradeConflict(Exception):
+    """A prediction in a grade batch could not take a verdict."""
+
+    def __init__(self, forecast_id: int):
+        super().__init__(f"prediction #{forecast_id} is unknown or already graded")
+        self.forecast_id = forecast_id
+
+
+def grade_forecasts(
+    grades: List[Dict[str, Any]],
     graded_on: str,
     graded_by: str,
-    evidence_url: Optional[str] = None,
-    note: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Write a verdict exactly once.
+) -> List[Dict[str, Any]]:
+    """Write a batch of verdicts, each exactly once, all or nothing.
 
-    Returns the graded row, or None when the id is unknown or the prediction
-    already carries a verdict - the WHERE clause makes grade-once atomic, so
-    two concurrent graders cannot both win.
+    Every entry needs ``id`` and ``verdict`` and may carry ``evidence_url``
+    and ``note``. The batch runs in one write transaction: if any prediction
+    is unknown or already graded (for example, settled by a concurrent run
+    after the caller checked), nothing is written and
+    ``ForecastGradeConflict`` names it. A half-applied grade file could never
+    be retried, because verdicts are permanent.
     """
     init_db()
     conn = _connect()
     try:
-        cursor = conn.execute(
-            """UPDATE forecasts
-               SET verdict = ?, graded_on = ?, graded_by = ?, evidence_url = ?, note = ?
-               WHERE id = ? AND verdict IS NULL""",
-            (verdict, graded_on, graded_by, evidence_url, note, forecast_id),
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        for grade in grades:
+            cursor = conn.execute(
+                """UPDATE forecasts
+                   SET verdict = ?, graded_on = ?, graded_by = ?, evidence_url = ?, note = ?
+                   WHERE id = ? AND verdict IS NULL""",
+                (
+                    grade["verdict"], graded_on, graded_by,
+                    grade.get("evidence_url"), grade.get("note"), grade["id"],
+                ),
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                raise ForecastGradeConflict(grade["id"])
         conn.commit()
-        if cursor.rowcount == 0:
-            return None
-        row = conn.execute(
-            "SELECT * FROM forecasts WHERE id = ?", (forecast_id,)
-        ).fetchone()
-        return _forecast_row(row)
+        return [
+            _forecast_row(conn.execute(
+                "SELECT * FROM forecasts WHERE id = ?", (grade["id"],)
+            ).fetchone())
+            for grade in grades
+        ]
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
     finally:
         conn.close()
 
