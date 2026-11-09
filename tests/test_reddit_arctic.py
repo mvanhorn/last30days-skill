@@ -221,6 +221,65 @@ class TestWindowedFetchListings:
         assert requested == ["tea", "coffee", "cocoa"]
         assert reddit_arctic.time.monotonic() <= reddit_arctic._LISTING_DEADLINE_SECONDS
 
+    def test_slow_down_422_is_retried_once(self, listing_clock):
+        requested = []
+
+        def get(url, **kwargs):
+            sub = parse_qs(urlsplit(url).query)["subreddit"][0]
+            requested.append(sub)
+            if requested.count(sub) == 1 and sub == "tea":
+                raise reddit_arctic.http.HTTPError(
+                    "HTTP 422: Unprocessable Entity", 422,
+                    '{"data":null,"error":"Timeout. Maybe slow down a bit"}',
+                )
+            return _resp([_listing_row(
+                pid=sub, subreddit=sub, permalink=f"/r/{sub}/comments/{sub}/x/",
+            )])
+
+        with mock.patch.object(reddit_arctic.http, "get", side_effect=get):
+            out = reddit_arctic.fetch_listings(["tea", "coffee"])
+
+        assert requested == ["tea", "tea", "coffee"]
+        assert sorted(post["subreddit"] for post in out) == ["coffee", "tea"]
+
+    def test_slow_down_422_retries_only_once(self, listing_clock):
+        calls = []
+
+        def get(url, **kwargs):
+            calls.append(url)
+            raise reddit_arctic.http.HTTPError("HTTP 422: Unprocessable Entity", 422)
+
+        with mock.patch.object(reddit_arctic.http, "get", side_effect=get):
+            assert reddit_arctic.fetch_listings(["tea"]) == []
+
+        assert len(calls) == 2
+
+    def test_other_4xx_is_not_retried(self, listing_clock):
+        calls = []
+
+        def get(url, **kwargs):
+            calls.append(url)
+            raise reddit_arctic.http.HTTPError("HTTP 400: Bad Request", 400)
+
+        with mock.patch.object(reddit_arctic.http, "get", side_effect=get):
+            assert reddit_arctic.fetch_listings(["tea"]) == []
+
+        assert len(calls) == 1
+
+    def test_slow_down_retry_respects_the_listing_deadline(self, listing_clock):
+        calls = []
+
+        def get(url, **kwargs):
+            calls.append(url)
+            # Spend almost the whole shared budget before throttling.
+            listing_clock(reddit_arctic._LISTING_DEADLINE_SECONDS - 1)
+            raise reddit_arctic.http.HTTPError("HTTP 422: Unprocessable Entity", 422)
+
+        with mock.patch.object(reddit_arctic.http, "get", side_effect=get):
+            assert reddit_arctic.fetch_listings(["tea"]) == []
+
+        assert len(calls) == 1
+
     def test_slow_first_subreddit_does_not_starve_other_subreddits(self, listing_clock):
         requested = []
 
