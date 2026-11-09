@@ -555,6 +555,8 @@ def extract_cookies(
 ) -> Optional[dict[str, str]]:
     """Extract cookies from the specified browser.
 
+    See extract_cookies_with_source() for selection and permission-error behavior.
+
     Args:
         browser: One of 'firefox', 'chrome', 'brave', 'edge', 'vivaldi',
             'opera', 'arc', 'dia', 'chromium', 'safari', or 'auto'.
@@ -628,15 +630,24 @@ def extract_cookies_with_source(
     Same as extract_cookies() but returns a (cookies, browser_name) tuple
     so callers can track the source.
 
+    Auto mode tries browsers in platform order until one supplies every requested
+    cookie with a nonempty value. If none does, it returns the first partial
+    result without combining cookies from different browsers. A browser's
+    PermissionError does not stop later candidates from being tried.
+
     Args:
         browser: One of 'firefox', 'chrome', 'brave', 'edge', 'vivaldi',
             'opera', 'arc', 'dia', 'chromium', 'safari', or 'auto'.
-        domain: The cookie domain to match (e.g. ".x.com").
+        domain: Bare or dot-prefixed cookie domain (e.g. "x.com" or ".x.com").
         cookie_names: List of cookie names to extract.
 
     Returns:
         Tuple of ({cookie_name: cookie_value}, browser_name) or None.
         browser_name is "firefox-wsl" when cookies came from Windows Firefox via WSL2.
+
+    Raises:
+        PermissionError: The explicitly selected browser denies access, or auto
+            mode encounters a denial and no browser returns even a partial result.
     """
     extractors = {
         "firefox": extract_firefox_cookies,
