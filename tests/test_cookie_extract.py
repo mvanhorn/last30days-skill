@@ -21,6 +21,105 @@ from lib.cookie_extract import (
 )
 
 
+@pytest.mark.parametrize("domain", [".x.com", "x.com", ".example.test", "example.test"])
+def test_firefox_cookie_host_family_and_requested_names(tmp_path, domain):
+    host = domain.lstrip(".")
+    db = tmp_path / "cookies.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE moz_cookies (host TEXT, name TEXT, value TEXT)")
+        conn.executemany("INSERT INTO moz_cookies VALUES (?, ?, ?)", [
+            (host, "auth_token", "dummy-auth"),
+            ("." + host, "ct0", "dummy-ct0"),
+            ("sub." + host, "sub_cookie", "dummy-sub"),
+            ("not" + host, "near_cookie", "dummy-near"),
+            (host + ".example", "suffix_cookie", "dummy-suffix"),
+            (host, "unrequested", "dummy-other"),
+        ])
+    assert _query_cookies_db(
+        db, domain, ["auth_token", "ct0", "sub_cookie", "near_cookie", "suffix_cookie"],
+    ) == {"auth_token": "dummy-auth", "ct0": "dummy-ct0", "sub_cookie": "dummy-sub"}
+
+
+@pytest.fixture
+def standalone_browsers(monkeypatch):
+    """Replace every browser boundary, including Firefox's source label."""
+    calls = []
+    results = {}
+    order = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium", "firefox", "safari"]
+    monkeypatch.setattr(cookie_extract.platform, "system", lambda: "Darwin")
+
+    def extractor(name):
+        def extract(domain, names):
+            assert domain == ".x.com"
+            assert names == ["auth_token", "ct0"]
+            calls.append(name)
+            result = results.get(name)
+            if isinstance(result, Exception):
+                raise result
+            if name == "firefox" and result is not None:
+                return result, "firefox-wsl"
+            return result
+        return extract
+
+    for name in order:
+        target = "_extract_firefox_with_source" if name == "firefox" else f"extract_{name}_cookies"
+        monkeypatch.setattr(cookie_extract, target, extractor(name))
+    return results, calls, order
+
+
+@pytest.mark.parametrize("first", [{"ct0": "dummy-partial"}, PermissionError("dummy-denial")])
+def test_standalone_auto_continues_to_complete_browser(standalone_browsers, first):
+    results, calls, order = standalone_browsers
+    complete = {"auth_token": "dummy-auth", "ct0": "dummy-complete"}
+    results.update(chrome=first, firefox=complete)
+    assert cookie_extract.extract_cookies_with_source(
+        "auto", ".x.com", ["auth_token", "ct0"],
+    ) == (complete, "firefox-wsl")
+    assert calls == order[:-1]
+
+
+def test_standalone_auto_keeps_first_partial_without_combining_browsers(standalone_browsers):
+    results, calls, order = standalone_browsers
+    partial = {"ct0": "dummy-partial"}
+    results.update(chrome=partial, brave={"auth_token": "dummy-other"}, edge=PermissionError("dummy-denial"))
+    assert cookie_extract.extract_cookies_with_source(
+        "auto", ".x.com", ["auth_token", "ct0"],
+    ) == (partial, "chrome")
+    assert calls == order
+
+
+def test_standalone_auto_raises_first_denial_after_trying_every_browser(standalone_browsers):
+    results, calls, order = standalone_browsers
+    denial = PermissionError("dummy-first-denial")
+    results.update({name: PermissionError("dummy-other-denial") for name in order})
+    results["chrome"] = denial
+    with pytest.raises(PermissionError) as caught:
+        cookie_extract.extract_cookies_with_source("auto", ".x.com", ["auth_token", "ct0"])
+    assert caught.value is denial
+    assert calls == order
+
+
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_standalone_auto_other_platforms_only_try_firefox(standalone_browsers, monkeypatch, system):
+    results, calls, _ = standalone_browsers
+    monkeypatch.setattr(cookie_extract.platform, "system", lambda: system)
+    assert cookie_extract.extract_cookies_with_source("auto", ".x.com", ["auth_token", "ct0"]) is None
+    assert calls == ["firefox"]
+
+
+def test_standalone_explicit_browser_preserves_partial_and_denial(standalone_browsers):
+    results, calls, _ = standalone_browsers
+    partial = {"ct0": "dummy-partial"}
+    results["chrome"] = partial
+    assert cookie_extract.extract_cookies_with_source(
+        "chrome", ".x.com", ["auth_token", "ct0"],
+    ) == (partial, "chrome")
+    results["chrome"] = PermissionError("dummy-denial")
+    with pytest.raises(PermissionError):
+        cookie_extract.extract_cookies_with_source("chrome", ".x.com", ["auth_token", "ct0"])
+    assert calls == ["chrome", "chrome"]
+
+
 def test_firefox_database_permission_denial_survives_extractor(tmp_path):
     db = tmp_path / "cookies.sqlite"
     db.touch()
