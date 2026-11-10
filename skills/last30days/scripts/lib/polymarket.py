@@ -824,6 +824,19 @@ def parse_polymarket_response(
             except (IndexError, TypeError):
                 end_date = None
 
+        # Per-market detail: every active market keeps its own slug, question,
+        # closing date, and full outcome prices so a specific market stays
+        # identifiable when the event holds several.
+        market_details = []
+        for m in active_markets:
+            market_end = m.get("endDate")
+            market_details.append({
+                "slug": m.get("slug", ""),
+                "question": m.get("question", title),
+                "end_date": market_end[:10] if isinstance(market_end, str) and market_end else None,
+                "outcome_prices": _parse_outcome_prices(m),
+            })
+
         # Semantic relevance should dominate. Market quality should refine
         # relevant matches, not rescue unrelated high-liquidity events.
         text_score = _compute_text_similarity(topic, title, all_outcome_names) if topic else 0.5
@@ -891,6 +904,7 @@ def parse_polymarket_response(
             "liquidity": liquidity,
             "date": date_str,
             "end_date": end_date,
+            "markets": market_details,
             "relevance": round(relevance, 2),
             "why_relevant": f"Prediction market: {title[:60]}",
         })

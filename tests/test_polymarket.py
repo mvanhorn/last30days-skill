@@ -667,3 +667,214 @@ def test_per_item_relevance_floor_no_drops_when_all_high():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# === Tests for per-market detail ===
+
+
+def _market(slug, question, *, end_date="2026-12-31T12:00:00Z", **kwargs):
+    market = create_mock_market(question=question, **kwargs)
+    market["slug"] = slug
+    if end_date is not None:
+        market["endDate"] = end_date
+    return market
+
+
+def test_multi_market_event_keeps_every_active_market():
+    response = {
+        "events": [create_mock_event(
+            title="Fed decision in December?",
+            markets=[
+                _market(
+                    "fed-cut-25-december",
+                    "Will the Fed cut rates by 25 bps in December?",
+                    prices='["0.70", "0.30"]',
+                    volume="900",
+                    end_date="2026-12-10T19:00:00Z",
+                ),
+                _market(
+                    "fed-hold-december",
+                    "Will the Fed hold rates in December?",
+                    prices='["0.25", "0.75"]',
+                    volume="500",
+                    end_date="2026-12-11T19:00:00Z",
+                ),
+                _market(
+                    "fed-cut-50-december",
+                    "Will the Fed cut rates by 50 bps in December?",
+                    prices='["0.05", "0.95"]',
+                    volume="100",
+                    end_date="2026-12-12T19:00:00Z",
+                ),
+            ],
+        )]
+    }
+
+    items = polymarket.parse_polymarket_response(response, topic="Fed")
+
+    assert items[0]["markets"] == [
+        {
+            "slug": "fed-cut-25-december",
+            "question": "Will the Fed cut rates by 25 bps in December?",
+            "end_date": "2026-12-10",
+            "outcome_prices": [("Yes", 0.7), ("No", 0.3)],
+        },
+        {
+            "slug": "fed-hold-december",
+            "question": "Will the Fed hold rates in December?",
+            "end_date": "2026-12-11",
+            "outcome_prices": [("Yes", 0.25), ("No", 0.75)],
+        },
+        {
+            "slug": "fed-cut-50-december",
+            "question": "Will the Fed cut rates by 50 bps in December?",
+            "end_date": "2026-12-12",
+            "outcome_prices": [("Yes", 0.05), ("No", 0.95)],
+        },
+    ]
+
+
+def test_market_keeps_all_outcome_prices_beyond_display_cap():
+    response = {
+        "events": [create_mock_event(
+            title="Who wins the AI race?",
+            markets=[_market(
+                "ai-race-winner",
+                "Who wins the AI race?",
+                outcomes='["A", "B", "C", "D", "E"]',
+                prices='["0.40", "0.25", "0.20", "0.10", "0.05"]',
+            )],
+        )]
+    }
+
+    items = polymarket.parse_polymarket_response(response)
+
+    assert len(items[0]["outcome_prices"]) == 3
+    assert items[0]["markets"][0]["outcome_prices"] == [
+        ("A", 0.4), ("B", 0.25), ("C", 0.2), ("D", 0.1), ("E", 0.05),
+    ]
+
+
+def test_single_market_event_matches_top_market_fields():
+    response = {
+        "events": [create_mock_event(
+            title="Will AI surpass humans?",
+            markets=[_market(
+                "will-ai-surpass-humans",
+                "Will AI surpass humans by 2030?",
+                end_date="2030-01-01T00:00:00Z",
+            )],
+        )]
+    }
+
+    item = polymarket.parse_polymarket_response(response, topic="AI")[0]
+
+    assert len(item["markets"]) == 1
+    market = item["markets"][0]
+    assert market["slug"] == "will-ai-surpass-humans"
+    assert market["question"] == item["question"]
+    assert market["end_date"] == item["end_date"] == "2030-01-01"
+    assert market["outcome_prices"] == item["outcome_prices"]
+
+
+def test_market_without_end_date_is_kept_with_date_absent():
+    response = {
+        "events": [create_mock_event(
+            title="Will AI surpass humans?",
+            markets=[
+                _market("dated", "Will AI surpass humans by 2030?", volume="900"),
+                _market("undated", "Will AI surpass humans ever?", volume="100", end_date=None),
+            ],
+        )]
+    }
+
+    markets = polymarket.parse_polymarket_response(response, topic="AI")[0]["markets"]
+
+    assert [m["slug"] for m in markets] == ["dated", "undated"]
+    assert markets[0]["end_date"] == "2026-12-31"
+    assert markets[1]["end_date"] is None
+    assert markets[1]["outcome_prices"] == [("Yes", 0.6), ("No", 0.4)]
+
+
+def test_closed_and_zero_liquidity_markets_stay_excluded():
+    response = {
+        "events": [create_mock_event(
+            title="Will AI surpass humans?",
+            markets=[
+                _market("open", "Will AI surpass humans by 2030?"),
+                _market("closed", "Will AI surpass humans by 2025?", closed=True),
+                _market("illiquid", "Will AI surpass humans by 2027?", liquidity="0"),
+            ],
+        )]
+    }
+
+    markets = polymarket.parse_polymarket_response(response, topic="AI")[0]["markets"]
+
+    assert [m["slug"] for m in markets] == ["open"]
+
+
+def _legacy_raw_item():
+    """A raw event item shaped as it was before per-market detail existed."""
+    return {
+        "event_id": "evt-1",
+        "title": "Who wins the primary?",
+        "question": "Who wins the primary?",
+        "url": "https://polymarket.com/event/primary",
+        "outcome_prices": [("Kanye", 0.12), ("Other", 0.88)],
+        "outcomes_remaining": 0,
+        "price_movement": "up 3.0% this week",
+        "volume24hr": 1000.0,
+        "volume1mo": 50000.0,
+        "liquidity": 2000.0,
+        "date": "2026-07-01",
+        "end_date": "2026-12-31",
+        "relevance": 0.8,
+        "why_relevant": "Prediction market: Who wins the primary?",
+    }
+
+
+def _normalized(raw):
+    from lib import normalize
+
+    return normalize._normalize_polymarket(
+        "polymarket", raw, 0, "2026-06-10", "2026-07-10"
+    )
+
+
+def test_normalize_carries_markets_in_metadata():
+    markets = [{
+        "slug": "primary-kanye",
+        "question": "Who wins the primary?",
+        "end_date": "2026-12-31",
+        "outcome_prices": [("Kanye", 0.12), ("Other", 0.88)],
+    }]
+
+    item = _normalized({**_legacy_raw_item(), "markets": markets})
+
+    assert item.metadata["markets"] == markets
+
+
+def test_footer_and_stats_lines_unchanged_for_legacy_fixture():
+    from lib import render
+    from tests.test_render_footer import _report
+
+    markets = [{
+        "slug": "primary-kanye",
+        "question": "Who wins the primary?",
+        "end_date": "2026-12-31",
+        "outcome_prices": [("Kanye", 0.12), ("Other", 0.88)],
+    }]
+    legacy = _report(items_by_source={"polymarket": [_normalized(_legacy_raw_item())]})
+    current = _report(items_by_source={
+        "polymarket": [_normalized({**_legacy_raw_item(), "markets": markets})]
+    })
+
+    legacy_footer = render._build_source_footer_lines(legacy)
+    legacy_stats = render._render_stats(legacy)
+
+    assert legacy_footer == [
+        "📊 Polymarket: 1 market │ Who wins the primary: Kanye 12%"
+    ]
+    assert "- Polymarket: 1 market | Who wins the primary: Kanye 12%" in legacy_stats
+    assert render._build_source_footer_lines(current) == legacy_footer
+    assert render._render_stats(current) == legacy_stats

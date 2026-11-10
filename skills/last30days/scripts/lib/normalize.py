@@ -1007,6 +1007,7 @@ def _normalize_polymarket(
             "end_date": item.get("end_date"),
             "outcome_prices": item.get("outcome_prices") or [],
             "outcomes_remaining": item.get("outcomes_remaining"),
+            "markets": item.get("markets") or [],
         },
     )
 
