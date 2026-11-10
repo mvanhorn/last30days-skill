@@ -53,6 +53,7 @@ def test_comparison_template_points_at_the_rule():
     text = reference_text("comparison")
     do_not = text.split("**Do NOT:**", 1)[1].split("\n\n", 1)[0]
     assert "COUNTS IN PROSE" in do_not
+    assert "with its engagement" not in text
 
 
 def test_final_check_strips_counts_that_are_not_the_finding():
