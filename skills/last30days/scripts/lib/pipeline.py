@@ -6494,7 +6494,10 @@ def _retrieve_stream_impl(
         # lookup and gh-CLI subprocess fallback (up to 5s timeout each).
         token = github.resolve_token(config.get("GITHUB_TOKEN"))
         response = github.search_github(subquery.search_query, from_date, to_date, depth=depth, token=token)
-        items = github.parse_github_response(response)
+        # Judge results against the stable research topic, not the narrowed
+        # per-subquery search_query, as polymarket does above.
+        relevance_topic = raw_topic or topic or subquery.search_query
+        items = github.parse_github_response(response, topic=relevance_topic)
         # Note: an unauth rate-limit (response["error"]) is expected on the
         # tokenless anon tier and returns empty here rather than raising — github
         # is now always eligible, so raising would spam "github failed" on every

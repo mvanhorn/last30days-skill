@@ -216,7 +216,7 @@ class TestParseGithubResponse(unittest.TestCase):
             },
             {
                 "html_url": "https://github.com/vercel/next.js/pull/99",
-                "title": "Add streaming support",
+                "title": "Add React streaming support",
                 "body": "This PR adds...",
                 "created_at": "2026-03-20T10:00:00Z",
                 "state": "open",
@@ -298,6 +298,24 @@ class TestParseGithubResponse(unittest.TestCase):
         )
         scores = [i.get("relevance", 0) for i in items]
         self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_drops_results_that_do_not_name_the_topic(self):
+        envelope = {
+            "items": [
+                {"html_url": "https://github.com/vercel/next.js/pull/99",
+                 "title": "Add streaming support", "comments": 5,
+                 "reactions": {"total_count": 3}},
+                {"html_url": "https://github.com/vercel/next.js/pull/100",
+                 "title": "Add React streaming support", "comments": 0,
+                 "reactions": {"total_count": 0}},
+            ],
+            "context": {"core": "react"},
+        }
+        items = github.parse_github_response(envelope)
+        self.assertEqual(
+            [item["url"] for item in items],
+            ["https://github.com/vercel/next.js/pull/100"],
+        )
 
     def test_empty_envelope(self):
         self.assertEqual(github.parse_github_response({"items": []}), [])

@@ -1,0 +1,1 @@
+GitHub keyword search no longer adds spam issues and passing mentions from unrelated repos to reports on non-tech topics. A result is kept only when its title names the topic or its repo is named for it; `--github-user` and `--github-repo` runs are unchanged.

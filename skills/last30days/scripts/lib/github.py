@@ -166,6 +166,27 @@ def _compute_relevance(
     return round(relevance, 2)
 
 
+# Issue search matches body text, so an off-topic query still returns a full
+# page: keyword-stuffed spam issues and passing mentions in unrelated repos.
+# Their search rank is as good as a real hit's, so the blended score above
+# cannot separate them. A keyword result is kept only when its title names the
+# topic or its repo is named for it. 0.25 sits just above the 0.24 cap that
+# token_overlap_relevance gives a match on generic words alone.
+TOPICAL_FLOOR = 0.25
+
+
+def _clears_topical_floor(topic: str, title: str, repo: str) -> bool:
+    """True when a keyword-search result is about ``topic``.
+
+    Rank and engagement play no part. Person and project modes never call this.
+    """
+    repo_words = re.sub(r"[/_.\-]+", " ", repo)
+    return max(
+        token_overlap_relevance(topic, title),
+        token_overlap_relevance(topic, repo_words),
+    ) >= TOPICAL_FLOOR
+
+
 # GitHub search qualifiers the planner sometimes writes straight into the topic
 # string (e.g. "open source AI stars:>1000 created:>2025-03-20"). They must not
 # reach the query builder in `search_github`: it appends its own
@@ -391,11 +412,18 @@ def search_github(
     return envelope
 
 
-def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+def parse_github_response(
+    response: Dict[str, Any],
+    topic: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Normalize a ``search_github`` envelope into the skill's item shape.
 
-    Pure function: no I/O, no token, no enrichment. Applies the date
-    filter using the search context and sorts by relevance.
+    Pure function: no I/O, no token, no enrichment. Drops results that are
+    not about the topic, applies the date filter using the search context and
+    sorts by relevance.
+
+    ``topic`` is the research topic the results are judged against. It
+    defaults to the subject the search ran on.
     """
     if not isinstance(response, dict):
         return []
@@ -407,12 +435,17 @@ def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     from_date = context.get("from_date") or ""
     to_date = context.get("to_date") or ""
     count = context.get("count") or DEPTH_LIMITS["default"]
+    floor_topic = strip_search_qualifiers(extract_core_subject(topic or "")) or core
 
     items: List[Dict[str, Any]] = []
+    off_topic = 0
     for i, item in enumerate(raw_items[:count]):
         html_url = item.get("html_url", "")
         repo = _parse_repo_from_url(html_url)
         title = item.get("title", "")
+        if not _clears_topical_floor(floor_topic, title, repo):
+            off_topic += 1
+            continue
         body_text = item.get("body") or ""
         reactions_total = item.get("reactions", {}).get("total_count", 0) if isinstance(item.get("reactions"), dict) else 0
         comment_count = item.get("comments") or 0
@@ -450,6 +483,12 @@ def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "is_pr": is_pr,
             },
         })
+
+    if off_topic:
+        _log(
+            f"Dropped {off_topic} of {off_topic + len(items)} results not about "
+            f"'{_truncate_diagnostic(floor_topic)}'"
+        )
 
     # Date filter
     if from_date and to_date:
