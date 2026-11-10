@@ -113,10 +113,13 @@ def test_no_contract_document_licenses_a_separate_sources_block():
         assert "separate `Sources:` block" not in text, name
 
 
-def test_invitation_counts_web_pages_with_the_social_sources():
-    text = reference_text("synthesis")
-    close = text.split("Close with `I have all the links to the", 1)[1].splitlines()[0]
-    assert "web" in close
+def test_report_ends_at_the_invitation_with_no_link_count_line():
+    synthesis = reference_text("synthesis")
+    assert "The response ends at the invitation, without an additional source list." in synthesis
+    for name, text in contract_documents().items():
+        assert "I have all the links" not in text, name
+        assert "Just ask." not in text, name
+        assert "link line" not in text, name
 
 
 def test_engine_boundary_text_claims_no_authority_over_tool_contracts():

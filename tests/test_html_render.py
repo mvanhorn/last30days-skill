@@ -381,6 +381,102 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertEqual(0, rendered.count("<blockquote>"))
 
 
+SUGGESTIONS = (
+    "- What is the real story behind the apology letter?\n"
+    "- Break down the BULLY tracklist reactions\n"
+    "- Compare how Reddit and X are reacting"
+)
+EXPERT_INVITATIONS = {
+    "prompting": (
+        "---\nI'm now an expert on product photos for Midjourney. What do you want to make? For example:\n"
+        f"{SUGGESTIONS}\n\n"
+        "Just describe your vision and I'll write a prompt you can paste straight into Midjourney."
+    ),
+    "recommendations": f"---\nI'm now an expert on kids skis. Want me to go deeper? For example:\n{SUGGESTIONS}",
+    "news": f"---\nI'm now an expert on Kanye West. Some things you could ask:\n{SUGGESTIONS}",
+    "general": f"---\nI'm now an expert on Kanye West. Some things I can help with:\n{SUGGESTIONS}",
+}
+COMPARISON_INVITATION = (
+    "I've compared Cursor vs Windsurf using the latest community data. Some things you could ask:\n"
+    f"{SUGGESTIONS}"
+)
+OLD_LINK_LINE = (
+    "\n\nI have all the links to the 14 Reddit threads, 22 X posts, and 5 web articles I pulled from. Just ask."
+)
+REPORT_BODY = (
+    "What I learned:\n\n"
+    "**The apology letter** - fans are split, per [@example](https://example.com)\n\n"
+    "---\n\n"
+    "KEY PATTERNS from the research:\n"
+    "1. Closing pattern stays in the brief\n\n"
+)
+
+
+class InvitationStripTests(unittest.TestCase):
+    def test_old_reports_lose_each_expert_invitation(self):
+        for name, invitation in EXPERT_INVITATIONS.items():
+            with self.subTest(shape=name):
+                stripped = html_render._strip_invitation(REPORT_BODY + invitation + OLD_LINK_LINE)
+                self.assertNotIn("I'm now an expert", stripped)
+                self.assertNotIn("apology letter?", stripped)
+                self.assertNotIn("Just ask.", stripped)
+                self.assertIn("Closing pattern stays in the brief", stripped)
+
+    def test_old_comparison_report_loses_its_invitation(self):
+        stripped = html_render._strip_invitation(REPORT_BODY + COMPARISON_INVITATION + OLD_LINK_LINE)
+        self.assertNotIn("I've compared Cursor vs Windsurf", stripped)
+        self.assertNotIn("Just ask.", stripped)
+        self.assertIn("Closing pattern stays in the brief", stripped)
+
+    def test_reports_ending_at_the_invitation_lose_each_shape(self):
+        shapes = {**EXPERT_INVITATIONS, "comparison": COMPARISON_INVITATION}
+        for name, invitation in shapes.items():
+            with self.subTest(shape=name):
+                stripped = html_render._strip_invitation(REPORT_BODY + invitation + "\n")
+                self.assertNotIn("I'm now an expert", stripped)
+                self.assertNotIn("I've compared", stripped)
+                self.assertNotIn("apology letter?", stripped)
+                self.assertNotIn("Just describe your vision", stripped)
+                self.assertIn("Closing pattern stays in the brief", stripped)
+
+    def test_body_rule_before_the_invitation_keeps_the_body(self):
+        stripped = html_render._strip_invitation(REPORT_BODY + EXPERT_INVITATIONS["general"])
+        self.assertEqual(stripped, REPORT_BODY)
+
+    def test_report_ending_at_the_invitation_renders_ending_at_the_footer(self):
+        rendered = html_render.render_html(
+            _report("Kanye West", ["One"]),
+            synthesis_md=REPORT_BODY + EXPERT_INVITATIONS["general"],
+        )
+        self.assertNotIn("I'm now an expert", rendered)
+        self.assertNotIn("apology letter?", rendered)
+        self.assertIn("Closing pattern stays in the brief", rendered)
+        body = rendered.split('<div class="colophon">', 1)[0].rstrip()
+        self.assertIn("All agents reported back!", body)
+        self.assertTrue(body.endswith("---</pre></div>"), body[-200:])
+
+    def test_comparison_ending_at_the_invitation_renders_ending_at_the_footer(self):
+        rendered = html_render.render_html_comparison(
+            [("Cursor", _report("Cursor", ["One"])), ("Windsurf", _report("Windsurf", ["Two"]))],
+            synthesis_md=REPORT_BODY + COMPARISON_INVITATION,
+        )
+        self.assertNotIn("I've compared", rendered)
+        self.assertNotIn("apology letter?", rendered)
+        self.assertIn("Closing pattern stays in the brief", rendered)
+        self.assertIn("All agents reported back!", rendered)
+
+    def test_old_saved_report_renders_without_the_invitation(self):
+        rendered = html_render.render_html(
+            _report("Kanye West", ["One"]),
+            synthesis_md=REPORT_BODY + EXPERT_INVITATIONS["general"] + OLD_LINK_LINE,
+        )
+        self.assertNotIn("I'm now an expert", rendered)
+        self.assertNotIn("Just ask.", rendered)
+        self.assertIn("<strong>The apology letter</strong>", rendered)
+        self.assertIn("Closing pattern stays in the brief", rendered)
+        self.assertIn('<div class="engine-footer">', rendered)
+
+
 class HtmlCliIntegrationTests(unittest.TestCase):
     def test_parser_accepts_html_emit(self):
         args = cli.build_parser().parse_args(["AI agents", "--emit=html"])

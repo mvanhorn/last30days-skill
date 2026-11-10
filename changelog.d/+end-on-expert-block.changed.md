@@ -1,0 +1,1 @@
+Reports now end on the "I'm now an expert on…" invitation and its suggestions; the closing "I have all the links to the … I pulled from. Just ask." line is gone. Saved HTML briefs and the library feed still leave the invitation out, for reports with either ending, and now leave out the comparison invitation too.

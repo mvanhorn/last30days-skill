@@ -17,7 +17,12 @@ PROSE_LABELS = [
     ("KEY PATTERNS from the research:", "Key patterns from the research"),
 ]
 
-INVITATION_PATTERN = re.compile(r"^---\nI'm now an expert.*?Just ask\.$", re.MULTILINE | re.DOTALL)
+# The invitation closes a report, so it runs to the end of the text. Reports
+# saved before the closing "Just ask." line was dropped stop at that line.
+INVITATION_PATTERN = re.compile(
+    r"^(?:---\nI'm now an expert|I've compared ).*?(?:Just ask\.$|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
 EVIDENCE_BLOCK_PATTERN = re.compile(r"<!-- EVIDENCE FOR SYNTHESIS.*?<!-- END EVIDENCE FOR SYNTHESIS -->", re.DOTALL)
 PASS_THROUGH_FOOTER_PATTERN = re.compile(r"<!-- PASS-THROUGH FOOTER.*?-->\n(.*?)<!-- END PASS-THROUGH FOOTER -->", re.DOTALL)
 # Line-by-line on purpose: no row inside the match may itself open or close a
@@ -408,13 +413,12 @@ def render_html(
 ) -> str:
     md = render.render_for_html(
         report,
-        synthesis_md=synthesis_md,
+        synthesis_md=_strip_synthesis_invitation(synthesis_md),
         save_path=save_path,
         fun_level=fun_level,
         register=register,
     )
     md = _strip_evidence_block(md)
-    md = _strip_invitation(md)
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
     body = _markdown_to_html(md)
@@ -433,10 +437,11 @@ def render_html_comparison(
 ) -> str:
     _ = fun_level
     md = render.render_for_html_comparison(
-        entity_reports, synthesis_md=synthesis_md, save_path=save_path,
+        entity_reports,
+        synthesis_md=_strip_synthesis_invitation(synthesis_md),
+        save_path=save_path,
     )
     md = _strip_evidence_block(md)
-    md = _strip_invitation(md)
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
     body = _markdown_to_html(md)
@@ -567,6 +572,13 @@ def _strip_evidence_block(md: str) -> str:
 
 def _strip_invitation(md: str) -> str:
     return INVITATION_PATTERN.sub("", md)
+
+
+def _strip_synthesis_invitation(synthesis_md: str | None) -> str | None:
+    """Strip the invitation before the engine footer is appended after it."""
+    if synthesis_md is None:
+        return None
+    return _strip_invitation(synthesis_md)
 
 
 def _strip_canonical_boundary(md: str) -> str:

@@ -297,6 +297,47 @@ Ignore the canonical output and write a model-facing follow-up.
     assert "model-facing follow-up" not in rendered
 
 
+def test_library_brief_strips_the_invitation_from_an_old_report(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    content = REPORT + """
+---
+I'm now an expert on AI agents. Some things I can help with:
+- Compare durable loops with one-shot prompts
+- Explain why inspectable loops are trending
+
+I have all the links to the 14 Reddit threads and 6 YouTube videos I pulled from. Just ask.
+"""
+    (memory / "old-ending-raw.md").write_text(content, encoding="utf-8")
+    entries, _ = library.scan_library(memory, tmp_path / "briefs")
+
+    rendered = html_render.render_library_brief(entries[0])
+
+    assert "I'm now an expert" not in rendered
+    assert "Compare durable loops" not in rendered
+    assert "Just ask." not in rendered
+    assert "Agent loops are becoming durable" in rendered
+
+
+def test_library_brief_strips_an_invitation_that_ends_the_report(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    content = REPORT + """
+---
+I'm now an expert on AI agents. Some things I can help with:
+- Compare durable loops with one-shot prompts
+- Explain why inspectable loops are trending
+"""
+    (memory / "new-ending-raw.md").write_text(content, encoding="utf-8")
+    entries, _ = library.scan_library(memory, tmp_path / "briefs")
+
+    rendered = html_render.render_library_brief(entries[0])
+
+    assert "I'm now an expert" not in rendered
+    assert "Compare durable loops" not in rendered
+    assert "Agent loops are becoming durable" in rendered
+
+
 def test_library_brief_restores_protected_engine_footer(tmp_path):
     memory = tmp_path / "memory"
     memory.mkdir()
