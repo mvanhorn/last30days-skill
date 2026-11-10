@@ -477,6 +477,7 @@ Rules:
 - use cluster_mode=none for factual or many how-to queries
 - use strict_recent for breaking news and most predictions
 - use debate for comparison/opinion, market for prediction, workflow for how_to, story for breaking_news
+- ENABLEMENT: when the topic asks how to make a named tool or agent control, operate, drive, automate, or use a computer, browser, desktop, laptop, screen, or phone ("X control my computer", "get X to use my browser"), use intent=how_to and cluster_mode=workflow, never comparison. Emit 4-5 subqueries that find what gives the named tool that capability: its own built-in route, plus third-party MCP servers, CLIs, browser or desktop automation tools, and extensions it can use. Keep the named tool in two or three search_query strings, and make at least one search_query capability-only without the named tool (e.g. 'computer use MCP server', 'browser automation CLI agent').
 - search_query should be concise and keyword-heavy
 - ranking_query should read like a natural-language question
 - preserve exact proper nouns and entity strings from the topic
@@ -501,6 +502,17 @@ def _sanitize_plan(
     intent_hint = str(raw.get("intent") or _infer_intent(topic)).strip()
     if intent_hint not in ALLOWED_INTENTS:
         intent_hint = _infer_intent(topic)
+    # The LLM planner reads "best X to control my computer" as a comparison
+    # and plans a strict-recent debate about X. An enablement topic without an
+    # explicit comparison is a how-to; an explicit --plan keeps its intent.
+    enablement_override = (
+        not honor_plan_sources
+        and intent_hint != "how_to"
+        and _is_enablement(topic)
+        and _infer_intent(topic) == "how_to"
+    )
+    if enablement_override:
+        intent_hint = "how_to"
     requested = set(requested_sources or [])
     available = set(available_sources)
     eligible_sources = [
@@ -573,6 +585,8 @@ def _sanitize_plan(
     if intent == "how_to":
         freshness_mode = "evergreen_ok"
     cluster_mode = str(raw.get("cluster_mode") or _default_cluster_mode(intent)).strip()
+    if enablement_override:
+        cluster_mode = _default_cluster_mode(intent)
     if cluster_mode not in ALLOWED_CLUSTER_MODES:
         cluster_mode = _default_cluster_mode(intent)
 
@@ -799,6 +813,53 @@ def _fallback_plan(
 _SLASH_COMPARISON = re.compile(r"\b[A-Z][a-z]{2,}(?:/[A-Z][a-z]{2,})+\b")
 
 
+_DEVICE = r"(?:my|the|your|our)\s+(?:own\s+)?(?:computer|mac|pc|desktop|laptop|browser|screen|phone|terminal)s?\b"
+# Mirrors the hosted worker's detect_enablement_intent (last30days-com).
+# A tool acting on a device the person owns: "grok bot control my computer",
+# "agent that automates the browser". Plain "use the browser" is ordinary use.
+_ENABLEMENT_TARGET_RE = re.compile(
+    r"\b(?P<verb>control(?:s|ling)?|operat(?:e|es|ing)|automat(?:e|es|ing))\s+" + _DEVICE,
+    re.IGNORECASE,
+)
+# A named tool made to act on the device: "get claude to control my browser",
+# "make chatgpt use my mac". The lookahead keeps people and idioms out, as in
+# "let my kid use the phone", "make kids use the computer", "make sure I use".
+_ENABLEMENT_AGENT_RE = re.compile(
+    r"\b(?:get|make|let|have)\s+"
+    r"(?!(?:to|me|us|them|you|sure|my|your|our|his|her|their|the\s+most|kids?|children|teens?|users?|people|customers?|employees?|students?|staff|team)\b)"
+    r"[\w.-]+(?:\s+[\w.-]+){0,2}?\s+(?:to\s+)?"
+    r"(?P<verb>control(?:s|ling)?|operat(?:e|es|ing)|drives?|automat(?:e|es|ing)|uses?)\s+" + _DEVICE,
+    re.IGNORECASE,
+)
+# Asking for news about device control is not asking how to enable it. Bare
+# "latest" or "released" stays allowed: "get the latest Claude to use my mac".
+_ENABLEMENT_NEWS_RE = re.compile(
+    r"\b(?:news|headlines?|announce(?:d|s|ment)|breaking"
+    r"|just\s+(?:shipped|launched|released)"
+    r"|(?:launch(?:ed|es)|release[sd]|unveil(?:ed|s)|ships)\s+(?:a|an|its|new)\b)",
+    re.IGNORECASE,
+)
+# A threat as the actor ("malware controlling my browser") is a security topic.
+# Only words before the verb count, so "...my browser without malware" is fine.
+_ENABLEMENT_THREAT_RE = re.compile(
+    r"\b(?:malware|virus(?:es)?|spyware|ransomware|trojans?|keyloggers?|rootkits?"
+    r"|hack(?:ed|er|ers)|scam(?:s|mers?)?|attackers?|someone|somebody|stranger)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_enablement(topic: str) -> bool:
+    """The topic asks how to give a named tool a capability, such as
+    controlling the person's computer. That is a how-to, not a comparison."""
+    if _ENABLEMENT_NEWS_RE.search(topic):
+        return False
+    for pattern in (_ENABLEMENT_TARGET_RE, _ENABLEMENT_AGENT_RE):
+        for match in pattern.finditer(topic):
+            if not _ENABLEMENT_THREAT_RE.search(topic, 0, match.start("verb")):
+                return True
+    return False
+
+
 def _infer_intent(topic: str) -> str:
     text = topic.lower().strip()
     if re.search(r"\b(vs|versus|compare|compared to|difference between)\b", text):
@@ -808,7 +869,7 @@ def _infer_intent(topic: str) -> str:
         return "comparison"
     if re.search(r"\b(odds|predict|prediction|forecast|chance|probability|will .* win)\b", text):
         return "prediction"
-    if re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install)\b", text):
+    if _is_enablement(topic) or re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install)\b", text):
         return "how_to"
     if re.search(r"\b(what is|what are|who is|who acquired|when did|parameter count|release date)\b", text):
         return "factual"
