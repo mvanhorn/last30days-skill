@@ -591,6 +591,11 @@ def _parse_outcome_prices(market: Dict[str, Any]) -> List[tuple]:
     return result
 
 
+# Longest name _shorten_question keeps when a question has no shorter subject.
+_MAX_QUESTION_NAME_CHARS = 80
+_UNBROKEN_NAME_CHARS = 40
+
+
 def _shorten_question(question: str) -> str:
     """Extract a short display name from a market question.
 
@@ -605,8 +610,18 @@ def _shorten_question(question: str) -> str:
     m = re.match(r"^Will\s+(.+?)\s+", q, re.IGNORECASE)
     if m and len(m.group(1).split()) <= 4:
         return m.group(1).strip()
-    # Fallback: truncate, dropping a leading article so the name doesn't read "an"/"the"
-    text = q[:40] if len(q) > 40 else q
+    # Fallback: the question is the name. Sub-markets of one event often differ
+    # only in their last words ("... by March 31, 2027"), so keep it whole and
+    # cut only a very long one, at a word boundary. Drop a leading article so
+    # the name doesn't read "an"/"the".
+    text = q
+    if len(q) > _MAX_QUESTION_NAME_CHARS:
+        head = q[: _MAX_QUESTION_NAME_CHARS + 1]
+        if " " in head:
+            text = head.rsplit(" ", 1)[0].rstrip(" ,;:-")
+        else:
+            # One unbroken run has no word boundary to cut at.
+            text = q[:_UNBROKEN_NAME_CHARS]
     return re.sub(r"^(?:a|an|the)\s+", "", text, flags=re.I)
 
 

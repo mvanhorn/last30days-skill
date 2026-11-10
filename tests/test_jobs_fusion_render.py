@@ -243,3 +243,60 @@ def test_hiring_analysis_keeps_case_sensitive_job_paths_distinct():
         candidate.url for candidate in report.ranked_candidates
     }
     assert "evidence: 6 roles" in render.render_compact(report)
+
+
+def _stats_report(items_by_source):
+    report = _report(_jobs(1), pool_limit=1)
+    report.items_by_source = items_by_source
+    return report
+
+
+def _posts(count):
+    return [
+        schema.SourceItem(
+            item_id=f"post-{index}",
+            source="x",
+            title=f"Acme update {index}",
+            body="Acme update",
+            url=f"https://x.com/acmefan/status/{index}",
+            author="acmefan",
+        )
+        for index in range(count)
+    ]
+
+
+def test_stats_total_leaves_out_job_roles_and_reports_them_on_their_own_line():
+    threads = [
+        schema.SourceItem(
+            item_id=f"thread-{index}",
+            source="reddit",
+            title=f"Acme thread {index}",
+            body="Acme thread",
+            url=f"https://www.reddit.com/r/acme/comments/{index}",
+            container="acme",
+        )
+        for index in range(45)
+    ]
+    report = _stats_report(
+        {"jobs": _jobs(2900), "x": _posts(100), "reddit": threads}
+    )
+
+    stats = render._render_stats(report)
+
+    assert "- Total evidence: 145 items across 2 sources" in stats
+    assert "- Jobs: 2900 roles" in stats
+
+
+def test_stats_top_voices_names_no_department_or_hiring_system():
+    report = _stats_report({"jobs": _jobs(40), "x": _posts(2)})
+
+    stats = render._render_stats(report)
+
+    assert "- Top voices: @acmefan" in stats
+    assert not any("Engineering" in line or "greenhouse" in line for line in stats)
+
+
+def test_stats_for_a_jobs_only_run_reports_roles_without_an_evidence_total():
+    report = _stats_report({"jobs": _jobs(1)})
+
+    assert render._render_stats(report) == ["## Stats", "", "- Jobs: 1 role", ""]

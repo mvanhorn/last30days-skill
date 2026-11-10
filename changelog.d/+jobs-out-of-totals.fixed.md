@@ -1,0 +1,1 @@
+The `## Stats` block no longer counts job postings as evidence: "Total evidence" and its source count leave them out, "Top voices" no longer lists departments or the hiring system, and open roles get their own `Jobs: N roles` line.
