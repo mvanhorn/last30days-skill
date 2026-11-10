@@ -99,19 +99,37 @@ _REMEDY = (
 # violence against a person, a private individual's personal life. The
 # engine cannot tell a public figure from a private one, so personal-life
 # terms exclude either.
+# A person's death, health, or personal life, and violence against a person.
+# Disease and surgery words alone are not excluded: a drug approval or a
+# health-policy vote is about a subject, not about someone's health.
 _EXCLUDED_RE = re.compile(
     r"\b(?:"
-    r"die|dies|died|dying|death|dead|deceased|pass(?:es)? away|suicide|obituar\w*|funeral"
+    r"died|dying|death|deceased|pass(?:es)? away|suicide|obituar\w*|funeral"
     r"|killed|killing|murder\w*|assassinat\w*|shot|shooting|stabb\w*|kidnap\w*"
     r"|abduct\w*|assault\w*|beaten|executed|raped?"
-    r"|hospitali[sz]\w*|diagnos\w*|illness|cancer|stroke|dementia|overdose\w*|rehab|coma"
-    r"|surgery|terminally ill|health (?:scare|condition|issues?|problems?|crisis)"
-    r"|(?:his|her|their) health|medical (?:leave|condition|emergency)"
-    r"|custody|divorc\w*|paternity|pregnan\w*|affair|dating|marry|marries|married|wedding"
+    r"|hospitali[sz]\w*|diagnosed with|undergo\w* surgery|terminally ill|in a coma"
+    r"|overdose\w*|rehab|health (?:scare|condition|issues?|problems?|crisis)"
+    r"|(?:his|her|their) (?:health|illness|cancer|stroke|dementia|surgery)"
+    r"|medical (?:leave|condition|emergency)"
+    r"|custody|divorc\w*|paternity|pregnan\w*|affair|marry|marries|married|wedding"
     r"|engaged to|broke up with|breaks up with|restraining order"
-    r")\b|'s health\b",
+    r")\b|'s (?:health|illness|cancer|stroke|dementia|surgery)\b",
     re.IGNORECASE,
 )
+# "die" and "dead" are about a person unless the sentence is plainly about a
+# bill, a deal, or a product (bills die in committee; a deal is dead).
+_DIE_RE = re.compile(r"\b(?:die|dies|dead)\b", re.IGNORECASE)
+_NOT_A_PERSON_RE = re.compile(
+    r"\b(?:bills?|legislation|measures?|amendments?|deals?|proposals?|mergers?|projects?"
+    r"|products?|features?|apps?)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_excluded(subject: str) -> bool:
+    if _EXCLUDED_RE.search(subject):
+        return True
+    return bool(_DIE_RE.search(subject)) and not _NOT_A_PERSON_RE.search(subject)
 
 _DECISION_RE = re.compile(
     r"\b(?:ruling|rules?|decision|decides?|vote|verdict|deadline|hearing|approval|sentencing)\b",
@@ -384,7 +402,7 @@ def build(
     seen: set[Any] = set()
 
     def admit(entry: dict[str, Any], identity: Any, subject: str) -> None:
-        if _EXCLUDED_RE.search(subject):
+        if _is_excluded(subject):
             dropped["excluded"] += 1
         elif identity not in seen:
             seen.add(identity)

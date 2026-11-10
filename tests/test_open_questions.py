@@ -179,6 +179,18 @@ def test_a_market_about_a_persons_death_health_or_harm_is_excluded(question):
     assert listing["dropped"]["excluded"] == 1
 
 
+@pytest.mark.parametrize("question", [
+    "Session ends; AI bills HB 2006 and SB 1090 die if not enacted",
+    "FDA decides on a new cancer drug application",
+    "Regulator rules on whether the merger is dead",
+    "Medicare decides on coverage for stroke rehabilitation devices",
+])
+def test_a_question_about_a_bill_a_drug_or_a_deal_is_not_mistaken_for_one_about_a_person(question):
+    listing = _build(host_rows=[_row("decision", question, "2026-12-03", "https://gov.example/item")])
+    assert [e["question"] for e in listing["entries"]] == [question]
+    assert listing["dropped"]["excluded"] == 0
+
+
 def test_an_item_about_a_private_individuals_custody_dispute_is_excluded():
     listing = _build(host_rows=[
         _row("decision", "Judge rules on Jane Doe custody dispute", "2026-12-03",
