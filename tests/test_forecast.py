@@ -1028,6 +1028,14 @@ def test_rehearsal_keeps_the_draft_private_and_the_predictions_grounded():
         "set every `resolve_by` explicitly to a date after it",
         "a codename, never the real name",
         "Criticize the draft, never the person",
+        '`--reactions` exits 2 unless it comes with `--private-file <path>` or `--nothing-private`',
+        '--reactions --private-file "$PRIVATE_FILE"',
+        "never work around the check by dropping `--private-file`",
+        "`[launcher reply]`",
+        "Save one only when the user asks for it after seeing the rehearsal",
+        "A file takes at most 2 predictions",
+        '--forecast-file - --private-file "$PRIVATE_FILE"',
+        'rm -f "$PRIVATE_FILE"',
     ):
         assert rule in rehearsal, rule
     assert "Rehearsal section below" in text.split("\n## ", 1)[0]

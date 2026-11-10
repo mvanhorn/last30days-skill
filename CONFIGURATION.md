@@ -63,6 +63,9 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--trace-exclude <url>` - with `--cached-report --emit=html --synthesis-file <file>`, leave the post at that URL out of the traced report's Spread Timeline; repeat the flag for each rejected post. A platform whose first sighting is excluded shows its next stored sighting or drops out, and excluding every post renders the "no trail to trace" line. The exclusion applies to that render only (the cached report keeps the full trace). Exits 2 when used without a cached HTML re-render, when the cached report is a comparison or was not researched with `--trace-origin`, or when a URL matches no post in the stored trace.
 - `--open-questions <path>` - a host-written file of dated upcoming items (scheduled events, pending decisions, expected releases) that are merged into the report's `## Open Questions` block. See [`--open-questions` flag](#--open-questions-flag).
 - `--forecast-file <path>` - JSON input for the `forecast add` (predictions) and `forecast grade` (verdicts) ledger commands; `-` reads stdin. Any other use exits 2. See [Forecast ledger](#forecast-ledger-next30days).
+- `--reactions` - rehearsal research: retrieve more comments per thread and add a `## Reactions` block of top-voted comments grouped by venue. Requires `--private-file <path>` or `--nothing-private`. See [`--reactions` and `--private-file` flags](#--reactions-and---private-file-flags).
+- `--private-file <path>` - a JSON file of names and draft text that must never leave the machine; the run exits 2 before any request or write when an input contains one. See [`--reactions` and `--private-file` flags](#--reactions-and---private-file-flags).
+- `--nothing-private` - with `--reactions`, states that the draft being rehearsed holds nothing private, so no `--private-file` is needed.
 - `--drill <target>` - deep follow-up over the fresh `~/.config/last30days/last-report.json` cache. Accepts a 1-based index (`--drill "cluster 3"` or `--drill "3"`) or a fuzzy cluster title/entity description. It re-fetches only sources that contributed to the matched cluster, enables their deep comment/transcript enrichment paths, merges/dedupes the evidence, and replaces the cache so drills can chain. Run it without a positional topic; if the cache is absent or expired, run a normal research pass first.
 - `--verify-freshness` - opt into an act-time verification pass for conservatively extracted, source-grounded claims (Polymarket odds/end dates, GitHub stars, StockTwits sentiment ratios, and explicit status assertions). With a topic, verification runs after research; without a topic, it re-verifies the fresh `last-report.json` cache without repeating research. Verdicts are `current`, `stale`, `contradicted`, or `unsupported` and include evidence timestamps. Set `LAST30DAYS_VERIFY_FRESHNESS=on` in `.env` to make the pass default for normal research runs.
 - `--save-suffix <name>` - distinguish runs of the same topic (e.g. per client: `--save-suffix=acme`).
@@ -610,6 +613,44 @@ The flag exits `2` when combined with `--hiring-signals`, discovery, `--drill`, 
 
 ```bash
 python3 skills/last30days/scripts/last30days.py "<topic>" --open-questions /tmp/open-questions.json
+```
+
+### `--reactions` and `--private-file` flags
+
+These two flags serve launch rehearsal: the user has a draft they have not shipped, and the skill researches how comparable launches from the last 30 days were received. The skill passes them itself; the direct form is for scripting and engine testing.
+
+**`--reactions`** raises comment retrieval for the run and adds a `## Reactions` block inside the evidence envelope (one `## Reactions: <entity>` block per entity on a comparison run):
+
+- Retrieval: up to 40 comments per Reddit thread on the keyless path (nested replies included) and up to 40 top-level comments per Hacker News story, plus up to 3 nested replies by the story's own author.
+- The block groups comments by venue (`### r/<subreddit>`, `### Hacker News`, and so on), top-voted first: up to 10 per thread and 25 per venue. Each line carries the comment's own link and its vote count. Hacker News comments carry no points, so they read `points unavailable` and keep the site's own order.
+- A reply written by the post's own author is marked `[launcher reply]` and is kept beyond the per-thread and per-venue limits (up to 3 per thread). On Reddit this needs the post's author, which the listing tiers report and the site-search tier does not.
+- Comments are listed, not grouped by theme.
+- The run does not save a brief to a save directory configured by `LAST30DAYS_MEMORY_DIR`; pass `--save-dir <path>` on the command line to save one.
+- It requires exactly one of `--private-file <path>` or `--nothing-private`, and exits `2` with neither or both. It also exits `2` when combined with `--hiring-signals`, discovery, `--drill`, `--cached-report`, an administrative or inspection command, an emit mode other than `compact` or `md`, or the hosted backend (`LAST30DAYS_API_BASE`).
+
+**`--private-file <path>`** names a JSON file holding what must stay on the machine:
+
+```json
+{
+  "terms": ["Project Falcon", "Example Labs"],
+  "draft": "The full text of the unreleased draft."
+}
+```
+
+Either key may be left out, but not both. Each term needs at least 3 characters once spaces, hyphens, underscores, and dots are removed.
+
+Before any request, reasoning-provider call, or write, the engine checks the topic, every flag value, the parsed contents of `--plan`, `--competitors-plan`, `--x-posts`, `--open-questions`, and the `--forecast-file` payload, and every resolved handle, subreddit, repository, and site. It exits `2` when one of them:
+
+- contains a term. Matching ignores case and ignores spaces, hyphens, underscores, and dots on both sides, so `Project Falcon` is caught as `projectfalcon`, `project-falcon`, or `project_falcon` in a handle, subreddit, hashtag, or domain.
+- shares 5 consecutive words with the draft (the whole draft when it is shorter than 5 words). Searching for the product category passes; quoting a sentence does not.
+
+The refusal names the input that was refused and never the text that matched. The engine never logs, caches, echoes, or stores the file's contents. A run given the file writes no report cache (`last-report.json`), no per-topic open-questions file, and no brief, even when a save directory is configured, and it exits `2` when combined with `--output`, `--publish-html`, or `--store`. An unreadable, malformed, or empty file exits `2` without running.
+
+The flag applies to topic research and to `forecast add`. Passed to discovery, `--drill`, `--cached-report`, or an administrative or inspection command, it exits `2`.
+
+```bash
+python3 skills/last30days/scripts/last30days.py "Widgetly vs Gadgetron" --reactions --private-file "$PRIVATE_FILE"
+python3 skills/last30days/scripts/last30days.py forecast add --forecast-file forecast.json --private-file "$PRIVATE_FILE"
 ```
 
 ### `setup --store-key`

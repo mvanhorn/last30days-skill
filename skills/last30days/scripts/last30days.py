@@ -53,6 +53,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, open_questions, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
 from lib.private_files import write_private_text
+from lib import private_terms
 
 atexit.register(subproc.cleanup_children)
 
@@ -869,6 +870,40 @@ def build_parser() -> argparse.ArgumentParser:
             "releases, each with a date and an http(s) link) the hosting model "
             "found; merged into the report's Open Questions block. Applies to "
             "topic research with --emit=compact or --emit=md."
+        ),
+    )
+    parser.add_argument(
+        "--reactions",
+        action="store_true",
+        help=(
+            "Rehearsal research: retrieve more comments per thread and add a "
+            "Reactions block of top-voted comments grouped by venue (one per "
+            "entity on a comparison). Applies to topic research with "
+            "--emit=compact or --emit=md, and requires --private-file or "
+            "--nothing-private. Not saved to the save directory unless "
+            "--save-dir is passed on the command line."
+        ),
+    )
+    parser.add_argument(
+        "--private-file",
+        dest="private_file",
+        metavar="PATH",
+        help=(
+            "JSON file {\"terms\": [...], \"draft\": \"...\"} holding names "
+            "and draft text that must never leave this machine. The run exits "
+            "2 before any request or write when the topic, a flag value, a "
+            "host-written input file, or a resolved handle contains a term or "
+            "a run of the draft's words; nothing from the run is cached or "
+            "saved. Applies to topic research and 'forecast add'."
+        ),
+    )
+    parser.add_argument(
+        "--nothing-private",
+        dest="nothing_private",
+        action="store_true",
+        help=(
+            "With --reactions: state that the draft being rehearsed holds "
+            "nothing private, so the run needs no --private-file"
         ),
     )
     parser.add_argument("--web-backend", default="auto",
@@ -3122,7 +3157,13 @@ def _open_questions_apply(args: argparse.Namespace) -> bool:
     The block lives in the compact output, so other emit modes skip the work;
     a hiring-signals run is about jobs, not the topic's upcoming dates.
     """
-    return args.emit in {"compact", "md"} and not args.hiring_signals
+    return (
+        args.emit in {"compact", "md"}
+        and not args.hiring_signals
+        # A rehearsal researches comparable launches, not the user's topic:
+        # their open questions are not the draft's.
+        and not args.reactions
+    )
 
 
 def _open_questions_misuse(
@@ -3161,6 +3202,99 @@ def _reject_open_questions() -> int:
         "commands, or other emit modes.\n"
     )
     return 2
+
+
+# The loaded --private-file for this command, or None. Module-level because
+# _forecast_private_refusal is handed only the payload.
+_private_guard: private_terms.Guard | None = None
+
+
+def _rehearsal_flags_misuse(
+    args: argparse.Namespace,
+    topic: str,
+    command_topic: str,
+    forecast_command: tuple[str, int] | None,
+) -> str | None:
+    """Why --reactions, --private-file, or --nothing-private cannot be used
+    here, or None.
+
+    Checked before every dispatch so none is accepted and ignored: a host that
+    passed the private file to a command that never checks it would believe
+    the draft was guarded, and a missing Reactions block would read as "nobody
+    commented".
+    """
+    if not (args.reactions or args.private_file or args.nothing_private):
+        return None
+    not_research = bool(
+        not topic
+        or args.welcome
+        or args.resolve_save_dir
+        or args.preflight
+        or args.diagnose
+        or args.cached_report
+        or args.discover is not None
+        or args.drill
+        or forecast_command is not None
+        or command_topic in {"setup", "doctor", "library feed", "queue list"}
+        or command_topic.startswith(("library search", "queue cover"))
+    )
+    if args.reactions or args.nothing_private:
+        if not_research or args.emit not in {"compact", "md"} or args.hiring_signals:
+            return (
+                "--reactions applies to topic research runs with --emit=compact "
+                "or --emit=md; it cannot be combined with --hiring-signals, "
+                "discovery, drill, --cached-report, administrative or inspection "
+                "commands, or other emit modes."
+            )
+        if not args.reactions:
+            return "--nothing-private only applies with --reactions."
+        if bool(args.private_file) == args.nothing_private:
+            return (
+                "--reactions requires exactly one of --private-file <path> (the "
+                "draft and the names to keep private) or --nothing-private (the "
+                "draft holds nothing private)."
+            )
+    elif not_research and not (forecast_command and forecast_command[0] == "add"):
+        return (
+            "--private-file applies to topic research runs and 'forecast add'; "
+            "it cannot be combined with discovery, drill, --cached-report, or "
+            "administrative or inspection commands."
+        )
+    if args.private_file and (args.output or args.publish_html or args.store):
+        return (
+            "--private-file cannot be combined with --output, --publish-html, "
+            "or --store: a run given the private file is never saved."
+        )
+    return None
+
+
+def _private_refused(label: str, value: object) -> bool:
+    """Refuse ``value`` when it matches the private file.
+
+    The message names the input and never what matched.
+    """
+    if _private_guard is None or not private_terms.contains(_private_guard, value):
+        return False
+    sys.stderr.write(
+        f"[last30days] Refused: {label} contains a private term or a run of "
+        "the draft's words (--private-file). The run stopped before sending "
+        "or writing it.\n"
+    )
+    return True
+
+
+def _private_args_refused(parser: argparse.ArgumentParser, args: argparse.Namespace) -> bool:
+    """Check every argument value the host supplied against the private file."""
+    for action in parser._actions:
+        if action.dest in {"private_file", "help"}:
+            continue
+        value = getattr(args, action.dest, None)
+        if action.dest == "topic":
+            if _private_refused("the topic", " ".join(value or [])):
+                return True
+        elif _private_refused(f"the value of {action.option_strings[0]}", value):
+            return True
+    return False
 
 
 def _reject_trace_exclude(detail: str = "") -> int:
@@ -3425,8 +3559,13 @@ def _forecast_private_refusal(payload: dict) -> str | None:
 
     The one place ``forecast add`` hands the host-written payload to a privacy
     check before anything is validated or written. A rehearsal's private-terms
-    check plugs in here; with none wired, every payload passes.
+    check plugs in here; with no --private-file, every payload passes.
     """
+    if _private_guard is not None and private_terms.contains(_private_guard, payload):
+        return (
+            "the forecast file contains a private term or a run of the draft's "
+            "words (--private-file); nothing was written"
+        )
     return None
 
 
@@ -3991,6 +4130,10 @@ def _main(
             return _reject_trace_origin()
         if args.open_questions is not None:
             return _reject_open_questions()
+        rehearsal_misuse = _rehearsal_flags_misuse(args, "", "", None)
+        if rehearsal_misuse:
+            sys.stderr.write(f"[last30days] {rehearsal_misuse}\n")
+            return 2
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
         return 0
@@ -4021,6 +4164,24 @@ def _main(
         return _reject_trace_origin()
     if _open_questions_misuse(args, topic, command_topic, forecast_command is not None):
         return _reject_open_questions()
+    rehearsal_misuse = _rehearsal_flags_misuse(args, topic, command_topic, forecast_command)
+    if rehearsal_misuse:
+        sys.stderr.write(f"[last30days] {rehearsal_misuse}\n")
+        return 2
+    global _private_guard
+    _private_guard = None
+    if args.private_file:
+        # Loaded and applied here, before configuration, any provider call,
+        # and any retrieval, so a refused run has contacted nothing.
+        try:
+            _private_guard = private_terms.load(args.private_file)
+        except private_terms.PrivateFileError as exc:
+            sys.stderr.write(
+                f"[last30days] --private-file {exc}; nothing was sent or written.\n"
+            )
+            return 2
+        if _private_args_refused(parser, args):
+            return 2
     if args.resolve_save_dir:
         print(env.resolve_memory_dir(args.save_dir))
         return 0
@@ -4032,6 +4193,8 @@ def _main(
             open_question_rows = open_questions.read_envelope(args.open_questions)
         except open_questions.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
+            return 2
+        if _private_refused("the --open-questions file", open_question_rows):
             return 2
     if args.x_posts is not None and _looks_inline_json(args.x_posts):
         sys.stderr.write(
@@ -4111,6 +4274,8 @@ def _main(
         except ValueError as exc:
             sys.stderr.write(f"[Planner] Invalid --plan schema: {exc}.\n")
             raise SystemExit(2)
+        if _private_refused("the --plan input", external_plan):
+            return 2
 
     research_options = _cache_research_options(
         args, config, supplied_only=args.cached_report,
@@ -4126,6 +4291,15 @@ def _main(
     if args.save_dir is None:
         env_val = os.environ.get("LAST30DAYS_MEMORY_DIR")
         args.save_dir = env_val if env_val is not None else config.get("LAST30DAYS_MEMORY_DIR")
+    if forecast_command is None and args.save_dir and (
+        _private_guard is not None
+        or (args.reactions and "save_dir" not in args._explicit_options)
+    ):
+        # A rehearsal is saved only when the user asks after seeing it: a
+        # reactions run ignores a configured save directory, and a run given
+        # the private file is never saved.
+        sys.stderr.write("[last30days] Rehearsal run: not saving a brief.\n")
+        args.save_dir = None
 
     # Surface SSH-routing config as an env var so library modules (e.g.
     # youtube_yt) can read it without taking a config dependency. This
@@ -4515,6 +4689,12 @@ def _main(
                 "backend; run locally or omit --open-questions.\n"
             )
             return 2
+        if args.reactions:
+            sys.stderr.write(
+                "[last30days] --reactions is not supported by the hosted "
+                "backend; run locally or omit --reactions.\n"
+            )
+            return 2
         from lib import hosted
         depth = "deep" if args.deep else "quick" if args.quick else "default"
         try:
@@ -4592,6 +4772,8 @@ def _main(
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
             return 2
+        if _private_refused("the --x-posts file", x_posts_envelope):
+            return 2
     if args.diagnose:
         diag = pipeline.diagnose(
             config, requested_sources, safe=True,
@@ -4609,6 +4791,8 @@ def _main(
         _attach_entity_envelopes(comp_plan, args)
     except x_envelope.EnvelopeContractError as exc:
         sys.stderr.write(f"[last30days] {exc.message}\n")
+        return 2
+    if _private_refused("the --competitors-plan input", comp_plan):
         return 2
 
     if not topic:
@@ -4712,6 +4896,11 @@ def _main(
         config["_max_per_source"] = args.max_per_source
     if args.max_source_fetches is not None:
         config["_max_source_fetches"] = args.max_source_fetches
+    if args.reactions:
+        # Read by the Reddit and Hacker News comment passes; the comparison
+        # path inherits it the same way as the caps above.
+        config["_reactions"] = True
+    private_refusals: list[str] = []
     try:
         x_related = [h.strip() for h in args.x_related.split(",") if h.strip()] if args.x_related else None
         subreddits = [s.strip().removeprefix("r/") for s in args.subreddits.split(",") if s.strip()] if args.subreddits else None
@@ -4810,6 +4999,12 @@ def _main(
                 sys.stderr.write(f"[Resolve] GitHub user from {official_site}: @{args.github_user}\n")
         if args.no_x_handle and not args.x_handle:
             sys.stderr.write(f"[Resolve] No X handle: {args.no_x_handle.strip()}\n")
+        if _private_refused("a resolved handle, subreddit, repository, or site", [
+            args.x_handle, args.github_user, args.github_repo, subreddits,
+            args.trustpilot_domain, official_site,
+        ]):
+            progress.end_processing()
+            return 2
         x_decision_signal = _x_handle_decision_signal(
             args, topic, external_plan, diag.get("available_sources") or [],
         )
@@ -5051,6 +5246,9 @@ def _main(
                 )
                 return 2
             discovered = distinct_peers
+            if _private_refused("a compared entity's name", discovered):
+                progress.end_processing()
+                return 2
             config["_comparison_entity_count"] = 1 + len(discovered)
 
             sys.stderr.write(
@@ -5113,6 +5311,14 @@ def _main(
                     resolved["trustpilot_domain"] = r.get("trustpilot_domain", "") or ""
                     resolved["context"] = r.get("context", "") or ""
                 kwargs = subrun_kwargs_for(entity, plan_entry, resolved=resolved)
+                if _private_refused("a handle, subreddit, repository, or site resolved for a compared entity", [
+                    kwargs[key] for key in (
+                        "x_handle", "x_related", "subreddits", "github_user",
+                        "github_repos", "trustpilot_domain",
+                    )
+                ]):
+                    private_refusals.append(entity)
+                    raise RuntimeError("refused by --private-file")
                 # Record effective per-entity targeting for the Resolved block.
                 resolved_effective = {
                     "entity": entity,
@@ -5170,6 +5376,9 @@ def _main(
             # succeeded silently promoted a competitor to be the subject: the
             # report was headed by that peer, saved under its slug, and the
             # topic the user actually asked about went unmentioned.
+            if private_refusals:
+                progress.end_processing()
+                return 2
             survived = {label for label, _ in entity_reports}
             dropped = [
                 label for label in (topic, *discovered) if label not in survived
@@ -5256,16 +5465,22 @@ def _main(
                     and (not args.search or "polymarket" in (requested_sources or []))
                 ),
             )
-            open_questions.store(original_topic, listing["entries"])
+            if _private_guard is None:
+                open_questions.store(original_topic, listing["entries"])
         except Exception as exc:
             sys.stderr.write(
                 f"[last30days] warning: could not build the open questions list: {exc}\n"
             )
-    _write_last_run(
-        original_topic, report, entity_reports=entity_reports,
-        x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
-        research_options=research_options,
-    )
+    if args.reactions:
+        for reactions_report in (report, *(entity for _label, entity in entity_reports or [])):
+            reactions_report.artifacts["reactions"] = True
+    if _private_guard is None:
+        # A run given the private file leaves no report cache behind.
+        _write_last_run(
+            original_topic, report, entity_reports=entity_reports,
+            x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
+            research_options=research_options,
+        )
     if _open_questions_apply(args):
         # After the cache write: the scaffold belongs to this run's output,
         # so a cached re-render carries none.
@@ -5280,7 +5495,7 @@ def _main(
         or config.get("LAST30DAYS_STORE")
         or ""
     ).lower()
-    if args.store or _store_env in ("1", "true", "yes"):
+    if (args.store or _store_env in ("1", "true", "yes")) and _private_guard is None:
         counts = persist_report(report, store_db=_scoped_store_db(args))
         sys.stderr.write(
             f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"

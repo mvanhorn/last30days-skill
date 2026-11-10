@@ -60,6 +60,7 @@ from . import (
     providers,
     query,
     reddit,
+    reddit_enrich,
     reddit_listing,
     reddit_public,
     relevance,
@@ -5610,6 +5611,13 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         with http.capture_failures() as failures, \
              http.fixture_module_capture(module_backed):
             items, artifact = _retrieve_stream_impl(*args, **kwargs)
+            if (
+                source == "reddit"
+                and not kwargs.get("mock")
+                and (kwargs.get("config") or {}).get("_reactions")
+            ):
+                # Reactions run: widen each enriched thread's comment list.
+                reddit_enrich.deepen_comments(items)
     except Exception as exc:
         recorded_exc = exc
         if failures and not getattr(exc, "outcome_state", None):
@@ -6638,7 +6646,9 @@ def _retrieve_stream_impl(
         items = hackernews.parse_hackernews_response(result, query=subquery.search_query)
         # Attach top-level comments to the highest-point stories (bounded by
         # hackernews.ENRICH_LIMITS per depth).
-        items = hackernews.enrich_top_stories(items, depth=depth)
+        items = hackernews.enrich_top_stories(
+            items, depth=depth, deep_comments=bool(config.get("_reactions")),
+        )
         return items, _result_outcome_artifact(source, result)
     if source == "devto":
         relevance_topic = raw_topic or topic or subquery.search_query

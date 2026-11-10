@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from . import http, dates
+from . import http, dates, reactions
 
 
 def extract_reddit_path(url: str) -> Optional[str]:
@@ -320,3 +320,53 @@ def enrich_reddit_item_sc(
     item["comment_insights"] = extract_comment_insights(top_comments)
 
     return item
+
+
+def deepen_comments(
+    items: List[Dict[str, Any]],
+    limit: int = reactions.THREAD_COMMENT_LIMIT,
+) -> None:
+    """Widen each already-enriched thread's comments for a reactions run.
+
+    Re-reads the thread's comment page (served from the per-command memo when
+    the keyless path already fetched it) and keeps up to ``limit`` comments,
+    nested replies included, instead of the default handful. A comment written
+    by the post's own author is flagged ``by_post_author`` when the item
+    carries the post's author. A thread whose page yields nothing keeps the
+    comments it had. Never raises.
+    """
+    from . import reddit_shreddit
+
+    for item in items:
+        if not item.get("top_comments"):
+            continue
+        ref = reddit_shreddit.extract_post_ref(item.get("url", ""))
+        if not ref:
+            continue
+        try:
+            html_text = http.reddit_keyless_get_text(
+                reddit_shreddit._svc_url(*ref),
+                timeout=reddit_shreddit.SVC_TIMEOUT,
+                accept="text/html",
+            )
+            comments = reddit_shreddit.parse_comments(html_text, limit=limit) if html_text else []
+        except Exception:
+            continue
+        if len(comments) <= len(item["top_comments"]):
+            comments = item["top_comments"]
+        post_author = str(item.get("author") or "")
+        item["top_comments"] = [
+            {
+                "score": c.get("score", 0),
+                "date": c.get("date"),
+                "author": c.get("author", ""),
+                "excerpt": c.get("excerpt", ""),
+                "url": c.get("url", ""),
+                **(
+                    {"by_post_author": True}
+                    if post_author not in ("", "[deleted]") and c.get("author") == post_author
+                    else {}
+                ),
+            }
+            for c in comments
+        ]

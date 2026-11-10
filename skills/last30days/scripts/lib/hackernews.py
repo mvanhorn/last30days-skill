@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import re
 
-from . import http, log
+from . import http, log, reactions
 from .query import extract_core_subject
 from .relevance import token_overlap_relevance
 
@@ -375,12 +375,29 @@ def _order_comments_by_kids(
     return ordered
 
 
-def _fetch_item_comments(object_id: str, max_comments: int = 5) -> Dict[str, Any]:
+def _author_replies(children: List[Dict[str, Any]], author: str) -> List[Dict[str, Any]]:
+    """Nested replies written by the story's own author, in thread order."""
+    found: List[Dict[str, Any]] = []
+    for child in children:
+        for reply in child.get("children") or []:
+            if reply.get("text") and reply.get("author") == author:
+                found.append(reply)
+            found.extend(_author_replies([reply], author))
+    return found
+
+
+def _fetch_item_comments(
+    object_id: str,
+    max_comments: int = 5,
+    author_replies: bool = False,
+) -> Dict[str, Any]:
     """Fetch top-level comments for a story from Algolia items endpoint.
 
     Args:
         object_id: HN story ID
         max_comments: Max comments to return
+        author_replies: Also return the story author's nested replies (a
+            reactions run reads what the launcher answered)
 
     Returns:
         Dict with 'comments' list and 'comment_insights' list.
@@ -413,7 +430,11 @@ def _fetch_item_comments(object_id: str, max_comments: int = 5) -> Dict[str, Any
     # A quote links to where it was said: the comment's own permalink, else the
     # story's discussion page -- never the article URL.
     discussion_url = _hn_item_url(object_id)
-    for c in real_comments[:max_comments]:
+    selected = real_comments[:max_comments]
+    story_author = data.get("author") or ""
+    if author_replies and story_author:
+        selected += _author_replies(selected, story_author)[:reactions.LAUNCHER_REPLY_LIMIT]
+    for c in selected:
         text = _strip_html(c.get("text", ""))
         excerpt = text[:300] + "..." if len(text) > 300 else text
         comment_id = c.get("id")
@@ -434,12 +455,15 @@ def _fetch_item_comments(object_id: str, max_comments: int = 5) -> Dict[str, Any
 def enrich_top_stories(
     items: List[Dict[str, Any]],
     depth: str = "default",
+    deep_comments: bool = False,
 ) -> List[Dict[str, Any]]:
     """Fetch comments for top N stories by points.
 
     Args:
         items: Parsed HN items
         depth: Research depth (controls how many to enrich)
+        deep_comments: Reactions run: fetch more comments per story, plus the
+            story author's nested replies
 
     Returns:
         Items with top_comments and comment_insights added.
@@ -468,6 +492,7 @@ def enrich_top_stories(
                 executor,
                 _fetch_item_comments,
                 items[idx]["id"],
+                *((reactions.THREAD_COMMENT_LIMIT, True) if deep_comments else ()),
             ): idx
             for idx in to_enrich
         }

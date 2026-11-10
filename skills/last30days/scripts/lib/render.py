@@ -17,6 +17,7 @@ from . import (
     hiring_signals,
     library_index,
     meta_ads,
+    reactions,
     registers,
     relevance,
     rerank,
@@ -1005,6 +1006,9 @@ def render_compact(
         # Outside the audience branch: a requested trace is evidence for every
         # register, not a default-voice section.
         lines.extend(["", *_render_spread_timeline(report)])
+    reaction_lines = _render_reactions(evidence_report)
+    if reaction_lines:
+        lines.extend(["", *reaction_lines])
     open_questions = _render_open_questions(report)
     if open_questions:
         lines.extend(["", *open_questions])
@@ -1638,6 +1642,13 @@ def render_comparison_multi(
                 fun_params=fun_params,
             )
         )
+
+    for label, report in entity_reports:
+        reaction_lines = _render_reactions(
+            schema.without_sources(report, {"corpus"}), label=label,
+        )
+        if reaction_lines:
+            lines.extend([*reaction_lines, ""])
 
     # One list for the whole comparison, stored on the main entity's report.
     open_questions = _render_open_questions(main_report)
@@ -4110,6 +4121,51 @@ def _render_top_comments(
             f"— {attribution}{vote_part}{url_part}"
         )
     return lines
+
+
+def _render_reactions(report: schema.Report, *, label: str | None = None) -> list[str]:
+    """Per-venue top-voted comments for a reactions run (``--reactions``).
+
+    One ``###`` block per venue, each comment with its own link and its vote
+    count; a source that reports no count says so instead of showing a number.
+    A reply by the post's own author is marked as the launcher's. Comments are
+    listed by votes and left ungrouped: the reading model finds the recurring
+    objections.
+    """
+    if not report.artifacts.get("reactions"):
+        return []
+    lines = [f"## Reactions: {_safe_title(label)}" if label else "## Reactions", ""]
+    venues = reactions.collect(
+        item for cand in report.ranked_candidates for item in cand.source_items
+    )
+    if not venues:
+        # Said outright: a requested block that is silently absent would read
+        # as "nobody objected".
+        return [*lines, "No comments were retrieved for this run."]
+    for venue in venues:
+        rows = venue["reactions"]
+        lines.extend([
+            f"### {_safe_title(venue['venue'])} "
+            f"({len(rows)} comments from {venue['threads']} "
+            f"{'thread' if venue['threads'] == 1 else 'threads'})",
+            "",
+        ])
+        for row in rows:
+            vote_label = _vote_label_for(row["source"])
+            votes = (
+                f"{row['score']} {vote_label}" if row["score"] is not None
+                else f"{vote_label} unavailable"
+            )
+            body = _format_untrusted_evidence(row["text"], 300, continuation_indent="  ")
+            marker = "[launcher reply] " if row["launcher"] else ""
+            url_part = f": {_defang_engine_sentinels(row['url'])}" if row["url"] else ""
+            lines.append(
+                f'- {marker}"{body}" by '
+                f"{_safe_title(_comment_attribution(row['source'], row['author']))} "
+                f'({votes}) on "{_safe_title(_truncate(row["thread_title"], 80))}"{url_part}'
+            )
+        lines.append("")
+    return lines[:-1]
 
 
 def _truncate(text: str, limit: int) -> str:
