@@ -60,6 +60,7 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--finalize` - leg 3: apply optional host angles to the pending report, render the final discovery brief, save artifacts, and record the topic queue (retries are idempotent - the pending file stays in place within its TTL). Offline; requires `--discover`.
 - `--angles <path>` - optional host angles file for `--discover --finalize` (`{"bundle_id": "...", "angles": [{"id", "podcast", "x_article"}, ...]}`, sentences capped at 200 chars); omitting it ships the brief without angle lines. All three protocol legs must share one `--save-dir` (handoff files live there, else in `~/.config/last30days/`); contract failures (missing/stale/unbound handoff files) exit 2 with the remedy on stderr, and `--mock` protocol legs require `--save-dir` to stay side-effect-free.
 - `--trace-origin` - add a `## Spread Timeline` block to a single-topic `--emit=compact` or `--emit=md` report: the earliest post found, each platform's first sighting in date order with the gap between them, the peak day, the biggest single post, and the limits of the trace. Built only from dated, on-topic posts already in the run, so it costs no extra requests; pair it with `--lookback-days 90` when the trail reaches the start of the window. Exits 2 when combined with comparison, discovery, drill, an administrative command, or another emit mode. The skill adds it for "where did this start" requests.
+- `--open-questions <path>` - a host-written file of dated upcoming items (scheduled events, pending decisions, expected releases) that are merged into the report's `## Open Questions` block. See [`--open-questions` flag](#--open-questions-flag).
 - `--forecast-file <path>` - JSON input for the `forecast add` (predictions) and `forecast grade` (verdicts) ledger commands; `-` reads stdin. Any other use exits 2. See [Forecast ledger](#forecast-ledger-next30days).
 - `--drill <target>` - deep follow-up over the fresh `~/.config/last30days/last-report.json` cache. Accepts a 1-based index (`--drill "cluster 3"` or `--drill "3"`) or a fuzzy cluster title/entity description. It re-fetches only sources that contributed to the matched cluster, enables their deep comment/transcript enrichment paths, merges/dedupes the evidence, and replaces the cache so drills can chain. Run it without a positional topic; if the cache is absent or expired, run a normal research pass first.
 - `--verify-freshness` - opt into an act-time verification pass for conservatively extracted, source-grounded claims (Polymarket odds/end dates, GitHub stars, StockTwits sentiment ratios, and explicit status assertions). With a topic, verification runs after research; without a topic, it re-verifies the fresh `last-report.json` cache without repeating research. Verdicts are `current`, `stale`, `contradicted`, or `unsupported` and include evidence timestamps. Set `LAST30DAYS_VERIFY_FRESHNESS=on` in `.env` to make the pass default for normal research runs.
@@ -577,6 +578,37 @@ Limits: 8 MiB, strict UTF-8, at most 20 calls, 500 rows per call, 1,000 rows in 
 
 ```bash
 python3 skills/last30days/scripts/last30days.py "<topic>" --x-posts /tmp/x-posts.json
+```
+
+### `--open-questions` flag
+
+Every topic research run with `--emit=compact` or `--emit=md` (single topic or comparison) prints an `## Open Questions` block inside the evidence envelope: the dated, unresolved items a prediction can be made on. Each entry has an id (`Q1`, `Q2`, ...), a kind (`market`, `event`, `decision`, `release`), the question, a date, and a source link. The list is built from three places:
+
+- **Prediction markets** the run retrieved. The engine fills the question, outcome labels and prices, closing date, and a link to the specific market (`https://polymarket.com/event/<event>/<market>`).
+- **A host envelope**, passed with `--open-questions <path>`: dated items the hosting model found in its own web search.
+- **The engine's own forward-looking web search**, when a web backend is configured (see [Web search backend priority](#web-search-backend-priority)) and the run's own web search reported cleanly. It runs three extra queries per topic (upcoming dates and deadlines, scheduled announcements and release dates, expected decisions and votes) inside a 20-second budget. A result is kept only when its title or snippet names an explicit future calendar date; its publication date is never used. `--mock` runs skip it.
+
+The envelope is a JSON file in the `last30days-open-questions/1` shape:
+
+```json
+{
+  "schema": "last30days-open-questions/1",
+  "items": [
+    {"kind": "event", "question": "Widget 3 launch keynote", "date": "2026-12-01", "url": "https://example.com/keynote"}
+  ]
+}
+```
+
+`kind` is `event`, `decision`, or `release` (markets come only from the engine). Limits: 256 KiB, UTF-8, at most 100 items. An unreadable, oversized, or malformed file exits `2` before any retrieval. Rows are lenient: a row with an unknown kind, no question, a link that is not `http` or `https`, no parseable date, or a date that has passed is dropped and counted in the block's warning line, and the rest are kept.
+
+Items about a death, a person's health, violence against a person, or a personal matter such as a custody dispute are never listed. The same link and date from two places appears once, the list is ordered soonest first and capped at 12 entries, and a market and a dated item on the same question are both kept and point at each other. A run with nothing to list prints the block with an explicit empty line. Discovery, `--drill`, and `--hiring-signals` runs print no block.
+
+Each run also writes the list to an owner-only file for that topic under `~/.config/last30days/open-questions/`, valid for the report-cache lifetime (`LAST30DAYS_REPORT_CACHE_TTL_SECONDS`). A run on another topic does not replace it.
+
+The flag exits `2` when combined with `--hiring-signals`, discovery, `--drill`, an administrative or inspection command, an emit mode other than `compact` or `md`, or the hosted backend (`LAST30DAYS_API_BASE`).
+
+```bash
+python3 skills/last30days/scripts/last30days.py "<topic>" --open-questions /tmp/open-questions.json
 ```
 
 ### `setup --store-key`

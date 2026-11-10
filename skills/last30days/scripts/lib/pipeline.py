@@ -51,6 +51,7 @@ from . import (
     log,
     meta_ads,
     normalize,
+    open_questions,
     permission_preflight,
     perplexity,
     pinterest,
@@ -5111,6 +5112,139 @@ def trace_origin(
         extension.update(stopped="failed", failed_sources=sources)
         timeline = build([*candidates, *earlier], range_from, extension)
     report.artifacts["origin_trace"] = timeline
+
+
+# Forward-looking web pass for the Open Questions list: one wall-clock budget
+# for every query of the pass. A caller sharing a larger ceiling passes its share.
+OPEN_QUESTIONS_WEB_BUDGET_SECONDS = 20.0
+_OPEN_QUESTIONS_MAX_WORKERS = 6
+
+
+def _searched_web_cleanly(report: schema.Report) -> bool:
+    """Whether this run used the ``grounding`` source and it reported in full."""
+    outcome = report.source_status.get("grounding")
+    return bool(
+        outcome is not None and outcome.attempted
+        and outcome.state in render._CLEAN_SOURCE_STATES
+    )
+
+
+def _needs_market_lookup(report: schema.Report) -> bool:
+    """Whether a real run finished without ever asking Polymarket.
+
+    Query plans often leave Polymarket out (quick runs, concept topics), but
+    live markets are the best open questions a topic has, so the list asks
+    for them itself. A run that already attempted Polymarket is not asked
+    twice, and a report with no source outcomes at all did no retrieval.
+    """
+    if not report.source_status:
+        return False
+    outcome = report.source_status.get("polymarket")
+    return outcome is None or not outcome.attempted
+
+
+def _lookup_markets(report: schema.Report, config: dict[str, Any]) -> list[schema.SourceItem]:
+    result = fetch_memo.fetch_once(
+        ("polymarket", report.topic, report.range_from, report.range_to, "quick"),
+        lambda: polymarket.search_polymarket(
+            report.topic, report.range_from, report.range_to, depth="quick",
+        ),
+        timeout=_memo_wait_seconds(config),
+        cacheable=_clean_search_result,
+    )
+    raw = polymarket.parse_polymarket_response(result, topic=report.topic)
+    return normalize.normalize_source_items(
+        "polymarket", raw, report.range_from, report.range_to,
+    )
+
+
+def gather_open_questions(
+    report: schema.Report,
+    *,
+    config: dict[str, Any],
+    mock: bool,
+    entity_reports: list[tuple[str, schema.Report]] | None = None,
+    web_backend: str = "auto",
+    host_rows: Iterable[Any] = (),
+    budget_seconds: float = OPEN_QUESTIONS_WEB_BUDGET_SECONDS,
+    market_lookup: bool = True,
+) -> dict[str, Any]:
+    """Build the run's Open Questions list and store it in the report's artifacts.
+
+    Markets come from the Polymarket items the run retrieved, or from a
+    direct lookup when the run's plan never asked Polymarket (callers turn
+    ``market_lookup`` off when the user limited the run to named sources);
+    ``host_rows`` come from the host's envelope. Where a web backend exists and the run's own
+    web search reported cleanly, forward-looking queries also run as a lane of
+    the ``grounding`` source inside ``budget_seconds``; a mock run never searches.
+    A timeout or a failed search becomes a warning on the list, never an
+    error. A comparison gets one list across its entities, on the main report.
+    """
+    reports = [entity for _, entity in entity_reports] if entity_reports else [report]
+    market_items = [
+        item for entity in reports for item in entity.items_by_source.get("polymarket") or []
+    ]
+    warnings: list[str] = []
+    if market_lookup and not mock:
+        for entity in reports:
+            if _needs_market_lookup(entity):
+                try:
+                    market_items.extend(_lookup_markets(entity, config))
+                except Exception as exc:
+                    log.source_log(
+                        "Polymarket", f"market lookup failed: {type(exc).__name__}: {exc}",
+                        tty_only=False,
+                    )
+                    warnings.append(
+                        "Prediction-market lookup failed; market questions may be missing."
+                    )
+    markets = open_questions.markets_from_items(market_items)
+    web = web_backend
+    if web == "auto":
+        web = grounding.configured_backend(config) or (
+            "keyless" if env.keyless_web_allowed(config) else "none"
+        )
+    searches = [
+        (template.format(topic=entity.topic), (entity.range_from, entity.range_to))
+        for entity in reports
+        if _searched_web_cleanly(entity)
+        for template in open_questions.FORWARD_QUERIES
+    ]
+    web_results: list[dict[str, Any]] = []
+    if searches and not mock and web != "none":
+        failed = False
+        with _abandoning_executor(max_workers=min(len(searches), _OPEN_QUESTIONS_MAX_WORKERS)) as executor:
+            futures = [
+                executor.submit(grounding.web_search, search_query, date_range, config, web)
+                for search_query, date_range in searches
+            ]
+            done, pending = futures_wait(futures, timeout=max(0.0, budget_seconds))
+            for future in futures:
+                if future not in done:
+                    continue
+                try:
+                    web_results.extend(future.result(timeout=0)[0])
+                except Exception as exc:
+                    failed = True
+                    log.source_log(
+                        "Web", f"forward-looking search failed: {type(exc).__name__}: {exc}",
+                        tty_only=False,
+                    )
+        if pending:
+            warnings.append(
+                "Forward-looking web search stopped at its time budget; "
+                "later dated items may be missing."
+            )
+        if failed:
+            warnings.append(
+                "Forward-looking web search failed; dated items from the web may be missing."
+            )
+    listing = open_questions.build(
+        today=report.range_to, markets=markets, host_rows=host_rows,
+        web_results=web_results, warnings=warnings,
+    )
+    report.artifacts[open_questions.ARTIFACT_KEY] = listing
+    return listing
 
 
 def _retry_thin_sources(

@@ -50,7 +50,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
+from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, open_questions, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
 from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -847,6 +847,18 @@ def build_parser() -> argparse.ArgumentParser:
             "model fetched through its X connector; replaces the engine's X "
             "fetch for this run. A file path only (never inline JSON); on a "
             "comparison run use the per-entity x_posts field of --competitors-plan."
+        ),
+    )
+    parser.add_argument(
+        "--open-questions",
+        dest="open_questions",
+        metavar="PATH",
+        help=(
+            "Path to a last30days-open-questions/1 JSON envelope of dated "
+            "upcoming items (scheduled events, pending decisions, expected "
+            "releases, each with a date and an http(s) link) the hosting model "
+            "found; merged into the report's Open Questions block. Applies to "
+            "topic research with --emit=compact or --emit=md."
         ),
     )
     parser.add_argument("--web-backend", default="auto",
@@ -3094,6 +3106,53 @@ def _reject_trace_origin() -> int:
     return 2
 
 
+def _open_questions_apply(args: argparse.Namespace) -> bool:
+    """Whether this research run builds and prints an Open Questions list.
+
+    The block lives in the compact output, so other emit modes skip the work;
+    a hiring-signals run is about jobs, not the topic's upcoming dates.
+    """
+    return args.emit in {"compact", "md"} and not args.hiring_signals
+
+
+def _open_questions_misuse(
+    args: argparse.Namespace,
+    topic: str,
+    command_topic: str,
+    is_forecast_command: bool,
+) -> bool:
+    """Whether --open-questions was passed to something that cannot use it.
+
+    Checked before every dispatch so the file is never accepted and ignored:
+    a host that passed dated items and saw none listed would read that as
+    "nothing upcoming".
+    """
+    if args.open_questions is None:
+        return False
+    return bool(
+        not topic
+        or args.resolve_save_dir
+        or args.preflight
+        or args.diagnose
+        or args.discover is not None
+        or args.drill
+        or not _open_questions_apply(args)
+        or is_forecast_command
+        or command_topic in {"setup", "doctor", "library feed", "queue list"}
+        or command_topic.startswith(("library search", "queue cover"))
+    )
+
+
+def _reject_open_questions() -> int:
+    sys.stderr.write(
+        "[last30days] --open-questions applies to topic research runs with "
+        "--emit=compact or --emit=md; it cannot be combined with "
+        "--hiring-signals, discovery, drill, administrative or inspection "
+        "commands, or other emit modes.\n"
+    )
+    return 2
+
+
 def _forecast_command(command_topic: str) -> tuple[str, int] | None:
     """Recognize ``forecast <command>`` and return (command, prefix length).
 
@@ -3683,7 +3742,7 @@ def _main(
 
     if args.cached_report and (
         args.emit != "html" or not args.synthesis_file or not args.topic or args.deep_research
-        or args.plan or args.competitors_plan or args.x_posts
+        or args.plan or args.competitors_plan or args.x_posts or args.open_questions
         or args.discover is not None or args.drill or args.diagnose or args.preflight
         or args.welcome or args.resolve_save_dir or args.verify_freshness is True
     ):
@@ -3691,6 +3750,8 @@ def _main(
     if args.welcome:
         if args.trace_origin:
             return _reject_trace_origin()
+        if args.open_questions is not None:
+            return _reject_open_questions()
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
         return 0
@@ -3719,9 +3780,20 @@ def _main(
         return 2
     if _trace_origin_misuse(args, topic, command_topic, forecast_command is not None):
         return _reject_trace_origin()
+    if _open_questions_misuse(args, topic, command_topic, forecast_command is not None):
+        return _reject_open_questions()
     if args.resolve_save_dir:
         print(env.resolve_memory_dir(args.save_dir))
         return 0
+    open_question_rows: list = []
+    if args.open_questions is not None:
+        # Read here, before configuration and any retrieval, so a bad file
+        # costs nothing.
+        try:
+            open_question_rows = open_questions.read_envelope(args.open_questions)
+        except open_questions.EnvelopeContractError as exc:
+            sys.stderr.write(f"[last30days] {exc.message}\n")
+            return 2
     if args.x_posts is not None and _looks_inline_json(args.x_posts):
         sys.stderr.write(
             "[last30days] --x-posts accepts a file path only (inline JSON is not "
@@ -4196,6 +4268,12 @@ def _main(
             sys.stderr.write(
                 "[last30days] --x-posts is not supported by the hosted backend; "
                 "run locally or omit --x-posts.\n"
+            )
+            return 2
+        if args.open_questions is not None:
+            sys.stderr.write(
+                "[last30days] --open-questions is not supported by the hosted "
+                "backend; run locally or omit --open-questions.\n"
             )
             return 2
         from lib import hosted
@@ -4899,6 +4977,26 @@ def _main(
             report, config=config, mock=args.mock,
             web_backend=args.web_backend, subreddits=subreddits,
         )
+    if _open_questions_apply(args):
+        # Stored before the cache write so a cached re-render keeps the same
+        # ids, and in the topic's own file because the report cache holds only
+        # the latest run.
+        try:
+            listing = pipeline.gather_open_questions(
+                report, entity_reports=entity_reports, config=config, mock=args.mock,
+                web_backend=args.web_backend, host_rows=open_question_rows,
+                # Only when Polymarket is a source this run may contact: --search
+                # and the availability check both bound what a run reaches.
+                market_lookup=(
+                    "polymarket" in (diag.get("available_sources") or [])
+                    and (not args.search or "polymarket" in (requested_sources or []))
+                ),
+            )
+            open_questions.store(original_topic, listing["entries"])
+        except Exception as exc:
+            sys.stderr.write(
+                f"[last30days] warning: could not build the open questions list: {exc}\n"
+            )
     _write_last_run(
         original_topic, report, entity_reports=entity_reports,
         x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),

@@ -911,6 +911,9 @@ def render_compact(
         # Outside the audience branch: a requested trace is evidence for every
         # register, not a default-voice section.
         lines.extend(["", *_render_spread_timeline(report)])
+    open_questions = _render_open_questions(report)
+    if open_questions:
+        lines.extend(["", *open_questions])
     corpus_section = _render_corpus_section(report)
     if corpus_section:
         lines.extend(["", *corpus_section])
@@ -963,6 +966,70 @@ def spread_timeline_inputs(
     # The pool keeps every member of an accepted cluster; an off-topic member
     # must not become the "earliest found" post, so re-apply the shared check.
     return [candidate for candidate in pool if _best_take_relevance_ok(candidate)], incomplete
+
+
+_OPEN_QUESTION_DROP_LABELS = (
+    ("no-future-date", "web result", "with no future date in the title or snippet"),
+    ("past", "item", "whose date has passed"),
+    ("undated", "item", "with no date"),
+    ("bad-link", "item", "without an http or https link"),
+    ("bad-row", "malformed item", ""),
+    ("excluded", "item", "on an excluded subject"),
+    ("same-event", "more market", "in events already listed"),
+    ("over-cap", "later-dated item", "beyond the list limit"),
+)
+
+
+def _render_open_questions(report: schema.Report) -> list[str]:
+    """The run's stored Open Questions list, for the evidence envelope.
+
+    Absent on a report that never built one, and on drill and hiring-signals
+    reports. Question text and outcome labels are source data (a web page or
+    a market wrote them), so each goes through the one-line defang helper.
+    """
+    listing = report.artifacts.get("open_questions")
+    if (
+        not isinstance(listing, dict)
+        or report.artifacts.get("drill_context")
+        or report.artifacts.get("hiring_signals_mode")
+    ):
+        return []
+    out = ["## Open Questions", ""]
+    for entry in listing.get("entries") or []:
+        parts = [
+            f"- {entry.get('id')} [{entry.get('kind')}] {entry.get('date')}: "
+            f"{_safe_title(str(entry.get('question') or ''))}"
+        ]
+        outcomes = entry.get("outcomes") or []
+        if outcomes:
+            shown = ", ".join(
+                f"{_safe_title(str(name))} "
+                + (f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%")
+                for name, price in outcomes[:4]
+            )
+            if len(outcomes) > 4:
+                shown += f", +{len(outcomes) - 4} more"
+            parts.append(shown)
+        parts.append(_safe_title(str(entry.get("url") or "")))
+        line = " | ".join(parts)
+        related = entry.get("related") or []
+        if related:
+            line += f" (see also {', '.join(str(ref) for ref in related)})"
+        out.append(line)
+    if len(out) == 2:
+        out.append("- No dated open questions were found for this topic.")
+    dropped = listing.get("dropped") or {}
+    left_out = [
+        f"{dropped[key]} {noun}{'s' if dropped[key] != 1 else ''} {detail}".rstrip()
+        for key, noun, detail in _OPEN_QUESTION_DROP_LABELS
+        if dropped.get(key)
+    ]
+    notes = [str(warning) for warning in listing.get("warnings") or []]
+    if left_out:
+        notes.insert(0, f"Not listed: {'; '.join(left_out)}.")
+    if notes:
+        out.append(f"- Warning: {' '.join(notes)}")
+    return out
 
 
 def _render_spread_timeline(report: schema.Report) -> list[str]:
@@ -1465,6 +1532,11 @@ def render_comparison_multi(
                 fun_params=fun_params,
             )
         )
+
+    # One list for the whole comparison, stored on the main entity's report.
+    open_questions = _render_open_questions(main_report)
+    if open_questions:
+        lines.extend([*open_questions, ""])
 
     lines.append("<!-- END EVIDENCE FOR SYNTHESIS -->")
     lines.append("")

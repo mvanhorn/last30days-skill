@@ -170,6 +170,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--devto-tags={t1,t2}` | Step 0.55 | Tech topics: 1-3 lowercase tags (`claudecode,ai`); enables dev.to |
 | `--tiktok-creators={c1,c2,...}` | Step 0.55 | Creator / influencer / brand topics |
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
+| `--open-questions {path}` | Before the engine command | You hold dated upcoming items for the topic (events, decisions, releases) with URLs. Write `{"schema": "last30days-open-questions/1", "items": [{"kind": "event\|decision\|release", "question", "date": "YYYY-MM-DD", "url"}]}` to a file; compact/md runs only |
 | `--web-backend {backend}` | Explicit user request | Otherwise use automatic selection, including non-Latin topics. API backends require their resolved credential. |
 | `--web-backend parallel-mcp` | Explicit user request only | Use only when the user asks to use Parallel Search MCP. This opts the run into sending its search objective and queries to `https://search.parallel.ai/mcp`; never select it automatically. Anonymous use sends no authorization header; an existing `PARALLEL_API_KEY` is sent as Bearer auth. |
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
@@ -720,19 +721,16 @@ If the resolved `LAST30DAYS_MEMORY_DIR` is empty, saving was disabled: skip this
 3. For each WebSearch result, include one bullet in the canonical format (see Format example below).
 4. Write the updated file back.
 
-**Format example (canonical, from April 7 archive — match this shape):**
+**Format example (canonical; match this shape):**
 
 ```
 ## WebSearch Supplemental Results
 
-- **Flowtivity** (flowtivity.ai) — Side-by-side OpenClaw vs Paperclip framework comparison; concludes Paperclip solves coordination, OpenClaw solves execution.
-- **Rahul Goyal** (rahulgoyal.co) — Honest three-way review: start with Hermes for simplicity, OpenClaw for tinkering, Paperclip only if running multiple agents.
-- **Eigent** (eigent.ai) — Feature-by-feature OpenClaw vs Hermes for founders; Hermes wins on self-improving skills, OpenClaw on ecosystem breadth.
-- **The New Stack** (thenewstack.io) — "The race to build AI assistants that never forget" — deep comparison of persistent memory architectures.
-- **MindStudio** (mindstudio.ai) — Paperclip vs OpenClaw multi-agent comparison; Paperclip for orchestration, OpenClaw as the individual agent.
+- **Example Blog** (https://blog.example.com/openclaw-vs-paperclip) — Side-by-side OpenClaw vs Paperclip framework comparison; concludes Paperclip solves coordination, OpenClaw solves execution.
+- **Example News** (https://news.example.com/2026/assistant-memory) — Deep comparison of persistent memory architectures; names a December 3 release date.
 ```
 
-Each bullet: `- **{Publisher}** ({domain}) — {1-2 sentence excerpt of what you found}`. Publisher is the site name or author; domain is the clean hostname (no protocol, no path). Do not nest sub-bullets. Do not add URLs - the domain in parens is the citation.
+Each bullet: `- **{Publisher}** ({url}) — {1-2 sentence excerpt of what you found}`. Publisher is the site name or author; `{url}` is the result's verbatim URL, so the source and any date it names stay checkable. Do not nest sub-bullets.
 
 This ensures anyone reviewing the raw file sees ALL data that fed into the synthesis, not just the Python engine output.
 
