@@ -685,8 +685,10 @@ def _markdown_to_html(md: str) -> str:
             out.append(f"<blockquote>{_inline_markdown(' '.join(quote_lines))}</blockquote>")
             continue
 
-        unordered = re.match(r"^[-*]\s+(.+)$", stripped)
-        ordered = re.match(r"^\d+[.)]\s+(.+)$", stripped)
+        # `•` and an escaped `1\.` are the list-free markers the skill writes
+        # in chat on Claude Code; an export copies that text and wants lists.
+        unordered = re.match(r"^[-*•]\s+(.+)$", stripped)
+        ordered = re.match(r"^\d+(?:[.)]|\\\.)\s+(.+)$", stripped)
         if unordered or ordered:
             flush_paragraph()
             next_type = "ul" if unordered else "ol"

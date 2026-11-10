@@ -145,6 +145,8 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **COUNTS IN PROSE: engagement numbers choose what you show, rarely what you say.** Likes, upvotes, views, and points already ranked the evidence. In the body, KEY PATTERNS, and comparisons, print a count only when its size is the finding: a comparison, a contrast, or a surprise ("roughly 4x the likes of the next post", "but with only 5 points"). Otherwise use a rank word ("the top comment", "the month's biggest thread") or drop it, so `@x joked "..." (260 likes)` loses the parenthesis. A count that stays is rounded and single. Unaffected: Polymarket odds, the `creator` register, the `exec` lead number, entity scale figures, the footer.
 
+**NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, one per line with no blank lines between. Other hosts keep normal lists.
+
 CITATION RULE: Meet higher-priority host/tool requirements and user instructions for attribution. Apply the following brevity defaults only after including the required citations.
 - In the "What I learned" intro: cite 1-2 top sources total, not every sentence
 - In KEY PATTERNS: cite 1 source per pattern, short format: "per @handle" or "per r/sub"

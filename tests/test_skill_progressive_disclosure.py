@@ -52,7 +52,7 @@ def test_configured_user_without_global_marker_has_a_bounded_setup_check():
     total = len((SKILL_ROOT / "SKILL.md").read_bytes()) + sum(
         len(reference_text(name).encode("utf-8")) for name in names
     )
-    assert total <= 190_000, f"configured path without a global marker loads {total} bytes"
+    assert total <= 190_500, f"configured path without a global marker loads {total} bytes"
 
 
 def test_existing_users_can_load_repair_without_restarting_onboarding():
