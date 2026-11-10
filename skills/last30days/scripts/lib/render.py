@@ -732,6 +732,48 @@ def _render_earlier_calls(report: schema.Report) -> list[str]:
     return lines
 
 
+def _render_next30_scaffold(report: schema.Report) -> list[str]:
+    """The questions this run may make a prediction on, for the host to fill.
+
+    A pass-through block, so it names each question by id, kind, and date
+    only: question text can come from a web page and stays inside the
+    evidence envelope. Absent unless the run itself stored the scaffold, so a
+    cached report, a drill, and a hiring-signals report print none.
+    """
+    scaffold = report.artifacts.get("next30_scaffold")
+    if (
+        not isinstance(scaffold, dict)
+        or report.artifacts.get("drill_context")
+        or report.artifacts.get("hiring_signals_mode")
+    ):
+        return []
+    eligible = scaffold.get("eligible") or []
+    if not eligible:
+        return [
+            "## Next 30 Days",
+            "",
+            "No open question is eligible for a prediction on this run. Close the brief with a "
+            "`Next 30 days:` section that shows the nearest dated item, or a market's current "
+            "odds, as the thing to watch, with no probability, and log nothing. With nothing "
+            "dated at all, say so in one line.",
+        ]
+    lines = [
+        "## Next 30 Days",
+        "",
+        "Close the brief with a `Next 30 days:` section: one or two predictions, each on one "
+        "question listed here, logged with `forecast add`. The synthesis reference has the "
+        "rules. Each question's text is in the Open Questions list under the same id.",
+        "",
+        *(f"- {entry['id']} [{entry['kind']}] {entry['date']}" for entry in eligible),
+    ]
+    if not scaffold.get("logged"):
+        lines.append(
+            "- No save directory is in effect, so predictions will not be logged. "
+            "Show them and say they are not being saved."
+        )
+    return lines
+
+
 def _clusters_for_register(
     report: schema.Report,
     audience: registers.AudienceRegister,
@@ -982,6 +1024,11 @@ def render_compact(
     if earlier_calls:
         lines.append("")
         lines.extend(earlier_calls)
+
+    next30_scaffold = _render_next30_scaffold(report)
+    if next30_scaffold:
+        lines.append("")
+        lines.extend(next30_scaffold)
 
     pre_research_warning = _render_pre_research_warning(report)
     if pre_research_warning:
@@ -1609,6 +1656,9 @@ def render_comparison_multi(
     earlier_calls = _render_earlier_calls(main_report)
     if earlier_calls:
         lines.extend([*earlier_calls, ""])
+    next30_scaffold = _render_next30_scaffold(main_report)
+    if next30_scaffold:
+        lines.extend([*next30_scaffold, ""])
 
     # Reuse the existing comparison scaffold by feeding it the synthesized
     # topic. _parse_comparison_entities splits on " vs " so the scaffold

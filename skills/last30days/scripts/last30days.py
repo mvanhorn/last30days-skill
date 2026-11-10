@@ -3327,6 +3327,13 @@ def _note_earlier_calls(
         warnings=warnings,
     )
     if data is not None:
+        # The questions an open call already covers, so the run does not
+        # offer them for a second prediction.
+        settled_ids = {row["id"] for row in graded}
+        data["open_question_keys"] = sorted({
+            row["question_key"] for row in topic_rows
+            if row.get("question_key") and row["id"] not in settled_ids
+        })
         report.artifacts["earlier_calls"] = data
 
 
@@ -3359,6 +3366,58 @@ def _note_earlier_calls_safely(
             f"[last30days] Warning: earlier predictions unavailable ({exc}); "
             "continuing without them.\n"
         )
+
+
+def _note_next30_scaffold(
+    report: schema.Report,
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> None:
+    """Store which of the run's open questions a prediction may be made on.
+
+    Eligible means dated after today and inside the ledger's horizon, not an
+    all-but-settled market, and not already covered by an open earlier call.
+    Only ids, kinds, and dates are stored: the renderer prints this outside
+    the evidence envelope. Nothing is stored when Next30Days is off or the
+    run built no list, and then no scaffold prints.
+    """
+    from lib import forecast
+
+    listing = report.artifacts.get(open_questions.ARTIFACT_KEY)
+    if not isinstance(listing, dict) or not forecast.enabled(config):
+        return
+    today = datetime.date.today()
+    last_day = today + datetime.timedelta(days=forecast.MAX_HORIZON_DAYS)
+    earlier = report.artifacts.get("earlier_calls")
+    covered = set(earlier.get("open_question_keys") or []) if isinstance(earlier, dict) else set()
+    eligible = []
+    for entry in listing.get("entries") or []:
+        try:
+            day = datetime.date.fromisoformat(str(entry.get("date")))
+        except ValueError:
+            continue
+        lead = max((price for _, price in entry.get("outcomes") or []), default=0.0)
+        if (
+            today < day <= last_day
+            and lead < open_questions.SETTLED_PRICE
+            and entry.get("key") not in covered
+        ):
+            eligible.append({"id": entry["id"], "kind": entry["kind"], "date": entry["date"]})
+    report.artifacts["next30_scaffold"] = {
+        "eligible": eligible,
+        "logged": _scoped_store_db(args) is not None,
+    }
+
+
+# Settling earlier calls, the forward-looking web pass, and the origin
+# trace's second pass all run after research has finished, inside the host's
+# 300-second command limit. Each keeps its own budget; together they get this.
+ADDED_PASSES_CEILING_SECONDS = 60.0
+
+
+def _added_pass_budget(own_seconds: float, ceiling_deadline: float) -> float:
+    """A pass's own budget, or what is left of the shared ceiling if less."""
+    return max(0.0, min(own_seconds, ceiling_deadline - time.monotonic()))
 
 
 def _forecast_private_refusal(payload: dict) -> str | None:
@@ -5160,16 +5219,25 @@ def _main(
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
+    from lib import forecast
+
+    added_deadline = time.monotonic() + ADDED_PASSES_CEILING_SECONDS
     if args.trace_origin and not entity_reports:
         # Stored before the cache write so a cached re-render carries the trace.
         pipeline.trace_origin(
             report, config=config, mock=args.mock,
             web_backend=args.web_backend, subreddits=subreddits,
+            budget_seconds=_added_pass_budget(
+                pipeline.ORIGIN_SECOND_PASS_BUDGET_SECONDS, added_deadline,
+            ),
         )
     if _open_questions_apply(args):
         # Same runs as the Open Questions list, and stored before the cache
         # write so a cached re-render shows the same block.
-        _note_earlier_calls_safely(report, original_topic, args, config)
+        _note_earlier_calls_safely(
+            report, original_topic, args, config,
+            budget_seconds=_added_pass_budget(forecast.SETTLE_BUDGET_SECONDS, added_deadline),
+        )
     if _open_questions_apply(args):
         # Stored before the cache write so a cached re-render keeps the same
         # ids, and in the topic's own file because the report cache holds only
@@ -5178,6 +5246,9 @@ def _main(
             listing = pipeline.gather_open_questions(
                 report, entity_reports=entity_reports, config=config, mock=args.mock,
                 web_backend=args.web_backend, host_rows=open_question_rows,
+                budget_seconds=_added_pass_budget(
+                    pipeline.OPEN_QUESTIONS_WEB_BUDGET_SECONDS, added_deadline,
+                ),
                 # Only when Polymarket is a source this run may contact: --search
                 # and the availability check both bound what a run reaches.
                 market_lookup=(
@@ -5195,6 +5266,10 @@ def _main(
         x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
         research_options=research_options,
     )
+    if _open_questions_apply(args):
+        # After the cache write: the scaffold belongs to this run's output,
+        # so a cached re-render carries none.
+        _note_next30_scaffold(report, args, config)
     # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
     # (for shell-exported users) and config (for users who set it in
     # ~/.config/last30days/.env, which env.py loads but does not propagate

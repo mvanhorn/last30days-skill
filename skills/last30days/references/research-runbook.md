@@ -170,7 +170,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--devto-tags={t1,t2}` | Step 0.55 | Tech topics: 1-3 lowercase tags (`claudecode,ai`); enables dev.to |
 | `--tiktok-creators={c1,c2,...}` | Step 0.55 | Creator / influencer / brand topics |
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
-| `--open-questions {path}` | Before the engine command | You hold dated upcoming items for the topic (events, decisions, releases) with URLs. Write `{"schema": "last30days-open-questions/1", "items": [{"kind": "event\|decision\|release", "question", "date": "YYYY-MM-DD", "url"}]}` to a file; compact/md runs only |
+| `--open-questions {path}` | Step 0.55 (item 7) | The forward-looking searches found a dated upcoming item; compact/md runs only |
 | `--web-backend {backend}` | Explicit user request | Otherwise use automatic selection, including non-Latin topics. API backends require their resolved credential. |
 | `--web-backend parallel-mcp` | Explicit user request only | Use only when the user asks to use Parallel Search MCP. This opts the run into sending its search objective and queries to `https://search.parallel.ai/mcp`; never select it automatically. Anonymous use sends no authorization header; an existing `PARALLEL_API_KEY` is sent as Bearer auth. |
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
@@ -403,6 +403,29 @@ Store as `RESOLVED_YT_QUERIES`.
 
 **6. First-party positioning** - **MANDATORY when WebSearch is available, for company / product / service topics.** If the topic (or, in a vs-run, an entity) is a company, product, or service with a public presence, fetch its CURRENT stated positioning. Do **NOT** rely on memory - homepages and positioning go stale as companies rewrite copy and pivot, and a stale claim produces a false gap. Anchor on first-party sources: the homepage tagline, docs, pricing, or a "compare/why-us" page. Fold this into the per-entity passes above where you can (e.g. add `official site` to a query); otherwise run one focused search per entity (`{TOPIC} official site`, `{TOPIC} pricing`). Capture the one-line value prop and any explicit claims ("zero-config", "fastest", "open source"). Store as `RESOLVED_POSITIONING`. This is what the entity *pitches*; the engine's community data is what people *actually talk about*. Use it three ways: ground `What it is` descriptions (describe the entity as it pitches itself TODAY, not as remembered), help reject unrelated brand-name noise (knowing what the entity is makes off-brand matches obvious), and feed the pitch-vs-pulse synthesis beat - a PROSE note that fires only when the month's evidence directly supports, cuts against, or is squarely about the pitch (see the synthesis section; orthogonal evidence gets silence, not a verdict). Skip (and omit `RESOLVED_POSITIONING`) for people, events, abstract concepts, and ownerless topics - they make no comparable public claim. The test is an identifiable first party with a fetchable pitch, and people NEVER pass it - not even founders/creators whose companies would qualify. The lens can apply to MrBeast (a company) but never to Jimmy Donaldson (a person); a person-vs-person run ("Garry Tan vs Sam Altman") gets no positioning research at all. Ownerless topics fail the same test: Bitcoin has no authoritative first party, and a foundation or fan site does not count.
 
+**7. Open questions** - The brief closes with predictions about what is scheduled or pending for the topic; these searches find those dated items. In the same pre-engine isolated web search dispatch, run these for the topic (for each entity in a comparison):
+
+```
+WebSearch("{TOPIC} upcoming dates deadline")
+WebSearch("{TOPIC} scheduled announcement release date")
+WebSearch("{TOPIC} decision vote ruling expected")
+```
+
+Keep only results that state a concrete calendar date after today for a scheduled event, a pending decision, or an expected release. Copy each URL verbatim from the result that states the date. Never invent, estimate, or infer a date, and never use a page's publication date as the item's date: an item with no stated date is left out. Leave out anything about a death, a person's health, violence against a person, or a private individual's personal life. When at least one item remains, write the file at the top of the same Bash call as the engine command and add `--open-questions "$OPEN_QUESTIONS_FILE"` to that command:
+
+```bash
+# Trailing XXXXXX for BSD/macOS mktemp; >| because mktemp already created the file.
+OPEN_QUESTIONS_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-open-questions.XXXXXX")
+trap 'rm -f -- "$OPEN_QUESTIONS_FILE"' EXIT
+cat >| "$OPEN_QUESTIONS_FILE" <<'OPEN_QUESTIONS_EOF'
+{"schema": "last30days-open-questions/1", "items": [
+  {"kind": "decision", "question": "Regulator rules on the Widget merger", "date": "2026-12-01", "url": "https://regulator.example/cases/widget"}
+]}
+OPEN_QUESTIONS_EOF
+```
+
+`kind` is `event`, `decision`, or `release`, and `question` is one line of plain text. Do not add prediction markets: the engine lists those itself, with their prices. With no dated item, omit the flag.
+
 **Concrete examples:**
 
 | Topic | WebSearches needed | Reddit subs | TikTok hashtags | TikTok creators | IG creators | YT queries |
@@ -622,10 +645,7 @@ Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 - `--trustpilot-domain={RESOLVED_TRUSTPILOT_DOMAIN}` (from Step 0.5d, company/brand topics; the flag also auto-activates Trustpilot)
 - Omit any flag where the value was not resolved (empty).
 
-**If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
-- `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context before planning)
-
-**If you skipped Steps 0.55 and 0.75 (no WebSearch), keep `--auto-resolve` on the command; the engine plans internally.** Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
+**If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add `--auto-resolve`:** the engine uses Brave/Exa/Serper to discover subreddits and context, then plans internally. Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
 
 Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically takes 1-3 minutes.
 

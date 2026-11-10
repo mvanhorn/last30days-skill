@@ -990,10 +990,23 @@ def test_reference_teaches_every_command_and_the_honesty_rules():
         "Relay it verbatim",
         "A verdict is written once",
         "A wrong prediction is a `miss`",
-        "Never anchor to a market that has already resolved",
         "not a recommendation",
+        "Predictions are part of every ordinary research run",
+        "`synthesis.md` holds the whole procedure",
+        "Never present a prediction as logged unless the engine printed it with an id",
+        "LAST30DAYS_NEXT30DAYS=off",
     ):
         assert rule in text
+    # The on-request procedure is gone: predictions come from a run's open questions.
+    assert "Making a forecast for a topic" not in text
+    assert not re.search(r"3 to 5|three to five", text)
+    scorecard = text.split("- `forecast scorecard` prints", 1)[1].split("\n", 1)[0]
+    for part in (
+        "departed from a market baseline", "skill against the market",
+        "The market was closer than these calls.", "departed from a host-stated baseline",
+        "agreed with their baseline", "legacy and rehearsal calls", "calibration",
+    ):
+        assert part in scorecard, part
     assert "—" not in text and "–" not in text
     for block in text.split("<<'")[1:]:
         body = block.split("\n", 1)[1].split("_EOF", 1)[0].rsplit("\n", 1)[0]

@@ -220,6 +220,8 @@ I've compared {TOPIC_A} vs {TOPIC_B} [vs ...] using the latest community data. S
 - [follow-up on the emerging-stack combination pattern]
 ````
 
+**Next 30 days:** when the engine output has a `## Next 30 Days` block, add the closing section `synthesis.md` specifies between `## The emerging stack` and the engine footer, under the prose label `Next 30 days:` (not a `##` header), with at most two predictions for the whole comparison.
+
 **Do NOT:**
 - Use `What I learned:` prose label (that is general-query voice)
 - Use bold-lead-in paragraphs with ` - ` separators for the body (that is general-query voice)

@@ -53,10 +53,14 @@ def test_configured_user_without_global_marker_has_a_bounded_setup_check():
         len(reference_text(name).encode("utf-8")) for name in names
     )
     # Raised from 190,000 with the forecast and origin-trace routes: the root
-    # had 64 bytes of headroom, less than any routing row costs. The
-    # 32,000-byte root budget and the 180,000-byte standard path above are
-    # unchanged.
-    assert total <= 190_400, f"configured path without a global marker loads {total} bytes"
+    # had 64 bytes of headroom, less than any routing row costs. Raised again
+    # from 190,400 when predictions became part of every run: the closing
+    # `Next 30 days` section and the forward-looking search step have to sit on
+    # the always-loaded path (synthesis and the runbook), and the root has no
+    # room for a route to anywhere else. The rise is the measured addition
+    # after trimming, rounded up to the next 100. The 32,000-byte root budget
+    # and the 180,000-byte standard path above are unchanged.
+    assert total <= 196_200, f"configured path without a global marker loads {total} bytes"
 
 
 def test_existing_users_can_load_repair_without_restarting_onboarding():

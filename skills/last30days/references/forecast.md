@@ -1,8 +1,8 @@
 # Next30Days: forecasts and the scorecard
 
-Read for forecast, prediction, or scorecard intent: "what happens next with X", "forecast X", "predict the next 30 days for X", "next30 X", "how accurate are your forecasts", "show my scorecard", "grade your predictions". Also read for launch-rehearsal intent ("how will this land", "roast my launch post", "what will people say about this draft"); that procedure is the Rehearsal section below. The runtime interpreter bootstrap still runs first.
+Read for scorecard, ledger, or grading intent: "how accurate are your forecasts", "show my scorecard", "grade your predictions", or a research run that shows a prediction as due. Also read for launch-rehearsal intent ("how will this land", "roast my launch post", "what will people say about this draft"); that procedure is the Rehearsal section below. The runtime interpreter bootstrap still runs first.
 
-Research says what happened in the last 30 days. A forecast commits to what happens in the next 30, in writing, with a probability and a date, and the ledger grades it later. You write the predictions; the engine validates, stores, settles, and scores them. Every ledger command takes the same `--save-dir="${LAST30DAYS_MEMORY_DIR}"` as the library and queue commands; the ledger lives only in that directory, and with no save directory nothing is read or logged.
+Research says what happened in the last 30 days. A prediction commits to what happens next, in writing, with a probability and a date, and the ledger grades it later. Predictions are part of every ordinary research run, not a separate mode: the run's closing `Next 30 days` section is where they are chosen, checked, and logged, and `synthesis.md` specifies it. A request such as "forecast X" or "what happens next with X" is an ordinary research run on X. This reference covers the ledger: its commands, the grading rules, and the scorecard. You write and grade the predictions; the engine validates, stores, settles, and scores them. Every ledger command takes the same `--save-dir="${LAST30DAYS_MEMORY_DIR}"` as the library and queue commands; the ledger lives only in that directory, and with no save directory nothing is read or logged. Setting `LAST30DAYS_NEXT30DAYS=off` turns predictions off: runs print no prediction block and `forecast add` writes nothing.
 
 ## Scorecard, list, and grading fast paths
 
@@ -16,12 +16,12 @@ For scorecard, ledger, or grading intent with no new topic, do not run setup, ho
 
 - `forecast settle` checks every open market-anchored prediction against Polymarket's public API and grades the ones whose market has resolved. It is the only ledger command that uses the network.
 - `forecast due` lists predictions whose date has arrived and still have no verdict. Grade them (below) before presenting the scorecard.
-- `forecast scorecard` prints hit rate, Brier score, calibration, and the comparison against market prices. Relay it verbatim, including the overdue and small-sample lines. Never round the record up, drop a miss, or describe the record more favorably than the block does. An empty ledger is a valid answer.
+- `forecast scorecard` prints the record in a fixed order: the logged, overdue, and small-sample lines; the calls that departed from a market baseline and their skill against the market (with `The market was closer than these calls.` when that skill is negative); the calls that departed from a host-stated baseline; the calls that agreed with their baseline; legacy and rehearsal calls, counted with no skill figure; then all graded calls with hit rate, Brier score, and calibration. Relay it verbatim, including the overdue and small-sample lines. Never round the record up, drop a miss, or describe the record more favorably than the block does. An empty ledger is a valid answer.
 - `forecast list` (optionally `forecast list <topic>`) prints every prediction with its id and status.
 
 ## Grading due predictions
 
-For each prediction from `forecast due`, find out what actually happened. Use the prediction's own `resolves when` line as the test, and check it against a primary page: host web search, or a fresh `/last30days` run on the topic when the answer needs community evidence. Then write one grade file and submit it:
+For each prediction from `forecast due`, and each `DUE` line in a research run's `## Earlier Calls` block, find out what actually happened. Use the prediction's own `resolves when` line as the test, and check it against a primary page: host web search, or a fresh `/last30days` run on the topic when the answer needs community evidence. Then write one grade file and submit it:
 
 ```bash
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" forecast grade --forecast-file - --save-dir="${LAST30DAYS_MEMORY_DIR}" <<'GRADE_EOF'
@@ -41,21 +41,20 @@ Grading rules, enforced by the engine:
 - `void` is for a claim that became unjudgeable, never for a call that went badly. A wrong prediction is a `miss`.
 - Grade against the claim as written. Close does not count: "by Dec 1" that happened Dec 3 is a miss.
 
-## Making a forecast for a topic
+## Predictions on a research run
 
-1. Run ordinary topic research first, through the research-runbook and synthesis routes, exactly as for any topic. Present that synthesis as usual. When this conversation already holds a fresh run on the topic, use it instead of re-running.
-2. Run `forecast list <topic>` so open calls on this topic are in front of you. A question takes one open call: the engine returns the existing call instead of logging a second, and it finds calls logged under a renamed form of the topic.
-3. Write 1 or 2 predictions (the engine refuses more than 2 per file). Each one targets one entry in this run's Open Questions list, named by its id in `question`, and must be:
-   - **Falsifiable.** `claim` is one specific event that a stranger could check on the question's date. "Sentiment will stay mixed" and "adoption will grow" are not predictions. The question's own date is the deadline; you do not set one.
-   - **Stated in the direction you believe**, with `probability` from 0.5 to 0.99. To predict that something will not happen, write the negative claim.
-   - **Worth making.** `reason` is one line on why the call says more than its baseline. The engine refuses a restatement: a market call within 5 points of the market's price on the same outcome, or a call above 0.85 that the status quo holds.
-   - **Honestly calibrated.** Reserve 0.9 and above for calls you would be shocked to lose.
-4. For a market question, add only `outcome`: the label you are backing. The engine fills the market's link, price, and closing date from its own list and ignores any you send; the price is the call's baseline, and the call settles automatically. Never anchor to a market that has already resolved. For any other question, state the baseline and how the call settles: `baseline` gives the `status_quo` outcome and its `probability`, `backs` says whether your claim is that outcome (`status_quo`) or its opposite (`change`), and `resolution` names the `page` (an http or https link) and the `field` or event on it that settles the call.
-5. Log them:
+There is no separate forecast procedure. Every ordinary topic or comparison run ends with one or two predictions on that run's open questions, or with an item to watch when no question supports one, and `synthesis.md` holds the whole procedure: choosing a question, the baseline, the checks, the submission, and the presentation. Do not write predictions from the brief alone, and do not log a call on anything the run's `## Open Questions` list does not contain.
+
+`forecast add` is the command that section submits with. Its file names each question by its id in the run's list:
 
 ```bash
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" forecast add --forecast-file - --save-dir="${LAST30DAYS_MEMORY_DIR}" <<'FORECAST_EOF'
 {"topic": "OpenClaw", "predictions": [
+  {"question": "Q1",
+   "outcome": "No",
+   "claim": "The Polymarket market on an OpenClaw acquisition this year resolves No",
+   "probability": 0.7,
+   "reason": "Both named acquirers publicly walked away this month"},
   {"question": "Q2",
    "claim": "OpenClaw ships no stable 2.0 release by its roadmap date",
    "probability": 0.6,
@@ -63,19 +62,17 @@ Grading rules, enforced by the engine:
    "baseline": {"status_quo": "No stable 2.0 release ships", "probability": 0.8},
    "backs": "status_quo",
    "resolution": {"page": "https://github.com/example/openclaw/releases",
-                  "field": "A non-prerelease v2.0.0 tag is listed"}},
-  {"question": "Q1",
-   "outcome": "No",
-   "claim": "The Polymarket market on an OpenClaw acquisition this year resolves No",
-   "probability": 0.95,
-   "reason": "Both named acquirers publicly walked away this month"}
+                  "field": "A non-prerelease v2.0.0 tag is listed"}}
 ]}
 FORECAST_EOF
 ```
 
-On exit 2 the engine names the failing prediction and writes nothing; fix the file and resubmit once. An id that is not in the topic's stored list, or a list that has expired, also exits 2: run the topic again first. When the engine prints `Not logged:` (no save directory is in effect, or Next30Days is turned off), show the predictions marked as not logged. Never present a prediction as logged unless the engine printed it with an id.
-
-6. After the research synthesis and its footer, present the forecast under the prose label `Next 30 days:` as a numbered list. Each item gives the claim, the probability as a percentage, the resolve date, the baseline, and one sentence of reasoning tied to cited evidence. Follow it with the scorecard's hit rate and Brier lines when the ledger already has graded calls, then one line saying these are logged and will be graded on their dates. The root output laws still apply: no em or en dashes, no `##` headers.
+- A market question takes only `outcome`. The engine fills the market's link, price, and closing date from its own list; the price is the call's baseline, and the call settles automatically.
+- Any other question takes `baseline` (the `status_quo` outcome and its `probability`), `backs` (`status_quo` or `change`), and `resolution` (the `page` and the `field` or event on it that settles the call).
+- `probability` is 0.5 to 0.99 on the claim as stated. The question's own date is the deadline.
+- The engine exits 2 and writes nothing for a third prediction in one file, an id that is not in the topic's stored list, a list that has expired (run the topic again), a market call within 5 points of the market's price on the same outcome, and a call above 0.85 that the status quo holds.
+- A question takes one open call. For a question that already has one, the engine returns the existing call instead of logging a second.
+- When the engine prints `Not logged:` (no save directory is in effect, or Next30Days is turned off), nothing was written. Never present a prediction as logged unless the engine printed it with an id.
 
 ## Rehearsal: forecast the reception of the user's own draft
 

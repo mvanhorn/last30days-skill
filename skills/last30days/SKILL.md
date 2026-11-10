@@ -96,7 +96,7 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 |---|---|---|
 | Before any engine command | Read [references/runtime.md](references/runtime.md) in full. | Stale-clone check, interpreter bootstrap, and trusted save/config resolution precede commands. |
 | Library search, feed, or queue intent | Read [references/library-queue.md](references/library-queue.md) in full. | Execute the selected offline fast path, then stop. |
-| Forecast, scorecard, or launch-rehearsal intent | Read [references/forecast.md](references/forecast.md) in full. | Run its ledger fast path, forecast after research, or rehearse a draft. |
+| Forecast scorecard, grading, or launch-rehearsal intent | Read [references/forecast.md](references/forecast.md) in full. | Run its ledger fast path, grade, or rehearse a draft. |
 | Origin-trace intent | Read [references/origin.md](references/origin.md) in full. | Research with the trace, then report the spread. |
 | First-run setup is required | Read [references/setup-wizard.md](references/setup-wizard.md) in full. | Evaluate all credential sources; complete the applicable host flow, then resume the original request route. |
 | Source repair requested or indicated by doctor | Read [references/setup-wizard.md](references/setup-wizard.md) in full. | Use the repair entry and applicable Manual Setup Guide subsection; preserve consent and host restrictions without restarting onboarding. |
@@ -238,10 +238,10 @@ After the response and required citations, stop and wait unless governing instru
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
 - Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction markets and forecast settlement (free, no auth)
 - Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)
-- Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG).
+- Sends YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only) and transcripts to ScrapeCreators; keyed calls spend credits (10,000 free, then PAYG).
 - Optionally sends search queries to Brave Search API, Parallel AI API, Perplexity API (`api.perplexity.ai`), or OpenRouter API for web search / synthesis
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
-- Stores research findings (watchlist mode) and requested forecasts in local SQLite
+- Stores research findings (watchlist mode) in local SQLite; logs each run's predictions to the save directory (off: `LAST30DAYS_NEXT30DAYS=off`)
 - Saves research briefings as .md files to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`)
 - Generates a local `index.html`, Atom `feed.xml`, and rendered brief pages from saved research when the user asks for the library feed
 - Publishes the library, feed, and referenced briefs to `ht-ml.app` only after explicit opt-in; hosted pages are public by default unless the user chooses password protection

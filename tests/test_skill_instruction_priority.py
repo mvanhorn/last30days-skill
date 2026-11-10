@@ -142,6 +142,26 @@ def test_every_runbook_web_search_runs_through_the_isolated_search_block():
             assert "isolated web search" in step.lower(), step.splitlines()[0]
 
 
+def test_the_forward_looking_searches_run_in_the_isolated_dispatch_and_never_invent_a_date():
+    runbook = reference_text("research-runbook")
+    [step] = [part for part in re.split(r"\n(?=## )", runbook) if "**7. Open questions**" in part]
+    item = step.split("**7. Open questions**", 1)[1].split("**Concrete examples:**", 1)[0]
+    assert "isolated web search" in item.lower()
+    from lib import open_questions
+
+    # The same query shapes the engine runs where it has its own web backend.
+    for template in open_questions.FORWARD_QUERIES:
+        assert f'WebSearch("{template.replace("{topic}", "{TOPIC}")}")' in item
+    envelope = item.split("<<'OPEN_QUESTIONS_EOF'\n", 1)[1].split("\nOPEN_QUESTIONS_EOF", 1)[0]
+    assert len(open_questions.parse_envelope(envelope)) == 1
+    assert "Copy each URL verbatim" in item
+    assert "Never invent, estimate, or infer a date" in item
+    assert "a concrete calendar date after today" in item
+    assert '--open-questions "$OPEN_QUESTIONS_FILE"' in item
+    assert "last30days-open-questions/1" in item
+    assert "a death, a person's health, violence against a person" in item
+
+
 @pytest.mark.parametrize("document", ["comparison", "competitors"])
 def test_comparison_searches_use_the_isolated_search_block(document):
     assert "isolated web search" in reference_text(document).lower()

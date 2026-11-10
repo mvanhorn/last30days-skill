@@ -17,6 +17,7 @@ PROSE_LABELS = [
     ("What I learned:", "What I learned"),
     ("KEY PATTERNS from the research:", "Key patterns from the research"),
     ("How it spread:", "How it spread"),
+    ("Next 30 days:", "Next 30 days"),
 ]
 
 INVITATION_PATTERN = re.compile(r"^---\nI'm now an expert.*?Just ask\.$", re.MULTILINE | re.DOTALL)
