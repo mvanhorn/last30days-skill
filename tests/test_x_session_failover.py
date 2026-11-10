@@ -62,13 +62,14 @@ class TestEnvBookkeeping:
     def test_records_source_browser_and_remaining_browsers(self):
         cfg = _discover(_config(), {"safari": DEAD, "chrome": LIVE})
         assert cfg["AUTH_TOKEN"] == DEAD["auth_token"]
-        assert cfg[env.X_COOKIE_BROWSER_KEY] == "safari"
-        assert cfg[env.X_ALT_COOKIE_BROWSERS_KEY][0] == "chrome"
-        assert "firefox" not in cfg[env.X_ALT_COOKIE_BROWSERS_KEY]
+        state = cfg[env.X_SESSION_STATE_KEY]
+        assert state["browser"] == "safari"
+        assert state["remaining"][0] == "chrome"
+        assert "firefox" not in state["remaining"]
 
     def test_explicit_env_pair_records_nothing(self):
         cfg = _discover(_config(AUTH_TOKEN="x" * 20, CT0="y" * 20), {"safari": DEAD})
-        assert env.X_COOKIE_BROWSER_KEY not in cfg
+        assert env.X_SESSION_STATE_KEY not in cfg
 
     def test_next_pair_skips_incomplete_and_same_session(self):
         cfg = _discover(_config(), {"safari": DEAD, "chrome": {"auth_token": DEAD["auth_token"], "ct0": "z" * 12},
@@ -79,7 +80,7 @@ class TestEnvBookkeeping:
             pair = env.next_x_browser_pair(cfg)
         assert pair == (LIVE["auth_token"], LIVE["ct0"], "edge")
         assert cfg["AUTH_TOKEN"] == LIVE["auth_token"]
-        assert cfg[env.X_COOKIE_BROWSER_KEY] == "edge"
+        assert cfg[env.X_SESSION_STATE_KEY]["browser"] == "edge"
 
     def test_next_pair_none_when_exhausted(self):
         cfg = _discover(_config(), {"safari": DEAD})
@@ -89,7 +90,8 @@ class TestEnvBookkeeping:
 
     def test_next_pair_never_replaces_non_browser_session(self):
         cfg = _config(AUTH_TOKEN="a" * 20, CT0="b" * 20, _AUTH_TOKEN_SOURCE="agentcookie",
-                      **{env.X_ALT_COOKIE_BROWSERS_KEY: ["chrome"]})
+                      **{env.X_SESSION_STATE_KEY: {"browser": "safari", "remaining": ["chrome"],
+                                                   "rejected": set(), "auth_token": "a" * 20, "ct0": "b" * 20}})
         with mock.patch("lib.cookie_extract.extract_cookies") as extract:
             assert env.next_x_browser_pair(cfg) is None
         extract.assert_not_called()
@@ -118,7 +120,7 @@ class TestBirdFailover:
         assert response["items"] == [{"id": "1", "text": "tweet"}]
         assert run.call_count == 2
         assert bird_x._credentials["AUTH_TOKEN"] == LIVE["auth_token"]
-        assert cfg[env.X_COOKIE_BROWSER_KEY] == "chrome"
+        assert cfg[env.X_SESSION_STATE_KEY]["browser"] == "chrome"
 
     def test_switched_session_sticks_for_later_searches(self):
         self._inject({"safari": DEAD, "chrome": LIVE})
@@ -164,9 +166,70 @@ class TestBirdFailover:
 
     def test_failover_respects_exhausted_deadline(self):
         self._inject({"safari": DEAD, "chrome": LIVE})
-        with mock.patch("lib.cookie_extract.extract_cookies", side_effect=_browser_cookies({"chrome": LIVE})), \
+        with mock.patch("lib.cookie_extract.extract_cookies", side_effect=_browser_cookies({"chrome": LIVE})) as extract, \
              mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=_bird_outputs(SEARCH_500)) as run, \
              mock.patch.object(bird_x, "_clamped_bird_timeout", return_value=None):
             response = bird_x._run_bird_search("kanye", count=10, timeout=30, deadline=1.0)
-        assert response["error"] == "Internal server error"
+        assert response["error"].startswith("Internal server error")
         assert run.call_count == 1
+        assert extract.call_count == 0
+
+
+class TestGreptileRegressions:
+    def test_config_copy_cannot_reinject_rejected_session(self):
+        """pipeline.run searches on dict(config); a later phase reuses config."""
+        cfg = _discover(_config(), {"safari": DEAD, "chrome": LIVE})
+        run_copy = dict(cfg)
+        env._inject_bird_credentials(run_copy)
+        with mock.patch("lib.cookie_extract.extract_cookies", side_effect=_browser_cookies({"chrome": LIVE})), \
+             mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=_bird_outputs(SEARCH_500, SEARCH_OK)):
+            bird_x._run_bird_search("kanye", count=10, timeout=30)
+        assert cfg["AUTH_TOKEN"] == DEAD["auth_token"]  # the original copy is stale
+        env._inject_bird_credentials(cfg)  # supplemental phase re-injects
+        assert bird_x._credentials["AUTH_TOKEN"] == LIVE["auth_token"]
+
+    def test_rejected_sessions_are_never_retried(self):
+        """Browser order A, B, A, C: after A and B fail, go straight to C."""
+        b_pair = {"auth_token": "second-dead-token-2222", "ct0": "second-dead-ct0-22"}
+        c_pair = {"auth_token": "third-live-token-3333", "ct0": "third-live-ct0-333"}
+        cfg = _discover(_config(FROM_BROWSER="safari,chrome,brave,edge"), {"safari": DEAD})
+        env._inject_bird_credentials(cfg)
+        others = {"chrome": b_pair, "brave": DEAD, "edge": c_pair}
+        with mock.patch("lib.cookie_extract.extract_cookies", side_effect=_browser_cookies(others)), \
+             mock.patch.object(bird_x, "_invoke_bird_subprocess",
+                               side_effect=_bird_outputs(SEARCH_401, SEARCH_401, SEARCH_OK)) as run:
+            response = bird_x._run_bird_search("kanye", count=10, timeout=30)
+        assert response["items"] == [{"id": "1", "text": "tweet"}]
+        assert run.call_count == 3
+        assert bird_x._credentials["AUTH_TOKEN"] == c_pair["auth_token"]
+
+    def test_browser_walk_stops_at_deadline(self):
+        cfg = _discover(_config(), {"safari": DEAD})
+        with mock.patch("lib.cookie_extract.extract_cookies") as extract, \
+             mock.patch("time.monotonic", return_value=100.0):
+            assert env.next_x_browser_pair(cfg, deadline=101.0) is None
+        extract.assert_not_called()
+        assert cfg[env.X_SESSION_STATE_KEY]["remaining"]  # left for a later search
+
+    def test_browser_walk_stops_on_cancel(self):
+        import threading
+        cfg = _discover(_config(), {"safari": DEAD})
+        cancel = threading.Event(); cancel.set()
+        with mock.patch("lib.cookie_extract.extract_cookies") as extract:
+            assert env.next_x_browser_pair(cfg, cancel=cancel) is None
+        extract.assert_not_called()
+
+    def test_lock_wait_is_bounded_by_deadline(self):
+        import time
+        cfg = _discover(_config(), {"safari": DEAD, "chrome": LIVE})
+        env._inject_bird_credentials(cfg)
+        bird_x._session_lock.acquire()
+        try:
+            with mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=_bird_outputs(SEARCH_401)):
+                started = time.monotonic()
+                response = bird_x._run_bird_search("kanye", count=10, timeout=30,
+                                                   deadline=time.monotonic() + 1.5)
+            assert time.monotonic() - started < 5
+            assert "session rejected (cookies from safari)" in response["error"]
+        finally:
+            bird_x._session_lock.release()

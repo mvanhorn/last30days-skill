@@ -1233,42 +1233,69 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
             # left, so bird can move to the next browser's session if X
             # rejects this one (an expired session in an earlier browser
             # would otherwise shadow a live one in a later browser).
-            config[X_COOKIE_BROWSER_KEY] = browsers[chosen_index]
-            config[X_ALT_COOKIE_BROWSERS_KEY] = list(browsers[chosen_index + 1:])
+            config[X_SESSION_STATE_KEY] = {
+                "browser": browsers[chosen_index],
+                "remaining": list(browsers[chosen_index + 1:]),
+                "rejected": set(),
+                "auth_token": chosen.get("auth_token"),
+                "ct0": chosen.get("ct0"),
+            }
         for cookie_name, env_key in spec["mapping"].items():
             if chosen.get(cookie_name) and not config.get(env_key):
                 extracted[env_key] = chosen[cookie_name]
     return extracted
 
 
-# In-memory bookkeeping for X browser-session failover (never persisted).
-X_COOKIE_BROWSER_KEY = "_X_COOKIE_BROWSER"
-X_ALT_COOKIE_BROWSERS_KEY = "_X_ALT_COOKIE_BROWSERS"
+# In-memory X browser-session failover state (never persisted). One mutable
+# dict per run: ``pipeline.run`` and its phases work on shallow config copies,
+# so keeping the live session here (not in AUTH_TOKEN/CT0) lets every copy see
+# a switch made by any other.
+X_SESSION_STATE_KEY = "_X_SESSION_STATE"
 
 
-def next_x_browser_pair(config: dict[str, Any]) -> tuple[str, str, str] | None:
+def x_session_state(config: dict[str, Any]) -> dict[str, Any] | None:
+    """The run's browser-session failover state, or None when not browser-sourced."""
+    state = config.get(X_SESSION_STATE_KEY)
+    if not isinstance(state, dict) or config.get("_AUTH_TOKEN_SOURCE") != "browser":
+        return None
+    return state
+
+
+def next_x_browser_pair(
+    config: dict[str, Any],
+    deadline: float | None = None,
+    cancel: Any = None,
+) -> tuple[str, str, str] | None:
     """Extract the next browser's complete X session after a rejection.
 
-    Walks the browsers left after the one that supplied the current session,
-    in the same order ``extract_browser_credentials`` used, and returns
-    ``(auth_token, ct0, browser)`` for the first complete pair that is not the
-    session already rejected. Updates ``config`` so later status reporting
-    names the new source. Returns None when no browser is left. Lazy on
-    purpose: a later Chromium browser may cost a Keychain prompt, so it is
-    read only after an earlier browser's session failed.
+    Marks the current session rejected, then walks the browsers left after
+    the one that supplied it, in ``extract_browser_credentials`` order, and
+    returns ``(auth_token, ct0, browser)`` for the first complete pair whose
+    session has not been rejected this run. Stops early when ``deadline``
+    (``time.monotonic()``) is under two seconds away or ``cancel`` is set,
+    leaving unread browsers for a later search. Lazy on purpose: a later
+    Chromium browser may cost a Keychain prompt, so it is read only after an
+    earlier browser's session failed.
     """
-    if config.get("_AUTH_TOKEN_SOURCE") != "browser":
+    state = x_session_state(config)
+    if state is None:
         return None
-    remaining = config.get(X_ALT_COOKIE_BROWSERS_KEY) or []
+    if state.get("auth_token"):
+        state["rejected"].add(state["auth_token"])
+    remaining = state["remaining"]
     if not remaining:
         return None
     try:
         from . import cookie_extract
     except ImportError:
         return None
+    import time as _time
     spec = COOKIE_DOMAINS["x"]
-    rejected = config.get("AUTH_TOKEN")
     while remaining:
+        if cancel is not None and cancel.is_set():
+            return None
+        if deadline is not None and deadline - _time.monotonic() < 2:
+            return None
         browser = remaining.pop(0)
         try:
             cookies = cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
@@ -1276,24 +1303,32 @@ def next_x_browser_pair(config: dict[str, Any]) -> tuple[str, str, str] | None:
             continue
         if not cookie_extract.has_complete_pair(cookies, spec["cookies"]):
             continue
-        if cookies["auth_token"] == rejected:
-            # Same session shared through another browser profile; skip it.
+        if cookies["auth_token"] in state["rejected"]:
+            # A session already rejected this run (e.g. a shared profile).
             continue
+        state.update(browser=browser, auth_token=cookies["auth_token"], ct0=cookies["ct0"])
         _apply_x_pair(config, cookies["auth_token"], cookies["ct0"], "browser")
-        config[X_COOKIE_BROWSER_KEY] = browser
         return cookies["auth_token"], cookies["ct0"], browser
     return None
 
 
 def _inject_bird_credentials(config: dict[str, Any]) -> None:
-    """Hand the X session (and its browser failover) to the bird client."""
+    """Hand the X session (and its browser failover) to the bird client.
+
+    For a browser-sourced session the shared run state wins over this
+    config's AUTH_TOKEN/CT0, so a config copy made before a failover never
+    re-injects the session X already rejected.
+    """
     from . import bird_x
-    bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
-    if config.get("_AUTH_TOKEN_SOURCE") == "browser" and config.get(X_COOKIE_BROWSER_KEY):
+    state = x_session_state(config)
+    if state is not None and state.get("auth_token") and state.get("ct0"):
+        bird_x.set_credentials(state["auth_token"], state["ct0"])
         bird_x.set_session_failover(
-            config.get(X_COOKIE_BROWSER_KEY),
-            lambda: next_x_browser_pair(config),
+            state.get("browser"),
+            lambda deadline=None, cancel=None: next_x_browser_pair(config, deadline, cancel),
         )
+        return
+    bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
 
 
 # Auth-origin label per X backend for ``get_x_source_with_method`` (bird's

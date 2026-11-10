@@ -438,13 +438,24 @@ def _run_bird_search(
             return response
         if cancel is not None and cancel.is_set():
             return response
-        with _session_lock:
+        failed_browser = _session_browser
+        # Never start browser reads (possible Keychain prompts) once the
+        # search budget can no longer fit a retry.
+        if deadline is not None and _clamped_bird_timeout(timeout, deadline) is None:
+            return _annotate_session_error(response, error, failed_browser)
+        wait = -1 if deadline is None else max(0.0, deadline - time.monotonic())
+        if not _session_lock.acquire(timeout=wait):
+            return _annotate_session_error(response, error, failed_browser)
+        try:
             if _credentials.get('AUTH_TOKEN') != started_with:
                 switched = True  # another search already moved to a new session
             else:
                 switched = False
                 failed_browser = _session_browser
-                nxt = _next_session() if _next_session is not None else None
+                nxt = (
+                    _next_session(deadline=deadline, cancel=cancel)
+                    if _next_session is not None else None
+                )
                 if nxt:
                     auth_token, ct0, browser = nxt
                     set_credentials(auth_token, ct0)
@@ -455,30 +466,39 @@ def _run_bird_search(
                         tty_only=False,
                     )
                     switched = True
+        finally:
+            _session_lock.release()
         if switched:
             timeout = _clamped_bird_timeout(timeout, deadline)
             if timeout is None:
                 return response
             continue
-        if failed_browser and _session_rejected(error):
-            return {
-                **response,
-                "error": (
-                    f"X session rejected (cookies from {failed_browser}): {error}. "
-                    f"Log in to x.com again in {failed_browser}, or set FROM_BROWSER "
-                    "to the browser you use for X."
-                ),
-            }
-        if failed_browser:
-            return {
-                **response,
-                "error": (
-                    f"{error} (X can return this when the {failed_browser} session "
-                    f"is expired; if it persists, log in to x.com again in "
-                    f"{failed_browser} or set FROM_BROWSER to the browser you use for X)"
-                ),
-            }
+        return _annotate_session_error(response, error, failed_browser)
+
+
+def _annotate_session_error(
+    response: Dict[str, Any], error: str, failed_browser: Optional[str]
+) -> Dict[str, Any]:
+    """Name the browser whose X session failed so the report says what to fix."""
+    if not failed_browser:
         return response
+    if _session_rejected(error):
+        return {
+            **response,
+            "error": (
+                f"X session rejected (cookies from {failed_browser}): {error}. "
+                f"Log in to x.com again in {failed_browser}, or set FROM_BROWSER "
+                "to the browser you use for X."
+            ),
+        }
+    return {
+        **response,
+        "error": (
+            f"{error} (X can return this when the {failed_browser} session "
+            f"is expired; if it persists, log in to x.com again in "
+            f"{failed_browser} or set FROM_BROWSER to the browser you use for X)"
+        ),
+    }
 
 
 def _session_browser_update(browser: str) -> None:
