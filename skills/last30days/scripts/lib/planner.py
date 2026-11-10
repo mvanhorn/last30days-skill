@@ -831,11 +831,21 @@ _ENABLEMENT_AGENT_RE = re.compile(
     r"(?:control(?:s|ling)?|operat(?:e|es|ing)|drives?|automat(?:e|es|ing)|uses?)\s+" + _DEVICE,
     re.IGNORECASE,
 )
+# News about device control, or a threat doing it, is not a request to give a
+# tool that ability: "latest news about malware controlling my browser".
+_ENABLEMENT_EXCLUDE_RE = re.compile(
+    r"\b(?:latest|news|announced|just shipped|launched|released|breaking"
+    r"|malware|virus(?:es)?|spyware|ransomware|trojans?|keyloggers?|rootkits?"
+    r"|hack(?:ed|er|ers|ing)?|scam(?:s|mers?)?|attackers?|someone|somebody|stranger)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_enablement(topic: str) -> bool:
     """The topic asks how to give a named tool a capability, such as
     controlling the person's computer. That is a how-to, not a comparison."""
+    if _ENABLEMENT_EXCLUDE_RE.search(topic):
+        return False
     return bool(_ENABLEMENT_TARGET_RE.search(topic) or _ENABLEMENT_AGENT_RE.search(topic))
 
 

@@ -664,9 +664,6 @@ class FallbackDefaultsTests(unittest.TestCase):
         self.assertIn("LLM planning failed", output)
         self.assertIn("No --plan passed", output)
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class EnablementIntentTests(unittest.TestCase):
     """Issue Esper-Labs/last30days-com#616: "best Grok AI bot to control my
@@ -728,6 +725,28 @@ class EnablementIntentTests(unittest.TestCase):
             with self.subTest(topic=topic):
                 self.assertFalse(planner._is_enablement(topic))
 
+    def test_news_and_threats_are_not_enablement(self):
+        self.assertEqual(
+            "breaking_news", planner._infer_intent("latest news about malware controlling my browser")
+        )
+        for topic in (
+            "latest news about malware controlling my browser",
+            "is a hacker controlling my computer",
+            "someone is controlling my laptop remotely",
+            "Anthropic launched an agent that controls your computer",
+        ):
+            with self.subTest(topic=topic):
+                self.assertFalse(planner._is_enablement(topic))
+
+    def test_llm_news_verdict_is_not_overridden(self):
+        topic = "latest news about malware controlling my browser"
+        plan = planner._sanitize_plan(
+            self._raw(intent="breaking_news", cluster_mode="story"), topic, self.SOURCES, None, "default"
+        )
+        self.assertEqual("breaking_news", plan.intent)
+        self.assertEqual("strict_recent", plan.freshness_mode)
+        self.assertEqual("story", plan.cluster_mode)
+
     def test_llm_comparison_verdict_becomes_how_to(self):
         plan = planner._sanitize_plan(self._raw(), self.TOPIC, self.SOURCES, None, "default")
         self.assertEqual("how_to", plan.intent)
@@ -752,3 +771,7 @@ class EnablementIntentTests(unittest.TestCase):
         )
         self.assertEqual("product", plan.intent)
         self.assertEqual("none", plan.cluster_mode)
+
+
+if __name__ == "__main__":
+    unittest.main()
