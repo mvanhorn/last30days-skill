@@ -369,7 +369,13 @@ def _diversify_pool(
     if capability:
         reserved_ids = {c.candidate_id for c in protected}
         protected += _capability_reservation(
-            [c for c in fused if c.candidate_id not in reserved_ids and is_capability_result(c, capability, host)]
+            [
+                c
+                for c in fused
+                if c.candidate_id not in reserved_ids
+                and not schema.candidate_out_of_window(c)
+                and is_capability_result(c, capability, host)
+            ]
         )
     protected_ids = {c.candidate_id for c in protected}
     pool: list[schema.Candidate] = list(protected)

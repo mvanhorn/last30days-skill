@@ -128,6 +128,23 @@ def test_pool_reserves_no_slot_for_a_capability_search_post_that_names_the_host(
     assert not any(cid.startswith("tagged-") for cid in kept)
 
 
+def test_pool_reserves_no_slot_for_out_of_window_capability_results():
+    host_posts = [
+        _candidate(f"grok-{i}", f"Grok Bot post {i}", ["primary"], 1.0 - i / 100)
+        for i in range(10)
+    ]
+    stale = _candidate("stale", "MCP server stale", ["capability-1"], 0.02)
+    stale.source_items[0].published_at = "2024-01-01"
+    stale.metadata = {"range_from": "2026-10-10", "range_to": "2026-11-09"}
+    fresh = _candidate("fresh", "MCP server fresh", ["capability-1"], 0.01)
+    pool = fusion._diversify_pool(
+        host_posts + [stale, fresh], 8, capability={"capability-1"}, host="grok"
+    )
+    kept = {c.candidate_id for c in pool}
+    assert "fresh" in kept
+    assert "stale" not in kept
+
+
 def test_pool_without_capability_searches_is_unchanged():
     host_posts = [
         _candidate(f"grok-{i}", f"Grok Bot post {i}", ["primary"], 1.0 - i / 100)
