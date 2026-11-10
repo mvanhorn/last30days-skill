@@ -163,6 +163,45 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertNotIn("\\.", rendered)
         self.assertNotIn("•", rendered)
 
+    def test_each_story_keeps_its_own_pulled_quote(self):
+        md = (
+            "**North West takes the stage** - Fans say she sounds like her father.\n"
+            '> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes\n'
+            "\n"
+            "**The album debate** - Reddit is less convinced.\n"
+            "\n"
+            '> "Internet feelings vs reality." 🟠 u/CappaccinoJay on r/hiphopheads · 1,315 upvotes\n'
+        )
+        rendered = html_render._markdown_to_html(md)
+        self.assertEqual(2, rendered.count("<blockquote>"))
+        self.assertIn(
+            "<blockquote>&quot;Ofc shes literally him😭&quot; 🎵 @haktimel2 on TikTok · 825,451 likes</blockquote>",
+            rendered,
+        )
+        self.assertIn(
+            "<blockquote>&quot;Internet feelings vs reality.&quot; 🟠 u/CappaccinoJay"
+            " on r/hiphopheads · 1,315 upvotes</blockquote>",
+            rendered,
+        )
+        first_quote = rendered.index("<blockquote>")
+        self.assertLess(rendered.index("North West takes the stage"), first_quote)
+        self.assertLess(first_quote, rendered.index("The album debate"))
+        self.assertLess(rendered.index("The album debate"), rendered.rindex("<blockquote>"))
+
+    def test_pulled_quote_text_renders_literally(self):
+        md = (
+            '> "a > b, 5 * 4 | see https://example.test/x?a=1&b=2 <script>" '
+            "🟠 u/ada on r/math · 12 upvotes"
+        )
+        rendered = html_render._markdown_to_html(md)
+        self.assertEqual(
+            "<blockquote>&quot;a &gt; b, 5 * 4 | see https://example.test/x?a=1&amp;b=2"
+            " &lt;script&gt;&quot; 🟠 u/ada on r/math · 12 upvotes</blockquote>",
+            rendered.strip(),
+        )
+        for tag in ("<a ", "<em>", "<table", "<script>"):
+            self.assertNotIn(tag, rendered)
+
     def test_list_free_markers_inside_code_are_left_alone(self):
         rendered = html_render._markdown_to_html("```\n• keep\n1\\. keep\n```")
         self.assertIn("• keep", rendered)

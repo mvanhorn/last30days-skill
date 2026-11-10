@@ -227,7 +227,7 @@ I've compared {TOPIC_A} vs {TOPIC_B} [vs ...] using the latest community data. S
 - Use bold-lead-in paragraphs with ` - ` separators for the body (that is general-query voice)
 - Use a `KEY PATTERNS from the research:` numbered list (replaced by per-entity Strengths/Weaknesses bullets and the emerging-stack paragraph)
 - Fabricate a `## Notable Stats` block (the engine footer IS the stats block, LAW 5)
-- Attach like, upvote, view, or point counts to quotes and attributions (`references/synthesis.md` COUNTS IN PROSE; entity scale figures stay)
+- Attach like, upvote, view, or point counts to quotes and attributions, or add pulled-quote lines (`references/synthesis.md` COUNTS IN PROSE; entity scale figures stay)
 - Produce section headers outside the six listed above (`## Quick Verdict`, `## {Entity}` per entity, `## Head-to-Head`, `## The Bottom Line`, `## The emerging stack` are the only allowed `##` headers per LAW 4 comparison exception)
 
 **Reference exemplar:** `$LAST30DAYS_MEMORY_DIR/openclaw-vs-hermes-vs-paperclip-LAUNCH-VIDEO-april9-exemplar.md` preserves the April 9 canonical output with full structural analysis. Match this shape section-for-section.

@@ -217,8 +217,9 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
         # wording (no tool-contract override claim), and HN cluster-evidence
         # comment lines carrying the comment's own link, and #706's fenced
         # text footer, and #1082's removal of LAW N framing from model-visible
-        # contract text, then moving presentation commands out of the payload.
-        "55bbe53ca0895286ec01abc57579c9c6e0c5e0f50d4dbd43aa34bbbe850eb38f"
+        # contract text, then moving presentation commands out of the payload,
+        # and Top Community Comments lines naming the platform dot and subreddit.
+        "5defd1bd77d24ff9e04b08a197cc955ad77b8e5f67835f3ed22bd32b1264ce00"
     )
 
 

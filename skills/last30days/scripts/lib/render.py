@@ -3572,6 +3572,29 @@ def _comment_attribution(source: str | None, author: str | None) -> str:
     return f"{prefix}{author}" if prefix else author
 
 
+def _comment_platform_dot(source: str | None) -> str:
+    """The footer's dot for a source ("🟠" for Reddit), or "" when it has none."""
+    for source_key, emoji, *_rest in _FOOTER_SOURCES:
+        if source_key == source:
+            return emoji
+    return ""
+
+
+def _comment_community(item: schema.SourceItem) -> str:
+    """Where a comment was posted, as ``on r/sub``. Only Reddit has one."""
+    if item.source != "reddit":
+        return ""
+    subreddit = (item.container or "").strip().removeprefix("r/")
+    return f" on r/{subreddit}" if subreddit else ""
+
+
+def _comment_count(score) -> str:
+    """A vote count with thousands separators; other values print as they are."""
+    if isinstance(score, int) and not isinstance(score, bool):
+        return f"{score:,}"
+    return str(score)
+
+
 def _comment_link(item: schema.SourceItem, comment: dict, fallback: str = "") -> str:
     """Link for a quoted comment: where it was said, never the HN article.
 
@@ -3803,8 +3826,9 @@ def _render_top_comments(
     use the funniest comments never reach the model. This block always surfaces
     the crowd-voted comments and leaves the funny/quotable SELECTION to the model
     (a capable fun judge). Ranking is per-platform-normalized so one platform
-    can't crowd out the rest; each line carries the verbatim comment/post URL so
-    the model can cite without reconstructing a link.
+    can't crowd out the rest; each line carries the platform dot, the author,
+    the subreddit for Reddit, the count and the verbatim comment/post URL, so
+    the model can attribute and cite without looking anything up.
     """
     seen: set[str] = set()
     scored: list[tuple[float, schema.Candidate, schema.SourceItem, dict, str]] = []
@@ -3881,13 +3905,15 @@ def _render_top_comments(
         url = _comment_link(item, tc, fallback=cand.url)
         url_part = f" — {url}" if url else ""
         vote_part = (
-            f" ({score} {vote_label})"
+            f" ({_comment_count(score)} {vote_label})"
             if score is not None and score != ""
             else ""
         )
+        dot = _comment_platform_dot(item.source)
+        dot_part = f"{dot} " if dot else ""
         lines.append(
             f'- "{_format_untrusted_evidence(body, 240, continuation_indent="  ")}" '
-            f"— {attribution}{vote_part}{url_part}"
+            f"— {dot_part}{attribution}{_comment_community(item)}{vote_part}{url_part}"
         )
     return lines
 
