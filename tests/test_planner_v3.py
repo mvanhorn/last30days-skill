@@ -1,6 +1,6 @@
 import unittest
 
-from lib import planner
+from lib import fusion, planner
 
 
 class PlannerV3Tests(unittest.TestCase):
@@ -820,6 +820,13 @@ class EnablementIntentTests(unittest.TestCase):
         )
         plan = planner._sanitize_plan(raw, self.TOPIC, self.SOURCES, None, "default")
         self.assertEqual(["Grok computer control", "browser automation CLI agent"], self._searches(plan))
+
+    def test_llm_capability_search_naming_the_host_still_gets_a_host_free_one(self):
+        raw = self._raw()
+        raw["subqueries"][0]["search_query"] = "Grok MCP computer control"
+        plan = planner._sanitize_plan(raw, self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual(["Grok MCP computer control", "computer use MCP server"], self._searches(plan))
+        self.assertTrue(fusion.capability_labels(plan))
 
     def test_explicit_plan_gets_no_capability_search(self):
         plan = planner._sanitize_plan(

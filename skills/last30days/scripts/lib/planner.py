@@ -576,7 +576,7 @@ def _sanitize_plan(
         and not honor_plan_sources
         and intent_hint == "how_to"
         and _is_enablement(topic)
-        and not _has_capability_subquery(subqueries)
+        and not _has_capability_subquery(subqueries, _enablement_host(topic))
     ):
         subqueries.extend(_enablement_subqueries(topic, list(source_weights), start=len(subqueries) + 1)[:1])
     if depth == "quick" and subqueries:
@@ -927,9 +927,11 @@ def _enablement_capability_queries(topic: str) -> list[str]:
     return ["computer use MCP server", "desktop automation CLI for AI agents"]
 
 
-def _has_capability_subquery(subqueries) -> bool:
+def _has_capability_subquery(subqueries, host: str) -> bool:
+    # Must leave out the host: fusion.capability_labels ignores searches that name it.
     return any(
         re.search(r"\b(?:mcp|cli|computer[- ]use|automation)\b", sq.search_query, re.IGNORECASE)
+        and not (host and re.search(rf"\b{re.escape(host)}", sq.search_query, re.IGNORECASE))
         for sq in subqueries
     )
 
