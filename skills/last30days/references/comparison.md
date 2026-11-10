@@ -145,7 +145,7 @@ Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (omit unnecessary tra
 **Required comparison structure (match the April 9 exemplar):**
 
 ````
-🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+{the engine's first line, copied verbatim}
 
 # {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (/Last30Days)
 

@@ -61,21 +61,25 @@ def _skill_version() -> str:
     return "?"
 
 
-def _render_badge() -> list[str]:
-    """Emit the MANDATORY first-line badge per SKILL.md OUTPUT CONTRACT.
+_BADGE_TOPIC_LIMIT = 60
 
-    Added in v3.0.8 after three Opus 4.7 self-debugs (2026-04-18) confirmed
-    the model was failing to emit the badge manually because SKILL.md was
-    too big to reach the BADGE MANDATORY block before synthesis. Engine
-    emission makes passing-through-the-script-output the default-correct
-    behavior; emitting the badge no longer depends on model compliance.
+
+def _render_badge(topic: str, range_from: str, range_to: str) -> list[str]:
+    """Emit the first-line badge: search, window and version.
+
+    The engine owns this line so that passing the script output through is
+    the default-correct behavior; the instruction files tell the model to
+    copy it rather than rebuild it. A segment with nothing to say is left
+    out, so the separators never double up or trail.
     """
     version = _skill_version()
-    today = date.today().strftime("%Y-%m-%d")
-    return [
-        f"🌐 last30days v{version} · synced {today}",
-        "",
+    segments = [
+        "🌐 last30days",
+        _truncate(_safe_title(topic), _BADGE_TOPIC_LIMIT),
+        dates.format_window(range_from, range_to),
+        f"v{version}" if version else "",
     ]
+    return [" · ".join(segment for segment in segments if segment), ""]
 
 
 def _ordinal(count: int) -> str:
@@ -110,7 +114,7 @@ def render_discovery(report: schema.DiscoveryReport) -> str:
         f"# Trending discovery: {report.domain}" if report.domain else "# Trending now"
     )
     lines = [
-        *_render_badge(),
+        *_render_badge(report.domain, report.range_from, report.range_to),
         title,
         "",
         f"Window: {report.range_from} to {report.range_to}",
@@ -801,7 +805,7 @@ def render_compact(
     evidence_report = schema.without_sources(report, {"corpus"})
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
-        *_render_badge(),
+        *_render_badge(report.topic, report.range_from, report.range_to),
         f"# last30days v{_skill_version()}: {report.topic}",
         "",
         *_assistant_safety_lines(),
@@ -961,7 +965,7 @@ def render_for_html(
     audience = registers.get_register(register)
     evidence_report = schema.without_sources(report, {"corpus"})
     lines = [
-        *_render_badge(),
+        *_render_badge(report.topic, report.range_from, report.range_to),
         *_render_html_metadata(report),
     ]
     drill_context = _render_drill_context(report)
@@ -1036,7 +1040,9 @@ def render_for_html_comparison(
         f"· comparing {len(entities)}: {', '.join(entities)} -->"
     )
     lines = [
-        *_render_badge(),
+        *_render_badge(
+            " vs ".join(entities), main_report.range_from, main_report.range_to
+        ),
         meta,
     ]
     if synthesis_md:
@@ -1386,7 +1392,9 @@ def render_comparison_multi(
     synthesized_topic = " vs ".join(entities)
 
     lines: list[str] = [
-        *_render_badge(),
+        *_render_badge(
+            synthesized_topic, main_report.range_from, main_report.range_to
+        ),
         f"# last30days v{_skill_version()}: {synthesized_topic}",
         "",
         *_assistant_safety_lines(),

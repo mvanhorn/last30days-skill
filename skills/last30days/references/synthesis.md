@@ -184,7 +184,7 @@ here for the conversation, not the press release.
 Apply root LAWs 2–4 to the following normal-query template. Comparison uses its separate template.
 
 ```
-🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+{the engine's first line, copied verbatim}
 
 What I learned:
 

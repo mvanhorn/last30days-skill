@@ -149,7 +149,7 @@ When HTML is the requested deliverable - whether by `--emit=html`, `--emit:html`
 Respond with a concise handoff that includes the next-step choices:
 
 ```text
-🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+{the engine's first line, copied verbatim}
 
 📎 Shareable brief saved to <absolute HTML path>
 
@@ -180,7 +180,7 @@ If the user chooses open, open it when the host can safely open local files; oth
 
 The engine's `--emit=html` renderer combines:
 
-- The badge (`🌐 last30days vX.Y.Z · synced YYYY-MM-DD`) at the top
+- The engine's badge line at the top
 - A single inline metadata line (`{date range} · {active sources}`) below the badge
 - Your synthesis verbatim, with prose labels promoted to `<h2>` and bold lead-ins preserved
 - All `[name](url)` citations rendered as `<a>` tags

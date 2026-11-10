@@ -197,7 +197,11 @@ def test_creator_register_leads_markdown_and_html_with_best_takes():
 
 
 def test_default_register_is_byte_identical_when_omitted(monkeypatch):
-    monkeypatch.setattr(render, "_render_badge", lambda: ["fixed badge", ""])
+    monkeypatch.setattr(
+        render,
+        "_render_badge",
+        lambda topic, range_from, range_to: ["fixed badge", ""],
+    )
     monkeypatch.setattr(render, "_skill_version", lambda: "fixture")
     report = fixture_report()
 

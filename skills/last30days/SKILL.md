@@ -155,13 +155,7 @@ Historical `## From your library` findings may inform synthesis as dated context
 
 Apply these presentation defaults only where compatible with governing host/tool requirements and user instructions. User formatting preferences, including host memory, take precedence. The laws resolve conflicts within this skill. LAWs 1, 3, 5, 6, 7, and 8 apply to every query type; LAWs 2 and 4 have explicit comparison exceptions. Selected mode contracts also retain scoped exceptions: discovery relays its brief; hiring uses its scoped title; agent mode omits the invitation/wait and uses its report structure. Explicit machine-readable JSON uses `--emit=json` and verbatim engine stdout, with no prose badge, synthesis, footer, or invitation added.
 
-**BADGE (MANDATORY, FIRST LINE OF OUTPUT):** Pass through the engine's badge as line 1. When synthesizing it yourself, emit exactly:
-
-```
-🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
-```
-
-Use the installed version (`jq -r '.version' "$SKILL_DIR/../../.claude-plugin/plugin.json" 2>/dev/null || awk '/^version:/{gsub(/"/,"",$(2)); print $(2); exit}' "$SKILL_DIR/SKILL.md"`) and today's date. Put no other text on that line. Follow with one blank line.
+**BADGE (MANDATORY, FIRST LINE OF OUTPUT):** Copy the engine's first line (`🌐 last30days · ...`) verbatim as line 1. Put no other text on that line. Follow with one blank line.
 
 GENERAL / NEWS / PROMPTING / RECOMMENDATIONS use `What I learned:` on line 3 and bold-lead-in paragraphs. COMPARISON uses its required title and section template. DISCOVERY relays the engine-owned brief verbatim, including ranked headings, momentum labels, quotes, counters, handoffs, Podcast angle, X article angle, Pipeline, and the valid `Nothing solid this window` result. Do not retry or fabricate topics around an empty discovery brief.
 

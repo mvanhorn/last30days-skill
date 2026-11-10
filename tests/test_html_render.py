@@ -107,7 +107,8 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
         snapshot_markers = [
             "<!DOCTYPE html>",
             "<title>last30days · AI agent frameworks</title>",
-            '<div class="badge"><span class="accent">🌐</span> last30days v',
+            '<div class="badge"><span class="accent">🌐</span> '
+            "last30days · AI agent frameworks · Mar 30 to Apr 29, 2026 · v",
             '<div class="meta">2026-03-30 to 2026-04-29',
             '<div class="engine-footer"><pre>---\n✅ All agents reported back!',
             'Generated 2026-04-29 by /last30days v',
