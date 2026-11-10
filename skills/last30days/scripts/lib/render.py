@@ -4138,8 +4138,12 @@ def _render_reactions(report: schema.Report, *, label: str | None = None) -> lis
     if not report.artifacts.get("reactions"):
         return []
     lines = [f"## Reactions: {_safe_title(label)}" if label else "## Reactions", ""]
+    # Only threads that passed the shared relevance check: a launch whose name
+    # is a common word otherwise fills the block with comments on unrelated
+    # videos, and a rehearsal would quote them as reactions to the launch.
     venues = reactions.collect(
-        item for cand in report.ranked_candidates for item in cand.source_items
+        item for cand in report.ranked_candidates if _best_take_relevance_ok(cand)
+        for item in cand.source_items
     )
     if not venues:
         # Said outright: a requested block that is silently absent would read

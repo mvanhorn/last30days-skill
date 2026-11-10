@@ -170,6 +170,17 @@ def test_no_block_without_the_flag_and_a_plain_line_when_nothing_was_retrieved()
     assert "## Reactions\n\nNo comments were retrieved for this run." in empty
 
 
+def test_comments_on_a_thread_the_relevance_check_rejected_are_not_reactions(monkeypatch):
+    # A launch named like a common word pulls in unrelated videos; their
+    # comments are not reactions to the launch.
+    report = _report(_reddit_thread(), _hn_story())
+    monkeypatch.setattr(render, "_best_take_relevance_ok", lambda candidate: False)
+    text = render.render_compact(report)
+    assert "## Reactions\n" in text
+    assert "No comments were retrieved for this run." in text
+    assert "### r/SideProject" not in text and "### Hacker News" not in text
+
+
 def test_a_two_entity_comparison_renders_one_block_per_entity_grouped_by_venue():
     text = render.render_comparison_multi([
         ("Widgetly", _report(_reddit_thread(votes=[12, 30]), _hn_story())),
