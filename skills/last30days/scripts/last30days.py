@@ -1089,9 +1089,15 @@ COMPETITORS_MAX = competitors_mod.COMPETITORS_MAX
 COMPETITORS_DEFAULT = competitors_mod.COMPETITORS_DEFAULT
 
 
-def _resolved_company(entity: str, *, mock: bool) -> dict:
-    """Company fields for one entity's ``resolved`` artifact; mock runs make no request."""
-    if mock:
+# The lanes that use the resolved company. With every one of them in
+# EXCLUDE_SOURCES nothing reads the answer, so the topic is not sent.
+_COMPANY_LANES = frozenset({yahoo_finance.SOURCE, "jobs"})
+
+
+def _resolved_company(entity: str, *, mock: bool, config: dict) -> dict:
+    """Company fields for one entity's ``resolved`` artifact. Mock runs, and
+    runs that exclude every lane the company feeds, make no request."""
+    if mock or _COMPANY_LANES <= env.exclude_sources(config):
         return {}
     company = company_resolve.resolve_company(entity)
     if company.get("company"):
@@ -4328,7 +4334,7 @@ def _main(
         # lookup above it needs no key and does not depend on who planned the
         # run, so it happens with or without a host plan. Each entity of a
         # comparison is resolved on its own, after the split.
-        main_company = _resolved_company(topic, mock=args.mock)
+        main_company = _resolved_company(topic, mock=args.mock, config=config)
         if comp_enabled:
             config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget(
                 owner=topic,
@@ -4397,8 +4403,9 @@ def _main(
                 **main_company,
             }
             # The share-price window of a listed company. A mock run resolved
-            # no company, so it never reaches the price CLI.
-            yahoo_finance.attach_market_data(r, main_company)
+            # no company, so it never reaches the price CLI, and neither does
+            # a run with EXCLUDE_SOURCES=yahoo_finance.
+            yahoo_finance.attach_market_data(r, main_company, config)
             return r
 
         if comp_enabled:
@@ -4539,7 +4546,7 @@ def _main(
                     "github_repos": kwargs["github_repos"] or [],
                     "trustpilot_domain": kwargs["trustpilot_domain"] or "",
                     "context": kwargs["_context"],
-                    **_resolved_company(entity, mock=args.mock),
+                    **_resolved_company(entity, mock=args.mock, config=entity_config),
                 }
                 if kwargs["_context"]:
                     entity_config["_auto_resolve_context"] = kwargs["_context"]
@@ -4574,7 +4581,7 @@ def _main(
                     x_posts=plan_entry.get("_x_envelope"),
                 )
                 report.artifacts["resolved"] = resolved_effective
-                yahoo_finance.attach_market_data(report, resolved_effective)
+                yahoo_finance.attach_market_data(report, resolved_effective, entity_config)
                 return report
 
             entity_reports = fanout.run_competitor_fanout(

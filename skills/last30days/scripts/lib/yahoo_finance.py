@@ -7,6 +7,8 @@ closes of the research window once and stores the numbers as the report's
 
 Activation gate: the ``yahoo-finance-pp-cli`` binary on PATH and a company
 with a ticker. Without either, nothing happens and nothing is logged.
+``EXCLUDE_SOURCES=yahoo_finance`` switches it off the same way. ``--search``
+picks search sources and this is not one, so it does not switch it off.
 
 Which symbol is charted:
 
@@ -34,7 +36,10 @@ is the first trading day inside it and its last close is the last one. Daily
 moves are close to close between consecutive bars inside the window.
 
 A fetch that fails, is rate limited, or returns fewer than two closes records
-a degraded ``yahoo_finance`` source outcome and no artifact. Nothing raises.
+a degraded ``yahoo_finance`` source outcome and no artifact. So does an
+``autocomplete`` call that fails or answers in another shape: that is not the
+same as Yahoo listing no matching equity, which records nothing. Nothing
+raises.
 """
 
 from __future__ import annotations
@@ -42,10 +47,11 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+from concurrent.futures import Future
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from . import http, log, schema, subproc
+from . import env, http, log, schema, subproc
 
 CLI_BIN = "yahoo-finance-pp-cli"
 SOURCE = "yahoo_finance"
@@ -61,9 +67,16 @@ _US_EXCHANGES = frozenset({
 })
 
 # One fetch per symbol and window for the life of the process: the entities of
-# a comparison run on threads and each asks for the same S&P 500 window.
+# a comparison run on threads and each asks for the same S&P 500 window. The
+# lock guards the dict only. The thread that adds a key runs the CLI outside
+# the lock and the others wait on that key's future, so different symbols are
+# fetched at the same time.
 _fetch_lock = threading.Lock()
-_fetched: dict[tuple[str, str, str], dict[str, Any]] = {}
+_fetched: dict[tuple[str, str, str], Future] = {}
+
+
+class SymbolSearchFailed(Exception):
+    """``autocomplete`` gave no usable answer, so the symbol is unknown."""
 
 
 def _log(msg: str) -> None:
@@ -102,13 +115,16 @@ def _run_cli(args: list[str]) -> dict[str, Any]:
 
 def _first_equity(company: str, accept) -> str | None:
     """The first equity ``autocomplete`` lists for the company that ``accept``
-    takes, or None. ``accept`` gets the symbol in upper case."""
+    takes, or None when it lists none. ``accept`` gets the symbol in upper
+    case. Raises ``SymbolSearchFailed`` when the call failed or its answer
+    could not be read."""
     response = _run_cli(["autocomplete", "--query", company])
     if "error" in response:
-        _log(f"autocomplete for {company!r} failed: {response['error']}")
-        return None
+        raise SymbolSearchFailed(f"symbol search for {company!r} failed: {response['error']}")
     try:
         rows = response["data"]["results"]["ResultSet"]["Result"]
+        if not isinstance(rows, list):
+            raise TypeError(f"Result is {type(rows).__name__}, not a list")
         for row in rows:
             if str(row.get("typeDisp") or "").casefold() != "equity":
                 continue
@@ -116,12 +132,15 @@ def _first_equity(company: str, accept) -> str | None:
             if accept(symbol.upper()):
                 return symbol
     except (AttributeError, KeyError, TypeError) as exc:
-        _log(f"autocomplete for {company!r} had an unexpected shape: {exc!r}")
+        raise SymbolSearchFailed(
+            f"symbol search for {company!r}: schema: unexpected autocomplete response ({exc!r})"
+        ) from exc
     return None
 
 
 def _confirmed_symbol(company: dict[str, Any]) -> str | None:
-    """The Yahoo symbol for a resolved company, or None when not certain."""
+    """The Yahoo symbol for a resolved company, or None when not certain.
+    Raises ``SymbolSearchFailed`` when the symbol search itself failed."""
     name = str(company.get("company") or "").strip()
     ticker = str(company.get("ticker") or "").strip().upper()
     if ticker:
@@ -160,9 +179,20 @@ def _fetch_window(symbol: str, range_from: str, range_to: str) -> dict[str, Any]
     ``{"error": text}``. Fetched once per symbol and window."""
     key = (symbol, range_from, range_to)
     with _fetch_lock:
-        if key not in _fetched:
-            _fetched[key] = _fetch_window_uncached(symbol, range_from, range_to)
-        return _fetched[key]
+        pending = _fetched.get(key)
+        fetching = pending is None
+        if fetching:
+            pending = _fetched[key] = Future()
+    if fetching:
+        try:
+            pending.set_result(_fetch_window_uncached(symbol, range_from, range_to))
+        except BaseException as exc:
+            # Whoever is waiting gets the error; the next request tries again.
+            with _fetch_lock:
+                if _fetched.get(key) is pending:
+                    del _fetched[key]
+            pending.set_exception(exc)
+    return pending.result()
 
 
 def _fetch_window_uncached(symbol: str, range_from: str, range_to: str) -> dict[str, Any]:
@@ -232,16 +262,20 @@ def fetch_market_data(company: dict[str, Any], range_from: str, range_to: str) -
     """The price window for a resolved company.
 
     Returns ``{}`` when there is nothing to fetch (binary absent, no ticker,
-    or a symbol that could not be confirmed), ``{"artifact": {...}}`` when the
-    window came back, and ``{"error": text}`` when the fetch for a confirmed
-    symbol failed. Never raises.
+    or a symbol Yahoo does not confirm), ``{"artifact": {...}}`` when the
+    window came back, and ``{"error": text}`` when the symbol search or the
+    fetch for a confirmed symbol failed. Never raises.
     """
     if not (company.get("ticker") or company.get("ticker_candidates")):
         return {}
     if not _is_available():
         return {}
     try:
-        symbol = _confirmed_symbol(company)
+        try:
+            symbol = _confirmed_symbol(company)
+        except SymbolSearchFailed as exc:
+            _log(str(exc))
+            return {"error": str(exc)}
         if not symbol:
             return {}
         window = _fetch_window(symbol, range_from, range_to)
@@ -290,10 +324,20 @@ def _thirty_days_before(range_to: str) -> str:
     return (date.fromisoformat(range_to) - timedelta(days=PRICE_WINDOW_DAYS)).isoformat()
 
 
-def attach_market_data(report: schema.Report, company: dict[str, Any]) -> None:
+def is_excluded(config: dict[str, Any] | None) -> bool:
+    """True when ``EXCLUDE_SOURCES`` names this source."""
+    return SOURCE in env.exclude_sources(config or {})
+
+
+def attach_market_data(
+    report: schema.Report, company: dict[str, Any], config: dict[str, Any] | None = None,
+) -> None:
     """Fetch the report's window for the company and record it on the report:
     the ``yahoo_finance`` artifact on success, a degraded source outcome on a
-    failed fetch, and nothing at all when there was nothing to fetch."""
+    failed fetch, and nothing at all when there was nothing to fetch or the
+    run's ``config`` excludes the source."""
+    if is_excluded(config):
+        return
     outcome = fetch_market_data(company or {}, _thirty_days_before(report.range_to), report.range_to)
     if "artifact" in outcome:
         report.artifacts[SOURCE] = outcome["artifact"]
