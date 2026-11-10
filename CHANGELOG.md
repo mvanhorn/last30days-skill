@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.33.2] - 2026-11-10
+
+### Fixed
+
+- X search no longer fails with "Internal server error" when an earlier browser holds an expired x.com session. With `FROM_BROWSER=auto`, if X rejects the session from the first browser that has one (for example an old Safari login), the engine retries the search with the next browser's session (for example Chrome) and keeps using it for the rest of the run. When no other browser has a working session, the error names the browser whose session failed and is reported as an auth failure.
+
+
 ## [3.33.1] - 2026-11-10
 
 ### Fixed
