@@ -143,10 +143,14 @@ CASES = [
         {"company": "Apple Inc.", "ticker": "AAPL", "exchange": "Nasdaq"},
         id="apple-ignores-its-ended-tokyo-listing",
     ),
-    # Recorded Tesla data lists four exchanges and marks none as primary.
+    # Recorded Tesla data lists four exchanges and marks none as primary, so
+    # the listings are only candidates.
     pytest.param(
         "Tesla", None,
-        {"company": "Tesla", "company_site": "https://www.tesla.com/"},
+        {
+            "company": "Tesla", "company_site": "https://www.tesla.com/",
+            "ticker_candidates": ["TSLA", "TL0", "0R0X"],
+        },
         id="tesla-four-exchanges-none-primary",
     ),
     # Company with no ticker.
@@ -194,7 +198,10 @@ CASES = [
     ),
     pytest.param(
         "Alphabet", None,
-        {"company": "Alphabet Inc.", "company_site": "https://abc.xyz/"},
+        {
+            "company": "Alphabet Inc.", "company_site": "https://abc.xyz/",
+            "ticker_candidates": ["GOOG", "GOOGL"],
+        },
         id="alphabet-no-class-marked",
     ),
     # Listings on several exchanges.
@@ -208,13 +215,19 @@ CASES = [
     ),
     pytest.param(
         "Toyota", None,
-        {"company": "Toyota", "company_site": "https://global.toyota"},
+        {
+            "company": "Toyota", "company_site": "https://global.toyota",
+            "ticker_candidates": ["7203", "TYT", "TM"],
+        },
         id="toyota-no-exchange-marked",
     ),
     # An organization typed only by a kind of enterprise.
     pytest.param(
         "Toyota", _edited(TOYOTA, _only_instance_of(AUTOMOBILE_MANUFACTURER)),
-        {"company": "Toyota", "company_site": "https://global.toyota"},
+        {
+            "company": "Toyota", "company_site": "https://global.toyota",
+            "ticker_candidates": ["7203", "TYT", "TM"],
+        },
         id="typed-as-a-subclass-of-enterprise",
     ),
 ]

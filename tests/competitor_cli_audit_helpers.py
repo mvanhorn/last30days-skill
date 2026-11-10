@@ -11,7 +11,7 @@ from lib import resolve, schema
 def run_competitor_cli(
     monkeypatch, tmp_path, *, args=(), config=None, has_backend=False, resolutions=None,
     topic="MainBrand", competitors_list="PeerOne,PeerTwo", companies=None,
-    expected_topics=frozenset({"MainBrand", "PeerOne", "PeerTwo"}),
+    expected_topics=frozenset({"MainBrand", "PeerOne", "PeerTwo"}), market_cli=None,
 ):
     config = {} if config is None else config
     calls = {}
@@ -43,6 +43,9 @@ def run_competitor_cli(
     monkeypatch.setattr(resolve, "auto_resolve", resolver)
     company_resolver = mock.Mock(side_effect=lambda topic: dict((companies or {}).get(topic, {})))
     monkeypatch.setattr(cli.company_resolve, "resolve_company", company_resolver)
+    # The price CLI is absent unless a test hands in a stand-in for it.
+    monkeypatch.setattr(cli.yahoo_finance, "_is_available", lambda: market_cli is not None)
+    monkeypatch.setattr(cli.yahoo_finance.subproc, "run_with_timeout", market_cli)
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
     monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "")
     monkeypatch.setenv("LAST30DAYS_STORE", "")

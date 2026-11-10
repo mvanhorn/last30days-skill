@@ -50,7 +50,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope, yahoo_finance
 from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -4396,6 +4396,9 @@ def _main(
                 "context": config.get("_auto_resolve_context", "") or "",
                 **main_company,
             }
+            # The share-price window of a listed company. A mock run resolved
+            # no company, so it never reaches the price CLI.
+            yahoo_finance.attach_market_data(r, main_company)
             return r
 
         if comp_enabled:
@@ -4571,6 +4574,7 @@ def _main(
                     x_posts=plan_entry.get("_x_envelope"),
                 )
                 report.artifacts["resolved"] = resolved_effective
+                yahoo_finance.attach_market_data(report, resolved_effective)
                 return report
 
             entity_reports = fanout.run_competitor_fanout(

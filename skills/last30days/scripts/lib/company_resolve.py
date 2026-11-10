@@ -11,7 +11,9 @@ worse than none, so every step that is not certain returns nothing:
 - The ticker is certain when the company has exactly one primary listing:
   the one listing marked preferred, or the only listing when none is marked.
   A listing with an end time is ignored. Two share classes or two exchanges
-  with none marked give no ticker.
+  with none marked give no ticker. They give ``ticker_candidates`` instead:
+  the symbols of the current listings, for a caller that can confirm one of
+  them against a second source. A candidate is never a ticker on its own.
 
 Any error, timeout or unexpected response returns nothing and logs once.
 """
@@ -94,9 +96,11 @@ def resolve_company(topic: str) -> dict[str, Any]:
     """Return what is certain about the company a topic names.
 
     Keys, each present only when resolved: ``company``, ``company_site``,
-    ``ticker``, ``exchange``, and ``company_via_person`` (True) when the topic
-    is the person who leads the company. An empty dict means nothing is
-    certain. No request is made for a topic that is not company-shaped.
+    ``ticker``, ``exchange``, ``ticker_candidates`` (the current listings'
+    symbols, only when the company is certain and its ticker is not), and
+    ``company_via_person`` (True) when the topic is the person who leads the
+    company. An empty dict means nothing is certain. No request is made for a
+    topic that is not company-shaped.
     """
     if not company_topic_likely(topic):
         return {}
@@ -238,20 +242,25 @@ def _company_fields(entity: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
-def _primary_listing(entity: dict[str, Any]) -> dict[str, str]:
+def _listing_tickers(statement: dict[str, Any]) -> list[str]:
+    return [
+        snak["datavalue"]["value"]
+        for snak in statement.get("qualifiers", {}).get(_TICKER_SYMBOL, [])
+        if snak["snaktype"] == "value"
+    ]
+
+
+def _primary_listing(entity: dict[str, Any]) -> dict[str, Any]:
     current = [
         statement for statement in _statements(entity, _STOCK_EXCHANGE) if not _ended(statement)
     ]
     primary = _preferred_or_all(current)
-    if len(primary) != 1:
-        return {}
-    tickers = [
-        snak["datavalue"]["value"]
-        for snak in primary[0].get("qualifiers", {}).get(_TICKER_SYMBOL, [])
-        if snak["snaktype"] == "value"
-    ]
+    tickers = _listing_tickers(primary[0]) if len(primary) == 1 else []
     if len(tickers) != 1:
-        return {}
+        candidates = list(dict.fromkeys(
+            ticker for statement in current for ticker in _listing_tickers(statement)
+        ))
+        return {"ticker_candidates": candidates} if candidates else {}
     exchange_id = _value(primary[0])["id"]
     labels = _entities([exchange_id], "labels")[exchange_id]["labels"]
     listing = {"ticker": tickers[0]}

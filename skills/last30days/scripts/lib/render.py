@@ -238,6 +238,7 @@ SOURCE_LABELS = {
     "trustpilot": "Trustpilot",
     "amazon": "Amazon",
     "meta_ads": "Meta Ads",
+    "yahoo_finance": "Yahoo Finance",
     "perplexity": "Perplexity",
     "jobs": "Jobs",
     "corpus": "Your files",
@@ -876,6 +877,10 @@ def render_compact(
     if hiring_block and audience.name in {"default", "eli5"}:
         lines.extend(hiring_block)
         lines.append("")
+    market_block = _render_market_data(report)
+    if market_block:
+        lines.extend(market_block)
+        lines.append("")
     fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
     if audience.name in {"default", "eli5"}:
         # Keep this legacy assembly byte-for-byte stable. ELI5 has always been
@@ -1055,7 +1060,9 @@ def render_for_html_comparison(
         if corpus_section:
             lines.extend(["", f"## {label}", "", *corpus_section])
     # Comparison data quality notes also go to stderr, not into the artifact.
-    _append_html_footer(lines, main_report, save_path)
+    _append_html_footer(
+        lines, main_report, save_path, market_windows=_market_windows(entity_reports),
+    )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1159,9 +1166,13 @@ def _dedupe_notes(notes: list[str]) -> list[str]:
 
 
 def _append_html_footer(
-    lines: list[str], report: schema.Report, save_path: str | None
+    lines: list[str],
+    report: schema.Report,
+    save_path: str | None,
+    *,
+    market_windows: list[dict] | None = None,
 ) -> None:
-    footer = _render_emoji_footer(report, save_path)
+    footer = _render_emoji_footer(report, save_path, market_windows=market_windows)
     _append_pass_through_footer(lines, footer)
 
 
@@ -1446,7 +1457,9 @@ def render_comparison_multi(
     scaffold = _render_comparison_scaffold(synthesized_topic)
     lines.extend(scaffold)
 
-    footer = _render_emoji_footer(main_report, save_path)
+    footer = _render_emoji_footer(
+        main_report, save_path, market_windows=_market_windows(entity_reports),
+    )
     _append_pass_through_footer(lines, footer)
 
     lines.extend(_render_canonical_boundary())
@@ -1527,6 +1540,10 @@ def _render_entity_evidence_block(
         requested_clusters,
     )
     out: list[str] = [f"## {label}", ""]
+    market_block = _render_market_data(report, heading="### Market Data")
+    if market_block:
+        out.extend(market_block)
+        out.append("")
 
     if not evidence_report.clusters:
         out.append("(no significant discussion this month)")
@@ -2893,8 +2910,15 @@ def _footer_line_for_source(
     return f"{emoji} {label}: {count_str} {plural}"
 
 
-def _build_source_footer_lines(report: schema.Report) -> list[str]:
+def _build_source_footer_lines(
+    report: schema.Report,
+    *,
+    market_windows: list[dict] | None = None,
+) -> list[str]:
     """Return emoji-tree lines for populated sources only (>=1 item).
+
+    ``market_windows`` holds the price windows of every entity of a
+    comparison; left out, the report's own window is used.
 
     Sources that returned zero items - clean NO_RESULTS or a failure - are
     omitted; their outcome still surfaces in the ## Source Coverage /
@@ -2951,6 +2975,10 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
             line = f"📊 Polymarket: {count_str} {plural}"
         out.append(line)
 
+    yahoo_finance_line = _yahoo_finance_footer_line(report, market_windows)
+    if yahoo_finance_line:
+        out.append(yahoo_finance_line)
+
     amazon_line = _amazon_footer_line(report)
     if amazon_line:
         out.append(amazon_line)
@@ -2979,6 +3007,139 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
     # ## Partial Coverage / ## Source Coverage evidence blocks, so nothing is
     # silently lost; the conclusion surface just stays clean.
     return out
+
+
+def _market_windows(entity_reports: list[tuple[str, schema.Report]]) -> list[dict]:
+    """The price window of each entity that has one, in entity order."""
+    return [
+        report.artifacts["yahoo_finance"]
+        for _label, report in entity_reports
+        if _is_market_window(report.artifacts.get("yahoo_finance"))
+    ]
+
+
+_MARKET_WINDOW_NUMBERS = ("start_close", "end_close", "change_pct")
+
+
+def _is_market_window(window: object) -> bool:
+    return (
+        isinstance(window, dict)
+        and bool(window.get("symbol"))
+        and all(isinstance(window.get(key), (int, float)) for key in _MARKET_WINDOW_NUMBERS)
+    )
+
+
+def _signed_percent(value: float) -> str:
+    return f"{value:+.1f}%"
+
+
+def _market_price(value: float, currency: str) -> str:
+    """Dollars as ``$226.32``; any other currency by its code, ``JPY 2,480``,
+    with decimals only when the price has them."""
+    if currency == "USD":
+        return f"${value:,.2f}"
+    number = f"{value:,.0f}" if value == int(value) else f"{value:,.2f}"
+    return f"{_footer_safe(currency, 8)} {number}".strip()
+
+
+def _market_ticker(window: dict, *, name_company: bool) -> str:
+    ticker = _footer_safe(window["symbol"], 16)
+    company = _footer_safe(window.get("company") or "")
+    return f"{ticker} ({company})" if name_company and company else ticker
+
+
+def _market_day(iso_date: str) -> str:
+    try:
+        day = date.fromisoformat(iso_date)
+    except ValueError:
+        return _footer_safe(iso_date, 12)
+    return f"{day:%b} {day.day}"
+
+
+def _yahoo_finance_footer_line(
+    report: schema.Report,
+    market_windows: list[dict] | None = None,
+) -> str | None:
+    """Build the 📈 Yahoo Finance footer line from the price-window artifact.
+
+    One line whatever the number of tickers. A single ticker carries its two
+    closes and its largest daily move; a comparison lists each ticker's change
+    and keeps the line short. A ticker reached through the person who leads
+    the company names the company beside it. The S&P 500 segment is present
+    only when the window carries one (US listings).
+    """
+    if market_windows is None:
+        market_windows = [(report.artifacts or {}).get("yahoo_finance")]
+    windows = [window for window in market_windows if _is_market_window(window)]
+    if not windows:
+        return None
+    changes = " │ ".join(
+        f"{_market_ticker(window, name_company=bool(window.get('via_person')))} "
+        f"{_signed_percent(window['change_pct'])}"
+        for window in windows
+    )
+    parts = [f"📈 Yahoo Finance: {changes} in the L30"]
+    if len(windows) == 1:
+        currency = str(windows[0].get("currency") or "")
+        parts.append(
+            f"{_market_price(windows[0]['start_close'], currency)} → "
+            f"{_market_price(windows[0]['end_close'], currency)}"
+        )
+    benchmark = next(
+        (
+            window["benchmark"] for window in windows
+            if isinstance(window.get("benchmark"), dict)
+            and isinstance(window["benchmark"].get("change_pct"), (int, float))
+        ),
+        None,
+    )
+    if benchmark:
+        parts.append(
+            f"{_footer_safe(benchmark.get('name') or '')} "
+            f"{_signed_percent(benchmark['change_pct'])}"
+        )
+    moves = windows[0].get("top_moves") or []
+    if len(windows) == 1 and moves:
+        biggest = moves[0]
+        label = "worst day" if biggest["change_pct"] < 0 else "best day"
+        parts.append(
+            f"{label} {_market_day(str(biggest['date']))} {_signed_percent(biggest['change_pct'])}"
+        )
+    return " │ ".join(parts)
+
+
+def _render_market_data(report: schema.Report, heading: str = "## Market Data") -> list[str]:
+    """The price window as evidence: the same numbers as the footer line plus
+    the closes around the largest daily moves. Data only."""
+    window = (report.artifacts or {}).get("yahoo_finance")
+    if not _is_market_window(window):
+        return []
+    currency = _footer_safe(str(window.get("currency") or ""), 8)
+    lines = [
+        heading,
+        "",
+        f"- Yahoo Finance daily closes: {_market_ticker(window, name_company=True)}, "
+        f"{currency}, {window.get('range_from')} to {window.get('range_to')}",
+        f"- First close {window['start_close']:,.2f} ({window.get('start_date')}), "
+        f"last close {window['end_close']:,.2f} ({window.get('end_date')}), "
+        f"change {_signed_percent(window['change_pct'])}",
+    ]
+    benchmark = window.get("benchmark")
+    if isinstance(benchmark, dict):
+        lines.append(
+            f"- {_footer_safe(benchmark.get('name') or '')} over the same window: "
+            f"{benchmark['start_close']:,.2f} to {benchmark['end_close']:,.2f}, "
+            f"change {_signed_percent(benchmark['change_pct'])}"
+        )
+    moves = window.get("top_moves") or []
+    if moves:
+        lines.append("- Largest daily moves, close to close:")
+        lines.extend(
+            f"  - {move['date']}: {move['previous_close']:,.2f} to {move['close']:,.2f}, "
+            f"{_signed_percent(move['change_pct'])}"
+            for move in moves
+        )
+    return lines
 
 
 def _amazon_footer_line(report: schema.Report) -> str | None:
@@ -3255,7 +3416,12 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
     return f"🗣️ Top voices: {' │ '.join(parts)}"
 
 
-def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[str]:
+def _render_emoji_footer(
+    report: schema.Report,
+    save_path: str | None,
+    *,
+    market_windows: list[dict] | None = None,
+) -> list[str]:
     """Produce the deterministic magic footer block.
 
     Returns a list of markdown lines, including enclosing ``---`` separators.
@@ -3264,7 +3430,7 @@ def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[s
     items but a save path exists, the banner and the 'Raw results saved to' line
     still render so the durable raw-file citation is never silently dropped.
     """
-    source_lines = _build_source_footer_lines(report)
+    source_lines = _build_source_footer_lines(report, market_windows=market_windows)
     voices_line = _top_voices_footer_line(report)
     # The freshness verdict is computed for the report body, but a reader who
     # only scans this footer never sees it — and it is the one line that says
