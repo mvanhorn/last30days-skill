@@ -20,7 +20,9 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
@@ -264,7 +266,7 @@ def _lane_under_transcript_reserve(reserve: float) -> bool:
 # yt-dlp text for "stop calling YouTube for transcripts this search".
 # Timeouts are not included: one slow video is not a block.
 _YOUTUBE_BLOCK_RE = re.compile(
-    r"429|too many requests|sign in to confirm|not a bot|bot-gate",
+    r"429|too many requests|sign in to confirm(?! your age)|not a bot|bot-gate",
     re.IGNORECASE,
 )
 
@@ -782,6 +784,111 @@ def _apply_date_window(
     return items
 
 
+# YouTube's own upload-date search filters (the ``sp`` results-page parameter),
+# smallest first: this week, this month, this year.
+_UPLOAD_DATE_FILTERS = ((7, "EgIIAw=="), (31, "EgIIBA=="), (366, "EgIIBQ=="))
+# The filters count back from now, so they only fit a window ending about today.
+_UPLOAD_FILTER_MAX_END_LAG_DAYS = 2
+
+
+def _upload_date_filter(from_date: str, to_date: str) -> Optional[str]:
+    """Return the smallest YouTube upload filter covering the window, or None."""
+    try:
+        start = _dt.date.fromisoformat(from_date)
+        end = _dt.date.fromisoformat(to_date)
+    except ValueError:
+        return None
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    if (today - end).days > _UPLOAD_FILTER_MAX_END_LAG_DAYS:
+        return None
+    span = (today - start).days
+    for max_days, sp in _UPLOAD_DATE_FILTERS:
+        if span <= max_days:
+            return sp
+    return None
+
+
+def _count_in_window(items: List[Dict[str, Any]], from_date: str, to_date: str) -> int:
+    return sum(1 for i in items if i["date"] and from_date <= i["date"] <= to_date)
+
+
+def _parse_search_stdout(stdout: str, core_topic: str) -> List[Dict[str, Any]]:
+    """Parse yt-dlp ``--dump-json`` lines into video items."""
+    items = []
+    for line in stdout.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            video = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        video_id = video.get("id", "")
+        view_count = video.get("view_count") if video.get("view_count") is not None else 0
+        like_count = video.get("like_count") if video.get("like_count") is not None else 0
+        comment_count = video.get("comment_count") if video.get("comment_count") is not None else 0
+        upload_date = video.get("upload_date", "")  # YYYYMMDD
+
+        # Convert YYYYMMDD to YYYY-MM-DD
+        date_str = None
+        if upload_date and len(upload_date) == 8:
+            date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+
+        description = str(video.get("description", ""))[:500]
+        items.append({
+            "video_id": video_id,
+            "title": video.get("title", ""),
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": video.get("channel", video.get("uploader", "")),
+            "date": date_str,
+            "engagement": {
+                "views": view_count,
+                "likes": like_count,
+                "comments": comment_count,
+            },
+            "duration": video.get("duration"),
+            "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
+            "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
+            "description": description,
+        })
+    return items
+
+
+def _search_recent_uploads(
+    core_topic: str, count: int, sp: str, timeout: float,
+) -> List[Dict[str, Any]]:
+    """Search YouTube's results page with an upload-date filter.
+
+    Relevance-ranked ``ytsearch`` fills its top results with years-old videos
+    for topics that have a big back catalog (a music artist's official videos),
+    so a recent window can come back empty while new uploads exist. The
+    filtered results page returns only uploads from the period.
+    """
+    query = urllib.parse.urlencode({"search_query": core_topic, "sp": sp})
+    cmd = [
+        "yt-dlp",
+        "--ignore-config",
+        "--no-cookies-from-browser",
+        f"https://www.youtube.com/results?{query}",
+        "--playlist-end",
+        str(count),
+        "--dump-json",
+        "--no-warnings",
+        "--no-download",
+    ]
+    try:
+        result = _run_ytdlp(_wrap_ytdlp_cmd(cmd), timeout=timeout)
+    except (subproc.SubprocTimeout, FileNotFoundError) as exc:
+        _log(f"YouTube upload-date search failed: {type(exc).__name__}")
+        return []
+    if result.returncode != 0:
+        _note_youtube_block(result.stderr or "")
+    items = _parse_search_stdout(result.stdout or "", core_topic)
+    _log(f"YouTube upload-date search found {len(items)} videos")
+    return items
+
+
 def search_youtube(
     topic: str,
     from_date: str,
@@ -880,45 +987,25 @@ def search_youtube(
             published = _publish({"items": []})
             return published
 
-        # Parse JSON-per-line output
-        items = []
-        for line in stdout.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                video = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        items = _parse_search_stdout(stdout, core_topic)
 
-            video_id = video.get("id", "")
-            view_count = video.get("view_count") if video.get("view_count") is not None else 0
-            like_count = video.get("like_count") if video.get("like_count") is not None else 0
-            comment_count = video.get("comment_count") if video.get("comment_count") is not None else 0
-            upload_date = video.get("upload_date", "")  # YYYYMMDD
-
-            # Convert YYYYMMDD to YYYY-MM-DD
-            date_str = None
-            if upload_date and len(upload_date) == 8:
-                date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
-
-            description = str(video.get("description", ""))[:500]
-            items.append({
-                "video_id": video_id,
-                "title": video.get("title", ""),
-                "url": f"https://www.youtube.com/watch?v={video_id}",
-                "channel_name": video.get("channel", video.get("uploader", "")),
-                "date": date_str,
-                "engagement": {
-                    "views": view_count,
-                    "likes": like_count,
-                    "comments": comment_count,
-                },
-                "duration": video.get("duration"),
-                "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
-                "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
-                "description": description,
-            })
+        # Old catalog videos can crowd every relevance slot. For a recent
+        # window, retry once with YouTube's upload-date filter and merge.
+        blocked = result.returncode != 0 and _is_youtube_bot_or_rate_limit(result.stderr or "")
+        if (
+            freshness_mode in _RECENT_FRESHNESS_MODES
+            and _count_in_window(items, from_date, to_date) < 3
+            and not blocked
+            and not _lane_out_of_time()
+        ):
+            sp = _upload_date_filter(from_date, to_date)
+            if sp:
+                _log(f"Retrying YouTube for '{core_topic}' with an upload-date filter")
+                seen = {i["video_id"] for i in items}
+                for item in _search_recent_uploads(core_topic, count, sp, timeout):
+                    if item["video_id"] not in seen:
+                        seen.add(item["video_id"])
+                        items.append(item)
 
         # Date filter: prefer recent items; the keep-all fallback is scoped
         # by freshness mode (evergreen only), see _apply_date_window.
