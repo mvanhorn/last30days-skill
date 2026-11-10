@@ -596,13 +596,8 @@ _MAX_QUESTION_NAME_CHARS = 80
 _UNBROKEN_NAME_CHARS = 40
 
 
-def _shorten_question(question: str) -> str:
-    """Extract a short display name from a market question.
-
-    'Will Arizona win the 2026 NCAA Tournament?' -> 'Arizona'
-    'Will Duke be a number 1 seed in the 2026 NCAA...' -> 'Duke'
-    """
-    q = question.strip().rstrip("?")
+def _question_subject(q: str) -> Optional[str]:
+    """The subject of a "Will X win/be/..." question, or None."""
     # Common patterns: "Will X win/be/...", "X wins/loses..."
     m = re.match(r"^Will\s+(.+?)\s+(?:win|be|make|reach|have|lose|qualify|advance|strike|agree|pass|sign|get|become|remain|stay|leave|survive|next)\b", q, re.IGNORECASE)
     if m:
@@ -610,6 +605,19 @@ def _shorten_question(question: str) -> str:
     m = re.match(r"^Will\s+(.+?)\s+", q, re.IGNORECASE)
     if m and len(m.group(1).split()) <= 4:
         return m.group(1).strip()
+    return None
+
+
+def _shorten_question(question: str) -> str:
+    """Extract a short display name from a market question.
+
+    'Will Arizona win the 2026 NCAA Tournament?' -> 'Arizona'
+    'Will Duke be a number 1 seed in the 2026 NCAA...' -> 'Duke'
+    """
+    q = question.strip().rstrip("?")
+    subject = _question_subject(q)
+    if subject is not None:
+        return subject
     # Fallback: the question is the name. Sub-markets of one event often differ
     # only in their last words ("... by March 31, 2027"), so keep it whole and
     # cut only a very long one, at a word boundary. Drop a leading article so
@@ -623,6 +631,19 @@ def _shorten_question(question: str) -> str:
             # One unbroken run has no word boundary to cut at.
             text = q[:_UNBROKEN_NAME_CHARS]
     return re.sub(r"^(?:a|an|the)\s+", "", text, flags=re.I)
+
+
+def _legacy_shorten_question(question: str) -> str:
+    """The name older builds gave a market question; saved reports hold it.
+
+    They cut a question with no shorter subject at 40 characters and only
+    then dropped a leading article.
+    """
+    q = question.strip().rstrip("?")
+    subject = _question_subject(q)
+    if subject is not None:
+        return subject
+    return re.sub(r"^(?:a|an|the)\s+", "", q[:40], flags=re.I)
 
 
 def _compute_text_similarity(topic: str, title: str, outcomes: List[str] = None) -> float:
@@ -790,6 +811,8 @@ def parse_polymarket_response(
         # sub-markets, synthesize from market questions to show actual
         # team/entity probabilities instead of a single market's Yes/No
         outcome_prices = _parse_outcome_prices(top_market)
+        # The market question each outcome was named from, None for a label.
+        outcome_questions: List[Optional[str]] = [None] * len(outcome_prices)
         top_outcomes_are_binary = (
             len(outcome_prices) == 2
             and {n.lower() for n, _ in outcome_prices} == {"yes", "no"}
@@ -807,6 +830,7 @@ def parse_polymarket_response(
             if synth_outcomes:
                 synth_outcomes.sort(key=lambda x: x[1], reverse=True)
                 outcome_prices = [(_shorten_question(q), p) for q, p in synth_outcomes]
+                outcome_questions = [q for q, _p in synth_outcomes]
 
         # Format price movement
         price_movement = _format_price_movement(top_market)
@@ -874,8 +898,8 @@ def parse_polymarket_response(
             core_tokens = set(core.split())
             reordered = []
             rest = []
-            for pair in outcome_prices:
-                name_lower = pair[0].lower()
+            for pair in zip(outcome_prices, outcome_questions):
+                name_lower = pair[0][0].lower()
                 # Match if full core is substring, or name is substring of core,
                 # or any core token appears in the name (handles long question strings)
                 if (core in name_lower or name_lower in core
@@ -884,7 +908,8 @@ def parse_polymarket_response(
                 else:
                     rest.append(pair)
             if reordered:
-                outcome_prices = reordered + rest
+                outcome_prices = [priced for priced, _q in reordered + rest]
+                outcome_questions = [q for _priced, q in reordered + rest]
 
         # Normal display payloads stay compact. Verification requests the
         # complete snapshot so topic-promoted outcomes remain re-checkable.
@@ -899,6 +924,7 @@ def parse_polymarket_response(
             "question": top_market.get("question", title),
             "url": url,
             "outcome_prices": top_outcomes,
+            "outcome_questions": outcome_questions[: len(top_outcomes)],
             "outcomes_remaining": remaining,
             "price_movement": price_movement,
             "volume24hr": volume24hr,
@@ -936,9 +962,6 @@ def parse_polymarket_response(
 
     cap = response.get("_cap", len(items))
     return items[:cap]
-
-
-_LEGACY_NAME_CUT = 40
 
 
 def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
@@ -1047,17 +1070,27 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         outcome_counts[normalized] = occurrence + 1
         key = f"{name}\x1f{occurrence}" if outcome_totals[normalized] > 1 else str(name)
         values[key] = price
-    # The same snapshot answers later claims on this event, so it also carries
-    # each long name under the cut form older saved reports hold.
-    cut_names = [str(name)[:_LEGACY_NAME_CUT] for name, _price in outcome_pairs]
-    cut_seen: dict[str, int] = {}
-    for (name, price), cut in zip(outcome_pairs, cut_names):
-        if len(str(name)) <= _LEGACY_NAME_CUT:
-            continue
-        index = cut_seen.get(cut.casefold(), 0)
-        cut_seen[cut.casefold()] = index + 1
-        repeated = sum(1 for other in cut_names if other.casefold() == cut.casefold()) > 1
-        values.setdefault(f"{cut}\x1f{index}" if repeated else cut, price)
+    # Reports saved by older builds hold each market under its old cut name.
+    # The same snapshot answers later claims on this event, so it carries
+    # those names too, numbered the way the old names repeated.
+    questions = refreshed.get("outcome_questions") or []
+    legacy_pairs = [
+        (
+            _legacy_shorten_question(question).strip() if question else str(name),
+            price,
+        )
+        for (name, price), question in zip(outcome_pairs, questions)
+    ]
+    legacy_totals: dict[str, int] = {}
+    for name, _price in legacy_pairs:
+        legacy_totals[name.casefold()] = legacy_totals.get(name.casefold(), 0) + 1
+    legacy_counts: dict[str, int] = {}
+    for name, price in legacy_pairs:
+        normalized = name.casefold()
+        occurrence = legacy_counts.get(normalized, 0)
+        legacy_counts[normalized] = occurrence + 1
+        key = f"{name}\x1f{occurrence}" if legacy_totals[normalized] > 1 else name
+        values.setdefault(key, price)
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
@@ -1070,13 +1103,14 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         else:
             outcome_name, occurrence = datum_key, 0
         wanted = outcome_name.casefold()
-        pairs = refreshed.get("outcome_prices") or []
-        matches = [price for name, price in pairs if str(name).casefold() == wanted]
-        if not matches and len(outcome_name) == _LEGACY_NAME_CUT:
-            # Reports saved while names were cut at 40 characters hold the cut
-            # name; the nth repeat of it is the nth market it was cut from.
+        matches = [
+            price for name, price in outcome_pairs if str(name).casefold() == wanted
+        ]
+        if occurrence >= len(matches):
+            # An old cut name; the nth repeat of it is the nth market it was
+            # cut from.
             matches = [
-                price for name, price in pairs if str(name).casefold().startswith(wanted)
+                price for name, price in legacy_pairs if name.casefold() == wanted
             ]
         value = matches[occurrence] if occurrence < len(matches) else None
     if value is None:

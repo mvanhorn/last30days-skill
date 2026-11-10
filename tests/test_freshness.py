@@ -1391,6 +1391,130 @@ def test_slug_refetch_rejects_same_slug_different_event_id(monkeypatch):
     assert polymarket.refetch_datum(cached, "Yes") is not None
 
 
+def _ladder_event(questions_and_prices):
+    return {
+        "id": "77",
+        "slug": "ladder",
+        "title": "Ladder by...?",
+        "updatedAt": "2026-11-10T12:00:00Z",
+        "markets": [
+            {
+                "active": True,
+                "closed": False,
+                "question": question,
+                "liquidity": str(100 - index),
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": f'["{price}", "{round(1 - price, 3)}"]',
+            }
+            for index, (question, price) in enumerate(questions_and_prices)
+        ],
+    }
+
+
+_LONG_TAIL = "after the annual shareholder meeting held in Santa Clara in June 2027?"
+
+
+@pytest.mark.parametrize(
+    "questions, saved_names",
+    [
+        # The old name was cut at 40 characters and then lost its leading
+        # article, so it is shorter than 40 and no prefix of the new name.
+        pytest.param(
+            [
+                "The Nvidia board removes Jensen Huang by June 30, 2027?",
+                "The Nvidia board removes Jensen Huang by December 31, 2026?",
+            ],
+            ["Nvidia board removes Jensen Huang by", "Nvidia board removes Jensen Huang by"],
+            id="the-ladder",
+        ),
+        pytest.param(
+            [
+                "A successor to Jensen Huang is named by June 30, 2027?",
+                "Nvidia stock above 200 dollars on December 31, 2026?",
+            ],
+            ["successor to Jensen Huang is named by ", "Nvidia stock above 200 dollars on Decemb"],
+            id="a-and-plain",
+        ),
+        pytest.param(
+            [
+                "An Nvidia chief executive other than Jensen Huang by June 30, 2027?",
+                "An Nvidia chief executive other than Jensen Huang by December 31, 2026?",
+            ],
+            ["Nvidia chief executive other than Jen", "Nvidia chief executive other than Jen"],
+            id="an-ladder",
+        ),
+        # A question longer than the new limit is cut in both, at other places.
+        pytest.param(
+            [
+                "The Nvidia board announces a successor to Jensen Huang " + _LONG_TAIL,
+                "Jensen Huang announces his own successor as chief executive " + _LONG_TAIL,
+            ],
+            ["Nvidia board announces a successor t", "Jensen Huang announces his own successor"],
+            id="longer-than-the-new-limit",
+        ),
+        # Names the old "Will ..." rules produced are the names of today.
+        pytest.param(
+            [
+                "Will Arizona win the 2026 NCAA Tournament?",
+                "Will the Duke Blue Devils be a number 1 seed?",
+            ],
+            ["Arizona", "the Duke Blue Devils"],
+            id="will-subject",
+        ),
+        pytest.param(
+            [
+                "Will Jensen Huang step down?",
+                "Will Lisa Su step down?",
+            ],
+            ["Jensen", "Lisa"],
+            id="will-short-subject",
+        ),
+    ],
+)
+def test_polymarket_refetch_matches_every_name_the_old_shortener_saved(
+    monkeypatch, questions, saved_names
+):
+    prices = [0.32, 0.2]
+    item = _item(
+        "polymarket",
+        title="Ladder by...?",
+        url="https://polymarket.com/event/ladder",
+        metadata={
+            "event_id": "77",
+            "outcome_prices": [list(pair) for pair in zip(saved_names, prices)],
+        },
+    )
+    event = _ladder_event(list(zip(questions, prices)))
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+
+
+def test_polymarket_refetch_old_cut_name_reads_its_own_market(monkeypatch):
+    # Both old names are the same text; the second one is the second market.
+    saved = "Nvidia board removes Jensen Huang by"
+    item = _item(
+        "polymarket",
+        title="Ladder by...?",
+        url="https://polymarket.com/event/ladder",
+        metadata={"event_id": "77", "outcome_prices": [[saved, 0.32], [saved, 0.2]]},
+    )
+    event = _ladder_event(
+        [
+            ("The Nvidia board removes Jensen Huang by June 30, 2027?", 0.32),
+            ("The Nvidia board removes Jensen Huang by December 31, 2026?", 0.05),
+        ]
+    )
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "stale"]
+    assert verdicts[1].current_value == 0.05
+
+
 def test_slug_refetch_fails_closed_without_any_event_identity(monkeypatch):
     """A synthetic PM<N> parse id carries no identity, so slug equality alone
     must not verify a claim; the refetch fails closed to unsupported."""
