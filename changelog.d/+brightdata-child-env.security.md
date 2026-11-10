@@ -1,1 +1,0 @@
-Limit the Bright Data CLI child environment to its own API key and runtime, credential-location, TLS and proxy settings, preventing unrelated provider secrets from being inherited even when no explicit Bright Data key is configured.
