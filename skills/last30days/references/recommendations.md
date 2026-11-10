@@ -25,19 +25,23 @@ Read for recommendation intent before ranking and rendering. The root citation a
 **Output shape:**
 
 ```
-🏆 Top recommendations (ranked by signal quality, not mention count):
+🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+
+What I learned:
 
 **[Pick 1]** - [one-line why it is the top recommendation based on the strongest signal in the research]
 - Evidence: [specific practitioner testimony, benchmark number, or expert pick - quote the actual signal]
 - Best for: [specific use case]
-- Voices: [real @handles, publications, or r/subreddits with stakes in the outcome]
+- Voices: [attributable sources returned by this run]
 
 **[Pick 2]** - [same shape]
 
 **[Pick 3]** - [same shape]
 
-Also mentioned (exists, not recommended): [comma-separated list with one-line note on WHY each is a mention rather than a pick - e.g., "Python (status-quo default across bootcamp content; @javitm: 'agents have a strong bias for Python despite it probably not being the best')"]
+Also mentioned (exists, not recommended): [supported mentions with a one-line reason each is a mention rather than a pick]
 ```
+
+Use this shape for the recommendation body. Add the key patterns, engine footer, and invitation as the root output contract requires.
 
 **Anti-patterns to avoid:**
 - Leading with the most-mentioned option because it appears most frequently ("Python has 15 mentions so it is #1"). That is counting, not judging.
@@ -49,38 +53,11 @@ Also mentioned (exists, not recommended): [comma-separated list with one-line no
 **BAD RECOMMENDATIONS synthesis (counting):**
 > "🏆 Most mentioned: Python (15 mentions), TypeScript (10x), Go (7x), Rust (5x)."
 
-**GOOD RECOMMENDATIONS synthesis (judging):**
-> "🏆 Top recommendations (ranked by signal quality, not mention count):
->
-> **Go** - Flask creator Miguel Grinberg publicly switched this month for a specific technical reason
-> - Evidence: @miguelgrinberg blog post "Why I am moving Python projects to Go for AI agents" — cites reliability and concurrency model; 1.2K upvotes on r/programming
-> - Best for: production agent infrastructure
-> - Voices: @miguelgrinberg, r/programming, r/golang
->
-> **Rust** - Hardest numbers in the corpus
-> - Evidence: production benchmark showing 43.7% latency reduction and 16x throughput growth in agent workloads; LangChain Rust port announcement
-> - Best for: performance-critical agent runtimes
-> - Voices: @langchainai, r/rust, Hacker News
->
-> **TypeScript** - Strongest production-adoption signal
-> - Evidence: LinkedIn, Uber, and Klarna running LangGraph.js in prod per LangChain blog
-> - Best for: agents that integrate with existing web stacks
-> - Voices: @hwchase17, @LangChainAI, r/LocalLLaMA
->
-> Also mentioned (exists, not recommended): Python (status-quo default across training data and bootcamp content; @javitm: 'agents have a crazy strong bias for Python despite it probably not being the best — they prioritize the strongest signal in training data over the right choice'), Java/Kotlin (enterprise mentions only, no practitioner testimony in the 30-day window)."
-
-Notice how the good version:
-- Leads with movement (Flask creator switched), not volume (Python has most mentions)
-- Cites specific evidence that would defend the ranking to a skeptic
-- Treats Python's volume as anti-signal (the @javitm quote) rather than support
-- Puts promotional / descriptive mentions in "Also mentioned" with explicit framing
-
-
 **Rendering:** use the signal-quality template above; mention counts do not determine ranking.
 
 **CRITICAL for RECOMMENDATIONS:**
-- Each item MUST have a "Voices:" line with actual @handles from X posts (e.g., @LONGLIVE47, @ByDobson)
-- Include subreddit names (r/hiphopheads) and web sources (Complex, Variety)
-- Parse @handles from research output and include the highest-engagement ones
+- Each item MUST have a "Voices:" line naming actual sources from the returned research.
+- Include X @handles only when the research returned those X posts. Use subreddit names, publications, or other attributable sources when available.
+- Do not invent voices or require X access to present recommendations supported by other sources.
 - Format naturally - tables work well for wide terminals, stacked cards for narrow
 - **CRITICAL whitespace rule:** Never insert more than ONE blank line between any two content blocks. Comparison tables should immediately follow the preceding paragraph with exactly one blank line. Do NOT pad with 3-6 empty lines before tables.
