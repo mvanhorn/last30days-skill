@@ -3,7 +3,7 @@ module github.com/mvanhorn/last30days-skill/mcp
 go 1.25.5
 
 require (
-	github.com/mark3labs/mcp-go v1.4.0
+	github.com/mark3labs/mcp-go v1.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

@@ -1,3 +1,0 @@
-Make explicit cookie refusal (`BROWSER_CONSENT=false` or `FROM_BROWSER=off`) disable the agentcookie sidecar as well as native browser and CDP reads, including availability checks. User-supplied credentials and sidecar behavior without an explicit refusal are unchanged.
-
-Existing sidecar users with either refusal setting must remove both `BROWSER_CONSENT` and `FROM_BROWSER` from the process environment, the active global `.env` (including a custom `LAST30DAYS_CONFIG_DIR`), and any trusted project `.claude/last30days.env`, then set `AGENTCOOKIE=on` to restore sidecar-only access. Native browser and CDP reads remain disabled with both settings absent; `BROWSER_CONSENT=true` would also permit CDP reads.

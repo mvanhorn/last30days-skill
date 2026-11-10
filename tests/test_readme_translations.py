@@ -11,6 +11,7 @@ READMES = {
     "Português (Brasil)": ROOT / "README.pt-BR.md",
     "日本語": ROOT / "README.ja.md",
     "简体中文": ROOT / "README.zh-CN.md",
+    "العربية": ROOT / "README.ar.md",
 }
 
 

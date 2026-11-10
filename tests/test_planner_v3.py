@@ -1,6 +1,6 @@
 import unittest
 
-from lib import planner
+from lib import fusion, planner
 
 
 class PlannerV3Tests(unittest.TestCase):
@@ -663,6 +663,177 @@ class FallbackDefaultsTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("LLM planning failed", output)
         self.assertIn("No --plan passed", output)
+
+
+class EnablementIntentTests(unittest.TestCase):
+    """Issue Esper-Labs/last30days-com#616: "best Grok AI bot to control my
+    computer agent" was planned as a strict-recent comparison about Grok, so
+    retrieval never looked for the tools that give Grok that capability."""
+
+    TOPIC = "best Grok AI bot to control my computer agent"
+    SOURCES = ["reddit", "x", "youtube", "hackernews", "github"]
+
+    def _raw(self, intent="comparison", cluster_mode="debate"):
+        return {
+            "intent": intent,
+            "freshness_mode": "strict_recent",
+            "cluster_mode": cluster_mode,
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "Grok computer control",
+                    "ranking_query": "How can Grok control my computer?",
+                    "sources": ["reddit", "github"],
+                }
+            ],
+        }
+
+    def test_enablement_phrasing_infers_how_to(self):
+        for topic in (
+            self.TOPIC,
+            "best grok bot control my computer agent",
+            "get claude to control my browser",
+            "how to make chatgpt use my mac",
+            "agent that automates the desktop",
+            "let codex drive my desktop",
+            "get claude code to use my terminal",
+        ):
+            with self.subTest(topic=topic):
+                self.assertEqual("how_to", planner._infer_intent(topic))
+
+    def test_near_misses_keep_their_intent(self):
+        self.assertEqual("concept", planner._infer_intent("best wireless earbuds"))
+        for topic in (
+            "best browser for privacy",
+            "make sure I use the right charger",
+            "how to get users to use my app",
+            "should I let my kid use the phone",
+            "make kids use the computer less",
+            "AI drives the PC upgrade cycle",
+        ):
+            with self.subTest(topic=topic):
+                self.assertFalse(planner._is_enablement(topic))
+        self.assertEqual("comparison", planner._infer_intent("Grok vs Claude to control my computer"))
+
+    def test_ordinary_device_use_is_not_enablement(self):
+        for topic in (
+            "how to use my computer for video editing",
+            "how to use the browser devtools",
+            "Chrome uses the browser sandbox",
+            "teens use the phone too much",
+        ):
+            with self.subTest(topic=topic):
+                self.assertFalse(planner._is_enablement(topic))
+
+    def test_news_and_threats_are_not_enablement(self):
+        self.assertEqual(
+            "breaking_news", planner._infer_intent("latest news about malware controlling my browser")
+        )
+        for topic in (
+            "latest news about malware controlling my browser",
+            "is a hacker controlling my computer",
+            "someone is controlling my laptop remotely",
+            "Anthropic launched an agent that controls your computer",
+        ):
+            with self.subTest(topic=topic):
+                self.assertFalse(planner._is_enablement(topic))
+
+    def test_news_and_threat_words_outside_their_role_keep_enablement(self):
+        for topic in (
+            "get the latest Claude to control my browser",
+            "how to get the newly released Claude to use my mac",
+            "get claude to control my browser without malware",
+            "best AI agent to control my computer safely from hackers",
+        ):
+            with self.subTest(topic=topic):
+                self.assertEqual("how_to", planner._infer_intent(topic))
+
+    def test_llm_news_verdict_is_not_overridden(self):
+        topic = "latest news about malware controlling my browser"
+        plan = planner._sanitize_plan(
+            self._raw(intent="breaking_news", cluster_mode="story"), topic, self.SOURCES, None, "default"
+        )
+        self.assertEqual("breaking_news", plan.intent)
+        self.assertEqual("strict_recent", plan.freshness_mode)
+        self.assertEqual("story", plan.cluster_mode)
+
+    def test_llm_comparison_verdict_becomes_how_to(self):
+        plan = planner._sanitize_plan(self._raw(), self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual("how_to", plan.intent)
+        self.assertEqual("evergreen_ok", plan.freshness_mode)
+        self.assertEqual("workflow", plan.cluster_mode)
+
+    def test_explicit_plan_keeps_its_intent(self):
+        plan = planner._sanitize_plan(
+            self._raw(), self.TOPIC, self.SOURCES, None, "default", honor_plan_sources=True
+        )
+        self.assertEqual("comparison", plan.intent)
+        self.assertEqual("debate", plan.cluster_mode)
+
+    def test_explicit_comparison_is_not_overridden(self):
+        topic = "Grok vs Claude to control my computer"
+        plan = planner._sanitize_plan(self._raw(), topic, self.SOURCES, None, "default")
+        self.assertEqual("comparison", plan.intent)
+
+    def test_ordinary_topic_keeps_llm_intent(self):
+        plan = planner._sanitize_plan(
+            self._raw(intent="product", cluster_mode="none"), "best wireless earbuds", self.SOURCES, None, "default"
+        )
+        self.assertEqual("product", plan.intent)
+        self.assertEqual("none", plan.cluster_mode)
+
+    @staticmethod
+    def _searches(plan):
+        return [sq.search_query for sq in plan.subqueries]
+
+    def test_fallback_plan_searches_the_capability_without_the_host(self):
+        # The LLM planner can be down; the fallback still has to find general
+        # tools such as MCP servers that no post names beside the host.
+        plan = planner._fallback_plan(self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual("how_to", plan.intent)
+        self.assertEqual(
+            ["computer use MCP server", "desktop automation CLI for AI agents"],
+            self._searches(plan)[1:],
+        )
+
+    def test_fallback_capability_searches_follow_the_device(self):
+        plan = planner._fallback_plan("get claude to control my browser", self.SOURCES, None, "default")
+        self.assertIn("browser automation MCP server", self._searches(plan))
+
+    def test_fallback_adds_no_capability_search_to_other_topics(self):
+        for topic in ("best wireless earbuds", "how to use my computer for video editing"):
+            with self.subTest(topic=topic):
+                plan = planner._fallback_plan(topic, self.SOURCES, None, "default")
+                self.assertFalse(any("MCP" in search for search in self._searches(plan)))
+
+    def test_quick_fallback_keeps_one_search(self):
+        self.assertEqual(1, len(planner._fallback_plan(self.TOPIC, self.SOURCES, None, "quick").subqueries))
+
+    def test_llm_plan_without_a_capability_search_gets_one(self):
+        plan = planner._sanitize_plan(self._raw(), self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual(["Grok computer control", "computer use MCP server"], self._searches(plan))
+
+    def test_llm_plan_with_a_capability_search_is_left_alone(self):
+        raw = self._raw()
+        raw["subqueries"].append(
+            {"label": "tools", "search_query": "browser automation CLI agent", "ranking_query": "Which CLIs?"}
+        )
+        plan = planner._sanitize_plan(raw, self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual(["Grok computer control", "browser automation CLI agent"], self._searches(plan))
+
+    def test_llm_capability_search_naming_the_host_still_gets_a_host_free_one(self):
+        raw = self._raw()
+        raw["subqueries"][0]["search_query"] = "Grok MCP computer control"
+        plan = planner._sanitize_plan(raw, self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual(["Grok MCP computer control", "computer use MCP server"], self._searches(plan))
+        self.assertTrue(fusion.capability_labels(plan))
+
+    def test_explicit_plan_gets_no_capability_search(self):
+        plan = planner._sanitize_plan(
+            self._raw(), self.TOPIC, self.SOURCES, None, "default", honor_plan_sources=True
+        )
+        self.assertEqual(["Grok computer control"], self._searches(plan))
+
 
 if __name__ == "__main__":
     unittest.main()
