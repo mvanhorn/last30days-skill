@@ -20,7 +20,9 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
@@ -264,7 +266,7 @@ def _lane_under_transcript_reserve(reserve: float) -> bool:
 # yt-dlp text for "stop calling YouTube for transcripts this search".
 # Timeouts are not included: one slow video is not a block.
 _YOUTUBE_BLOCK_RE = re.compile(
-    r"429|too many requests|sign in to confirm|not a bot|bot-gate",
+    r"429|too many requests|sign in to confirm(?! your age)|not a bot|bot-gate",
     re.IGNORECASE,
 )
 
@@ -782,6 +784,123 @@ def _apply_date_window(
     return items
 
 
+# YouTube's own upload-date search filters (the ``sp`` results-page parameter),
+# smallest first: this week, this month, this year.
+_UPLOAD_DATE_FILTERS = ((7, "EgIIAw=="), (31, "EgIIBA=="), (366, "EgIIBQ=="))
+# The filters count back from now, so they only fit a window ending about today.
+_UPLOAD_FILTER_MAX_END_LAG_DAYS = 2
+
+
+def _upload_date_filter(from_date: str, to_date: str) -> Optional[str]:
+    """Return the smallest YouTube upload filter covering the window, or None."""
+    try:
+        start = _dt.date.fromisoformat(from_date)
+        end = _dt.date.fromisoformat(to_date)
+    except ValueError:
+        return None
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    if (today - end).days > _UPLOAD_FILTER_MAX_END_LAG_DAYS:
+        return None
+    span = (today - start).days
+    for max_days, sp in _UPLOAD_DATE_FILTERS:
+        if span <= max_days:
+            return sp
+    return None
+
+
+def _first_stderr_line(stderr: Optional[str]) -> str:
+    lines = (stderr or "").strip().splitlines()
+    return lines[0] if lines else "(no stderr)"
+
+
+def _count_in_window(items: List[Dict[str, Any]], from_date: str, to_date: str) -> int:
+    return sum(1 for i in items if i["date"] and from_date <= i["date"] <= to_date)
+
+
+def _parse_search_stdout(stdout: str, core_topic: str) -> List[Dict[str, Any]]:
+    """Parse yt-dlp ``--dump-json`` lines into video items."""
+    items = []
+    for line in stdout.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            video = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        video_id = video.get("id", "")
+        view_count = video.get("view_count") if video.get("view_count") is not None else 0
+        like_count = video.get("like_count") if video.get("like_count") is not None else 0
+        comment_count = video.get("comment_count") if video.get("comment_count") is not None else 0
+        upload_date = video.get("upload_date", "")  # YYYYMMDD
+
+        # Convert YYYYMMDD to YYYY-MM-DD
+        date_str = None
+        if upload_date and len(upload_date) == 8:
+            date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+
+        description = str(video.get("description", ""))[:500]
+        items.append({
+            "video_id": video_id,
+            "title": video.get("title", ""),
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": video.get("channel", video.get("uploader", "")),
+            "date": date_str,
+            "engagement": {
+                "views": view_count,
+                "likes": like_count,
+                "comments": comment_count,
+            },
+            "duration": video.get("duration"),
+            "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
+            "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
+            "description": description,
+        })
+    return items
+
+
+def _search_recent_uploads(
+    core_topic: str, count: int, sp: str, timeout: float,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Search YouTube's results page with an upload-date filter.
+
+    Relevance-ranked ``ytsearch`` fills its top results with years-old videos
+    for topics that have a big back catalog (a music artist's official videos),
+    so a recent window can come back empty while new uploads exist. The
+    filtered results page returns only uploads from the period.
+
+    Returns the parsed videos and an error string when the search failed
+    without producing any, so the caller can keep the failure visible.
+    """
+    query = urllib.parse.urlencode({"search_query": core_topic, "sp": sp})
+    cmd = [
+        "yt-dlp",
+        "--ignore-config",
+        "--no-cookies-from-browser",
+        f"https://www.youtube.com/results?{query}",
+        "--playlist-end",
+        str(count),
+        "--dump-json",
+        "--no-warnings",
+        "--no-download",
+    ]
+    try:
+        result = _run_ytdlp(_wrap_ytdlp_cmd(cmd), timeout=timeout)
+    except subproc.SubprocTimeout:
+        _log(f"YouTube upload-date search timed out ({timeout:g}s)")
+        return [], f"Upload-date search timed out after {timeout:g}s"
+    except FileNotFoundError:
+        return [], "yt-dlp not found"
+    if result.returncode != 0:
+        _note_youtube_block(result.stderr or "")
+    items = _parse_search_stdout(result.stdout or "", core_topic)
+    _log(f"YouTube upload-date search found {len(items)} videos")
+    if result.returncode != 0 and not items:
+        return [], f"yt-dlp upload-date search failed: {_first_stderr_line(result.stderr)}"
+    return items, None
+
+
 def search_youtube(
     topic: str,
     from_date: str,
@@ -861,64 +980,45 @@ def search_youtube(
         # going through the error path below.
         if result.returncode != 0:
             _note_youtube_block(result.stderr or "")
+        stderr = result.stderr or ""
+        blocked = result.returncode != 0 and _is_youtube_bot_or_rate_limit(stderr)
+        search_error: Optional[str] = None
         if result.returncode != 0 and not stdout.strip():
-            stderr_first = (result.stderr or "").strip().splitlines()
-            first_line = stderr_first[0] if stderr_first else "(no stderr)"
+            first_line = _first_stderr_line(stderr)
             if ssh_host:
                 _log(
                     f"YouTube search via SSH host {ssh_host!r} failed "
                     f"(rc={result.returncode}): {first_line}"
                 )
-                error = f"SSH routing to {ssh_host!r} failed: {first_line}"
+                search_error = f"SSH routing to {ssh_host!r} failed: {first_line}"
             else:
                 _log(f"YouTube search failed (rc={result.returncode}): {first_line}")
-                error = f"yt-dlp search failed: {first_line}"
-            published = _publish({"items": [], "error": error})
-            return published
-        if not stdout.strip():
+                search_error = f"yt-dlp search failed: {first_line}"
+
+        items = _parse_search_stdout(stdout, core_topic) if stdout.strip() else []
+
+        # Old catalog videos can crowd every relevance slot, and an age-gated
+        # result can leave stdout empty. For a recent window, retry once with
+        # YouTube's upload-date filter and merge. A bot block skips it.
+        retry_error: Optional[str] = None
+        sp = None
+        if (
+            freshness_mode in _RECENT_FRESHNESS_MODES
+            and _count_in_window(items, from_date, to_date) < 3
+            and not blocked
+            and not _lane_out_of_time()
+        ):
+            sp = _upload_date_filter(from_date, to_date)
+        if sp:
+            _log(f"Retrying YouTube for '{core_topic}' with an upload-date filter")
+            recent_items, retry_error = _search_recent_uploads(core_topic, count, sp, timeout)
+            seen = {i["video_id"] for i in items}
+            for item in recent_items:
+                if item["video_id"] not in seen:
+                    seen.add(item["video_id"])
+                    items.append(item)
+        if not items and not search_error and not retry_error:
             _log("YouTube search returned 0 results")
-            published = _publish({"items": []})
-            return published
-
-        # Parse JSON-per-line output
-        items = []
-        for line in stdout.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                video = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            video_id = video.get("id", "")
-            view_count = video.get("view_count") if video.get("view_count") is not None else 0
-            like_count = video.get("like_count") if video.get("like_count") is not None else 0
-            comment_count = video.get("comment_count") if video.get("comment_count") is not None else 0
-            upload_date = video.get("upload_date", "")  # YYYYMMDD
-
-            # Convert YYYYMMDD to YYYY-MM-DD
-            date_str = None
-            if upload_date and len(upload_date) == 8:
-                date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
-
-            description = str(video.get("description", ""))[:500]
-            items.append({
-                "video_id": video_id,
-                "title": video.get("title", ""),
-                "url": f"https://www.youtube.com/watch?v={video_id}",
-                "channel_name": video.get("channel", video.get("uploader", "")),
-                "date": date_str,
-                "engagement": {
-                    "views": view_count,
-                    "likes": like_count,
-                    "comments": comment_count,
-                },
-                "duration": video.get("duration"),
-                "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
-                "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
-                "description": description,
-            })
 
         # Date filter: prefer recent items; the keep-all fallback is scoped
         # by freshness mode (evergreen only), see _apply_date_window.
@@ -926,7 +1026,12 @@ def search_youtube(
 
         # Sort by views descending
         items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
-        published = _publish({"items": items})
+        payload: Dict[str, Any] = {"items": items}
+        # Nothing usable survived: keep whichever search failed visible so the
+        # run reports a failed source instead of a quiet zero.
+        if not items and (search_error or retry_error):
+            payload["error"] = search_error or retry_error
+        published = _publish(payload)
         return published
     except Exception as exc:
         # Post-subprocess failures (parse/relevance/sort) must still unblock

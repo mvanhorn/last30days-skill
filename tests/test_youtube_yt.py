@@ -1990,6 +1990,133 @@ class TestYoutubeProxy(unittest.TestCase):
         self.assertNotIn("--proxy", result)
 
 
+class TestYouTubeUploadDateFallback(unittest.TestCase):
+    """A relevance search full of old catalog videos retries with YouTube's upload-date filter."""
+
+    def setUp(self):
+        youtube_yt.reset_search_cache()
+        self.addCleanup(youtube_yt.reset_search_cache)
+        today = datetime.now(timezone.utc).date()
+        self.TO = today.isoformat()
+        self.FROM = (today - timedelta(days=30)).isoformat()
+        self.recent = [(today - timedelta(days=n)).isoformat() for n in (1, 2)]
+
+    @staticmethod
+    def _stdout(prefix, dates):
+        return "\n".join(
+            json.dumps({
+                "id": f"{prefix}{i}", "title": f"Kanye West video {i}", "view_count": 100 + i,
+                "like_count": 1, "comment_count": 1, "upload_date": d.replace("-", ""),
+                "description": "desc",
+            })
+            for i, d in enumerate(dates)
+        )
+
+    def _search(self, relevance_dates, filtered_dates, freshness_mode="strict_recent",
+                from_date=None, to_date=None, relevance_rc=0, relevance_stderr="",
+                filtered_rc=0, filtered_stderr=""):
+        from lib.subproc import SubprocResult
+        calls = []
+
+        def _run(cmd, timeout, **_kwargs):
+            calls.append(cmd)
+            if any("youtube.com/results" in arg for arg in cmd):
+                return SubprocResult(
+                    returncode=filtered_rc, stdout=self._stdout("new", filtered_dates),
+                    stderr=filtered_stderr,
+                )
+            return SubprocResult(
+                returncode=relevance_rc, stdout=self._stdout("old", relevance_dates),
+                stderr=relevance_stderr,
+            )
+
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_ytdlp_ssh_host", return_value=None), \
+             mock.patch.object(youtube_yt, "_run_ytdlp", side_effect=_run):
+            out = youtube_yt.search_youtube(
+                "Kanye West", from_date or self.FROM, to_date or self.TO,
+                freshness_mode=freshness_mode,
+            )
+        return out, calls
+
+    def test_catalog_topic_returns_recent_uploads_from_filtered_search(self):
+        out, calls = self._search(["2010-11-22", "2013-06-18"], self.recent)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+        self.assertEqual(len(calls), 2)
+        url = next(arg for arg in calls[1] if "youtube.com/results" in arg)
+        self.assertIn("search_query=kanye+west", url.lower())
+        self.assertIn("sp=EgIIBA%3D%3D", url)  # "this month"
+
+    def test_week_window_uses_this_week_filter(self):
+        from_date = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+        _, calls = self._search(["2010-11-22"], self.recent, from_date=from_date)
+        url = next(arg for arg in calls[1] if "youtube.com/results" in arg)
+        self.assertIn("sp=EgIIAw%3D%3D", url)
+
+    def test_filtered_results_merge_with_in_window_relevance_hits(self):
+        out, _ = self._search([self.recent[0], "2010-11-22"], [self.recent[1]])
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"old0", "new0"})
+
+    def test_no_fallback_when_relevance_search_already_has_three_recent(self):
+        out, calls = self._search(self.recent + [self.recent[0]], self.recent)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(out["items"]), 3)
+
+    def test_no_fallback_for_evergreen_topics(self):
+        out, calls = self._search(["2010-11-22", "2013-06-18"], self.recent, freshness_mode="evergreen_ok")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"old0", "old1"})
+
+    def test_age_restricted_result_does_not_block_the_fallback(self):
+        """One age-gated video in the results is not a bot block."""
+        out, calls = self._search(
+            ["2010-11-22"], self.recent, relevance_rc=1,
+            relevance_stderr="ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+
+    def test_all_age_gated_relevance_hits_still_reach_the_fallback(self):
+        """Every hit age-gated leaves stdout empty; the retry must still run."""
+        out, calls = self._search(
+            [], self.recent, relevance_rc=1,
+            relevance_stderr="ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+        self.assertNotIn("error", out)
+
+    def test_failed_retry_is_reported_instead_of_a_quiet_zero(self):
+        out, calls = self._search(
+            ["2010-11-22"], [], filtered_rc=1,
+            filtered_stderr="ERROR: HTTP Error 429: Too Many Requests",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(out["items"], [])
+        self.assertIn("upload-date search failed", out["error"])
+
+    def test_failed_retry_keeps_relevance_hits_without_an_error(self):
+        out, _ = self._search(
+            [self.recent[0]], [], filtered_rc=1,
+            filtered_stderr="ERROR: HTTP Error 429: Too Many Requests",
+        )
+        self.assertEqual([i["video_id"] for i in out["items"]], ["old0"])
+        self.assertNotIn("error", out)
+
+    def test_bot_block_skips_the_fallback(self):
+        _, calls = self._search(
+            ["2010-11-22"], self.recent, relevance_rc=1,
+            relevance_stderr="ERROR: [youtube] abc: Sign in to confirm you're not a bot.",
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_no_fallback_for_past_as_of_window(self):
+        """YouTube's upload filters count back from now, so a past window cannot use them."""
+        out, calls = self._search(["2010-11-22"], ["2024-03-01"], from_date="2024-02-01", to_date="2024-03-02")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out["items"], [])
+
+
 class TestYouTubeDateWindowByFreshnessMode(unittest.TestCase):
     """Out-of-window soft fallback is scoped to evergreen_ok (recent topics stay honest)."""
 
