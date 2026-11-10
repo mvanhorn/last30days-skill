@@ -184,10 +184,22 @@ The engine's `--emit=html` renderer combines:
 - A single inline metadata line (`{date range} · {active sources}`) below the badge
 - Your synthesis verbatim, with prose labels promoted to `<h2>` and bold lead-ins preserved
 - All `[name](url)` citations rendered as `<a>` tags
+- For a run researched with `--trace-origin`, the Spread Timeline graphic and its text
 - The engine footer (`✅ All agents reported back!` tree) preserved verbatim in monospace
 - A colophon with the topic and a re-run hint
 
 The renderer strips engine-internal noise that doesn't belong in a shareable artifact: the `# last30days vX.Y.Z: TOPIC` debug file header, the model-facing `> Safety note:` blockquote, and the `I'm now an expert on X` invitation block. Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs - they never leak into the share-ready file.
+
+## Spread timeline (origin trace)
+
+When the research run used `--trace-origin`, the cached report carries the trace and the HTML brief shows it without any extra flag on the `--cached-report` command (`--trace-origin` itself is refused together with `--cached-report`). Under a `Spread Timeline` heading the renderer draws an inline SVG timeline: one marker per platform's first sighting in date order with its date and platform, the peak day marked, and each marker linked to its post. The trace's text (earliest found, the per-platform lines, limits) follows as ordinary HTML. A `How it spread:` label in your synthesis is promoted to a heading like the other prose labels. A direct `--emit=html --trace-origin` research run renders the same section.
+
+If the user rejects a post in the timeline (wrong story, off topic, should not be shared), re-render with the same command plus `--trace-exclude <post URL>`, once per rejected post. Use the URL exactly as the trace links it.
+
+- A platform whose first sighting is excluded shows its next stored sighting, or drops out when the stored trace has no other post for it.
+- Excluding every post renders the "no trail to trace" line instead of a timeline.
+- The exclusion applies to that render only. The cached report keeps the full trace, so pass every rejected URL again on each later re-render.
+- The engine exits 2 instead of ignoring the flag when it is used without `--cached-report --emit=html --synthesis-file`, when the cached report is a comparison or was not researched with `--trace-origin`, or when a URL matches no post in the stored trace.
 
 ## Comparison mode
 

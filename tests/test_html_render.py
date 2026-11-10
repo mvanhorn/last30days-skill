@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import html
+import re
 import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 
 import last30days as cli
-from lib import html_render, schema
+from lib import html_render, origin, schema
 
 
 def _report(topic: str, cluster_titles: list[str]) -> schema.Report:
@@ -448,6 +451,158 @@ class HtmlCliIntegrationTests(unittest.TestCase):
         self.assertIn("last30days · OpenClaw vs Hermes", saved)
         self.assertIn("comparing 2: OpenClaw, Hermes", saved)
         self.assertNotIn("last30days · OpenClaw</title>", saved)
+
+
+def _post(source, day, url, engagement, *, title="Widget leak thread", container=""):
+    return SimpleNamespace(
+        source=source, published_at=day, url=url, title=title, container=container,
+        author="someone", date_confidence="high", body="", metadata={}, engagement=engagement,
+    )
+
+
+REDDIT_FIRST = "https://reddit.test/r/widgets/first"
+REDDIT_SECOND = "https://reddit.test/r/widgets/second"
+X_POST = "https://x.com/i/status/1234567890123456789"
+HN_POST = "https://hn.test/item?id=7"
+
+
+def _timeline(posts=None):
+    posts = posts or [
+        _post("reddit", "2026-04-02", REDDIT_FIRST, 5, container="widgets"),
+        _post("x", "2026-04-05", X_POST, 40),
+        _post("hackernews", "2026-04-09", HN_POST, 12),
+        _post("reddit", "2026-04-12", REDDIT_SECOND, 900, title="Widget leak megathread", container="widgets"),
+    ]
+    return origin.build_timeline(
+        [SimpleNamespace(source_items=[post]) for post in posts],
+        "2026-04-01", "2026-04-29", lambda post: post.engagement,
+    )
+
+
+def _traced_html(timeline, **kwargs) -> str:
+    report = _report("widget leak", ["Widget leak"])
+    report.artifacts["trace_origin"] = True
+    if timeline:
+        report.artifacts["origin_trace"] = timeline
+    return html_render.render_html(report, **kwargs)
+
+
+def _svg(rendered: str) -> str:
+    return rendered[rendered.index("<svg"):rendered.index("</svg>") + len("</svg>")]
+
+
+class HtmlSpreadTimelineTests(unittest.TestCase):
+    def test_traced_brief_draws_one_marker_per_platform_and_the_peak_day(self):
+        rendered = _traced_html(_timeline(), synthesis_md="How it spread:\n\nIt moved fast.")
+        _assert_parses(self, rendered)
+        self.assertEqual(1, rendered.count("<svg"))
+        svg = _svg(rendered)
+        self.assertEqual(3, svg.count("<circle"))
+        self.assertEqual(1, svg.count('class="peak-mark"'))
+        # Platform first sightings in date order, then the peak day.
+        order = [svg.index(f">{day}<") for day in ("2026-04-02", "2026-04-05", "2026-04-09", "2026-04-12")]
+        self.assertEqual(order, sorted(order))
+        for label in ("Reddit", "X", "Hacker News", "Peak day"):
+            self.assertIn(f">{label}", svg)
+        for url in (REDDIT_FIRST, X_POST, HN_POST):
+            self.assertIn(f'<a href="{html.escape(url, quote=True)}"', svg)
+        self.assertNotIn("<script", rendered.lower())
+        self.assertIn("<h2>How it spread</h2>", rendered)
+        self.assertLess(rendered.index("<h2>Spread Timeline</h2>"), rendered.index("<svg"))
+        # The trace is readable without the graphic, and sits above the footer.
+        text = rendered[rendered.index("</svg>"):rendered.index('<div class="engine-footer">')]
+        self.assertIn("Earliest found: 2026-04-02", text)
+        self.assertIn("First sighting per platform, in order", text)
+        self.assertIn("<li>2026-04-05 (+3 days)", text)
+        self.assertIn("Limits of this trace:", text)
+
+    def test_untraced_brief_has_no_timeline(self):
+        rendered = html_render.render_html(_report("widget leak", ["Widget leak"]))
+        self.assertNotIn("<svg", rendered)
+        self.assertNotIn("Spread Timeline", rendered)
+
+    def test_post_title_and_venue_markup_is_escaped_in_the_svg(self):
+        payload = '<img src=x onerror=alert(1)>"'
+        svg = _svg(_traced_html(_timeline([
+            _post("hackernews", "2026-04-02", HN_POST, 5, title=payload, container=payload),
+        ])))
+        self.assertNotIn("<img", svg)
+        self.assertEqual(2, svg.count("&lt;img src=x onerror=alert(1)&gt;"))
+
+    def test_script_and_data_links_render_as_unlinked_markers(self):
+        rendered = _traced_html(_timeline([
+            _post("reddit", "2026-04-02", "javascript:alert(1)", 5),
+            _post("x", "2026-04-05", "data:text/html,<script>alert(1)</script>", 5),
+            _post("hackernews", "2026-04-09", HN_POST, 5),
+        ]))
+        svg = _svg(rendered)
+        self.assertEqual(3, svg.count("<circle"))
+        self.assertEqual(1, svg.count("<a "))
+        self.assertNotIn("javascript:", svg)
+        self.assertNotIn("data:", svg)
+        self.assertNotIn('href="javascript:', rendered)
+        self.assertNotIn('href="data:', rendered)
+
+    def test_excluding_a_post_promotes_that_platforms_next_stored_sighting(self):
+        trimmed = html_render.exclude_from_trace(_timeline(), [REDDIT_FIRST])
+        self.assertEqual(
+            [(hop["source"], hop["url"]) for hop in trimmed["hops"]],
+            [("x", X_POST), ("hackernews", HN_POST), ("reddit", REDDIT_SECOND)],
+        )
+        self.assertEqual(X_POST, trimmed["earliest"]["url"])
+        self.assertEqual(3, trimmed["sighting_count"])
+        rendered = _traced_html(trimmed)
+        self.assertNotIn(REDDIT_FIRST, rendered)
+        self.assertEqual(3, _svg(rendered).count("<circle"))
+        self.assertIn("Earliest found: 2026-04-05", rendered)
+
+    def test_excluding_a_platforms_only_stored_sighting_drops_the_platform(self):
+        trimmed = html_render.exclude_from_trace(_timeline(), [X_POST])
+        self.assertEqual(["reddit", "hackernews"], [hop["source"] for hop in trimmed["hops"]])
+        rendered = _traced_html(trimmed)
+        self.assertNotIn("status/1234567890123456789", rendered)
+        self.assertEqual(2, _svg(rendered).count("<circle"))
+
+    def test_excluding_the_peak_days_only_post_moves_the_peak(self):
+        trimmed = html_render.exclude_from_trace(_timeline(), [REDDIT_SECOND])
+        self.assertEqual("2026-04-05", trimmed["peak_day"])
+        self.assertEqual({"count": 1, "engagement": 40.0}, trimmed["peak"])
+        self.assertEqual(X_POST, trimmed["breakout"]["url"])
+        self.assertNotIn(REDDIT_SECOND, _traced_html(trimmed))
+
+    def test_excluding_every_sighting_renders_the_no_trail_line(self):
+        trimmed = html_render.exclude_from_trace(
+            _timeline(), [REDDIT_FIRST, REDDIT_SECOND, X_POST, HN_POST],
+        )
+        self.assertIsNone(trimmed)
+        rendered = _traced_html(trimmed)
+        self.assertNotIn("<svg", rendered)
+        self.assertIn("there is no trail to trace", rendered)
+
+    def test_published_digit_scrubbing_leaves_timeline_dates_alone(self):
+        rendered = _traced_html(_timeline())
+        scrubbed = html_render.scrub_publishable_digit_runs(rendered)
+        self.assertIn("status/%31%32%33", _svg(scrubbed))
+
+        def without_links(svg: str) -> str:
+            return re.sub(r'href="[^"]*"', "", svg)
+
+        self.assertEqual(without_links(_svg(rendered)), without_links(_svg(scrubbed)))
+        for day in ("2026-04-02", "2026-04-05", "2026-04-09", "2026-04-12"):
+            self.assertIn(f">{day}<", _svg(scrubbed))
+
+    def test_timeline_colors_follow_the_page_theme(self):
+        svg = _svg(_traced_html(_timeline()))
+        rules = "\n".join(
+            line for line in html_render.CSS.splitlines() if line.lstrip().startswith(".spread-timeline")
+        )
+        self.assertIn("var(--", rules)
+        for markup in (svg, rules):
+            self.assertIsNone(re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", markup))
+        self.assertIn("currentColor", svg)
+        for paint in re.findall(r'(?:fill|stroke)="([^"]*)"', svg):
+            self.assertIn(paint, {"currentColor", "none"})
+
 
 if __name__ == "__main__":
     unittest.main()

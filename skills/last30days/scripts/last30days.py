@@ -762,9 +762,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--trace-origin",
         action="store_true",
         help=(
-            "Add a Spread Timeline to a single-topic compact/md report: the "
-            "earliest post found, each platform's first sighting in order, "
+            "Add a Spread Timeline to a single-topic compact/md/html report: "
+            "the earliest post found, each platform's first sighting in order, "
             "and the peak day"
+        ),
+    )
+    parser.add_argument(
+        "--trace-exclude",
+        action="append",
+        metavar="URL",
+        help=(
+            "With --cached-report --emit=html, leave the post at URL out of "
+            "the traced report's Spread Timeline (repeatable)"
         ),
     )
     parser.add_argument(
@@ -3088,7 +3097,7 @@ def _trace_origin_misuse(
         or args.cached_report
         or args.discover is not None
         or args.drill
-        or args.emit not in {"compact", "md"}
+        or args.emit not in {"compact", "md", "html"}
         or is_forecast_command
         or command_topic in {"setup", "doctor", "library feed", "queue list"}
         or command_topic.startswith(("library search", "queue cover"))
@@ -3099,9 +3108,9 @@ def _trace_origin_misuse(
 def _reject_trace_origin() -> int:
     sys.stderr.write(
         "[last30days] --trace-origin applies to single-topic research runs "
-        "with --emit=compact or --emit=md; it cannot be combined with "
-        "comparison, discovery, drill, administrative or inspection "
-        "commands, or other emit modes.\n"
+        "with --emit=compact, --emit=md, or --emit=html; it cannot be "
+        "combined with comparison, discovery, drill, --cached-report, "
+        "administrative or inspection commands, or other emit modes.\n"
     )
     return 2
 
@@ -3151,6 +3160,39 @@ def _reject_open_questions() -> int:
         "commands, or other emit modes.\n"
     )
     return 2
+
+
+def _reject_trace_exclude(detail: str = "") -> int:
+    sys.stderr.write(
+        "[last30days] --trace-exclude applies only to a --cached-report "
+        "--emit=html --synthesis-file re-render of a single-topic report "
+        f"that was researched with --trace-origin.{detail}\n"
+    )
+    return 2
+
+
+def _exclude_from_cached_trace(report: schema.Report, urls: list[str]) -> str | None:
+    """Drop the named posts from the report's stored trace for this render.
+
+    Returns the URLs that name no stored post: ignoring one would leave a
+    rejected post in the brief.
+    """
+    timeline = report.artifacts["origin_trace"]
+    stored = {
+        sighting["url"]
+        for sighting in (
+            timeline["earliest"], timeline["breakout"], *timeline["hops"], *timeline["carries"],
+        )
+    }
+    unknown = [url for url in urls if url not in stored]
+    if unknown:
+        return ", ".join(unknown)
+    trimmed = html_render.exclude_from_trace(timeline, urls)
+    if trimmed is None:
+        del report.artifacts["origin_trace"]
+    else:
+        report.artifacts["origin_trace"] = trimmed
+    return None
 
 
 def _forecast_command(command_topic: str) -> tuple[str, int] | None:
@@ -3747,6 +3789,8 @@ def _main(
         or args.welcome or args.resolve_save_dir or args.verify_freshness is True
     ):
         parser.error("--cached-report requires a topic, --emit=html, and --synthesis-file without research input files, --verify-freshness, or other command modes")
+    if args.trace_exclude and not args.cached_report:
+        return _reject_trace_exclude()
     if args.welcome:
         if args.trace_origin:
             return _reject_trace_origin()
@@ -4406,6 +4450,15 @@ def _main(
             requested_window=requested_window,
             use_cached_envelopes=args.cached_report,
         )
+        if cached is not None and args.trace_origin and not cached[0].artifacts.get("trace_origin"):
+            # A cached report researched without the trace cannot show one.
+            cached = None
+        if cached is not None and args.trace_exclude:
+            if cached[1] or not cached[0].artifacts.get("origin_trace"):
+                return _reject_trace_exclude()
+            unknown = _exclude_from_cached_trace(cached[0], args.trace_exclude)
+            if unknown:
+                return _reject_trace_exclude(f" No post in the stored trace has this URL: {unknown}")
         if cached is not None:
             cached_report, cached_entity_reports, cache_path = cached
             sys.stderr.write(

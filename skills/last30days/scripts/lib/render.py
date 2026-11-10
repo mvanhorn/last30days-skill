@@ -1109,6 +1109,8 @@ def render_for_html(
                 ),
             ]
         )
+    if report.artifacts.get("trace_origin"):
+        lines.extend(["", *_render_spread_timeline(report)])
     corpus_section = _render_corpus_section(report)
     if corpus_section:
         lines.extend(["", *corpus_section])

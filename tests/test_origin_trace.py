@@ -1,5 +1,6 @@
 """Patient Zero: the spread timeline reports a lower bound and says so."""
 
+import html
 import json
 import sys
 import threading
@@ -462,7 +463,7 @@ def test_the_timeline_is_in_the_last_report_cache_after_the_run(monkeypatch, cap
 
 @pytest.mark.parametrize("argv", [
     ["widget", "--emit=json"],
-    ["widget", "--emit=html"],
+    ["widget", "--emit=html", "--cached-report", "--synthesis-file", "missing.md"],
     ["widget vs gadget"],
     ["widget", "--competitors"],
     ["--discover"],
@@ -482,6 +483,86 @@ def test_trace_origin_is_never_a_silent_no_op(monkeypatch, capsys, argv):
     with mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("research ran")):
         rc, out, err = _run(monkeypatch, capsys, [*argv, "--trace-origin", "--mock", "--save-dir", ""])
     assert rc == 2 and "--trace-origin applies to single-topic research runs" in err and not out
+
+
+# --- HTML brief --------------------------------------------------------------------
+
+
+_HTML = ["widget", "--mock", "--emit=html", "--save-dir", "", "--no-browser-cookies"]
+
+
+def _stored_trace(tmp_path):
+    cached = json.loads((tmp_path / "last-report.json").read_text())
+    return cached["reports"][0]["report"]["artifacts"].get("origin_trace")
+
+
+def _traced_cache(monkeypatch, capsys, tmp_path, *, traced=True):
+    """Run research into a private cache; return the stored timeline and a synthesis file."""
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    rc, _, _ = _run(monkeypatch, capsys, [
+        "widget", "--mock", "--emit=compact", "--save-dir", "", "--no-browser-cookies",
+        *(["--trace-origin"] if traced else []),
+    ])
+    assert rc == 0
+    synthesis = tmp_path / "synthesis.md"
+    synthesis.write_text("How it spread:\n\nIt moved fast.\n", encoding="utf-8")
+    return _stored_trace(tmp_path), str(synthesis)
+
+
+def _rerender(synthesis, *extra):
+    return [
+        "widget", "--emit=html", "--cached-report", "--synthesis-file", synthesis,
+        "--save-dir", "", *extra,
+    ]
+
+
+def test_trace_origin_draws_the_timeline_in_an_html_brief(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    rc, plain, _ = _run(monkeypatch, capsys, _HTML)
+    assert rc == 0 and "<svg" not in plain
+    rc, traced, _ = _run(monkeypatch, capsys, [*_HTML, "--trace-origin"])
+    assert rc == 0
+    assert traced.count("<svg") == 1 and "<h2>Spread Timeline</h2>" in traced
+    assert traced.count("<circle") == len(_stored_trace(tmp_path)["hops"])
+
+
+def test_a_cached_html_re_render_carries_the_trace_and_drops_an_excluded_post(monkeypatch, capsys, tmp_path):
+    stored, synthesis = _traced_cache(monkeypatch, capsys, tmp_path)
+    rejected = stored["hops"][0]["url"]
+    rc, kept, _ = _run(monkeypatch, capsys, _rerender(synthesis))
+    assert rc == 0 and kept.count("<svg") == 1 and rejected in html.unescape(kept)
+    rc, trimmed, _ = _run(monkeypatch, capsys, _rerender(synthesis, "--trace-exclude", rejected))
+    assert rc == 0 and "<h2>Spread Timeline</h2>" in trimmed
+    assert rejected not in html.unescape(trimmed)
+    # The exclusion belongs to that render; the stored trace is untouched.
+    assert _stored_trace(tmp_path) == stored
+
+
+def test_trace_origin_on_html_never_reuses_an_untraced_cached_report(monkeypatch, capsys, tmp_path):
+    _, synthesis = _traced_cache(monkeypatch, capsys, tmp_path, traced=False)
+    rc, out, err = _run(monkeypatch, capsys, [*_HTML, "--trace-origin", "--synthesis-file", synthesis])
+    assert rc == 0 and "<h2>Spread Timeline</h2>" in out
+    assert "running fresh research" in err
+
+
+def test_trace_exclude_is_never_a_silent_no_op(monkeypatch, capsys, tmp_path):
+    stored, synthesis = _traced_cache(monkeypatch, capsys, tmp_path)
+    url = stored["hops"][0]["url"]
+    with mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("research ran")):
+        for argv in (
+            [*_HTML, "--trace-exclude", url],
+            [*_HTML, "--trace-origin", "--trace-exclude", url],
+            ["widget", "--mock", "--emit=compact", "--save-dir", "", "--trace-exclude", url],
+            ["--discover", "--trace-exclude", url],
+        ):
+            rc, out, err = _run(monkeypatch, capsys, argv)
+            assert rc == 2 and "--trace-exclude applies only to" in err and not out, argv
+        # A URL that names no post in the stored trace would leave the post in the brief.
+        rc, out, err = _run(monkeypatch, capsys, _rerender(synthesis, "--trace-exclude", "https://nowhere.test/post"))
+        assert rc == 2 and "https://nowhere.test/post" in err and not out
+    _traced_cache(monkeypatch, capsys, tmp_path, traced=False)
+    rc, out, err = _run(monkeypatch, capsys, _rerender(synthesis, "--trace-exclude", url))
+    assert rc == 2 and "--trace-exclude applies only to" in err and not out
 
 
 def test_off_topic_cluster_members_cannot_lead_the_timeline(monkeypatch):

@@ -5,16 +5,18 @@ from __future__ import annotations
 import html
 import re
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
+from typing import Any
 
-from . import registers, render, schema
+from . import origin, registers, render, schema
 from .library import LibraryEntry
 
 
 PROSE_LABELS = [
     ("What I learned:", "What I learned"),
     ("KEY PATTERNS from the research:", "Key patterns from the research"),
+    ("How it spread:", "How it spread"),
 ]
 
 INVITATION_PATTERN = re.compile(r"^---\nI'm now an expert.*?Just ask\.$", re.MULTILINE | re.DOTALL)
@@ -269,6 +271,12 @@ td:first-child { color: var(--fg); font-weight: 500; }
   word-break: break-word;
 }
 
+.spread-timeline { margin: 1.5rem 0; color: var(--fg-muted); }
+.spread-timeline svg { display: block; font-size: 14px; }
+.spread-timeline .day { fill: var(--fg); font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 13px; }
+.spread-timeline .peak-mark { color: var(--accent); }
+.spread-timeline a { color: var(--accent); }
+
 .colophon {
   margin-top: 4rem;
   padding-top: 2rem;
@@ -417,8 +425,13 @@ def render_html(
     md = _strip_invitation(md)
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
+    timeline = report.artifacts.get("origin_trace") if report.artifacts.get("trace_origin") else None
+    if timeline:
+        md = _protect_spread_timeline(md)
     body = _markdown_to_html(md)
     body = _wrap_engine_footer(body)
+    if timeline:
+        body = body.replace(SPREAD_TIMELINE_TOKEN, _spread_timeline_svg(timeline))
     body = _promote_meta_marker(body)
     colophon = _build_colophon(report)
     return _wrap_in_template(body, colophon, report.topic)
@@ -635,7 +648,7 @@ def _markdown_to_html(md: str) -> str:
             index += 1
             continue
 
-        if stripped in footers:
+        if stripped in footers or stripped == SPREAD_TIMELINE_TOKEN:
             flush_paragraph()
             close_list()
             out.append(stripped)
@@ -740,6 +753,156 @@ def _wrap_engine_footer(body: str) -> str:
         replace,
         body,
     )
+
+
+SPREAD_TIMELINE_TOKEN = "__LAST30DAYS_SPREAD_TIMELINE__"
+_SPREAD_TIMELINE_HEADING = "\n## Spread Timeline\n"
+_ROW_HEIGHT = 46
+
+
+def _protect_spread_timeline(md: str) -> str:
+    """Reserve a block for the timeline graphic under the engine's heading.
+
+    The markdown converter escapes raw HTML, so the SVG goes in after
+    conversion. The engine's section follows the synthesis, so the last
+    heading is the engine's even when the synthesis reuses the title.
+    """
+    head, heading, tail = md.rpartition(_SPREAD_TIMELINE_HEADING)
+    if not heading:
+        return md
+    return f"{head}{heading}\n{SPREAD_TIMELINE_TOKEN}\n{tail}"
+
+
+def _spread_timeline_svg(timeline: dict[str, Any]) -> str:
+    """Draw each platform's first sighting in date order, plus the peak day.
+
+    Rows are evenly spaced so close dates never overlap. Every paint is
+    ``currentColor``; the page's CSS variables set it, so the graphic follows
+    the light and dark styles. Post text and link targets come from the open
+    web: all text is escaped and a link is drawn only for an allowed scheme.
+    """
+    rows: list[tuple[str, dict[str, Any] | None]] = [(hop["day"], hop) for hop in timeline["hops"]]
+    rows.append((timeline["peak_day"], None))
+    # Stable: sightings keep their stored order and the peak follows its day's sightings.
+    rows.sort(key=lambda row: (row[0], row[1] is None))
+    height = _ROW_HEIGHT * len(rows)
+    middle = _ROW_HEIGHT // 2
+    parts = [
+        '<figure class="spread-timeline">',
+        # No viewBox: the text keeps its size on a narrow screen instead of shrinking.
+        f'<svg xmlns="http://www.w3.org/2000/svg" role="img" width="100%" height="{height}" '
+        'aria-label="First sighting per platform in date order, with the peak day">',
+        f'<line x1="14" y1="{middle}" x2="14" y2="{height - middle}" stroke="currentColor" '
+        'stroke-opacity="0.35" stroke-width="2"/>',
+    ]
+    for index, (day, hop) in enumerate(rows):
+        y = index * _ROW_HEIGHT + middle
+        date_text = f'<text class="day" x="36" y="{y - 4}" fill="currentColor">{html.escape(day)}</text>'
+        if hop is None:
+            peak = timeline["peak"]
+            count = int(peak["count"])
+            parts.append(
+                f'<g class="peak-mark"><rect x="7" y="{y - 7}" width="14" height="14" '
+                f'transform="rotate(45 14 {y})" fill="currentColor"/>{date_text}'
+                f'<text x="36" y="{y + 14}" fill="currentColor">Peak day: {count} '
+                f'post{"s" if count != 1 else ""}</text></g>'
+            )
+            continue
+        label = render._source_label(hop["source"])
+        if hop.get("venue"):
+            label += f" in {hop['venue']}"
+        marker = (
+            f'<title>{html.escape(hop.get("title") or label)}</title>'
+            f'<circle cx="14" cy="{y}" r="6" fill="currentColor"/>{date_text}'
+            f'<text x="36" y="{y + 14}" fill="currentColor">{html.escape(label)}</text>'
+        )
+        url = html.escape(str(hop.get("url") or ""), quote=True)
+        if _is_safe_link_url(url):
+            marker = f'<a href="{url}" rel="noopener noreferrer">{marker}</a>'
+        parts.append(f"<g>{marker}</g>")
+    parts.extend(["</svg>", "</figure>"])
+    return "\n".join(parts)
+
+
+_HOP_ONLY_KEYS = ("searched_from", "searched_to", "order_uncertain")
+
+
+def exclude_from_trace(timeline: dict[str, Any], urls: Iterable[str]) -> dict[str, Any] | None:
+    """Return a stored origin trace without the named posts, or None when none remain.
+
+    The stored trace keeps each platform's first sighting, the biggest post,
+    and the posts that link to an earlier one. A platform whose first
+    sighting is excluded falls back to its next stored sighting, and drops
+    out when it has none.
+    """
+    excluded = set(urls)
+    stored: dict[str, dict[str, Any]] = {}
+    for sighting in (timeline["earliest"], *timeline["hops"], *timeline["carries"], timeline["breakout"]):
+        stored.setdefault(
+            sighting["url"],
+            {key: value for key, value in sighting.items() if key not in _HOP_ONLY_KEYS},
+        )
+    removed = [sighting for url, sighting in stored.items() if url in excluded]
+    kept = sorted(
+        (sighting for url, sighting in stored.items() if url not in excluded),
+        key=lambda s: (s["day"], -s["engagement"], s["source"], s["url"]),
+    )
+    if not kept:
+        return None
+    for sighting in kept:
+        if sighting.get("links_to", {}).get("url") in excluded:
+            del sighting["links_to"]
+
+    searched = {
+        hop["source"]: (hop["searched_from"], hop["searched_to"]) for hop in timeline["hops"]
+    }
+    first_by_source: dict[str, dict[str, Any]] = {}
+    for sighting in kept:
+        first_by_source.setdefault(sighting["source"], sighting)
+    hops = [
+        {
+            **sighting,
+            "searched_from": searched[sighting["source"]][0],
+            "searched_to": searched[sighting["source"]][1],
+        }
+        for sighting in sorted(
+            first_by_source.values(), key=lambda s: (s["day"], -s["engagement"], s["source"]),
+        )
+    ]
+    for hop in hops:
+        hop["order_uncertain"] = hop["searched_from"] > hops[0]["day"]
+
+    peak_day = timeline["peak_day"]
+    on_peak = [sighting for sighting in removed if sighting["day"] == peak_day]
+    peak = {
+        "count": timeline["peak"]["count"] - len(on_peak),
+        "engagement": timeline["peak"]["engagement"] - sum(s["engagement"] for s in on_peak),
+    }
+    if peak["count"] <= 0:
+        # Nothing is left on the stored peak day; the peak is the best remaining day.
+        by_day: dict[str, dict[str, float]] = {}
+        for sighting in kept:
+            bucket = by_day.setdefault(sighting["day"], {"count": 0, "engagement": 0.0})
+            bucket["count"] += 1
+            bucket["engagement"] += sighting["engagement"]
+        peak_day = max(by_day, key=lambda d: (by_day[d]["engagement"], by_day[d]["count"], d))
+        peak = by_day[peak_day]
+
+    return {
+        **timeline,
+        "earliest": kept[0],
+        "hops": hops,
+        "carries": [sighting for sighting in kept if "links_to" in sighting],
+        "peak_day": peak_day,
+        "peak": peak,
+        "breakout": max(
+            kept, key=lambda s: (s["engagement"], -date.fromisoformat(s["day"]).toordinal()),
+        ),
+        "sighting_count": timeline["sighting_count"] - len(removed),
+        "at_window_edge": (
+            date.fromisoformat(kept[0]["day"]) - date.fromisoformat(timeline["range_from"])
+        ).days <= origin.WINDOW_EDGE_DAYS,
+    }
 
 
 def _promote_meta_marker(body: str) -> str:
