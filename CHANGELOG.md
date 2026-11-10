@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.33.1] - 2026-11-10
+
+### Fixed
+
+- YouTube no longer comes back empty for topics with a big back catalog, such as a music artist whose top search results are years-old official videos. When the relevance search finds fewer than 3 videos inside a recent window, the engine retries once with YouTube's own upload-date filter (this week, month, or year) and merges the new uploads. An age-restricted video in the results is also no longer mistaken for a bot block, which had been cancelling transcripts for the whole search.
+
+
 ## [3.33.0] - 2026-11-10
 
 ### Security
