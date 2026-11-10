@@ -202,3 +202,28 @@ def test_the_same_market_listed_twice_renders_once():
     lines = render._polymarket_top_markets(items, limit=3)
 
     assert lines == ["Jensen Huang divorce 18%"]
+
+
+def test_different_markets_with_the_same_labelled_name_both_render():
+    items = [
+        _pm_item("Next president by December 31, 2026?", "Vance", 0.3, volume=300),
+        _pm_item("Next president by June 30, 2027?", "Vance", 0.41, volume=200),
+    ]
+
+    lines = render._polymarket_top_markets(items, limit=3)
+
+    assert lines == [
+        "Next president by December 31, 2026: Vance 30%",
+        "Next president by June 30, 2027: Vance 41%",
+    ]
+
+
+def test_the_same_labelled_market_listed_twice_renders_once():
+    items = [
+        _pm_item("Next president by June 30, 2027?", "Vance", 0.41, volume=300),
+        _pm_item("Next president by June 30, 2027?", "Vance", 0.41, volume=200),
+    ]
+
+    lines = render._polymarket_top_markets(items, limit=3)
+
+    assert lines == ["Next president: Vance 41%"]
