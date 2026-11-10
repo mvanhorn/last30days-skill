@@ -1,5 +1,6 @@
 """Run real CLI/fanout wiring while collecting the research boundary inputs."""
 
+import copy
 import sys
 from types import SimpleNamespace
 from unittest import mock
@@ -41,7 +42,10 @@ def run_competitor_cli(
     monkeypatch.setattr(cli.pipeline, "run", research)
     monkeypatch.setattr(resolve, "_has_backend", lambda _config: has_backend)
     monkeypatch.setattr(resolve, "auto_resolve", resolver)
-    company_resolver = mock.Mock(side_effect=lambda topic: dict((companies or {}).get(topic, {})))
+    # copy.copy keeps the type of a failed lookup, which dict() would drop.
+    company_resolver = mock.Mock(
+        side_effect=lambda topic, **_kwargs: copy.copy((companies or {}).get(topic, {}))
+    )
     monkeypatch.setattr(cli.company_resolve, "resolve_company", company_resolver)
     # The price CLI is absent unless a test hands in a stand-in for it.
     monkeypatch.setattr(cli.yahoo_finance, "_is_available", lambda: market_cli is not None)

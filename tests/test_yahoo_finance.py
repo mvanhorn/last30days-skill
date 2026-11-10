@@ -14,7 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from lib import health, render, schema, yahoo_finance
+import last30days as cli
+from lib import company_resolve, health, http, render, schema, yahoo_finance
+from tests.test_company_resolve import FakeWikidata
 from tests.test_render_v3 import sample_report
 
 NVDA_CLOSES = [
@@ -35,18 +37,19 @@ NVIDIA = {"company": "Nvidia", "ticker": "NVDA", "exchange": "Nasdaq"}
 TESLA = {"company": "Tesla", "ticker_candidates": ["TSLA", "TL0", "0R0X"]}
 
 
-def _chart(symbol, closes, *, currency="USD", gmtoffset=-18000, hour=14):
+def _chart(symbol, closes, *, currency="USD", gmtoffset=-18000, hour=14, name=None, instrument="EQUITY"):
     """A chart response; each bar is stamped at the exchange's opening hour."""
     stamps = [
         int(datetime.fromisoformat(f"{day}T{hour:02d}:30:00+00:00").timestamp())
         for day, _close in closes
     ]
+    names = {"longName": name, "shortName": name} if name else {}
     return {
         "meta": {"source": "live"},
         "results": {"chart": {"result": [{
             "meta": {
                 "currency": currency, "symbol": symbol, "gmtoffset": gmtoffset,
-                "instrumentType": "EQUITY", "fullExchangeName": "NasdaqGS",
+                "instrumentType": instrument, "fullExchangeName": "NasdaqGS", **names,
             },
             "timestamp": stamps,
             "indicators": {"quote": [{"close": [close for _day, close in closes]}]},
@@ -708,3 +711,757 @@ def test_a_fetch_that_raises_is_not_remembered(monkeypatch):
     with pytest.raises(OSError):
         yahoo_finance._fetch_window("NVDA", "2026-10-11", "2026-11-10")
     assert yahoo_finance._fetch_window("NVDA", "2026-10-11", "2026-11-10") == {"bars": [], "currency": "USD"}
+
+
+# The backup: Yahoo's symbol search, asked for the topic itself, only when the
+# Wikidata lookup failed.
+
+RATE_LIMITED = http.HTTPError("HTTP 429: Too Many Requests", status_code=429)
+TIMED_OUT = http.HTTPError("Request timed out")
+BACKUP_USED = "wikidata failed; yahoo backup used"
+NO_BACKUP_MATCH = "wikidata failed; no backup match"
+BACKUP_NOT_RUN = "wikidata failed; backup not run"
+TSLA_ROWS = [("TSLA", "Tesla, Inc.", "Equity"), ("STSLA=F", "Tesla, Inc Single Stock futures", "Futures")]
+
+
+def _named(*rows):
+    return {"meta": {"source": "live"}, "results": {"ResultSet": {"Result": [
+        {"symbol": symbol, "name": name, "typeDisp": kind, "exchDisp": "-"}
+        for symbol, name, kind in rows
+    ]}}}
+
+
+def _company_after(monkeypatch, topic, *, error=RATE_LIMITED, config=None, mock_run=False, **install_kwargs):
+    """What the engine resolves for a topic, with Wikidata failing unless
+    ``error`` is None and the price CLI answering from ``install_kwargs``."""
+    fake = _install(monkeypatch, **install_kwargs)
+    wikidata = FakeWikidata(error=error)
+    monkeypatch.setattr(company_resolve.http, "get", wikidata)
+    company = cli._resolved_company(topic, mock=mock_run, config=config or {})
+    return company, fake, wikidata
+
+
+@pytest.mark.parametrize("error", [RATE_LIMITED, TIMED_OUT], ids=["http-429", "timeout"])
+def test_backup_gives_tesla_its_ticker_and_the_price_line(monkeypatch, error):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Tesla", error=error,
+        matches={"Tesla": _named(*TSLA_ROWS)},
+        charts={"TSLA": _chart("TSLA", RISING_CLOSES), "^GSPC": _chart("^GSPC", SP500_CLOSES)},
+    )
+
+    assert company == {
+        "company": "Tesla", "ticker": "TSLA", "company_source": "yahoo-backup",
+        "company_lookup": BACKUP_USED, "ticker_source": "yahoo-backup",
+    }
+    assert len(wikidata.calls) == 1
+    report = _report()
+    yahoo_finance.attach_market_data(report, company)
+    assert _footer(report) == [
+        "📈 Yahoo Finance: TSLA +10.0% in the L30 │ $100.00 → $110.00 │ "
+        "S&P 500 -3.9% │ best day Nov 10 +5.8%"
+    ]
+    # One symbol search, for the topic; the accepted symbol is not searched again.
+    assert [cmd[1:4] for cmd in fake.calls if cmd[1] == "autocomplete"] == [
+        ["autocomplete", "--query", "Tesla"]
+    ]
+    assert fake.charted() == ["TSLA", "^GSPC"]
+
+
+def test_backup_accepts_a_name_that_differs_by_case_and_designator(monkeypatch):
+    company, _fake, _wikidata = _company_after(
+        monkeypatch, "Nvidia", matches={"Nvidia": _named(("NVDA", "NVIDIA Corporation", "Equity"))},
+    )
+
+    assert (company["company"], company["ticker"]) == ("Nvidia", "NVDA")
+    assert company["company_source"] == "yahoo-backup"
+    assert "exchange" not in company and "company_site" not in company
+
+
+@pytest.mark.parametrize(
+    "topic,rows",
+    [
+        ("Rust", [("RUSTA.ST", "Rusta AB (publ)", "Equity")]),
+        ("Stripe", [("STRIZZX", "Stripe Fund", "Fund"), ("0P0000X8PD.F", "Stripe", "Fund")]),
+        (
+            "Apple",
+            [("APLE", "Apple Hospitality REIT, Inc.", "Equity"), ("AAPL", "Apple Inc.", "Equity")],
+        ),
+        ("Toyota", [("7203.T", "Toyota Motor Corporation", "Equity")]),
+        ("Toyota", [("7203.T", "Toyota", "Equity"), ("TM", "Toyota", "Equity")]),
+        ("Jensen Huang", []),
+    ],
+    ids=[
+        "rust-is-not-rusta", "funds-only", "name-only-contains-the-topic",
+        "foreign-listing", "foreign-listing-with-the-same-name", "no-results",
+    ],
+)
+def test_backup_rejects_anything_but_an_exact_us_match_on_the_first_equity(monkeypatch, topic, rows):
+    company, fake, _wikidata = _company_after(monkeypatch, topic, matches={topic: _named(*rows)})
+
+    assert company == {"company_lookup": NO_BACKUP_MATCH}
+    assert len(fake.calls) == 1
+    report = _report()
+    yahoo_finance.attach_market_data(report, company)
+    assert _footer(report) == []
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Tesla", "TESLA INC", "Tesla, Inc.", "Tesla Incorporated", "Tesla Corp.", "Tesla Corporation",
+        "Tesla Co.", "Tesla Company", "Tesla Ltd.", "Tesla Limited", "Tesla PLC", "Tesla plc",
+        "Tesla AG", "Tesla SA", "Tesla S.A.", "Tesla NV", "Tesla N.V.", "Tesla AB",
+        "Tesla AB (publ)", "Tesla SE", "Tesla Holdings", "Tesla Holding", "Tesla Group",
+        "Tesla, Inc. Class A", "Tesla Inc Class C", "Tesla Holdings Co., Ltd.", "Tesla, The",
+        "  tesla,  inc. ",
+    ],
+)
+def test_backup_name_match_ignores_case_punctuation_and_trailing_designators(name):
+    assert yahoo_finance._same_company_name("Tesla", name)
+
+
+@pytest.mark.parametrize(
+    "topic,name",
+    [
+        ("Rust", "Rusta AB (publ)"),
+        ("Apple", "Apple Hospitality REIT, Inc."),
+        ("Tesla", "Tesla Motors, Inc."),
+        ("Tesla", "Inc. Tesla"),
+        ("Tesla", ""),
+        ("Group", "Inc."),
+    ],
+)
+def test_backup_name_match_refuses_any_other_name(topic, name):
+    assert not yahoo_finance._same_company_name(topic, name)
+
+
+def test_wikidata_answering_nothing_never_reaches_the_backup(monkeypatch):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Rust", error=None, matches={"Rust": _named(("RUST", "Rust", "Equity"))},
+    )
+
+    assert company == {}
+    assert wikidata.calls
+    assert fake.calls == []
+
+
+def test_backup_without_the_binary_gives_nothing(monkeypatch):
+    company, fake, _wikidata = _company_after(monkeypatch, "Tesla", available=False)
+
+    assert company == {"company_lookup": BACKUP_NOT_RUN}
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("excluded", ["yahoo_finance", "reddit, Yahoo_Finance ,x"])
+def test_backup_is_not_run_when_yahoo_finance_is_excluded(monkeypatch, excluded):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Tesla", config={"EXCLUDE_SOURCES": excluded},
+        matches={"Tesla": _named(*TSLA_ROWS)},
+    )
+
+    assert company == {"company_lookup": BACKUP_NOT_RUN}
+    assert len(wikidata.calls) == 1
+    assert fake.calls == []
+
+
+def test_a_topic_that_is_not_company_shaped_reaches_neither_wikidata_nor_the_cli(monkeypatch):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "how to deploy on Fly.io",
+        matches={"how to deploy on Fly.io": _named(("FLY", "how to deploy on Fly.io", "Equity"))},
+    )
+
+    assert company == {}
+    assert wikidata.calls == []
+    assert fake.calls == []
+
+
+def test_mock_run_reaches_neither_wikidata_nor_the_backup(monkeypatch):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Tesla", mock_run=True, matches={"Tesla": _named(*TSLA_ROWS)},
+    )
+
+    assert company == {}
+    assert wikidata.calls == []
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        _failed("GET /v6/finance/autocomplete returned HTTP 429: Too Many Requests", code=7),
+        {"meta": {"source": "live"}, "results": {}},
+    ],
+    ids=["cli-error", "unexpected-shape"],
+)
+def test_backup_search_that_fails_gives_nothing_and_does_not_raise(monkeypatch, answer):
+    company, _fake, _wikidata = _company_after(monkeypatch, "Tesla", matches={"Tesla": answer})
+
+    assert company == {"company_lookup": NO_BACKUP_MATCH}
+
+
+def test_failed_lookup_is_logged_once_when_the_backup_runs(monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        company_resolve.log, "source_log",
+        lambda source, message, **kwargs: logged.append((source, message, kwargs)),
+    )
+
+    _company_after(monkeypatch, "Tesla", matches={"Tesla": _named(*TSLA_ROWS)})
+
+    company_lines = [entry for entry in logged if entry[0] == "Company"]
+    assert len(company_lines) == 1
+    assert "Wikidata lookup failed for 'Tesla'" in company_lines[0][1]
+    assert company_lines[0][2] == {"tty_only": False}
+
+
+def test_engine_run_records_the_lookup_note_for_both_backup_outcomes(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(
+        charts={"MAIN": _chart("MAIN", _JUNE), "^GSPC": _chart("^GSPC", _JUNE)},
+        matches={
+            "MainBrand": _named(("MAIN", "MainBrand, Inc.", "Equity")),
+            "PeerOne": _named(("PONE.L", "PeerOne plc", "Equity")),
+        },
+    )
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake,
+        companies={
+            "MainBrand": company_resolve.FailedLookup(),
+            "PeerOne": company_resolve.FailedLookup(),
+        },
+    )
+
+    main = observed.reports["MainBrand"].artifacts["resolved"]
+    assert (main["company"], main["ticker"]) == ("MainBrand", "MAIN")
+    assert main["company_source"] == "yahoo-backup"
+    assert main["company_lookup"] == BACKUP_USED
+    assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "MAIN"
+    peer_one = observed.reports["PeerOne"].artifacts["resolved"]
+    assert peer_one["company_lookup"] == NO_BACKUP_MATCH
+    assert not {"company", "ticker", "company_source"} & set(peer_one)
+    assert "yahoo_finance" not in observed.reports["PeerOne"].artifacts
+    # Wikidata answered for PeerTwo, so there is no note and no symbol search.
+    assert "company_lookup" not in observed.reports["PeerTwo"].artifacts["resolved"]
+    assert sorted(cmd[3] for cmd in fake.calls if cmd[1] == "autocomplete") == ["MainBrand", "PeerOne"]
+    rows = render._render_resolved_entities_block(
+        [(name, observed.reports[name]) for name in ("MainBrand", "PeerOne")]
+    )
+    assert "Ticker MAIN (Yahoo match)" in rows[2]
+    assert "Ticker" not in rows[3]
+
+
+# The host's ticker: ``--ticker "SYMBOL:Company"`` pairs the hosting model
+# found by web search, each checked against Yahoo's chart and symbol search.
+
+TSLA_CLOSES = [("2026-10-12", 400.0), ("2026-10-13", 410.0), ("2026-11-10", 402.0)]
+SPCX_CLOSES = [("2026-10-12", 100.0), ("2026-10-13", 96.0), ("2026-11-10", 86.0)]
+GOOGL_CLOSES = [("2026-10-12", 200.0), ("2026-10-13", 198.0), ("2026-11-10", 193.8)]
+NOT_FOUND = _failed(
+    'GET /v8/finance/chart/ANT returned HTTP 404: {"chart":{"result":null,"error":'
+    '{"code":"Not Found","description":"No data found, symbol may be delisted"}}}'
+)
+HOST_CHARTS = {
+    "SPCX": _chart("SPCX", SPCX_CLOSES, name="Space Exploration Technologies Corp."),
+    "NET": _chart("NET", RISING_CLOSES, name="Cloudflare, Inc."),
+    "TTWO": _chart("TTWO", RISING_CLOSES, name="Take-Two Interactive Software, Inc."),
+    "NVDA": _chart("NVDA", NVDA_CLOSES, name="NVIDIA Corporation"),
+    "GOOGL": _chart("GOOGL", GOOGL_CLOSES, name="Alphabet Inc."),
+    "TSLA": _chart("TSLA", TSLA_CLOSES, name="Tesla, Inc."),
+    "STRS": _chart("STRS", RISING_CLOSES, name="Stratus Properties Inc."),
+    "ANT": NOT_FOUND,
+    "SPY": _chart("SPY", RISING_CLOSES, name="State Street SPDR S&P 500 ETF Trust", instrument="ETF"),
+    "^GSPC": _chart("^GSPC", SP500_CLOSES, name="S&P 500", instrument="INDEX"),
+}
+HOST_MATCHES = {
+    "SpaceX": _named(
+        ("SPCX", "Space Exploration Technologies Corp.", "Equity"),
+        ("SSPCX=F", "SpaceX Single Stock futures", "Futures"),
+        ("SPCF", "ProShares Ultra SpaceX", "ETF"),
+    ),
+    "Cloudflare": _named(("NET", "Cloudflare, Inc.", "Equity")),
+    "Take-Two Interactive": _named(("TTWO", "Take-Two Interactive Software, Inc.", "Equity")),
+    "Nvidia": _named(("NVDA", "NVIDIA Corporation", "Equity"), ("NVDL", "GraniteShares 2x Long NVDA", "ETF")),
+    "Nvidia Corporation": _named(("NVDA", "NVIDIA Corporation", "Equity")),
+    "Alphabet": _named(
+        ("GOOG", "Alphabet Inc.", "Equity"), ("GOOGL", "Alphabet Inc.", "Equity"),
+        ("SGOOG=F", "Alphabet Inc Single Stock futures", "Futures"),
+    ),
+    "Tesla": _named(*TSLA_ROWS),
+    "Stripe": _named(
+        ("STRIZZX", "Stripe - Company Level", "Fund"),
+        ("0P0000X8PD.F", "Prosper Stars & Stripes Fund P EUR", "Fund"),
+    ),
+    "Anthropic": _named(("ANTH.PVT", "Anthropic PBC", "Private Company")),
+    "S&P 500 ETF": _named(("SPY", "State Street SPDR S&P 500 ETF Trust", "ETF")),
+}
+
+
+def _host(monkeypatch, ticker, *, topic="Some Topic", config=None, **install_kwargs):
+    """Parse ``--ticker``, check it and attach it, as the engine does after a
+    run. Returns the report, what goes into ``resolved``, and the CLI."""
+    install_kwargs.setdefault("charts", HOST_CHARTS)
+    install_kwargs.setdefault("matches", HOST_MATCHES)
+    fake = _install(monkeypatch, **install_kwargs)
+    report = _report()
+    report.topic = topic
+    fields = yahoo_finance.attach_host_tickers(
+        report, yahoo_finance.parse_host_tickers(ticker), config,
+    )
+    return report, fields, fake
+
+
+@pytest.mark.parametrize(
+    "ticker,symbol",
+    [
+        ("SPCX:SpaceX", "SPCX"),
+        ("NET:Cloudflare", "NET"),
+        ("TTWO:Take-Two Interactive", "TTWO"),
+        ("NVDA:Nvidia", "NVDA"),
+        ("nvda: Nvidia ", "NVDA"),
+        ("$NVDA:Nvidia", "NVDA"),
+    ],
+)
+def test_host_ticker_is_accepted_when_yahoo_lists_it_first_for_the_company(monkeypatch, ticker, symbol):
+    report, fields, fake = _host(monkeypatch, ticker)
+
+    assert report.artifacts["yahoo_finance"]["symbol"] == symbol
+    assert fields["ticker"] == symbol
+    assert fields["tickers"] == [symbol]
+    assert fields["ticker_source"] == "host"
+    assert "ticker_rejected" not in fields
+    assert "yahoo_finance" not in report.source_status
+    # One chart fetch for the symbol: the check reads the fetch the line uses.
+    assert fake.charted() == [symbol, "^GSPC"]
+    assert len([cmd for cmd in fake.calls if cmd[1] == "autocomplete"]) == 1
+
+
+def test_host_ticker_is_accepted_when_the_first_stock_is_the_same_company(monkeypatch):
+    """Yahoo lists GOOG before GOOGL for "Alphabet"; both are Alphabet Inc."""
+    report, fields, _fake = _host(monkeypatch, "GOOGL:Alphabet")
+
+    assert report.artifacts["yahoo_finance"]["symbol"] == "GOOGL"
+    assert fields["tickers"] == ["GOOGL"]
+
+
+@pytest.mark.parametrize(
+    "ticker,reason",
+    [
+        ("STRS:Stripe", "Yahoo lists no stock for 'Stripe'; STRS is Stratus Properties Inc."),
+        ("ANT:Anthropic", "Yahoo has no price data for ANT"),
+        ("SPY:S&P 500 ETF", "SPY is not a stock on Yahoo (ETF)"),
+        (
+            "STRS:Tesla",
+            "Yahoo's first stock for 'Tesla' is TSLA (Tesla, Inc.); STRS is Stratus Properties Inc.",
+        ),
+        ("NVDA", "no company name"),
+        ("NVDA:", "no company name"),
+        (":Nvidia", "not a ticker symbol"),
+        ("--query:Nvidia", "not a ticker symbol"),
+        ("^GSPC:S&P 500", "not a ticker symbol"),
+    ],
+    ids=[
+        "stripe-is-not-stratus", "filed-but-not-trading", "not-an-equity", "another-company",
+        "symbol-alone", "empty-name", "no-symbol", "flag-shaped-symbol", "index",
+    ],
+)
+def test_host_ticker_that_fails_the_check_gives_no_line(monkeypatch, ticker, reason):
+    report, fields, _fake = _host(monkeypatch, ticker)
+
+    assert _footer(report) == []
+    assert "yahoo_finance" not in report.artifacts
+    assert "yahoo_finance" not in report.source_status
+    assert fields == {
+        "ticker_source": "host", "ticker_rejected": [{"pair": ticker, "reason": reason}],
+    }
+
+
+def test_host_ticker_with_no_company_name_never_reaches_the_cli(monkeypatch):
+    _report_, _fields, fake = _host(monkeypatch, "NVDA,--help:Nvidia")
+
+    assert fake.calls == []
+
+
+def test_host_ticker_with_fewer_than_two_closes_is_rejected(monkeypatch):
+    report, fields, _fake = _host(
+        monkeypatch, "NVDA:Nvidia",
+        charts={"NVDA": _chart("NVDA", NVDA_CLOSES[:1], name="NVIDIA Corporation")},
+    )
+
+    assert "yahoo_finance" not in report.artifacts
+    assert "fewer than two daily closes" in fields["ticker_rejected"][0]["reason"]
+
+
+@pytest.mark.parametrize(
+    "answer,state",
+    [
+        (
+            _failed("GET /v6/finance/autocomplete returned HTTP 429: Too Many Requests", code=7),
+            health.RATE_LIMITED,
+        ),
+        (_failed("GET /v6/finance/autocomplete returned HTTP 500: upstream failure"), health.ERROR),
+        ({"meta": {"source": "live"}, "results": {}}, health.SCHEMA_DRIFT),
+    ],
+    ids=["http-429", "cli-error", "unexpected-shape"],
+)
+def test_host_ticker_whose_symbol_search_fails_is_a_degraded_source(monkeypatch, answer, state):
+    report, fields, _fake = _host(monkeypatch, "NVDA:Nvidia", matches={"Nvidia": answer})
+
+    assert _footer(report) == []
+    assert "yahoo_finance" not in report.artifacts
+    assert report.source_status["yahoo_finance"].state == state
+    assert "Nvidia" in report.source_status["yahoo_finance"].detail
+    assert "ticker" not in fields
+    assert fields["ticker_rejected"][0]["pair"] == "NVDA:Nvidia"
+    assert "not checked" in fields["ticker_rejected"][0]["reason"]
+
+
+def test_host_ticker_whose_symbol_search_times_out_does_not_raise(monkeypatch):
+    def cli(cmd, timeout):
+        if cmd[1] == "autocomplete":
+            raise yahoo_finance.subproc.SubprocTimeout(f"timed out after {timeout}s")
+        return _ok(HOST_CHARTS[cmd[2]])
+
+    monkeypatch.setattr(yahoo_finance, "_is_available", lambda: True)
+    monkeypatch.setattr(yahoo_finance.subproc, "run_with_timeout", cli)
+    report = _report()
+
+    fields = yahoo_finance.attach_host_tickers(report, yahoo_finance.parse_host_tickers("NVDA:Nvidia"))
+
+    assert "yahoo_finance" not in report.artifacts
+    assert "Nvidia" in report.source_status["yahoo_finance"].detail
+    assert "ticker" not in fields
+
+
+def test_host_ticker_whose_chart_is_rate_limited_is_a_degraded_source(monkeypatch):
+    report, fields, fake = _host(
+        monkeypatch, "NVDA:Nvidia",
+        charts={"NVDA": _failed("GET /v8/finance/chart/NVDA returned HTTP 429: Too Many Requests", code=7)},
+    )
+
+    assert report.source_status["yahoo_finance"].state == health.RATE_LIMITED
+    assert "not checked" in fields["ticker_rejected"][0]["reason"]
+    assert fake.calls == [fake.calls[0]]
+
+
+def test_two_host_tickers_share_one_footer_line_and_both_reach_the_evidence(monkeypatch):
+    report, fields, fake = _host(monkeypatch, "TSLA:Tesla,SPCX:SpaceX", topic="Elon Musk")
+
+    assert _footer(report) == [
+        "📈 Yahoo Finance: TSLA (Tesla) +0.5% │ SPCX (SpaceX) -14.0% in the L30 │ S&P 500 -3.9%"
+    ]
+    assert fields == {
+        "ticker_source": "host", "ticker": "TSLA", "tickers": ["TSLA", "SPCX"], "company": "Tesla",
+    }
+    text = render.render_compact(report)
+    assert text.count("## Market Data") == 1
+    block = text[text.index("## Market Data"):]
+    block = block[:block.index("\n## ", 1)]
+    assert [line for line in block.splitlines() if line.startswith("- Yahoo Finance daily closes")] == [
+        "- Yahoo Finance daily closes: TSLA (Tesla), USD, 2026-10-11 to 2026-11-10",
+        "- Yahoo Finance daily closes: SPCX (SpaceX), USD, 2026-10-11 to 2026-11-10",
+    ]
+    assert sorted(fake.charted()) == ["SPCX", "TSLA", "^GSPC"]
+
+
+def test_one_accepted_and_one_rejected_host_ticker_prints_the_accepted_one(monkeypatch):
+    report, fields, _fake = _host(monkeypatch, "ANT:Anthropic,NVDA:Nvidia", topic="AI labs")
+
+    assert _footer(report)[0].startswith("📈 Yahoo Finance: NVDA (Nvidia) -25.9% in the L30 │ $226.32")
+    assert fields["tickers"] == ["NVDA"]
+    assert fields["ticker_rejected"] == [
+        {"pair": "ANT:Anthropic", "reason": "Yahoo has no price data for ANT"},
+    ]
+
+
+def test_a_third_host_ticker_is_ignored_with_a_log_line(monkeypatch):
+    logged = []
+    monkeypatch.setattr(yahoo_finance, "_log", logged.append)
+
+    report, fields, fake = _host(monkeypatch, "TSLA:Tesla, SPCX:SpaceX ,NVDA:Nvidia", topic="Elon Musk")
+
+    assert fields["tickers"] == ["TSLA", "SPCX"]
+    assert "NVDA" not in fake.charted()
+    assert any("NVDA:Nvidia" in line and "ignor" in line for line in logged)
+
+
+def test_a_repeated_host_symbol_is_used_once(monkeypatch):
+    _report_, fields, _fake = _host(monkeypatch, "NVDA:Nvidia,nvda:Nvidia")
+
+    assert fields["tickers"] == ["NVDA"]
+    assert fields["ticker_rejected"] == [{"pair": "nvda:Nvidia", "reason": "repeats NVDA"}]
+
+
+@pytest.mark.parametrize(
+    "topic,ticker,shown",
+    [
+        ("Nvidia", "NVDA:Nvidia", "NVDA -25.9%"),
+        ("NVIDIA", "NVDA:Nvidia Corporation", "NVDA -25.9%"),
+        ("Jensen Huang", "NVDA:Nvidia", "NVDA (Nvidia) -25.9%"),
+        ("Waymo", "GOOGL:Alphabet", "GOOGL (Alphabet) -3.1%"),
+    ],
+    ids=["same", "same-but-for-case-and-designator", "person", "subsidiary"],
+)
+def test_footer_names_the_company_only_when_it_is_not_the_topic(monkeypatch, topic, ticker, shown):
+    report, _fields, _fake = _host(monkeypatch, ticker, topic=topic)
+
+    assert _footer(report)[0].startswith(f"📈 Yahoo Finance: {shown} in the L30 │ $")
+
+
+@pytest.mark.parametrize(
+    "config,available,why",
+    [
+        ({"EXCLUDE_SOURCES": "yahoo_finance"}, True, "not checked: yahoo_finance is excluded"),
+        ({}, False, "not checked: yahoo-finance-pp-cli is not on PATH"),
+    ],
+    ids=["excluded", "binary-absent"],
+)
+def test_host_ticker_makes_no_cli_call_when_the_lane_is_off(monkeypatch, config, available, why):
+    report, fields, fake = _host(monkeypatch, "NVDA:Nvidia", config=config, available=available)
+
+    assert fake.calls == []
+    assert _footer(report) == []
+    assert "yahoo_finance" not in report.artifacts
+    assert "yahoo_finance" not in report.source_status
+    assert fields == {
+        "ticker_source": "host", "ticker_rejected": [{"pair": "NVDA:Nvidia", "reason": why}],
+    }
+
+
+def test_resolved_row_names_the_host_search_and_keeps_the_other_wordings():
+    from tests.test_company_resolve import _report as resolved_report
+
+    rows = render._render_resolved_entities_block([
+        ("Elon Musk", resolved_report("Elon Musk", {
+            "company": "Tesla", "ticker": "TSLA", "tickers": ["TSLA", "SPCX"], "ticker_source": "host",
+        })),
+        ("Jensen Huang", resolved_report("Jensen Huang", {
+            "company": "Nvidia", "ticker": "NVDA", "company_via_person": True, "ticker_source": "wikidata",
+        })),
+        ("Tesla", resolved_report("Tesla", {
+            "company": "Tesla", "ticker": "TSLA", "company_source": "yahoo-backup",
+            "ticker_source": "yahoo-backup",
+        })),
+        ("Stripe", resolved_report("Stripe", {
+            "ticker_source": "host", "ticker_rejected": [{"pair": "STRS:Stripe", "reason": "no"}],
+        })),
+    ])
+
+    assert rows[2] == "- **Elon Musk**: X - | Subs - | GitHub - | Ticker TSLA, SPCX (host search) | Context: -"
+    assert "Ticker NVDA (via Nvidia)" in rows[3]
+    assert "Ticker TSLA (Yahoo match)" in rows[4]
+    assert "Ticker" not in rows[5]
+
+
+# Resolution order in the engine.
+
+
+def _wikidata_asked_for_a_listing(wikidata) -> bool:
+    return any(
+        "Q82059" in str((call.get("params") or {}).get("ids", "")) for call in wikidata.calls
+    )
+
+
+def test_ticker_source_is_recorded_for_wikidata_and_the_backup(monkeypatch):
+    company, _fake, wikidata = _company_after(monkeypatch, "Nvidia", error=None)
+    assert (company["ticker"], company["ticker_source"]) == ("NVDA", "wikidata")
+    assert _wikidata_asked_for_a_listing(wikidata)
+
+    backup, _fake, _wikidata = _company_after(monkeypatch, "Tesla", matches={"Tesla": _named(*TSLA_ROWS)})
+    assert backup["ticker_source"] == "yahoo-backup"
+
+
+def test_host_ticker_keeps_the_wikidata_company_and_asks_it_for_no_listing(monkeypatch):
+    fake = _install(monkeypatch, charts=HOST_CHARTS, matches=HOST_MATCHES)
+    wikidata = FakeWikidata()
+    monkeypatch.setattr(company_resolve.http, "get", wikidata)
+
+    company = cli._resolved_company("Nvidia", mock=False, config={}, host_ticker=True)
+
+    assert company["company"] == "Nvidia"
+    assert company["company_site"]
+    assert not {"ticker", "exchange", "ticker_candidates", "ticker_source"} & set(company)
+    assert wikidata.calls
+    assert not _wikidata_asked_for_a_listing(wikidata)
+    assert fake.calls == []
+
+
+def test_host_ticker_never_reaches_the_yahoo_backup_when_wikidata_fails(monkeypatch):
+    fake = _install(monkeypatch, charts=HOST_CHARTS, matches=HOST_MATCHES)
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata(error=RATE_LIMITED))
+
+    company = cli._resolved_company("Tesla", mock=False, config={}, host_ticker=True)
+
+    assert company == {}
+    assert fake.calls == []
+
+
+def _host_run(monkeypatch, tmp_path, ticker, *, charts, matches=HOST_MATCHES, **kwargs):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(charts=charts, matches=matches)
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake, competitors_list=None,
+        expected_topics=frozenset({"MainBrand"}),
+        args=["--ticker", ticker, *kwargs.pop("args", [])], **kwargs,
+    )
+    return observed, fake
+
+
+_JUNE_HOST_CHARTS = {
+    "NVDA": _chart("NVDA", _JUNE, name="NVIDIA Corporation"),
+    "STRS": _chart("STRS", _JUNE, name="Stratus Properties Inc."),
+    "MAIN": _chart("MAIN", _JUNE, name="MainBrand, Inc."),
+    "^GSPC": _chart("^GSPC", _JUNE),
+}
+
+
+def test_engine_run_uses_the_host_ticker_and_not_the_wikidata_one(monkeypatch, tmp_path):
+    observed, fake = _host_run(
+        monkeypatch, tmp_path, "NVDA:Nvidia", charts=_JUNE_HOST_CHARTS,
+        companies={"MainBrand": {
+            "company": "MainBrand Inc.", "company_site": "https://mainbrand.example/",
+        }},
+    )
+
+    report = observed.reports["MainBrand"]
+    assert report.artifacts["yahoo_finance"]["symbol"] == "NVDA"
+    resolved = report.artifacts["resolved"]
+    assert (resolved["ticker"], resolved["tickers"], resolved["ticker_source"]) == ("NVDA", ["NVDA"], "host")
+    # Wikidata still names the company, and is asked for no listing.
+    assert resolved["company"] == "MainBrand Inc."
+    assert resolved["company_site"] == "https://mainbrand.example/"
+    observed.company_resolver.assert_called_once_with("MainBrand", listing=False)
+    assert fake.charted() == ["NVDA", "^GSPC"]
+
+
+def test_engine_run_fills_the_company_from_the_host_when_wikidata_names_none(monkeypatch, tmp_path):
+    observed, _fake = _host_run(monkeypatch, tmp_path, "NVDA:Nvidia", charts=_JUNE_HOST_CHARTS)
+
+    assert observed.reports["MainBrand"].artifacts["resolved"]["company"] == "Nvidia"
+
+
+def test_engine_run_with_every_host_ticker_rejected_prints_nothing_and_falls_back_to_nothing(
+    monkeypatch, tmp_path,
+):
+    observed, fake = _host_run(
+        monkeypatch, tmp_path, "STRS:Stripe", charts=_JUNE_HOST_CHARTS,
+        matches={**HOST_MATCHES, "MainBrand": _named(("MAIN", "MainBrand, Inc.", "Equity"))},
+        # What Wikidata would say with its listing; the run must not use it.
+        companies={"MainBrand": company_resolve.FailedLookup()},
+    )
+
+    report = observed.reports["MainBrand"]
+    assert "yahoo_finance" not in report.artifacts
+    assert _footer(report) == []
+    resolved = report.artifacts["resolved"]
+    assert not {"ticker", "tickers", "company", "company_source"} & set(resolved)
+    assert resolved["ticker_source"] == "host"
+    assert resolved["ticker_rejected"] == [{
+        "pair": "STRS:Stripe",
+        "reason": "Yahoo lists no stock for 'Stripe'; STRS is Stratus Properties Inc.",
+    }]
+    observed.company_resolver.assert_called_once_with("MainBrand", listing=False)
+    # No symbol search for the topic: the Yahoo backup is not a fallback here.
+    assert [cmd[3] for cmd in fake.calls if cmd[1] == "autocomplete"] == ["Stripe"]
+    assert fake.charted() == ["STRS"]
+
+
+def test_engine_run_without_the_flag_resolves_as_before(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(charts=_JUNE_CHARTS)
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake, competitors_list=None,
+        expected_topics=frozenset({"MainBrand"}), companies=_LISTED,
+    )
+
+    observed.company_resolver.assert_called_once_with("MainBrand")
+    resolved = observed.reports["MainBrand"].artifacts["resolved"]
+    assert (resolved["ticker"], resolved["ticker_source"]) == ("MAIN", "wikidata")
+    assert "tickers" not in resolved and "ticker_rejected" not in resolved
+    assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "MAIN"
+
+
+def test_engine_run_with_an_empty_ticker_flag_resolves_as_before(monkeypatch, tmp_path):
+    observed, _fake = _host_run(monkeypatch, tmp_path, " ", charts=_JUNE_CHARTS, companies=_LISTED)
+
+    observed.company_resolver.assert_called_once_with("MainBrand")
+    assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "MAIN"
+
+
+def test_mock_run_with_a_host_ticker_never_starts_the_cli(monkeypatch, tmp_path):
+    observed, fake = _host_run(monkeypatch, tmp_path, "NVDA:Nvidia", charts=_JUNE_HOST_CHARTS, args=["--mock"])
+
+    assert fake.calls == []
+    assert observed.company_resolver.call_count == 0
+    assert "yahoo_finance" not in observed.reports["MainBrand"].artifacts
+    assert "ticker_source" not in observed.reports["MainBrand"].artifacts["resolved"]
+
+
+def test_engine_run_with_yahoo_finance_excluded_checks_no_host_ticker(monkeypatch, tmp_path):
+    observed, fake = _host_run(
+        monkeypatch, tmp_path, "NVDA:Nvidia", charts=_JUNE_HOST_CHARTS,
+        config={"EXCLUDE_SOURCES": "yahoo_finance"},
+    )
+
+    assert fake.calls == []
+    report = observed.reports["MainBrand"]
+    assert "yahoo_finance" not in report.artifacts and "yahoo_finance" not in report.source_status
+    assert "ticker" not in report.artifacts["resolved"]
+
+
+def test_engine_run_without_the_binary_checks_no_host_ticker(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, competitors_list=None, expected_topics=frozenset({"MainBrand"}),
+        args=["--ticker", "NVDA:Nvidia"],
+    )
+
+    report = observed.reports["MainBrand"]
+    assert "yahoo_finance" not in report.artifacts and "yahoo_finance" not in report.source_status
+    assert "ticker" not in report.artifacts["resolved"]
+
+
+def test_comparison_gives_the_host_ticker_to_the_main_entity_only(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(
+        charts={**_JUNE_HOST_CHARTS, "PEER": _chart("PEER", _JUNE)}, matches=HOST_MATCHES,
+    )
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake, companies=_LISTED, args=["--ticker", "NVDA:Nvidia"],
+    )
+
+    assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "NVDA"
+    assert observed.reports["PeerOne"].artifacts["yahoo_finance"]["symbol"] == "PEER"
+    assert observed.reports["PeerOne"].artifacts["resolved"]["ticker_source"] == "wikidata"
+
+
+# The host's instruction and the byte budgets it has to fit.
+
+
+def test_runbook_tells_the_host_to_find_the_ticker_through_the_isolated_search():
+    from tests.skill_contract import SKILL_ROOT, reference_text
+
+    runbook = reference_text("research-runbook")
+    section = runbook.split("### Section B: Resolve the Stock Ticker", 1)[1].split("\n### ", 1)[0]
+    assert '--ticker="SYMBOL:Company"' in section
+    assert "isolated web search" in section.lower()
+    assert "listed and trading" in section
+    assert "pass nothing" in section
+    # Next to the X handle section, in the checklist and in the engine's flag list.
+    assert runbook.index("### Section A: Resolve X Handles") < runbook.index("### Section B: Resolve the Stock Ticker")
+    assert runbook.index("### Section B: Resolve the Stock Ticker") < runbook.index("### Step 0.5b")
+    checklist = runbook.split("| Flag | Resolved in | Applies when |", 1)[1].split("**Checkpoint", 1)[0]
+    assert "`--ticker=" in checklist
+    flags = runbook.split("Add these targeting flags to that engine command", 1)[1].split("**If you skipped", 1)[0]
+    assert "`--ticker=" in flags
+
+    root = (SKILL_ROOT / "SKILL.md").read_bytes()
+    assert len(root) <= 32_000
+    names = ("runtime", "setup-wizard", "research-runbook", "synthesis")
+    total = len(root) + sum(len(reference_text(name).encode("utf-8")) for name in names)
+    assert total <= 190_500

@@ -804,6 +804,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
     parser.add_argument(
+        "--ticker",
+        metavar="SYMBOL:COMPANY[,SYMBOL:COMPANY]",
+        help=(
+            "Stock ticker of the listed company behind the topic, with that company's "
+            "name, as the hosting model found it by web search (e.g., \"NVDA:Nvidia\", "
+            "or \"TSLA:Tesla,SPCX:SpaceX\" for a person who leads two). At most two "
+            "pairs. Each is checked against Yahoo Finance before a share-price line is "
+            "shown; when it is passed, no other ticker lookup is used."
+        ),
+    )
+    parser.add_argument(
         "--official-site",
         metavar="DOMAIN",
         help=(
@@ -1094,15 +1105,36 @@ COMPETITORS_DEFAULT = competitors_mod.COMPETITORS_DEFAULT
 _COMPANY_LANES = frozenset({yahoo_finance.SOURCE, "jobs"})
 
 
-def _resolved_company(entity: str, *, mock: bool, config: dict) -> dict:
+def _resolved_company(entity: str, *, mock: bool, config: dict, host_ticker: bool = False) -> dict:
     """Company fields for one entity's ``resolved`` artifact. Mock runs, and
-    runs that exclude every lane the company feeds, make no request."""
+    runs that exclude every lane the company feeds, make no request.
+
+    When the Wikidata lookup failed (not when it answered with nothing),
+    Yahoo's symbol search is asked for the topic instead, and
+    ``company_lookup`` says how that went.
+
+    With ``host_ticker`` the host passed ``--ticker``, which is then the only
+    ticker source: Wikidata is asked for the company and its site but not for
+    a listing, and a failed lookup is not followed by Yahoo's symbol search."""
     if mock or _COMPANY_LANES <= env.exclude_sources(config):
         return {}
+    if host_ticker:
+        return dict(company_resolve.resolve_company(entity, listing=False))
     company = company_resolve.resolve_company(entity)
+    if isinstance(company, company_resolve.FailedLookup):
+        backup = yahoo_finance.backup_company(entity, config)
+        if backup is None:
+            outcome = "backup not run"
+        else:
+            outcome = "yahoo backup used" if backup else "no backup match"
+        company = {**(backup or {}), "company_lookup": f"wikidata failed; {outcome}"}
     if company.get("company"):
         ticker = f", ticker {company['ticker']}" if company.get("ticker") else ""
+        if company.get("company_source") == yahoo_finance.BACKUP_SOURCE:
+            ticker += " (Yahoo match)"
         sys.stderr.write(f"[Resolve] {entity}: company {company['company']}{ticker}\n")
+    if company.get("ticker") or company.get("ticker_candidates"):
+        company["ticker_source"] = company.get("company_source") or "wikidata"
     return company
 
 
@@ -1485,7 +1517,7 @@ def _cache_research_options(
         "hiring_signals", "x_handle", "x_related", "official_site", "no_x_handle",
         "subreddits", "dedicated_subreddits", "devto_tags", "tiktok_hashtags",
         "tiktok_creators", "ig_creators", "max_results", "max_per_source",
-        "max_source_fetches", "auto_resolve", "github_user", "github_repo",
+        "max_source_fetches", "auto_resolve", "github_user", "github_repo", "ticker",
         "trustpilot_domain", "amazon_query", "meta_ads_page", "telegram_sources",
         "competitors", "competitors_list", "polymarket_keywords", "corpus_all_time", "drill",
     )
@@ -4334,7 +4366,15 @@ def _main(
         # lookup above it needs no key and does not depend on who planned the
         # run, so it happens with or without a host plan. Each entity of a
         # comparison is resolved on its own, after the split.
-        main_company = _resolved_company(topic, mock=args.mock, config=config)
+        # ``--ticker`` is the host's own answer for the main topic. Passed, it
+        # is the only ticker source, checked against Yahoo after the run.
+        host_tickers = (
+            yahoo_finance.parse_host_tickers(args.ticker)
+            if (args.ticker or "").strip() and not args.mock else None
+        )
+        main_company = _resolved_company(
+            topic, mock=args.mock, config=config, host_ticker=host_tickers is not None,
+        )
         # The jobs lane reads the company from here; each comparison peer
         # replaces it with its own.
         config["_company"] = main_company
@@ -4408,7 +4448,19 @@ def _main(
             # The share-price window of a listed company. A mock run resolved
             # no company, so it never reaches the price CLI, and neither does
             # a run with EXCLUDE_SOURCES=yahoo_finance.
-            yahoo_finance.attach_market_data(r, main_company, config)
+            if host_tickers is None:
+                yahoo_finance.attach_market_data(r, main_company, config)
+                return r
+            checked = yahoo_finance.attach_host_tickers(r, host_tickers, config)
+            # The company Wikidata named stays; the host's fills an empty one.
+            host_company = checked.pop("company", "")
+            r.artifacts["resolved"].update(checked)
+            if host_company:
+                r.artifacts["resolved"].setdefault("company", host_company)
+            if checked.get("tickers"):
+                sys.stderr.write(
+                    f"[Resolve] {topic}: ticker {', '.join(checked['tickers'])} (host search)\n"
+                )
             return r
 
         if comp_enabled:

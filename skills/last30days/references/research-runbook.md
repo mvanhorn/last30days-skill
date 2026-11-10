@@ -19,8 +19,7 @@ Common patterns:
 - `[topic] for [tool]` → "web mockups for Nano Banana Pro" → TOOL IS SPECIFIED
 - `[topic] prompts for [tool]` → "UI design prompts for Midjourney" → TOOL IS SPECIFIED
 - Just `[topic]` → "iOS design mockups" → TOOL NOT SPECIFIED, that's OK
-- "best [topic]" or "top [topic]" → QUERY_TYPE = RECOMMENDATIONS
-- "what are the best [topic]" → QUERY_TYPE = RECOMMENDATIONS
+- "best [topic]", "top [topic]", or "what are the best [topic]" → QUERY_TYPE = RECOMMENDATIONS
 - "X vs Y" or "X versus Y" → QUERY_TYPE = COMPARISON, TOPIC_A = X, TOPIC_B = Y (split on ` vs ` or ` versus ` with spaces)
 
 **IMPORTANT: Do NOT ask about target tool before research.**
@@ -35,7 +34,7 @@ Common patterns:
 - `TOPIC_A = [first item]` (only if COMPARISON)
 - `TOPIC_B = [second item]` (only if COMPARISON)
 
-**Confirm the topic with a branded, truthful message. Build ACTIVE_SOURCES_LIST from the engine's own source diagnostic — do NOT infer availability by checking env vars or `.env`.** The engine resolves credentials at runtime from several places (process environment, `.env`, macOS Keychain, etc.), so a config-file check silently under-reports sources whenever a key is resolved at runtime rather than written literally in `.env`. Run the engine's `--diagnose` and read its result:
+**Confirm the topic with a branded, truthful message. Build ACTIVE_SOURCES_LIST from the engine's own source diagnostic — do NOT infer availability by checking env vars or `.env`.** The engine resolves credentials at runtime from several places (process environment, `.env`, macOS Keychain, etc.), so a config-file check under-reports sources whose key is not written literally in `.env`. Run the engine's `--diagnose` and read its result:
 
 ```bash
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --diagnose
@@ -88,7 +87,7 @@ Known keyword-trap classes and how to handle each:
 
 **Class 1: Demographic shopping query**
 - Pattern: `gift for {age} year old {gender}`, `what to buy for my {relationship}`, `present for {demographic}`, `birthday gift for {age} {gender}`.
-- Why it fails: no human on Reddit posts "I bought a 42 year old man a gift." Real posts use relationship + hobbies + budget. The literal phrase is not the vocabulary of the actual discussions. The 2026-04-18 "Birthday gift for 42 year old man" run returned r/todayilearned, r/japannews crime posts, r/LivestreamFail drama - none about gifts.
+- Why it fails: no human on Reddit posts "I bought a 42 year old man a gift." Real posts use relationship + hobbies + budget. A "Birthday gift for 42 year old man" run returned r/todayilearned, r/japannews crime posts, r/LivestreamFail drama - none about gifts.
 - Action: **Ask ONE clarifying question upfront**:
   > "Before I research, tell me a bit more - hobbies (cooks / runs / reads / gaming / outdoors / golf / music)? Relationship (husband / dad / friend / boss / brother)? Budget range? A 'gift for a 42 year old man' is a wide net; hobbies + relationship narrow it 10x."
 - If the user declines to narrow ("just run it"), reframe to generic-demographic and scope to gift subreddits:
@@ -129,9 +128,9 @@ Known keyword-trap classes and how to handle each:
 3. If the action is a clarifying question, STOP after emitting it. Wait for the user response before any engine work.
 4. If the topic does NOT match any class, emit a one-liner: `Pre-Flight: topic is a {named-entity / comparison / concept} - proceeding to Step 0.5.` Then proceed.
 
-**One-turn gate rule:** do NOT run the engine on a keyword-trap topic without either (a) explicit user confirmation to "just run it anyway", or (b) a concrete reframed query. Burning 5 minutes on a doomed run is worse than a one-turn clarifying question.
+**One-turn gate rule:** do NOT run the engine on a keyword-trap topic without either (a) explicit user confirmation to "just run it anyway", or (b) a concrete reframed query.
 
-**When the user provides context inline:** if a Class 1 query already contains hobbies/relationship/budget ("gift for my cooking-obsessed husband, $200"), SKIP the clarifying question and go straight to the reframe + scope action. The clarifying question exists to fill in the gaps; if the gaps are already filled, move on.
+**When the user provides context inline:** if a Class 1 query already contains hobbies/relationship/budget ("gift for my cooking-obsessed husband, $200"), SKIP the clarifying question and go straight to the reframe + scope action.
 
 ---
 
@@ -160,6 +159,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--official-site={domain}` | Step 0.5 (Section A below) | Company / product / service with a website; the engine fills unset `--x-handle` / `--github-user` from its homepage links |
 | `--no-x-handle="{reason}"` | Step 0.5 (Section A below) | X is active, the topic is entity-shaped, and no first-party X account was found |
 | `--x-related={h1,h2,...}` | Step 0.5 (Section A below) | X is in `ACTIVE_SOURCES_LIST` and the topic has associated entities (founders, commentators, spouse, collaborators, media handles) |
+| `--ticker="{SYMBOL}:{Company}"` | Step 0.5 (Section B below) | Topic is a listed company, a person who leads one, or a product or subsidiary of one |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
 | `--github-repo={owner/repo}` | Step 0.5c | Topic is a product / project / open-source tool |
 | `--trustpilot-domain={domain}` | Step 0.5d | Topic is a company / brand / service with a Trustpilot presence (passing the flag also auto-activates the opt-in Trustpilot source for this run) |
@@ -226,9 +226,13 @@ Pass handles without @: `--x-handle={handle}` and `--x-related={h1},{h2},{compan
 
 Store: `RESOLVED_HANDLE = {handle or empty}`, `RESOLVED_RELATED = {comma-separated handles or empty}`
 
+### Section B: Resolve the Stock Ticker
+
+When the topic is a company, a person who leads one, or a product or subsidiary of a listed company, find the listed company's ticker in the pre-engine isolated web search dispatch and pass `--ticker="SYMBOL:Company"` (Waymo is `--ticker="GOOGL:Alphabet"`). Fold the question into a search already planned (X handle, company context) when you can. Pass it only when sources agree the company is listed and trading: not a filed-but-unlisted ticker, not a single unconfirmed site. A person who leads two listed companies gets both (`--ticker="TSLA:Tesla,SPCX:SpaceX"`). When unsure or not listed, pass nothing.
+
 ### Step 0.5b: Resolve GitHub Username (if topic is a person) — MANDATORY FOR PERSON TOPICS
 
-**MANDATORY when the topic is a person (developer, creator, CEO, founder, engineer, researcher) and WebSearch is available.** Resolve GitHub independently of the X handle. Without `--github-user={handle}`, GitHub search becomes a keyword match across all of GitHub instead of person-mode scoped to `user:{handle}`. The result is typically 5-10 thin unrelated items instead of the person's actual commits, PRs, releases, and top-starred repos. Treat this as a peer step to Step 0.5 (X handle resolution), not an afterthought.
+**MANDATORY when the topic is a person (developer, creator, CEO, founder, engineer, researcher) and WebSearch is available.** Resolve GitHub independently of the X handle. Without `--github-user={handle}`, GitHub search is a keyword match across all of GitHub (typically 5-10 thin unrelated items), not person-mode scoped to `user:{handle}` with the person's commits, PRs, releases, and top-starred repos. This is a peer step to Step 0.5 (X handle resolution), not an afterthought.
 
 ```
 WebSearch("{TOPIC} github profile", allowed_domains: ["github.com"])
@@ -244,7 +248,7 @@ Take the username from a `github.com/{username}` URL whose bio or pinned repos m
 
 Store: `RESOLVED_GITHUB_USER = {username or empty}`
 
-**Checkpoint for person topics:** by the time you reach the Research Execution command, for a person topic you MUST have BOTH `RESOLVED_HANDLE` (from Step 0.5) AND `RESOLVED_GITHUB_USER` (from this step) OR an explicit "no X account" / "no GitHub profile" note. The Bash command that follows must include BOTH `--x-handle={handle}` AND `--github-user={handle}` when resolved. A person-topic run that shows only one of the two is a Step 0.5b regression.
+**Checkpoint for person topics:** before the Research Execution command you MUST have BOTH `RESOLVED_HANDLE` (from Step 0.5) AND `RESOLVED_GITHUB_USER` (from this step) OR an explicit "no X account" / "no GitHub profile" note. That command must include BOTH `--x-handle={handle}` AND `--github-user={handle}` when resolved. A person-topic run that shows only one of the two is a Step 0.5b regression.
 
 ### Step 0.5c: Resolve GitHub Repos (if topic is a product/project)
 
@@ -289,7 +293,7 @@ Store: `RESOLVED_TRUSTPILOT_DOMAIN = {domain or empty}`
 
 ### Step 0.5e: Decide the Amazon Buyer-Signal Lane (if `brightdata` is available)
 
-**Availability first.** This lane exists only when the Bright Data CLI is on PATH and logged in (`--diagnose` reports `brightdata_installed` and `brightdata_authenticated`). If either is false the source does not exist, nothing changes, and you should skip this step entirely — do not mention it, do not suggest installing it mid-run.
+**Availability first.** This lane exists only when the Bright Data CLI is on PATH and logged in (`--diagnose` reports `brightdata_installed` and `brightdata_authenticated`). If either is false, skip this step entirely — do not mention it, do not suggest installing it mid-run.
 
 **The one question to ask:** *would recent Amazon buyer sentiment materially inform this report?* Not "is this shopping" — the test is whether buyer evidence is real evidence for this topic.
 
@@ -319,7 +323,7 @@ Store: `AMAZON_QUERY = {product keyword or empty}` — pass as `--amazon-query="
 
 ### Step 0.5f: Decide the Meta Ads Lane (if a ScrapeCreators key is set)
 
-**Availability first.** This lane exists only when `SCRAPECREATORS_API_KEY` is configured (`--diagnose` reports `has_scrapecreators`). Without it the source does not exist, nothing changes, and you should skip this step entirely — do not mention it, do not suggest signing up mid-run.
+**Availability first.** This lane exists only when `SCRAPECREATORS_API_KEY` is configured (`--diagnose` reports `has_scrapecreators`). Without it, skip this step entirely — do not mention it, do not suggest signing up mid-run.
 
 **The one question to ask:** *is there a brand here whose own paid message is evidence?* This lane answers "what is this company paying to say right now" — its live creatives, the products it is pushing, the promo codes it is running, and what its video ads say out loud. It is not a conversation source: nothing here is what people think about the brand, only what the brand is telling them.
 
@@ -355,7 +359,7 @@ Store: `META_ADS_PAGE = {page id or empty}` — add `meta_ads` to `--search`, an
 
 **MANDATORY on Claude Code (and any platform with WebSearch), on every run, including repeat runs of the same topic.** Run Step 0.55 before the engine. An engine command without a `--plan` carrying resolved handles and subreddits is a Step 0.55 skip, and the engine's `[Resolve] No web search backend available, skipping resolve` line means this step was skipped, not that the engine covered it.
 
-**Run 2-3 focused WebSearches (in parallel, inside the pre-engine isolated web search dispatch) to resolve platform-specific targeting. Do NOT search for every platform individually - that wastes time. Instead, use your knowledge of the topic to infer most targeting, and only WebSearch for what you can't infer.**
+**Run 2-3 focused WebSearches (in parallel, inside the pre-engine isolated web search dispatch) to resolve platform-specific targeting. Do NOT search for every platform individually: infer most targeting from your knowledge of the topic, and WebSearch only for what you can't infer.**
 
 **1. X handles** - Already resolved in Step 0.5 above (including company handles and commentators). Reference your `RESOLVED_HANDLE` and `RESOLVED_RELATED` from that step.
 
@@ -366,7 +370,7 @@ WebSearch("{TOPIC} subreddit reddit community")
 WebSearch("{TOPIC} news {CURRENT_MONTH} {CURRENT_YEAR}")
 ```
 
-The first search finds subreddits. The second gives you current events context (which helps you generate better subqueries in Step 0.75) and may surface YouTube channels or creators organically.
+The first search finds subreddits. The second gives current events context (for better Step 0.75 subqueries) and may surface YouTube channels or creators.
 
 Extract 3-5 subreddit names from the results. Store as `RESOLVED_SUBREDDITS` (comma-separated, no r/ prefix).
 
@@ -375,7 +379,7 @@ Extract 3-5 subreddit names from the results. Store as `RESOLVED_SUBREDDITS` (co
 - **Broad** = mixed-content communities where the topic is only sometimes discussed (`r/hiphopheads`, `r/Music`, category peers from 2a). Store as `RESOLVED_SUBREDDITS` and pass via `--subreddits`. These stay relevance-floored.
 Label conservatively: only a sub clearly named for / dedicated to the entity goes in the dedicated bucket. Most topics have 0-3 dedicated subs (people and products often have one; generic concepts have none). When unsure, treat it as broad.
 
-**2a. Category-peer expansion (MANDATORY for product topics).** If the topic is a product in a recognizable category (AI image generation, AI video generation, AI coding agents, AI music, AI chat models, SaaS screen recording, prediction markets, etc.), the brand-specific subreddits that WebSearch returned are INSUFFICIENT. Add 2-3 peer subreddits from the category. Peer subs are where cross-product technique discussion actually lives. For example, resolving only OpenAI-brand communities for GPT Image misses cross-product prompting techniques in `r/StableDiffusion, r/midjourney, r/dalle2, r/aiArt`.
+**2a. Category-peer expansion (MANDATORY for product topics).** If the topic is a product in a recognizable category (AI image generation, AI video generation, AI coding agents, AI music, AI chat models, SaaS screen recording, prediction markets, etc.), the brand-specific subreddits that WebSearch returned are INSUFFICIENT. Add 2-3 peer subreddits from the category, where cross-product technique discussion lives. For example, resolving only OpenAI-brand communities for GPT Image misses cross-product prompting techniques in `r/StableDiffusion, r/midjourney, r/dalle2, r/aiArt`.
 
 
 **Category peers:** when the product eligibility rule above applies, follow the root routing gate for `category-peers.md` before continuing.
@@ -439,7 +443,7 @@ Resolved (comparison):
 - Paperclip: X @paperclipai | GitHub dotta/paperclip | Founder @dotta | Reddit r/OpenClawInstall
 ```
 
-Passing the resolved block visibly (per-entity, all 4 types each) is the observable check that Step 0.55 happened for this comparison. A Resolved block that only lists 3 project handles with no founders and no GitHub repos is a Step 0.55 regression. This was canonical behavior and must stay canonical.
+The visible Resolved block (per-entity, all 4 types each) is the observable check that Step 0.55 happened for this comparison. One that lists only 3 project handles, with no founders or GitHub repos, is a Step 0.55 regression. This must stay canonical.
 
 **For non-comparison queries:** Resolve communities/handles for the single topic. Merging list logic does not apply.
 
@@ -447,7 +451,7 @@ Passing the resolved block visibly (per-entity, all 4 types each) is the observa
 
 **Step 0.55 self-check: category-peer coverage.** Before emitting the Resolved block, re-read your resolved subreddit list. Does the topic match any category in the `category-peers.md` table (or fit the spirit of one — AI image gen, AI coding, AI music, etc.)? If one plausibly applies and that reference is not loaded, load it through the root gate now. If YES: does your list include AT LEAST 2 peer subs from that category? If NO, widen the list NOW — do not run the engine yet. The observable contract is the `(+ {category_id} peers)` annotation on the Reddit line in the Resolved block. Its absence on a product-in-a-known-category topic is a Step 0.55 regression. Person topics, music artists, news stories, and topics outside any category are exempt; omit the annotation.
 
-**After resolving all handles and communities, display what you found before moving on.** This shows the user that intelligent pre-research happened:
+**After resolving all handles and communities, display what you found before moving on:**
 
 ```
 Resolved:
@@ -459,7 +463,7 @@ Resolved:
 - Positioning: "{one-line stated value prop}" (first-party)
 ```
 
-Only show lines for platforms where something was resolved. Skip empty lines. On the Reddit line, the trailing `(+ {category_id} peers)` annotation appears when Step 0.55 Section 2a added category-peer subs. Omit the annotation when the topic had no matching category. The `Positioning:` line appears for company / product / service topics (from Step 0.55 item 6); omit it for people, events, abstract concepts, and ownerless topics. The `Trustpilot:` line appears only when Step 0.5d resolved a domain (company/brand topic with the Trustpilot source active). This display replaces the old "Parsed intent" block with something more useful.
+Only show lines for platforms where something was resolved. On the Reddit line, the trailing `(+ {category_id} peers)` annotation appears when Step 0.55 Section 2a added category-peer subs. Omit the annotation when the topic had no matching category. The `Positioning:` line appears for company / product / service topics (from Step 0.55 item 6); omit it for people, events, abstract concepts, and ownerless topics. The `Trustpilot:` line appears only when Step 0.5d resolved a domain (company/brand topic with the Trustpilot source active). This display replaces the old "Parsed intent" block.
 
 ---
 
@@ -616,15 +620,16 @@ Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 - `--devto-tags={t1,t2}` (see flag table)
 - `--tiktok-creators={RESOLVED_TIKTOK_CREATORS}` (from Step 0.55)
 - `--ig-creators={RESOLVED_IG_CREATORS}` (from Step 0.55)
+- `--ticker="{SYMBOL}:{Company}"` (from Step 0.5 Section B)
 - `--github-user={RESOLVED_GITHUB_USER}` (from Step 0.5b, person topics only)
 - `--github-repo={RESOLVED_GITHUB_REPOS}` (from Step 0.5c, product/project topics only)
 - `--trustpilot-domain={RESOLVED_TRUSTPILOT_DOMAIN}` (from Step 0.5d, company/brand topics; the flag also auto-activates Trustpilot)
 - Omit any flag where the value was not resolved (empty).
 
 **If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
-- `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context before planning)
+- `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context, then plans internally)
 
-**If you skipped Steps 0.55 and 0.75 (no WebSearch), keep `--auto-resolve` on the command; the engine plans internally.** Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
+Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
 
 Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically takes 1-3 minutes.
 

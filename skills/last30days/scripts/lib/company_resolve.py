@@ -15,7 +15,9 @@ worse than none, so every step that is not certain returns nothing:
   the symbols of the current listings, for a caller that can confirm one of
   them against a second source. A candidate is never a ticker on its own.
 
-Any error, timeout or unexpected response returns nothing and logs once.
+Any error, timeout or unexpected response returns nothing and logs once. That
+nothing is a ``FailedLookup``, so a caller can tell "Wikidata did not answer"
+from "Wikidata answered and nothing is certain".
 """
 
 from __future__ import annotations
@@ -60,6 +62,11 @@ _COMMON_TECH_TERMS = frozenset({
 })
 
 
+class FailedLookup(dict):
+    """The empty result of a lookup that failed, as opposed to one Wikidata
+    answered. It is an empty dict to every caller that does not ask."""
+
+
 def company_topic_likely(topic: str) -> bool:
     """Whether a topic is shaped like a company or a person's name.
 
@@ -92,30 +99,32 @@ def _comparison_side_company_like(side: str) -> bool:
     return bool(token[:1].isupper() or lower in _KNOWN_SINGLE_WORD_COMPANIES)
 
 
-def resolve_company(topic: str) -> dict[str, Any]:
+def resolve_company(topic: str, *, listing: bool = True) -> dict[str, Any]:
     """Return what is certain about the company a topic names.
 
     Keys, each present only when resolved: ``company``, ``company_site``,
     ``ticker``, ``exchange``, ``ticker_candidates`` (the current listings'
     symbols, only when the company is certain and its ticker is not), and
     ``company_via_person`` (True) when the topic is the person who leads the
-    company. An empty dict means nothing is certain. No request is made for a
-    topic that is not company-shaped.
+    company. An empty dict means nothing is certain; it is a ``FailedLookup``
+    when the lookup itself failed. No request is made for a topic that is not
+    company-shaped. With ``listing`` off the company's stock listing is not
+    read, so there is no ``ticker``, ``exchange`` or ``ticker_candidates``.
     """
     if not company_topic_likely(topic):
         return {}
     try:
-        return _resolve(" ".join(topic.split()))
+        return _resolve(" ".join(topic.split()), listing)
     except Exception as exc:
         log.source_log(
             "Company",
             f"Wikidata lookup failed for {topic!r}: {type(exc).__name__}: {exc}",
             tty_only=False,
         )
-        return {}
+        return FailedLookup()
 
 
-def _resolve(topic: str) -> dict[str, Any]:
+def _resolve(topic: str, listing: bool = True) -> dict[str, Any]:
     hits = _api({
         "action": "wbsearchentities", "search": topic, "language": "en",
         "uselang": "en", "type": "item", "limit": 1,
@@ -130,10 +139,10 @@ def _resolve(topic: str) -> dict[str, Any]:
         company = _company_led_by(top_id)
         if company is None:
             return {}
-        return {**_company_fields(company), "company_via_person": True}
+        return {**_company_fields(company, listing), "company_via_person": True}
     if not _is_business(entity):
         return {}
-    return _company_fields(entity)
+    return _company_fields(entity, listing)
 
 
 def _api(params: dict[str, Any]) -> dict[str, Any]:
@@ -232,13 +241,14 @@ def _company_led_by(person_id: str) -> dict[str, Any] | None:
     return led[0]
 
 
-def _company_fields(entity: dict[str, Any]) -> dict[str, Any]:
+def _company_fields(entity: dict[str, Any], listing: bool = True) -> dict[str, Any]:
     labels = entity["labels"]
     fields: dict[str, Any] = {"company": (labels.get("en") or labels["mul"])["value"]}
     sites = _preferred_or_all(_statements(entity, _OFFICIAL_WEBSITE))
     if len(sites) == 1:
         fields["company_site"] = _value(sites[0])
-    fields.update(_primary_listing(entity))
+    if listing:
+        fields.update(_primary_listing(entity))
     return fields
 
 

@@ -271,6 +271,7 @@ def test_wikidata_failure_returns_nothing_and_logs_once(monkeypatch, error):
     result, fake = _resolve(monkeypatch, "Nvidia", error=error)
 
     assert result == {}
+    assert isinstance(result, company_resolve.FailedLookup)
     assert len(fake.calls) == 1
     assert logged.call_count == 1
     assert logged.call_args.kwargs == {"tty_only": False}
@@ -286,8 +287,39 @@ def test_unexpected_search_shape_returns_nothing_and_logs_once(monkeypatch, resp
     monkeypatch.setattr(company_resolve.log, "source_log", logged)
     monkeypatch.setattr(company_resolve.http, "get", lambda *_args, **_kwargs: response)
 
-    assert company_resolve.resolve_company("Nvidia") == {}
+    result = company_resolve.resolve_company("Nvidia")
+
+    assert result == {}
+    assert isinstance(result, company_resolve.FailedLookup)
     assert logged.call_count == 1
+
+
+def test_http_429_is_a_failed_lookup(monkeypatch):
+    monkeypatch.setattr(company_resolve.log, "source_log", mock.Mock())
+
+    result, _fake = _resolve(
+        monkeypatch, "Tesla",
+        error=http.HTTPError("HTTP 429: Too Many Requests", status_code=429),
+    )
+
+    assert result == {}
+    assert isinstance(result, company_resolve.FailedLookup)
+
+
+@pytest.mark.parametrize("topic", ["Rust", "Kanye West", "Sundar Pichai"])
+def test_an_answer_of_nothing_certain_is_not_a_failed_lookup(monkeypatch, topic):
+    result, fake = _resolve(monkeypatch, topic)
+
+    assert result == {}
+    assert fake.calls
+    assert not isinstance(result, company_resolve.FailedLookup)
+
+
+def test_a_topic_that_is_not_company_shaped_is_not_a_failed_lookup(monkeypatch):
+    result, fake = _resolve(monkeypatch, "how to deploy on Fly.io")
+
+    assert fake.calls == []
+    assert not isinstance(result, company_resolve.FailedLookup)
 
 
 def test_a_failure_after_the_company_is_known_still_returns_nothing(monkeypatch):
@@ -304,7 +336,10 @@ def test_a_failure_after_the_company_is_known_still_returns_nothing(monkeypatch)
     monkeypatch.setattr(company_resolve.log, "source_log", logged)
     monkeypatch.setattr(company_resolve.http, "get", flaky)
 
-    assert company_resolve.resolve_company("Nvidia") == {}
+    result = company_resolve.resolve_company("Nvidia")
+
+    assert result == {}
+    assert isinstance(result, company_resolve.FailedLookup)
     assert logged.call_count == 1
 
 
@@ -399,3 +434,16 @@ def test_resolved_entities_row_shows_the_ticker():
         "- **Jensen Huang**: X - | Subs - | GitHub - | Ticker NVDA (via Nvidia) | Context: -"
     )
     assert rows[4] == "- **Stripe**: X - | Subs - | GitHub - | Context: -"
+
+
+def test_resolved_entities_row_marks_a_ticker_from_the_yahoo_backup():
+    rows = render._render_resolved_entities_block([
+        ("Tesla", _report("Tesla", {
+            "company": "Tesla", "ticker": "TSLA", "company_source": "yahoo-backup",
+            "company_lookup": "wikidata failed; yahoo backup used",
+        })),
+        ("Rust", _report("Rust", {"company_lookup": "wikidata failed; no backup match"})),
+    ])
+
+    assert rows[2] == "- **Tesla**: X - | Subs - | GitHub - | Ticker TSLA (Yahoo match) | Context: -"
+    assert rows[3] == "- **Rust**: X - | Subs - | GitHub - | Context: -"
