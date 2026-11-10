@@ -35,6 +35,8 @@ MCP research denies browser-cookie access by default by passing `--no-browser-co
 
 The research tool passes `--research-only`, so topics such as `setup` remain research queries and cannot invoke administrative commands. Preflight and research resolve save destinations through the engine's `--resolve-save-dir` query, including trusted `.env` configuration. Set `save=false` to suppress research file saves.
 
+The research tool runs with saving disabled unless you pass `save=true`, so by default its briefs end with a `Next 30 days` section whose predictions are shown but not logged. The forecast ledger lives only in a save directory, so earlier calls and the scorecard come only from runs that save.
+
 ## Versioning
 
 The MCPB `manifest.json` version is hand-bumped in the same PR that ships engine changes worth releasing. Release CI stamps the Go binary's `main.Version` from the tag.

@@ -4,6 +4,8 @@ The eval suite measures the quality properties that ordinary unit tests do not: 
 
 It runs the production pipeline offline. Recorded HTTP exchanges replay at `lib/http.py`; CLI-backed adapters such as yt-dlp, Digg, arXiv, Techmeme, and Trustpilot replay their parsed result at the source-module seam. Planning is supplied by each fixture manifest, and normalization, date filtering, scoring, fusion, clustering, source outcomes, and the versioned agent JSON export all run normally. The harness never calls an LLM or the network.
 
+The offline harness below does not judge forecasting, rehearsal, or origin-trace quality. Those have a manual acceptance protocol in [forecast-eval.md](forecast-eval.md).
+
 ## Run it
 
 From the repository root:

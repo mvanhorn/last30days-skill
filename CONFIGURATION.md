@@ -776,26 +776,32 @@ Both respect `--save-dir` scoping.
 
 ### Next30Days predictions (`LAST30DAYS_NEXT30DAYS`)
 
-Next30Days logs predictions about a topic's open questions to a ledger (table `forecasts`) through `forecast add`, so they can be graded later. On by default.
+Next30Days ends every ordinary research run with one or two predictions about the topic's open questions and logs them to a ledger (table `forecasts`) through `forecast add`, so they can be graded later. On by default; it needs no flag.
 
 | Var | Effect |
 | --- | --- |
-| `LAST30DAYS_NEXT30DAYS` | Set to `off` to turn predictions off: `forecast add` prints a one-line notice and writes nothing. Any other value (or unset) keeps them on. Works shell-exported or in `.env`. |
+| `LAST30DAYS_NEXT30DAYS` | Set to `off` to turn predictions off: runs print no `Next 30 days` section, and `forecast add` prints a one-line notice and writes nothing. Any other value (or unset) keeps them on. Works shell-exported or in `.env`. |
 
 **The ledger follows the save directory.** Predictions are logged to `research.db` inside the effective save directory (`--save-dir`, else `LAST30DAYS_MEMORY_DIR`) and nowhere else. When no save directory is in effect (an explicitly empty `--save-dir` or `LAST30DAYS_MEMORY_DIR=`, or a bare engine invocation with neither set), `forecast add` validates the predictions, prints `Not logged:`, and creates no file; the other `forecast` commands report that there is no ledger. The forecast commands never read or write the shared `~/.local/share/last30days/research.db`. `--preflight` lists the ledger under local writes whenever a save directory resolves and predictions are on.
 
 ### Forecast ledger (Next30Days)
 
-Ask `/last30days what happens next with <topic>?` and the skill logs 3-5 dated, falsifiable predictions after its research, then grades them when their dates arrive. `/last30days scorecard` shows the record. Predictions live in table `forecasts` in the same research.db and never leave your machine.
+Every ordinary `/last30days <topic>` run ends with one or two dated, falsifiable predictions about the topic's open questions (see [`--open-questions` flag](#--open-questions-flag)), or with an item to watch when no question supports a call. Each states a probability, its baseline (the market price, or the status-quo outcome), a resolve date, and a one-line reason, and the engine refuses one that only restates the baseline. No special phrasing is needed. The predictions are logged to table `forecasts` in the save directory's research.db and never leave your machine; with saving disabled they are shown marked `Not logged:` and nothing is written. Set `LAST30DAYS_NEXT30DAYS=off` to stop logging them.
+
+A later run on the same topic first shows how its earlier calls turned out: market-anchored calls settle automatically, and the rest are graded with an evidence link once their date arrives. `/last30days scorecard` shows the record. It leads with the calls that departed from a market baseline and their skill against the market's price, then the calls that departed from a stated status-quo baseline, then the calls that agreed with their baseline, which are counted separately; hit rate, Brier score, and calibration follow. These are logged reads of public evidence, not advice.
 
 The ledger is append-only: a prediction cannot be edited or deleted, and a verdict (`hit`, `miss`, or `void`) is written once. A `hit` or `miss` requires an evidence URL, and a `miss` cannot be written before the prediction's date, except by `forecast settle` when the anchored market has already resolved against the call. Deleting the store (above) is the only way to clear it.
 
 Dev/fallback engine commands (the skill drives these for you):
 
 ```bash
-# Log predictions: {"topic": "...", "predictions": [{"claim", "probability" (0.5-0.99),
-#   "resolve_by" (YYYY-MM-DD, within 90 days; default 30), "resolution", "basis": [urls],
-#   "market": {"url", "outcome", "price"} (optional Polymarket anchor)}]} - max 5 per file
+# Log predictions (the skill writes this after a run; at most 2 per file). Each names a
+#   question id from the run's Open Questions list. A market question takes only "outcome";
+#   the engine fills the market's link, price, and date. Any other question takes "baseline"
+#   ({"status_quo", "probability"}), "backs" ("status_quo" or "change"), and "resolution"
+#   ({"page", "field"}). Every prediction has "claim", "probability" (0.5-0.99), "reason".
+#   {"topic": "...", "predictions": [{"question": "Q1", "outcome": "No", "claim": "...",
+#                                     "probability": 0.7, "reason": "..."}]}
 python3 skills/last30days/scripts/last30days.py forecast add --forecast-file forecast.json
 
 python3 skills/last30days/scripts/last30days.py forecast list [topic]   # every prediction with id and status

@@ -103,6 +103,15 @@ What a prediction is measured against: the market price for a market question, o
 ### Earlier call
 A prediction logged by a previous run on the same topic. A later run settles the market-anchored ones and shows every one that has come due, with its outcome, before making new predictions.
 
+### Rehearsal
+A forecast whose subject is the user's own unshipped draft. The skill finds two or three comparable launches from the last 30 days and predicts the draft's reception venue by venue, with every predicted reaction tied to a real quoted comment on one of them. The draft and any names the user marks private stay on the machine, and a guarded run is never saved as a brief.
+
+### Reactions
+The top-voted comments the engine retrieves for a Rehearsal, grouped by venue, with each comment's own link and vote count. A reply written by the launched post's own author is marked as a launcher reply. The engine lists comments and does not group them by theme.
+
+### Spread timeline
+The block that an origin trace adds to a report: the earliest post found, each platform's first sighting in date order with the range that platform was searched over, posts that link to an earlier one, the peak day, the biggest post, and the limits of the trace. It names venues, not individual posters, and it is a lower bound: "earliest found", never "the origin".
+
 ## X source routing
 
 ### X backend chain

@@ -42,6 +42,8 @@ This section describes the skill's default behavior so you can judge its access 
 - The engine has no telemetry, analytics, or update check.
 - Each source contacts only its own service. Reddit, Hacker News, Polymarket, and GitHub are on by default. Other sources turn on when you add their key, install their CLI, or opt in with `INCLUDE_SOURCES` or `--search`.
 - Your research topic goes to every source that runs, and to the web-search backend. Without a paid web-search key, the keyless fallback uses DuckDuckGo and then Startpage.
+- Every ordinary research run also looks for the topic's upcoming dates. It sends three forward-looking queries about the topic (upcoming dates and deadlines, scheduled announcements and release dates, expected decisions and votes) through the configured web-search backend, within a 20-second budget, and the host's own web search can run similar queries. These carry your topic and no other text.
+- Polymarket lookups for open questions go to Polymarket's public API. Settling logged predictions sends requests to `gamma-api.polymarket.com` when a later run on the same topic starts and when you run `forecast settle`. They read public market data and send no prediction text.
 - If you set `LAST30DAYS_API_BASE` and `LAST30DAYS_API_KEY`, the engine sends your topic to that endpoint instead of running the local sources.
 - `--publish-html` and `library feed --publish` upload the report to `api.ht-ml.app`. These flags never run unless you pass them.
 
@@ -80,13 +82,21 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 | `~/.config/last30days/.env` | Your settings and keys (`0600`) | Setup, or when you create it |
 | `~/.config/last30days/last-report.json`, `last-run.json` | The latest report, including evidence text | Every run |
 | `~/.config/last30days/corpus-cache.json` | Text extracted from your corpus files (`0600`) | Corpus runs |
-| `research.db` in the save directory, or `~/.local/share/last30days/research.db` when a run has no `--save-dir` | Research findings and the discovery topic queue (`0600`) | Runs with `--store` or `LAST30DAYS_STORE=1`, and every `--discover` run unless `LAST30DAYS_DISCOVERY_QUEUE=off` |
+| `research.db` in the save directory, or `~/.local/share/last30days/research.db` when a run has no `--save-dir` | Research findings and the discovery topic queue (`0600`) | Runs with `--store` or `LAST30DAYS_STORE=1`, every `--discover` run unless `LAST30DAYS_DISCOVERY_QUEUE=off`, and every ordinary run that logs predictions (the forecast ledger) unless `LAST30DAYS_NEXT30DAYS=off` |
 | `~/.local/share/last30days/library.db`, `briefs/` | Search index of saved reports and briefs | Every Markdown report saved to the default directory, and library commands |
 | `.last30days-library.db` in a nondefault save directory | Search index of the reports saved there | Every Markdown report saved to that directory |
+
+The forecast ledger is written by ordinary runs, not only by `--store` or discovery. Each run that makes predictions appends them to the save directory's `research.db`: the claim, probability, baseline, resolve date, reason, and source links. With saving disabled (an empty save directory) nothing is logged and no database is created. `LAST30DAYS_NEXT30DAYS=off` stops predictions and logging. The ledger never leaves your machine, and the only requests it causes are the settlement requests listed under Network.
 
 Slash-command runs pass the resolved save directory to the engine with `--save-dir`, so their `research.db` usually sits next to your saved reports.
 
 The engine has no purge command. To remove local data, delete these files, including the databases in every save directory you've used.
+
+### Keeping a draft private
+
+For a launch rehearsal, `--private-file` names a JSON file holding the draft and any names you mark private. Before any request, reasoning-provider call, or write, the engine checks the topic, flag values, query plans, host-supplied inputs, resolved handles and sites, and the prediction payload. It exits with an error if one contains a listed term (matched regardless of case, spaces, hyphens, underscores, and dots) or 5 consecutive words of the draft, and a guarded run writes no report cache or brief. The refusal names the input, never the matched text.
+
+This is a check on what is sent, not a guarantee of confidentiality. It catches listed terms and verbatim runs of the draft. A paraphrase of the draft, or an unlisted name, is not caught. The engine checks only what is passed to it, so queries the host model makes with its own web search depend on the skill's instructions to keep the draft out of them. The engine never stores or echoes the file's contents.
 
 ### Untrusted content
 
