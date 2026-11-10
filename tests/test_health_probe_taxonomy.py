@@ -233,7 +233,7 @@ class TestCachingAndRegistry:
              mock.patch.object(health, "_off_path_candidate_dirs", return_value=[]):
             probes = health.probe_dependencies()
         assert set(probes) == set(health.KNOWN_DEPENDENCIES)
-        assert {"yt-dlp", "digg-pp-cli", "node", "ffmpeg"} <= set(probes)
+        assert {"yt-dlp", "digg-pp-cli", "yahoo-finance-pp-cli", "node", "ffmpeg"} <= set(probes)
         for probe in probes.values():
             assert probe.status == health.MISSING
             assert probe.prescription
@@ -244,6 +244,20 @@ class TestCachingAndRegistry:
             probe = health.probe_dependency("espn-pp-cli")
         assert probe.status == health.MISSING
         assert "install espn --cli-only" in probe.prescription
+        assert probe.owner_pkg_manager == "npx"
+
+
+    def test_yahoo_finance_cli_prescribes_the_pinned_catalog_install(self):
+        from lib import setup_wizard
+
+        with mock.patch.object(health.shutil, "which", side_effect=_which_map({})), \
+             mock.patch.object(health, "_off_path_candidate_dirs", return_value=[]):
+            probe = health.probe_dependency("yahoo-finance-pp-cli")
+        assert probe.status == health.MISSING
+        assert probe.off_path is False
+        assert probe.prescription == (
+            f"npx -y {setup_wizard.PRINTING_PRESS_NPM} install yahoo-finance --cli-only"
+        )
         assert probe.owner_pkg_manager == "npx"
 
 

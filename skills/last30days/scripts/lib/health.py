@@ -157,7 +157,9 @@ _PP_CLI_SUFFIX = "-pp-cli"
 _PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.16"
 
 # Dependencies the doctor probes by default.
-KNOWN_DEPENDENCIES: Tuple[str, ...] = ("yt-dlp", "digg-pp-cli", "node", "ffmpeg", "grok")
+KNOWN_DEPENDENCIES: Tuple[str, ...] = (
+    "yt-dlp", "digg-pp-cli", "yahoo-finance-pp-cli", "node", "ffmpeg", "grok",
+)
 
 # Cheap side-effect-free version invocation per dependency (default --version).
 _VERSION_ARGS: Dict[str, List[str]] = {

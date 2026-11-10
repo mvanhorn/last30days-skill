@@ -22,6 +22,7 @@ class TestWelcome(unittest.TestCase):
             "Digg",
             "arXiv",
             "Techmeme",
+            "Yahoo Finance",
             "StockTwits",
             "Trustpilot",
             "Hacker News",

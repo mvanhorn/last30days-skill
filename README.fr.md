@@ -79,6 +79,7 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 | **Digg** | Des groupes d'articles issus des sections AI et Tech de Digg, avec des citations attribuables de X intégrées (sans authentification X). Activé automatiquement quand `digg-pp-cli` est présent dans le PATH. |
 | **arXiv** | Les articles scientifiques derrière le battage médiatique. La recherche publiée dans la fenêtre, gratuit, sans clé API. Activé automatiquement quand `arxiv-pp-cli` est présent dans le PATH (la configuration initiale l'installe). |
 | **Techmeme** | La couche éditoriale de l'actu tech, restreinte à votre fenêtre de 30 jours. Gratuit, sans clé API. Activé automatiquement quand `techmeme-pp-cli` est présent dans le PATH (la configuration initiale l'installe). |
+| **Yahoo Finance** | Le verdict du marché sur une entreprise. La variation du cours de l'action sur vos 30 jours, à côté du S&P 500 pour les sociétés cotées aux États-Unis. Gratuit, sans clé API. S'affiche quand votre sujet est une société cotée ou la personne qui la dirige et que `yahoo-finance-pp-cli` est présent dans le PATH (la configuration initiale l'installe). |
 | **LinkedIn** | Le signal professionnel. Posts et articles, les articles étant pondérés comme signal fort. |
 | **Meta Ads** | Ce qu'une marque paie pour dire. Les créations publicitaires Meta lancées ce mois-ci, avec le texte, les codes promo et les transcriptions. |
 | **StockTwits** | Le sentiment des traders. S'active automatiquement quand votre sujet est un ticker ou une crypto. |
@@ -267,7 +268,7 @@ Ces plateformes n'ont aucune relation entre elles. X ignore ce que pense Reddit.
 | Sources | Ce qu'il vous faut | Coût |
 |---------|---------------|------|
 | Reddit (avec les commentaires) + HN + Polymarket + GitHub + StockTwits | Rien | Gratuit |
-| arXiv + Techmeme | Des CLI gratuites, installées automatiquement à la configuration initiale | Gratuit |
+| arXiv + Techmeme + Yahoo Finance | Des CLI gratuites, installées automatiquement à la configuration initiale | Gratuit |
 | X / Twitter | Définissez `X_BEARER_TOKEN` pour l'API X officielle (posts récents, environ la dernière semaine, sauf si votre projet développeur X dispose de l'accès aux archives complètes ; en secours sur Grok Bot après les outils X intégrés du bot, en opt-in ailleurs avec `LAST30DAYS_X_BACKEND=xapi`), ou connectez-vous à x.com dans n'importe quel navigateur, ou définissez `XQUIK_API_KEY` / `XAI_API_KEY` | Les crédits de l'API X proviennent de votre projet développeur X ; les cookies de navigateur sont gratuits ; les autres clés dépendent du fournisseur |
 | YouTube | `brew install yt-dlp` | Gratuit |
 | Bluesky | Un mot de passe d'application depuis bsky.app | Gratuit |

@@ -79,6 +79,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Digg** | Story clusters from Digg's AI and Tech sections, with attributable inline quotes from X (no X auth required). Auto-enabled when `digg-pp-cli` is on PATH. |
 | **arXiv** | The papers behind the hype. New research in the window, free, no API key. Auto-enabled when `arxiv-pp-cli` is on PATH (first-run setup installs it). |
 | **Techmeme** | The tech-news editorial layer, date-windowed to your 30 days. Free, no API key. Auto-enabled when `techmeme-pp-cli` is on PATH (first-run setup installs it). |
+| **Yahoo Finance** | The market's read on a company. The share-price move over your 30 days, next to the S&P 500 for US listings. Free, no API key. Shows when your topic is a listed company or the person who leads one and `yahoo-finance-pp-cli` is on PATH (first-run setup installs it). |
 | **LinkedIn** | The professional signal. Posts and articles, with articles weighted as high signal. |
 | **Meta Ads** | What a brand is paying to say. Live Meta ad creatives launched this month, with copy, promo codes, and spoken transcripts. |
 | **StockTwits** | Trader sentiment. Auto-activates when your topic is a ticker or crypto. |
@@ -266,7 +267,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | Sources | What you need | Cost |
 |---------|---------------|------|
 | Reddit (with comments) + HN + Polymarket + GitHub + StockTwits | Nothing | Free |
-| arXiv + Techmeme | Free CLIs, auto-installed by first-run setup | Free |
+| arXiv + Techmeme + Yahoo Finance | Free CLIs, auto-installed by first-run setup | Free |
 | X / Twitter | Set `X_BEARER_TOKEN` for the official X API (recent posts, about the last week, unless your X developer project has full-archive access; a backup on Grok Bot after the bot's built-in X tools, opt-in elsewhere with `LAST30DAYS_X_BACKEND=xapi`), or log into x.com in any browser, or set `XQUIK_API_KEY` / `XAI_API_KEY` | X API credits come from your X developer project; browser cookies are free; other keys are provider-specific |
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |

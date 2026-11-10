@@ -165,6 +165,7 @@ SOURCE_ORDER = (
     "digg",
     "techmeme",
     "arxiv",
+    "yahoo_finance",
     "trustpilot",
     "amazon",
     "meta_ads",
@@ -192,6 +193,7 @@ CLI_DEPENDENCIES = {
     "digg": "digg-pp-cli",
     "techmeme": "techmeme-pp-cli",
     "arxiv": "arxiv-pp-cli",
+    "yahoo_finance": "yahoo-finance-pp-cli",
     "trustpilot": "trustpilot-pp-cli",
     # The only entry that also needs auth; _amazon_record reports the
     # installed-but-unauthenticated state the shared CLI helper cannot.
@@ -741,6 +743,19 @@ def _arxiv_record(config):
     return _cli_gated_record(config, "arxiv-pp-cli", "arxiv")
 
 
+def _yahoo_finance_record(config):
+    """The share-price line. Unlike a search source it runs only for a topic
+    that resolves to a listed company, so a working install records nothing on
+    most runs; the note says so, so that quiet is not read as a fault."""
+    record = _cli_gated_record(config, "yahoo-finance-pp-cli", "yahoo_finance")
+    if record["status"] == health.OK:
+        record["note"] = (
+            "share-price line for topics that resolve to a listed company; "
+            "no price line on other topics is expected"
+        )
+    return record
+
+
 def _trustpilot_record(config):
     return _cli_gated_record(config, "trustpilot-pp-cli", "trustpilot")
 
@@ -1001,6 +1016,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,
+    "yahoo_finance": _yahoo_finance_record,
     "trustpilot": _trustpilot_record,
     "amazon": _amazon_record,
     "meta_ads": _meta_ads_record,

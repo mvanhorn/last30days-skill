@@ -192,12 +192,18 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_cookie_consent_names_all_installed_clis(self):
         """The cookie-consent modal must not frame X cookies as instead-of the CLIs,
-        and must name arXiv + Techmeme (not just 'YouTube + Digg') since auto-setup
-        installs all four regardless of the cookie choice."""
+        and must name every installed CLI (not just 'YouTube + Digg') since auto-setup
+        installs all five regardless of the cookie choice."""
         consent = self.modal[self.modal.find("your browser's x.com cookies"):]
         consent = consent[: consent.find("Full Disk Access")]  # bound to the consent modal
-        for cli in ("yt-dlp", "Digg", "arXiv", "Techmeme"):
+        for cli in ("yt-dlp", "Digg", "arXiv", "Techmeme", "Yahoo Finance"):
             self.assertIn(cli, consent, cli)
+        # The question and each option's description name the full list, so no
+        # choice hides an install.
+        full_list = "yt-dlp (YouTube), Digg, arXiv, Techmeme, and Yahoo Finance"
+        self.assertIn(f"Auto setup installs the free CLIs either way - {full_list}.", self.modal)
+        self.assertEqual(3, consent.count(full_list))
+        self.assertNotIn("arXiv, and Techmeme", self.step0)
         # The "skip X" option still installs the CLIs (not framed as X-or-CLIs).
         self.assertIn("Skip X - just the CLIs", consent)
 
@@ -264,8 +270,12 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("Digg", self.modal)
         self.assertIn("Digg", self.prose)
         self.assertIn("Digg", self.manual)
+        # The prose and Grok Bot flows run the same installs, so they name the
+        # same list.
+        self.assertIn("Yahoo Finance", self.prose)
+        self.assertIn("Yahoo Finance", self.grok)
         # The Auto-setup modal option names every installed CLI, not just two.
-        self.assertIn("yt-dlp (YouTube), Digg, arXiv, Techmeme", self.modal)
+        self.assertIn("yt-dlp (YouTube), Digg, arXiv, Techmeme, Yahoo Finance.", self.modal)
 
     # --- Credit count = 10,000, no conflicting numbers in onboarding ---
 

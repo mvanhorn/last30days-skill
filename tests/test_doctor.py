@@ -1500,6 +1500,81 @@ class CliHealth(unittest.TestCase):
             self.assertIn(src, report["sources"], src)
             self.assertEqual("ok", report["sources"][src]["cli"]["status"], src)
 
+    def test_yahoo_finance_listed_with_cli_marker(self):
+        report = _build({}, probe_map={"yahoo-finance-pp-cli": health.OK})
+        rec = report["sources"]["yahoo_finance"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("yahoo-finance-pp-cli", rec["cli"]["name"])
+        self.assertEqual("ok", rec["cli"]["status"])
+        text = doctor.render_text(report)
+        self.assertIn("yahoo_finance [CLI: yahoo-finance-pp-cli ✓]", text)
+        self.assertIn("yahoo-finance-pp-cli — yahoo_finance", text)
+
+    def test_yahoo_finance_quiet_on_a_non_company_topic_is_not_broken(self):
+        # The lane only runs for a topic that resolves to a listed company, so
+        # a fresh run that recorded nothing for it is the normal case.
+        tmp = tempfile.mkdtemp()
+        path = _write_last_report(
+            tmp, source_status={"reddit": {"state": "ok", "items_returned": 4}}
+        )
+        with _Hermetic(probe_map={"yahoo-finance-pp-cli": health.OK}), mock.patch(
+            "lib.doctor._last_report_path", return_value=path
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["yahoo_finance"]
+        self.assertIsNone(rec["run_outcome"])
+        self.assertNotEqual(doctor.AUDIT_NOT_WORKING, rec["audit_state"])
+        self.assertIn("listed company", rec["note"])
+        line = next(
+            ln for ln in doctor.render_text(report).splitlines()
+            if "yahoo_finance [CLI" in ln
+        )
+        self.assertIn("no price line on other topics", line)
+        self.assertNotIn("✕", line)
+
+    def test_yahoo_finance_missing_prescribes_catalog_install(self):
+        def fake(name, timeout=health.PROBE_TIMEOUT):
+            prescription = (
+                health.pp_install_cmd("yahoo-finance")
+                if name == "yahoo-finance-pp-cli" else f"install {name}"
+            )
+            return health.DependencyProbe(
+                name=name, status=health.MISSING,
+                detail=f"{name} not found on PATH",
+                prescription=prescription, owner_pkg_manager="npx",
+            )
+
+        with _Hermetic(), mock.patch("lib.health.probe_dependency", fake):
+            report = doctor.build_report({})
+        rec = report["sources"]["yahoo_finance"]
+        # Never installed: an optional lane that is off, not a failure.
+        self.assertEqual("opt-in", rec["status"])
+        self.assertEqual(doctor.AUDIT_COULD_BE_ON, rec["audit_state"])
+        self.assertIn(
+            f"npx -y {setup_wizard.PRINTING_PRESS_NPM} install yahoo-finance --cli-only",
+            rec["fix"],
+        )
+        text = doctor.render_text(report)
+        self.assertIn("[CLI: yahoo-finance-pp-cli ✗ missing]", text)
+        self.assertIn("install yahoo-finance --cli-only", text)
+        blob = json.loads(doctor.render_json(report))
+        self.assertEqual("missing", blob["sources"]["yahoo_finance"]["cli"]["status"])
+
+    def test_yahoo_finance_off_path_is_not_working(self):
+        def fake(name, timeout=health.PROBE_TIMEOUT):
+            return health.DependencyProbe(
+                name=name, status=health.MISSING, detail="installed off PATH",
+                off_path=name == "yahoo-finance-pp-cli",
+                prescription="add $HOME/.local/bin to PATH",
+            )
+
+        with _Hermetic(), mock.patch("lib.health.probe_dependency", fake):
+            report = doctor.build_report({})
+        rec = report["sources"]["yahoo_finance"]
+        self.assertTrue(rec["cli"]["off_path"])
+        self.assertEqual(doctor.AUDIT_NOT_WORKING, rec["audit_state"])
+        self.assertIn("PATH", rec["fix"])
+
     def test_cli_marker_and_block_for_ytdlp(self):
         report = _build({}, probe_map={"yt-dlp": health.OK})
         self.assertEqual("ok", report["sources"]["youtube"]["cli"]["status"])

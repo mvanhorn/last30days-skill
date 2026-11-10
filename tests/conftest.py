@@ -120,6 +120,20 @@ def _no_arctic_network():
 
 
 @pytest.fixture(autouse=True)
+def _no_company_lookup_network(monkeypatch):
+    """The company lookup needs no key and runs for every company-shaped topic,
+    so any in-process engine run would reach Wikidata. Default its HTTP seam to
+    "no match"; the resolver's own tests replace ``get`` on the same seam."""
+    from types import SimpleNamespace
+
+    from lib import company_resolve
+
+    monkeypatch.setattr(
+        company_resolve, "http", SimpleNamespace(get=lambda *_args, **_kwargs: {"search": []}),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_grok_cli():
     """Default the grok CLI to absent so no test resolves it from the developer's
     own machine. grok is a new X-chain backend whose availability is a plain

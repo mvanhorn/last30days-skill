@@ -42,6 +42,7 @@ Auto setup gives you the core sources free in about 30 seconds:
 - YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
 - Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
 - arXiv (papers) + Techmeme (tech-news) - install free, keyless Printing Press CLIs and run on any topic (arXiv is relevance + recency gated to research topics).
+- Yahoo Finance - the share-price move over your 30 days - installs the free, keyless Yahoo Finance CLI; shows only when your topic is a listed company or the person who leads one.
 - StockTwits - retail trader sentiment - auto-on when your topic is a ticker or crypto (e.g. "$NVDA earnings", "bitcoin"), off for everything else.
 - Trustpilot - brand/company review sentiment - opt-in (add trustpilot to INCLUDE_SOURCES), off by default.
 - Hacker News + Polymarket + GitHub (auto-on if the gh CLI is installed) - always on, zero config.
@@ -195,7 +196,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         "digg_installed": digg_installed,
         "digg_action": digg_action,
         # Per-CLI status for the additional default-on Printing Press sources
-        # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
+        # (arxiv, techmeme, yahoo_finance): {source: {installed, action, ...}}.
         "pp_sources": pp_sources,
         # Reported, never installed: this CLI spends the user's own metered
         # credits, so acquiring it stays their decision. Passing
@@ -371,6 +372,9 @@ def _install_digg_cli() -> Tuple[bool, str, str, str]:
 PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = [
     ("arxiv", "arxiv", "arxiv-pp-cli"),
     ("techmeme", "techmeme", "techmeme-pp-cli"),
+    # Not a search source: it adds the share-price line when a topic resolves
+    # to a listed company (lib/yahoo_finance.py gates on the same binary).
+    ("yahoo_finance", "yahoo-finance", "yahoo-finance-pp-cli"),
 ]
 
 # Bright Data is deliberately absent from PP_DEFAULT_SOURCES: it is not a
@@ -847,9 +851,15 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         )
 
     pp_sources = results.get("pp_sources", {})
-    pp_name: dict[str, str] = {"arxiv": "arXiv", "techmeme": "Techmeme"}
+    pp_name: dict[str, str] = {
+        "arxiv": "arXiv", "techmeme": "Techmeme", "yahoo_finance": "Yahoo Finance",
+    }
+    # The catalog install takes the slug, which is not always the source key
+    # (yahoo_finance installs as yahoo-finance).
+    pp_slug = {key: slug for key, slug, _bin in PP_DEFAULT_SOURCES}
     for source_key, entry in sorted(pp_sources.items()):
         name = pp_name.get(source_key, source_key.title())
+        install_cmd = f"npx -y {PRINTING_PRESS_NPM} install {pp_slug.get(source_key, source_key)} --cli-only"
         action = entry.get("action", "")
         if action == "installed":
             lines.append(f"  - Installed {name} CLI ({name} source now active)")
@@ -871,13 +881,12 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
                 )
         elif action == "install_failed":
             lines.append(
-                f"  - {name} CLI install failed — run "
-                f"`npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only` manually"
+                f"  - {name} CLI install failed — run `{install_cmd}` manually"
             )
         elif action == "no_npx":
             lines.append(
                 f"  - {name} CLI not installed (free, optional). Install Node/npx, "
-                f"then: `npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only`"
+                f"then: `{install_cmd}`"
             )
 
     # Bright Data / Amazon. Reported but never installed (it spends the user's

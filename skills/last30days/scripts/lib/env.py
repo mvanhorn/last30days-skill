@@ -1932,6 +1932,11 @@ def _parse_exclude_sources(config: dict[str, Any]) -> set[str]:
     return {s.strip().lower() for s in raw.split(',') if s.strip()}
 
 
+def exclude_sources(config: dict[str, Any]) -> set[str]:
+    """Public view of the parsed EXCLUDE_SOURCES set."""
+    return _parse_exclude_sources(config)
+
+
 def include_sources(config: dict[str, Any]) -> set[str]:
     """Public view of the parsed INCLUDE_SOURCES set.
 

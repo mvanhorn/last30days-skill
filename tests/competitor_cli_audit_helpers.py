@@ -1,5 +1,6 @@
 """Run real CLI/fanout wiring while collecting the research boundary inputs."""
 
+import copy
 import sys
 from types import SimpleNamespace
 from unittest import mock
@@ -10,7 +11,8 @@ from lib import resolve, schema
 
 def run_competitor_cli(
     monkeypatch, tmp_path, *, args=(), config=None, has_backend=False, resolutions=None,
-    topic="MainBrand", competitors_list="PeerOne,PeerTwo",
+    topic="MainBrand", competitors_list="PeerOne,PeerTwo", companies=None,
+    expected_topics=frozenset({"MainBrand", "PeerOne", "PeerTwo"}), market_cli=None,
 ):
     config = {} if config is None else config
     calls = {}
@@ -40,6 +42,14 @@ def run_competitor_cli(
     monkeypatch.setattr(cli.pipeline, "run", research)
     monkeypatch.setattr(resolve, "_has_backend", lambda _config: has_backend)
     monkeypatch.setattr(resolve, "auto_resolve", resolver)
+    # copy.copy keeps the type of a failed lookup, which dict() would drop.
+    company_resolver = mock.Mock(
+        side_effect=lambda topic, **_kwargs: copy.copy((companies or {}).get(topic, {}))
+    )
+    monkeypatch.setattr(cli.company_resolve, "resolve_company", company_resolver)
+    # The price CLI is absent unless a test hands in a stand-in for it.
+    monkeypatch.setattr(cli.yahoo_finance, "_is_available", lambda: market_cli is not None)
+    monkeypatch.setattr(cli.yahoo_finance.subproc, "run_with_timeout", market_cli)
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
     monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "")
     monkeypatch.setenv("LAST30DAYS_STORE", "")
@@ -52,5 +62,7 @@ def run_competitor_cli(
     monkeypatch.setattr(sys, "argv", argv)
 
     assert cli.main() == 0
-    assert set(calls) == {"MainBrand", "PeerOne", "PeerTwo"}
-    return SimpleNamespace(calls=calls, reports=reports, resolver=resolver)
+    assert set(calls) == set(expected_topics)
+    return SimpleNamespace(
+        calls=calls, reports=reports, resolver=resolver, company_resolver=company_resolver,
+    )

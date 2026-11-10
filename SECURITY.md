@@ -26,7 +26,7 @@ In scope:
 Out of scope, so report it to the upstream project instead:
 
 - Vulnerabilities in third-party services the skill calls, such as Reddit, X, ScrapeCreators, or a web-search API.
-- The Printing Press CLIs that setup installs (`digg-pp-cli`, `arxiv-pp-cli`, `techmeme-pp-cli`, and `trustpilot-pp-cli`), `yt-dlp`, `gh`, and other external binaries.
+- The Printing Press CLIs that setup installs (`digg-pp-cli`, `arxiv-pp-cli`, `techmeme-pp-cli`, `yahoo-finance-pp-cli`, and `trustpilot-pp-cli`), `yt-dlp`, `gh`, and other external binaries.
 - Automated scanner ratings without a concrete finding. If a scanner flags something specific, report that finding with the evidence.
 
 ## Supported versions
@@ -42,6 +42,9 @@ This section describes the skill's default behavior so you can judge its access 
 - The engine has no telemetry, analytics, or update check.
 - Each source contacts only its own service. Reddit, Hacker News, Polymarket, and GitHub are on by default. Other sources turn on when you add their key, install their CLI, or opt in with `INCLUDE_SOURCES` or `--search`.
 - Your research topic goes to every source that runs, and to the web-search backend. Without a paid web-search key, the keyless fallback uses DuckDuckGo and then Startpage.
+- When your topic looks like a company or a person's name, the engine sends the topic text to Wikidata's public API (`www.wikidata.org`, no key) to find the company it names and its stock ticker. This runs with no setting to turn on. Other topics aren't sent.
+- When that lookup finds a listed company and `yahoo-finance-pp-cli` is on your `PATH`, the engine runs that CLI to read daily share prices from Yahoo Finance. Yahoo Finance receives the ticker symbol and, when the engine has to confirm a symbol, the company name. For a US listing it also receives the S&P 500 index symbol. It never receives a key. It receives the topic text in one case: when the Wikidata lookup fails (an error, a timeout or a rate limit, not an answer that names no company), the engine sends the topic text itself to Yahoo Finance's symbol search as a fallback, and uses the result only when the first stock listed has the topic as its name and a US symbol. `EXCLUDE_SOURCES=yahoo_finance` turns that off too.
+- The hosting model's web search before a run can include a lookup of the topic's stock ticker, next to its lookups for the X handle and communities. That search goes to the host's own search tool, like its other searches. When the host passes the result with `--ticker`, the engine sends Yahoo Finance the ticker symbol and the company name the host passed, to check them against each other, and Wikidata is not asked for a listing. `EXCLUDE_SOURCES=yahoo_finance` stops the check, so neither reaches Yahoo Finance.
 - If you set `LAST30DAYS_API_BASE` and `LAST30DAYS_API_KEY`, the engine sends your topic to that endpoint instead of running the local sources.
 - `--publish-html` and `library feed --publish` upload the report to `api.ht-ml.app`. These flags never run unless you pass them.
 
@@ -69,7 +72,7 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 
 ### Installs and external programs
 
-- First-run setup installs `yt-dlp` with Homebrew when it's missing on macOS. It also installs the Digg, arXiv, and Techmeme CLIs with `npx -y @mvanhorn/printing-press-library@0.1.16`, by default into `~/.local/bin`. That package and the CLIs it installs come from outside this repository.
+- First-run setup installs `yt-dlp` with Homebrew when it's missing on macOS. It also installs the Digg, arXiv, Techmeme, and Yahoo Finance CLIs with `npx -y @mvanhorn/printing-press-library@0.1.16`, by default into `~/.local/bin`. That package and the CLIs it installs come from outside this repository.
 - During research, the engine can run `node` (the vendored X client), `yt-dlp`, `gh`, the Printing Press CLIs, `brightdata`, `grok`, `xurl`, `pass`, and `pdftotext`, depending on which sources you turned on. On macOS it also runs `security` and `openssl` to decrypt Chromium cookies.
 
 ### Local files
