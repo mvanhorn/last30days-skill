@@ -2562,8 +2562,6 @@ def _render_save_and_print(
     synthesis_md: str | None,
     config: dict[str, object],
 ) -> int:
-    if getattr(args, "trace_origin", False) and report is not None and not entity_reports:
-        report.artifacts["trace_origin"] = True
     fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
     try:
         audience = _audience_register_for_run(args, config, entity_reports)
@@ -4895,6 +4893,12 @@ def _main(
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
+    if args.trace_origin and not entity_reports:
+        # Stored before the cache write so a cached re-render carries the trace.
+        pipeline.trace_origin(
+            report, config=config, mock=args.mock,
+            web_backend=args.web_backend, subreddits=subreddits,
+        )
     _write_last_run(
         original_topic, report, entity_reports=entity_reports,
         x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),

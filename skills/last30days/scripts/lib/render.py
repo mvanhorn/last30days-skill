@@ -910,7 +910,7 @@ def render_compact(
     if report.artifacts.get("trace_origin") and not no_solid_evidence:
         # Outside the audience branch: a requested trace is evidence for every
         # register, not a default-voice section.
-        lines.extend(["", *_render_spread_timeline(evidence_report, aux_candidates)])
+        lines.extend(["", *_render_spread_timeline(report)])
     corpus_section = _render_corpus_section(report)
     if corpus_section:
         lines.extend(["", *corpus_section])
@@ -945,28 +945,32 @@ def render_compact(
 _CLEAN_SOURCE_STATES = frozenset({"ok", "no-results"})
 
 
-def _render_spread_timeline(
+def spread_timeline_inputs(
     report: schema.Report,
-    candidates: list[schema.Candidate],
-) -> list[str]:
-    """Origin trace over the relevance-qualified pool (``--trace-origin``)."""
-    from . import origin
-
+) -> tuple[list[schema.Candidate], list[str]]:
+    """The relevance-qualified pool an origin trace reads, and the sources
+    that did not report cleanly."""
+    evidence_report = schema.without_sources(report, {"corpus"})
+    # The compact brief's default cluster limit: the same nothing-solid gate.
+    visible_clusters = evidence_report.clusters[:8]
+    solid_clusters = _clusters_clearing_relevance_floor(evidence_report, visible_clusters)
+    pool = _auxiliary_candidate_pool(evidence_report, visible_clusters, solid_clusters)
     incomplete = [
         source
-        for source, outcome in report.source_status.items()
+        for source, outcome in evidence_report.source_status.items()
         if outcome.attempted and outcome.state not in _CLEAN_SOURCE_STATES
     ]
     # The pool keeps every member of an accepted cluster; an off-topic member
     # must not become the "earliest found" post, so re-apply the shared check.
-    timeline = origin.build_timeline(
-        [candidate for candidate in candidates if _best_take_relevance_ok(candidate)],
-        report.range_from,
-        report.range_to,
-        schema.item_headline_engagement,
-        incomplete_sources=incomplete,
-    )
-    if timeline is None:
+    return [candidate for candidate in pool if _best_take_relevance_ok(candidate)], incomplete
+
+
+def _render_spread_timeline(report: schema.Report) -> list[str]:
+    """Origin trace the run stored in the report (``--trace-origin``)."""
+    from . import origin
+
+    timeline = report.artifacts.get("origin_trace")
+    if not timeline:
         return [
             "## Spread Timeline",
             "",

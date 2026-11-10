@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
+from types import SimpleNamespace
 from typing import Any
 
 from . import (
@@ -84,6 +85,7 @@ from . import (
 )
 from .cluster import cluster_candidates
 from . import fusion
+from . import origin
 from . import render
 from .fusion import collapse_duplicate_urls, source_item_key, weighted_rrf
 
@@ -4897,6 +4899,218 @@ def _run_supplemental_searches(
                             weight=0.3,
                         )
                     )
+
+
+# Origin trace: when the earliest sighting sits at the start of the window, the
+# story's query is searched again over these longer ranges, shortest first.
+ORIGIN_EXTENDED_WINDOWS_DAYS = (90, 365)
+# One wall-clock budget for the whole extended search, both ranges included.
+ORIGIN_SECOND_PASS_BUDGET_SECONDS = 40.0
+# Sources that search a fixed range whatever window the run asks for.
+_ORIGIN_FIXED_REACH_DAYS = {"arxiv": 365, "dripstack": 30, "stocktwits": 30}
+# Sources that honor the window only up to a cap.
+_ORIGIN_CAPPED_REACH_DAYS = {"digg": 30}
+# Keyless Reddit search and listings are pinned to the past month.
+_ORIGIN_REDDIT_KEYLESS_REACH_DAYS = 30
+# Backends that pass the requested dates to the search itself, so a longer
+# window reaches older posts instead of re-filtering the same recent sample.
+_ORIGIN_X_DATED_BACKENDS = frozenset({"bird", "xquik", "grok"})
+_ORIGIN_WEB_DATED_BACKENDS = frozenset({"brave", "exa", "serper"})
+
+
+def _origin_planned_sources(report: schema.Report) -> list[str]:
+    return sorted({
+        source
+        for subquery in report.query_plan.subqueries
+        for source in subquery.sources
+        if source not in origin.EXCLUDED_SOURCES
+    })
+
+
+def _origin_reddit_honors_window(config: dict[str, Any]) -> bool:
+    return bool(config.get("SCRAPECREATORS_API_KEY")) and (
+        (config.get(env.REDDIT_BACKEND_PIN_VAR) or "").lower() == "scrapecreators"
+    )
+
+
+def _origin_reach(report: schema.Report, config: dict[str, Any]) -> dict[str, str]:
+    """The day each planned source's search actually started in the main run."""
+    to_day = date.fromisoformat(report.range_to)
+    window_days = (to_day - date.fromisoformat(report.range_from)).days
+    reach: dict[str, str] = {}
+    for source in _origin_planned_sources(report):
+        days = window_days
+        if source in _ORIGIN_FIXED_REACH_DAYS:
+            days = _ORIGIN_FIXED_REACH_DAYS[source]
+        elif source in _ORIGIN_CAPPED_REACH_DAYS:
+            days = min(days, _ORIGIN_CAPPED_REACH_DAYS[source])
+        elif source == "x" and report.provider_runtime.x_search_backend == "xapi":
+            days = min(days, x_api.RECENT_WINDOW_DAYS)
+        elif source == "reddit" and not _origin_reddit_honors_window(config):
+            days = min(days, _ORIGIN_REDDIT_KEYLESS_REACH_DAYS)
+        reach[source] = (to_day - timedelta(days=days)).isoformat()
+    return reach
+
+
+def _origin_extendable_sources(
+    report: schema.Report, config: dict[str, Any], web_backend: str,
+) -> list[str]:
+    """Planned sources whose search reaches further back when asked to."""
+    web = web_backend if web_backend != "auto" else grounding.configured_backend(config)
+    host_x_lane = config.get("_x_envelope") is not None or bool(config.get("_x_lane_missing"))
+    honors = {
+        "hackernews": True,
+        "x": report.provider_runtime.x_search_backend in _ORIGIN_X_DATED_BACKENDS and not host_x_lane,
+        "reddit": _origin_reddit_honors_window(config),
+        "grounding": web in _ORIGIN_WEB_DATED_BACKENDS,
+    }
+    return [source for source in _origin_planned_sources(report) if honors.get(source)]
+
+
+def _origin_second_pass(
+    report: schema.Report,
+    sources: list[str],
+    date_range: tuple[str, str],
+    *,
+    config: dict[str, Any],
+    web_backend: str,
+    subreddits: list[str] | None,
+    deadline: float,
+) -> tuple[list[schema.SourceItem], list[str], list[str]]:
+    """Search the story's query over a longer range, one stream per source.
+
+    Returns the items, the sources that finished, and the sources that failed.
+    A source in neither list ran out of time.
+    """
+    plan = report.query_plan
+    pass_config = dict(config)
+    pass_config["_research_deadline"] = deadline
+    items: list[schema.SourceItem] = []
+    finished: list[str] = []
+    failed: list[str] = []
+    futures = {}
+    with _abandoning_executor(max_workers=len(sources)) as executor:
+        for source in sources:
+            subquery = next(sq for sq in plan.subqueries if source in sq.sources)
+            futures[
+                executor.submit(
+                    _retrieve_stream,
+                    topic=report.topic,
+                    subquery=subquery,
+                    source=source,
+                    config=pass_config,
+                    depth="quick",
+                    date_range=date_range,
+                    runtime=report.provider_runtime,
+                    mock=False,
+                    web_backend=web_backend,
+                    raw_topic=report.topic,
+                    subreddits=subreddits,
+                    freshness_mode=plan.freshness_mode,
+                )
+            ] = (source, subquery)
+        done, _pending = _wait_for_research(futures, pass_config)
+        for future in done:
+            source, subquery = futures[future]
+            try:
+                raw_items, artifact = future.result(timeout=0)
+                state = ((artifact or {}).get("_source_outcome") or {}).get("state")
+                if not raw_items and state == health.TIMEOUT:
+                    continue
+                if not raw_items and state and state not in render._CLEAN_SOURCE_STATES:
+                    raise SourceRunError(f"{source} returned {state}", state)
+                items.extend(_normalize_score_dedupe(
+                    source, raw_items, date_range[0], date_range[1],
+                    freshness_mode=plan.freshness_mode,
+                    ranking_query=subquery.ranking_query,
+                ))
+            except Exception as exc:
+                print(f"[Origin] extended search failed on {source}: {exc}", file=sys.stderr)
+                failed.append(source)
+                continue
+            finished.append(source)
+    return items, finished, failed
+
+
+def trace_origin(
+    report: schema.Report,
+    *,
+    config: dict[str, Any],
+    mock: bool,
+    web_backend: str = "auto",
+    subreddits: list[str] | None = None,
+    budget_seconds: float = ORIGIN_SECOND_PASS_BUDGET_SECONDS,
+) -> None:
+    """Build the spread timeline and store it in the report's artifacts.
+
+    ``origin_trace`` holds the timeline (None when nothing dated qualified) so
+    a cached report renders the same trace the run printed. When the earliest
+    sighting sits at the start of the window, the search is extended on the
+    sources that honor a longer range, inside ``budget_seconds``. A mock run
+    never extends, and a failure or timeout there becomes a limit of the trace.
+    """
+    candidates, incomplete = render.spread_timeline_inputs(report)
+    reach = _origin_reach(report, config)
+
+    def build(pool, range_from, extension=None):
+        return origin.build_timeline(
+            pool, range_from, report.range_to, schema.item_headline_engagement,
+            incomplete_sources=incomplete, reach=reach, extension=extension,
+        )
+
+    timeline = build(candidates, report.range_from)
+    report.artifacts["trace_origin"] = True
+    report.artifacts["origin_trace"] = timeline
+    if timeline is None or not timeline["at_window_edge"] or mock:
+        return
+    sources = _origin_extendable_sources(report, config, web_backend)
+    if not sources:
+        return
+    extension = {
+        "window_from": report.range_from, "days": 0, "sources": [],
+        "stopped": "", "failed_sources": [],
+    }
+    to_day = date.fromisoformat(report.range_to)
+    window_days = (to_day - date.fromisoformat(report.range_from)).days
+    deadline = time.monotonic() + budget_seconds
+    range_from = report.range_from
+    earlier: list[SimpleNamespace] = []
+    try:
+        for days in ORIGIN_EXTENDED_WINDOWS_DAYS:
+            if days <= window_days:
+                continue
+            if time.monotonic() >= deadline:
+                extension["stopped"] = "budget"
+            else:
+                from_date = (to_day - timedelta(days=days)).isoformat()
+                items, finished, failed = _origin_second_pass(
+                    report, sources, (from_date, report.range_to),
+                    config=config, web_backend=web_backend, subreddits=subreddits,
+                    deadline=deadline,
+                )
+                # Posts inside the original window were already judged by the
+                # main run; the extended search only adds what came before it.
+                earlier.extend(
+                    SimpleNamespace(source_items=[item]) for item in items
+                    if item.published_at and item.published_at < report.range_from
+                )
+                if finished:
+                    reach.update({source: from_date for source in finished})
+                    extension.update(days=days, sources=sorted(finished))
+                    range_from = from_date
+                extension["failed_sources"] = sorted(failed)
+                if len(finished) + len(failed) < len(sources):
+                    extension["stopped"] = "budget"
+                elif failed:
+                    extension["stopped"] = "failed"
+            timeline = build([*candidates, *earlier], range_from, extension)
+            if extension["stopped"] or not timeline["at_window_edge"]:
+                break
+    except Exception as exc:
+        print(f"[Origin] extended search failed: {exc}", file=sys.stderr)
+        extension.update(stopped="failed", failed_sources=sources)
+        timeline = build([*candidates, *earlier], range_from, extension)
+    report.artifacts["origin_trace"] = timeline
 
 
 def _retry_thin_sources(
