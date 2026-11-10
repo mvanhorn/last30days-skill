@@ -151,6 +151,22 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertIn("<h2>What I learned</h2>", rendered)
         self.assertNotIn("What I learned:", rendered)
 
+    def test_claude_code_list_free_markers_render_as_lists(self):
+        # On Claude Code the chat report writes `1\.` and `• ` instead of
+        # markdown lists; the export copies that text verbatim.
+        md = "KEY PATTERNS:\n1\\. First, per [CNN](https://example.test/a)\n2\\. Second\n\nAsk me:\n• Go deeper\n• Compare"
+        rendered = html_render._markdown_to_html(md)
+        self.assertIn("<ol>\n<li>First, per", rendered)
+        self.assertIn("<li>Second</li>\n</ol>", rendered)
+        self.assertIn("<ul>\n<li>Go deeper</li>\n<li>Compare</li>\n</ul>", rendered)
+        self.assertNotIn("\\.", rendered)
+        self.assertNotIn("•", rendered)
+
+    def test_list_free_markers_inside_code_are_left_alone(self):
+        rendered = html_render._markdown_to_html("```\n• keep\n1\\. keep\n```")
+        self.assertIn("• keep", rendered)
+        self.assertIn("1\\. keep", rendered)
+
     def test_invitation_strip(self):
         md = "---\nI'm now an expert on OpenClaw. Some things you could ask:\n\nJust ask."
         self.assertNotIn("I'm now an expert", html_render._strip_invitation(md))
