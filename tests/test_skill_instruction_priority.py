@@ -105,6 +105,21 @@ def test_durable_raw_appendix_and_default_footer_remain_required():
     assert "append the same `## WebSearch Supplemental Results` section to every listed per-entity Markdown raw file" in appendix
 
 
+def test_raw_appendix_bullets_keep_each_article_url():
+    appendix = reference_text("research-runbook").split("## Step 2.5: Append WebSearch Results to Saved Raw File", 1)[1]
+    appendix = appendix.split("\n---\n", 1)[0]
+    shape = next(line for line in appendix.splitlines() if line.startswith("Each bullet: `"))
+    canonical = shape.split("`")[1]
+    assert canonical.startswith("- **{Publisher}** ")
+    assert "{url}" in canonical
+    assert "Do not add URLs" not in appendix
+    example = appendix.split("```", 2)[1]
+    bullets = [line for line in example.splitlines() if line.startswith("- ")]
+    assert bullets
+    for bullet in bullets:
+        assert "https://" in bullet, bullet
+
+
 ISOLATED_SEARCH_MARKER = "**Isolated web search"
 
 
