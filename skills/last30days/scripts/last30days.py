@@ -50,7 +50,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
 from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -1087,6 +1087,17 @@ def subrun_kwargs_for(
 COMPETITORS_MIN = competitors_mod.COMPETITORS_MIN
 COMPETITORS_MAX = competitors_mod.COMPETITORS_MAX
 COMPETITORS_DEFAULT = competitors_mod.COMPETITORS_DEFAULT
+
+
+def _resolved_company(entity: str, *, mock: bool) -> dict:
+    """Company fields for one entity's ``resolved`` artifact; mock runs make no request."""
+    if mock:
+        return {}
+    company = company_resolve.resolve_company(entity)
+    if company.get("company"):
+        ticker = f", ticker {company['ticker']}" if company.get("ticker") else ""
+        sys.stderr.write(f"[Resolve] {entity}: company {company['company']}{ticker}\n")
+    return company
 
 
 def truncate_comparison_entities(entities: list[str], *, warn: bool = True) -> list[str]:
@@ -4313,6 +4324,11 @@ def _main(
             comp_explicit=comp_explicit,
             comp_plan=comp_plan,
         )
+        # Which company the topic names, from Wikidata. Like the homepage
+        # lookup above it needs no key and does not depend on who planned the
+        # run, so it happens with or without a host plan. Each entity of a
+        # comparison is resolved on its own, after the split.
+        main_company = _resolved_company(topic, mock=args.mock)
         if comp_enabled:
             config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget(
                 owner=topic,
@@ -4378,6 +4394,7 @@ def _main(
                 "github_repos": list(github_repos or []),
                 "trustpilot_domain": (trustpilot_domain or ""),
                 "context": config.get("_auto_resolve_context", "") or "",
+                **main_company,
             }
             return r
 
@@ -4519,6 +4536,7 @@ def _main(
                     "github_repos": kwargs["github_repos"] or [],
                     "trustpilot_domain": kwargs["trustpilot_domain"] or "",
                     "context": kwargs["_context"],
+                    **_resolved_company(entity, mock=args.mock),
                 }
                 if kwargs["_context"]:
                     entity_config["_auto_resolve_context"] = kwargs["_context"]

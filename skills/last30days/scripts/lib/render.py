@@ -1497,10 +1497,16 @@ def _render_resolved_entities_block(
                 + ")"
             )
         context_display = _truncate(context, 120) if context else "-"
+        ticker = resolved.get("ticker") or ""
+        ticker_display = ""
+        if ticker:
+            ticker_display = f" | Ticker {ticker}"
+            if resolved.get("company_via_person") and resolved.get("company"):
+                ticker_display += f" (via {resolved['company']})"
 
         out.append(
             f"- **{label}**: X {x_display} | Subs {subs_display} | "
-            f"GitHub {gh_display} | Context: {context_display}"
+            f"GitHub {gh_display}{ticker_display} | Context: {context_display}"
         )
     return out
 

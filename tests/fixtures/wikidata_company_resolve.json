@@ -1,0 +1,3781 @@
+{
+ "search": {
+  "Nvidia": {
+   "search": [
+    {
+     "id": "Q182477",
+     "label": "Nvidia",
+     "description": "American multinational technology company",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Nvidia"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Jensen Huang": {
+   "search": [
+    {
+     "id": "Q305177",
+     "label": "Jensen Huang",
+     "description": "American entrepreneur and businessman; co-founder and CEO of Nvidia",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Jensen Huang"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Apple": {
+   "search": [
+    {
+     "id": "Q312",
+     "label": "Apple Inc.",
+     "description": "American multinational technology company based in Cupertino, California",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Apple Inc."
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Tesla": {
+   "search": [
+    {
+     "id": "Q478214",
+     "label": "Tesla",
+     "description": "American automotive and clean energy company",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Tesla"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Stripe": {
+   "search": [
+    {
+     "id": "Q7624104",
+     "label": "Stripe",
+     "description": "Irish-American payment technology company",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Stripe"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "OpenAI": {
+   "search": [
+    {
+     "id": "Q21708200",
+     "label": "OpenAI",
+     "description": "American artificial intelligence research organization",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "OpenAI"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Anthropic": {
+   "search": [
+    {
+     "id": "Q116758847",
+     "label": "Anthropic",
+     "description": "American artificial intelligence corporation",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Anthropic"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Kanye West": {
+   "search": [
+    {
+     "id": "Q15935",
+     "label": "Kanye West",
+     "description": "American rapper and record producer (born 1977)",
+     "match": {
+      "type": "label",
+      "language": "mul",
+      "text": "Kanye West"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Taylor Swift": {
+   "search": [
+    {
+     "id": "Q26876",
+     "label": "Taylor Swift",
+     "description": "American singer-songwriter (born 1989)",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Taylor Swift"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Rust": {
+   "search": [
+    {
+     "id": "Q575650",
+     "label": "Rust",
+     "description": "memory-safe programming language without garbage collection",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Rust"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Alphabet": {
+   "search": [
+    {
+     "id": "Q20800404",
+     "label": "Alphabet Inc.",
+     "description": "American multinational technology conglomerate",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Alphabet Inc."
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Toyota": {
+   "search": [
+    {
+     "id": "Q53268",
+     "label": "Toyota",
+     "description": "Japanese multinational automotive manufacturer",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Toyota"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Patrick Collison": {
+   "search": [
+    {
+     "id": "Q7146257",
+     "label": "Patrick Collison",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Patrick Collison"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "Sundar Pichai": {
+   "search": [
+    {
+     "id": "Q3503829",
+     "label": "Sundar Pichai",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Sundar Pichai"
+     }
+    }
+   ],
+   "success": 1
+  }
+ },
+ "entities": {
+  "Q182477": {
+   "type": "item",
+   "id": "Q182477",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Nvidia"
+    },
+    "en": {
+     "language": "en",
+     "value": "Nvidia"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Nvidia Corp."
+     },
+     {
+      "language": "mul",
+      "value": "NVIDIA Corporation"
+     },
+     {
+      "language": "mul",
+      "value": "Nvidia Corporation"
+     },
+     {
+      "language": "mul",
+      "value": "NVDA"
+     }
+    ],
+    "en": [
+     {
+      "language": "en",
+      "value": "nVidia"
+     },
+     {
+      "language": "en",
+      "value": "NVIDIA"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 891723,
+         "id": "Q891723"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "NVDA",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 305177,
+         "id": "Q305177"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.nvidia.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.nvidia.com/zh-tw/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.nvidia.cn/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q305177": {
+   "type": "item",
+   "id": "Q305177",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Jensen Huang"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Jensen Huang"
+    }
+   },
+   "aliases": {
+    "en": [
+     {
+      "language": "en",
+      "value": "Jen-hsun Jensen Huang"
+     },
+     {
+      "language": "en",
+      "value": "Jen-Hsun Huang"
+     },
+     {
+      "language": "en",
+      "value": "Huang Jen-hsun"
+     },
+     {
+      "language": "en",
+      "value": "Huang Renxun"
+     }
+    ],
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Huang Jen-hsun"
+     },
+     {
+      "language": "mul",
+      "value": "Jen-hsun Huang"
+     },
+     {
+      "language": "mul",
+      "value": "Huang Renxun"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5,
+         "id": "Q5"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q312": {
+   "type": "item",
+   "id": "Q312",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Apple Inc."
+    },
+    "en": {
+     "language": "en",
+     "value": "Apple Inc."
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "AAPL"
+     },
+     {
+      "language": "mul",
+      "value": "Apple Computer, Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Apple Computer Incorporated"
+     },
+     {
+      "language": "mul",
+      "value": "Apple"
+     },
+     {
+      "language": "mul",
+      "value": "Apple Incorporated"
+     },
+     {
+      "language": "mul",
+      "value": "Apple Computer Inc"
+     },
+     {
+      "language": "mul",
+      "value": "Apple Computer"
+     },
+     {
+      "language": "mul",
+      "value": "Apple Computer Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Apple, Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Apple, Inc"
+     },
+     {
+      "language": "mul",
+      "value": "Apple Inc"
+     },
+     {
+      "language": "mul",
+      "value": "蘋果"
+     }
+    ],
+    "en": [
+     {
+      "language": "en",
+      "value": "Apple (company)"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6881511,
+         "id": "Q6881511"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 891723,
+         "id": "Q891723"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 167037,
+         "id": "Q167037"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 18388277,
+         "id": "Q18388277"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "AAPL",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 217475,
+         "id": "Q217475"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "6689",
+          "type": "string"
+         }
+        }
+       ],
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2004-12-25T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 926972,
+         "id": "Q926972"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1981-01-01T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 369783,
+         "id": "Q369783"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1983-01-01T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 337024,
+         "id": "Q337024"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1993-01-01T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 64088,
+         "id": "Q64088"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1996-01-01T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 713588,
+         "id": "Q713588"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1997-01-01T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 19837,
+         "id": "Q19837"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2011-08-23T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 265852,
+         "id": "Q265852"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2026-08-31T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 106028933,
+         "id": "Q106028933"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://apple.com/at/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://apple.com/de/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://apple.com/it/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://mac.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "deprecated"
+     }
+    ]
+   }
+  },
+  "Q478214": {
+   "type": "item",
+   "id": "Q478214",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Tesla"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Tesla"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "TSLA"
+     },
+     {
+      "language": "mul",
+      "value": "Tesla Motors"
+     },
+     {
+      "language": "mul",
+      "value": "Tesla Motors, Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Tesla Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Tesla Motors Netherlands B.V."
+     },
+     {
+      "language": "mul",
+      "value": "Tesla, Inc."
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 167037,
+         "id": "Q167037"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6881511,
+         "id": "Q6881511"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "TSLA",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 151139,
+         "id": "Q151139"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "TL0",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 819468,
+         "id": "Q819468"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "TL0",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 171240,
+         "id": "Q171240"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "0R0X",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 317521,
+         "id": "Q317521"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 8068146,
+         "id": "Q8068146"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2008-10-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 10,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1903673,
+         "id": "Q1903673"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2007-08-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 10,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.tesla.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.tesla.com/de_de",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.tesla.com/fr_fr",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.tesla.com/nl_nl",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.tesla.com/fi_fi",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.tesla.com/it_it",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q7624104": {
+   "type": "item",
+   "id": "Q7624104",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Stripe"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Stripe, LLC"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Stripe, Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Stripe"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 12738586,
+         "id": "Q12738586"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7146257,
+         "id": "Q7146257"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://stripe.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q21708200": {
+   "type": "item",
+   "id": "Q21708200",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "OpenAI"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "OpenAI"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "OpenAI Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Open AI"
+     },
+     {
+      "language": "mul",
+      "value": "OpenAI"
+     },
+     {
+      "language": "mul",
+      "value": "OpenAI Foundation"
+     }
+    ],
+    "en": [
+     {
+      "language": "en",
+      "value": "openai.com"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6881511,
+         "id": "Q6881511"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7407093,
+         "id": "Q7407093"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2023-11-17T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 116706551,
+         "id": "Q116706551"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2023-11-19T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5373565,
+         "id": "Q5373565"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2023-11-21T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7407093,
+         "id": "Q7407093"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://openai.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q116758847": {
+   "type": "item",
+   "id": "Q116758847",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Anthropic"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Anthropic"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Anthropic, PBC"
+     },
+     {
+      "language": "mul",
+      "value": "Anthropic PBC"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 18388277,
+         "id": "Q18388277"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4887441,
+         "id": "Q4887441"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 103335665,
+         "id": "Q103335665"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.anthropic.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q15935": {
+   "type": "item",
+   "id": "Q15935",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Kanye West"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Kanye Omari West"
+     },
+     {
+      "language": "mul",
+      "value": "Ye"
+     },
+     {
+      "language": "mul",
+      "value": "Yeezy"
+     }
+    ],
+    "en": [
+     {
+      "language": "en",
+      "value": "Kanye Omari West"
+     },
+     {
+      "language": "en",
+      "value": "Ye"
+     },
+     {
+      "language": "en",
+      "value": "Yeezy"
+     },
+     {
+      "language": "en",
+      "value": "Kon the Louis Vuitton Don"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5,
+         "id": "Q5"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://yeezy.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q26876": {
+   "type": "item",
+   "id": "Q26876",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Taylor Swift"
+    },
+    "en": {
+     "language": "en",
+     "value": "Taylor Swift"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Taylor Alison Swift"
+     },
+     {
+      "language": "mul",
+      "value": "Nils Sjöberg"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5,
+         "id": "Q5"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://taylorswift.com",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q575650": {
+   "type": "item",
+   "id": "Q575650",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Rust"
+    },
+    "en": {
+     "language": "en",
+     "value": "Rust"
+    }
+   },
+   "aliases": {
+    "en": [
+     {
+      "language": "en",
+      "value": "Rust language"
+     },
+     {
+      "language": "en",
+      "value": "Rust programming language"
+     }
+    ],
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Rustlang"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9143,
+         "id": "Q9143"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 3839507,
+         "id": "Q3839507"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 12772052,
+         "id": "Q12772052"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 21562092,
+         "id": "Q21562092"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4117397,
+         "id": "Q4117397"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 506883,
+         "id": "Q506883"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 651794,
+         "id": "Q651794"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://rust-lang.org/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q20800404": {
+   "type": "item",
+   "id": "Q20800404",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Alphabet Inc."
+    },
+    "en": {
+     "language": "en",
+     "value": "Alphabet Inc."
+    }
+   },
+   "aliases": {
+    "en": [
+     {
+      "language": "en",
+      "value": "Alphabet, Inc."
+     },
+     {
+      "language": "en",
+      "value": "Alphabet Inc"
+     },
+     {
+      "language": "en",
+      "value": "Alphabet, Inc"
+     },
+     {
+      "language": "en",
+      "value": "Alphabet company"
+     },
+     {
+      "language": "en",
+      "value": "Alphabet"
+     },
+     {
+      "language": "en",
+      "value": "Google holding"
+     },
+     {
+      "language": "en",
+      "value": "Alphabet Incorporated"
+     }
+    ],
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Alphabet"
+     },
+     {
+      "language": "mul",
+      "value": "abc.xyz"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 219577,
+         "id": "Q219577"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 891723,
+         "id": "Q891723"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "GOOG",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "GOOGL",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4934,
+         "id": "Q4934"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2019-12-03T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 3503829,
+         "id": "Q3503829"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://abc.xyz/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q53268": {
+   "type": "item",
+   "id": "Q53268",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Toyota"
+    },
+    "en": {
+     "language": "en",
+     "value": "Toyota"
+    }
+   },
+   "aliases": {
+    "en": [
+     {
+      "language": "en",
+      "value": "TOYOTA JIDOSHA KABUSHIKI KAISHA"
+     },
+     {
+      "language": "en",
+      "value": "TOYOTA JIDOSHA KABUSHIKI KAISHA (Toyota)"
+     }
+    ],
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Toyota Motor Corporation"
+     },
+     {
+      "language": "mul",
+      "value": "Toyota Motor"
+     },
+     {
+      "language": "mul",
+      "value": "Toyota Jidōsha"
+     },
+     {
+      "language": "mul",
+      "value": "Toyota Jidosha"
+     },
+     {
+      "language": "mul",
+      "value": "Toyota Jidōsha KK"
+     },
+     {
+      "language": "mul",
+      "value": "Toyota Jidosha KK"
+     },
+     {
+      "language": "mul",
+      "value": "TM"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 786820,
+         "id": "Q786820"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 21980538,
+         "id": "Q21980538"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 431289,
+         "id": "Q431289"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 891723,
+         "id": "Q891723"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 43229,
+         "id": "Q43229"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 10429667,
+         "id": "Q10429667"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 217475,
+         "id": "Q217475"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "7203",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 171240,
+         "id": "Q171240"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "TYT",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 13677,
+         "id": "Q13677"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "TM",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1188840,
+         "id": "Q1188840"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "7203",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 116935918,
+         "id": "Q116935918"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 736336,
+         "id": "Q736336"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2009-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 418622,
+         "id": "Q418622"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2023-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://global.toyota/en/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://global.toyota",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://toyota.jp/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.toyota.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.autohaus.toyota.de",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "deprecated"
+     }
+    ]
+   }
+  },
+  "Q7146257": {
+   "type": "item",
+   "id": "Q7146257",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Patrick Collison"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Patrick Collison"
+    }
+   },
+   "aliases": {},
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5,
+         "id": "Q5"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://patrickcollison.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q3503829": {
+   "type": "item",
+   "id": "Q3503829",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Sundar Pichai"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Sundar Pichai"
+    }
+   },
+   "aliases": {
+    "en": [
+     {
+      "language": "en",
+      "value": "Pichai Sundarajan"
+     },
+     {
+      "language": "en",
+      "value": "Pichai Sundararajan"
+     },
+     {
+      "language": "en",
+      "value": "Pichai"
+     },
+     {
+      "language": "en",
+      "value": "Sundara Pichai"
+     }
+    ],
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Pichai Sundarajan"
+     },
+     {
+      "language": "mul",
+      "value": "Pichai Sundararajan"
+     },
+     {
+      "language": "mul",
+      "value": "Pichai"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5,
+         "id": "Q5"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q95": {
+   "type": "item",
+   "id": "Q95",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Google"
+    },
+    "en": {
+     "language": "en",
+     "value": "Google"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Google LLC"
+     },
+     {
+      "language": "mul",
+      "value": "google.com"
+     },
+     {
+      "language": "mul",
+      "value": "Google Inc."
+     },
+     {
+      "language": "mul",
+      "value": "Google, Inc."
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 18388277,
+         "id": "Q18388277"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5988403,
+         "id": "Q5988403"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 891723,
+         "id": "Q891723"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 19967801,
+         "id": "Q19967801"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "GOOG",
+          "type": "string"
+         }
+        }
+       ],
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2016-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "GOOGL",
+          "type": "string"
+         }
+        }
+       ],
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2016-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4934,
+         "id": "Q4934"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2001-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 92747,
+         "id": "Q92747"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2011-04-08T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4934,
+         "id": "Q4934"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2015-08-10T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 3503829,
+         "id": "Q3503829"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://about.google/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "deprecated"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://about.google/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q10429667": {
+   "type": "item",
+   "id": "Q10429667",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "car brand"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 431289,
+         "id": "Q431289"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q12772052": {
+   "type": "item",
+   "id": "Q12772052",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "multi-paradigm programming language"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9143,
+         "id": "Q9143"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q21562092": {
+   "type": "item",
+   "id": "Q21562092",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "imperative programming language"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9143,
+         "id": "Q9143"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q217475": {
+   "type": "item",
+   "id": "Q217475",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Tokyo Stock Exchange"
+    }
+   },
+   "claims": {}
+  },
+  "Q21980538": {
+   "type": "item",
+   "id": "Q21980538",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "commercial organization"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 43229,
+         "id": "Q43229"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q3839507": {
+   "type": "item",
+   "id": "Q3839507",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "functional programming language"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9143,
+         "id": "Q9143"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q4117397": {
+   "type": "item",
+   "id": "Q4117397",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "systems programming language"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9143,
+         "id": "Q9143"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q431289": {
+   "type": "item",
+   "id": "Q431289",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "brand"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 16686448,
+         "id": "Q16686448"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q43229": {
+   "type": "item",
+   "id": "Q43229",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "organization"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 106559804,
+         "id": "Q106559804"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 106668099,
+         "id": "Q106668099"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1639378,
+         "id": "Q1639378"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 854457,
+         "id": "Q854457"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 131085629,
+         "id": "Q131085629"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q506883": {
+   "type": "item",
+   "id": "Q506883",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "free and open-source software"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1130645,
+         "id": "Q1130645"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q651794": {
+   "type": "item",
+   "id": "Q651794",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "compiled language"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9143,
+         "id": "Q9143"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 188267,
+         "id": "Q188267"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "deprecated"
+     }
+    ]
+   }
+  },
+  "Q786820": {
+   "type": "item",
+   "id": "Q786820",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "automobile manufacturer"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6881511,
+         "id": "Q6881511"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 136678590,
+         "id": "Q136678590"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q82059": {
+   "type": "item",
+   "id": "Q82059",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Nasdaq"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Nasdaq"
+    }
+   },
+   "claims": {}
+  },
+  "Q891723": {
+   "type": "item",
+   "id": "Q891723",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "public company"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6881511,
+         "id": "Q6881511"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 134161,
+         "id": "Q134161"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q9143": {
+   "type": "item",
+   "id": "Q9143",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "programming language"
+    }
+   },
+   "claims": {
+    "P279": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P279",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 629206,
+         "id": "Q629206"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  }
+ },
+ "chief_executive_of": {
+  "Q305177": {
+   "query": {
+    "searchinfo": {
+     "totalhits": 1
+    },
+    "search": [
+     {
+      "ns": 0,
+      "title": "Q182477"
+     }
+    ]
+   }
+  },
+  "Q15935": {
+   "query": {
+    "searchinfo": {
+     "totalhits": 0
+    },
+    "search": []
+   }
+  },
+  "Q26876": {
+   "query": {
+    "searchinfo": {
+     "totalhits": 0
+    },
+    "search": []
+   }
+  },
+  "Q7146257": {
+   "query": {
+    "searchinfo": {
+     "totalhits": 1
+    },
+    "search": [
+     {
+      "ns": 0,
+      "title": "Q7624104"
+     }
+    ]
+   }
+  },
+  "Q3503829": {
+   "query": {
+    "searchinfo": {
+     "totalhits": 2
+    },
+    "search": [
+     {
+      "ns": 0,
+      "title": "Q95"
+     },
+     {
+      "ns": 0,
+      "title": "Q20800404"
+     }
+    ]
+   }
+  }
+ }
+}

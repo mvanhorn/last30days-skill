@@ -26,6 +26,7 @@ from . import (
     bird_x,
     bluesky,
     brightdata,
+    company_resolve,
     corpus,
     dates,
     dedupe,
@@ -3922,47 +3923,7 @@ def _ensure_perplexity_in_plan(
     plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
-def _company_topic_likely(topic: str) -> bool:
-    text = topic.strip()
-    if not text:
-        return False
-    lower = text.lower()
-    if "?" in text or len(text.split()) > 4:
-        return False
-    generic = {
-        "how", "what", "why", "best", "top", "tutorial", "guide", "prompts",
-        "news", "latest", "ideas", "examples",
-    }
-    if any(word in generic for word in lower.split()):
-        return False
-    known_single_word_companies = {
-        "apple", "uber", "google", "microsoft", "amazon", "meta", "netflix",
-        "openai", "anthropic", "qualtrics", "stripe", "brex",
-    }
-    if " vs " in lower or " versus " in lower:
-        parts = re.split(r"\s+(?:vs|versus)\s+", text, maxsplit=1, flags=re.IGNORECASE)
-        if len(parts) != 2:
-            return False
-        return _comparison_side_company_like(parts[0], known_single_word_companies) or _comparison_side_company_like(
-            parts[1], known_single_word_companies
-        )
-    return bool(text[:1].isupper() or lower in known_single_word_companies)
-
-
-def _comparison_side_company_like(side: str, known_companies: set[str]) -> bool:
-    token = re.sub(r"[^\w.+#-]", "", side.strip().split()[0] if side.strip() else "")
-    if not token:
-        return False
-    lower = token.lower()
-    common_tech_terms = {
-        "python", "ruby", "javascript", "typescript", "java", "go", "golang",
-        "rust", "php", "swift", "kotlin", "scala", "clojure", "elixir",
-        "react", "vue", "angular", "svelte", "node", "django", "rails",
-        "postgres", "mysql", "redis", "kubernetes", "docker",
-    }
-    if lower in common_tech_terms:
-        return False
-    return bool(token[:1].isupper() or lower in known_companies)
+_company_topic_likely = company_resolve.company_topic_likely
 
 
 def _warnings(

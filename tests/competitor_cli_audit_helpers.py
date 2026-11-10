@@ -10,7 +10,8 @@ from lib import resolve, schema
 
 def run_competitor_cli(
     monkeypatch, tmp_path, *, args=(), config=None, has_backend=False, resolutions=None,
-    topic="MainBrand", competitors_list="PeerOne,PeerTwo",
+    topic="MainBrand", competitors_list="PeerOne,PeerTwo", companies=None,
+    expected_topics=frozenset({"MainBrand", "PeerOne", "PeerTwo"}),
 ):
     config = {} if config is None else config
     calls = {}
@@ -40,6 +41,8 @@ def run_competitor_cli(
     monkeypatch.setattr(cli.pipeline, "run", research)
     monkeypatch.setattr(resolve, "_has_backend", lambda _config: has_backend)
     monkeypatch.setattr(resolve, "auto_resolve", resolver)
+    company_resolver = mock.Mock(side_effect=lambda topic: dict((companies or {}).get(topic, {})))
+    monkeypatch.setattr(cli.company_resolve, "resolve_company", company_resolver)
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
     monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "")
     monkeypatch.setenv("LAST30DAYS_STORE", "")
@@ -52,5 +55,7 @@ def run_competitor_cli(
     monkeypatch.setattr(sys, "argv", argv)
 
     assert cli.main() == 0
-    assert set(calls) == {"MainBrand", "PeerOne", "PeerTwo"}
-    return SimpleNamespace(calls=calls, reports=reports, resolver=resolver)
+    assert set(calls) == set(expected_topics)
+    return SimpleNamespace(
+        calls=calls, reports=reports, resolver=resolver, company_resolver=company_resolver,
+    )
