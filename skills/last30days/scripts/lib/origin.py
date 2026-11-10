@@ -28,6 +28,7 @@ EXCLUDED_SOURCES = frozenset({
 # An earliest sighting this close to the window start means the search was
 # cut off by the window, not that the story began there.
 WINDOW_EDGE_DAYS = 2
+SAME_DAY_LISTED = 3
 _TITLE_LIMIT = 110
 # Sources whose author field names a channel, which is a venue, not a person.
 _CHANNEL_SOURCES = frozenset({"youtube"})
@@ -214,6 +215,9 @@ def build_timeline(
     )
     timeline = {
         "earliest": earliest,
+        # Day resolution cannot say which of these came first, so the others
+        # dated that day are named instead of being hidden behind the pick.
+        "same_day": [s for s in sightings[1:] if s["day"] == earliest["day"]][:SAME_DAY_LISTED],
         "hops": hops,
         "carries": carries,
         "peak_day": peak_day,
@@ -335,6 +339,11 @@ def render_timeline(timeline: dict[str, Any], label_of: Callable[[str], str]) ->
     lines.extend([
         "",
         f"- Earliest found: {earliest['day']} - {_describe(earliest, label_of)}",
+        *(
+            f"- Also dated {earliest['day']} (the order within a day is unknown): "
+            f"{_describe(sighting, label_of)}"
+            for sighting in timeline.get("same_day") or []
+        ),
         "",
         "First sighting per platform, in order, with the range that platform was searched over:",
     ])

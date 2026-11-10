@@ -42,7 +42,7 @@ import json
 import os
 import re
 import stat
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -73,7 +73,9 @@ COUNTERS = (
 # Dated items the host or the web pass found are the topic's own calendar;
 # a sports or election topic can have hundreds of markets, so this many list
 # places are theirs before any market is considered.
-RESERVED_FOR_DATED_ITEMS = 6
+RESERVED_FOR_DATED_ITEMS = 8
+# Mirrors the ledger's limit on how far out a prediction may resolve.
+CALL_HORIZON_DAYS = 90
 # One event can hold dozens of near-identical markets (a ladder of dates or
 # of candidates). Only the most undecided few are worth a prediction; the
 # rest would crowd every other question out of the list.
@@ -508,12 +510,17 @@ def build(
             text,
         )
 
+    horizon = (now + timedelta(days=CALL_HORIZON_DAYS)).isoformat()
     dated = sorted(
         (entry for entry in kept if entry["kind"] != "market"), key=lambda entry: entry["date"],
     )[:RESERVED_FOR_DATED_ITEMS]
     market_entries = sorted(
         (entry for entry in kept if entry["kind"] == "market"),
-        key=lambda entry: (_is_settled(entry), loudness[entry["key"]], entry["date"]),
+        # A market closing years out cannot take a call this run; it gets a
+        # place only after every market that can.
+        key=lambda entry: (
+            _is_settled(entry), entry["date"] > horizon, loudness[entry["key"]], entry["date"],
+        ),
     )
     chosen = dated + market_entries[: MAX_ENTRIES - len(dated)]
     # Leftover places go to the next dated items rather than staying empty.

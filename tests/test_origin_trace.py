@@ -259,7 +259,7 @@ def _traced_report(candidates, *, sources=("hackernews", "x"), x_backend="bird")
             )],
         ),
         provider_runtime=SimpleNamespace(x_search_backend=x_backend),
-        candidates=candidates,
+        candidates=candidates, ranked_candidates=[], items_by_source={},
     )
 
 
@@ -582,6 +582,10 @@ def test_off_topic_cluster_members_cannot_lead_the_timeline(monkeypatch):
             clusters=[], pool=pool, artifacts={},
             query_plan=SimpleNamespace(freshness_mode="balanced_recent", subqueries=[]),
             provider_runtime=SimpleNamespace(x_search_backend=None),
+            # The off-topic post is inside a ranked candidate, so its high
+            # retrieval relevance must not bring it back as an unranked post.
+            ranked_candidates=pool,
+            items_by_source={"x": [item for candidate in pool for item in candidate.source_items]},
         )
         pipeline.trace_origin(report, config={}, mock=True)
         return "\n".join(render._render_spread_timeline(report))
@@ -612,3 +616,34 @@ def test_reference_keeps_the_trace_honest_and_people_safe():
         assert rule in text, rule
     assert "Re-run once" not in text
     assert "—" not in text and "–" not in text
+
+
+def test_an_on_topic_post_that_ranking_cut_still_counts_toward_the_trail(monkeypatch):
+    ranked = _candidate(900, _item("youtube", "2026-10-30", "https://youtube.test/big"))
+    early_unranked = _item("youtube", "2026-10-29", "https://youtube.test/early")
+    early_unranked.local_relevance = 0.5
+    weak_unranked = _item("youtube", "2026-10-20", "https://youtube.test/weak")
+    weak_unranked.local_relevance = 0.1
+    for item in ranked.source_items:
+        item.local_relevance = 0.6
+    report = _traced_report([ranked], sources=("youtube",))
+    report.ranked_candidates = [ranked]
+    report.items_by_source = {"youtube": [*ranked.source_items, early_unranked, weak_unranked]}
+    _trace(monkeypatch, report, fetch=lambda *a, **k: [], mock_run=True)
+    timeline = report.artifacts["origin_trace"]
+    assert timeline["earliest"]["url"] == "https://youtube.test/early"
+    assert timeline["sighting_count"] == 2
+
+
+def test_other_posts_dated_the_same_day_as_the_earliest_are_named():
+    timeline = _build([
+        _candidate(371, _item("hackernews", "2026-10-29", "https://hn.test/big",
+                              metadata={"hn_url": "https://hn.test/big"})),
+        _candidate(40, _item("hackernews", "2026-10-29", "https://hn.test/first",
+                             metadata={"hn_url": "https://hn.test/first"})),
+        _candidate(10, _item("x", "2026-10-31", "https://x.com/someone/status/5")),
+    ])
+    assert [s["url"] for s in timeline["same_day"]] == ["https://hn.test/first"]
+    text = "\n".join(origin.render_timeline(timeline, _label))
+    assert "Also dated 2026-10-29 (the order within a day is unknown)" in text
+    assert "https://hn.test/first" in text

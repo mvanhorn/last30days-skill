@@ -5034,6 +5034,33 @@ def _origin_second_pass(
     return items, finished, failed
 
 
+# Ranking keeps only the strongest posts per source, but the earliest post
+# about a story is often a small one that ranking cut. A post the run
+# retrieved and scored this relevant counts toward the trail even unranked.
+ORIGIN_UNRANKED_MIN_RELEVANCE = 0.35
+
+
+def _origin_unranked_posts(report: schema.Report) -> list[SimpleNamespace]:
+    """Retrieved posts ranking left out that are clearly on topic.
+
+    A post inside any ranked candidate is skipped: it was already judged,
+    and one the relevance check rejected must not come back this way.
+    """
+    judged = {
+        (item.source, item.url)
+        for candidate in report.ranked_candidates
+        for item in candidate.source_items
+    }
+    return [
+        SimpleNamespace(source_items=[item])
+        for source, items in report.items_by_source.items()
+        if source != "corpus"
+        for item in items
+        if (item.source, item.url) not in judged
+        and (item.local_relevance or 0.0) >= ORIGIN_UNRANKED_MIN_RELEVANCE
+    ]
+
+
 def trace_origin(
     report: schema.Report,
     *,
@@ -5052,6 +5079,7 @@ def trace_origin(
     never extends, and a failure or timeout there becomes a limit of the trace.
     """
     candidates, incomplete = render.spread_timeline_inputs(report)
+    candidates = [*candidates, *_origin_unranked_posts(report)]
     reach = _origin_reach(report, config)
 
     def build(pool, range_from, extension=None):
