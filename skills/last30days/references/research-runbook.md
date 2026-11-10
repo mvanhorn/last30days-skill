@@ -720,19 +720,17 @@ If the resolved `LAST30DAYS_MEMORY_DIR` is empty, saving was disabled: skip this
 3. For each WebSearch result, include one bullet in the canonical format (see Format example below).
 4. Write the updated file back.
 
-**Format example (canonical, from April 7 archive — match this shape):**
+**Format example (canonical; match this shape):**
 
 ```
 ## WebSearch Supplemental Results
 
-- **Flowtivity** (flowtivity.ai) — Side-by-side OpenClaw vs Paperclip framework comparison; concludes Paperclip solves coordination, OpenClaw solves execution.
-- **Rahul Goyal** (rahulgoyal.co) — Honest three-way review: start with Hermes for simplicity, OpenClaw for tinkering, Paperclip only if running multiple agents.
-- **Eigent** (eigent.ai) — Feature-by-feature OpenClaw vs Hermes for founders; Hermes wins on self-improving skills, OpenClaw on ecosystem breadth.
-- **The New Stack** (thenewstack.io) — "The race to build AI assistants that never forget" — deep comparison of persistent memory architectures.
-- **MindStudio** (mindstudio.ai) — Paperclip vs OpenClaw multi-agent comparison; Paperclip for orchestration, OpenClaw as the individual agent.
+- **Flowtivity** (https://example.com/openclaw-vs-paperclip) — Side-by-side OpenClaw vs Paperclip framework comparison; concludes Paperclip solves coordination, OpenClaw solves execution.
+- **Rahul Goyal** (https://example.org/hermes-review) — Honest three-way review: start with Hermes for simplicity, OpenClaw for tinkering, Paperclip only if running multiple agents.
+- **Eigent** (https://example.net/openclaw-vs-hermes) — Feature-by-feature OpenClaw vs Hermes for founders; Hermes wins on self-improving skills, OpenClaw on ecosystem breadth.
 ```
 
-Each bullet: `- **{Publisher}** ({domain}) — {1-2 sentence excerpt of what you found}`. Publisher is the site name or author; domain is the clean hostname (no protocol, no path). Do not nest sub-bullets. Do not add URLs - the domain in parens is the citation.
+Each bullet: `- **{Publisher}** ({url}) — {1-2 sentence excerpt of what you found}`. Publisher is the site name or author; url is the article's verbatim URL, so later readers and runs can link it. Keep each bullet on one line with no sub-bullets.
 
 This ensures anyone reviewing the raw file sees ALL data that fed into the synthesis, not just the Python engine output.
 

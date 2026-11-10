@@ -2465,12 +2465,49 @@ def _shorten_polymarket_title(title: str) -> str:
     return t
 
 
+def _polymarket_name_key(text: str) -> str:
+    return " ".join((text or "").casefold().split())
+
+
+def _polymarket_market_name(question: str, label: str) -> tuple[str, bool]:
+    """Name one market for the footer, saying each thing once.
+
+    Returns the name and whether it is the bare descriptor, which drops the
+    question's deadline and so can read the same for two different markets.
+    """
+    descriptor = _shorten_polymarket_title(question)
+    if not descriptor:
+        return "", True
+    label = (label or "").strip()
+    label_key = _polymarket_name_key(label)
+    descriptor_key = _polymarket_name_key(descriptor)
+    descriptor_lead = descriptor_key.split()[0] if descriptor_key else ""
+
+    # The label adds nothing when it is empty, a binary Yes/No proxy, a bare
+    # article ("an"/"the"), the descriptor's leading token, or a copy of the
+    # question cut short ("Jensen Huang announced resignation or re").
+    if (
+        not label_key
+        or label_key in ("yes", "no", "a", "an", "the")
+        or label_key == descriptor_lead
+        or descriptor_key.startswith(label_key)
+        or _polymarket_name_key(question.rstrip("?")).startswith(label_key)
+    ):
+        return descriptor, True
+    # A sub-market named by its own question ("Jensen Huang divorce by March
+    # 31, 2027") already holds the descriptor; the price is that market's.
+    if label_key.startswith(descriptor_key):
+        return label, False
+    return f"{descriptor}: {label}", False
+
+
 def _polymarket_top_markets(
     items: list[schema.SourceItem], limit: int = 3
 ) -> list[str]:
     """Build short summary strings for the top Polymarket markets by volume.
 
     Returns list like: ['UK visit 5.5%', 'Israel visit 8%', 'blocked from entering 36%']
+    Each market is named once: no market repeats and no two share a name.
     """
     # Sort by volume descending
     sorted_items = sorted(
@@ -2479,7 +2516,8 @@ def _polymarket_top_markets(
         reverse=True,
     )
 
-    summaries: list[str] = []
+    # (name, pct, question, label when the name is not the bare descriptor)
+    markets: list[tuple[str, str, str, str]] = []
     for item in sorted_items[:limit]:
         outcome_prices = item.metadata.get("outcome_prices") or []
         if not outcome_prices:
@@ -2495,27 +2533,37 @@ def _polymarket_top_markets(
             else f"{lead_price * 100:.1f}%"
         )
 
-        descriptor = _shorten_polymarket_title(
-            item.metadata.get("question") or item.title or ""
-        )
-        if not descriptor:
+        question = (item.metadata.get("question") or item.title or "").strip()
+        name, is_descriptor = _polymarket_market_name(question, lead_name)
+        if not name:
             continue
+        label = "" if is_descriptor else str(lead_name).strip()
+        markets.append((name, pct, question, label))
 
-        # Append the outcome name only when it adds information. It's redundant when
-        # empty, a binary Yes/No proxy, a bare article ("an"/"the"), or already the
-        # leading token of the descriptor — appending it then yields noise like
-        # "...score at: an 19%" or a doubled token.
-        label = (lead_name or "").strip()
-        descriptor_lead = descriptor.split()[0].lower() if descriptor.split() else ""
-        redundant = (
-            not label
-            or label.lower() in ("yes", "no", "a", "an", "the")
-            or label.lower() == descriptor_lead
+    # Different questions can shorten to one name (a deadline ladder:
+    # "... by March 31, 2027", "... by June 30, 2027"), with or without an
+    # outcome label after it. Name those by the whole question so they read
+    # apart; only the same question listed twice is said once.
+    questions_by_name: dict[str, set[str]] = {}
+    for name, _pct, question, _label in markets:
+        questions_by_name.setdefault(_polymarket_name_key(name), set()).add(
+            _polymarket_name_key(question)
         )
-        if redundant:
-            summaries.append(f"{descriptor} {pct}")
-        else:
-            summaries.append(f"{descriptor}: {label} {pct}")
+
+    summaries: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for name, pct, question, label in markets:
+        if len(questions_by_name[_polymarket_name_key(name)]) > 1:
+            whole = question.rstrip("?").strip()
+            if whole.lower().startswith("will "):
+                whole = whole[5:].strip()
+            if whole:
+                name = f"{whole}: {label}" if label else whole
+        key = (_polymarket_name_key(question), _polymarket_name_key(name))
+        if key in seen:
+            continue
+        seen.add(key)
+        summaries.append(f"{name} {pct}")
 
     return summaries
 
@@ -3262,20 +3310,35 @@ def _render_stats(report: schema.Report) -> list[str]:
         for source, items in sorted(report.items_by_source.items())
         if items
     }
-    total_items = sum(len(items) for items in non_empty_sources.values())
     if not non_empty_sources:
         lines.append("- No usable source metrics available.")
         lines.append("")
         return lines
 
-    lines.append(
-        f"- Total evidence: {total_items} item{'s' if total_items != 1 else ''} across "
-        f"{len(non_empty_sources)} source{'s' if len(non_empty_sources) != 1 else ''}"
-    )
-    top_voices = _top_voices_overall(non_empty_sources)
+    # Job postings are roles, not evidence or voices: a company board can hold
+    # thousands, and their department and hiring-system names are not people.
+    # They stay out of the total, its source count and the top voices, and get
+    # their own line below.
+    evidence_sources = {
+        source: items
+        for source, items in non_empty_sources.items()
+        if source != "jobs"
+    }
+    total_items = sum(len(items) for items in evidence_sources.values())
+    if evidence_sources:
+        lines.append(
+            f"- Total evidence: {total_items} item{'s' if total_items != 1 else ''} across "
+            f"{len(evidence_sources)} source{'s' if len(evidence_sources) != 1 else ''}"
+        )
+    top_voices = _top_voices_overall(evidence_sources)
     if top_voices:
         lines.append(f"- Top voices: {', '.join(top_voices)}")
     for source, items in non_empty_sources.items():
+        if source == "jobs":
+            lines.append(
+                f"- {_source_label(source)}: {len(items)} role{'s' if len(items) != 1 else ''}"
+            )
+            continue
         if source == "polymarket":
             # Polymarket gets a richer stats line with top market odds
             market_summaries = _polymarket_top_markets(items)
