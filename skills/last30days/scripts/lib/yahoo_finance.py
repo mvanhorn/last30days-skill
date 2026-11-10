@@ -281,11 +281,20 @@ def fetch_market_data(company: dict[str, Any], range_from: str, range_to: str) -
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+PRICE_WINDOW_DAYS = 30
+
+
+def _thirty_days_before(range_to: str) -> str:
+    """The footer says "in the L30", so the price window is always the 30 days
+    ending on the report's last day, whatever the research window was."""
+    return (date.fromisoformat(range_to) - timedelta(days=PRICE_WINDOW_DAYS)).isoformat()
+
+
 def attach_market_data(report: schema.Report, company: dict[str, Any]) -> None:
     """Fetch the report's window for the company and record it on the report:
     the ``yahoo_finance`` artifact on success, a degraded source outcome on a
     failed fetch, and nothing at all when there was nothing to fetch."""
-    outcome = fetch_market_data(company or {}, report.range_from, report.range_to)
+    outcome = fetch_market_data(company or {}, _thirty_days_before(report.range_to), report.range_to)
     if "artifact" in outcome:
         report.artifacts[SOURCE] = outcome["artifact"]
     elif "error" in outcome:

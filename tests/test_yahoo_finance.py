@@ -464,3 +464,13 @@ def test_mock_run_never_starts_the_cli(monkeypatch, tmp_path):
     run_competitor_cli(monkeypatch, tmp_path, args=["--mock"], market_cli=fake)
 
     assert fake.calls == []
+
+
+def test_price_window_is_the_thirty_days_ending_on_the_last_day(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        yahoo_finance, "fetch_market_data",
+        lambda company, start, end: seen.append((start, end)) or {},
+    )
+    yahoo_finance.attach_market_data(_report(range_from="2026-11-03", range_to="2026-11-10"), {"ticker": "NVDA"})
+    assert seen == [("2026-10-11", "2026-11-10")]
