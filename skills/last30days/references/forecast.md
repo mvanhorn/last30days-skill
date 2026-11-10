@@ -2,7 +2,7 @@
 
 Read for forecast, prediction, or scorecard intent: "what happens next with X", "forecast X", "predict the next 30 days for X", "next30 X", "how accurate are your forecasts", "show my scorecard", "grade your predictions". Also read for launch-rehearsal intent ("how will this land", "roast my launch post", "what will people say about this draft"); that procedure is the Rehearsal section below. The runtime interpreter bootstrap still runs first.
 
-Research says what happened in the last 30 days. A forecast commits to what happens in the next 30, in writing, with a probability and a date, and the ledger grades it later. You write the predictions; the engine validates, stores, settles, and scores them. Every ledger command takes the same `--save-dir="${LAST30DAYS_MEMORY_DIR}"` as the library and queue commands.
+Research says what happened in the last 30 days. A forecast commits to what happens in the next 30, in writing, with a probability and a date, and the ledger grades it later. You write the predictions; the engine validates, stores, settles, and scores them. Every ledger command takes the same `--save-dir="${LAST30DAYS_MEMORY_DIR}"` as the library and queue commands; the ledger lives only in that directory, and with no save directory nothing is read or logged.
 
 ## Scorecard, list, and grading fast paths
 
@@ -44,38 +44,38 @@ Grading rules, enforced by the engine:
 ## Making a forecast for a topic
 
 1. Run ordinary topic research first, through the research-runbook and synthesis routes, exactly as for any topic. Present that synthesis as usual. When this conversation already holds a fresh run on the topic, use it instead of re-running.
-2. Run `forecast list <topic>` so open calls on this topic are in front of you. Do not re-log a call that is already open, and do not log a contradicting call without saying you changed your mind.
-3. Write 3 to 5 predictions (the engine refuses more than 5 per file). Each one must be:
-   - **Falsifiable and dated.** One specific event that a stranger could check on the resolve date. "Sentiment will stay mixed" and "adoption will grow" are not predictions.
+2. Run `forecast list <topic>` so open calls on this topic are in front of you. A question takes one open call: the engine returns the existing call instead of logging a second, and it finds calls logged under a renamed form of the topic.
+3. Write 1 or 2 predictions (the engine refuses more than 2 per file). Each one targets one entry in this run's Open Questions list, named by its id in `question`, and must be:
+   - **Falsifiable.** `claim` is one specific event that a stranger could check on the question's date. "Sentiment will stay mixed" and "adoption will grow" are not predictions. The question's own date is the deadline; you do not set one.
    - **Stated in the direction you believe**, with `probability` from 0.5 to 0.99. To predict that something will not happen, write the negative claim.
-   - **Grounded.** `basis` lists 1 to 6 URLs copied verbatim from this run's evidence that the call rests on.
-   - **Resolvable.** `resolution` names the exact observable test and where to look.
-   - **Within 90 days.** `resolve_by` defaults to 30 days from today when omitted.
-   - **Honestly calibrated.** Reserve 0.9 and above for calls you would be shocked to lose. A slate of only safe 0.95 calls scores well and tells the user nothing; include the calls that are actually uncertain and interesting.
-4. When the run surfaced a Polymarket market on the same question, anchor the prediction to it with `market`: the market's URL copied verbatim from the evidence, the `outcome` label you are backing, and its current `price` (0 to 1) for that outcome. Use the market's own question and end date. Anchored predictions settle automatically and are scored against the market. If the event has several markets, the URL must include the specific market's slug or it will not auto-settle. Never anchor to a market that has already resolved.
+   - **Worth making.** `reason` is one line on why the call says more than its baseline. The engine refuses a restatement: a market call within 5 points of the market's price on the same outcome, or a call above 0.85 that the status quo holds.
+   - **Honestly calibrated.** Reserve 0.9 and above for calls you would be shocked to lose.
+4. For a market question, add only `outcome`: the label you are backing. The engine fills the market's link, price, and closing date from its own list and ignores any you send; the price is the call's baseline, and the call settles automatically. Never anchor to a market that has already resolved. For any other question, state the baseline and how the call settles: `baseline` gives the `status_quo` outcome and its `probability`, `backs` says whether your claim is that outcome (`status_quo`) or its opposite (`change`), and `resolution` names the `page` (an http or https link) and the `field` or event on it that settles the call.
 5. Log them:
 
 ```bash
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" forecast add --forecast-file - --save-dir="${LAST30DAYS_MEMORY_DIR}" <<'FORECAST_EOF'
 {"topic": "OpenClaw", "predictions": [
-  {"claim": "OpenClaw publishes a stable 2.0 release on GitHub",
-   "probability": 0.7,
-   "resolve_by": "2026-12-09",
-   "resolution": "A non-prerelease v2.0.0 tag is listed on the repository's GitHub releases page",
-   "basis": ["https://github.com/example/openclaw/issues/4821"]},
-  {"claim": "The Polymarket market on an OpenClaw acquisition this year resolves No",
-   "probability": 0.9,
-   "resolve_by": "2026-12-31",
-   "resolution": "The linked Polymarket market resolves No",
-   "basis": ["https://polymarket.com/event/openclaw-acquired-in-2026"],
-   "market": {"url": "https://polymarket.com/event/openclaw-acquired-in-2026", "outcome": "No", "price": 0.86}}
+  {"question": "Q2",
+   "claim": "OpenClaw ships no stable 2.0 release by its roadmap date",
+   "probability": 0.6,
+   "reason": "The release branch still has three open blockers a week out",
+   "baseline": {"status_quo": "No stable 2.0 release ships", "probability": 0.8},
+   "backs": "status_quo",
+   "resolution": {"page": "https://github.com/example/openclaw/releases",
+                  "field": "A non-prerelease v2.0.0 tag is listed"}},
+  {"question": "Q1",
+   "outcome": "No",
+   "claim": "The Polymarket market on an OpenClaw acquisition this year resolves No",
+   "probability": 0.95,
+   "reason": "Both named acquirers publicly walked away this month"}
 ]}
 FORECAST_EOF
 ```
 
-On exit 2 the engine names the failing prediction and writes nothing; fix the file and resubmit once. Never present a prediction as logged unless the engine printed it with an id.
+On exit 2 the engine names the failing prediction and writes nothing; fix the file and resubmit once. An id that is not in the topic's stored list, or a list that has expired, also exits 2: run the topic again first. When the engine prints `Not logged:` (no save directory is in effect, or Next30Days is turned off), show the predictions marked as not logged. Never present a prediction as logged unless the engine printed it with an id.
 
-6. After the research synthesis and its footer, present the forecast under the prose label `Next 30 days:` as a numbered list. Each item gives the claim, the probability as a percentage, the resolve date, one sentence of reasoning tied to cited evidence, and the market price when anchored. Follow it with the scorecard's hit rate and Brier lines when the ledger already has graded calls, then one line saying these are logged and will be graded on their dates. The root output laws still apply: no em or en dashes, no `##` headers.
+6. After the research synthesis and its footer, present the forecast under the prose label `Next 30 days:` as a numbered list. Each item gives the claim, the probability as a percentage, the resolve date, the baseline, and one sentence of reasoning tied to cited evidence. Follow it with the scorecard's hit rate and Brier lines when the ledger already has graded calls, then one line saying these are logged and will be graded on their dates. The root output laws still apply: no em or en dashes, no `##` headers.
 
 ## Rehearsal: forecast the reception of the user's own draft
 
@@ -92,7 +92,7 @@ Read this section for launch-rehearsal intent: the user supplies something they 
    - **What will work**, on the same evidence standard.
    - **The single change with the most leverage**, stated as an edit to the draft: the objection it removes and the analog thread that shows it.
    - **What the evidence cannot tell you.** Name the venues with thin or no analog evidence and say the rehearsal is silent on them. Analog reactions are evidence about the room, not a guarantee about this launch.
-6. **Offer to put it on the record.** Ask whether to log the rehearsal's predictions so they can be graded after launch. On yes, write them as ordinary forecast predictions using the ledger procedure above, with these differences: the `topic` is a neutral label the user approves (for an unannounced product, a codename, never the real name), ask for the planned launch date when it is unknown and set every `resolve_by` explicitly to a date after it (the 30-day default counts from today and would expire before a later launch; a launch too far out to resolve within the ledger's 90-day limit cannot be logged yet, so say so and offer to log it closer to the date), each `claim` describes an observable outcome within 30 days of that launch date ("the top-voted comment on the launch thread raises pricing"), and `basis` holds the analog comment URLs. Never log a prediction about reception without the user's yes.
+6. **Offer to put it on the record.** Ask whether to log the rehearsal's predictions so they can be graded after launch. On yes, log them with `forecast add` as a rehearsal file: `"kind": "rehearsal"` beside `topic`, no `question`, and each prediction carrying `claim`, `probability`, `resolve_by`, `resolution` (the observable test, as one sentence), and `basis`. The `topic` is a neutral label the user approves (for an unannounced product, a codename, never the real name), ask for the planned launch date when it is unknown and set every `resolve_by` explicitly to a date after it (the 30-day default counts from today and would expire before a later launch; a launch too far out to resolve within the ledger's 90-day limit cannot be logged yet, so say so and offer to log it closer to the date), each `claim` describes an observable outcome within 30 days of that launch date ("the top-voted comment on the launch thread raises pricing"), and `basis` holds 1 to 6 analog comment URLs. Never log a prediction about reception without the user's yes.
 
 Be direct about weaknesses; a rehearsal that flatters is worthless. Criticize the draft, never the person, and do not invent hostility the analog threads do not show.
 

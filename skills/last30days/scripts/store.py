@@ -273,6 +273,24 @@ CREATE TABLE IF NOT EXISTS forecasts (
 CREATE INDEX IF NOT EXISTS idx_forecasts_open_due
     ON forecasts(verdict, resolve_by);
 """,
+    # Predictions bind to an open question and carry the baseline they are
+    # measured against. Rows logged before this keep kind 'legacy': they have
+    # no baseline, so the scorecard cannot score them against one.
+    6: """
+ALTER TABLE forecasts ADD COLUMN kind TEXT NOT NULL DEFAULT 'legacy'
+    CHECK(kind IN ('legacy','question','rehearsal'));
+ALTER TABLE forecasts ADD COLUMN question_key TEXT;
+ALTER TABLE forecasts ADD COLUMN question_kind TEXT;
+ALTER TABLE forecasts ADD COLUMN baseline_kind TEXT
+    CHECK(baseline_kind IN ('market','status_quo'));
+ALTER TABLE forecasts ADD COLUMN baseline_outcome TEXT;
+ALTER TABLE forecasts ADD COLUMN baseline_probability REAL;
+ALTER TABLE forecasts ADD COLUMN reason TEXT;
+ALTER TABLE forecasts ADD COLUMN resolution_url TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_forecasts_open_question
+    ON forecasts(normalized_topic, question_key)
+    WHERE verdict IS NULL AND question_key IS NOT NULL;
+""",
 }
 
 
@@ -1175,30 +1193,66 @@ def mark_discovery_covered(name: str, as_of: str) -> Optional[Dict[str, Any]]:
 # scorecard worth reading, so no update/delete helper exists here on purpose.
 
 
+def _same_forecast_topic(name: str, other: str) -> bool:
+    """Whether two topic names refer to one subject, by the discovery queue's
+    rule (see match_discovery_topic), so "OpenClaw agent" finds "OpenClaw"."""
+    if dedupe.normalize_text(name) == dedupe.normalize_text(other):
+        return True
+    overlap = max(
+        entity_extract.entity_overlap(
+            entity_extract.extract_text_entities(name),
+            entity_extract.extract_text_entities(other),
+        ),
+        entity_extract.entity_overlap(
+            _discovery_anchor_entities(name), _discovery_anchor_entities(other)
+        ),
+    )
+    return overlap >= DISCOVERY_QUEUE_OVERLAP_THRESHOLD
+
+
 def add_forecast(row: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
     """Insert one validated prediction. Returns (row, created).
 
-    A retry of the same topic + claim + resolve-by returns the existing row
-    with ``created`` False instead of logging a duplicate (or silently
-    replacing the original probability).
+    A question takes one open call per topic: when the row's question key
+    already has an open call under this topic or a renamed form of it, that
+    call is returned with ``created`` False and nothing is logged. A retry of
+    the same topic + claim + resolve-by likewise returns the existing row
+    instead of logging a duplicate (or silently replacing the original
+    probability). The check and the insert share one write transaction, so
+    two concurrent adds on a question log one row.
     """
     init_db()
     normalized_topic = dedupe.normalize_text(row["topic"])
     normalized_claim = dedupe.normalize_text(row["claim"])
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if row.get("question_key"):
+            for open_call in conn.execute(
+                """SELECT * FROM forecasts
+                   WHERE question_key = ? AND verdict IS NULL ORDER BY id""",
+                (row["question_key"],),
+            ).fetchall():
+                if _same_forecast_topic(row["topic"], open_call["topic"]):
+                    conn.rollback()
+                    return _forecast_row(open_call), False
         cursor = conn.execute(
             """INSERT OR IGNORE INTO forecasts
                (topic, normalized_topic, claim, normalized_claim, probability,
                 created_on, created_at, resolve_by, resolution, basis, market_url,
-                market_outcome, market_price)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                market_outcome, market_price, kind, question_key, question_kind,
+                baseline_kind, baseline_outcome, baseline_probability, reason,
+                resolution_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 row["topic"], normalized_topic, row["claim"], normalized_claim,
                 row["probability"], row["created_on"], row["created_at"], row["resolve_by"],
                 row["resolution"], json.dumps(row["basis"]),
                 row.get("market_url"), row.get("market_outcome"),
-                row.get("market_price"),
+                row.get("market_price"), row["kind"], row.get("question_key"),
+                row.get("question_kind"), row.get("baseline_kind"),
+                row.get("baseline_outcome"), row.get("baseline_probability"),
+                row.get("reason"), row.get("resolution_url"),
             ),
         )
         conn.commit()
@@ -1208,6 +1262,10 @@ def add_forecast(row: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
             (normalized_topic, normalized_claim, row["resolve_by"]),
         ).fetchone()
         return _forecast_row(stored), cursor.rowcount > 0
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
     finally:
         conn.close()
 

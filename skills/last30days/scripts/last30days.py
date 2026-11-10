@@ -3245,33 +3245,59 @@ def _fetch_polymarket_events(event_slug: str) -> object:
     )
 
 
+def _forecast_private_refusal(payload: dict) -> str | None:
+    """Why a forecast submission must not be logged, or None to let it through.
+
+    The one place ``forecast add`` hands the host-written payload to a privacy
+    check before anything is validated or written. A rehearsal's private-terms
+    check plugs in here; with none wired, every payload passes.
+    """
+    return None
+
+
 def _run_forecast(
     args: argparse.Namespace,
     config: dict[str, object],
     command: str,
     topic_filter: str,
 ) -> int:
-    """Next30Days ledger commands: local SQLite, plus Polymarket for settle."""
+    """Next30Days ledger commands: local SQLite, plus Polymarket for settle.
+
+    The ledger lives only in the save directory. With none in effect, no
+    command reads or writes a database anywhere: predictions are never logged
+    to the shared store.
+    """
     import store
     from lib import forecast
 
     today = datetime.date.today()
     db_path = _scoped_store_db(args)
-    read_only = command in ("list", "due", "scorecard")
-    if read_only and not Path(db_path or store.DB_PATH).exists():
-        # Reading must not create a database as a side effect.
-        rows: list[dict] = []
-        return _print_forecast_view(command, rows, today, topic_filter)
 
     if command == "add":
+        if not forecast.enabled(config):
+            print(f"Not logged: Next30Days is turned off ({forecast.CONFIG_KEY}=off).")
+            return 0
         payload = _read_forecast_file(args, command)
         if payload is None:
             return 2
+        refusal = _forecast_private_refusal(payload)
+        if refusal:
+            sys.stderr.write(f"[last30days] forecast add: {refusal}\n")
+            return 2
+        questions = None
+        if payload.get("kind", "question") == "question" and isinstance(payload.get("topic"), str):
+            questions = open_questions.load(payload["topic"], _report_cache_ttl_seconds(config))
         try:
-            new_rows = forecast.validate_predictions(payload, today)
+            new_rows = forecast.validate_predictions(payload, today, questions=questions)
         except forecast.ForecastError as exc:
             sys.stderr.write(f"[last30days] forecast add: {exc}\n")
             return 2
+        if db_path is None:
+            print(
+                "Not logged: no save directory is in effect, so these predictions "
+                "were not written to any ledger."
+            )
+            return 0
         with store.scoped_db(db_path):
             store.ensure_private_db_files()
             results = [store.add_forecast(row) for row in new_rows]
@@ -3287,6 +3313,13 @@ def _run_forecast(
                 repeats, today, "Already in the ledger (kept as first logged, not changed)",
             ))
         return 0
+
+    if db_path is None:
+        print("No forecast ledger: no save directory is in effect, so nothing was read or written.")
+        return 0
+    if command in ("list", "due", "scorecard") and not db_path.exists():
+        # Reading must not create a database as a side effect.
+        return _print_forecast_view(command, [], today, topic_filter)
 
     if command == "grade":
         payload = _read_forecast_file(args, command)

@@ -733,6 +733,16 @@ python3 skills/last30days/scripts/last30days.py queue cover "Gemma 4 chat templa
 
 Both respect `--save-dir` scoping.
 
+### Next30Days predictions (`LAST30DAYS_NEXT30DAYS`)
+
+Next30Days logs predictions about a topic's open questions to a ledger (table `forecasts`) through `forecast add`, so they can be graded later. On by default.
+
+| Var | Effect |
+| --- | --- |
+| `LAST30DAYS_NEXT30DAYS` | Set to `off` to turn predictions off: `forecast add` prints a one-line notice and writes nothing. Any other value (or unset) keeps them on. Works shell-exported or in `.env`. |
+
+**The ledger follows the save directory.** Predictions are logged to `research.db` inside the effective save directory (`--save-dir`, else `LAST30DAYS_MEMORY_DIR`) and nowhere else. When no save directory is in effect (an explicitly empty `--save-dir` or `LAST30DAYS_MEMORY_DIR=`, or a bare engine invocation with neither set), `forecast add` validates the predictions, prints `Not logged:`, and creates no file; the other `forecast` commands report that there is no ledger. The forecast commands never read or write the shared `~/.local/share/last30days/research.db`. `--preflight` lists the ledger under local writes whenever a save directory resolves and predictions are on.
+
 ### Forecast ledger (Next30Days)
 
 Ask `/last30days what happens next with <topic>?` and the skill logs 3-5 dated, falsifiable predictions after its research, then grades them when their dates arrive. `/last30days scorecard` shows the record. Predictions live in table `forecasts` in the same research.db and never leave your machine.

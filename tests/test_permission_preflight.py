@@ -104,7 +104,10 @@ def test_preflight_prefers_definite_save_dir_over_conditional_report_on_save(tmp
         report_on_save_dir=DEFAULT_SAVE_DIR,
     )
 
-    assert preflight["local_writes"] == [{"kind": "report", "path": str(save_dir)}]
+    assert preflight["local_writes"] == [
+        {"kind": "report", "path": str(save_dir)},
+        {"kind": "forecast_ledger", "path": str(save_dir / "research.db")},
+    ]
     assert preflight["conditional_writes"] == []
 
 
@@ -115,7 +118,10 @@ def test_preflight_dedupes_env_save_dir_against_conditional_report_on_save():
         report_on_save_dir=DEFAULT_SAVE_DIR,
     )
 
-    assert preflight["local_writes"] == [{"kind": "report", "path": DEFAULT_SAVE_DIR}]
+    assert preflight["local_writes"] == [
+        {"kind": "report", "path": DEFAULT_SAVE_DIR},
+        {"kind": "forecast_ledger", "path": DEFAULT_SAVE_DIR + "/research.db"},
+    ]
     assert preflight["conditional_writes"] == []
 
 
@@ -396,3 +402,27 @@ def test_preflight_without_templates_keeps_the_ready_shape():
     assert preflight["status"] == "ready"
     assert preflight["action_items"] == []
     assert "Unsubstituted config template" not in permission_preflight.render_text(preflight)
+
+
+def test_preflight_lists_the_forecast_ledger_only_where_predictions_are_logged(tmp_path):
+    save_dir = tmp_path / "reports"
+    ledger = {"kind": "forecast_ledger", "path": str(save_dir / "research.db")}
+
+    saving = permission_preflight.build({}, _diag(), planned_save_dir=str(save_dir))
+    assert ledger in saving["local_writes"]
+    assert f"- forecast_ledger: {save_dir / 'research.db'}" in permission_preflight.render_text(saving)
+
+    configured = permission_preflight.build(
+        {}, _diag(local_writes=[{"kind": "report", "path": str(save_dir)}]),
+    )
+    assert ledger in configured["local_writes"]
+
+    saving_disabled = permission_preflight.build({}, _diag())
+    assert saving_disabled["local_writes"] == []
+    on_request = permission_preflight.build({}, _diag(), report_on_save_dir=str(save_dir))
+    assert on_request["local_writes"] == []
+
+    feature_off = permission_preflight.build(
+        {"LAST30DAYS_NEXT30DAYS": "off"}, _diag(), planned_save_dir=str(save_dir),
+    )
+    assert feature_off["local_writes"] == [{"kind": "report", "path": str(save_dir)}]

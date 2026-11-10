@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from . import env, providers as provider_endpoints
+from . import env, forecast, providers as provider_endpoints
 
 
 ENDPOINT_OVERRIDE_KEYS = {
@@ -88,6 +89,13 @@ def build(
     local_writes = list(diagnose.get("local_writes") or [])
     if planned_save_dir:
         local_writes = [{"kind": "report", "path": str(planned_save_dir)}]
+    if forecast.enabled(config):
+        # Predictions are logged next to the saved research, so the ledger is
+        # written only where a save directory resolves.
+        local_writes += [
+            {"kind": "forecast_ledger", "path": str(Path(str(write.get("path"))) / "research.db")}
+            for write in local_writes if write.get("kind") == "report"
+        ]
     local_writes = _dedupe_writes([dict(write) for write in local_writes])
     local_write_paths = {str(write.get("path") or "") for write in local_writes}
     conditional_writes: list[dict[str, str]] = []

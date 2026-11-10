@@ -634,6 +634,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Discovery topic queue (podcast/X-article pipeline memory). Default
         # ON; the literal value "off" disables queue writes and annotations.
         ('LAST30DAYS_DISCOVERY_QUEUE', None),
+        # Next30Days predictions and their ledger. Default ON; the literal
+        # value "off" disables them (lib/forecast.py reads it).
+        ('LAST30DAYS_NEXT30DAYS', None),
         # Wall-clock budget (seconds) for the deep-tier enrichment batch on
         # the discovery resume leg (--discover --judgments). Read from the
         # resolved config only (pipeline._resume_enrich_budget_seconds);

@@ -1045,7 +1045,7 @@ def test_init_db_reaches_latest_migration_with_discovery_topics_table(temp_db):
     }
     conn.close()
 
-    assert version == 5
+    assert version == 6
     assert table is not None
     assert {
         "id", "name", "normalized_name", "entity_key", "domain",
@@ -1086,7 +1086,7 @@ def test_migration_2_db_upgrades_to_latest_without_data_loss(tmp_path, monkeypat
     store.init_db()
 
     conn = sqlite3.connect(str(db_path))
-    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
+    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 6
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='discovery_topics'"
     ).fetchone() is not None

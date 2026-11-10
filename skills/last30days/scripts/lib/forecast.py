@@ -3,7 +3,8 @@
 The hosting model writes the predictions (it has just read the research);
 this module does the mechanical half that makes them worth trusting:
 
-- validate that every prediction is dated, falsifiable, and grounded in URLs
+- validate that every prediction targets one of the topic's open questions,
+  states a baseline, and says more than that baseline already does
 - enforce the grading rules (a verdict needs evidence, a miss needs the
   deadline to have passed, a verdict is written once)
 - settle market-anchored predictions against resolved Polymarket markets
@@ -23,7 +24,25 @@ import re
 from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
-MAX_PREDICTIONS_PER_ADD = 5
+# Read through env.get_config. Default on; the literal value "off" disables it.
+CONFIG_KEY = "LAST30DAYS_NEXT30DAYS"
+# A question call targets an entry in the topic's open questions. A rehearsal
+# call is about the user's own unreleased draft, so no open question exists
+# for it; it rests on basis links instead.
+KINDS = ("question", "rehearsal")
+MAX_PREDICTIONS_PER_ADD = 2
+# A market call this close to the market's own price on the same outcome only
+# restates it.
+RESTATEMENT_MARKET_MARGIN = 0.05
+# A non-market call on the status-quo outcome above this is a safe call that
+# tells the reader nothing.
+RESTATEMENT_STATUS_QUO_CEILING = 0.85
+# A logged call departs from its baseline when it sits on the other side of
+# even odds, or at least this far from it. Otherwise it agrees.
+EVEN_ODDS = 0.5
+DEPARTURE_MARGIN = 0.15
+MAX_REASON = 280
+MAX_BASELINE_OUTCOME = 200
 MAX_HORIZON_DAYS = 90
 DEFAULT_HORIZON_DAYS = 30
 MIN_PROBABILITY = 0.5
@@ -121,17 +140,169 @@ def parse_market_url(url: str) -> tuple[str, str | None]:
     return match.group(1), match.group(2)
 
 
+def enabled(config: dict[str, Any]) -> bool:
+    """Whether Next30Days is on. Only the literal setting "off" disables it."""
+    return str(config.get(CONFIG_KEY) or "").strip().lower() != "off"
+
+
+def _points(probability: float, baseline: float) -> float:
+    # Rounded so 0.70 against 0.55 is fifteen points, not 0.1499999.
+    return round(abs(probability - baseline), 6)
+
+
+def departs_from_baseline(row: dict[str, Any]) -> bool | None:
+    """Whether a logged call departed from its baseline or agreed with it.
+
+    None when the row has no baseline (a legacy or rehearsal call). Derived
+    from the stored probabilities, which are both stated on the call's own
+    outcome.
+    """
+    baseline = row.get("baseline_probability")
+    if baseline is None:
+        return None
+    probability, baseline = float(row["probability"]), float(baseline)
+    other_side = (probability - EVEN_ODDS) * (baseline - EVEN_ODDS) < 0
+    return other_side or _points(probability, baseline) >= DEPARTURE_MARGIN
+
+
+def _resolve_by(value: _dt.date, today: _dt.date, where: str, field: str = "resolve_by") -> str:
+    if value <= today:
+        raise ForecastError(f"{where}: {field} must be after today ({today.isoformat()})")
+    if (value - today).days > MAX_HORIZON_DAYS:
+        raise ForecastError(
+            f"{where}: {field} is more than {MAX_HORIZON_DAYS} days out; "
+            "this ledger scores near-term calls"
+        )
+    return value.isoformat()
+
+
+def _market_fields(
+    entry: dict[str, Any], question: dict[str, Any], probability: float, where: str,
+) -> dict[str, Any]:
+    """Everything about the market comes from the stored question."""
+    outcomes = [
+        (str(pair[0]), float(pair[1])) for pair in question.get("outcomes") or []
+        if isinstance(pair, (list, tuple)) and len(pair) == 2
+    ]
+    wanted = entry.get("outcome")
+    matches = [
+        pair for pair in outcomes
+        if isinstance(wanted, str) and pair[0].casefold() == wanted.strip().casefold()
+    ]
+    if len(matches) != 1:
+        raise ForecastError(
+            f"{where}: outcome must be one of this market's outcomes "
+            f"({', '.join(label for label, _ in outcomes) or 'none listed'})"
+        )
+    label, price = matches[0]
+    if _points(probability, price) <= RESTATEMENT_MARKET_MARGIN:
+        raise ForecastError(
+            f"{where}: {_pct(probability)} on {label!r} restates the market, which prices "
+            f"it at {_pct(price)}; a call within {round(RESTATEMENT_MARKET_MARGIN * 100)} "
+            "points of the price adds nothing. Show the market's odds as the item to "
+            "watch instead."
+        )
+    market_url = str(question.get("url") or "")
+    try:
+        parse_market_url(market_url)
+    except ForecastError as exc:
+        raise ForecastError(f"{where}: {exc}") from exc
+    return {
+        "resolution": f"The linked Polymarket market resolves {label}",
+        "resolution_url": market_url,
+        "baseline_kind": "market",
+        "baseline_outcome": label,
+        "baseline_probability": price,
+        "market_url": market_url,
+        "market_outcome": label,
+        "market_price": price,
+    }
+
+
+def _status_quo_fields(entry: dict[str, Any], probability: float, where: str) -> dict[str, Any]:
+    baseline = entry.get("baseline")
+    if not isinstance(baseline, dict):
+        raise ForecastError(
+            f"{where}: baseline must state the status-quo outcome and its probability "
+            '({"status_quo": "...", "probability": 0.8})'
+        )
+    status_quo = _text(
+        baseline.get("status_quo"), "baseline.status_quo", where, MAX_BASELINE_OUTCOME,
+    )
+    status_quo_probability = _probability(
+        baseline.get("probability"), "baseline.probability", where, 0.01, MAX_PROBABILITY,
+    )
+    backs = entry.get("backs")
+    if backs not in ("status_quo", "change"):
+        raise ForecastError(
+            f"{where}: backs must be 'status_quo' (the claim is the status-quo outcome) "
+            "or 'change' (the claim is that it breaks)"
+        )
+    if backs == "status_quo" and probability > RESTATEMENT_STATUS_QUO_CEILING:
+        raise ForecastError(
+            f"{where}: {_pct(probability)} on the status-quo outcome restates the "
+            f"baseline; a call above {_pct(RESTATEMENT_STATUS_QUO_CEILING)} that nothing "
+            "changes adds nothing. Show the dated item as the one to watch instead."
+        )
+    resolution = entry.get("resolution")
+    if not isinstance(resolution, dict):
+        raise ForecastError(
+            f"{where}: resolution must give the page that settles the call and the "
+            'field or event on it ({"page": "https://...", "field": "..."})'
+        )
+    return {
+        "resolution": _text(resolution.get("field"), "resolution.field", where, MAX_RESOLUTION),
+        "resolution_url": _http_url(resolution.get("page"), "resolution.page", where),
+        "baseline_kind": "status_quo",
+        "baseline_outcome": status_quo,
+        # Stored on the claim's own outcome, like a market price, so the two
+        # probabilities in a row are always comparable.
+        "baseline_probability": (
+            status_quo_probability if backs == "status_quo"
+            else round(1 - status_quo_probability, 6)
+        ),
+    }
+
+
+def _rehearsal_fields(entry: dict[str, Any], today: _dt.date, where: str) -> dict[str, Any]:
+    if entry.get("resolve_by") is None:
+        resolve_by = today + _dt.timedelta(days=DEFAULT_HORIZON_DAYS)
+    else:
+        resolve_by = _iso_date(entry.get("resolve_by"), "resolve_by", where)
+    resolve_by_text = _resolve_by(resolve_by, today, where)
+    resolution = _text(entry.get("resolution"), "resolution", where, MAX_RESOLUTION)
+    basis_raw = entry.get("basis")
+    if not isinstance(basis_raw, list) or not basis_raw:
+        raise ForecastError(
+            f"{where}: basis must list at least one evidence URL from the research"
+        )
+    if len(basis_raw) > MAX_BASIS_URLS:
+        raise ForecastError(f"{where}: basis accepts at most {MAX_BASIS_URLS} URLs")
+    return {
+        "resolve_by": resolve_by_text,
+        "resolution": resolution,
+        "basis": [_http_url(url, "basis URL", where) for url in basis_raw],
+    }
+
+
 def validate_predictions(
     payload: dict[str, Any],
     today: _dt.date,
     now: _dt.datetime | None = None,
+    *,
+    questions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Turn a host-written forecast file into rows ready for the ledger.
 
-    The whole file is rejected on the first problem: a partial write would
-    leave the host unsure which calls were logged.
+    ``questions`` is the topic's stored open-questions list, or None when it
+    is missing or expired; every call that is not a rehearsal must name one
+    of its ids. The whole file is rejected on the first problem: a partial
+    write would leave the host unsure which calls were logged.
     """
     topic = _text(payload.get("topic"), "topic", "forecast", 200, minimum=2)
+    kind = payload.get("kind", "question")
+    if kind not in KINDS:
+        raise ForecastError(f"forecast: kind must be one of {', '.join(KINDS)}")
     logged_at = (now or _dt.datetime.now(_dt.timezone.utc)).astimezone(_dt.timezone.utc)
     predictions = payload.get("predictions")
     if not isinstance(predictions, list) or not predictions:
@@ -141,8 +312,14 @@ def validate_predictions(
             f"forecast: at most {MAX_PREDICTIONS_PER_ADD} predictions per file; "
             "keep the calls you would stake a reputation on"
         )
+    if kind == "question" and questions is None:
+        raise ForecastError(
+            f"forecast: no open questions are stored for {topic!r}; the topic's research "
+            "run is missing or has expired. Run the topic again, then resubmit."
+        )
+    by_id = {str(question.get("id")): question for question in questions or []}
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[Any] = set()
     for index, entry in enumerate(predictions, start=1):
         where = f"prediction {index}"
         if not isinstance(entry, dict):
@@ -151,61 +328,56 @@ def validate_predictions(
         probability = _probability(
             entry.get("probability"), "probability", where, MIN_PROBABILITY, MAX_PROBABILITY,
         )
-        if entry.get("resolve_by") is None:
-            resolve_by = today + _dt.timedelta(days=DEFAULT_HORIZON_DAYS)
-        else:
-            resolve_by = _iso_date(entry.get("resolve_by"), "resolve_by", where)
-        if resolve_by <= today:
-            raise ForecastError(f"{where}: resolve_by must be after today ({today.isoformat()})")
-        if (resolve_by - today).days > MAX_HORIZON_DAYS:
-            raise ForecastError(
-                f"{where}: resolve_by is more than {MAX_HORIZON_DAYS} days out; "
-                "this ledger scores near-term calls"
-            )
-        resolution = _text(entry.get("resolution"), "resolution", where, MAX_RESOLUTION)
-        basis_raw = entry.get("basis")
-        if not isinstance(basis_raw, list) or not basis_raw:
-            raise ForecastError(
-                f"{where}: basis must list at least one evidence URL from the research"
-            )
-        if len(basis_raw) > MAX_BASIS_URLS:
-            raise ForecastError(f"{where}: basis accepts at most {MAX_BASIS_URLS} URLs")
-        basis = [_http_url(url, "basis URL", where) for url in basis_raw]
-
         row: dict[str, Any] = {
             "topic": topic,
+            "kind": kind,
             "claim": claim,
             "probability": probability,
             "created_on": today.isoformat(),
             "created_at": logged_at.isoformat(timespec="seconds"),
-            "resolve_by": resolve_by.isoformat(),
-            "resolution": resolution,
-            "basis": basis,
+            "basis": [],
+            "reason": None,
+            "question_key": None,
+            "question_kind": None,
+            "resolution_url": None,
+            "baseline_kind": None,
+            "baseline_outcome": None,
+            "baseline_probability": None,
             "market_url": None,
             "market_outcome": None,
             "market_price": None,
         }
-        market = entry.get("market")
-        if market is not None:
-            if not isinstance(market, dict):
-                raise ForecastError(f"{where}: market must be an object")
-            market_url = _http_url(market.get("url"), "market.url", where)
-            try:
-                parse_market_url(market_url)
-            except ForecastError as exc:
-                raise ForecastError(f"{where}: {exc}") from exc
-            row["market_url"] = market_url
-            row["market_outcome"] = _text(
-                market.get("outcome"), "market.outcome", where, 120, minimum=1,
-            )
-            if market.get("price") is not None:
-                row["market_price"] = _probability(
-                    market.get("price"), "market.price", where, 0.0, 1.0,
+        if kind == "rehearsal":
+            row.update(_rehearsal_fields(entry, today, where))
+            identity: Any = (claim.casefold(), row["resolve_by"])
+        else:
+            question_id = entry.get("question")
+            if not isinstance(question_id, str) or not question_id.strip():
+                raise ForecastError(
+                    f"{where}: question must name an open question id from this run's list"
                 )
-        key = (claim.casefold(), row["resolve_by"])
-        if key in seen:
+            question = by_id.get(question_id.strip())
+            if question is None:
+                raise ForecastError(
+                    f"{where}: question {question_id.strip()!r} is not in this topic's open "
+                    f"questions ({', '.join(by_id) or 'the list is empty'})"
+                )
+            row["reason"] = _text(entry.get("reason"), "reason", where, MAX_REASON)
+            row["question_key"] = str(question.get("key"))
+            row["question_kind"] = str(question.get("kind"))
+            # The question's own date is the deadline; the host does not pick one.
+            row["resolve_by"] = _resolve_by(
+                _iso_date(question.get("date"), "the question's date", where),
+                today, where, "the question's date",
+            )
+            if question.get("kind") == "market":
+                row.update(_market_fields(entry, question, probability, where))
+            else:
+                row.update(_status_quo_fields(entry, probability, where))
+            identity = row["question_key"]
+        if identity in seen:
             raise ForecastError(f"{where}: duplicates an earlier prediction in this file")
-        seen.add(key)
+        seen.add(identity)
         rows.append(row)
     return rows
 
@@ -481,11 +653,23 @@ def render_prediction(row: dict[str, Any], today: _dt.date) -> str:
         status = f"OVERDUE (was due {row['resolve_by']})"
     else:
         status = f"open (due {row['resolve_by']})"
+    legacy = (
+        " | legacy call, logged before baselines were recorded"
+        if row.get("kind") == "legacy" else ""
+    )
     lines = [
         f"#{row['id']} [{status}] {_pct(float(row['probability']))} - {row['claim']}",
-        f"    topic: {row['topic']} | logged {row['created_on']}",
+        f"    topic: {row['topic']} | logged {row['created_on']}{legacy}",
         f"    resolves when: {row['resolution']}",
     ]
+    if row.get("baseline_kind") == "status_quo":
+        lines.append(f"    resolution page: {row['resolution_url']}")
+        lines.append(
+            f"    baseline: {_pct(float(row['baseline_probability']))} "
+            f"(status quo: {row['baseline_outcome']})"
+        )
+    if row.get("reason"):
+        lines.append(f"    why: {row['reason']}")
     if row.get("market_url"):
         price = (
             f", market priced it at {_pct(float(row['market_price']))} when logged"
