@@ -15,7 +15,7 @@ ROUTES = {
     "Before synthesizing ordinary or comparison research": ("synthesis",),
     "Explicit comparison intent": ("comparison",),
     "--competitors mode": ("competitors", "comparison"),
-    "Hiring intent or an engine ## Hiring Signals block": ("hiring-signals",),
+    "Hiring intent or an engine ## Hiring Signals or ## Jobs Digest block": ("hiring-signals",),
     "--agent mode or explicit machine-readable JSON": ("agent-mode",),
     "Recommendation intent": ("recommendations",),
     "Identifiable product requires category peers": ("category-peers",),

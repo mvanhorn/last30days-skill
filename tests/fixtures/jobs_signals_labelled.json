@@ -1,0 +1,150 @@
+{
+  "about": "Labelled candidate signals from four company job boards, for the Jobs Page Secret Signals rules in skills/last30days/references/hiring-signals.md. tests lists which of the four tests of the bar a candidate meets (1 out of character, 2 names something concrete, 3 large and hard to undo, 4 bears on a story in the report). public is true when the thing is already publicly announced, false when a web check found nothing, null when it was not checked while labelling. quote is the posting's own words, or null where the label rests on the role or a count. The labels are a person's judgment of saved boards; boards change, so compare a live run by signal, not by exact role.",
+  "boards": [
+    {
+      "company": "Anthropic",
+      "report_story": null,
+      "expected_section": "present",
+      "candidates": [
+        {
+          "role": "Gas Supply and Transport Lead, US and Canada",
+          "quote": "pipeline side of an expansion or greenfield lateral, including the federal, state, or provincial approvals it needed",
+          "tests": [1, 2, 3],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Hardware Systems Architect",
+          "quote": "owns the system-level architecture of that compute, from the package boundary out through boards, racks, interconnect, power, cooling, and the datacenter interface",
+          "tests": [1, 2, 3],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "M&A Tax Director",
+          "quote": "an active and growing pipeline of acquisitions, acqui-hires, data center investments, joint ventures",
+          "tests": [2, 3],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Public Sector Sales Lead, France",
+          "quote": "there is no public sector team in France today",
+          "tests": [1, 2],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Enterprise Account Executive",
+          "quote": null,
+          "tests": [],
+          "public": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "company": "Stripe",
+      "report_story": null,
+      "expected_section": "absent",
+      "candidates": [
+        {
+          "role": "Engineering Manager, Money as a Service (MaaS)",
+          "department": "MaaS APAC",
+          "quote": "Asia-Pacific (APAC) Money as a Service (MaaS) is a newly formed team based in Singapore",
+          "tests": [2, 3],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Account Executive, SMB (Hunter)",
+          "quote": "help build out a new team and go-to-market (GTM) motion",
+          "tests": [],
+          "public": null,
+          "expected": "does not qualify"
+        },
+        {
+          "role": "Fraud Operations Analyst, Bridge, Mexico City",
+          "quote": "launch and manage their own branded stablecoins",
+          "tests": [2],
+          "public": null,
+          "expected": "does not qualify"
+        },
+        {
+          "role": "Business Development Manager, Agentic Commerce",
+          "quote": null,
+          "note": "Open 305 days when the board was saved.",
+          "tests": [],
+          "public": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "company": "SpaceX",
+      "report_story": null,
+      "expected_section": "present",
+      "candidates": [
+        {
+          "role": "Supervisor, Hospitality (Moon Corps)",
+          "department": "Spaceport Operations - Moonbase",
+          "quote": null,
+          "tests": [1, 2, 3],
+          "public": false,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Starmind roles",
+          "quote": "a new constellation of satellites capturing solar energy in space to power low-cost, high-performance AI compute for Earth",
+          "note": "Starmind is publicly announced, so the section may show it only worded as public.",
+          "tests": [1, 2, 3],
+          "public": true,
+          "expected": "qualifies"
+        },
+        {
+          "role": "SpaceXSI roles",
+          "quote": "building Super Intelligence to help humanity understand the universe",
+          "note": "SpaceXSI is the public rename of the AI unit.",
+          "tests": [2],
+          "public": true,
+          "expected": "does not qualify"
+        },
+        {
+          "role": "Sr. Core Integration Engineer, Starlink Mobile",
+          "quote": "for the international expansion strategy for direct to handset",
+          "tests": [2, 3],
+          "public": null,
+          "expected": "qualifies"
+        }
+      ]
+    },
+    {
+      "company": "Nvidia",
+      "report_story": "Washington is questioning Nvidia's China ties after the board opened a probe into its chief executive",
+      "expected_section": "present",
+      "candidates": [
+        {
+          "role": "67 open roles based in China, including a Senior Physical AI Data Engineer in Shanghai",
+          "quote": null,
+          "tests": [4],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Product Management Space Compute MBA Intern",
+          "quote": "make space-based data center class compute competitive and accessible to all customers",
+          "tests": [1, 2],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Senior Account Manager, SI Factory Segment Sales, Global Public Sector",
+          "quote": "Enterprise SI Factory Segment Sales team",
+          "tests": [2],
+          "public": null,
+          "expected": "does not qualify"
+        }
+      ]
+    }
+  ]
+}

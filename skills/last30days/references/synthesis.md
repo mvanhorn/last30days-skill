@@ -52,7 +52,7 @@ The Judge Agent must:
 
 ### Prediction Markets (Polymarket)
 
-**CRITICAL: When Polymarket returns relevant markets, prediction market odds are among the highest-signal data points in your research.** Real money on outcomes cuts through opinion. Treat them as strong evidence, not an afterthought.
+**CRITICAL: When Polymarket returns relevant markets, prediction market odds are among the highest-signal data points in your research.** Real money on outcomes cuts through opinion.
 
 **How to interpret and synthesize Polymarket data:**
 
@@ -62,7 +62,7 @@ The Judge Agent must:
 
 3. **Weave odds into the narrative as supporting evidence.** Don't isolate Polymarket data in its own paragraph. Instead: "Final Four buzz is building - Polymarket gives Arizona a 12% chance to win the championship (up 3% this week), and 28% to earn a #1 seed."
 
-4. **Citation format: show ONLY % odds. NEVER mention dollar volumes, liquidity, or betting amounts.** The % odds are the magic of Polymarket -- the dollar amounts are internal liquidity metrics that mean nothing to readers. Say "Polymarket has Arizona at 28% for a #1 seed (up 10% this month)" -- NOT "28% ($24K volume)". The dollar figure adds zero value and clutters the insight.
+4. **Citation format: show ONLY % odds. NEVER mention dollar volumes, liquidity, or betting amounts.** The % odds are the magic of Polymarket -- the dollar amounts are internal liquidity metrics that mean nothing to readers. Say "Polymarket has Arizona at 28% for a #1 seed (up 10% this month)" -- NOT "28% ($24K volume)".
 
 5. **When multiple relevant markets exist, highlight 3-5 of the most interesting ones** in your synthesis, ordered by importance (structural > near-term). Don't just pick the highest-volume one.
 
@@ -177,8 +177,7 @@ When both a web article and an X post cover the same fact, cite the X post.
 **OK** (web, only when Reddit/X don't have it): "The Hellwatt Festival runs July 4-18 at RCF Arena, per Billboard" (inline-linked on a hidden-link host)
 
 **Lead with people, not publications.** Start each topic with what Reddit/X
-users are saying/feeling, then add web context only if needed. The user came
-here for the conversation, not the press release.
+users are saying/feeling, then add web context only if needed.
 
 **MANDATORY - bold headline per narrative paragraph.** Every paragraph in the "What I learned" section MUST begin with a bolded headline phrase that summarizes the paragraph, followed by ` - ` (a SINGLE HYPHEN with spaces on both sides, NOT an em-dash) and the body text. Pattern: `**Headline phrase** - body text describing what people are saying...`. Without the bold headline, the output is unscannable slop. The headline is report structure: a general style preference alone does not remove it; the root output contract names the cases that do.
 
@@ -208,9 +207,11 @@ Headlines should be specific and newsy ("BULLY dropped and it's dominating", "Eu
 
 **Pitch-vs-pulse beat (company / product / service topics).** If you captured `RESOLVED_POSITIONING` in Step 0.55 AND the month's evidence directly bears on it, work in ONE bold-lead-in paragraph saying how. Three cases qualify: the pulse SUPPORTS a specific claim (e.g. `**"Zero-config" is holding up** - this month's top deploy thread is devs praising the no-setup flow`), CUTS AGAINST one (e.g. `**Stripe's fraud-fighting pitch took a direct hit** - the loudest thread this month, on Hacker News, argues it is friendly to "friendly fraud"`), or the conversation is squarely ABOUT the pitched ground. Always anchor to the real top item, named by where it ran, and keep claims windowed - "this month's conversation" - never trend verbs like "losing the narrative" that one 30-day window cannot support. If the month's conversation is orthogonal to the pitch - on-entity but about something the pitch doesn't speak to - write NOTHING about the pitch; a manufactured connection is worse than silence. Match altitude: test SPECIFIC claims ("zero-config", "fastest", an uptime number) against specific threads; never grade a broad tagline against an individual thread. Keep it a bold-lead-in paragraph, not a `##` section (LAW 4). Skip silently for people (always - the beat can cover MrBeast the company, never Jimmy Donaldson the person), events, abstract concepts, and ownerless topics (Bitcoin), and whenever positioning was not actually fetched this run - never supply a pitch from memory.
 
+**Jobs Page Secret Signals.** When the engine output has a `## Jobs Digest` section, `hiring-signals.md` decides whether this section is written after the last story paragraph and before `KEY PATTERNS from the research:`. Most runs omit it.
+
 **THEN - Quality Nudge (if present in the output):**
 
-If the research output contains a `**🔍 Research Coverage:**` block, render it verbatim right before the stats block. This tells the user which core sources are missing and how to unlock them. Do NOT render this block if it is absent from the output (100% coverage = no nudge).
+If the research output contains a `**🔍 Research Coverage:**` block, render it verbatim right before the stats block. This tells the user which core sources are missing and how to unlock them. If it is absent (100% coverage), render no nudge.
 
 **Optional X omission:** If X was unavailable because no X authentication was configured, finish the useful findings first. The engine emits one short, non-blocking note: `Optional source omitted: X/Twitter was not enabled; research continued with the available sources.` Render that note once if present. Do not repeat it. Do not open a modal, ask another question, recommend a login, or provide cookie/API setup instructions unless the user explicitly asks to enable X. On a Grok Bot host the engine's own X hint (connect X inside Grok Bot, a bearer token, or a credit top-up) is the only guidance; relay it once, unchanged, and the note does not fire at all when the X connector lane served the run.
 
@@ -235,7 +236,7 @@ If the research output does not contain the footer block, skip it and go straigh
 
 **LAST - Invitation (adapt to QUERY_TYPE):**
 
-**CRITICAL: Every invitation MUST include 2-3 specific example suggestions based on what you ACTUALLY learned from the research.** Don't be generic - show the user you absorbed the content by referencing real things from the results.
+**CRITICAL: Every invitation MUST include 2-3 specific example suggestions based on what you ACTUALLY learned from the research.** Don't be generic - reference real things from the results.
 
 **If QUERY_TYPE = PROMPTING:**
 ```
