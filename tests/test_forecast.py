@@ -387,9 +387,38 @@ def test_settle_reports_fetch_failures_instead_of_calling_them_open():
         raise RuntimeError("gamma down")
 
     rows = [_market_row(), _market_row(id=2, verdict="hit"), {"id": 3, "verdict": None, "market_url": None}]
-    settled, unreachable = forecast.settle_open_markets(rows, fetch)
-    assert settled == []
+    settled, unreachable, unchecked = forecast.settle_open_markets(rows, fetch)
+    assert settled == [] and unchecked == []
     assert [(row["id"], reason) for row, reason in unreachable] == [(1, "RuntimeError: gamma down")]
+
+
+def test_settle_asks_for_each_market_event_once():
+    fetch = mock.Mock(return_value=_event())
+    rows = [_market_row(), _market_row(id=2, market_outcome="Yes")]
+    settled, unreachable, unchecked = forecast.settle_open_markets(rows, fetch)
+    fetch.assert_called_once_with(EVENT_SLUG)
+    assert [(row["id"], verdict) for row, verdict, _ in settled] == [(1, "hit"), (2, "miss")]
+
+    down = mock.Mock(side_effect=RuntimeError("gamma down"))
+    _, unreachable, _ = forecast.settle_open_markets(rows, down)
+    down.assert_called_once_with(EVENT_SLUG)
+    assert [row["id"] for row, _ in unreachable] == [1, 2]
+
+
+def test_settle_stops_at_its_deadline_and_returns_what_it_did_not_check():
+    ticks = iter([0.0, 6.0, 12.0])
+    fetch = mock.Mock(return_value=_event())
+    rows = [
+        _market_row(),
+        _market_row(id=2, market_url="https://polymarket.com/event/second-event"),
+        _market_row(id=3, market_url="https://polymarket.com/event/third-event"),
+    ]
+    settled, unreachable, unchecked = forecast.settle_open_markets(
+        rows, fetch, deadline=10.0, clock=lambda: next(ticks),
+    )
+    assert [call.args[0] for call in fetch.call_args_list] == [EVENT_SLUG, "second-event"]
+    assert [row["id"] for row, _, _ in settled] == [1]
+    assert unreachable == [] and [row["id"] for row in unchecked] == [3]
 
 
 # --- scorecard --------------------------------------------------------------------
@@ -399,10 +428,26 @@ def _scored(probability, verdict, **extra):
     return {"probability": probability, "verdict": verdict, "resolve_by": "2026-10-01", **extra}
 
 
+def _against(probability, verdict, baseline, baseline_kind="market", **extra):
+    """A graded question call with a stored baseline on the call's own outcome."""
+    return _scored(
+        probability, verdict, kind="question", baseline_kind=baseline_kind,
+        baseline_probability=baseline, **extra,
+    )
+
+
+DEPARTED = [_against(0.7, "hit", 0.4), _against(0.8, "hit", 0.5), _against(0.7, "miss", 0.45)]
+DEPARTED_SKILL = 1 - ((0.09 + 0.04 + 0.49) / 3) / ((0.36 + 0.25 + 0.2025) / 3)
+
+
+def _card_text(rows):
+    return forecast.render_scorecard(forecast.scorecard(rows, TODAY), TODAY)
+
+
 def test_scorecard_math():
     rows = [
-        _scored(0.9, "hit", market_price=0.6),
-        _scored(0.9, "miss", market_price=0.6),
+        _scored(0.9, "hit"),
+        _scored(0.9, "miss"),
         _scored(0.6, "hit"),
         _scored(0.7, "void"),
         _scored(0.7, None),
@@ -414,16 +459,12 @@ def test_scorecard_math():
     assert card["hit_rate"] == pytest.approx(2 / 3)
     assert card["brier"] == pytest.approx((0.01 + 0.81 + 0.16) / 3)
     assert card["small_sample"] is True
-    assert card["market_count"] == 2
-    assert card["brier_vs_market_ours"] == pytest.approx(0.41)
-    assert card["brier_vs_market_theirs"] == pytest.approx(0.26)
     by_low = {bucket["low"]: bucket for bucket in card["calibration"]}
     assert by_low[0.9]["count"] == 2 and by_low[0.9]["actual"] == 0.5
     text = forecast.render_scorecard(card, TODAY)
     assert "Hit rate: 67% (2 of 3)" in text
     assert "Overdue and ungraded: 1" in text
     assert "Small sample" in text
-    assert "worse than the market" in text
     assert "—" not in text and "–" not in text
 
 
@@ -436,11 +477,70 @@ def test_scorecard_never_invents_a_record():
     assert voided["hit_rate"] is None and voided["brier"] is None
 
 
-def test_market_comparison_wording():
-    better = forecast.scorecard([_scored(0.9, "hit", market_price=0.6)], TODAY)
-    assert "better than the market" in forecast.render_scorecard(better, TODAY)
-    level = forecast.scorecard([_scored(0.9, "hit", market_price=0.9)], TODAY)
-    assert "level with the market" in forecast.render_scorecard(level, TODAY)
+def test_scorecard_leads_with_the_calls_that_departed_from_the_market():
+    card = forecast.scorecard(DEPARTED, TODAY)
+    assert card["departed_market"] == {
+        "graded": 3, "hits": 2, "ours": pytest.approx(0.62 / 3),
+        "baseline": pytest.approx(0.8125 / 3), "skill": pytest.approx(DEPARTED_SKILL),
+    }
+    text = forecast.render_scorecard(card, TODAY)
+    record = text.index("Calls that departed from a market baseline: 2 of 3 right")
+    skill = text.index("Skill against the market: +0.24 (ours 0.207, market 0.271 on Brier")
+    assert record < skill < text.index("Hit rate: 67% (2 of 3)")
+    assert "The market was closer" not in text and "—" not in text and "–" not in text
+
+
+def test_calls_that_agreed_with_the_baseline_are_reported_apart_from_the_headline():
+    agreeing = [_against(0.6, "hit", 0.55), _against(0.6, "miss", 0.55, "status_quo")]
+    card = forecast.scorecard(DEPARTED + agreeing, TODAY)
+    assert card["departed_market"]["skill"] == pytest.approx(DEPARTED_SKILL)
+    assert card["agreed"] == {"graded": 2, "hits": 1}
+    text = forecast.render_scorecard(card, TODAY)
+    assert "Calls that departed from a market baseline: 2 of 3 right" in text
+    assert "Skill against the market: +0.24" in text
+    assert text.index("Skill against the market") < text.index(
+        "Calls that agreed with their baseline: 1 of 2 right"
+    )
+
+
+def test_a_call_against_a_host_stated_baseline_stays_out_of_the_headline_skill():
+    card = forecast.scorecard(DEPARTED + [_against(0.6, "hit", 0.2, "status_quo")], TODAY)
+    assert card["departed_market"]["graded"] == 3
+    assert card["departed_market"]["skill"] == pytest.approx(DEPARTED_SKILL)
+    assert card["departed_status_quo"]["skill"] == pytest.approx(1 - 0.16 / 0.64)
+    text = forecast.render_scorecard(card, TODAY)
+    assert "Skill against the market: +0.24" in text
+    assert (
+        "Calls that departed from a host-stated baseline: 1 of 1 right, skill +0.75 "
+        "(ours 0.160, baseline 0.640 on Brier)"
+    ) in text
+    assert "not part of the market figure" in text
+
+
+def test_legacy_and_rehearsal_calls_are_counted_on_their_own_lines_without_a_skill_figure():
+    legacy = [_scored(0.9, "hit", kind="legacy", market_price=0.6), _scored(0.7, "miss", kind="legacy")]
+    text = _card_text(legacy)
+    assert "Legacy calls (logged before baselines were recorded): 2 logged, 1 of 2 graded right. No skill figure." in text
+    assert "Skill against" not in text and "departed" not in text and "Rehearsal" not in text
+    assert "Hit rate: 50% (1 of 2)" in text
+
+    mixed = _card_text(legacy + [_scored(0.7, "hit", kind="rehearsal"), _scored(0.7, None, kind="rehearsal")])
+    assert "Rehearsal calls: 2 logged, 1 of 1 graded right. No skill figure." in mixed
+    assert "Skill against" not in mixed
+
+
+def test_negative_skill_says_the_market_was_closer():
+    card = forecast.scorecard([_against(0.9, "miss", 0.6), _against(0.9, "hit", 0.6)], TODAY)
+    assert card["departed_market"]["skill"] == pytest.approx(1 - 0.41 / 0.26)
+    text = forecast.render_scorecard(card, TODAY)
+    assert "Skill against the market: -0.58 (ours 0.410, market 0.260 on Brier" in text
+    assert "The market was closer than these calls." in text
+
+
+def test_skill_is_not_computed_against_a_baseline_that_scored_zero():
+    card = forecast.scorecard([_against(0.6, "miss", 0.0)], TODAY)
+    assert card["departed_market"]["skill"] is None
+    assert "Skill against the market: not defined" in forecast.render_scorecard(card, TODAY)
 
 
 # --- store: append-only ledger ------------------------------------------------------
@@ -496,6 +596,24 @@ def test_open_call_is_found_under_a_renamed_topic_but_not_an_unrelated_one(ledge
     assert created and other["id"] != first["id"]
 
 
+def test_open_calls_are_read_back_under_a_renamed_topic(ledger):
+    [row] = _validate({**_payload(), "topic": "OpenClaw"})
+    first, _ = store.add_forecast(row)
+    other, _ = store.add_forecast({**row, "topic": "Widget Co"})
+    assert [r["id"] for r in store.list_open_forecasts("OpenClaw agent")] == [first["id"]]
+    assert [r["id"] for r in store.list_open_forecasts("openclaw")] == [first["id"]]
+    assert [r["id"] for r in store.list_open_forecasts()] == [first["id"], other["id"]]
+    assert store.list_open_forecasts("Something Else Entirely") == []
+    # An exact-topic read keeps its meaning.
+    assert store.list_forecasts("OpenClaw agent") == []
+
+    store.grade_forecasts(
+        [{"id": first["id"], "verdict": "hit", "evidence_url": "https://example.com/proof"}],
+        "2026-11-20", "host",
+    )
+    assert store.list_open_forecasts("OpenClaw agent") == []
+
+
 def test_rehearsal_retry_returns_the_first_logged_call(ledger):
     [row] = _validate(_rehearsal())
     stored, created = store.add_forecast(row)
@@ -549,7 +667,9 @@ def test_list_view_shows_the_baseline_and_the_reason(ledger):
 
 def test_ledger_has_no_edit_or_delete_surface():
     names = {name for name in dir(store) if "forecast" in name and not name.startswith("_")}
-    assert names == {"add_forecast", "get_forecast", "list_forecasts", "grade_forecasts"}
+    assert names == {
+        "add_forecast", "get_forecast", "list_forecasts", "list_open_forecasts", "grade_forecasts",
+    }
 
 
 # --- engine commands ------------------------------------------------------------------
@@ -656,7 +776,11 @@ def test_add_settle_grade_scorecard_round_trip(monkeypatch, capsys, tmp_path, co
     rc, out, _ = _run(monkeypatch, capsys, ["forecast", "list", "Widget", "Co", *save])
     assert rc == 0 and "Forecast ledger for 'Widget Co' (2)" in out
     rc, out, _ = _run(monkeypatch, capsys, ["forecast", "scorecard", *save])
-    assert rc == 0 and "Against the market" in out
+    assert rc == 0
+    # The release call left its stated status quo; the market call stayed near the price.
+    assert "Calls that departed from a host-stated baseline: 1 of 1 right" in out
+    assert "Calls that agreed with their baseline: 1 of 1 right" in out
+    assert "Skill against the market" not in out
 
 
 def test_settle_outage_is_reported_and_leaves_the_call_open(monkeypatch, capsys, tmp_path, config_dir):
@@ -799,6 +923,12 @@ def test_without_a_save_directory_nothing_is_logged_anywhere(monkeypatch, capsys
         with mock.patch.object(cli, "_fetch_polymarket_events", side_effect=AssertionError("network")):
             rc, out, _ = _run(monkeypatch, capsys, ["forecast", command, *save_args])
         assert rc == 0 and out.strip().startswith("No forecast ledger:")
+    # Submitted verdicts that were not written are a failure, not a notice.
+    grades = json.dumps({"grades": [{"id": 1, "verdict": "hit", "evidence_url": "https://example.com/x"}]})
+    rc, out, _ = _run(
+        monkeypatch, capsys, ["forecast", "grade", "--forecast-file", "-", *save_args], stdin=grades,
+    )
+    assert rc == 2 and out.strip().startswith("No forecast ledger:")
     assert not list(tmp_path.rglob("*.db*"))
     assert list(workdir.iterdir()) == []
 

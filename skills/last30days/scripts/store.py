@@ -1308,6 +1308,27 @@ def list_forecasts(topic: Optional[str] = None) -> List[Dict[str, Any]]:
         conn.close()
 
 
+def list_open_forecasts(topic: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Ungraded predictions, oldest first, optionally limited to one subject.
+
+    Unlike ``list_forecasts``, ``topic`` matches by subject (see
+    ``_same_forecast_topic``), so a run on "OpenClaw agent" finds the calls
+    logged under "OpenClaw".
+    """
+    init_db()
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM forecasts WHERE verdict IS NULL ORDER BY id"
+        ).fetchall()
+        return [
+            _forecast_row(r) for r in rows
+            if not topic or _same_forecast_topic(topic, r["topic"])
+        ]
+    finally:
+        conn.close()
+
+
 class ForecastGradeConflict(Exception):
     """A prediction in a grade batch could not take a verdict."""
 

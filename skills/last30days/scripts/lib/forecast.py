@@ -8,8 +8,9 @@ this module does the mechanical half that makes them worth trusting:
 - enforce the grading rules (a verdict needs evidence, a miss needs the
   deadline to have passed, a verdict is written once)
 - settle market-anchored predictions against resolved Polymarket markets
-- compute the scorecard: hit rate, Brier score, calibration, and how the
-  same calls scored against the market price at the time
+- compute the scorecard: skill against each call's stored baseline, hit
+  rate, Brier score, and calibration
+- assemble the Earlier Calls a repeat run on a topic shows
 
 Nothing here talks to SQLite. ``store.py`` owns persistence and the engine
 entry point glues the two together, so every function below is a pure
@@ -21,6 +22,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+import time
 from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
@@ -56,6 +58,8 @@ MAX_PAYLOAD_BYTES = 256_000
 # Below this many graded calls the hit rate is an anecdote, not a track
 # record; the scorecard says so instead of printing a confident percentage.
 MIN_SAMPLE = 10
+# How long a research run may spend settling the topic's earlier market calls.
+SETTLE_BUDGET_SECONDS = 10.0
 VERDICTS = ("hit", "miss", "void")
 # A resolved binary market prices its winner at 1 and its loser at 0. The
 # margins absorb float noise without mistaking a 50/50 refund for a result.
@@ -558,28 +562,96 @@ def settle_from_event(row: dict[str, Any], events: Any) -> tuple[str, str] | Non
 def settle_open_markets(
     rows: Iterable[dict[str, Any]],
     fetch_events: Callable[[str], Any],
-) -> tuple[list[tuple[dict[str, Any], str, str]], list[tuple[dict[str, Any], str]]]:
-    """Check every open market-anchored prediction.
+    *,
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[
+    list[tuple[dict[str, Any], str, str]],
+    list[tuple[dict[str, Any], str]],
+    list[dict[str, Any]],
+]:
+    """Check every open market-anchored prediction, one request per event.
 
-    Returns (settled, unreachable). A fetch failure is reported, never
-    swallowed into "still open", so an outage is not mistaken for a market
-    that has not resolved.
+    Returns (settled, unreachable, unchecked). A fetch failure is reported,
+    never swallowed into "still open", so an outage is not mistaken for a
+    market that has not resolved. ``deadline`` is a ``clock`` reading after
+    which no further event is requested; the predictions left over come back
+    as unchecked.
     """
     settled: list[tuple[dict[str, Any], str, str]] = []
     unreachable: list[tuple[dict[str, Any], str]] = []
+    unchecked: list[dict[str, Any]] = []
+    # event slug -> (events, None) or (None, failure); None once out of time.
+    fetched: dict[str, tuple[Any, str | None] | None] = {}
     for row in rows:
         if row.get("verdict") or not row.get("market_url"):
             continue
         event_slug, _ = parse_market_url(row["market_url"])
-        try:
-            events = fetch_events(event_slug)
-        except Exception as exc:  # network, HTTP, or decode failure
-            unreachable.append((row, f"{type(exc).__name__}: {exc}"))
+        if event_slug not in fetched:
+            if deadline is not None and clock() >= deadline:
+                fetched[event_slug] = None
+            else:
+                try:
+                    fetched[event_slug] = (fetch_events(event_slug), None)
+                except Exception as exc:  # network, HTTP, or decode failure
+                    fetched[event_slug] = (None, f"{type(exc).__name__}: {exc}")
+        result = fetched[event_slug]
+        if result is None:
+            unchecked.append(row)
             continue
-        result = settle_from_event(row, events)
-        if result is not None:
-            settled.append((row, result[0], result[1]))
-    return settled, unreachable
+        events, failure = result
+        if failure is not None:
+            unreachable.append((row, failure))
+            continue
+        verdict = settle_from_event(row, events)
+        if verdict is not None:
+            settled.append((row, verdict[0], verdict[1]))
+    return settled, unreachable, unchecked
+
+
+# --- earlier calls ----------------------------------------------------------
+
+
+def earlier_calls(
+    open_rows: list[dict[str, Any]],
+    graded: dict[int, dict[str, Any]],
+    today: _dt.date,
+    *,
+    other_due: int = 0,
+    warnings: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    """What a repeat run shows about the topic's earlier predictions.
+
+    ``open_rows`` are the topic's calls that were open when the run began and
+    ``graded`` holds the ones this run settled, by id. Returns plain data for
+    the report's artifacts, or None when there is nothing to show.
+    """
+    calls = []
+    for row in open_rows:
+        row = graded.get(row["id"], row)
+        if row.get("verdict"):
+            status = row["verdict"]
+        elif _dt.date.fromisoformat(row["resolve_by"]) <= today:
+            status = "due"
+        else:
+            status = "open"
+        calls.append({
+            "id": row["id"],
+            "status": status,
+            "claim": row["claim"],
+            "probability": float(row["probability"]),
+            "created_on": row["created_on"],
+            "resolve_by": row["resolve_by"],
+            "resolution": row.get("resolution"),
+            "resolution_url": row.get("resolution_url"),
+            "market_url": row.get("market_url"),
+            "reason": row.get("reason"),
+            "note": row.get("note"),
+        })
+    notes = [str(warning) for warning in warnings]
+    if not calls and not other_due:
+        return None
+    return {"calls": calls, "warnings": notes, "other_due": other_due}
 
 
 # --- scorecard --------------------------------------------------------------
@@ -595,10 +667,42 @@ def is_overdue(row: dict[str, Any], today: _dt.date) -> bool:
     return not row.get("verdict") and _dt.date.fromisoformat(row["resolve_by"]) < today
 
 
+def _outcome_pairs(rows: list[dict[str, Any]], field: str) -> list[tuple[float, int]]:
+    return [(float(r[field]), 1 if r["verdict"] == "hit" else 0) for r in rows]
+
+
+def _record(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"graded": len(rows), "hits": sum(1 for r in rows if r["verdict"] == "hit")}
+
+
+def _skill(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Record and Brier skill of graded calls against their stored baselines.
+
+    Skill is 1 - ours / baseline: above zero the calls beat the baseline,
+    below zero the baseline was closer. None when the baseline scored a
+    perfect zero, which leaves nothing to be measured against.
+    """
+    ours = _brier(_outcome_pairs(rows, "probability"))
+    baseline = _brier(_outcome_pairs(rows, "baseline_probability"))
+    return {
+        **_record(rows),
+        "ours": ours,
+        "baseline": baseline,
+        "skill": (1 - ours / baseline) if rows and baseline else None,
+    }
+
+
+def _kind_count(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "total": len(rows),
+        **_record([r for r in rows if r.get("verdict") in ("hit", "miss")]),
+    }
+
+
 def scorecard(rows: list[dict[str, Any]], today: _dt.date) -> dict[str, Any]:
     graded = [r for r in rows if r.get("verdict") in ("hit", "miss")]
     hits = sum(1 for r in graded if r["verdict"] == "hit")
-    pairs = [(float(r["probability"]), 1 if r["verdict"] == "hit" else 0) for r in graded]
+    pairs = _outcome_pairs(graded, "probability")
     buckets = []
     for low, high in CALIBRATION_BUCKETS:
         members = [(p, o) for p, o in pairs if low <= p < high]
@@ -611,13 +715,18 @@ def scorecard(rows: list[dict[str, Any]], today: _dt.date) -> dict[str, Any]:
             "predicted": sum(p for p, _ in members) / len(members),
             "actual": sum(o for _, o in members) / len(members),
         })
-    priced = [r for r in graded if r.get("market_price") is not None]
-    market_pairs = [
-        (float(r["market_price"]), 1 if r["verdict"] == "hit" else 0) for r in priced
+    # A rehearsal call has no baseline by design; any other call without one
+    # was logged before baselines were recorded.
+    rehearsal = [r for r in rows if r.get("kind") == "rehearsal"]
+    legacy = [
+        r for r in rows
+        if r.get("kind") != "rehearsal" and r.get("baseline_probability") is None
     ]
-    our_priced_pairs = [
-        (float(r["probability"]), 1 if r["verdict"] == "hit" else 0) for r in priced
+    measured = [
+        r for r in graded
+        if r.get("kind") != "rehearsal" and r.get("baseline_probability") is not None
     ]
+    departed = [r for r in measured if departs_from_baseline(r)]
     return {
         "total": len(rows),
         "open": sum(1 for r in rows if not r.get("verdict")),
@@ -629,9 +738,17 @@ def scorecard(rows: list[dict[str, Any]], today: _dt.date) -> dict[str, Any]:
         "hit_rate": (hits / len(graded)) if graded else None,
         "brier": _brier(pairs),
         "calibration": buckets,
-        "market_count": len(priced),
-        "brier_vs_market_ours": _brier(our_priced_pairs),
-        "brier_vs_market_theirs": _brier(market_pairs),
+        # The headline. A market price is a baseline nobody chose; a host-stated
+        # status quo is one the forecaster picked, so it is scored apart.
+        "departed_market": _skill(
+            [r for r in departed if r.get("baseline_kind") == "market"]
+        ),
+        "departed_status_quo": _skill(
+            [r for r in departed if r.get("baseline_kind") != "market"]
+        ),
+        "agreed": _record([r for r in measured if not departs_from_baseline(r)]),
+        "legacy": _kind_count(legacy),
+        "rehearsal": _kind_count(rehearsal),
         "small_sample": len(graded) < MIN_SAMPLE,
     }
 
@@ -690,6 +807,28 @@ def render_list(rows: list[dict[str, Any]], today: _dt.date, heading: str) -> st
     return "\n".join([f"{heading} ({len(rows)}):", ""] + [render_prediction(r, today) for r in rows])
 
 
+def _skill_text(group: dict[str, Any], baseline_label: str) -> str:
+    scores = f"(ours {group['ours']:.3f}, {baseline_label} {group['baseline']:.3f} on Brier)"
+    if group["skill"] is None:
+        return f"not defined {scores}"
+    return f"{group['skill']:+.2f} {scores}"
+
+
+def _kind_lines(card: dict[str, Any]) -> list[str]:
+    lines = []
+    for key, label in (
+        ("legacy", "Legacy calls (logged before baselines were recorded)"),
+        ("rehearsal", "Rehearsal calls"),
+    ):
+        group = card[key]
+        if group["total"]:
+            lines.append(
+                f"{label}: {group['total']} logged, {group['hits']} of "
+                f"{group['graded']} graded right. No skill figure."
+            )
+    return lines
+
+
 def render_scorecard(card: dict[str, Any], today: _dt.date) -> str:
     lines = [f"Next30Days scorecard - as of {today.isoformat()}", ""]
     if card["total"] == 0:
@@ -706,19 +845,49 @@ def render_scorecard(card: dict[str, Any], today: _dt.date) -> str:
         )
     if not card["graded"]:
         lines.append("Nothing graded yet, so there is no track record to report.")
+        lines.extend(_kind_lines(card))
         return "\n".join(lines)
-    lines.append(
-        f"Hit rate: {_pct(card['hit_rate'])} ({card['hits']} of {card['graded']})"
-    )
-    lines.append(
-        f"Brier score: {card['brier']:.3f} (0 is perfect; 0.250 is what always "
-        "saying 50% scores)"
-    )
     if card["small_sample"]:
         lines.append(
             f"Small sample: fewer than {MIN_SAMPLE} graded calls. Treat this as "
             "an early read, not a track record."
         )
+    market, status_quo, agreed = (
+        card["departed_market"], card["departed_status_quo"], card["agreed"],
+    )
+    if market["graded"]:
+        lines.extend([
+            "",
+            f"Calls that departed from a market baseline: {market['hits']} of "
+            f"{market['graded']} right",
+            f"Skill against the market: {_skill_text(market, 'market')}. Above 0 "
+            "beats the market's price at logging.",
+        ])
+        if market["skill"] is not None and market["skill"] < 0:
+            lines.append("The market was closer than these calls.")
+    if status_quo["graded"]:
+        lines.extend([
+            "",
+            f"Calls that departed from a host-stated baseline: {status_quo['hits']} of "
+            f"{status_quo['graded']} right, skill {_skill_text(status_quo, 'baseline')}. "
+            "The forecaster chose this baseline, so it is not part of the market figure.",
+        ])
+    if agreed["graded"]:
+        lines.extend([
+            "",
+            f"Calls that agreed with their baseline: {agreed['hits']} of "
+            f"{agreed['graded']} right. Not counted in either skill figure.",
+        ])
+    kind_lines = _kind_lines(card)
+    if kind_lines:
+        lines.extend(["", *kind_lines])
+    lines.extend([
+        "",
+        "All graded calls:",
+        f"Hit rate: {_pct(card['hit_rate'])} ({card['hits']} of {card['graded']})",
+        f"Brier score: {card['brier']:.3f} (0 is perfect; 0.250 is what always "
+        "saying 50% scores)",
+    ])
     if card["calibration"]:
         lines.extend(["", "Calibration (said vs happened):"])
         for bucket in card["calibration"]:
@@ -727,18 +896,4 @@ def render_scorecard(card: dict[str, Any], today: _dt.date) -> str:
                 f"said {_pct(bucket['predicted'])}, happened {_pct(bucket['actual'])} "
                 f"(n={bucket['count']})"
             )
-    if card["market_count"]:
-        ours, theirs = card["brier_vs_market_ours"], card["brier_vs_market_theirs"]
-        if ours < theirs:
-            verdict = "better than the market"
-        elif ours > theirs:
-            verdict = "worse than the market"
-        else:
-            verdict = "level with the market"
-        lines.extend([
-            "",
-            f"Against the market (graded calls with a Polymarket price at "
-            f"logging: {card['market_count']}): ours {ours:.3f}, market {theirs:.3f} "
-            f"- {verdict} on Brier.",
-        ])
     return "\n".join(lines)

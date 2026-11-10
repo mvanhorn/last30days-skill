@@ -15,6 +15,7 @@ import re
 import signal
 import sqlite3
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -3236,13 +3237,128 @@ def _read_forecast_file(args: argparse.Namespace, command: str) -> dict | None:
         return None
 
 
-def _fetch_polymarket_events(event_slug: str) -> object:
+def _fetch_polymarket_events(
+    event_slug: str, *, deadline_monotonic: float | None = None,
+) -> object:
     from lib import http, polymarket
 
     return http.request(
         "GET", polymarket.GAMMA_EVENTS_URL, params={"slug": event_slug},
-        timeout=10, retries=2,
+        timeout=10, retries=2, deadline_monotonic=deadline_monotonic,
     )
+
+
+def _settle_and_record(
+    open_rows: list[dict], today: datetime.date, *, deadline: float | None = None,
+) -> tuple[list[dict], list[tuple[dict, str]], list[dict]]:
+    """Settle open market-anchored predictions and write each verdict once.
+
+    Returns (graded rows, unreachable, unchecked). Runs inside the caller's
+    ``store.scoped_db``.
+    """
+    import store
+    from lib import forecast
+
+    settled, unreachable, unchecked = forecast.settle_open_markets(
+        open_rows,
+        (lambda slug: _fetch_polymarket_events(slug, deadline_monotonic=deadline))
+        if deadline is not None else _fetch_polymarket_events,
+        deadline=deadline,
+    )
+    graded = []
+    for row, verdict, note in settled:
+        # One prediction per transaction: each market verdict stands
+        # alone, so a call graded concurrently is skipped, not fatal.
+        try:
+            graded.extend(store.grade_forecasts(
+                [{"id": row["id"], "verdict": verdict,
+                  "evidence_url": row["market_url"], "note": note}],
+                today.isoformat(), "market",
+            ))
+        except store.ForecastGradeConflict:
+            continue
+    return graded, unreachable, unchecked
+
+
+def _note_earlier_calls(
+    report: schema.Report,
+    topic: str,
+    args: argparse.Namespace,
+    config: dict[str, object],
+    budget_seconds: float,
+) -> None:
+    import store
+    from lib import forecast
+
+    db_path = _scoped_store_db(args)
+    # No save directory means no ledger, and reading must not create one.
+    if db_path is None or not forecast.enabled(config) or not db_path.exists():
+        return
+    today = datetime.date.today()
+    graded: list[dict] = []
+    warnings: list[str] = []
+    with store.scoped_db(db_path):
+        all_open = store.list_open_forecasts()
+        topic_rows = store.list_open_forecasts(topic)
+        market_rows = [row for row in topic_rows if row.get("market_url")]
+        if market_rows and not args.mock:
+            graded, unreachable, unchecked = _settle_and_record(
+                market_rows, today, deadline=time.monotonic() + budget_seconds,
+            )
+            warnings.extend(
+                f"could not check prediction #{row['id']} against its market "
+                f"({reason}); it stays open."
+                for row, reason in unreachable
+            )
+            if unchecked:
+                warnings.append(
+                    f"the time allowed for settling ran out with {len(unchecked)} market "
+                    f"prediction{'s' if len(unchecked) != 1 else ''} unchecked; "
+                    f"{'they stay' if len(unchecked) != 1 else 'it stays'} open."
+                )
+    topic_ids = {row["id"] for row in topic_rows}
+    data = forecast.earlier_calls(
+        topic_rows, {row["id"]: row for row in graded}, today,
+        other_due=sum(
+            1 for row in all_open
+            if row["id"] not in topic_ids
+            and datetime.date.fromisoformat(row["resolve_by"]) <= today
+        ),
+        warnings=warnings,
+    )
+    if data is not None:
+        report.artifacts["earlier_calls"] = data
+
+
+def _note_earlier_calls_safely(
+    report: schema.Report,
+    topic: str,
+    args: argparse.Namespace,
+    config: dict[str, object],
+    *,
+    budget_seconds: float | None = None,
+) -> None:
+    """Store what happened to the topic's earlier predictions in the report.
+
+    Reads the save directory's ledger, settles the topic's market-anchored
+    calls within ``budget_seconds`` (a caller sharing one ceiling across
+    passes hands in its share), and leaves the result in
+    ``report.artifacts["earlier_calls"]`` for the renderer. A broken ledger
+    or any other failure degrades to a stderr warning: this must never
+    destroy a finished research run.
+    """
+    from lib import forecast
+
+    try:
+        _note_earlier_calls(
+            report, topic, args, config,
+            forecast.SETTLE_BUDGET_SECONDS if budget_seconds is None else budget_seconds,
+        )
+    except Exception as exc:
+        sys.stderr.write(
+            f"[last30days] Warning: earlier predictions unavailable ({exc}); "
+            "continuing without them.\n"
+        )
 
 
 def _forecast_private_refusal(payload: dict) -> str | None:
@@ -3316,7 +3432,8 @@ def _run_forecast(
 
     if db_path is None:
         print("No forecast ledger: no save directory is in effect, so nothing was read or written.")
-        return 0
+        # Submitted verdicts that were not written are a failure, not a notice.
+        return 2 if command == "grade" else 0
     if command in ("list", "due", "scorecard") and not db_path.exists():
         # Reading must not create a database as a side effect.
         return _print_forecast_view(command, [], today, topic_filter)
@@ -3365,21 +3482,7 @@ def _run_forecast(
                 row for row in store.list_forecasts()
                 if not row.get("verdict") and row.get("market_url")
             ]
-            settled, unreachable = forecast.settle_open_markets(
-                open_rows, _fetch_polymarket_events,
-            )
-            graded = []
-            for row, verdict, note in settled:
-                # One prediction per transaction: each market verdict stands
-                # alone, so a call graded concurrently is skipped, not fatal.
-                try:
-                    graded.extend(store.grade_forecasts(
-                        [{"id": row["id"], "verdict": verdict,
-                          "evidence_url": row["market_url"], "note": note}],
-                        today.isoformat(), "market",
-                    ))
-                except store.ForecastGradeConflict:
-                    continue
+            graded, unreachable, _ = _settle_and_record(open_rows, today)
         print(
             f"Checked {len(open_rows)} open market-anchored prediction(s): "
             f"{len(graded)} settled, {len(unreachable)} unreachable, "
@@ -5063,6 +5166,10 @@ def _main(
             report, config=config, mock=args.mock,
             web_backend=args.web_backend, subreddits=subreddits,
         )
+    if _open_questions_apply(args):
+        # Same runs as the Open Questions list, and stored before the cache
+        # write so a cached re-render shows the same block.
+        _note_earlier_calls_safely(report, original_topic, args, config)
     if _open_questions_apply(args):
         # Stored before the cache write so a cached re-render keeps the same
         # ids, and in the topic's own file because the report cache holds only
