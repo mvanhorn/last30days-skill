@@ -16,7 +16,8 @@ def response(payload):
     return result
 
 
-def run_discovery(monkeypatch, *, recovery=None, statuses=(401, 429), cancel=None, primary_failure=None):
+def run_discovery(monkeypatch, *, recovery=None, statuses=(401, 429), cancel=None, primary_failure=None,
+                  primary_failure_body=None):
     reel = {"id": "recovered", "shortcode": "RECOVERED", "taken_at": "2026-08-16T12:00:00Z",
             "video_play_count": 10, "owner": {"username": "creator"}}
     queries = ["first", "second"] if recovery != "creator" else ["first"]
@@ -28,7 +29,10 @@ def run_discovery(monkeypatch, *, recovery=None, statuses=(401, 429), cancel=Non
             return response({"reels": [reel]})
         if url.path.endswith("/reels/search"):
             if primary_failure and query["query"][0] == "first":
-                raise urllib.error.HTTPError(request.full_url, primary_failure, "Error", {}, io.BytesIO(b"{}"))
+                body = primary_failure_body if primary_failure_body is not None else {}
+                raise urllib.error.HTTPError(
+                    request.full_url, primary_failure, "Error", {}, io.BytesIO(json.dumps(body).encode())
+                )
             recovered = query["query"][0] == recovery
             return response({"reels": [reel] if recovered else []})
         assert url.path.endswith("/google/search")
@@ -106,3 +110,15 @@ def test_primary_or_composite_timeout_is_not_masked_by_later_discovery_network_f
     assert items == []
     assert "408" in result["error"]
     assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+
+
+def test_documented_primary_404_and_fallback_404_is_clean_no_results(monkeypatch):
+    result, items, artifact = run_discovery(
+        monkeypatch,
+        primary_failure=404,
+        primary_failure_body={"error": "not_found", "message": "No reels found for that query"},
+        statuses=(404, 404),
+    )
+    assert items == []
+    assert not result.get("error")
+    assert "_source_outcome" not in artifact
