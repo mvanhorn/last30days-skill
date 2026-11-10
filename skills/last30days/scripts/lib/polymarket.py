@@ -938,6 +938,9 @@ def parse_polymarket_response(
     return items[:cap]
 
 
+_LEGACY_NAME_CUT = 40
+
+
 def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     """Re-fetch one event datum through the replay-aware HTTP wrapper."""
     event_id = str(getattr(item, "metadata", {}).get("event_id") or "").strip()
@@ -1044,6 +1047,17 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         outcome_counts[normalized] = occurrence + 1
         key = f"{name}\x1f{occurrence}" if outcome_totals[normalized] > 1 else str(name)
         values[key] = price
+    # The same snapshot answers later claims on this event, so it also carries
+    # each long name under the cut form older saved reports hold.
+    cut_names = [str(name)[:_LEGACY_NAME_CUT] for name, _price in outcome_pairs]
+    cut_seen: dict[str, int] = {}
+    for (name, price), cut in zip(outcome_pairs, cut_names):
+        if len(str(name)) <= _LEGACY_NAME_CUT:
+            continue
+        index = cut_seen.get(cut.casefold(), 0)
+        cut_seen[cut.casefold()] = index + 1
+        repeated = sum(1 for other in cut_names if other.casefold() == cut.casefold()) > 1
+        values.setdefault(f"{cut}\x1f{index}" if repeated else cut, price)
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
@@ -1055,11 +1069,15 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
             occurrence = int(raw_occurrence)
         else:
             outcome_name, occurrence = datum_key, 0
-        matches = [
-            price
-            for name, price in refreshed.get("outcome_prices") or []
-            if str(name).casefold() == outcome_name.casefold()
-        ]
+        wanted = outcome_name.casefold()
+        pairs = refreshed.get("outcome_prices") or []
+        matches = [price for name, price in pairs if str(name).casefold() == wanted]
+        if not matches and len(outcome_name) == _LEGACY_NAME_CUT:
+            # Reports saved while names were cut at 40 characters hold the cut
+            # name; the nth repeat of it is the nth market it was cut from.
+            matches = [
+                price for name, price in pairs if str(name).casefold().startswith(wanted)
+            ]
         value = matches[occurrence] if occurrence < len(matches) else None
     if value is None:
         raise KeyError(f"Polymarket datum {datum_key!r} was not found")

@@ -1409,3 +1409,47 @@ def test_slug_refetch_fails_closed_without_any_event_identity(monkeypatch):
     with pytest.raises(ValueError):
         polymarket.refetch_datum(cached, "Yes")
     assert calls == []  # fails closed before any network request
+
+
+def test_polymarket_refetch_matches_names_saved_with_the_old_forty_character_cut(monkeypatch):
+    # Reports saved before sub-market names were kept whole hold names cut at
+    # 40 characters, so sibling deadlines collapsed to one repeated name.
+    cut = "Jensen Huang announced resignation or re"
+    item = _item(
+        "polymarket",
+        title="Jensen Huang announced resignation or removal by...?",
+        url="https://polymarket.com/event/jensen-huang-out",
+        metadata={
+            "event_id": "77",
+            "outcome_prices": [[cut, 0.32], [cut, 0.2]],
+        },
+    )
+    event = {
+        "id": "77",
+        "slug": "jensen-huang-out",
+        "title": "Jensen Huang announced resignation or removal by...?",
+        "updatedAt": "2026-11-10T12:00:00Z",
+        "markets": [
+            {
+                "active": True,
+                "closed": False,
+                "question": "Jensen Huang announced resignation or removal by June 30, 2027?",
+                "liquidity": "100",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.32", "0.68"]',
+            },
+            {
+                "active": True,
+                "closed": False,
+                "question": "Jensen Huang announced resignation or removal by December 31, 2026?",
+                "liquidity": "90",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.2", "0.8"]',
+            },
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
