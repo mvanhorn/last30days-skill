@@ -82,6 +82,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Digg** | 来自 Digg AI 与 Tech 板块的话题聚类，包含可追溯的 X 行内引用，无需 X 认证。当 PATH 中存在 `digg-pp-cli` 时自动启用。 |
 | **arXiv** | 热点背后的论文。免费查找时间窗口内的新研究，无需 API 密钥。当 PATH 中存在 `arxiv-pp-cli` 时自动启用（首次配置会安装）。 |
 | **Techmeme** | 科技新闻的编辑视角，并按你设定的 30 天窗口筛选。免费且无需 API 密钥。当 PATH 中存在 `techmeme-pp-cli` 时自动启用（首次配置会安装）。 |
+| **Yahoo Finance** | 市场对一家公司的看法。显示 30 天窗口内的股价涨跌，美股上市公司还会对比标普 500。免费且无需 API 密钥。当主题是上市公司或其掌舵人，且 PATH 中存在 `yahoo-finance-pp-cli` 时显示（首次配置会安装）。 |
 | **LinkedIn** | 职业领域的信号。搜索帖子和文章，其中文章被视为高价值信号。 |
 | **Meta Ads** | 品牌花钱在说什么。本月新投放的 Meta 广告创意，包含文案、优惠码和语音转写。 |
 | **StockTwits** | 交易者情绪。当主题是股票代码或加密货币时自动启用。 |
@@ -265,7 +266,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 | 来源 | 你需要准备什么 | 成本 |
 |------|----------------|------|
 | Reddit（含评论）+ HN + Polymarket + GitHub + StockTwits | 无 | 免费 |
-| arXiv + Techmeme | 免费 CLI，由首次配置自动安装 | 免费 |
+| arXiv + Techmeme + Yahoo Finance | 免费 CLI，由首次配置自动安装 | 免费 |
 | X / Twitter | 设置 `X_BEARER_TOKEN` 使用官方 X API（近期帖子，大约最近一周；除非你的 X 开发者项目拥有完整归档访问权限。Grok Bot 上作为机器人内置 X 工具之后的备用方式，其他宿主需通过 `LAST30DAYS_X_BACKEND=xapi` 选择启用），或在任意浏览器中登录 x.com，或设置 `XQUIK_API_KEY` / `XAI_API_KEY` | X API 额度来自你自己的 X 开发者项目；浏览器 Cookie 免费；其他密钥费用取决于服务商 |
 | YouTube | `brew install yt-dlp` | 免费 |
 | Bluesky | 来自 bsky.app 的应用密码 | 免费 |

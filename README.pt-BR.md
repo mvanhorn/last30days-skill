@@ -79,6 +79,7 @@ Se você vai se reunir com um CEO, já leu todos os tweets e todas as transcriç
 | **Digg** | Agrupamentos de histórias das seções AI e Tech do Digg, com citações atribuíveis do X embutidas e sem exigir autenticação no X. Ativa sozinho quando `digg-pp-cli` está no PATH. |
 | **arXiv** | Os artigos científicos por trás do hype. Pesquisa nova dentro da janela, de graça e sem chave de API. Ativa sozinho quando `arxiv-pp-cli` está no PATH (a configuração inicial instala). |
 | **Techmeme** | A camada editorial do noticiário de tecnologia, limitada à sua janela de 30 dias. De graça e sem chave de API. Ativa sozinho quando `techmeme-pp-cli` está no PATH (a configuração inicial instala). |
+| **Yahoo Finance** | A leitura do mercado sobre uma empresa. A variação da ação na sua janela de 30 dias, ao lado do S&P 500 nas empresas listadas nos EUA. De graça e sem chave de API. Aparece quando o tema é uma empresa de capital aberto ou a pessoa que a comanda e `yahoo-finance-pp-cli` está no PATH (a configuração inicial instala). |
 | **LinkedIn** | O sinal profissional. Publicações e artigos, com os artigos ponderados como sinal forte. |
 | **Meta Ads** | O que uma marca paga para dizer. Criativos de anúncios da Meta lançados neste mês, com texto, códigos promocionais e transcrições. |
 | **StockTwits** | O humor dos traders. Ativa automaticamente quando seu assunto é um ticker ou uma cripto. |
@@ -267,7 +268,7 @@ Essas plataformas não têm relação nenhuma entre si. O X não sabe o que o Re
 | Fontes | O que você precisa | Custo |
 |---------|---------------|------|
 | Reddit (com comentários) + HN + Polymarket + GitHub + StockTwits | Nada | De graça |
-| arXiv + Techmeme | CLIs gratuitas, instaladas automaticamente pela configuração inicial | De graça |
+| arXiv + Techmeme + Yahoo Finance | CLIs gratuitas, instaladas automaticamente pela configuração inicial | De graça |
 | X / Twitter | Defina `X_BEARER_TOKEN` para a API oficial do X (posts recentes, cerca da última semana, a menos que seu projeto de desenvolvedor do X tenha acesso ao arquivo completo; é uma reserva no Grok Bot depois das ferramentas de X integradas do bot e opcional em outros hosts com `LAST30DAYS_X_BACKEND=xapi`), ou faça login em x.com em qualquer navegador, ou defina `XQUIK_API_KEY` / `XAI_API_KEY` | Os créditos da API do X vêm do seu projeto de desenvolvedor do X; os cookies do navegador são gratuitos; as demais chaves dependem do provedor |
 | YouTube | `brew install yt-dlp` | De graça |
 | Bluesky | Uma senha de aplicativo do bsky.app | De graça |

@@ -79,6 +79,7 @@ Wenn du dich mit einem CEO triffst: Hast du alle Tweets und YouTube-Transkripte 
 | **Digg** | Story-Cluster aus Diggs Rubriken AI und Tech, mit zuordenbaren Inline-Zitaten von X und ganz ohne X-Authentifizierung. Wird automatisch aktiv, sobald `digg-pp-cli` im PATH liegt. |
 | **arXiv** | Die Fachartikel hinter dem Hype. Neue Forschung im Zeitfenster, kostenlos, ohne API-Schlüssel. Wird automatisch aktiv, sobald `arxiv-pp-cli` im PATH liegt (das Erst-Setup installiert es). |
 | **Techmeme** | Die redaktionelle Ebene der Tech-News, begrenzt auf dein 30-Tage-Fenster. Kostenlos, ohne API-Schlüssel. Wird automatisch aktiv, sobald `techmeme-pp-cli` im PATH liegt (das Erst-Setup installiert es). |
+| **Yahoo Finance** | Wie der Markt ein Unternehmen bewertet. Die Kursveränderung der Aktie in deinem 30-Tage-Fenster, bei US-Notierungen neben dem S&P 500. Kostenlos, ohne API-Schlüssel. Erscheint, wenn dein Thema ein börsennotiertes Unternehmen oder die Person an seiner Spitze ist und `yahoo-finance-pp-cli` im PATH liegt (das Erst-Setup installiert es). |
 | **LinkedIn** | Das berufliche Signal. Beiträge und Artikel, wobei Artikel als starkes Signal gewichtet werden. |
 | **Meta Ads** | Wofür eine Marke bezahlt. Diesen Monat gestartete Meta-Werbemittel mit Anzeigentext, Gutscheincodes und Transkripten. |
 | **StockTwits** | Die Stimmung der Trader. Aktiviert sich automatisch, wenn dein Thema ein Ticker oder eine Kryptowährung ist. |
@@ -267,7 +268,7 @@ Diese Plattformen haben nichts miteinander zu tun. X weiß nicht, was Reddit den
 | Quellen | Was du brauchst | Kosten |
 |---------|---------------|------|
 | Reddit (mit Kommentaren) + HN + Polymarket + GitHub + StockTwits | Nichts | Kostenlos |
-| arXiv + Techmeme | Kostenlose CLIs, die das Erst-Setup automatisch installiert | Kostenlos |
+| arXiv + Techmeme + Yahoo Finance | Kostenlose CLIs, die das Erst-Setup automatisch installiert | Kostenlos |
 | X / Twitter | `X_BEARER_TOKEN` für die offizielle X-API setzen (aktuelle Posts, etwa die letzte Woche, sofern dein X-Entwicklerprojekt keinen Vollarchiv-Zugang hat; auf Grok Bot ein Fallback nach den eingebauten X-Tools des Bots, anderswo per Opt-in mit `LAST30DAYS_X_BACKEND=xapi`), oder in einem beliebigen Browser bei x.com anmelden, oder `XQUIK_API_KEY` / `XAI_API_KEY` setzen | X-API-Guthaben stammt aus deinem X-Entwicklerprojekt; Browser-Cookies sind kostenlos; andere Schlüssel hängen vom Anbieter ab |
 | YouTube | `brew install yt-dlp` | Kostenlos |
 | Bluesky | App-Passwort von bsky.app | Kostenlos |

@@ -18,7 +18,9 @@ def run_setup(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(env, "CONFIG_FILE", config_path)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
-    installed = {"yt-dlp", "digg-pp-cli", "arxiv-pp-cli", "techmeme-pp-cli"}
+    installed = {
+        "yt-dlp", "digg-pp-cli", "arxiv-pp-cli", "techmeme-pp-cli", "yahoo-finance-pp-cli",
+    }
     monkeypatch.setattr(
         shutil, "which", lambda name: f"/test/bin/{name}" if name in installed else None
     )

@@ -227,12 +227,13 @@ After the response and required citations, stop and wait unless governing instru
 - Legacy: Sends search queries to OpenAI's Responses API (`api.openai.com`) for Reddit discovery (fallback if no SCRAPECREATORS_API_KEY)
 - Sends search queries to X/Twitter via the official X API v2 (`api.x.com`, app-only bearer from `X_BEARER_TOKEN`, sent only in the Authorization header; the engine's default X path on a Grok Bot host next to xAI's API), optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated)
 - Accepts a host-provided `--x-posts` envelope (a `.json` file of posts the hosting model fetched through its own X connector) as untrusted input: it replaces the engine's X fetch for that run, every row is validated and its citation URL rebuilt from the post id, and no X backend is called
-- Sends search queries to Algolia HN Search API (`hn.algolia.com`) for Hacker News story and comment discovery (free, no auth)
+- Sends search queries to Algolia HN Search (`hn.algolia.com`) for Hacker News stories and comments (free, no auth)
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
-- Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction market discovery (free, no auth)
-- Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)
+- Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction markets (free, no auth)
+- Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name
+- Runs `yt-dlp` locally for YouTube search and transcripts (no API key, public data)
 - Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG).
-- Optionally sends search queries to Brave Search API, Parallel AI API, Perplexity API (`api.perplexity.ai`), or OpenRouter API for web search / synthesis
+- Optionally sends search queries to Brave Search, Parallel AI, Perplexity (`api.perplexity.ai`), or OpenRouter APIs for web search / synthesis
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
 - Stores research findings in local SQLite database (watchlist mode only)
 - Saves research briefings as .md files to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`)
@@ -247,7 +248,7 @@ After the response and required citations, stop and wait unless governing instru
 - Does not share API keys between providers, except the TikTok legacy fallback: when `SCRAPECREATORS_API_KEY` is unset, `APIFY_API_TOKEN` is sent to ScrapeCreators (`get_tiktok_token` in `scripts/lib/env.py`)
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
-- Hacker News and Polymarket sources are always available (no API key, no binary dependency)
+- Hacker News and Polymarket are always available (no API key or binary)
 - TikTok and Instagram sources require SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG). With the key set, Reddit spends ScrapeCreators credits on search backfill when the free path returns fewer than 5 items (default); `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` limits that to empty runs, and `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes ScrapeCreators primary.
 - Agent hosts invoke the slash-command skill contract; if `--agent` appears in the user's slash-command arguments, treat it as skill-level mode guidance, not a Python CLI flag.
 
