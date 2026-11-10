@@ -1188,9 +1188,10 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
         # so values are never combined across browsers: a complete set from
         # one browser wins, else the first browser's partial set is kept.
         chosen: dict[str, str] | None = None
+        chosen_index: int | None = None
         fallback: dict[str, str] | None = None
         denied_browsers: list[str] = []
-        for browser in browsers:
+        for index, browser in enumerate(browsers):
             try:
                 cookies = cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
             except PermissionError:
@@ -1210,6 +1211,7 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
                 continue
             if cookie_extract.has_complete_pair(cookies, spec["cookies"]):
                 chosen = cookies
+                chosen_index = index
                 break
             if fallback is None:
                 fallback = cookies
@@ -1222,10 +1224,76 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
                 "[last30days] X browser cookie access permission denied in "
                 f"{', '.join(denied_browsers)}. {X_COOKIE_ACCESS_FIX}\n"
             )
+        if (
+            _service == "x"
+            and chosen_index is not None
+            and len(missing_cookies) == len(spec["cookies"])
+        ):
+            # Remember where the X session came from and which browsers are
+            # left, so bird can move to the next browser's session if X
+            # rejects this one (an expired session in an earlier browser
+            # would otherwise shadow a live one in a later browser).
+            config[X_COOKIE_BROWSER_KEY] = browsers[chosen_index]
+            config[X_ALT_COOKIE_BROWSERS_KEY] = list(browsers[chosen_index + 1:])
         for cookie_name, env_key in spec["mapping"].items():
             if chosen.get(cookie_name) and not config.get(env_key):
                 extracted[env_key] = chosen[cookie_name]
     return extracted
+
+
+# In-memory bookkeeping for X browser-session failover (never persisted).
+X_COOKIE_BROWSER_KEY = "_X_COOKIE_BROWSER"
+X_ALT_COOKIE_BROWSERS_KEY = "_X_ALT_COOKIE_BROWSERS"
+
+
+def next_x_browser_pair(config: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Extract the next browser's complete X session after a rejection.
+
+    Walks the browsers left after the one that supplied the current session,
+    in the same order ``extract_browser_credentials`` used, and returns
+    ``(auth_token, ct0, browser)`` for the first complete pair that is not the
+    session already rejected. Updates ``config`` so later status reporting
+    names the new source. Returns None when no browser is left. Lazy on
+    purpose: a later Chromium browser may cost a Keychain prompt, so it is
+    read only after an earlier browser's session failed.
+    """
+    if config.get("_AUTH_TOKEN_SOURCE") != "browser":
+        return None
+    remaining = config.get(X_ALT_COOKIE_BROWSERS_KEY) or []
+    if not remaining:
+        return None
+    try:
+        from . import cookie_extract
+    except ImportError:
+        return None
+    spec = COOKIE_DOMAINS["x"]
+    rejected = config.get("AUTH_TOKEN")
+    while remaining:
+        browser = remaining.pop(0)
+        try:
+            cookies = cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
+        except Exception:
+            continue
+        if not cookie_extract.has_complete_pair(cookies, spec["cookies"]):
+            continue
+        if cookies["auth_token"] == rejected:
+            # Same session shared through another browser profile; skip it.
+            continue
+        _apply_x_pair(config, cookies["auth_token"], cookies["ct0"], "browser")
+        config[X_COOKIE_BROWSER_KEY] = browser
+        return cookies["auth_token"], cookies["ct0"], browser
+    return None
+
+
+def _inject_bird_credentials(config: dict[str, Any]) -> None:
+    """Hand the X session (and its browser failover) to the bird client."""
+    from . import bird_x
+    bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
+    if config.get("_AUTH_TOKEN_SOURCE") == "browser" and config.get(X_COOKIE_BROWSER_KEY):
+        bird_x.set_session_failover(
+            config.get(X_COOKIE_BROWSER_KEY),
+            lambda: next_x_browser_pair(config),
+        )
 
 
 # Auth-origin label per X backend for ``get_x_source_with_method`` (bird's
@@ -1557,8 +1625,7 @@ def x_backend_chain(config: dict[str, Any], local_only: bool = False) -> list[st
         ]
 
     if 'bird' in chain:
-        from . import bird_x
-        bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
+        _inject_bird_credentials(config)
     return chain
 
 
@@ -1946,7 +2013,7 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
         considered.add(pin)
 
     if 'bird' in considered and config.get('AUTH_TOKEN') and config.get('CT0'):
-        bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
+        _inject_bird_credentials(config)
     bird_status = dict(bird_x.get_bird_status())
     if 'bird' not in considered:
         # Never report the scraper as usable where the policy forbids it.
