@@ -570,6 +570,15 @@ def _sanitize_plan(
                 weight=max(0.05, float(subquery.get("weight") or 1.0)),
             )
         )
+    if (
+        depth != "quick"
+        and subqueries
+        and not honor_plan_sources
+        and intent_hint == "how_to"
+        and _is_enablement(topic)
+        and not _has_capability_subquery(subqueries, _enablement_host(topic))
+    ):
+        subqueries.extend(_enablement_subqueries(topic, list(source_weights), start=len(subqueries) + 1)[:1])
     if depth == "quick" and subqueries:
         subqueries = subqueries[:1]
     if not subqueries:
@@ -611,7 +620,8 @@ def _sanitize_plan(
             )
         ),
         source_weights=source_weights,
-        notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()],
+        notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()]
+        + (_enablement_notes(topic) if not honor_plan_sources and intent == "how_to" and _is_enablement(topic) else []),
         person_identity_anchors=[a.strip() for a in anchors if _is_identity_anchor(a)],
     )
 
@@ -782,6 +792,9 @@ def _fallback_plan(
             )
         )
 
+    if depth != "quick" and intent == "how_to" and _is_enablement(topic):
+        subqueries.extend(_enablement_subqueries(topic, list(source_weights)))
+
     # Intent-modifier fanout: when topic contains a phrase like "use cases",
     # "workflows", "examples", "review" (see _INTENT_MODIFIER_PATTERNS),
     # paraphrase the intent across 3 extra subqueries rather than echoing
@@ -806,12 +819,24 @@ def _fallback_plan(
             )
         ),
         source_weights=_normalize_weights(source_weights),
-        notes=[note],
+        notes=[note] + (_enablement_notes(topic) if intent == "how_to" and _is_enablement(topic) else []),
     )
 
 
 _SLASH_COMPARISON = re.compile(r"\b[A-Z][a-z]{2,}(?:/[A-Z][a-z]{2,})+\b")
 
+
+# Plan notes marking a topic that asks how to give a named tool (the host) a
+# capability. Rerank reads them to keep capability-only search results, which
+# name the tool that delivers the capability rather than the host, out of the
+# entity cap.
+ENABLEMENT_NOTE = "enablement"
+ENABLEMENT_HOST_NOTE = "enablement-host:"
+_HOST_FILLER = frozenset(
+    "a an the best top good which what how to can i we get make let have that "
+    "who is are for my your our some any".split()
+)
+_GENERIC_HOST = frozenset("ai agent agents bot bots tool tools app apps assistant llm model".split())
 
 _DEVICE = r"(?:my|the|your|our)\s+(?:own\s+)?(?:computer|mac|pc|desktop|laptop|browser|screen|phone|terminal)s?\b"
 # Mirrors the hosted worker's detect_enablement_intent (last30days-com).
@@ -858,6 +883,70 @@ def _is_enablement(topic: str) -> bool:
             if not _ENABLEMENT_THREAT_RE.search(topic, 0, match.start("verb")):
                 return True
     return False
+
+
+def _enablement_host(topic: str) -> str:
+    """The named tool an enablement topic wants to give a capability, as one
+    lowercase token ("grok" for "best Grok AI bot to control my computer"), or
+    "" when the topic names no distinctive tool ("agent that automates the
+    desktop")."""
+    match = _ENABLEMENT_AGENT_RE.search(topic) or _ENABLEMENT_TARGET_RE.search(topic)
+    if not match:
+        return ""
+    if match.re is _ENABLEMENT_AGENT_RE:
+        words = re.findall(r"[\w.-]+", match.group(0).lower())[1:]
+    else:
+        words = re.findall(r"[\w.-]+", topic[: match.start()].lower())
+    words = [word for word in words if word not in _HOST_FILLER]
+    if not words or words[0] in _GENERIC_HOST:
+        return ""
+    return words[0]
+
+
+def _enablement_notes(topic: str) -> list[str]:
+    host = _enablement_host(topic)
+    return [ENABLEMENT_NOTE] + ([f"{ENABLEMENT_HOST_NOTE}{host}"] if host else [])
+
+
+def _enablement_capability_queries(topic: str) -> list[str]:
+    """Capability-only searches for an enablement topic, without the named tool.
+
+    General tools (MCP servers, agent CLIs) rarely appear in posts that name
+    the host, so the plan searches for the capability itself as well.
+    """
+    match = _ENABLEMENT_TARGET_RE.search(topic) or _ENABLEMENT_AGENT_RE.search(topic)
+    device = match.group(0).lower() if match else ""
+    if "browser" in device:
+        return ["browser automation MCP server", "browser automation CLI for AI agents"]
+    if "phone" in device:
+        return ["phone automation MCP server for AI agents", "AI agent control phone app automation"]
+    if "terminal" in device:
+        return ["terminal MCP server for AI agents", "AI agent shell CLI tool"]
+    if "mac" in device.split():
+        return ["macOS computer use MCP server", "macOS automation CLI for AI agents"]
+    return ["computer use MCP server", "desktop automation CLI for AI agents"]
+
+
+def _has_capability_subquery(subqueries, host: str) -> bool:
+    # Must leave out the host: fusion.capability_labels ignores searches that name it.
+    return any(
+        re.search(r"\b(?:mcp|cli|computer[- ]use|automation)\b", sq.search_query, re.IGNORECASE)
+        and not (host and re.search(rf"\b{re.escape(host)}", sq.search_query, re.IGNORECASE))
+        for sq in subqueries
+    )
+
+
+def _enablement_subqueries(topic: str, sources: list[str], start: int = 1) -> list[schema.SubQuery]:
+    return [
+        schema.SubQuery(
+            label=f"capability-{index}",
+            search_query=search,
+            ranking_query=f"Which tools, MCP servers, or CLIs give an AI agent this capability, as asked in '{topic}'?",
+            sources=list(sources),
+            weight=0.7,
+        )
+        for index, search in enumerate(_enablement_capability_queries(topic), start=start)
+    ]
 
 
 def _infer_intent(topic: str) -> str:

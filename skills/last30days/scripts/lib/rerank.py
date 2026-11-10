@@ -291,6 +291,7 @@ def rerank_candidates(
     handles = resolved_handles or set()
     shortlisted = candidates[:shortlist_size]
     primary_entity = _primary_entity(topic)
+    _mark_capability_results(candidates, plan)
     subject = _subject_handles(primary_handle, topic)
     if provider and model and shortlisted:
         try:
@@ -406,6 +407,8 @@ def _build_prompt(
         # cap to the subject's own posts (which never name their own author).
         if author and author in handles:
             lines.append("  first_party: true (authored by the subject)")
+        if _is_capability_result(candidate):
+            lines.append("  capability_search: true")
         return lines
 
     candidate_block = "\n".join(
@@ -424,6 +427,14 @@ def _build_prompt(
             "it is first-class evidence about the subject and is EXEMPT from this cap. Score "
             "it on its own merits (a person rarely names themselves in their own post).\n"
         )
+        if any(_is_capability_result(candidate) for candidate in candidates):
+            grounding_hint += (
+                "EXCEPTION: the topic asks how to give the entity a capability. A candidate marked "
+                "`capability_search: true` came from a search for that capability alone and is "
+                "EXEMPT from this cap: a tool, MCP server, CLI, or extension that delivers the "
+                "capability is on-target without naming the entity. Score it on how directly it "
+                "delivers the capability; generic news that delivers nothing stays low.\n"
+            )
     return f"""
 Judge search-result relevance for a last-30-days research pipeline.
 
@@ -940,6 +951,10 @@ def _fallback_tuple(
     # docs/solutions/logic-errors/entity-grounding-full-phrase-false-demotion.md
     if _is_grounding_exempt(candidate):
         return max(0.0, min(100.0, score)), "fallback-local-score (grounding-exempt source)"
+    # A capability-only search on an enablement plan finds the tools that give
+    # the host the capability; they rarely name the host, and need not.
+    if _is_capability_result(candidate):
+        return max(0.0, min(100.0, score)), "fallback-local-score (capability search)"
     # Entity-grounding demotion: subtract ENTITY_MISS_PENALTY when the candidate
     # never mentions the primary entity's head token, across all text surfaces
     # (title, snippet, transcript, transcript highlights, top comments,
@@ -987,6 +1002,27 @@ def _is_grounding_exempt(candidate: schema.Candidate) -> bool:
         isinstance(item.metadata, dict) and item.metadata.get("grounding_exempt")
         for item in candidate.source_items
     )
+
+
+#: Candidate.metadata flag for a result of a capability-only search on an
+#: enablement plan ("computer use MCP server" for "X control my computer").
+CAPABILITY_SEARCH_KEY = "capability_search"
+
+
+def _mark_capability_results(candidates: list[schema.Candidate], plan: schema.QueryPlan) -> None:
+    from .fusion import capability_labels, enablement_host, is_capability_result
+
+    labels = capability_labels(plan)
+    if not labels:
+        return
+    host = enablement_host(plan)
+    for candidate in candidates:
+        if is_capability_result(candidate, labels, host):
+            candidate.metadata = {**(candidate.metadata or {}), CAPABILITY_SEARCH_KEY: True}
+
+
+def _is_capability_result(candidate: schema.Candidate) -> bool:
+    return bool((candidate.metadata or {}).get(CAPABILITY_SEARCH_KEY))
 
 
 def _is_corpus_candidate(candidate: schema.Candidate) -> bool:

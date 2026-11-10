@@ -1,6 +1,6 @@
 import unittest
 
-from lib import planner
+from lib import fusion, planner
 
 
 class PlannerV3Tests(unittest.TestCase):
@@ -781,6 +781,58 @@ class EnablementIntentTests(unittest.TestCase):
         )
         self.assertEqual("product", plan.intent)
         self.assertEqual("none", plan.cluster_mode)
+
+    @staticmethod
+    def _searches(plan):
+        return [sq.search_query for sq in plan.subqueries]
+
+    def test_fallback_plan_searches_the_capability_without_the_host(self):
+        # The LLM planner can be down; the fallback still has to find general
+        # tools such as MCP servers that no post names beside the host.
+        plan = planner._fallback_plan(self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual("how_to", plan.intent)
+        self.assertEqual(
+            ["computer use MCP server", "desktop automation CLI for AI agents"],
+            self._searches(plan)[1:],
+        )
+
+    def test_fallback_capability_searches_follow_the_device(self):
+        plan = planner._fallback_plan("get claude to control my browser", self.SOURCES, None, "default")
+        self.assertIn("browser automation MCP server", self._searches(plan))
+
+    def test_fallback_adds_no_capability_search_to_other_topics(self):
+        for topic in ("best wireless earbuds", "how to use my computer for video editing"):
+            with self.subTest(topic=topic):
+                plan = planner._fallback_plan(topic, self.SOURCES, None, "default")
+                self.assertFalse(any("MCP" in search for search in self._searches(plan)))
+
+    def test_quick_fallback_keeps_one_search(self):
+        self.assertEqual(1, len(planner._fallback_plan(self.TOPIC, self.SOURCES, None, "quick").subqueries))
+
+    def test_llm_plan_without_a_capability_search_gets_one(self):
+        plan = planner._sanitize_plan(self._raw(), self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual(["Grok computer control", "computer use MCP server"], self._searches(plan))
+
+    def test_llm_plan_with_a_capability_search_is_left_alone(self):
+        raw = self._raw()
+        raw["subqueries"].append(
+            {"label": "tools", "search_query": "browser automation CLI agent", "ranking_query": "Which CLIs?"}
+        )
+        plan = planner._sanitize_plan(raw, self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual(["Grok computer control", "browser automation CLI agent"], self._searches(plan))
+
+    def test_llm_capability_search_naming_the_host_still_gets_a_host_free_one(self):
+        raw = self._raw()
+        raw["subqueries"][0]["search_query"] = "Grok MCP computer control"
+        plan = planner._sanitize_plan(raw, self.TOPIC, self.SOURCES, None, "default")
+        self.assertEqual(["Grok MCP computer control", "computer use MCP server"], self._searches(plan))
+        self.assertTrue(fusion.capability_labels(plan))
+
+    def test_explicit_plan_gets_no_capability_search(self):
+        plan = planner._sanitize_plan(
+            self._raw(), self.TOPIC, self.SOURCES, None, "default", honor_plan_sources=True
+        )
+        self.assertEqual(["Grok computer control"], self._searches(plan))
 
 
 if __name__ == "__main__":
