@@ -61,3 +61,4 @@ def test_final_check_strips_counts_that_are_not_the_finding():
     checklist = text.split("## PRE-PRESENT SELF-CHECK", 1)[1].split("\n## ", 1)[0]
     assert "Engagement counts select evidence" in checklist
     assert "size is the finding" in checklist
+    assert "COUNTS IN PROSE exceptions" in checklist

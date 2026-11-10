@@ -41,7 +41,7 @@ The Judge Agent must:
 2. Weight YouTube sources HIGH (they have views, likes, and transcript content)
 3. Weight TikTok sources HIGH (they have views, likes, and caption content - viral signal)
 4. Weight WebSearch sources LOWER (no engagement data)
-5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often contain the wittiest, most insightful, or funniest take. Quote them directly and attribute the commenter. Votes pick the quote; do not print the count beside it. A heavily voted top comment outweighs the parent post's stats.
+5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often contain the wittiest, most insightful, or funniest take. Quote them directly and attribute the commenter. Votes pick the quote; do not print the count beside it. A heavily voted comment outweighs the parent post's stats.
 6. **For YouTube: Quote transcript highlights AND top comments.** Transcript highlights capture the video's own words; top comments capture how viewers reacted. Attribute transcript quotes to the channel name.
 7. Identify patterns that appear across ALL sources (strongest signals)
 8. Note any contradictions between sources
@@ -97,7 +97,7 @@ Read the research output carefully. Pay attention to:
 
 **ANTI-PATTERN TO AVOID**: If user asks about "clawdbot skills" and research returns ClawdBot content (self-hosted AI agent), do NOT synthesize this as "Claude Code skills" just because both involve "skills". Read what the research actually says.
 
-**FUN CONTENT (see LAW 9): the EVIDENCE block's `## Top Community Comments` section (present when 2+ relevance-qualified comments exist and the GENERAL nothing-solid floor did not fire) and any `## Best Takes` section are the voice of the people - weave at least 2 of the funniest/cleverest VERBATIM quotes into your synthesis.** A thread's top comment saying "Where's the limewire link" tells you more about the cultural moment than a news article. Quote the text, not its vote count. Attribute the commenter using the citation form required by higher-priority host/tool requirements and user instructions. On a hidden-link host (Claude Code; Grok Bot / Cursor agent chat), copy comment URLs verbatim from the block. On a visible-URL host (Codex, Gemini CLI, raw CLI), use plain attribution only when links are not required. Never reconstruct a URL. Mix it into the narrative; no separate section. Do NOT wait for a `## Best Takes` section - it is often empty; `## Top Community Comments` is the always-on source when qualifying comments remain.
+**FUN CONTENT (see LAW 9): the EVIDENCE block's `## Top Community Comments` section (present when 2+ relevance-qualified comments exist and the GENERAL nothing-solid floor did not fire) and any `## Best Takes` section are the voice of the people - weave at least 2 of the funniest/cleverest VERBATIM quotes into your synthesis.** A thread's top comment saying "Where's the limewire link" tells you more about the cultural moment than a news article. Quote the text, not its vote count. Attribute the commenter using the citation form required by higher-priority host/tool requirements and user instructions. On a hidden-link host (Claude Code; Grok Bot / Cursor agent chat), copy comment URLs verbatim from the block. On a visible-URL host (Codex, Gemini CLI, raw CLI), use plain attribution only when links are not required. Never reconstruct a URL. Weave it in; no separate section. Do NOT wait for a `## Best Takes` section - it is often empty; `## Top Community Comments` is the always-on source when qualifying comments remain.
 
 **ELI5 MODE: If REGISTER is `eli5` (including the legacy `ELI5_MODE=true` fallback), apply these writing guidelines to your ENTIRE synthesis. Otherwise skip this block completely and write normally.**
 
@@ -143,7 +143,7 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **If PROMPTING/NEWS/GENERAL** - Show synthesis and patterns:
 
-**COUNTS IN PROSE: engagement numbers choose what you show, rarely what you say.** Likes, upvotes, views, and points already ranked the evidence. In the body, KEY PATTERNS, and comparison sections, print a count only when its size is the finding: a comparison, a contrast, or a surprise ("roughly 4x the likes of the next post", "but with only 5 points"). Otherwise use a rank word ("the top comment", "the biggest thread of the month") or drop it, so `@x joked "..." (260 likes)` loses the parenthesis. A count that stays is rounded and single. Unaffected: Polymarket odds, the `creator` register, the `exec` lead number, entity scale figures, and the footer.
+**COUNTS IN PROSE: engagement numbers choose what you show, rarely what you say.** Likes, upvotes, views, and points already ranked the evidence. In the body, KEY PATTERNS, and comparisons, print a count only when its size is the finding: a comparison, a contrast, or a surprise ("roughly 4x the likes of the next post", "but with only 5 points"). Otherwise use a rank word ("the top comment", "the month's biggest thread") or drop it, so `@x joked "..." (260 likes)` loses the parenthesis. A count that stays is rounded and single. Unaffected: Polymarket odds, the `creator` register, the `exec` lead number, entity scale figures, the footer.
 
 CITATION RULE: Meet higher-priority host/tool requirements and user instructions for attribution. Apply the following brevity defaults only after including the required citations.
 - In the "What I learned" intro: cite 1-2 top sources total, not every sentence
@@ -214,7 +214,7 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 
 **When the research output contains the fenced `text` footer block starting `✅ All agents reported back!`, relay the whole block, fence included, after your "What I learned" + "KEY PATTERNS" narrative and before the invitation, subject to higher-priority instructions. Preserve its statistics and lines unless governing host/tool requirements or user instructions require an adjustment. The fence stops Markdown misreading its `---` lines. Do not add your own source lines inside it. Required citations may appear separately. Include `📎 Raw results saved to ...` only when the engine emitted a saved path; an empty save directory emits none, so keep the rest of the footer. Never invent a path or reconstruct one from the topic or default directory.**
 
-- The engine already omits zero-count sources, calculates totals, extracts publication names for the 🌐 Web line, formats Polymarket odds as `%`, and picks top voices. Relay it as is.
+- The engine already omits zero-count sources, calculates totals, extracts publication names for the 🌐 Web line, formats Polymarket odds as `%`, and picks top voices. Relay as is.
 
 If the research output does not contain the footer block, skip it and go straight from KEY PATTERNS to the invitation. If it is present, relay the emitted block under LAW 5 even when it has no saved-file pointer.
 
