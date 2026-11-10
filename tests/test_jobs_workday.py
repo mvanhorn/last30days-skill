@@ -2,7 +2,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from lib import jobs
+from lib import jobs, jobs_digest
 
 TOKEN = "acme.wd5/AcmeCareers"
 LIST_URL = "https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/AcmeCareers/jobs"
@@ -222,7 +222,7 @@ class WorkdayDetailTests(unittest.TestCase):
         self.assertEqual("", items[0]["description"])
 
     @patch("lib.jobs.http.get_text")
-    def test_search_jobs_details_only_the_first_rows_of_the_listing(self, mock_text):
+    def test_search_jobs_details_only_the_roles_the_digest_selected(self, mock_text):
         mock_text.return_value = '<a href="https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers">Jobs</a>'
         board = FakeBoard(45)
         with patch("lib.jobs.http.post", side_effect=board.post), \
@@ -237,10 +237,48 @@ class WorkdayDetailTests(unittest.TestCase):
         self.assertEqual(45, artifact["board_total"])
         self.assertFalse(artifact["board_capped"])
         self.assertFalse(artifact["board_cut_short"])
-        detailed = jobs.WORKDAY_DEFAULT_DETAIL_ROLES
-        self.assertEqual(detailed, len(board.detail_calls))
-        self.assertTrue(all(item["description"] and item["date"] for item in items[:detailed]))
-        self.assertTrue(all(not item["description"] and item["date"] is None for item in items[detailed:]))
+        selected = jobs_digest.DIGEST_MAX_ROLES
+        self.assertEqual(selected, len(board.detail_calls))
+        digest = artifact["digest"]
+        self.assertEqual(selected, len(digest["roles"]))
+        self.assertTrue(all(entry["text"].startswith("Own the JR") for entry in digest["roles"]))
+        self.assertTrue(all(entry["posted"] == "2026-11-03" for entry in digest["roles"]))
+        self.assertEqual(selected, sum(1 for item in items if item["description"]))
+        self.assertNotIn("note", digest)
+        # Listing rows carry no true date, so the board has no count of new roles.
+        self.assertEqual(45, artifact["open_roles"])
+        self.assertIsNone(artifact["new_in_window"])
+
+    @patch("lib.jobs.http.get_text")
+    def test_spent_budget_skips_detail_calls_and_the_digest_says_so(self, mock_text):
+        mock_text.return_value = '<a href="https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers">Jobs</a>'
+        board = FakeBoard(45)
+        real = jobs.fetch_workday_details
+
+        def late(items, **kwargs):
+            return real(items, deadline=kwargs["deadline"], clock=lambda: kwargs["deadline"] + 1)
+
+        with patch("lib.jobs.http.post", side_effect=board.post), \
+                patch("lib.jobs.http.get", side_effect=board.get), \
+                patch.object(jobs, "fetch_workday_details", side_effect=late):
+            _items, artifact = jobs.search_jobs(
+                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none",
+            )
+        self.assertEqual([], board.detail_calls)
+        self.assertIn("time budget", artifact["digest"]["note"])
+        self.assertTrue(all(entry["text"] == "" for entry in artifact["digest"]["roles"]))
+
+    def test_capped_board_counts_as_a_floor(self):
+        page = '<a href="https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers">Jobs</a>'
+        board = FakeBoard(2000, reported_total=2000)
+        with patch("lib.jobs.http.get_text", return_value=page), \
+                patch("lib.jobs.http.post", side_effect=board.post), \
+                patch("lib.jobs.http.get", side_effect=board.get):
+            _items, artifact = jobs.search_jobs(
+                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none",
+            )
+        self.assertEqual(2000, artifact["open_roles"])
+        self.assertTrue(artifact["open_roles_floor"])
 
 
 if __name__ == "__main__":

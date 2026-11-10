@@ -332,3 +332,56 @@ func TestResolveSaveDirUsesEngineConfiguration(t *testing.T) {
 }
 
 func stringPointer(value string) *string { return &value }
+
+func TestWithoutJobsDigestKeepsTheFooterLineAndDropsTheDigest(t *testing.T) {
+	output := strings.Join([]string{
+		"<!-- EVIDENCE FOR SYNTHESIS: ranked source data. -->",
+		"",
+		"## Hiring Signals",
+		"",
+		"- Mode: standard; company-size tier: growth",
+		"",
+		"## Jobs Digest",
+		"",
+		"- Board: Acme | greenhouse | 2,904 open roles | 658 posted 2026-10-11 to 2026-11-10",
+		"- [Analyst](https://boards.greenhouse.io/acme/jobs/1) | MaaS: Join the first APAC team.",
+		"",
+		"## Ranked Evidence Clusters",
+		"",
+		"### 1. Something",
+		"<!-- END EVIDENCE FOR SYNTHESIS -->",
+		"├─ 💼 Jobs: 2,904 open roles │ 658 new in the L30",
+		"",
+	}, "\n")
+
+	got := withoutJobsDigest(output)
+
+	for _, gone := range []string{"## Jobs Digest", "- Board: Acme", "Join the first APAC team"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("digest text %q survived:\n%s", gone, got)
+		}
+	}
+	for _, kept := range []string{
+		"## Hiring Signals", "- Mode: standard", "## Ranked Evidence Clusters", "### 1. Something",
+		"<!-- END EVIDENCE FOR SYNTHESIS -->", "💼 Jobs: 2,904 open roles │ 658 new in the L30",
+	} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%q was dropped:\n%s", kept, got)
+		}
+	}
+}
+
+func TestWithoutJobsDigestStopsAtTheEvidenceEndWhenTheDigestIsLast(t *testing.T) {
+	output := "## Jobs Digest\n\n- Board: Acme\n\n<!-- END EVIDENCE FOR SYNTHESIS -->\nfooter\n"
+	want := "<!-- END EVIDENCE FOR SYNTHESIS -->\nfooter\n"
+	if got := withoutJobsDigest(output); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestWithoutJobsDigestLeavesOtherOutputUnchanged(t *testing.T) {
+	output := "## Ranked Evidence Clusters\n\n- item\n"
+	if got := withoutJobsDigest(output); got != output {
+		t.Errorf("got %q, want %q", got, output)
+	}
+}

@@ -105,8 +105,34 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 		if runErr != nil {
 			return mcplib.NewToolResultError(formatRunError(runErr, res)), nil
 		}
-		return mcplib.NewToolResultText(string(res.Stdout)), nil
+		return mcplib.NewToolResultText(withoutJobsDigest(string(res.Stdout))), nil
 	}
+}
+
+// withoutJobsDigest drops the engine's "## Jobs Digest" evidence section. The
+// digest is raw role text that the skill's instruction files say how to
+// weigh, and an MCP client never sees those files; the footer's Jobs line,
+// outside the section, is kept. The section runs to the next "## " heading or
+// to the end of the evidence block, and scraped text inside it cannot start
+// either: the engine keeps each role on one line that starts with "- ".
+func withoutJobsDigest(output string) string {
+	lines := strings.SplitAfter(output, "\n")
+	kept := lines[:0:0]
+	inDigest := false
+	for _, line := range lines {
+		text := strings.TrimRight(line, "\r\n")
+		if text == "## Jobs Digest" {
+			inDigest = true
+			continue
+		}
+		if inDigest && (strings.HasPrefix(text, "## ") || strings.HasPrefix(text, "<!-- END EVIDENCE")) {
+			inDigest = false
+		}
+		if !inDigest {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "")
 }
 
 func researchRunArgs(topic, emit, saveDir string) []string {

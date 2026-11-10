@@ -148,6 +148,9 @@ STREAM_ARTIFACT_LIFT_KEYS: tuple[str, ...] = ("meta_ads_page", "meta_ads_tally")
 # Worst case per stream is one timeout ceiling (+ one inline 5xx retry in the
 # main fan-out, itself bounded by the lane's own timeouts); no new config knobs.
 STREAM_FUTURE_TIMEOUT_SECONDS = 180.0
+# A job board lists the roles open today, so it cannot answer a window that
+# ended in the past.
+JOBS_PAST_WINDOW_SKIP = "skipped: a job board shows the roles open today, not those of a past window"
 DISCOVERY_FUTURE_TIMEOUT_SECONDS = 60.0
 THIN_RETRY_FUTURE_TIMEOUT_SECONDS = 120.0
 # One X source, ordered backends: grok (up to 240s/call) + xai (90-180s) would
@@ -2258,6 +2261,7 @@ def run(
     # overlaps other sources instead of waiting for them all to finish.
     run_started = time.monotonic()
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
+    jobs_past_window = to_date < dates.get_date_range(0)[1]
     resolved_corpus_dirs = corpus.resolve_directories(
         corpus_dirs or config.get("_CORPUS_DIRS"),
         config.get("LAST30DAYS_CORPUS_DIRS"),
@@ -2687,6 +2691,14 @@ def run(
                 # Skip GitHub keyword search if person-mode already ran
                 if source == "github" and (_github_person_done or _github_custom_done):
                     continue
+                if source == "jobs" and jobs_past_window:
+                    bundle.source_status["jobs"] = schema.SourceOutcome(
+                        source="jobs",
+                        state=schema.NO_RESULTS,
+                        attempted=False,
+                        detail=JOBS_PAST_WINDOW_SKIP,
+                    )
+                    continue
                 # Enforce per-source fetch cap. A CLI override (issue #716) raises
                 # the cap for capped sources so every X subquery in a multi-angle
                 # --plan fetches, instead of only the first two.
@@ -2903,6 +2915,11 @@ def run(
                             attempted=deferred_outcome.get("attempted", True),
                         )
             bundle.add_items(subquery.label, source, normalized)
+            if source == "jobs" and isinstance(artifact, dict) and artifact.get("tier") == "ats":
+                # The board's own counts and digest are read by name, and stay
+                # whatever happens to the board's items below.
+                bundle.artifacts["jobs"] = artifact
+                artifact = {key: value for key, value in artifact.items() if key != "digest"}
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
@@ -2931,6 +2948,8 @@ def run(
     _github_skip_retry = {"corpus"}
     if _github_person_done or _github_custom_done:
         _github_skip_retry.add("github")
+    if jobs_past_window:
+        _github_skip_retry.add("jobs")
     pre_retry_counts = {
         source: len(bundle.items_by_source.get(source, []))
         for source in deferred_retryable_failures
@@ -3771,6 +3790,10 @@ def _apply_hiring_signal_gate(
     explicit: bool,
     topic: str,
 ) -> dict[str, Any] | None:
+    # On a standard run, a board whose titles cluster into no clear theme
+    # leaves the evidence pool, so scattered postings are not ranked and
+    # clustered beside what people said. The board's counts and digest live in
+    # ``bundle.artifacts["jobs"]`` and are not touched here.
     jobs_items = bundle.items_by_source.get("jobs") or []
     if not jobs_items:
         if explicit:
@@ -5722,13 +5745,18 @@ def _retrieve_stream_impl(
         return grounding.web_search(
             subquery.search_query, date_range, config, backend=web_backend)
     if source == "jobs":
+        # The company the topic resolved to, so a person's name searches the
+        # board of the company they lead, starting from its official site.
+        company = config.get("_company") or {}
         return jobs.search_jobs(
-            raw_topic or topic or subquery.search_query,
+            company.get("company") or raw_topic or topic or subquery.search_query,
             date_range,
             config,
             depth=depth,
             web_backend=web_backend,
             explicit=bool(config.get("_hiring_signals_mode")),
+            site=str(company.get("company_site") or ""),
+            entity_count=_comparison_entity_count(config),
         )
     if source == "reddit":
         # Use raw_topic so expand_reddit_queries() generates diverse variants

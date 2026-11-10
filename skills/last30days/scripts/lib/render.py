@@ -15,6 +15,7 @@ from . import (
     fusion,
     health,
     hiring_signals,
+    jobs_digest,
     library_index,
     meta_ads,
     registers,
@@ -876,6 +877,10 @@ def render_compact(
     )
     if hiring_block and audience.name in {"default", "eli5"}:
         lines.extend(hiring_block)
+        lines.append("")
+    jobs_digest_block = _render_jobs_digest(evidence_report)
+    if jobs_digest_block:
+        lines.extend(jobs_digest_block)
         lines.append("")
     market_block = _render_market_data(report)
     if market_block:
@@ -2342,6 +2347,99 @@ def _render_hiring_signals(
     return out
 
 
+def _jobs_board_footer_line(report: schema.Report) -> str | None:
+    """Build the 💼 Jobs footer line from what the company's board reports.
+
+    Open roles always; a ``+`` when the board stopped short of its full count;
+    roles new in the window only when the board gave every role a true
+    first-posted date. None when the run read no board directly.
+    """
+    board = (report.artifacts or {}).get("jobs")
+    if not isinstance(board, dict) or not board.get("open_roles"):
+        return None
+    count = int(board["open_roles"])
+    line = (
+        f"💼 Jobs: {count:,}{'+' if board.get('open_roles_floor') else ''} "
+        f"open role{'s' if count != 1 else ''}"
+    )
+    new = board.get("new_in_window")
+    if isinstance(new, int) and not isinstance(new, bool):
+        line += f" │ {new:,} new in the L30"
+    return line
+
+
+def _jobs_digest(report: schema.Report) -> dict | None:
+    board = (report.artifacts or {}).get("jobs")
+    digest = board.get("digest") if isinstance(board, dict) else None
+    return digest if isinstance(digest, dict) and digest.get("roles") else None
+
+
+def _render_jobs_digest(report: schema.Report) -> list[str]:
+    """Render the board's role-unique digest as one flat list of roles.
+
+    A header line with the board's own counts, then one line per role: title
+    and posting URL, department, location, posted date when the board gave a
+    true one, and the text no other role on the board repeats. Roles the
+    ranking rejected stay out. The section stops before the character ceiling.
+    """
+    digest = _jobs_digest(report)
+    if not digest:
+        return []
+    board = report.artifacts["jobs"]
+    rejected = set((report.artifacts.get("hiring_signals") or {}).get("rejected_job_keys") or [])
+    rejected_urls = {
+        item.url
+        for item in report.items_by_source.get("jobs", [])
+        if fusion.candidate_key(item) in rejected
+    }
+    entries = [entry for entry in digest["roles"] if entry.get("url") not in rejected_urls]
+    if not entries:
+        return []
+
+    count = int(board.get("open_roles") or 0)
+    header = [
+        _format_untrusted_evidence(" ".join(str(board.get("company") or report.topic).split()), 80),
+        str(board.get("provider") or "board"),
+        f"{count:,}{'+' if board.get('open_roles_floor') else ''} open role{'s' if count != 1 else ''}",
+    ]
+    new = board.get("new_in_window")
+    if isinstance(new, int) and not isinstance(new, bool):
+        header.append(f"{new:,} posted {report.range_from} to {report.range_to}")
+    distinct = int(digest.get("distinct_roles") or len(entries))
+    out = [
+        "## Jobs Digest",
+        "",
+        "- Board: " + " | ".join(header),
+        (
+            f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, the rarest on this "
+            "board by department, location and title wording. Each carries the text "
+            "no other role on the board repeats."
+        ),
+    ]
+    if digest.get("note"):
+        out.append(f"- Note: {digest['note']}")
+    size = sum(len(line) + 1 for line in out)
+    for entry in entries:
+        title = _safe_title(str(entry.get("title") or "Job posting"))
+        url = str(entry.get("url") or "")
+        parts = [f"[{title}]({url})" if url else title]
+        parts.extend(
+            _format_untrusted_evidence(" ".join(str(entry[key]).split()), 120)
+            for key in ("department", "location") if entry.get(key)
+        )
+        if entry.get("posted"):
+            parts.append(f"posted {entry['posted']}")
+        line = "- " + " | ".join(parts)
+        text = " ".join(str(entry.get("text") or "").split())
+        if text:
+            line += ": " + _format_untrusted_evidence(text, jobs_digest.DIGEST_ROLE_CHARS)
+        if size + len(line) + 1 > jobs_digest.DIGEST_MAX_CHARS:
+            break
+        size += len(line) + 1
+        out.append(line)
+    return out
+
+
 def _render_candidate(
     candidate: schema.Candidate,
     prefix: str,
@@ -2378,7 +2476,12 @@ def _render_candidate(
     explanation = _format_explanation(candidate)
     if explanation:
         lines.append(f"   - Why: {explanation}")
-    if candidate.snippet:
+    # A job description opens with company text every role shares; when the
+    # board's digest is present it carries each role's own text instead.
+    in_digest = bool(
+        primary and primary.source == "jobs" and report and _jobs_digest(report)
+    )
+    if candidate.snippet and not in_digest:
         lines.append(
             f"   - Evidence: {_format_untrusted_evidence(candidate.snippet, 360)}"
         )
@@ -2928,6 +3031,11 @@ def _build_source_footer_lines(
     out: list[str] = []
     for source_key, emoji, label, item_word, engagement_fields in _FOOTER_SOURCES:
         items = report.items_by_source.get(source_key) or []
+        if source_key == "jobs":
+            board_line = _jobs_board_footer_line(report)
+            if board_line:
+                out.append(board_line)
+                continue
         if not items:
             continue
         parts: list[str] = []

@@ -175,3 +175,22 @@ def test_quick_host_plan_keeps_its_source_budget():
     )
     assert [sq.sources for sq in report.query_plan.subqueries] == [["reddit", "youtube"]]
     assert not {"digg", "arxiv"} & fetched
+
+
+def test_runbook_tells_the_host_to_name_jobs_for_company_topics():
+    from tests.skill_contract import reference_text
+
+    runbook = reference_text("research-runbook")
+    omit = runbook[runbook.index("Leave out only"):]
+    omit = omit[:omit.index(".") + 1]
+    assert "`jobs`" not in omit
+    assert "`perplexity`" in omit
+    assert "For a company or the person who leads it, name `jobs`" in runbook
+
+
+def test_host_plan_naming_jobs_on_a_person_topic_fetches_jobs():
+    report, fetched = _run_with_plan(
+        "Jensen Huang", plan_with(["reddit", "jobs"], ["hackernews"]),
+    )
+    assert _planned(report) == [["reddit", "jobs"], ["hackernews"]]
+    assert "jobs" in fetched

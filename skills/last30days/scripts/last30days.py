@@ -4329,6 +4329,9 @@ def _main(
         # run, so it happens with or without a host plan. Each entity of a
         # comparison is resolved on its own, after the split.
         main_company = _resolved_company(topic, mock=args.mock)
+        # The jobs lane reads the company from here; each comparison peer
+        # replaces it with its own.
+        config["_company"] = main_company
         if comp_enabled:
             config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget(
                 owner=topic,
@@ -4541,6 +4544,7 @@ def _main(
                     "context": kwargs["_context"],
                     **_resolved_company(entity, mock=args.mock),
                 }
+                entity_config["_company"] = resolved_effective
                 if kwargs["_context"]:
                     entity_config["_auto_resolve_context"] = kwargs["_context"]
                 sys.stderr.write(

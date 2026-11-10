@@ -25,7 +25,7 @@ from html import unescape
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from . import dates, grounding, http
+from . import dates, grounding, http, jobs_digest
 
 
 ATS_PROVIDER_GREENHOUSE = "greenhouse"
@@ -42,12 +42,11 @@ WORKDAY_ROW_CEILING = 2000
 # One page takes about a second, so a full 2,000-row board is about 100 s read
 # one page at a time. Eight at once reads it in roughly 15 s.
 WORKDAY_MAX_WORKERS = 8
-# Wall time allowed for one board: the listing plus the detail calls.
+# Wall time allowed for one board: the listing plus the detail calls. A
+# comparison run gives each entity an equal share of it. Descriptions and true
+# posted dates cost one call per role, so they are fetched only for the roles
+# the digest selected.
 WORKDAY_BUDGET_SECONDS = 45.0
-# Descriptions and true posted dates cost one call per role, so a default run
-# fetches them only for the first rows of the listing: ten calls, about two
-# seconds at eight at once.
-WORKDAY_DEFAULT_DETAIL_ROLES = 10
 
 # Detection patterns: map an ATS embed/link found on a careers page to
 # (provider, slug). The published slug is authoritative - this is why discovery
@@ -82,8 +81,15 @@ def search_jobs(
     depth: str = "default",
     web_backend: str = "auto",
     explicit: bool = False,
+    site: str = "",
+    entity_count: int = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Fetch public job postings for a company via the tiered strategy."""
+    """Fetch public job postings for a company via the tiered strategy.
+
+    ``site`` is the company's official site when it is known; its careers page
+    is tried before any guessed domain. ``entity_count`` is the number of
+    entities a comparison run is fetching at once.
+    """
     company = company.strip()
     if not company:
         return [], {}
@@ -92,13 +98,16 @@ def search_jobs(
 
     # --- Discovery: fetch the careers page and read the ATS off it (Tier 1). ---
     careers_html, careers_url = _resolve_careers_page(
-        company, date_range, config, backend=web_backend,
+        company, date_range, config, backend=web_backend, site=site,
     )
     provider, slug = (None, None)
+    found_via = "slug-guess"
     if careers_html:
         provider, slug = detect_ats(careers_html)
         if provider:
             attempted.append(f"careers:{provider}:{slug}")
+            on_site = _host(careers_url or "") in _site_hosts(company, site)
+            found_via = "site" if on_site else "search"
 
     # Fallback discovery: cheap deterministic slug probe (only after careers-page
     # discovery fails - never the entry point).
@@ -109,9 +118,10 @@ def search_jobs(
     # --- Tier 1: call the resolved ATS API. Trust it only if it has jobs. ---
     if provider and slug:
         board: dict[str, Any] = {}
+        deadline = time.monotonic() + WORKDAY_BUDGET_SECONDS / max(1, entity_count)
         try:
             if provider == ATS_PROVIDER_WORKDAY:
-                items, board = _search_workday(slug)
+                items, board = search_workday_board(slug, deadline=deadline)
             else:
                 items = _fetch_ats(provider, slug)
         except http.HTTPError:
@@ -120,6 +130,33 @@ def search_jobs(
             artifact = _artifact("jobs", company, attempted, items, explicit,
                                  tier="ats", provider=provider, slug=slug)
             artifact.update(board)
+            # A board belongs to the company when its own site links to it or
+            # the board names the company. A guessed slug can be another
+            # company's board, so such a board still counts roles but gives
+            # no digest.
+            stated = next(
+                (str(item["company_name"]) for item in items if item.get("company_name")), "",
+            )
+            owned = found_via == "site" or _same_company(stated, company)
+            artifact.update({
+                "found_via": found_via,
+                "board_company": stated,
+                "owned": owned,
+                **_board_counts(items, board, date_range),
+            })
+            if owned:
+                selected = jobs_digest.select_roles(items)
+                missed = 0
+                if provider == ATS_PROVIDER_WORKDAY:
+                    missed = fetch_workday_details(
+                        [role["item"] for role in selected], deadline=deadline,
+                    )
+                artifact["digest"] = jobs_digest.build_digest(items, selected)
+                if missed:
+                    artifact["digest"]["note"] = (
+                        f"time budget spent: role text fetched for "
+                        f"{len(selected) - missed} of {len(selected)} selected roles"
+                    )
             return items, artifact
 
     # --- Tier 2: parse JSON-LD JobPosting off the careers page. ---
@@ -156,18 +193,18 @@ def _resolve_careers_page(
     config: dict[str, Any],
     *,
     backend: str = "auto",
+    site: str = "",
 ) -> tuple[str | None, str | None]:
     """Find and fetch the company's careers page HTML.
 
-    Tries conventional URLs on a guessed domain first (free, deterministic);
-    falls back to a single web search for the careers page when a backend is
-    configured. Returns (html, url) or (None, None). Never raises.
+    Tries conventional URLs on the company's known site, then on a guessed
+    domain (free, deterministic); falls back to a single web search for the
+    careers page when a backend is configured. Returns (html, url) or
+    (None, None). Never raises.
     """
-    slug = _company_slug(company)
     candidates: list[str] = []
-    if slug:
-        for host in (f"{slug}.com", f"{slug}.ai", f"{slug}.io"):
-            candidates.extend([f"https://{host}/careers", f"https://{host}/jobs"])
+    for host in _site_hosts(company, site):
+        candidates.extend([f"https://{host}/careers", f"https://{host}/jobs"])
 
     for url in candidates:
         with http.expected_misses(403, 404):
@@ -212,6 +249,48 @@ def _search_for_careers_url(
         )):
             return url
     return None
+
+
+def _host(url: str) -> str:
+    try:
+        return urlparse(url if "://" in url else f"https://{url}").netloc.lower()
+    except ValueError:
+        return ""
+
+
+def _site_hosts(company: str, site: str = "") -> list[str]:
+    """Hosts taken to be the company's own: its known site, then the guesses."""
+    hosts = [_host(site)] if site and _host(site) else []
+    slug = _company_slug(company)
+    if slug:
+        hosts.extend(host for host in (f"{slug}.com", f"{slug}.ai", f"{slug}.io") if host not in hosts)
+    return hosts
+
+
+def _same_company(stated: str, company: str) -> bool:
+    """Whether a board's stated company name is the company being researched."""
+    return bool(set(_candidate_slugs(stated)) & set(_candidate_slugs(company)))
+
+
+def _board_counts(
+    items: list[dict[str, Any]], board: dict[str, Any], date_range: tuple[str, str],
+) -> dict[str, Any]:
+    """What the board itself reports: open roles, and roles new in the window.
+
+    ``open_roles_floor`` marks a count the board stopped short of (its row
+    ceiling, or a listing cut short). ``new_in_window`` is a number only when
+    every role carries a true first-posted date; otherwise it is None.
+    """
+    from_date, to_date = date_range
+    dated = all(item.get("posted_date_true") and item.get("date") for item in items)
+    return {
+        "open_roles": len(items),
+        "open_roles_floor": bool(board.get("board_capped") or board.get("board_cut_short")),
+        "new_in_window": (
+            sum(1 for item in items if from_date <= str(item["date"]) <= to_date)
+            if dated else None
+        ),
+    }
 
 
 def detect_ats(html: str) -> tuple[str | None, str | None]:
@@ -339,6 +418,9 @@ def _workday_deadline(
     return clock() + budget_seconds if deadline is None else deadline
 
 
+_OUT_OF_TIME = object()
+
+
 def _workday_run(
     calls: list[Callable[[float], Any]],
     deadline: float,
@@ -346,13 +428,14 @@ def _workday_run(
 ) -> list[Any]:
     """Run calls at most WORKDAY_MAX_WORKERS at once; results keep call order.
 
-    A call that would start after the deadline, or that fails, yields None.
-    Each call gets the monotonic deadline to hand to ``lib.http``.
+    A call that fails yields None; one that would start after the deadline
+    yields ``_OUT_OF_TIME``. Each call gets the monotonic deadline to hand to
+    ``lib.http``.
     """
     def run(call: Callable[[float], Any]) -> Any:
         remaining = deadline - clock()
         if remaining <= 0:
-            return None
+            return _OUT_OF_TIME
         try:
             return call(time.monotonic() + remaining)
         except http.HTTPError:
@@ -465,11 +548,12 @@ def fetch_workday_details(
     deadline: float | None = None,
     budget_seconds: float = WORKDAY_BUDGET_SECONDS,
     clock: Callable[[], float] = time.monotonic,
-) -> None:
+) -> int:
     """Fill ``description`` and the true posted date on the given Workday items.
 
     One call per item, so pass only the few roles that need it. An item whose
-    call fails, or would start after the deadline, is left as it was.
+    call fails, or would start after the deadline, is left as it was. Returns
+    how many items the deadline left unfetched.
     """
     deadline = _workday_deadline(deadline, budget_seconds, clock)
 
@@ -494,18 +578,13 @@ def fetch_workday_details(
         if not isinstance(posting, dict):
             continue
         item["description"] = _clean_html(str(posting.get("jobDescription") or ""))
+        item["description_blocks"] = _block_text(str(posting.get("jobDescription") or ""))
         posted = _date_part(posting.get("startDate"))
         if posted:
             item["date"] = posted
             item["date_confidence"] = "high"
-
-
-def _search_workday(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Read a board and detail its first rows, all under one time budget."""
-    deadline = time.monotonic() + WORKDAY_BUDGET_SECONDS
-    items, info = search_workday_board(token, deadline=deadline)
-    fetch_workday_details(items[:WORKDAY_DEFAULT_DETAIL_ROLES], deadline=deadline)
-    return items, info
+            item["posted_date_true"] = True
+    return sum(1 for payload in payloads if payload is _OUT_OF_TIME)
 
 
 def parse_greenhouse_response(payload: dict[str, Any], board_token: str = "") -> list[dict[str, Any]]:
@@ -526,15 +605,18 @@ def parse_ashby_response(payload: dict[str, Any], slug: str = "") -> list[dict[s
             continue
         department = str(job.get("departmentName") or job.get("teamName") or "").strip()
         location = str(job.get("locationName") or job.get("location") or "").strip()
-        description = _clean_html(str(job.get("descriptionHtml") or job.get("descriptionPlain") or ""))
+        raw = str(job.get("descriptionHtml") or job.get("descriptionPlain") or "")
+        published = _date_part(job.get("publishedDate") or job.get("publishedAt"))
         items.append(_ats_item(
             provider=ATS_PROVIDER_ASHBY,
             slug=slug,
             ident=str(job.get("id") or job.get("jobId") or ""),
             title=str(job.get("title") or "").strip(),
             url=str(job.get("jobUrl") or job.get("applyUrl") or "").strip(),
-            description=description,
-            date=_date_part(job.get("publishedDate") or job.get("publishedAt")),
+            description=_clean_html(raw),
+            description_blocks=_block_text(raw),
+            date=published,
+            posted_date_true=bool(published),
             department=department,
             location=location,
         ))
@@ -550,14 +632,17 @@ def parse_lever_response(payload: Any, slug: str = "") -> list[dict[str, Any]]:
         categories = job.get("categories") if isinstance(job.get("categories"), dict) else {}
         department = str(categories.get("department") or categories.get("team") or "").strip()
         location = str(categories.get("location") or "").strip()
-        description = _clean_html(str(job.get("descriptionPlain") or job.get("description") or ""))
+        raw = str(job.get("descriptionPlain") or job.get("description") or "")
         items.append(_ats_item(
             provider=ATS_PROVIDER_LEVER,
             slug=slug,
             ident=str(job.get("id") or ""),
             title=str(job.get("text") or "").strip(),
             url=str(job.get("hostedUrl") or job.get("applyUrl") or "").strip(),
-            description=description,
+            description=_clean_html(raw),
+            description_blocks=_block_text(raw),
+            # When the posting was created, which can be well before it went
+            # public, so it is not counted as a posting date.
             date=_epoch_ms_to_date(job.get("createdAt")),
             department=department,
             location=location,
@@ -588,7 +673,9 @@ def parse_workable_response(payload: dict[str, Any], slug: str = "") -> list[dic
             title=str(job.get("title") or "").strip(),
             url=url,
             description=_clean_html(str(job.get("description") or "")),
+            description_blocks=_block_text(str(job.get("description") or "")),
             date=_date_part(job.get("published_on") or job.get("created_at")),
+            posted_date_true=bool(_date_part(job.get("published_on"))),
             department=str(job.get("department") or "").strip(),
             location=location,
         ))
@@ -626,6 +713,11 @@ def parse_smartrecruiters_response(payload: dict[str, Any], slug: str = "") -> l
             url=url,
             description="",
             date=_date_part(job.get("releasedDate") or job.get("createdOn")),
+            posted_date_true=bool(_date_part(job.get("releasedDate"))),
+            company_name=(
+                str(job["company"].get("name") or "").strip()
+                if isinstance(job.get("company"), dict) else ""
+            ),
             department=department,
             location=location,
         ))
@@ -780,7 +872,17 @@ def _ats_item(
     date: str | None,
     department: str,
     location: str,
+    description_blocks: str = "",
+    posted_date_true: bool = False,
+    company_name: str = "",
 ) -> dict[str, Any]:
+    """Build one board row.
+
+    ``description_blocks`` is the description with its paragraph and list
+    breaks kept, ``posted_date_true`` says ``date`` is the day the role was
+    first posted, and ``company_name`` is the company the board says it
+    belongs to, when the provider states one.
+    """
     prefix = {
         ATS_PROVIDER_ASHBY: "AB",
         ATS_PROVIDER_LEVER: "LV",
@@ -793,8 +895,11 @@ def _ats_item(
         "title": title,
         "url": url,
         "description": description,
+        "description_blocks": description_blocks,
         "date": date,
         "date_confidence": "high" if date else "low",
+        "posted_date_true": posted_date_true,
+        "company_name": company_name,
         "provider": provider,
         "board_token": slug,
         "department": department,
@@ -821,13 +926,19 @@ def _greenhouse_job_to_item(job: dict[str, Any], board_token: str) -> dict[str, 
     if isinstance(job.get("location"), dict):
         location = str(job["location"].get("name") or "").strip()
     description = _clean_html(str(job.get("content") or ""))
+    # ``updated_at`` moves on every edit, so only ``first_published`` says when
+    # a role was posted.
+    published = _date_part(job.get("first_published"))
     return {
         "id": f"GH{job.get('id') or job.get('internal_job_id') or board_token}",
         "title": str(job.get("title") or "").strip(),
         "url": str(job.get("absolute_url") or "").strip(),
         "description": description,
-        "date": _date_part(job.get("updated_at")),
-        "date_confidence": "high" if job.get("updated_at") else "low",
+        "description_blocks": _block_text(str(job.get("content") or "")),
+        "date": published,
+        "date_confidence": "high" if published else "low",
+        "posted_date_true": bool(published),
+        "company_name": str(job.get("company_name") or "").strip(),
         "provider": ATS_PROVIDER_GREENHOUSE,
         "board_token": board_token,
         "department": departments[0] if departments else "",
@@ -924,6 +1035,17 @@ def _clean_html(value: str) -> str:
     value = re.sub(r"<[^>]+>", " ", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
+
+
+_BLOCK_END = re.compile(r"<(?:br|/p|/li|/div|/h[1-6]|/tr|/ul|/ol)\b[^>]*>", re.I)
+
+
+def _block_text(value: str) -> str:
+    """Like ``_clean_html``, but each paragraph, heading and list item keeps its own line."""
+    value = _BLOCK_END.sub("\n", unescape(value))
+    value = re.sub(r"<[^>]+>", " ", value)
+    lines = (" ".join(line.split()) for line in value.splitlines())
+    return "\n".join(line for line in lines if line)
 
 
 def _looks_like_careers_html(html: str) -> bool:
