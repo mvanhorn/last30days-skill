@@ -225,6 +225,7 @@ SOURCE_LABELS = {
     "tiktok": "TikTok",
     "instagram": "Instagram",
     "grounding": "Web",
+    "podcasts": "Podcasts",
     "hackernews": "Hacker News",
     "devto": "dev.to",
     "truthsocial": "Truth Social",
@@ -1798,6 +1799,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "truthsocial",
         "polymarket",
         "grounding",
+        "podcasts",
         "xiaohongshu",
         "github",
         "digg",
@@ -2969,6 +2971,14 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
             line = f"🌐 Web: {count_str} {plural}"
         out.append(line)
 
+    podcast_items = report.items_by_source.get("podcasts") or []
+    if podcast_items:
+        names = ", ".join(_top_actors_for_source("podcasts", podcast_items))
+        line = _footer_line_for_source("🎙️", "Podcasts", len(podcast_items), "episode", "")
+        if names:
+            line += f" - {names}"
+        out.append(line)
+
     # Only populated sources (>=1 item) get an emoji-tree line. A source that
     # returned zero items - whether it completed cleanly (NO_RESULTS) or failed
     # (rate-limited / unreachable / etc.) - is omitted from the user-facing
@@ -3502,6 +3512,7 @@ def _top_actor_summary(source: str, items: list[schema.SourceItem]) -> str | Non
     label = {
         "reddit": "communities",
         "grounding": "domains",
+        "podcasts": "shows",
         "youtube": "channels",
         "hackernews": "domains",
     }.get(source, "voices")
