@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -86,6 +87,42 @@ def set_credentials(auth_token: Optional[str], ct0: Optional[str]):
         _credentials['CT0'] = ct0
 
 
+# Browser-session failover: the browser that supplied the current session and
+# a callback that extracts the next browser's session after X rejects it.
+_session_browser: Optional[str] = None
+_next_session: Optional[Any] = None
+_session_lock = threading.Lock()
+
+
+def set_session_failover(browser: Optional[str], next_session: Optional[Any]) -> None:
+    """Register where the injected session came from and how to replace it.
+
+    ``next_session`` takes no arguments and returns ``(auth_token, ct0,
+    browser)`` for the next browser's session, or None when none is left.
+    """
+    global _session_browser, _next_session
+    with _session_lock:
+        _session_browser = browser
+        _next_session = next_session
+
+
+# X answers a search made with an expired or revoked session either with a
+# 401 "Could not authenticate you" (code 32) or, for the POST SearchTimeline
+# call, with HTTP 200 and a GraphQL "Internal server error" on the timeline.
+_SESSION_REJECTED_MARKERS = ("could not authenticate", "http 401", "\"code\":32")
+_SESSION_SUSPECT_MARKERS = ("internal server error",)
+
+
+def _session_rejected(error: str) -> bool:
+    text = error.lower()
+    return any(m in text for m in _SESSION_REJECTED_MARKERS)
+
+
+def _session_suspect(error: str) -> bool:
+    text = error.lower()
+    return _session_rejected(error) or any(m in text for m in _SESSION_SUSPECT_MARKERS)
+
+
 def _has_injected_credentials() -> bool:
     """Return True when both X session cookies were injected from config."""
     return bool(_credentials.get('AUTH_TOKEN') and _credentials.get('CT0'))
@@ -150,7 +187,10 @@ def classify_run_failure(detail: str) -> str:
         return health.SCHEMA_DRIFT
     if any(
         marker in text
-        for marker in ("cookie expired", "expired cookie", "unauthorized", "forbidden", "login required")
+        for marker in (
+            "cookie expired", "expired cookie", "unauthorized", "forbidden",
+            "login required", "could not authenticate", "session rejected",
+        )
     ):
         return health.AUTH_FAILED
     return http.classify_failure(message=detail)
@@ -376,6 +416,97 @@ def _invalid_json_error(
 
 
 def _run_bird_search(
+    query: str,
+    count: int,
+    timeout: int,
+    deadline: Optional[float] = None,
+    cancel: Any = None,
+) -> Dict[str, Any]:
+    """Run one search, moving to the next browser's X session on rejection.
+
+    When X rejects the injected browser session (see ``_session_suspect``)
+    and another configured browser holds a different complete session, the
+    search is retried with that session, which then stays injected for the
+    rest of the run. Without a usable alternate, the error names the browser
+    whose session failed so the report says what to fix.
+    """
+    while True:
+        started_with = _credentials.get('AUTH_TOKEN')
+        response = _run_bird_search_once(query, count, timeout, deadline=deadline, cancel=cancel)
+        error = str(response.get("error") or "") if isinstance(response, dict) else ""
+        if not error or not _session_suspect(error):
+            return response
+        if cancel is not None and cancel.is_set():
+            return response
+        failed_browser = _session_browser
+        # Never start browser reads (possible Keychain prompts) once the
+        # search budget can no longer fit a retry.
+        if deadline is not None and _clamped_bird_timeout(timeout, deadline) is None:
+            return _annotate_session_error(response, error, failed_browser)
+        wait = -1 if deadline is None else max(0.0, deadline - time.monotonic())
+        if not _session_lock.acquire(timeout=wait):
+            return _annotate_session_error(response, error, failed_browser)
+        try:
+            if _credentials.get('AUTH_TOKEN') != started_with:
+                switched = True  # another search already moved to a new session
+            else:
+                switched = False
+                failed_browser = _session_browser
+                nxt = (
+                    _next_session(deadline=deadline, cancel=cancel)
+                    if _next_session is not None else None
+                )
+                if nxt:
+                    auth_token, ct0, browser = nxt
+                    set_credentials(auth_token, ct0)
+                    _session_browser_update(browser)
+                    log.source_log(
+                        "X/bird",
+                        f"X rejected the {failed_browser} session; retrying with {browser} cookies",
+                        tty_only=False,
+                    )
+                    switched = True
+        finally:
+            _session_lock.release()
+        if switched:
+            timeout = _clamped_bird_timeout(timeout, deadline)
+            if timeout is None:
+                return response
+            continue
+        return _annotate_session_error(response, error, failed_browser)
+
+
+def _annotate_session_error(
+    response: Dict[str, Any], error: str, failed_browser: Optional[str]
+) -> Dict[str, Any]:
+    """Name the browser whose X session failed so the report says what to fix."""
+    if not failed_browser:
+        return response
+    if _session_rejected(error):
+        return {
+            **response,
+            "error": (
+                f"X session rejected (cookies from {failed_browser}): {error}. "
+                f"Log in to x.com again in {failed_browser}, or set FROM_BROWSER "
+                "to the browser you use for X."
+            ),
+        }
+    return {
+        **response,
+        "error": (
+            f"{error} (X can return this when the {failed_browser} session "
+            f"is expired; if it persists, log in to x.com again in "
+            f"{failed_browser} or set FROM_BROWSER to the browser you use for X)"
+        ),
+    }
+
+
+def _session_browser_update(browser: str) -> None:
+    global _session_browser
+    _session_browser = browser
+
+
+def _run_bird_search_once(
     query: str,
     count: int,
     timeout: int,
