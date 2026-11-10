@@ -98,7 +98,8 @@ def test_eligible_questions_are_listed_by_id_kind_and_date_only():
         HEADING,
         "",
         "Close the brief with a `Next 30 days:` section: one or two predictions, each on one "
-        "question listed here, logged with `forecast add`. The synthesis reference has the "
+        "question listed here that this run's evidence supports a call on, logged with "
+        "`forecast add`; a question it does not is the item to watch. The synthesis reference has the "
         "rules. Each question's text is in the Open Questions list under the same id; a question missing here is over 90 days out, all but settled, or already called.",
         "",
         f"- Q1 [market] {_day(20)}",
@@ -430,7 +431,7 @@ def test_the_synthesis_reference_names_the_baseline_retry_and_fallback_rules():
         "one specific event a stranger could verify on the question's date",
         "It is not already decided",
         "names a real page and the field or event on that page that settles the call",
-        "fix or drop that prediction and resubmit once",
+        "Never change a probability or a baseline to get past a refusal",
         "A prediction is logged only when the engine printed it with an id",
         "say in one short clause that they are not being saved",
         "the claim, the probability as a percentage, the baseline it is measured against, "

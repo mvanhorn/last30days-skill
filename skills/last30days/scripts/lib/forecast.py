@@ -248,6 +248,20 @@ def _status_quo_fields(entry: dict[str, Any], probability: float, where: str) ->
             f"baseline; a call above {_pct(RESTATEMENT_STATUS_QUO_CEILING)} that nothing "
             "changes adds nothing. Show the dated item as the one to watch instead."
         )
+    claim_baseline = (
+        status_quo_probability if backs == "status_quo"
+        else round(1 - status_quo_probability, 6)
+    )
+    if not departs_from_baseline({"probability": probability, "baseline_probability": claim_baseline}):
+        # The host chose this baseline, so a call a few points off it is the
+        # same call: shading a near-certain outcome down to clear a ceiling
+        # is the padding this ledger refuses.
+        raise ForecastError(
+            f"{where}: {_pct(probability)} does not depart from the {_pct(claim_baseline)} "
+            f"baseline you stated for this claim; a call within "
+            f"{round(DEPARTURE_MARGIN * 100)} points of its own baseline says nothing new. "
+            "Show the dated item as the one to watch instead."
+        )
     resolution = entry.get("resolution")
     if not isinstance(resolution, dict):
         raise ForecastError(
@@ -261,10 +275,7 @@ def _status_quo_fields(entry: dict[str, Any], probability: float, where: str) ->
         "baseline_outcome": status_quo,
         # Stored on the claim's own outcome, like a market price, so the two
         # probabilities in a row are always comparable.
-        "baseline_probability": (
-            status_quo_probability if backs == "status_quo"
-            else round(1 - status_quo_probability, 6)
-        ),
+        "baseline_probability": claim_baseline,
     }
 
 

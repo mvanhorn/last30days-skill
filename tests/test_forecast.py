@@ -153,6 +153,30 @@ def test_market_call_within_five_points_of_the_price_is_a_restatement():
     assert row["baseline_probability"] == 0.55
 
 
+@pytest.mark.parametrize("probability,status_quo,backs,accepted", [
+    # A scheduled event "happening as listed", shaded from 92% to 80%: the same call.
+    (0.80, 0.92, "status_quo", False),
+    # Fifteen points under a near-certain baseline says something.
+    (0.80, 0.95, "status_quo", True),
+    # Backing the change at 65% when the status quo was given 20% (so 80% on the claim).
+    (0.65, 0.20, "change", True),
+    (0.75, 0.20, "change", False),
+    # The other side of even odds from the baseline always departs.
+    (0.55, 0.60, "change", True),
+])
+def test_a_non_market_call_must_depart_from_the_baseline_it_states(probability, status_quo, backs, accepted):
+    call = _event_call(
+        probability=probability, backs=backs,
+        baseline={"status_quo": "The summit is held on its listed dates", "probability": status_quo},
+    )
+    if accepted:
+        [row] = _validate(_payload(call))
+        assert forecast.departs_from_baseline(row) is True
+    else:
+        with pytest.raises(forecast.ForecastError, match="does not depart from"):
+            _validate(_payload(call))
+
+
 def test_non_market_call_states_a_status_quo_baseline():
     with pytest.raises(forecast.ForecastError, match="restates"):
         _validate(_payload(_event_call(probability=0.9)))
@@ -849,7 +873,7 @@ def test_same_event_reworded_on_a_later_run_returns_the_existing_call(monkeypatc
     # The later run lists the same dated page under a new id and new wording.
     later = {**_live_questions()[1], "id": "Q1", "question": "Will Widget Co finally tag 2.0?"}
     open_questions.store("Widget Co", [later])
-    reworded = _event_call(question="Q1", claim="Widget Co fails to tag 2.0 by its roadmap date", probability=0.75)
+    reworded = _event_call(question="Q1", claim="Widget Co fails to tag 2.0 by its roadmap date", probability=0.55)
     rc, out, _ = _add(monkeypatch, capsys, tmp_path, _live_payload(reworded))
     assert rc == 0 and "Already in the ledger" in out and "#1 [open" in out and "Logged to" not in out
     assert _open_rows(tmp_path / "research.db") == 1

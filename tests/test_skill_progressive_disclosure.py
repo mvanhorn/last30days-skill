@@ -60,7 +60,7 @@ def test_configured_user_without_global_marker_has_a_bounded_setup_check():
     # room for a route to anywhere else. The rise is the measured addition
     # after trimming, rounded up to the next 100. The 32,000-byte root budget
     # and the 180,000-byte standard path above are unchanged.
-    assert total <= 196_900, f"configured path without a global marker loads {total} bytes"
+    assert total <= 197_700, f"configured path without a global marker loads {total} bytes"
 
 
 def test_existing_users_can_load_repair_without_restarting_onboarding():
