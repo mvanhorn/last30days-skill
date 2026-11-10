@@ -1516,6 +1516,8 @@ def _render_resolved_entities_block(
             ticker_display = f" | Ticker {ticker}"
             if resolved.get("company_via_person") and resolved.get("company"):
                 ticker_display += f" (via {resolved['company']})"
+            elif resolved.get("company_source") == "yahoo-backup":
+                ticker_display += " (Yahoo match)"
 
         out.append(
             f"- **{label}**: X {x_display} | Subs {subs_display} | "

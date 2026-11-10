@@ -15,7 +15,9 @@ worse than none, so every step that is not certain returns nothing:
   the symbols of the current listings, for a caller that can confirm one of
   them against a second source. A candidate is never a ticker on its own.
 
-Any error, timeout or unexpected response returns nothing and logs once.
+Any error, timeout or unexpected response returns nothing and logs once. That
+nothing is a ``FailedLookup``, so a caller can tell "Wikidata did not answer"
+from "Wikidata answered and nothing is certain".
 """
 
 from __future__ import annotations
@@ -60,6 +62,11 @@ _COMMON_TECH_TERMS = frozenset({
 })
 
 
+class FailedLookup(dict):
+    """The empty result of a lookup that failed, as opposed to one Wikidata
+    answered. It is an empty dict to every caller that does not ask."""
+
+
 def company_topic_likely(topic: str) -> bool:
     """Whether a topic is shaped like a company or a person's name.
 
@@ -99,8 +106,9 @@ def resolve_company(topic: str) -> dict[str, Any]:
     ``ticker``, ``exchange``, ``ticker_candidates`` (the current listings'
     symbols, only when the company is certain and its ticker is not), and
     ``company_via_person`` (True) when the topic is the person who leads the
-    company. An empty dict means nothing is certain. No request is made for a
-    topic that is not company-shaped.
+    company. An empty dict means nothing is certain; it is a ``FailedLookup``
+    when the lookup itself failed. No request is made for a topic that is not
+    company-shaped.
     """
     if not company_topic_likely(topic):
         return {}
@@ -112,7 +120,7 @@ def resolve_company(topic: str) -> dict[str, Any]:
             f"Wikidata lookup failed for {topic!r}: {type(exc).__name__}: {exc}",
             tty_only=False,
         )
-        return {}
+        return FailedLookup()
 
 
 def _resolve(topic: str) -> dict[str, Any]:

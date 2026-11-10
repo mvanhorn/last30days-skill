@@ -25,6 +25,14 @@ All comparisons ignore case. ``autocomplete`` only ever confirms a symbol the
 resolver supplied: on its own it returned a fund for "Stripe" and a Swedish
 retailer for "Rust". A symbol that cannot be confirmed gives no line.
 
+The one exception is ``backup_company``, for a topic whose Wikidata lookup
+failed (not one Wikidata answered with nothing). ``autocomplete`` is asked for
+the topic itself and only its first equity is looked at. It is taken when its
+symbol has no exchange suffix and its name is the topic once case, punctuation
+and trailing corporate designators ("Tesla, Inc.", "NVIDIA Corporation") are
+set aside. That result carries ``company_source`` of ``yahoo-backup`` and its
+ticker is charted as it is.
+
 Surface choice: ``--json``, never ``--agent``. ``--agent`` implies
 ``--compact``, which empties records on older Printing Press binaries (see
 ``lib/techmeme.py``).
@@ -45,6 +53,7 @@ raises.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import threading
 from concurrent.futures import Future
@@ -65,6 +74,18 @@ TOP_MOVES = 3
 _US_EXCHANGES = frozenset({
     "nasdaq", "new york stock exchange", "nyse american", "nyse arca",
 })
+
+# ``company_source`` of a company found by ``backup_company``.
+BACKUP_SOURCE = "yahoo-backup"
+
+# Words dropped from the end of a company name before it is compared with the
+# topic. "publ" is what is left of "AB (publ)" and "the" of ", The".
+_DESIGNATORS = frozenset({
+    "inc", "incorporated", "corp", "corporation", "co", "company", "ltd",
+    "limited", "plc", "ag", "sa", "nv", "ab", "publ", "se", "holdings",
+    "holding", "group", "the",
+})
+_SHARE_CLASSES = frozenset({"a", "b", "c"})
 
 # One fetch per symbol and window for the life of the process: the entities of
 # a comparison run on threads and each asks for the same S&P 500 window. The
@@ -113,29 +134,87 @@ def _run_cli(args: list[str]) -> dict[str, Any]:
         return {"error": f"json decode: {exc}"}
 
 
+def _equities(query: str) -> list[tuple[str, str]]:
+    """The ``(symbol, name)`` of each equity ``autocomplete`` lists for the
+    query, in its order. Raises ``SymbolSearchFailed`` when the call failed or
+    its answer could not be read."""
+    response = _run_cli(["autocomplete", "--query", query])
+    if "error" in response:
+        raise SymbolSearchFailed(f"symbol search for {query!r} failed: {response['error']}")
+    try:
+        rows = response["data"]["results"]["ResultSet"]["Result"]
+        if not isinstance(rows, list):
+            raise TypeError(f"Result is {type(rows).__name__}, not a list")
+        return [
+            (str(row.get("symbol") or "").strip(), str(row.get("name") or ""))
+            for row in rows
+            if str(row.get("typeDisp") or "").casefold() == "equity"
+        ]
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise SymbolSearchFailed(
+            f"symbol search for {query!r}: schema: unexpected autocomplete response ({exc!r})"
+        ) from exc
+
+
 def _first_equity(company: str, accept) -> str | None:
     """The first equity ``autocomplete`` lists for the company that ``accept``
     takes, or None when it lists none. ``accept`` gets the symbol in upper
     case. Raises ``SymbolSearchFailed`` when the call failed or its answer
     could not be read."""
-    response = _run_cli(["autocomplete", "--query", company])
-    if "error" in response:
-        raise SymbolSearchFailed(f"symbol search for {company!r} failed: {response['error']}")
-    try:
-        rows = response["data"]["results"]["ResultSet"]["Result"]
-        if not isinstance(rows, list):
-            raise TypeError(f"Result is {type(rows).__name__}, not a list")
-        for row in rows:
-            if str(row.get("typeDisp") or "").casefold() != "equity":
-                continue
-            symbol = str(row.get("symbol") or "").strip()
-            if accept(symbol.upper()):
-                return symbol
-    except (AttributeError, KeyError, TypeError) as exc:
-        raise SymbolSearchFailed(
-            f"symbol search for {company!r}: schema: unexpected autocomplete response ({exc!r})"
-        ) from exc
+    for symbol, _name in _equities(company):
+        if accept(symbol.upper()):
+            return symbol
     return None
+
+
+def _name_key(name: str) -> str:
+    """A company name for comparison: case-folded, without punctuation, and
+    without the corporate designators and share class at its end. The last
+    word left is never dropped."""
+    text = re.sub(r"[.'\u2019]", "", name.casefold())
+    words = re.sub(r"[^\w\s]|_", " ", text).split()
+    while len(words) > 1:
+        if len(words) > 2 and words[-2] == "class" and words[-1] in _SHARE_CLASSES:
+            del words[-2:]
+        elif words[-1] in _DESIGNATORS:
+            del words[-1]
+        else:
+            break
+    return " ".join(words)
+
+
+def _same_company_name(topic: str, name: str) -> bool:
+    key = _name_key(name)
+    return bool(key) and key == _name_key(topic)
+
+
+def backup_company(topic: str, config: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The company a topic names, from Yahoo's symbol search alone. For a
+    topic whose Wikidata lookup failed; the caller decides that.
+
+    None when the search was not run (``EXCLUDE_SOURCES`` names this source,
+    or the binary is absent). ``{}`` when it ran and gave no certain match,
+    which includes a search that failed. Otherwise ``company`` (the topic as
+    typed), ``ticker`` and ``company_source``. Never raises.
+    """
+    if is_excluded(config) or not _is_available():
+        return None
+    topic = " ".join(topic.split())
+    try:
+        equities = _equities(topic)
+    except SymbolSearchFailed as exc:
+        _log(f"backup {exc}")
+        return {}
+    except Exception as exc:
+        _log(f"backup symbol search for {topic!r} failed: {type(exc).__name__}: {exc}")
+        return {}
+    if not equities:
+        return {}
+    # Only the first equity: a later row is a guess among companies.
+    symbol, name = equities[0]
+    if not symbol or "." in symbol or not _same_company_name(topic, name):
+        return {}
+    return {"company": topic, "ticker": symbol.upper(), "company_source": BACKUP_SOURCE}
 
 
 def _confirmed_symbol(company: dict[str, Any]) -> str | None:
@@ -145,6 +224,10 @@ def _confirmed_symbol(company: dict[str, Any]) -> str | None:
     ticker = str(company.get("ticker") or "").strip().upper()
     if ticker:
         if str(company.get("exchange") or "").casefold() in _US_EXCHANGES:
+            return ticker
+        # The backup took this symbol from Yahoo itself and only without an
+        # exchange suffix, so it is already Yahoo's symbol.
+        if company.get("company_source") == BACKUP_SOURCE:
             return ticker
         if not name:
             return None

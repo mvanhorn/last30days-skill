@@ -14,7 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from lib import health, render, schema, yahoo_finance
+import last30days as cli
+from lib import company_resolve, health, http, render, schema, yahoo_finance
+from tests.test_company_resolve import FakeWikidata
 from tests.test_render_v3 import sample_report
 
 NVDA_CLOSES = [
@@ -708,3 +710,242 @@ def test_a_fetch_that_raises_is_not_remembered(monkeypatch):
     with pytest.raises(OSError):
         yahoo_finance._fetch_window("NVDA", "2026-10-11", "2026-11-10")
     assert yahoo_finance._fetch_window("NVDA", "2026-10-11", "2026-11-10") == {"bars": [], "currency": "USD"}
+
+
+# The backup: Yahoo's symbol search, asked for the topic itself, only when the
+# Wikidata lookup failed.
+
+RATE_LIMITED = http.HTTPError("HTTP 429: Too Many Requests", status_code=429)
+TIMED_OUT = http.HTTPError("Request timed out")
+BACKUP_USED = "wikidata failed; yahoo backup used"
+NO_BACKUP_MATCH = "wikidata failed; no backup match"
+BACKUP_NOT_RUN = "wikidata failed; backup not run"
+TSLA_ROWS = [("TSLA", "Tesla, Inc.", "Equity"), ("STSLA=F", "Tesla, Inc Single Stock futures", "Futures")]
+
+
+def _named(*rows):
+    return {"meta": {"source": "live"}, "results": {"ResultSet": {"Result": [
+        {"symbol": symbol, "name": name, "typeDisp": kind, "exchDisp": "-"}
+        for symbol, name, kind in rows
+    ]}}}
+
+
+def _company_after(monkeypatch, topic, *, error=RATE_LIMITED, config=None, mock_run=False, **install_kwargs):
+    """What the engine resolves for a topic, with Wikidata failing unless
+    ``error`` is None and the price CLI answering from ``install_kwargs``."""
+    fake = _install(monkeypatch, **install_kwargs)
+    wikidata = FakeWikidata(error=error)
+    monkeypatch.setattr(company_resolve.http, "get", wikidata)
+    company = cli._resolved_company(topic, mock=mock_run, config=config or {})
+    return company, fake, wikidata
+
+
+@pytest.mark.parametrize("error", [RATE_LIMITED, TIMED_OUT], ids=["http-429", "timeout"])
+def test_backup_gives_tesla_its_ticker_and_the_price_line(monkeypatch, error):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Tesla", error=error,
+        matches={"Tesla": _named(*TSLA_ROWS)},
+        charts={"TSLA": _chart("TSLA", RISING_CLOSES), "^GSPC": _chart("^GSPC", SP500_CLOSES)},
+    )
+
+    assert company == {
+        "company": "Tesla", "ticker": "TSLA", "company_source": "yahoo-backup",
+        "company_lookup": BACKUP_USED,
+    }
+    assert len(wikidata.calls) == 1
+    report = _report()
+    yahoo_finance.attach_market_data(report, company)
+    assert _footer(report) == [
+        "📈 Yahoo Finance: TSLA +10.0% in the L30 │ $100.00 → $110.00 │ "
+        "S&P 500 -3.9% │ best day Nov 10 +5.8%"
+    ]
+    # One symbol search, for the topic; the accepted symbol is not searched again.
+    assert [cmd[1:4] for cmd in fake.calls if cmd[1] == "autocomplete"] == [
+        ["autocomplete", "--query", "Tesla"]
+    ]
+    assert fake.charted() == ["TSLA", "^GSPC"]
+
+
+def test_backup_accepts_a_name_that_differs_by_case_and_designator(monkeypatch):
+    company, _fake, _wikidata = _company_after(
+        monkeypatch, "Nvidia", matches={"Nvidia": _named(("NVDA", "NVIDIA Corporation", "Equity"))},
+    )
+
+    assert (company["company"], company["ticker"]) == ("Nvidia", "NVDA")
+    assert company["company_source"] == "yahoo-backup"
+    assert "exchange" not in company and "company_site" not in company
+
+
+@pytest.mark.parametrize(
+    "topic,rows",
+    [
+        ("Rust", [("RUSTA.ST", "Rusta AB (publ)", "Equity")]),
+        ("Stripe", [("STRIZZX", "Stripe Fund", "Fund"), ("0P0000X8PD.F", "Stripe", "Fund")]),
+        (
+            "Apple",
+            [("APLE", "Apple Hospitality REIT, Inc.", "Equity"), ("AAPL", "Apple Inc.", "Equity")],
+        ),
+        ("Toyota", [("7203.T", "Toyota Motor Corporation", "Equity")]),
+        ("Toyota", [("7203.T", "Toyota", "Equity"), ("TM", "Toyota", "Equity")]),
+        ("Jensen Huang", []),
+    ],
+    ids=[
+        "rust-is-not-rusta", "funds-only", "name-only-contains-the-topic",
+        "foreign-listing", "foreign-listing-with-the-same-name", "no-results",
+    ],
+)
+def test_backup_rejects_anything_but_an_exact_us_match_on_the_first_equity(monkeypatch, topic, rows):
+    company, fake, _wikidata = _company_after(monkeypatch, topic, matches={topic: _named(*rows)})
+
+    assert company == {"company_lookup": NO_BACKUP_MATCH}
+    assert len(fake.calls) == 1
+    report = _report()
+    yahoo_finance.attach_market_data(report, company)
+    assert _footer(report) == []
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Tesla", "TESLA INC", "Tesla, Inc.", "Tesla Incorporated", "Tesla Corp.", "Tesla Corporation",
+        "Tesla Co.", "Tesla Company", "Tesla Ltd.", "Tesla Limited", "Tesla PLC", "Tesla plc",
+        "Tesla AG", "Tesla SA", "Tesla S.A.", "Tesla NV", "Tesla N.V.", "Tesla AB",
+        "Tesla AB (publ)", "Tesla SE", "Tesla Holdings", "Tesla Holding", "Tesla Group",
+        "Tesla, Inc. Class A", "Tesla Inc Class C", "Tesla Holdings Co., Ltd.", "Tesla, The",
+        "  tesla,  inc. ",
+    ],
+)
+def test_backup_name_match_ignores_case_punctuation_and_trailing_designators(name):
+    assert yahoo_finance._same_company_name("Tesla", name)
+
+
+@pytest.mark.parametrize(
+    "topic,name",
+    [
+        ("Rust", "Rusta AB (publ)"),
+        ("Apple", "Apple Hospitality REIT, Inc."),
+        ("Tesla", "Tesla Motors, Inc."),
+        ("Tesla", "Inc. Tesla"),
+        ("Tesla", ""),
+        ("Group", "Inc."),
+    ],
+)
+def test_backup_name_match_refuses_any_other_name(topic, name):
+    assert not yahoo_finance._same_company_name(topic, name)
+
+
+def test_wikidata_answering_nothing_never_reaches_the_backup(monkeypatch):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Rust", error=None, matches={"Rust": _named(("RUST", "Rust", "Equity"))},
+    )
+
+    assert company == {}
+    assert wikidata.calls
+    assert fake.calls == []
+
+
+def test_backup_without_the_binary_gives_nothing(monkeypatch):
+    company, fake, _wikidata = _company_after(monkeypatch, "Tesla", available=False)
+
+    assert company == {"company_lookup": BACKUP_NOT_RUN}
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("excluded", ["yahoo_finance", "reddit, Yahoo_Finance ,x"])
+def test_backup_is_not_run_when_yahoo_finance_is_excluded(monkeypatch, excluded):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Tesla", config={"EXCLUDE_SOURCES": excluded},
+        matches={"Tesla": _named(*TSLA_ROWS)},
+    )
+
+    assert company == {"company_lookup": BACKUP_NOT_RUN}
+    assert len(wikidata.calls) == 1
+    assert fake.calls == []
+
+
+def test_a_topic_that_is_not_company_shaped_reaches_neither_wikidata_nor_the_cli(monkeypatch):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "how to deploy on Fly.io",
+        matches={"how to deploy on Fly.io": _named(("FLY", "how to deploy on Fly.io", "Equity"))},
+    )
+
+    assert company == {}
+    assert wikidata.calls == []
+    assert fake.calls == []
+
+
+def test_mock_run_reaches_neither_wikidata_nor_the_backup(monkeypatch):
+    company, fake, wikidata = _company_after(
+        monkeypatch, "Tesla", mock_run=True, matches={"Tesla": _named(*TSLA_ROWS)},
+    )
+
+    assert company == {}
+    assert wikidata.calls == []
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        _failed("GET /v6/finance/autocomplete returned HTTP 429: Too Many Requests", code=7),
+        {"meta": {"source": "live"}, "results": {}},
+    ],
+    ids=["cli-error", "unexpected-shape"],
+)
+def test_backup_search_that_fails_gives_nothing_and_does_not_raise(monkeypatch, answer):
+    company, _fake, _wikidata = _company_after(monkeypatch, "Tesla", matches={"Tesla": answer})
+
+    assert company == {"company_lookup": NO_BACKUP_MATCH}
+
+
+def test_failed_lookup_is_logged_once_when_the_backup_runs(monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        company_resolve.log, "source_log",
+        lambda source, message, **kwargs: logged.append((source, message, kwargs)),
+    )
+
+    _company_after(monkeypatch, "Tesla", matches={"Tesla": _named(*TSLA_ROWS)})
+
+    company_lines = [entry for entry in logged if entry[0] == "Company"]
+    assert len(company_lines) == 1
+    assert "Wikidata lookup failed for 'Tesla'" in company_lines[0][1]
+    assert company_lines[0][2] == {"tty_only": False}
+
+
+def test_engine_run_records_the_lookup_note_for_both_backup_outcomes(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(
+        charts={"MAIN": _chart("MAIN", _JUNE), "^GSPC": _chart("^GSPC", _JUNE)},
+        matches={
+            "MainBrand": _named(("MAIN", "MainBrand, Inc.", "Equity")),
+            "PeerOne": _named(("PONE.L", "PeerOne plc", "Equity")),
+        },
+    )
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake,
+        companies={
+            "MainBrand": company_resolve.FailedLookup(),
+            "PeerOne": company_resolve.FailedLookup(),
+        },
+    )
+
+    main = observed.reports["MainBrand"].artifacts["resolved"]
+    assert (main["company"], main["ticker"]) == ("MainBrand", "MAIN")
+    assert main["company_source"] == "yahoo-backup"
+    assert main["company_lookup"] == BACKUP_USED
+    assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "MAIN"
+    peer_one = observed.reports["PeerOne"].artifacts["resolved"]
+    assert peer_one["company_lookup"] == NO_BACKUP_MATCH
+    assert not {"company", "ticker", "company_source"} & set(peer_one)
+    assert "yahoo_finance" not in observed.reports["PeerOne"].artifacts
+    # Wikidata answered for PeerTwo, so there is no note and no symbol search.
+    assert "company_lookup" not in observed.reports["PeerTwo"].artifacts["resolved"]
+    assert sorted(cmd[3] for cmd in fake.calls if cmd[1] == "autocomplete") == ["MainBrand", "PeerOne"]
+    rows = render._render_resolved_entities_block(
+        [(name, observed.reports[name]) for name in ("MainBrand", "PeerOne")]
+    )
+    assert "Ticker MAIN (Yahoo match)" in rows[2]
+    assert "Ticker" not in rows[3]

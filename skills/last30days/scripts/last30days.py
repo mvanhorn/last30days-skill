@@ -1096,12 +1096,25 @@ _COMPANY_LANES = frozenset({yahoo_finance.SOURCE, "jobs"})
 
 def _resolved_company(entity: str, *, mock: bool, config: dict) -> dict:
     """Company fields for one entity's ``resolved`` artifact. Mock runs, and
-    runs that exclude every lane the company feeds, make no request."""
+    runs that exclude every lane the company feeds, make no request.
+
+    When the Wikidata lookup failed (not when it answered with nothing),
+    Yahoo's symbol search is asked for the topic instead, and
+    ``company_lookup`` says how that went."""
     if mock or _COMPANY_LANES <= env.exclude_sources(config):
         return {}
     company = company_resolve.resolve_company(entity)
+    if isinstance(company, company_resolve.FailedLookup):
+        backup = yahoo_finance.backup_company(entity, config)
+        if backup is None:
+            outcome = "backup not run"
+        else:
+            outcome = "yahoo backup used" if backup else "no backup match"
+        company = {**(backup or {}), "company_lookup": f"wikidata failed; {outcome}"}
     if company.get("company"):
         ticker = f", ticker {company['ticker']}" if company.get("ticker") else ""
+        if company.get("company_source") == yahoo_finance.BACKUP_SOURCE:
+            ticker += " (Yahoo match)"
         sys.stderr.write(f"[Resolve] {entity}: company {company['company']}{ticker}\n")
     return company
 
