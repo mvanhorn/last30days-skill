@@ -1297,10 +1297,12 @@ def next_x_browser_pair(
         if deadline is not None and deadline - _time.monotonic() < 2:
             return None
         browser = remaining.pop(0)
-        try:
-            cookies = cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
-        except Exception:
-            continue
+        budget = None if deadline is None else deadline - _time.monotonic() - 1
+        cookies = _bounded_cookie_read(cookie_extract, browser, spec, budget)
+        if cookies is _READ_TIMED_OUT:
+            # A Keychain lookup is still waiting; leave the rest for later
+            # rather than overrunning this search's budget.
+            return None
         if not cookie_extract.has_complete_pair(cookies, spec["cookies"]):
             continue
         if cookies["auth_token"] in state["rejected"]:
@@ -1310,6 +1312,37 @@ def next_x_browser_pair(
         _apply_x_pair(config, cookies["auth_token"], cookies["ct0"], "browser")
         return cookies["auth_token"], cookies["ct0"], browser
     return None
+
+
+_READ_TIMED_OUT = object()
+
+
+def _bounded_cookie_read(cookie_extract: Any, browser: str, spec: dict[str, Any], budget: float | None) -> Any:
+    """Read one browser's X cookies, waiting at most ``budget`` seconds.
+
+    A Chromium read can block on a Keychain lookup (up to its own 10s
+    timeout). With a budget the read runs on a daemon thread, and an unfinished
+    read returns ``_READ_TIMED_OUT`` so the caller is never held past its
+    deadline; the abandoned read finishes or times out on its own.
+    """
+    def read() -> Any:
+        try:
+            return cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
+        except Exception:
+            return None
+
+    if budget is None:
+        return read()
+    if budget <= 0:
+        return _READ_TIMED_OUT
+    import threading
+    result: list[Any] = []
+    worker = threading.Thread(target=lambda: result.append(read()), daemon=True)
+    worker.start()
+    worker.join(budget)
+    if worker.is_alive():
+        return _READ_TIMED_OUT
+    return result[0] if result else None
 
 
 def _inject_bird_credentials(config: dict[str, Any]) -> None:

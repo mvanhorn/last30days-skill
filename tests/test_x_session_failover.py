@@ -233,3 +233,23 @@ class TestGreptileRegressions:
             assert "session rejected (cookies from safari)" in response["error"]
         finally:
             bird_x._session_lock.release()
+
+    def test_slow_keychain_read_cannot_outlast_deadline(self):
+        import threading
+        import time
+        cfg = _discover(_config(), {"safari": DEAD})
+        release = threading.Event()
+
+        def slow_read(browser, domain, names):
+            release.wait(10)  # a Keychain prompt nobody answers
+            return LIVE
+
+        try:
+            with mock.patch("lib.cookie_extract.extract_cookies", side_effect=slow_read):
+                started = time.monotonic()
+                pair = env.next_x_browser_pair(cfg, deadline=time.monotonic() + 3.0)
+                elapsed = time.monotonic() - started
+        finally:
+            release.set()
+        assert pair is None
+        assert elapsed < 3.0
