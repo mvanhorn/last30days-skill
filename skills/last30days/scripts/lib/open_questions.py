@@ -68,8 +68,12 @@ KINDS = ("market", "event", "decision", "release")
 HOST_KINDS = ("event", "decision", "release")
 COUNTERS = (
     "bad-row", "bad-link", "undated", "past", "no-future-date", "excluded",
-    "same-event", "over-cap",
+    "unpriced", "same-event", "over-cap",
 )
+# Dated items the host or the web pass found are the topic's own calendar;
+# a sports or election topic can have hundreds of markets, so this many list
+# places are theirs before any market is considered.
+RESERVED_FOR_DATED_ITEMS = 6
 # One event can hold dozens of near-identical markets (a ladder of dates or
 # of candidates). Only the most undecided few are worth a prediction; the
 # rest would crowd every other question out of the list.
@@ -346,6 +350,11 @@ def _undecidedness(outcomes: list[list[Any]]) -> float:
     return max(0.0, 1.0 - abs(max(prices) - 0.5) * 2)
 
 
+def _is_unpriced(outcomes: list[list[Any]]) -> bool:
+    prices = [price for _, price in outcomes]
+    return len(prices) >= 2 and all(abs(price - 1 / len(prices)) < 0.005 for price in prices)
+
+
 def _is_settled(entry: dict[str, Any]) -> bool:
     prices = [price for _, price in entry.get("outcomes") or []]
     return bool(prices) and max(prices) >= SETTLED_PRICE
@@ -382,6 +391,9 @@ def build(
             kept.append(entry)
 
     candidates: list[tuple[str, float, dict[str, Any], Any, str]] = []
+    # Markets arrive loudest event first; that order decides which events
+    # get the list places left after the dated items.
+    event_rank: dict[str, int] = {}
     for market in markets:
         slug = _one_line(market.get("slug"), 200)
         question = _one_line(market.get("question"))
@@ -397,6 +409,12 @@ def build(
             dropped["past"] += 1
             continue
         outcomes = _outcomes(market.get("outcome_prices"))
+        if _is_unpriced(outcomes):
+            # A market sitting at exactly even odds has not been traded: it
+            # is a placeholder, and any outside number would look like an edge.
+            dropped["unpriced"] += 1
+            continue
+        event_rank.setdefault(event_url, len(event_rank))
         candidates.append((
             event_url,
             _undecidedness(outcomes),
@@ -410,6 +428,7 @@ def build(
             f"{question} {_one_line(market.get('event_title'))}",
         ))
     per_event: dict[str, int] = {}
+    loudness: dict[str, int] = {}
     # Most undecided first, so each event's quota goes to its open questions.
     for event_url, _, entry, identity, subject in sorted(
         candidates, key=lambda candidate: -candidate[1],
@@ -421,6 +440,7 @@ def build(
         admit(entry, identity, subject)
         if len(kept) > before:
             per_event[event_url] = per_event.get(event_url, 0) + 1
+            loudness[entry["key"]] = event_rank[event_url]
 
     for row in host_rows:
         question = _one_line(row.get("question")) if isinstance(row, dict) else ""
@@ -470,14 +490,25 @@ def build(
             text,
         )
 
-    ranked = sorted(
-        enumerate(kept),
-        key=lambda pair: (
-            _is_settled(pair[1]), pair[1]["date"], pair[1]["kind"] != "market", pair[0],
-        ),
+    dated = sorted(
+        (entry for entry in kept if entry["kind"] != "market"), key=lambda entry: entry["date"],
+    )[:RESERVED_FOR_DATED_ITEMS]
+    market_entries = sorted(
+        (entry for entry in kept if entry["kind"] == "market"),
+        key=lambda entry: (_is_settled(entry), loudness[entry["key"]], entry["date"]),
     )
-    entries = [entry for _, entry in ranked[:MAX_ENTRIES]]
-    dropped["over-cap"] = len(ranked) - len(entries)
+    chosen = dated + market_entries[: MAX_ENTRIES - len(dated)]
+    # Leftover places go to the next dated items rather than staying empty.
+    chosen_ids = {id(entry) for entry in chosen}
+    spare = sorted(
+        (entry for entry in kept if id(entry) not in chosen_ids), key=lambda entry: entry["date"],
+    )
+    chosen += spare[: MAX_ENTRIES - len(chosen)]
+    entries = sorted(
+        chosen,
+        key=lambda entry: (_is_settled(entry), entry["date"], entry["kind"] != "market"),
+    )
+    dropped["over-cap"] = len(kept) - len(entries)
     entries = [{"id": f"Q{position}", **entry, "related": []} for position, entry in enumerate(entries, 1)]
     # A market and a dated item on the same question are both kept; each
     # names the other so a prediction can cite the market as its baseline.

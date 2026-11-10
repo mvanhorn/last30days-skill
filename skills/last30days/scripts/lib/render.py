@@ -1085,8 +1085,9 @@ _OPEN_QUESTION_DROP_LABELS = (
     ("bad-link", "item", "without an http or https link"),
     ("bad-row", "malformed item", ""),
     ("excluded", "item", "on an excluded subject"),
+    ("unpriced", "untraded market", "still at even odds"),
     ("same-event", "more market", "in events already listed"),
-    ("over-cap", "later-dated item", "beyond the list limit"),
+    ("over-cap", "more item", "beyond the list limit"),
 )
 
 

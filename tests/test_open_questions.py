@@ -625,3 +625,46 @@ def test_an_all_but_settled_market_ranks_behind_every_open_question():
     assert [entry["key"].split(":")[0] + ":" + entry["kind"] for entry in listing["entries"]][-1] == "market:market"
     assert listing["entries"][-1]["key"] == "market:settled"
     assert listing["entries"][0]["key"] == "market:open"
+
+
+def test_an_untraded_market_at_even_odds_is_not_an_open_question():
+    listing = open_questions.build(today=TODAY, markets=[
+        _ladder_market("placeholder", 0.5, event="https://polymarket.com/event/game"),
+        _ladder_market("traded", 0.55, event="https://polymarket.com/event/other"),
+    ])
+    assert [entry["key"] for entry in listing["entries"]] == ["market:traded"]
+    assert listing["dropped"]["unpriced"] == 1
+
+
+def test_dated_items_keep_their_places_when_markets_are_plentiful():
+    # A sports topic: twenty single-market events closing this week, and three
+    # dated items further out that are the topic's real calendar.
+    markets = [
+        _ladder_market(f"game-{n}", 0.4, end="2026-11-12", event=f"https://polymarket.com/event/g{n}")
+        for n in range(20)
+    ]
+    rows = [
+        _row(question=f"Season milestone {n}", day=f"2026-12-0{n}", url=f"https://league.example/m{n}")
+        for n in (1, 4, 6)
+    ]
+    listing = open_questions.build(today=TODAY, markets=markets, host_rows=rows)
+    kinds = [entry["kind"] for entry in listing["entries"]]
+    assert kinds.count("event") == 3
+    assert len(listing["entries"]) == open_questions.MAX_ENTRIES
+    assert listing["dropped"]["over-cap"] == 20 + 3 - open_questions.MAX_ENTRIES
+
+
+def test_market_places_go_to_the_most_traded_events_not_the_soonest():
+    # markets_from_items hands markets over loudest event first.
+    markets = [
+        _ladder_market(f"m{n}", 0.4, end=f"2026-12-{10 + n:02d}", event=f"https://polymarket.com/event/e{n}")
+        for n in range(14)
+    ]
+    # The quietest events close soonest.
+    markets += [
+        _ladder_market(f"quiet{n}", 0.4, end="2026-11-11", event=f"https://polymarket.com/event/q{n}")
+        for n in range(5)
+    ]
+    listing = open_questions.build(today=TODAY, markets=markets)
+    keys = {entry["key"] for entry in listing["entries"]}
+    assert keys == {f"market:m{n}" for n in range(open_questions.MAX_ENTRIES)}
