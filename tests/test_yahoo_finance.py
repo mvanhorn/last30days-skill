@@ -8,6 +8,7 @@ for NVDA, 7203.T, ^GSPC, Tesla and Stripe.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -474,3 +475,236 @@ def test_price_window_is_the_thirty_days_ending_on_the_last_day(monkeypatch):
     )
     yahoo_finance.attach_market_data(_report(range_from="2026-11-03", range_to="2026-11-10"), {"ticker": "NVDA"})
     assert seen == [("2026-10-11", "2026-11-10")]
+
+
+@pytest.mark.parametrize("excluded", ["yahoo_finance", "reddit, Yahoo_Finance ,x"])
+def test_excluded_source_makes_no_cli_call_and_leaves_nothing(monkeypatch, excluded):
+    fake = _install(monkeypatch, charts=NVDA_CHARTS)
+    report = _report()
+
+    yahoo_finance.attach_market_data(report, NVIDIA, {"EXCLUDE_SOURCES": excluded})
+
+    assert fake.calls == []
+    assert _footer(report) == []
+    assert "yahoo_finance" not in report.artifacts
+    assert "yahoo_finance" not in report.source_status
+
+
+def test_other_exclusions_leave_the_price_line_on(monkeypatch):
+    fake = _install(monkeypatch, charts=NVDA_CHARTS)
+    report = _report()
+
+    yahoo_finance.attach_market_data(report, NVIDIA, {"EXCLUDE_SOURCES": "reddit,jobs"})
+
+    assert _footer(report) == [NVDA_LINE]
+    assert fake.charted() == ["NVDA", "^GSPC"]
+
+
+_JUNE = [("2026-06-01", 50.0), ("2026-06-15", 55.0), ("2026-06-30", 60.0)]
+_LISTED = {
+    "MainBrand": {"company": "MainBrand Inc.", "ticker": "MAIN", "exchange": "Nasdaq"},
+    "PeerOne": {"company": "PeerOne Corp.", "ticker": "PEER", "exchange": "Nasdaq"},
+}
+_JUNE_CHARTS = {
+    "MAIN": _chart("MAIN", _JUNE), "PEER": _chart("PEER", _JUNE), "^GSPC": _chart("^GSPC", _JUNE),
+}
+
+
+def test_engine_run_with_yahoo_finance_excluded_never_starts_the_cli(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(charts=_JUNE_CHARTS)
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake, companies=_LISTED,
+        config={"EXCLUDE_SOURCES": "yahoo_finance"},
+    )
+
+    assert fake.calls == []
+    for report in observed.reports.values():
+        assert "yahoo_finance" not in report.artifacts
+        assert "yahoo_finance" not in report.source_status
+    # Jobs can still run, so the company is still looked up.
+    assert observed.reports["MainBrand"].artifacts["resolved"]["ticker"] == "MAIN"
+    assert observed.reports["PeerOne"].artifacts["resolved"]["ticker"] == "PEER"
+
+
+def test_engine_run_with_both_company_lanes_excluded_skips_the_company_lookup(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(charts=_JUNE_CHARTS)
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake, companies=_LISTED,
+        config={"EXCLUDE_SOURCES": "jobs, yahoo_finance"},
+    )
+
+    assert observed.company_resolver.call_count == 0
+    assert fake.calls == []
+    for report in observed.reports.values():
+        assert "company" not in report.artifacts["resolved"]
+        assert "ticker" not in report.artifacts["resolved"]
+        assert "yahoo_finance" not in report.artifacts
+
+
+def test_engine_run_with_only_jobs_excluded_still_prices_the_company(monkeypatch, tmp_path):
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(charts=_JUNE_CHARTS)
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake, companies=_LISTED,
+        config={"EXCLUDE_SOURCES": "jobs"},
+    )
+
+    assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "MAIN"
+    assert observed.reports["PeerOne"].artifacts["yahoo_finance"]["symbol"] == "PEER"
+
+
+def test_explicit_search_list_keeps_the_price_line(monkeypatch, tmp_path):
+    """The price window is not a search source, so ``--search`` cannot name
+    it and does not switch it off; ``EXCLUDE_SOURCES`` is the off switch."""
+    from tests.competitor_cli_audit_helpers import run_competitor_cli
+
+    fake = FakeCli(charts=_JUNE_CHARTS)
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, market_cli=fake, companies=_LISTED,
+        args=["--search", "reddit"],
+    )
+
+    assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "MAIN"
+
+
+_TOYOTA = {"company": "Toyota", "ticker": "7203", "exchange": "Tokyo Stock Exchange"}
+
+
+@pytest.mark.parametrize(
+    "company,answer,state",
+    [
+        (TESLA, _failed("GET /v6/finance/autocomplete returned HTTP 500: upstream failure"), health.ERROR),
+        (
+            TESLA,
+            _failed("GET /v6/finance/autocomplete returned HTTP 429: Too Many Requests", code=7),
+            health.RATE_LIMITED,
+        ),
+        (TESLA, SimpleNamespace(returncode=0, stdout="", stderr=""), health.ERROR),
+        (TESLA, SimpleNamespace(returncode=0, stdout="<html>busy</html>", stderr=""), health.SCHEMA_DRIFT),
+        (TESLA, {"meta": {"source": "live"}, "results": {}}, health.SCHEMA_DRIFT),
+        (TESLA, {"results": {"ResultSet": {"Result": "TSLA"}}}, health.SCHEMA_DRIFT),
+        (_TOYOTA, _failed("GET /v6/finance/autocomplete returned HTTP 500: upstream failure"), health.ERROR),
+    ],
+    ids=[
+        "cli-error", "http-429", "empty-output", "not-json", "missing-result-set",
+        "rows-not-a-list", "foreign-listing",
+    ],
+)
+def test_failed_symbol_search_is_a_degraded_source_and_no_line(monkeypatch, company, answer, state):
+    report, fake = _attach(monkeypatch, company, matches={company["company"]: answer})
+
+    assert _footer(report) == []
+    assert "yahoo_finance" not in report.artifacts
+    outcome = report.source_status["yahoo_finance"]
+    assert outcome.state == state
+    assert outcome.items_returned == 0
+    assert company["company"] in outcome.detail
+    assert fake.charted() == []
+    assert "Yahoo Finance" in "\n".join(render._render_source_outcome_note(report))
+
+
+def test_symbol_search_that_times_out_is_a_degraded_source(monkeypatch):
+    def times_out(cmd, timeout):
+        raise yahoo_finance.subproc.SubprocTimeout(f"timed out after {timeout}s")
+
+    monkeypatch.setattr(yahoo_finance, "_is_available", lambda: True)
+    monkeypatch.setattr(yahoo_finance.subproc, "run_with_timeout", times_out)
+    report = _report()
+
+    yahoo_finance.attach_market_data(report, TESLA)
+
+    assert "yahoo_finance" not in report.artifacts
+    assert "Tesla" in report.source_status["yahoo_finance"].detail
+
+
+class _GatedCli:
+    """Chart answers for any symbol; a symbol in ``held`` waits for ``release``."""
+
+    def __init__(self, held=()):
+        self.held = set(held)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[str] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, cmd, timeout):
+        symbol = cmd[2]
+        with self._lock:
+            self.calls.append(symbol)
+        if symbol in self.held:
+            self.started.set()
+            assert self.release.wait(10), "the held fetch was never released"
+        return _ok(_chart(symbol, RISING_CLOSES))
+
+
+def _fetch_on_thread(symbol, results):
+    def work():
+        results.append((symbol, yahoo_finance._fetch_window(symbol, "2026-10-11", "2026-11-10")))
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_a_slow_symbol_does_not_hold_up_another_symbol(monkeypatch):
+    cli = _GatedCli(held={"SLOW"})
+    monkeypatch.setattr(yahoo_finance.subproc, "run_with_timeout", cli)
+    results: list = []
+
+    slow = _fetch_on_thread("SLOW", results)
+    try:
+        assert cli.started.wait(5)
+        fast = _fetch_on_thread("FAST", results)
+        fast.join(2)
+        finished_while_slow_was_held = not fast.is_alive()
+    finally:
+        cli.release.set()
+    slow.join(5)
+    fast.join(5)
+
+    assert finished_while_slow_was_held
+    assert [symbol for symbol, _window in results] == ["FAST", "SLOW"]
+    assert all(len(window["bars"]) == 3 for _symbol, window in results)
+
+
+def test_two_threads_asking_for_one_symbol_start_one_fetch(monkeypatch):
+    cli = _GatedCli(held={"NVDA"})
+    monkeypatch.setattr(yahoo_finance.subproc, "run_with_timeout", cli)
+    results: list = []
+
+    first = _fetch_on_thread("NVDA", results)
+    try:
+        assert cli.started.wait(5)
+        second = _fetch_on_thread("NVDA", results)
+        # The second request arrives while the first is still at the CLI.
+        second.join(0.2)
+        assert second.is_alive()
+    finally:
+        cli.release.set()
+    first.join(5)
+    second.join(5)
+
+    assert cli.calls == ["NVDA"]
+    assert len(results) == 2
+    assert results[0][1] == results[1][1]
+    assert len(results[0][1]["bars"]) == 3
+
+
+def test_a_fetch_that_raises_is_not_remembered(monkeypatch):
+    answers = [OSError("exec format error")]
+
+    def flaky(symbol, range_from, range_to):
+        if answers:
+            raise answers.pop()
+        return {"bars": [], "currency": "USD"}
+
+    monkeypatch.setattr(yahoo_finance, "_fetch_window_uncached", flaky)
+
+    with pytest.raises(OSError):
+        yahoo_finance._fetch_window("NVDA", "2026-10-11", "2026-11-10")
+    assert yahoo_finance._fetch_window("NVDA", "2026-10-11", "2026-11-10") == {"bars": [], "currency": "USD"}

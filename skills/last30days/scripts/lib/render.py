@@ -2642,8 +2642,8 @@ def _polymarket_top_markets(
         reverse=True,
     )
 
-    # (name, pct, question, name is the bare descriptor)
-    markets: list[tuple[str, str, str, bool]] = []
+    # (name, pct, question, label when the name is not the bare descriptor)
+    markets: list[tuple[str, str, str, str]] = []
     for item in sorted_items[:limit]:
         outcome_prices = item.metadata.get("outcome_prices") or []
         if not outcome_prices:
@@ -2663,26 +2663,29 @@ def _polymarket_top_markets(
         name, is_descriptor = _polymarket_market_name(question, lead_name)
         if not name:
             continue
-        markets.append((name, pct, question, is_descriptor))
+        label = "" if is_descriptor else str(lead_name).strip()
+        markets.append((name, pct, question, label))
 
-    # Different questions can shorten to one descriptor (a deadline ladder:
-    # "... by March 31, 2027", "... by June 30, 2027"). Name those by the
-    # whole question so they read apart; a market listed twice is said once.
+    # Different questions can shorten to one name (a deadline ladder:
+    # "... by March 31, 2027", "... by June 30, 2027"), with or without an
+    # outcome label after it. Name those by the whole question so they read
+    # apart; only the same question listed twice is said once.
     questions_by_name: dict[str, set[str]] = {}
-    for name, _pct, question, _is_descriptor in markets:
+    for name, _pct, question, _label in markets:
         questions_by_name.setdefault(_polymarket_name_key(name), set()).add(
             _polymarket_name_key(question)
         )
 
     summaries: list[str] = []
-    seen: set[str] = set()
-    for name, pct, question, is_descriptor in markets:
-        if is_descriptor and len(questions_by_name[_polymarket_name_key(name)]) > 1:
+    seen: set[tuple[str, str]] = set()
+    for name, pct, question, label in markets:
+        if len(questions_by_name[_polymarket_name_key(name)]) > 1:
             whole = question.rstrip("?").strip()
             if whole.lower().startswith("will "):
                 whole = whole[5:].strip()
-            name = whole or name
-        key = _polymarket_name_key(name)
+            if whole:
+                name = f"{whole}: {label}" if label else whole
+        key = (_polymarket_name_key(question), _polymarket_name_key(name))
         if key in seen:
             continue
         seen.add(key)
