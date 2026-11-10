@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -31,6 +33,21 @@ ATS_PROVIDER_ASHBY = "ashby"
 ATS_PROVIDER_LEVER = "lever"
 ATS_PROVIDER_WORKABLE = "workable"
 ATS_PROVIDER_SMARTRECRUITERS = "smartrecruiters"
+ATS_PROVIDER_WORKDAY = "workday"
+
+# Workday's public listing endpoint serves 20 rows per call and stops at 2,000
+# rows however large the board is.
+WORKDAY_PAGE_SIZE = 20
+WORKDAY_ROW_CEILING = 2000
+# One page takes about a second, so a full 2,000-row board is about 100 s read
+# one page at a time. Eight at once reads it in roughly 15 s.
+WORKDAY_MAX_WORKERS = 8
+# Wall time allowed for one board: the listing plus the detail calls.
+WORKDAY_BUDGET_SECONDS = 45.0
+# Descriptions and true posted dates cost one call per role, so a default run
+# fetches them only for the first rows of the listing: ten calls, about two
+# seconds at eight at once.
+WORKDAY_DEFAULT_DETAIL_ROLES = 10
 
 # Detection patterns: map an ATS embed/link found on a careers page to
 # (provider, slug). The published slug is authoritative - this is why discovery
@@ -45,10 +62,16 @@ _ATS_LINK_PATTERNS: list[tuple[str, str]] = [
     (ATS_PROVIDER_WORKABLE, r"([A-Za-z0-9_-]+)\.workable\.com"),
     (ATS_PROVIDER_SMARTRECRUITERS, r"(?:careers|jobs)\.smartrecruiters\.com/([A-Za-z0-9_.-]+)"),
     (ATS_PROVIDER_SMARTRECRUITERS, r"api\.smartrecruiters\.com/v1/companies/([A-Za-z0-9_.-]+)"),
+    # Workday needs three parts to rebuild its endpoints: tenant, host number
+    # and site. The site may follow a locale segment such as /en-US/.
+    (
+        ATS_PROVIDER_WORKDAY,
+        r"([A-Za-z0-9_-]+)\.(wd[0-9]+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Za-z]{2}/)?([A-Za-z0-9_-]+)",
+    ),
 ]
 
 # Tokens that show up in ATS URLs but are never real board slugs.
-_SLUG_STOPWORDS = {"embed", "job_board", "v1", "v0", "api", "posting-api", "boards", "jobs", "job-boards", "www"}
+_SLUG_STOPWORDS = {"embed", "job_board", "v1", "v0", "api", "posting-api", "boards", "jobs", "job-boards", "www", "wday"}
 
 
 def search_jobs(
@@ -85,13 +108,19 @@ def search_jobs(
 
     # --- Tier 1: call the resolved ATS API. Trust it only if it has jobs. ---
     if provider and slug:
+        board: dict[str, Any] = {}
         try:
-            items = _fetch_ats(provider, slug)
+            if provider == ATS_PROVIDER_WORKDAY:
+                items, board = _search_workday(slug)
+            else:
+                items = _fetch_ats(provider, slug)
         except http.HTTPError:
             items = []
         if items:
-            return items, _artifact("jobs", company, attempted, items, explicit,
-                                    tier="ats", provider=provider, slug=slug)
+            artifact = _artifact("jobs", company, attempted, items, explicit,
+                                 tier="ats", provider=provider, slug=slug)
+            artifact.update(board)
+            return items, artifact
 
     # --- Tier 2: parse JSON-LD JobPosting off the careers page. ---
     if careers_html:
@@ -179,6 +208,7 @@ def _search_for_careers_url(
         lowered = url.lower()
         if any(token in lowered for token in (
             "career", "/jobs", "ashbyhq", "greenhouse", "lever.co", "workable", "smartrecruiters",
+            "myworkdayjobs",
         )):
             return url
     return None
@@ -190,9 +220,13 @@ def detect_ats(html: str) -> tuple[str | None, str | None]:
         return None, None
     for provider, pattern in _ATS_LINK_PATTERNS:
         for match in re.finditer(pattern, html):
-            slug = match.group(1).strip().strip("/.")
-            if slug and slug.lower() not in _SLUG_STOPWORDS:
-                return provider, slug
+            slug = match.group(match.lastindex or 1).strip().strip("/.")
+            if not slug or slug.lower() in _SLUG_STOPWORDS:
+                continue
+            if provider == ATS_PROVIDER_WORKDAY:
+                # One token carries all three parts: "tenant.wdN/site".
+                slug = f"{match.group(1)}.{match.group(2)}/{slug}"
+            return provider, slug
     return None, None
 
 
@@ -279,6 +313,199 @@ def search_smartrecruiters_board(slug: str) -> list[dict[str, Any]]:
     url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
     data = http.get(url, params={"limit": "100"}, timeout=15, retries=2)
     return parse_smartrecruiters_response(data, slug)
+
+
+# Workday: a paginated listing with no descriptions, plus one detail call per
+# role. The board token is "tenant.wdN/site", as detect_ats builds it.
+
+def _workday_parts(token: str) -> tuple[str, str] | None:
+    """Split a board token into (host, API base URL), or None if malformed."""
+    match = re.fullmatch(r"([A-Za-z0-9_-]+)\.(wd[0-9]+)/([A-Za-z0-9_-]+)", token or "")
+    if not match:
+        return None
+    tenant, number, site = match.groups()
+    host = f"https://{tenant}.{number}.myworkdayjobs.com"
+    return host, f"{host}/wday/cxs/{tenant}/{site}"
+
+
+def workday_list_url(token: str) -> str:
+    parts = _workday_parts(token)
+    return f"{parts[1]}/jobs" if parts else ""
+
+
+def _workday_deadline(
+    deadline: float | None, budget_seconds: float, clock: Callable[[], float],
+) -> float:
+    return clock() + budget_seconds if deadline is None else deadline
+
+
+def _workday_run(
+    calls: list[Callable[[float], Any]],
+    deadline: float,
+    clock: Callable[[], float],
+) -> list[Any]:
+    """Run calls at most WORKDAY_MAX_WORKERS at once; results keep call order.
+
+    A call that would start after the deadline, or that fails, yields None.
+    Each call gets the monotonic deadline to hand to ``lib.http``.
+    """
+    def run(call: Callable[[float], Any]) -> Any:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return None
+        try:
+            return call(time.monotonic() + remaining)
+        except http.HTTPError:
+            return None
+
+    if not calls:
+        return []
+    with ThreadPoolExecutor(max_workers=min(WORKDAY_MAX_WORKERS, len(calls))) as executor:
+        futures = [http.submit_with_context(executor, run, call) for call in calls]
+        return [future.result() for future in futures]
+
+
+def search_workday_board(
+    token: str,
+    *,
+    deadline: float | None = None,
+    budget_seconds: float = WORKDAY_BUDGET_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return a Workday board's listing rows and what was read of the board.
+
+    The second value has ``board_total`` (the count the board reports, which
+    Workday itself stops at the row ceiling), ``board_capped`` (the listing hit
+    that ceiling, so the board may be larger) and ``board_cut_short`` (the time
+    budget ran out or a page failed, so some reported rows were not read).
+    A failed first page returns no rows rather than raising.
+    """
+    info: dict[str, Any] = {"board_total": 0, "board_capped": False, "board_cut_short": False}
+    url = workday_list_url(token)
+    if not url:
+        return [], info
+    deadline = _workday_deadline(deadline, budget_seconds, clock)
+
+    def page(offset: int) -> Callable[[float], Any]:
+        return lambda http_deadline: http.post(
+            url,
+            json_data={
+                "appliedFacets": {},
+                "limit": WORKDAY_PAGE_SIZE,
+                "offset": offset,
+                "searchText": "",
+            },
+            headers={"Accept": "application/json"},
+            timeout=15,
+            retries=2,
+            deadline_monotonic=http_deadline,
+        )
+
+    # The total is reported on the first page only, so read that one first.
+    first = _workday_run([page(0)], deadline, clock)[0]
+    if not isinstance(first, dict):
+        return [], info
+    try:
+        total = int(first.get("total") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    info["board_total"] = total
+    info["board_capped"] = total >= WORKDAY_ROW_CEILING
+    wanted = min(total, WORKDAY_ROW_CEILING)
+    rest = _workday_run(
+        [page(offset) for offset in range(WORKDAY_PAGE_SIZE, wanted, WORKDAY_PAGE_SIZE)],
+        deadline,
+        clock,
+    )
+    info["board_cut_short"] = any(not isinstance(payload, dict) for payload in rest)
+
+    items: list[dict[str, Any]] = []
+    for payload in [first, *rest]:
+        if isinstance(payload, dict):
+            items.extend(parse_workday_response(payload, token))
+    return items[:WORKDAY_ROW_CEILING], info
+
+
+def parse_workday_response(payload: dict[str, Any], token: str = "") -> list[dict[str, Any]]:
+    """Parse one Workday listing page. Rows have no description or posted date:
+    ``postedOn`` is a relative label ("Posted 3 Days Ago"), so it is not read
+    as a date."""
+    postings = payload.get("jobPostings") if isinstance(payload, dict) else []
+    parts = _workday_parts(token)
+    if not isinstance(postings, list) or not parts:
+        return []
+    site_url = f"{parts[0]}/{token.split('/', 1)[1]}"
+    items: list[dict[str, Any]] = []
+    for job in postings:
+        if not isinstance(job, dict):
+            continue
+        title = str(job.get("title") or "").strip()
+        path = str(job.get("externalPath") or "").strip()
+        if not title or not path.startswith("/"):
+            continue
+        bullets = job.get("bulletFields") if isinstance(job.get("bulletFields"), list) else []
+        ident = str(bullets[0]).strip() if bullets else path.rsplit("/", 1)[-1]
+        items.append(_ats_item(
+            provider=ATS_PROVIDER_WORKDAY,
+            slug=token,
+            ident=ident,
+            title=title,
+            url=f"{site_url}{path}",
+            description="",
+            date=None,
+            department="",
+            location=str(job.get("locationsText") or "").strip(),
+        ))
+    return items
+
+
+def fetch_workday_details(
+    items: list[dict[str, Any]],
+    *,
+    deadline: float | None = None,
+    budget_seconds: float = WORKDAY_BUDGET_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Fill ``description`` and the true posted date on the given Workday items.
+
+    One call per item, so pass only the few roles that need it. An item whose
+    call fails, or would start after the deadline, is left as it was.
+    """
+    deadline = _workday_deadline(deadline, budget_seconds, clock)
+
+    def detail(item: dict[str, Any]) -> Callable[[float], Any]:
+        parts = _workday_parts(str(item.get("board_token") or ""))
+        site_url = f"{parts[0]}/{item['board_token'].split('/', 1)[1]}" if parts else ""
+        url = str(item.get("url") or "")
+        if not parts or not url.startswith(f"{site_url}/"):
+            return lambda http_deadline: None
+        detail_url = f"{parts[1]}{url[len(site_url):]}"
+        return lambda http_deadline: http.get(
+            detail_url,
+            headers={"Accept": "application/json"},
+            timeout=15,
+            retries=2,
+            deadline_monotonic=http_deadline,
+        )
+
+    payloads = _workday_run([detail(item) for item in items], deadline, clock)
+    for item, payload in zip(items, payloads):
+        posting = payload.get("jobPostingInfo") if isinstance(payload, dict) else None
+        if not isinstance(posting, dict):
+            continue
+        item["description"] = _clean_html(str(posting.get("jobDescription") or ""))
+        posted = _date_part(posting.get("startDate"))
+        if posted:
+            item["date"] = posted
+            item["date_confidence"] = "high"
+
+
+def _search_workday(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read a board and detail its first rows, all under one time budget."""
+    deadline = time.monotonic() + WORKDAY_BUDGET_SECONDS
+    items, info = search_workday_board(token, deadline=deadline)
+    fetch_workday_details(items[:WORKDAY_DEFAULT_DETAIL_ROLES], deadline=deadline)
+    return items, info
 
 
 def parse_greenhouse_response(payload: dict[str, Any], board_token: str = "") -> list[dict[str, Any]]:
@@ -559,6 +786,7 @@ def _ats_item(
         ATS_PROVIDER_LEVER: "LV",
         ATS_PROVIDER_WORKABLE: "WK",
         ATS_PROVIDER_SMARTRECRUITERS: "SR",
+        ATS_PROVIDER_WORKDAY: "WD",
     }.get(provider, "AT")
     return {
         "id": f"{prefix}{ident or slug}",
@@ -700,7 +928,7 @@ def _clean_html(value: str) -> str:
 
 def _looks_like_careers_html(html: str) -> bool:
     lowered = html.lower()
-    if any(token in lowered for token in ("ashbyhq.com", "greenhouse.io", "lever.co", "workable.com", "smartrecruiters.com")):
+    if any(token in lowered for token in ("ashbyhq.com", "greenhouse.io", "lever.co", "workable.com", "smartrecruiters.com", "myworkdayjobs.com")):
         return True
     return bool(re.search(r"\b(open roles|open positions|join (our|the) team|current openings|jobposting)\b", lowered))
 

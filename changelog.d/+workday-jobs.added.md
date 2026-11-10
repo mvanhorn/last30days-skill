@@ -1,0 +1,1 @@
+Company job boards hosted on Workday (Nvidia, for example) are now read. The listing is fetched in parallel under a time budget, up to Workday's 2,000-row limit, and the run records when a board was capped or cut short. Descriptions and true posted dates are fetched for a small number of roles only.
