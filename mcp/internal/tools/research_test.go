@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -277,8 +278,9 @@ func TestFormatRunErrorHandlesNilResult(t *testing.T) {
 
 func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
 	got := researchExtraEnv()
-	if len(got) != 1 || got[0] != "LAST30DAYS_ALLOW_ENGINE_PLAN=1" {
-		t.Fatalf("researchExtraEnv() = %#v, want [LAST30DAYS_ALLOW_ENGINE_PLAN=1]", got)
+	want := []string{"LAST30DAYS_ALLOW_ENGINE_PLAN=1", "LAST30DAYS_NO_JOBS_DIGEST=1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("researchExtraEnv() = %#v, want %#v", got, want)
 	}
 }
 

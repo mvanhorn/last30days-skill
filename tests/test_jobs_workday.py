@@ -5,6 +5,8 @@ from unittest.mock import patch
 from lib import jobs, jobs_digest
 
 TOKEN = "acme.wd5/AcmeCareers"
+SITE = "https://www.acme.com"
+CAREERS = '<a href="https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers">Jobs</a>'
 LIST_URL = "https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/AcmeCareers/jobs"
 
 
@@ -28,6 +30,7 @@ class FakeBoard:
         self.list_calls: list[tuple[str, dict]] = []
         self.detail_calls: list[str] = []
         self.failing_details: set[str] = set()
+        self.empty_details: set[str] = set()
         self._lock = threading.Lock()
 
     def post(self, url, json_data, headers=None, **kwargs):
@@ -49,6 +52,8 @@ class FakeBoard:
         ident = url.rsplit("_", 1)[-1]
         if ident in self.failing_details:
             raise jobs.http.HTTPError("server error", status_code=500)
+        if ident in self.empty_details:
+            return {"errorCode": "HTTP_404"}
         return {
             "jobPostingInfo": {
                 "jobDescription": f"<p>Own the {ident} roadmap.</p>",
@@ -228,7 +233,7 @@ class WorkdayDetailTests(unittest.TestCase):
         with patch("lib.jobs.http.post", side_effect=board.post), \
                 patch("lib.jobs.http.get", side_effect=board.get):
             items, artifact = jobs.search_jobs(
-                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none",
+                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none", site=SITE,
             )
         self.assertEqual(45, len(items))
         self.assertEqual("ats", artifact["tier"])
@@ -262,11 +267,80 @@ class WorkdayDetailTests(unittest.TestCase):
                 patch("lib.jobs.http.get", side_effect=board.get), \
                 patch.object(jobs, "fetch_workday_details", side_effect=late):
             _items, artifact = jobs.search_jobs(
-                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none",
+                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none", site=SITE,
             )
         self.assertEqual([], board.detail_calls)
-        self.assertIn("time budget", artifact["digest"]["note"])
+        self.assertEqual(
+            "role text fetched for 0 of 40 selected roles (time budget spent before 40)",
+            artifact["digest"]["note"],
+        )
         self.assertTrue(all(entry["text"] == "" for entry in artifact["digest"]["roles"]))
+
+    def _search(self, board):
+        with patch("lib.jobs.http.get_text", return_value=CAREERS), \
+                patch("lib.jobs.http.post", side_effect=board.post), \
+                patch("lib.jobs.http.get", side_effect=board.get):
+            return jobs.search_jobs(
+                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none", site=SITE,
+            )
+
+    def test_small_board_with_every_detail_fetched_counts_its_new_roles(self):
+        _items, artifact = self._search(FakeBoard(5))
+        self.assertEqual(5, artifact["open_roles"])
+        self.assertEqual(5, artifact["new_in_window"])
+        self.assertNotIn("note", artifact["digest"])
+
+    def test_failed_and_empty_detail_calls_count_as_unfetched(self):
+        board = FakeBoard(5)
+        board.failing_details = {"JR1"}
+        board.empty_details = {"JR3"}
+        with patch("lib.jobs.http.post", side_effect=board.post):
+            items, _ = jobs.search_workday_board(TOKEN)
+        with patch("lib.jobs.http.get", side_effect=board.get):
+            self.assertEqual((0, 2), jobs.fetch_workday_details(items))
+        with patch("lib.jobs.http.get", side_effect=board.get):
+            self.assertEqual(
+                (5, 0), jobs.fetch_workday_details(items, deadline=10.0, clock=lambda: 11.0),
+            )
+
+        _items, artifact = self._search(board)
+        self.assertEqual(
+            "role text fetched for 3 of 5 selected roles (request failed or came back empty for 2)",
+            artifact["digest"]["note"],
+        )
+        # Two roles have no true date, so the board has no count of new roles.
+        self.assertIsNone(artifact["new_in_window"])
+
+    def test_two_postings_with_one_title_both_get_their_details(self):
+        board = FakeBoard(3)
+        real_post = board.post
+
+        def post(url, json_data, headers=None, **kwargs):
+            payload = real_post(url, json_data, headers=headers, **kwargs)
+            for row in payload["jobPostings"]:
+                row["title"] = "Software Engineer"
+            return payload
+
+        board.post = post
+        _items, artifact = self._search(board)
+        self.assertEqual(3, len(board.detail_calls))
+        self.assertEqual(
+            {"Own the JR0 roadmap.", "Own the JR1 roadmap.", "Own the JR2 roadmap."},
+            {entry["text"] for entry in artifact["digest"]["roles"]},
+        )
+
+    def test_board_on_a_guessed_domain_gives_counts_and_no_digest(self):
+        board = FakeBoard(5)
+        with patch("lib.jobs.http.get_text", return_value=CAREERS), \
+                patch("lib.jobs.http.post", side_effect=board.post), \
+                patch("lib.jobs.http.get", side_effect=board.get):
+            _items, artifact = jobs.search_jobs(
+                "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none",
+            )
+        self.assertEqual(5, artifact["open_roles"])
+        self.assertFalse(artifact["owned"])
+        self.assertNotIn("digest", artifact)
+        self.assertEqual([], board.detail_calls)
 
     def test_capped_board_counts_as_a_floor(self):
         page = '<a href="https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers">Jobs</a>'

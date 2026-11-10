@@ -15,10 +15,11 @@ from typing import Any
 
 from . import hiring_signals
 
-# A sentence found in this many distinct roles of a board is company or
-# role-family text, not something one role says. Counting distinct roles (a
-# role posted in five cities counts once) makes one fixed number work for a
-# three-role board and a 2,900-role one; below three roles nothing is removed.
+# A sentence found under this many distinct titles of a board is company or
+# role-family text, not something one role says. Counting a title in a
+# department once (however many cities or postings carry it) makes one fixed
+# number work for a three-role board and a 2,900-role one; below three nothing
+# is removed.
 BOILERPLATE_MIN_ROLES = 3
 # Roles in the digest, and role-unique characters kept for each.
 DIGEST_MAX_ROLES = 40
@@ -51,23 +52,45 @@ def _sentences(text: str) -> list[str]:
     return out
 
 
-def distinct_roles(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Group board rows into roles: one title in one department is one role.
+def _group(item: dict[str, Any]) -> tuple[str, str]:
+    return _key(item.get("title")), _key(item.get("department"))
 
-    Each role is ``{"item": first row, "locations": [...]}``. The first row
-    stands for the role; the other rows only add their locations.
+
+def _role_key(item: dict[str, Any]) -> tuple[str, ...]:
+    """What makes two board rows the same role posted in more than one place.
+
+    They share a title and a department, and they say the same thing: their
+    description text is equal. Rows with no text are told apart only when the
+    board lists a whole posting per row (``whole_posting``); then each row is
+    its own role. Other rows with no text merge on title and department, since
+    such a board lists one row per location and nothing else separates them.
     """
-    roles: dict[tuple[str, str], dict[str, Any]] = {}
+    text = _key(_text(item))
+    if text:
+        return (*_group(item), "text", text)
+    if item.get("whole_posting"):
+        return (*_group(item), "posting", str(item.get("url") or item.get("id") or ""))
+    return (*_group(item), "", "")
+
+
+def distinct_roles(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group board rows into roles; ``_role_key`` says which rows are one role.
+
+    Each role is ``{"item": first row, "locations": [...], "urls": [...]}``.
+    The first row stands for the role; the other rows only add their locations
+    and posting URLs.
+    """
+    roles: dict[tuple[str, ...], dict[str, Any]] = {}
     for item in items:
-        title = _key(item.get("title"))
-        if not title:
+        if not _key(item.get("title")):
             continue
-        role = roles.setdefault(
-            (title, _key(item.get("department"))), {"item": item, "locations": []},
-        )
+        role = roles.setdefault(_role_key(item), {"item": item, "locations": [], "urls": []})
         location = str(item.get("location") or "").strip()
         if location and location not in role["locations"]:
             role["locations"].append(location)
+        url = str(item.get("url") or "").strip()
+        if url and url not in role["urls"]:
+            role["urls"].append(url)
     return list(roles.values())
 
 
@@ -79,17 +102,17 @@ def select_roles(
     A role scores for sitting in a department no other role is in, for a
     location no other row names, for a title word no other role uses, and for
     a founding, leadership or specialized title. Ties go to the newest role
-    with a true posted date, then to board order.
+    with a true posted date, then to board order. Two postings with one title
+    in one department count once toward how common that title's department
+    and words are.
     """
     roles = distinct_roles(items)
-    departments = Counter(
-        _key(role["item"].get("department")) for role in roles
-        if _key(role["item"].get("department"))
-    )
+    groups = {_group(role["item"]) for role in roles}
+    departments = Counter(department for _title, department in groups if department)
     locations = Counter(_key(item.get("location")) for item in items if _key(item.get("location")))
     terms = Counter(
-        term for role in roles
-        for term in set(_TITLE_TERM.findall(_key(role["item"].get("title"))))
+        term for title in {title for title, _department in groups}
+        for term in set(_TITLE_TERM.findall(title))
     )
 
     def score(role: dict[str, Any]) -> int:
@@ -130,14 +153,19 @@ def build_digest(
 ) -> dict[str, Any]:
     """Return the digest of ``selected`` roles against the whole board.
 
-    Sentences are counted across every distinct role that has text, then each
-    selected role keeps its sentences that fewer than
-    ``BOILERPLATE_MIN_ROLES`` roles share, cut to ``DIGEST_ROLE_CHARS``.
+    Sentences are counted once per title in a department, then each selected
+    role keeps its sentences that fewer than ``BOILERPLATE_MIN_ROLES`` such
+    titles share, cut to ``DIGEST_ROLE_CHARS``.
     """
     roles = distinct_roles(items)
-    shared: Counter[str] = Counter()
+    by_group: dict[tuple[str, str], set[str]] = {}
     for role in roles:
-        shared.update({_key(sentence) for sentence in _sentences(_text(role["item"]))})
+        by_group.setdefault(_group(role["item"]), set()).update(
+            _key(sentence) for sentence in _sentences(_text(role["item"]))
+        )
+    shared: Counter[str] = Counter()
+    for sentences in by_group.values():
+        shared.update(sentences)
 
     entries: list[dict[str, Any]] = []
     for role in selected:
@@ -156,6 +184,8 @@ def build_digest(
             "location": "; ".join(named) + (f"; +{more} more" if more > 0 else ""),
             "posted": str(item.get("date") or "") if item.get("posted_date_true") else "",
             "url": str(item.get("url") or "").strip(),
+            # Every posting the entry stands for (one per location it merged).
+            "urls": list(role.get("urls") or []),
             "text": unique,
         })
     return {"distinct_roles": len(roles), "roles": entries}

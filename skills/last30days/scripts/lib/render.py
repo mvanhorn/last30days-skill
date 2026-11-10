@@ -6,6 +6,7 @@ import json
 import pathlib
 import re
 from collections import Counter
+from collections.abc import Collection
 from datetime import date
 from urllib.parse import urlparse
 
@@ -403,6 +404,8 @@ def _qualifying_representative_ids(
 def _render_ranked_clusters(
     report: schema.Report,
     clusters: list[schema.Cluster],
+    *,
+    digest_urls: Collection[str] = (),
 ) -> list[str]:
     lines = ["## Ranked Evidence Clusters", ""]
     candidate_by_id = {
@@ -437,7 +440,9 @@ def _render_ranked_clusters(
             if not candidate:
                 continue
             lines.extend(
-                _render_candidate(candidate, prefix=f"{rep_index}.", report=report)
+                _render_candidate(
+                    candidate, prefix=f"{rep_index}.", report=report, digest_urls=digest_urls,
+                )
             )
         lines.append("")
     return lines
@@ -878,7 +883,7 @@ def render_compact(
     if hiring_block and audience.name in {"default", "eli5"}:
         lines.extend(hiring_block)
         lines.append("")
-    jobs_digest_block = _render_jobs_digest(evidence_report)
+    jobs_digest_block, jobs_digest_urls = _jobs_digest_block(evidence_report)
     if jobs_digest_block:
         lines.extend(jobs_digest_block)
         lines.append("")
@@ -890,7 +895,9 @@ def render_compact(
     if audience.name in {"default", "eli5"}:
         # Keep this legacy assembly byte-for-byte stable. ELI5 has always been
         # a synthesis-only voice change, so it intentionally takes this path.
-        lines.extend(_render_ranked_clusters(evidence_report, visible_clusters))
+        lines.extend(_render_ranked_clusters(
+            evidence_report, visible_clusters, digest_urls=jobs_digest_urls,
+        ))
         lines.extend(_render_stats(evidence_report))
 
         if not no_solid_evidence:
@@ -2375,16 +2382,25 @@ def _jobs_digest(report: schema.Report) -> dict | None:
 
 
 def _render_jobs_digest(report: schema.Report) -> list[str]:
+    """The digest section's lines; see ``_jobs_digest_block``."""
+    return _jobs_digest_block(report)[0]
+
+
+def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
     """Render the board's role-unique digest as one flat list of roles.
 
     A header line with the board's own counts, then one line per role: title
     and posting URL, department, location, posted date when the board gave a
     true one, and the text no other role on the board repeats. Roles the
     ranking rejected stay out. The section stops before the character ceiling.
+
+    The second value is the posting URLs of the roles that made it into the
+    section, so a caller that prints the section can leave those roles'
+    snippets out of the ranked evidence.
     """
     digest = _jobs_digest(report)
     if not digest:
-        return []
+        return [], set()
     board = report.artifacts["jobs"]
     rejected = set((report.artifacts.get("hiring_signals") or {}).get("rejected_job_keys") or [])
     rejected_urls = {
@@ -2394,7 +2410,7 @@ def _render_jobs_digest(report: schema.Report) -> list[str]:
     }
     entries = [entry for entry in digest["roles"] if entry.get("url") not in rejected_urls]
     if not entries:
-        return []
+        return [], set()
 
     count = int(board.get("open_roles") or 0)
     header = [
@@ -2419,10 +2435,16 @@ def _render_jobs_digest(report: schema.Report) -> list[str]:
     if digest.get("note"):
         out.append(f"- Note: {digest['note']}")
     size = sum(len(line) + 1 for line in out)
+    shown: set[str] = set()
     for entry in entries:
-        title = _safe_title(str(entry.get("title") or "Job posting"))
+        # The title and URL are the board's own text. `_markdown_url_link`
+        # links only a one-line http(s) URL and escapes the rest, so neither
+        # can open a heading, close the evidence block or forge a link.
+        title = " ".join(str(entry.get("title") or "").split()) or "Job posting"
         url = str(entry.get("url") or "")
-        parts = [f"[{title}]({url})" if url else title]
+        parts = [
+            _markdown_url_link(url, label=title) or _escape_markdown_plain_text(title)
+        ]
         parts.extend(
             _format_untrusted_evidence(" ".join(str(entry[key]).split()), 120)
             for key in ("department", "location") if entry.get(key)
@@ -2437,13 +2459,16 @@ def _render_jobs_digest(report: schema.Report) -> list[str]:
             break
         size += len(line) + 1
         out.append(line)
-    return out
+        shown.update(url for url in (entry.get("url"), *(entry.get("urls") or [])) if url)
+    return out, shown
 
 
 def _render_candidate(
     candidate: schema.Candidate,
     prefix: str,
     report: schema.Report | None = None,
+    *,
+    digest_urls: Collection[str] = (),
 ) -> list[str]:
     primary = schema.candidate_primary_item(candidate)
     detail_parts = [
@@ -2476,10 +2501,11 @@ def _render_candidate(
     explanation = _format_explanation(candidate)
     if explanation:
         lines.append(f"   - Why: {explanation}")
-    # A job description opens with company text every role shares; when the
-    # board's digest is present it carries each role's own text instead.
+    # A job description opens with company text every role shares. A role the
+    # caller printed in the Jobs Digest has its own text there instead; any
+    # other posting keeps its snippet.
     in_digest = bool(
-        primary and primary.source == "jobs" and report and _jobs_digest(report)
+        primary and primary.source == "jobs" and candidate.url in digest_urls
     )
     if candidate.snippet and not in_digest:
         lines.append(

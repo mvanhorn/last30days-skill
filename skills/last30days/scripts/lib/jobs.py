@@ -48,6 +48,11 @@ WORKDAY_MAX_WORKERS = 8
 # the digest selected.
 WORKDAY_BUDGET_SECONDS = 45.0
 
+# SmartRecruiters serves at most 100 rows per call. Its board is read to the
+# same row ceiling and under the same time budget as a Workday board.
+SMARTRECRUITERS_PAGE_SIZE = 100
+SMARTRECRUITERS_ROW_CEILING = 2000
+
 # Detection patterns: map an ATS embed/link found on a careers page to
 # (provider, slug). The published slug is authoritative - this is why discovery
 # is careers-page-first rather than blind probing.
@@ -87,7 +92,8 @@ def search_jobs(
     """Fetch public job postings for a company via the tiered strategy.
 
     ``site`` is the company's official site when it is known; its careers page
-    is tried before any guessed domain. ``entity_count`` is the number of
+    is the only one tried, and a domain is guessed from the company's name
+    only when no site is known. ``entity_count`` is the number of
     entities a comparison run is fetching at once.
     """
     company = company.strip()
@@ -106,8 +112,7 @@ def search_jobs(
         provider, slug = detect_ats(careers_html)
         if provider:
             attempted.append(f"careers:{provider}:{slug}")
-            on_site = _host(careers_url or "") in _site_hosts(company, site)
-            found_via = "site" if on_site else "search"
+            found_via = _found_via(careers_url or "", company, site)
 
     # Fallback discovery: cheap deterministic slug probe (only after careers-page
     # discovery fails - never the entry point).
@@ -122,6 +127,10 @@ def search_jobs(
         try:
             if provider == ATS_PROVIDER_WORKDAY:
                 items, board = search_workday_board(slug, deadline=deadline)
+            elif provider == ATS_PROVIDER_SMARTRECRUITERS:
+                items, board = read_smartrecruiters_board(slug, deadline=deadline)
+            elif provider == ATS_PROVIDER_WORKABLE:
+                items, board = read_workable_board(slug)
             else:
                 items = _fetch_ats(provider, slug)
         except http.HTTPError:
@@ -130,10 +139,10 @@ def search_jobs(
             artifact = _artifact("jobs", company, attempted, items, explicit,
                                  tier="ats", provider=provider, slug=slug)
             artifact.update(board)
-            # A board belongs to the company when its own site links to it or
-            # the board names the company. A guessed slug can be another
-            # company's board, so such a board still counts roles but gives
-            # no digest.
+            # A board belongs to the company when its known official site
+            # links to it or the board names the company. A guessed slug or a
+            # guessed domain can be another company's, so such a board still
+            # counts roles but gives no digest unless it names the company.
             stated = next(
                 (str(item["company_name"]) for item in items if item.get("company_name")), "",
             )
@@ -142,21 +151,28 @@ def search_jobs(
                 "found_via": found_via,
                 "board_company": stated,
                 "owned": owned,
-                **_board_counts(items, board, date_range),
             })
             if owned:
                 selected = jobs_digest.select_roles(items)
-                missed = 0
+                late = failed = 0
                 if provider == ATS_PROVIDER_WORKDAY:
-                    missed = fetch_workday_details(
+                    late, failed = fetch_workday_details(
                         [role["item"] for role in selected], deadline=deadline,
                     )
                 artifact["digest"] = jobs_digest.build_digest(items, selected)
-                if missed:
+                if late or failed:
+                    reasons = []
+                    if late:
+                        reasons.append(f"time budget spent before {late}")
+                    if failed:
+                        reasons.append(f"request failed or came back empty for {failed}")
                     artifact["digest"]["note"] = (
-                        f"time budget spent: role text fetched for "
-                        f"{len(selected) - missed} of {len(selected)} selected roles"
+                        f"role text fetched for {len(selected) - late - failed} of "
+                        f"{len(selected)} selected roles ({'; '.join(reasons)})"
                     )
+            # Counted last: Workday's true posted dates arrive with the detail
+            # calls above.
+            artifact.update(_board_counts(items, board, date_range))
             return items, artifact
 
     # --- Tier 2: parse JSON-LD JobPosting off the careers page. ---
@@ -197,8 +213,8 @@ def _resolve_careers_page(
 ) -> tuple[str | None, str | None]:
     """Find and fetch the company's careers page HTML.
 
-    Tries conventional URLs on the company's known site, then on a guessed
-    domain (free, deterministic); falls back to a single web search for the
+    Tries conventional URLs on the company's known site, or on guessed
+    domains when no site is known (free, deterministic); falls back to a single web search for the
     careers page when a backend is configured. Returns (html, url) or
     (None, None). Never raises.
     """
@@ -259,12 +275,25 @@ def _host(url: str) -> str:
 
 
 def _site_hosts(company: str, site: str = "") -> list[str]:
-    """Hosts taken to be the company's own: its known site, then the guesses."""
-    hosts = [_host(site)] if site and _host(site) else []
+    """Hosts whose careers page is tried: the known official site alone, or,
+    when no site is known, domains guessed from the company's name."""
+    if site and _host(site):
+        return [_host(site)]
     slug = _company_slug(company)
-    if slug:
-        hosts.extend(host for host in (f"{slug}.com", f"{slug}.ai", f"{slug}.io") if host not in hosts)
-    return hosts
+    return [f"{slug}.com", f"{slug}.ai", f"{slug}.io"] if slug else []
+
+
+def _found_via(careers_url: str, company: str, site: str = "") -> str:
+    """How the careers page naming the board was reached.
+
+    ``site`` is the known official site, the only one that makes a board the
+    company's own. ``guess`` is a domain guessed from the company's name, which
+    another business can own, and ``search`` is a web search result.
+    """
+    host = _host(careers_url)
+    if site and host and host == _host(site):
+        return "site"
+    return "guess" if host in _site_hosts(company) else "search"
 
 
 def _same_company(stated: str, company: str) -> bool:
@@ -279,13 +308,17 @@ def _board_counts(
 
     ``open_roles_floor`` marks a count the board stopped short of (its row
     ceiling, or a listing cut short). ``new_in_window`` is a number only when
-    every role carries a true first-posted date; otherwise it is None.
+    the whole board was read and every role carries a true first-posted date;
+    otherwise it is None.
     """
     from_date, to_date = date_range
-    dated = all(item.get("posted_date_true") and item.get("date") for item in items)
+    floor = bool(board.get("board_capped") or board.get("board_cut_short"))
+    dated = not floor and all(
+        item.get("posted_date_true") and item.get("date") for item in items
+    )
     return {
         "open_roles": len(items),
-        "open_roles_floor": bool(board.get("board_capped") or board.get("board_cut_short")),
+        "open_roles_floor": floor,
         "new_in_window": (
             sum(1 for item in items if from_date <= str(item["date"]) <= to_date)
             if dated else None
@@ -382,16 +415,89 @@ def search_lever_board(slug: str) -> list[dict[str, Any]]:
 
 def search_workable_board(slug: str) -> list[dict[str, Any]]:
     """Return jobs from Workable's public widget API."""
+    return read_workable_board(slug)[0]
+
+
+def read_workable_board(slug: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return the first page of a Workable board and what was read of it.
+
+    Only that page is read. When the board reports more roles than the page
+    holds, ``board_cut_short`` says so; the keys are ``search_workday_board``'s.
+    """
     url = f"https://apply.workable.com/api/v3/accounts/{slug}/jobs"
     data = http.post(url, json_data={}, timeout=15, retries=2)
-    return parse_workable_response(data, slug)
+    items = parse_workable_response(data, slug)
+    total = max(_reported_total(data, "total"), len(items))
+    return items, {
+        "board_total": total, "board_capped": False, "board_cut_short": total > len(items),
+    }
 
 
 def search_smartrecruiters_board(slug: str) -> list[dict[str, Any]]:
     """Return jobs from SmartRecruiters' public postings API."""
+    return read_smartrecruiters_board(slug)[0]
+
+
+def _reported_total(payload: Any, key: str) -> int:
+    try:
+        return int(payload.get(key) or 0) if isinstance(payload, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def read_smartrecruiters_board(
+    slug: str,
+    *,
+    deadline: float | None = None,
+    budget_seconds: float = WORKDAY_BUDGET_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return a SmartRecruiters board's rows and what was read of the board.
+
+    The board is read a page at a time up to the row ceiling. The second value
+    has the same keys as ``search_workday_board``'s: ``board_capped`` when the
+    board reports more rows than the ceiling, ``board_cut_short`` when the time
+    budget ran out or a page failed. A failed first page returns no rows.
+    """
+    info: dict[str, Any] = {"board_total": 0, "board_capped": False, "board_cut_short": False}
     url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
-    data = http.get(url, params={"limit": "100"}, timeout=15, retries=2)
-    return parse_smartrecruiters_response(data, slug)
+    deadline = _workday_deadline(deadline, budget_seconds, clock)
+
+    def page(offset: int) -> Callable[[float], Any]:
+        params = {"limit": str(SMARTRECRUITERS_PAGE_SIZE)}
+        if offset:
+            params["offset"] = str(offset)
+        return lambda http_deadline: http.get(
+            url, params=params, timeout=15, retries=2, deadline_monotonic=http_deadline,
+        )
+
+    first = _workday_run([page(0)], deadline, clock)[0]
+    if not isinstance(first, dict):
+        return [], info
+    items = parse_smartrecruiters_response(first, slug)
+    total = max(_reported_total(first, "totalFound"), len(items))
+    info["board_total"] = total
+    info["board_capped"] = total > SMARTRECRUITERS_ROW_CEILING
+    rest = _workday_run(
+        [
+            page(offset)
+            for offset in range(
+                SMARTRECRUITERS_PAGE_SIZE,
+                min(total, SMARTRECRUITERS_ROW_CEILING),
+                SMARTRECRUITERS_PAGE_SIZE,
+            )
+        ],
+        deadline,
+        clock,
+    )
+    # A full page from a board that reports no total may not be the last one.
+    info["board_cut_short"] = any(not isinstance(payload, dict) for payload in rest) or (
+        "totalFound" not in first and len(items) >= SMARTRECRUITERS_PAGE_SIZE
+    )
+    for payload in rest:
+        if isinstance(payload, dict):
+            items.extend(parse_smartrecruiters_response(payload, slug))
+    return items[:SMARTRECRUITERS_ROW_CEILING], info
 
 
 # Workday: a paginated listing with no descriptions, plus one detail call per
@@ -538,6 +644,8 @@ def parse_workday_response(payload: dict[str, Any], token: str = "") -> list[dic
             date=None,
             department="",
             location=str(job.get("locationsText") or "").strip(),
+            # One row is one requisition with all its locations ("2 Locations").
+            whole_posting=True,
         ))
     return items
 
@@ -548,12 +656,13 @@ def fetch_workday_details(
     deadline: float | None = None,
     budget_seconds: float = WORKDAY_BUDGET_SECONDS,
     clock: Callable[[], float] = time.monotonic,
-) -> int:
+) -> tuple[int, int]:
     """Fill ``description`` and the true posted date on the given Workday items.
 
     One call per item, so pass only the few roles that need it. An item whose
     call fails, or would start after the deadline, is left as it was. Returns
-    how many items the deadline left unfetched.
+    two counts of items left unfetched: those the deadline stopped before
+    their call started, and those whose call failed or returned no posting.
     """
     deadline = _workday_deadline(deadline, budget_seconds, clock)
 
@@ -573,9 +682,14 @@ def fetch_workday_details(
         )
 
     payloads = _workday_run([detail(item) for item in items], deadline, clock)
+    late = failed = 0
     for item, payload in zip(items, payloads):
         posting = payload.get("jobPostingInfo") if isinstance(payload, dict) else None
         if not isinstance(posting, dict):
+            if payload is _OUT_OF_TIME:
+                late += 1
+            else:
+                failed += 1
             continue
         item["description"] = _clean_html(str(posting.get("jobDescription") or ""))
         item["description_blocks"] = _block_text(str(posting.get("jobDescription") or ""))
@@ -584,7 +698,7 @@ def fetch_workday_details(
             item["date"] = posted
             item["date_confidence"] = "high"
             item["posted_date_true"] = True
-    return sum(1 for payload in payloads if payload is _OUT_OF_TIME)
+    return late, failed
 
 
 def parse_greenhouse_response(payload: dict[str, Any], board_token: str = "") -> list[dict[str, Any]]:
@@ -875,13 +989,16 @@ def _ats_item(
     description_blocks: str = "",
     posted_date_true: bool = False,
     company_name: str = "",
+    whole_posting: bool = False,
 ) -> dict[str, Any]:
     """Build one board row.
 
     ``description_blocks`` is the description with its paragraph and list
     breaks kept, ``posted_date_true`` says ``date`` is the day the role was
     first posted, and ``company_name`` is the company the board says it
-    belongs to, when the provider states one.
+    belongs to, when the provider states one. ``whole_posting`` says the row
+    is one posting with all its locations, so another row with the same title
+    is a different posting.
     """
     prefix = {
         ATS_PROVIDER_ASHBY: "AB",
@@ -900,6 +1017,7 @@ def _ats_item(
         "date_confidence": "high" if date else "low",
         "posted_date_true": posted_date_true,
         "company_name": company_name,
+        "whole_posting": whole_posting,
         "provider": provider,
         "board_token": slug,
         "department": department,

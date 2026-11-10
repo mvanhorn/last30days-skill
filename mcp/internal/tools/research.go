@@ -31,6 +31,11 @@ const BrowserCookiesEnvOverride = "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES"
 // as CLAUDECODE) would hit the engine's LAW 7 host-plan gate and exit 2.
 const allowEnginePlanEnv = "LAST30DAYS_ALLOW_ENGINE_PLAN=1"
 
+// noJobsDigestEnv has the engine leave the "## Jobs Digest" section out. With
+// no digest to stand in for them, the engine keeps each job posting's own
+// evidence snippet, which it otherwise drops for the roles the digest lists.
+const noJobsDigestEnv = "LAST30DAYS_NO_JOBS_DIGEST=1"
+
 // Register adds every tool this server exposes to s. The caller supplies a
 // Config so test harnesses can pin a version without touching globals.
 func Register(s *server.MCPServer, cfg Config) {
@@ -112,7 +117,9 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 // withoutJobsDigest drops the engine's "## Jobs Digest" evidence section. The
 // digest is raw role text that the skill's instruction files say how to
 // weigh, and an MCP client never sees those files; the footer's Jobs line,
-// outside the section, is kept. The section runs to the next "## " heading or
+// outside the section, is kept. The engine is already asked for no digest
+// (noJobsDigestEnv), so this is the second check, for an engine that prints
+// one anyway. The section runs to the next "## " heading or
 // to the end of the evidence block, and scraped text inside it cannot start
 // either: the engine keeps each role on one line that starts with "- ".
 func withoutJobsDigest(output string) string {
@@ -150,7 +157,7 @@ func researchRunArgs(topic, emit, saveDir string) []string {
 }
 
 func researchExtraEnv() []string {
-	return []string{allowEnginePlanEnv}
+	return []string{allowEnginePlanEnv, noJobsDigestEnv}
 }
 
 func browserCookiesAllowed() bool {

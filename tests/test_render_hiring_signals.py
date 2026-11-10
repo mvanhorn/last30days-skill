@@ -1,6 +1,7 @@
 import unittest
+from unittest import mock
 
-from lib import fusion, render, schema
+from lib import fusion, pipeline, render, schema
 
 
 class RenderHiringSignalsTests(unittest.TestCase):
@@ -236,21 +237,61 @@ class JobsDigestRenderTests(unittest.TestCase):
         self.assertNotIn("Analyst", block)
         self.assertIn("Money as a Service", block)
 
-    def test_ranked_job_drops_its_snippet_when_a_digest_is_present(self):
-        item = schema.SourceItem(
-            item_id="GH1", source="jobs", title="Account Executive", body="Boilerplate opener.",
-            url="https://boards.greenhouse.io/acme/jobs/1", snippet="Boilerplate opener.",
+    def _ranked_report(self):
+        """A board report ranking one role the digest lists and one it does not."""
+        report = _board_report(self._board())
+        for index, snippet in ((1, "Boilerplate opener."), (9, "Run the Lagos warehouse.")):
+            item = schema.SourceItem(
+                item_id=f"GH{index}", source="jobs", title=f"Role {index}", body=snippet,
+                url=f"https://boards.greenhouse.io/acme/jobs/{index}", snippet=snippet,
+            )
+            report.ranked_candidates.append(schema.Candidate(
+                candidate_id=f"c{index}", item_id=item.item_id, source="jobs", title=item.title,
+                url=item.url, snippet=snippet, subquery_labels=["primary"], native_ranks={},
+                local_relevance=0.8, freshness=50, engagement=None, source_quality=0.7,
+                rrf_score=0.1, sources=["jobs"], source_items=[item], final_score=60,
+            ))
+            report.clusters.append(schema.Cluster(
+                cluster_id=f"k{index}", title=item.title, candidate_ids=[f"c{index}"],
+                representative_ids=[f"c{index}"], sources=["jobs"], score=60,
+            ))
+        report.items_by_source["jobs"] = [c.source_items[0] for c in report.ranked_candidates]
+        return report
+
+    def test_ranked_job_drops_its_snippet_only_when_the_digest_lists_it(self):
+        text = render.render_compact(self._ranked_report())
+        self.assertIn("## Jobs Digest", text)
+        # Listed in the digest: its own text is there, so the opener is left out.
+        self.assertNotIn("Evidence: Boilerplate opener.", text)
+        # Ranked but outside the digest: the snippet is all the reader gets.
+        self.assertIn("Evidence: Run the Lagos warehouse.", text)
+
+    def test_ranked_jobs_keep_their_snippets_where_no_digest_is_printed(self):
+        # The full dump prints no digest section, and a caller that asked for
+        # no digest (the MCP tool) gets a board without one.
+        full = render.render_full(self._ranked_report())
+        self.assertNotIn("## Jobs Digest", full)
+        self.assertIn("Evidence: Boilerplate opener.", full)
+        self.assertIn("Evidence: Run the Lagos warehouse.", full)
+
+        report = self._ranked_report()
+        with mock.patch.dict("os.environ", {"LAST30DAYS_NO_JOBS_DIGEST": "1"}):
+            report.artifacts["jobs"] = pipeline._jobs_board_artifact(report.artifacts["jobs"])
+        text = render.render_compact(report)
+        self.assertNotIn("## Jobs Digest", text)
+        self.assertIn("Evidence: Boilerplate opener.", text)
+        self.assertIn("Evidence: Run the Lagos warehouse.", text)
+        self.assertIn("💼 Jobs: 2,904 open roles │ 658 new in the L30", text)
+
+    def test_digest_role_merged_from_several_postings_covers_each_posting_url(self):
+        board = self._board()
+        board["digest"]["roles"][1]["urls"] = [
+            "https://boards.greenhouse.io/acme/jobs/2", "https://boards.greenhouse.io/acme/jobs/9",
+        ]
+        _lines, shown = render._jobs_digest_block(_board_report(board))
+        self.assertEqual(
+            {f"https://boards.greenhouse.io/acme/jobs/{index}" for index in (1, 2, 9)}, shown,
         )
-        candidate = schema.Candidate(
-            candidate_id="c1", item_id="GH1", source="jobs", title=item.title, url=item.url,
-            snippet=item.snippet, subquery_labels=["primary"], native_ranks={}, local_relevance=0.8,
-            freshness=50, engagement=None, source_quality=0.7, rrf_score=0.1,
-            sources=["jobs"], source_items=[item], final_score=60,
-        )
-        with_digest = "\n".join(render._render_candidate(candidate, "1.", _board_report(self._board())))
-        without = "\n".join(render._render_candidate(candidate, "1.", _board_report({})))
-        self.assertNotIn("Evidence:", with_digest)
-        self.assertIn("Evidence: Boilerplate opener.", without)
 
 
 class HiringSignalsBannerSuppressionTests(unittest.TestCase):

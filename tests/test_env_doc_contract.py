@@ -43,6 +43,10 @@ DOC_ONLY_KEYS = {
     # neither make a cron run look agent-hosted nor silently lift the gate.
     "LAST30DAYS_ALLOW_ENGINE_PLAN",
     "LAST30DAYS_HOST_AGENT",
+    # Set per run by a wrapper (the MCP `research` tool) and read from the
+    # process environment only, so a .env line cannot drop the Jobs Digest
+    # from every run.
+    "LAST30DAYS_NO_JOBS_DIGEST",
 }
 
 

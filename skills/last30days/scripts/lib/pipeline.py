@@ -2915,10 +2915,10 @@ def run(
                             attempted=deferred_outcome.get("attempted", True),
                         )
             bundle.add_items(subquery.label, source, normalized)
-            if source == "jobs" and isinstance(artifact, dict) and artifact.get("tier") == "ats":
+            if _is_jobs_board(source, artifact):
                 # The board's own counts and digest are read by name, and stay
                 # whatever happens to the board's items below.
-                bundle.artifacts["jobs"] = artifact
+                bundle.artifacts["jobs"] = _jobs_board_artifact(artifact)
                 artifact = {key: value for key, value in artifact.items() if key != "digest"}
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
@@ -3782,6 +3782,18 @@ def _merge_replayed_enrichment(
         if record and record.get("metadata"):
             item.metadata.update(record["metadata"])
     return items
+
+
+def _is_jobs_board(source: str, artifact: Any) -> bool:
+    """Whether a jobs fetch read the company's board directly."""
+    return source == "jobs" and isinstance(artifact, dict) and artifact.get("tier") == "ats"
+
+
+def _jobs_board_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    """The board data a run keeps, with no digest when the caller asked for none."""
+    if env.jobs_digest_disabled():
+        return {key: value for key, value in artifact.items() if key != "digest"}
+    return artifact
 
 
 def _apply_hiring_signal_gate(
@@ -4957,7 +4969,9 @@ def _retry_thin_sources(
 
     def _retry_one_source(
         source: str,
-    ) -> tuple[str, list[schema.SourceItem], dict[str, Any] | None, tuple, bool]:
+    ) -> tuple[
+        str, list[schema.SourceItem], dict[str, Any] | None, tuple, bool, dict[str, Any] | None,
+    ]:
         raw_items, artifact = _retrieve_stream(
             topic=topic,
             subquery=retry_subquery,
@@ -5003,7 +5017,10 @@ def _retry_thin_sources(
             defer_relevance_prune=(source == "x"),
         )
         if source == "jobs":
-            return source, normalized, outcome_note, (detail_note, detail_state), out_of_time
+            return (
+                source, normalized, outcome_note, (detail_note, detail_state), out_of_time,
+                artifact if _is_jobs_board(source, artifact) else None,
+            )
         normalized = _apply_reddit_stream_keepers(
             source, normalized, settings["per_stream_limit"], topic
         )
@@ -5011,7 +5028,7 @@ def _retry_thin_sources(
             outcome_note = outcome_note or artifact["_source_outcome_deferred"]
         if not normalized and isinstance(artifact, dict):
             outcome_note = outcome_note or artifact.get("_source_outcome_if_empty")
-        return source, normalized, outcome_note, (detail_note, detail_state), out_of_time
+        return source, normalized, outcome_note, (detail_note, detail_state), out_of_time, None
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 
@@ -5029,6 +5046,7 @@ def _retry_thin_sources(
             try:
                 (
                     source, normalized, outcome_note, (detail_note, detail_state), out_of_time,
+                    jobs_board,
                 ) = future.result(timeout=0)
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -5058,6 +5076,10 @@ def _retry_thin_sources(
                 if new_items:
                     primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                     bundle.add_items(primary_label, source, new_items)
+                # A board read only on this retry still gives the footer its
+                # counts and the report its digest.
+                if jobs_board and "jobs" not in bundle.artifacts:
+                    bundle.artifacts["jobs"] = _jobs_board_artifact(jobs_board)
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
                 state, attempted = _classify_source_failure(exc)
