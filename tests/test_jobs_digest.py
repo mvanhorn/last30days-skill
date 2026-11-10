@@ -480,6 +480,25 @@ def test_workable_board_reporting_more_roles_than_its_page_is_a_floor():
     assert render._jobs_board_footer_line(_report(artifact)) == "💼 Jobs: 10+ open roles"
 
 
+def test_workable_board_read_whole_counts_roles_new_in_the_window():
+    # Rows as the live endpoint returns them: `published`, not `published_on`.
+    payload = {"total": 3, "results": [
+        {"id": 1, "shortcode": "S1", "title": "Clerk", "published": "2026-11-01T00:00:00.000Z",
+         "department": ["Operations"]},
+        {"id": 2, "shortcode": "S2", "title": "Porter", "published": "2026-10-20T00:00:00.000Z",
+         "department": ["Operations"]},
+        {"id": 3, "shortcode": "S3", "title": "Baker", "published": "2026-07-04T00:00:00.000Z",
+         "department": ["Kitchen"]},
+    ]}
+    with patch("lib.jobs.http.get_text", return_value='<a href="https://apply.workable.com/acme/">Jobs</a>'), \
+            patch("lib.jobs.http.post", return_value=payload):
+        items, artifact = jobs.search_jobs("Acme", WINDOW, {}, web_backend="none")
+    assert len(items) == 3
+    assert artifact["open_roles_floor"] is False
+    assert artifact["new_in_window"] == 2
+    assert render._jobs_board_footer_line(_report(artifact)) == "💼 Jobs: 3 open roles │ 2 new in the L30"
+
+
 # --- A board first read on the thin-source retry ---
 
 def test_board_read_only_on_the_thin_source_retry_keeps_its_counts_and_digest(monkeypatch):

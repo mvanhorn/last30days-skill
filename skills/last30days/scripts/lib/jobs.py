@@ -776,6 +776,14 @@ def parse_workable_response(payload: dict[str, Any], slug: str = "") -> list[dic
             continue
         loc = job.get("location") if isinstance(job.get("location"), dict) else {}
         location = _join_parts(str(loc.get("city") or ""), str(loc.get("country") or ""))
+        # The v3 jobs endpoint gives `published` and a list of departments;
+        # the older widget rows gave `published_on` and one department name.
+        published = _date_part(job.get("published")) or _date_part(job.get("published_on"))
+        raw_department = job.get("department")
+        if isinstance(raw_department, (list, tuple)):
+            department = _join_parts(*(str(name or "") for name in raw_department))
+        else:
+            department = str(raw_department or "").strip()
         shortcode = str(job.get("shortcode") or "").strip()
         url = str(job.get("url") or job.get("application_url") or "").strip()
         if not url and shortcode and slug:
@@ -788,9 +796,9 @@ def parse_workable_response(payload: dict[str, Any], slug: str = "") -> list[dic
             url=url,
             description=_clean_html(str(job.get("description") or "")),
             description_blocks=_block_text(str(job.get("description") or "")),
-            date=_date_part(job.get("published_on") or job.get("created_at")),
-            posted_date_true=bool(_date_part(job.get("published_on"))),
-            department=str(job.get("department") or "").strip(),
+            date=published or _date_part(job.get("created_at")),
+            posted_date_true=bool(published),
+            department=department,
             location=location,
         ))
     return items
