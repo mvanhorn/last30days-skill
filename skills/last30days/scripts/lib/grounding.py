@@ -1,4 +1,4 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, Keenable, or a keyless floor."""
 
 from __future__ import annotations
 
@@ -218,6 +218,56 @@ def parallel_search(
     return items, artifact
 
 
+# ---------------------------------------------------------------------------
+# Keenable (agent web search on its own index)
+# ---------------------------------------------------------------------------
+
+def keenable_search(
+    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+) -> tuple[list[dict], dict]:
+    # published_after/published_before take RFC 3339 full-dates and cover the
+    # whole named UTC day at either end. With published_after set, Keenable
+    # omits pages that have no known publish date, so the window is enforced
+    # server-side; the local range check below is a guard, not the filter.
+    data = http.request(
+        "POST", "https://api.keenable.ai/v1/search",
+        headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+        json_data={
+            "query": query,
+            "max_results": count,
+            "published_after": date_range[0],
+            "published_before": date_range[1],
+            "snippet_max_length": 1000,
+            "disable_cards": True,
+        },
+        timeout=15,
+    )
+    items = []
+    for i, r in enumerate((data.get("results", []))[:count]):
+        if not isinstance(r, dict):
+            continue
+        url = r.get("url", "")
+        if not url:
+            continue
+        raw_date = r.get("published_at") or ""
+        pub_date = _normalize_date(raw_date[:10]) if raw_date else None
+        if pub_date is None or _known_date_out_of_range(pub_date, date_range):
+            continue
+        items.append({
+            "id": f"WK{i + 1}",
+            "title": r.get("title", ""),
+            "url": url,
+            "source_domain": _domain(url),
+            "snippet": (r.get("snippet") or "")[:500],
+            "date": pub_date,
+            "relevance": 0.8,
+            "why_relevant": "Keenable web search",
+            "metadata": {"date_window_basis": "server_bounds"},
+        })
+    artifact = {"label": "keenable", "webSearchQueries": [query], "resultCount": len(items)}
+    return items, artifact
+
+
 _SERPER_RELATIVE_RE = re.compile(
     r"^(?:about\s+)?(\d+)\s+(minute|min|hour|hr|day|week|month|year)s?\s+ago$", re.I
 )
@@ -301,6 +351,7 @@ def configured_backend(config: dict) -> str | None:
         ("exa", "EXA_API_KEY"),
         ("serper", "SERPER_API_KEY"),
         ("parallel", "PARALLEL_API_KEY"),
+        ("keenable", "KEENABLE_API_KEY"),
     ):
         if config.get(key):
             return backend
@@ -340,6 +391,11 @@ def web_search(
         if not key:
             raise RuntimeError("PARALLEL_API_KEY is required when web_backend='parallel'")
         items, artifact = parallel_search(query, date_range, key)
+    elif backend == "keenable":
+        key = config.get("KEENABLE_API_KEY")
+        if not key:
+            raise RuntimeError("KEENABLE_API_KEY is required when web_backend='keenable'")
+        items, artifact = keenable_search(query, date_range, key)
     elif backend == "parallel-mcp":
         items, artifact = parallel_mcp.search(
             query, date_range, config.get("PARALLEL_API_KEY")
