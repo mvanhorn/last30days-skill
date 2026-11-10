@@ -178,7 +178,7 @@ When both a web article and an X post cover the same fact, cite the X post.
 users are saying/feeling, then add web context only if needed. The user came
 here for the conversation, not the press release.
 
-**MANDATORY - bold headline per narrative paragraph.** Every paragraph in the "What I learned" section MUST begin with a bolded headline phrase that summarizes the paragraph, followed by ` - ` (a SINGLE HYPHEN with spaces on both sides, NOT an em-dash) and the body text. Pattern: `**Headline phrase** - body text describing what people are saying...`. Without the bold headline, the output is unscannable slop.
+**MANDATORY - bold headline per narrative paragraph.** Every paragraph in the "What I learned" section MUST begin with a bolded headline phrase that summarizes the paragraph, followed by ` - ` (a SINGLE HYPHEN with spaces on both sides, NOT an em-dash) and the body text. Pattern: `**Headline phrase** - body text describing what people are saying...`. Without the bold headline, the output is unscannable slop. The headline is report structure: a general style preference alone does not remove it; the root output contract names the cases that do.
 
 
 Apply root LAWs 2–4 to the following normal-query template. Comparison uses its separate template.
