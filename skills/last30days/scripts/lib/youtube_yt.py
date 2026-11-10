@@ -808,6 +808,11 @@ def _upload_date_filter(from_date: str, to_date: str) -> Optional[str]:
     return None
 
 
+def _first_stderr_line(stderr: Optional[str]) -> str:
+    lines = (stderr or "").strip().splitlines()
+    return lines[0] if lines else "(no stderr)"
+
+
 def _count_in_window(items: List[Dict[str, Any]], from_date: str, to_date: str) -> int:
     return sum(1 for i in items if i["date"] and from_date <= i["date"] <= to_date)
 
@@ -857,13 +862,16 @@ def _parse_search_stdout(stdout: str, core_topic: str) -> List[Dict[str, Any]]:
 
 def _search_recent_uploads(
     core_topic: str, count: int, sp: str, timeout: float,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Search YouTube's results page with an upload-date filter.
 
     Relevance-ranked ``ytsearch`` fills its top results with years-old videos
     for topics that have a big back catalog (a music artist's official videos),
     so a recent window can come back empty while new uploads exist. The
     filtered results page returns only uploads from the period.
+
+    Returns the parsed videos and an error string when the search failed
+    without producing any, so the caller can keep the failure visible.
     """
     query = urllib.parse.urlencode({"search_query": core_topic, "sp": sp})
     cmd = [
@@ -879,14 +887,18 @@ def _search_recent_uploads(
     ]
     try:
         result = _run_ytdlp(_wrap_ytdlp_cmd(cmd), timeout=timeout)
-    except (subproc.SubprocTimeout, FileNotFoundError) as exc:
-        _log(f"YouTube upload-date search failed: {type(exc).__name__}")
-        return []
+    except subproc.SubprocTimeout:
+        _log(f"YouTube upload-date search timed out ({timeout:g}s)")
+        return [], f"Upload-date search timed out after {timeout:g}s"
+    except FileNotFoundError:
+        return [], "yt-dlp not found"
     if result.returncode != 0:
         _note_youtube_block(result.stderr or "")
     items = _parse_search_stdout(result.stdout or "", core_topic)
     _log(f"YouTube upload-date search found {len(items)} videos")
-    return items
+    if result.returncode != 0 and not items:
+        return [], f"yt-dlp upload-date search failed: {_first_stderr_line(result.stderr)}"
+    return items, None
 
 
 def search_youtube(
@@ -968,30 +980,28 @@ def search_youtube(
         # going through the error path below.
         if result.returncode != 0:
             _note_youtube_block(result.stderr or "")
+        stderr = result.stderr or ""
+        blocked = result.returncode != 0 and _is_youtube_bot_or_rate_limit(stderr)
+        search_error: Optional[str] = None
         if result.returncode != 0 and not stdout.strip():
-            stderr_first = (result.stderr or "").strip().splitlines()
-            first_line = stderr_first[0] if stderr_first else "(no stderr)"
+            first_line = _first_stderr_line(stderr)
             if ssh_host:
                 _log(
                     f"YouTube search via SSH host {ssh_host!r} failed "
                     f"(rc={result.returncode}): {first_line}"
                 )
-                error = f"SSH routing to {ssh_host!r} failed: {first_line}"
+                search_error = f"SSH routing to {ssh_host!r} failed: {first_line}"
             else:
                 _log(f"YouTube search failed (rc={result.returncode}): {first_line}")
-                error = f"yt-dlp search failed: {first_line}"
-            published = _publish({"items": [], "error": error})
-            return published
-        if not stdout.strip():
-            _log("YouTube search returned 0 results")
-            published = _publish({"items": []})
-            return published
+                search_error = f"yt-dlp search failed: {first_line}"
 
-        items = _parse_search_stdout(stdout, core_topic)
+        items = _parse_search_stdout(stdout, core_topic) if stdout.strip() else []
 
-        # Old catalog videos can crowd every relevance slot. For a recent
-        # window, retry once with YouTube's upload-date filter and merge.
-        blocked = result.returncode != 0 and _is_youtube_bot_or_rate_limit(result.stderr or "")
+        # Old catalog videos can crowd every relevance slot, and an age-gated
+        # result can leave stdout empty. For a recent window, retry once with
+        # YouTube's upload-date filter and merge. A bot block skips it.
+        retry_error: Optional[str] = None
+        sp = None
         if (
             freshness_mode in _RECENT_FRESHNESS_MODES
             and _count_in_window(items, from_date, to_date) < 3
@@ -999,13 +1009,16 @@ def search_youtube(
             and not _lane_out_of_time()
         ):
             sp = _upload_date_filter(from_date, to_date)
-            if sp:
-                _log(f"Retrying YouTube for '{core_topic}' with an upload-date filter")
-                seen = {i["video_id"] for i in items}
-                for item in _search_recent_uploads(core_topic, count, sp, timeout):
-                    if item["video_id"] not in seen:
-                        seen.add(item["video_id"])
-                        items.append(item)
+        if sp:
+            _log(f"Retrying YouTube for '{core_topic}' with an upload-date filter")
+            recent_items, retry_error = _search_recent_uploads(core_topic, count, sp, timeout)
+            seen = {i["video_id"] for i in items}
+            for item in recent_items:
+                if item["video_id"] not in seen:
+                    seen.add(item["video_id"])
+                    items.append(item)
+        if not items and not search_error and not retry_error:
+            _log("YouTube search returned 0 results")
 
         # Date filter: prefer recent items; the keep-all fallback is scoped
         # by freshness mode (evergreen only), see _apply_date_window.
@@ -1013,7 +1026,12 @@ def search_youtube(
 
         # Sort by views descending
         items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
-        published = _publish({"items": items})
+        payload: Dict[str, Any] = {"items": items}
+        # Nothing usable survived: keep whichever search failed visible so the
+        # run reports a failed source instead of a quiet zero.
+        if not items and (search_error or retry_error):
+            payload["error"] = search_error or retry_error
+        published = _publish(payload)
         return published
     except Exception as exc:
         # Post-subprocess failures (parse/relevance/sort) must still unblock

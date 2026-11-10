@@ -2013,14 +2013,18 @@ class TestYouTubeUploadDateFallback(unittest.TestCase):
         )
 
     def _search(self, relevance_dates, filtered_dates, freshness_mode="strict_recent",
-                from_date=None, to_date=None, relevance_rc=0, relevance_stderr=""):
+                from_date=None, to_date=None, relevance_rc=0, relevance_stderr="",
+                filtered_rc=0, filtered_stderr=""):
         from lib.subproc import SubprocResult
         calls = []
 
         def _run(cmd, timeout, **_kwargs):
             calls.append(cmd)
             if any("youtube.com/results" in arg for arg in cmd):
-                return SubprocResult(returncode=0, stdout=self._stdout("new", filtered_dates), stderr="")
+                return SubprocResult(
+                    returncode=filtered_rc, stdout=self._stdout("new", filtered_dates),
+                    stderr=filtered_stderr,
+                )
             return SubprocResult(
                 returncode=relevance_rc, stdout=self._stdout("old", relevance_dates),
                 stderr=relevance_stderr,
@@ -2071,6 +2075,33 @@ class TestYouTubeUploadDateFallback(unittest.TestCase):
         )
         self.assertEqual(len(calls), 2)
         self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+
+    def test_all_age_gated_relevance_hits_still_reach_the_fallback(self):
+        """Every hit age-gated leaves stdout empty; the retry must still run."""
+        out, calls = self._search(
+            [], self.recent, relevance_rc=1,
+            relevance_stderr="ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+        self.assertNotIn("error", out)
+
+    def test_failed_retry_is_reported_instead_of_a_quiet_zero(self):
+        out, calls = self._search(
+            ["2010-11-22"], [], filtered_rc=1,
+            filtered_stderr="ERROR: HTTP Error 429: Too Many Requests",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(out["items"], [])
+        self.assertIn("upload-date search failed", out["error"])
+
+    def test_failed_retry_keeps_relevance_hits_without_an_error(self):
+        out, _ = self._search(
+            [self.recent[0]], [], filtered_rc=1,
+            filtered_stderr="ERROR: HTTP Error 429: Too Many Requests",
+        )
+        self.assertEqual([i["video_id"] for i in out["items"]], ["old0"])
+        self.assertNotIn("error", out)
 
     def test_bot_block_skips_the_fallback(self):
         _, calls = self._search(
