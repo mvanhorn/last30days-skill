@@ -33,6 +33,15 @@ and trailing corporate designators ("Tesla, Inc.", "NVIDIA Corporation") are
 set aside. That result carries ``company_source`` of ``yahoo-backup`` and its
 ticker is charted as it is.
 
+The host's ticker: ``--ticker "SYMBOL:Company"`` carries what the hosting
+model found by web search, and then the resolver's ticker is not used at all.
+A host claim is never taken alone. Yahoo has to agree twice: ``chart`` for the
+symbol returns an equity with two daily closes (the same fetch the line is
+built from), and the first equity ``autocomplete`` lists for the company name
+is that symbol, or carries the same company name as the chart does ("GOOGL"
+when "Alphabet" lists "GOOG" first). A pair that fails gives no line and no
+other source is tried in its place: see ``attach_host_tickers``.
+
 Surface choice: ``--json``, never ``--agent``. ``--agent`` implies
 ``--compact``, which empties records on older Printing Press binaries (see
 ``lib/techmeme.py``).
@@ -77,6 +86,14 @@ _US_EXCHANGES = frozenset({
 
 # ``company_source`` of a company found by ``backup_company``.
 BACKUP_SOURCE = "yahoo-backup"
+
+# ``ticker_source`` of a ticker the host passed with ``--ticker``.
+HOST_SOURCE = "host"
+MAX_HOST_TICKERS = 2
+# The symbol becomes a CLI argument, so it has to look like one: a letter or
+# digit first, never a dash.
+_HOST_SYMBOL = re.compile(r"[A-Z0-9][A-Z0-9.\-]{0,14}\Z")
+_HOST_TEXT_LIMIT = 80
 
 # Words dropped from the end of a company name before it is compared with the
 # topic. "publ" is what is left of "AB (publ)" and "the" of ", The".
@@ -309,7 +326,12 @@ def _fetch_window_uncached(symbol: str, range_from: str, range_to: str) -> dict[
                 bars.append((day, round(float(close), 4)))
     except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
         return {"error": f"schema: unexpected chart response ({exc!r})"}
-    return {"bars": bars, "currency": str(meta.get("currency") or "").upper()}
+    return {
+        "bars": bars,
+        "currency": str(meta.get("currency") or "").upper(),
+        "instrument": str(meta.get("instrumentType") or "").upper(),
+        "name": str(meta.get("longName") or meta.get("shortName") or "").strip(),
+    }
 
 
 def _percent(start: float, end: float) -> float:
@@ -369,33 +391,107 @@ def fetch_market_data(company: dict[str, Any], range_from: str, range_to: str) -
             return {"error": f"{symbol}: {window['error']}"}
         if not window["bars"][0][1]:
             return {"error": f"{symbol}: first close is zero"}
-        artifact: dict[str, Any] = {
-            "symbol": symbol,
-            "company": str(company.get("company") or ""),
-            "via_person": bool(company.get("company_via_person")),
-            "currency": window["currency"],
-            "range_from": range_from,
-            "range_to": range_to,
-            **_summary(window["bars"]),
-        }
-        # A US listing: quoted in dollars under a symbol with no exchange suffix.
-        if window["currency"] == "USD" and "." not in symbol:
-            benchmark = _fetch_window(BENCHMARK_SYMBOL, range_from, range_to)
-            if "error" in benchmark or len(benchmark["bars"]) < 2 or not benchmark["bars"][0][1]:
-                _log(f"{BENCHMARK_SYMBOL}: {benchmark.get('error') or 'fewer than two daily closes'}")
-            else:
-                summary = _summary(benchmark["bars"])
-                artifact["benchmark"] = {
-                    "symbol": BENCHMARK_SYMBOL,
-                    "name": BENCHMARK_NAME,
-                    "start_close": summary["start_close"],
-                    "end_close": summary["end_close"],
-                    "change_pct": summary["change_pct"],
-                }
-        return {"artifact": artifact}
+        return {"artifact": _artifact(
+            symbol, window, range_from, range_to,
+            company=str(company.get("company") or ""),
+            via_person=bool(company.get("company_via_person")),
+        )}
     except Exception as exc:
         _log(f"failed for {company.get('company')!r}: {type(exc).__name__}: {exc}")
         return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _artifact(
+    symbol: str, window: dict[str, Any], range_from: str, range_to: str, **labels: Any,
+) -> dict[str, Any]:
+    """The price window as the report stores it, with the S&P 500 beside a US
+    listing. ``window`` holds at least two bars."""
+    artifact: dict[str, Any] = {
+        "symbol": symbol,
+        **labels,
+        "currency": window["currency"],
+        "range_from": range_from,
+        "range_to": range_to,
+        **_summary(window["bars"]),
+    }
+    # A US listing: quoted in dollars under a symbol with no exchange suffix.
+    if window["currency"] == "USD" and "." not in symbol:
+        benchmark = _fetch_window(BENCHMARK_SYMBOL, range_from, range_to)
+        if "error" in benchmark or len(benchmark["bars"]) < 2 or not benchmark["bars"][0][1]:
+            _log(f"{BENCHMARK_SYMBOL}: {benchmark.get('error') or 'fewer than two daily closes'}")
+        else:
+            summary = _summary(benchmark["bars"])
+            artifact["benchmark"] = {
+                "symbol": BENCHMARK_SYMBOL,
+                "name": BENCHMARK_NAME,
+                "start_close": summary["start_close"],
+                "end_close": summary["end_close"],
+                "change_pct": summary["change_pct"],
+            }
+    return artifact
+
+
+def parse_host_tickers(raw: str) -> list[dict[str, str]]:
+    """The pairs of a ``--ticker`` value, ``SYMBOL:Company name`` separated by
+    commas, so a company name cannot hold a comma. The symbol is upper-cased
+    and a leading ``$`` dropped; the name is everything after the first colon.
+    Only the first ``MAX_HOST_TICKERS`` pairs are read. Each is ``pair`` (as
+    typed), ``symbol`` and ``company``, with a ``reason`` when it cannot be
+    used: no company name, a symbol that is not one, or a repeated symbol."""
+    entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+    if len(entries) > MAX_HOST_TICKERS:
+        ignored = ", ".join(entry[:_HOST_TEXT_LIMIT] for entry in entries[MAX_HOST_TICKERS:])
+        _log(f"--ticker takes {MAX_HOST_TICKERS} pairs; ignoring {ignored}")
+    pairs: list[dict[str, str]] = []
+    for entry in entries[:MAX_HOST_TICKERS]:
+        symbol, _colon, company = entry.partition(":")
+        symbol = symbol.strip().lstrip("$").upper()
+        pair = {
+            "pair": entry[:_HOST_TEXT_LIMIT],
+            "symbol": symbol,
+            "company": " ".join(company.split())[:_HOST_TEXT_LIMIT],
+        }
+        if not _HOST_SYMBOL.match(symbol):
+            pair["reason"] = "not a ticker symbol"
+        elif not pair["company"]:
+            pair["reason"] = "no company name"
+        elif any(symbol == earlier["symbol"] for earlier in pairs):
+            pair["reason"] = f"repeats {symbol}"
+        pairs.append(pair)
+    return pairs
+
+
+def _check_host_ticker(symbol: str, company: str, range_from: str, range_to: str) -> dict[str, Any]:
+    """Whether Yahoo agrees that ``symbol`` is the stock of ``company``.
+
+    ``{"window": ...}`` when it does. Otherwise ``{"reason": text}``, with
+    ``"error"`` as well when Yahoo could not be asked, which says nothing
+    about the pair. Raises nothing the caller does not catch."""
+    window = _fetch_window(symbol, range_from, range_to)
+    if "error" in window:
+        failure = window["error"].casefold()
+        if "http 404" in failure or "no data found" in failure:
+            return {"reason": f"Yahoo has no price data for {symbol}"}
+        return {"reason": "not checked: price fetch failed", "error": f"{symbol}: {window['error']}"}
+    if window["instrument"] != "EQUITY":
+        return {"reason": f"{symbol} is not a stock on Yahoo ({window['instrument'] or 'no type'})"}
+    if len(window["bars"]) < 2 or not window["bars"][0][1]:
+        return {"reason": f"{symbol} has fewer than two daily closes in {range_from}..{range_to}"}
+    try:
+        equities = _equities(company)
+    except SymbolSearchFailed as exc:
+        return {"reason": "not checked: symbol search failed", "error": str(exc)}
+    listed_as = f"{symbol} is {window['name'] or 'unnamed'}"
+    if not equities:
+        return {"reason": f"Yahoo lists no stock for {company!r}; {listed_as}"}
+    # Only the first equity, as everywhere else: a later row is a guess.
+    first_symbol, first_name = equities[0]
+    same_name = _name_key(first_name) and _name_key(first_name) == _name_key(window["name"])
+    if first_symbol.upper() == symbol or same_name:
+        return {"window": window}
+    return {
+        "reason": f"Yahoo's first stock for {company!r} is {first_symbol} ({first_name}); {listed_as}"
+    }
 
 
 PRICE_WINDOW_DAYS = 30
@@ -425,9 +521,74 @@ def attach_market_data(
     if "artifact" in outcome:
         report.artifacts[SOURCE] = outcome["artifact"]
     elif "error" in outcome:
-        report.source_status[SOURCE] = schema.SourceOutcome(
-            source=SOURCE,
-            state=http.classify_failure(message=outcome["error"]),
-            detail=outcome["error"],
-            fix_hint="doctor",
-        )
+        _record_failure(report, outcome["error"])
+
+
+def _record_failure(report: schema.Report, error: str) -> None:
+    report.source_status[SOURCE] = schema.SourceOutcome(
+        source=SOURCE,
+        state=http.classify_failure(message=error),
+        detail=error,
+        fix_hint="doctor",
+    )
+
+
+def attach_host_tickers(
+    report: schema.Report, pairs: list[dict[str, str]], config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Check the host's ``--ticker`` pairs and record the accepted ones on the
+    report, in place of ``attach_market_data``: there is no other ticker to
+    fall back to, because a line for another company is worse than none.
+
+    The ``yahoo_finance`` artifact is the first accepted window, and a second
+    one sits in its ``more`` list. A check Yahoo could not answer records a
+    degraded source outcome. Returns the fields for the ``resolved`` artifact:
+    ``ticker_source``, then ``ticker``, ``tickers`` and ``company`` (the first
+    accepted pair's) when a pair was accepted, and ``ticker_rejected`` (each
+    ``pair`` and ``reason``) when one was not. With the source excluded or the
+    binary absent nothing is run and every pair is listed as not checked.
+    Never raises."""
+    range_from = _thirty_days_before(report.range_to)
+    topic_key = _name_key(report.topic or "")
+    not_run = None
+    if is_excluded(config):
+        not_run = f"not checked: {SOURCE} is excluded"
+    elif not _is_available():
+        not_run = f"not checked: {CLI_BIN} is not on PATH"
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, str]] = []
+    errors: list[str] = []
+    for pair in pairs:
+        symbol, company = pair["symbol"], pair["company"]
+        outcome: dict[str, Any] = {"reason": pair.get("reason") or not_run}
+        if not outcome["reason"]:
+            try:
+                outcome = _check_host_ticker(symbol, company, range_from, report.range_to)
+                if "window" in outcome:
+                    accepted.append(_artifact(
+                        symbol, outcome["window"], range_from, report.range_to,
+                        company=company, via_person=False,
+                        # Beside the ticker when the topic is not the company:
+                        # the person who leads it, a product, a subsidiary.
+                        name_company=_name_key(company) != topic_key,
+                    ))
+                    continue
+            except Exception as exc:
+                error = f"{symbol}: {type(exc).__name__}: {exc}"
+                outcome = {"reason": "not checked: the check failed", "error": error}
+        if "error" in outcome:
+            errors.append(outcome["error"])
+        if not not_run:
+            _log(f"--ticker {pair['pair']} not used: {outcome['reason']}")
+        rejected.append({"pair": pair["pair"], "reason": outcome["reason"]})
+    fields: dict[str, Any] = {"ticker_source": HOST_SOURCE}
+    if accepted:
+        report.artifacts[SOURCE] = {**accepted[0], "more": accepted[1:]} if accepted[1:] else accepted[0]
+        fields["ticker"] = accepted[0]["symbol"]
+        fields["tickers"] = [window["symbol"] for window in accepted]
+        fields["company"] = accepted[0]["company"]
+    if rejected:
+        fields["ticker_rejected"] = rejected
+    if errors:
+        _record_failure(report, "; ".join(errors))
+    return fields

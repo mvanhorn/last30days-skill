@@ -1514,7 +1514,10 @@ def _render_resolved_entities_block(
         ticker_display = ""
         if ticker:
             ticker_display = f" | Ticker {ticker}"
-            if resolved.get("company_via_person") and resolved.get("company"):
+            if resolved.get("ticker_source") == "host":
+                tickers = [_footer_safe(str(symbol), 16) for symbol in resolved.get("tickers") or [ticker]]
+                ticker_display = f" | Ticker {', '.join(tickers)} (host search)"
+            elif resolved.get("company_via_person") and resolved.get("company"):
                 ticker_display += f" (via {resolved['company']})"
             elif resolved.get("company_source") == "yahoo-backup":
                 ticker_display += " (Yahoo match)"
@@ -3015,12 +3018,19 @@ def _build_source_footer_lines(
 
 
 def _market_windows(entity_reports: list[tuple[str, schema.Report]]) -> list[dict]:
-    """The price window of each entity that has one, in entity order."""
+    """The price windows of each entity that has any, in entity order."""
     return [
-        report.artifacts["yahoo_finance"]
-        for _label, report in entity_reports
-        if _is_market_window(report.artifacts.get("yahoo_finance"))
+        window for _label, report in entity_reports for window in _report_market_windows(report)
     ]
+
+
+def _report_market_windows(report: schema.Report) -> list[dict]:
+    """A report's price windows: the ``yahoo_finance`` artifact, then the
+    windows in its ``more`` list (a second ticker the host passed)."""
+    first = (report.artifacts or {}).get("yahoo_finance")
+    more = first.get("more") if isinstance(first, dict) else None
+    windows = [first, *(more if isinstance(more, list) else [])]
+    return [window for window in windows if _is_market_window(window)]
 
 
 _MARKET_WINDOW_NUMBERS = ("start_close", "end_close", "change_pct")
@@ -3070,16 +3080,17 @@ def _yahoo_finance_footer_line(
     One line whatever the number of tickers. A single ticker carries its two
     closes and its largest daily move; a comparison lists each ticker's change
     and keeps the line short. A ticker reached through the person who leads
-    the company names the company beside it. The S&P 500 segment is present
-    only when the window carries one (US listings).
+    the company, or passed by the host for a company that is not the topic,
+    names the company beside it. The S&P 500 segment is present only when the
+    window carries one (US listings).
     """
     if market_windows is None:
-        market_windows = [(report.artifacts or {}).get("yahoo_finance")]
+        market_windows = _report_market_windows(report)
     windows = [window for window in market_windows if _is_market_window(window)]
     if not windows:
         return None
     changes = " │ ".join(
-        f"{_market_ticker(window, name_company=bool(window.get('via_person')))} "
+        f"{_market_ticker(window, name_company=bool(window.get('via_person') or window.get('name_company')))} "
         f"{_signed_percent(window['change_pct'])}"
         for window in windows
     )
@@ -3114,15 +3125,21 @@ def _yahoo_finance_footer_line(
 
 
 def _render_market_data(report: schema.Report, heading: str = "## Market Data") -> list[str]:
-    """The price window as evidence: the same numbers as the footer line plus
-    the closes around the largest daily moves. Data only."""
-    window = (report.artifacts or {}).get("yahoo_finance")
-    if not _is_market_window(window):
+    """The price windows as evidence: the same numbers as the footer line plus
+    the closes around the largest daily moves, ticker after ticker under one
+    heading. Data only."""
+    windows = _report_market_windows(report)
+    if not windows:
         return []
+    lines = [heading, ""]
+    for window in windows:
+        lines.extend(_market_window_lines(window))
+    return lines
+
+
+def _market_window_lines(window: dict) -> list[str]:
     currency = _footer_safe(str(window.get("currency") or ""), 8)
     lines = [
-        heading,
-        "",
         f"- Yahoo Finance daily closes: {_market_ticker(window, name_company=True)}, "
         f"{currency}, {window.get('range_from')} to {window.get('range_to')}",
         f"- First close {window['start_close']:,.2f} ({window.get('start_date')}), "
