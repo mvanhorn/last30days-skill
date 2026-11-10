@@ -44,7 +44,11 @@ class DetectCategoryHappyPath(unittest.TestCase):
 
     def test_plural_that_is_another_word_does_not_match(self):
         self.assertIsNone(detect_category("yoga asanas"))
+        self.assertIsNone(detect_category("SunOS"))
         self.assertEqual(detect_category("asana"), "saas_productivity")
+
+    def test_generic_single_word_pattern_still_pluralizes(self):
+        self.assertEqual(detect_category("stablecoins"), "crypto_defi")
 
 
 class PeerSubsForHappyPath(unittest.TestCase):
