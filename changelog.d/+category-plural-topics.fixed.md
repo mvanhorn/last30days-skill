@@ -1,1 +1,0 @@
-Plural topics like "AI coding agents" or "prediction markets" are classified into their category again, so discovery and subreddit resolution add the category's peer subreddits instead of finding no category.

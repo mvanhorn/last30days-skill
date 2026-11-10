@@ -9,6 +9,23 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.33.0] - 2026-11-10
+
+### Security
+
+- Limit the Bright Data CLI child environment to its own API key and runtime, credential-location, TLS and proxy settings, preventing unrelated provider secrets from being inherited even when no explicit Bright Data key is configured.
+
+### Fixed
+
+- Instagram searches that find no reels now show `no results` in Source Coverage instead of `error: HTTP 404`. A 404 from the Google discovery fallback is treated as a clean miss, matching the primary reels search; other fallback failures are still reported. ([#1370](https://github.com/mvanhorn/last30days-skill/issues/1370))
+- Enablement topics such as "best Grok AI bot to control my computer agent" now plan as how-to research, with subqueries for the built-in route and the third-party MCP servers, CLIs and automation tools that give the named tool that capability, instead of a strict-recent comparison about the tool.
+- In Claude Code, reports no longer contain markdown lists: KEY PATTERNS numbers and suggestion bullets are written as plain lines that look the same. While a list streamed, Claude Code could redraw every link in the reply as `label (url)`, leaving the scrolled-off part of a report with visible URLs. Other hosts are unchanged.
+- Plural topics like "AI coding agents" or "prediction markets" are classified into their category again, so discovery and subreddit resolution add the category's peer subreddits instead of finding no category.
+- Questions such as "best Grok bot to control my computer" now surface the general tools that answer them (MCP servers, agent CLIs, browser automation), not only posts about the named tool. The planner always adds a search for the capability itself, also when the LLM planner is unavailable. The candidate pool keeps a few of those results, spread across sources. The reranker no longer caps them for not naming the tool the question names.
+- Recommendation reports use available source voices without requiring X posts, and their example follows the root output format.
+- Reports stop printing a like, upvote, view, or point count beside every quote and source. Engagement numbers still decide what gets quoted, but a count now appears in the summary only when its size is the finding (a comparison, a contrast, or a surprise); otherwise the report says "the top comment" or drops the number. Polymarket odds, the `creator` and `exec` registers, and the stats footer are unchanged.
+
+
 ## [3.32.0] - 2026-11-09
 
 ### Security

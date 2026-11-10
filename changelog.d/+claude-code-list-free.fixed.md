@@ -1,1 +1,0 @@
-In Claude Code, reports no longer contain markdown lists: KEY PATTERNS numbers and suggestion bullets are written as plain lines that look the same. While a list streamed, Claude Code could redraw every link in the reply as `label (url)`, leaving the scrolled-off part of a report with visible URLs. Other hosts are unchanged.

@@ -1,1 +1,0 @@
-Enablement topics such as "best Grok AI bot to control my computer agent" now plan as how-to research, with subqueries for the built-in route and the third-party MCP servers, CLIs and automation tools that give the named tool that capability, instead of a strict-recent comparison about the tool.
