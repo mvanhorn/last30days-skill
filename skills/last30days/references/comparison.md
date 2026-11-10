@@ -157,7 +157,7 @@ Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (omit unnecessary tra
 
 **Community Sentiment:** [Positive / Mixed / Negative / Enthusiastic / Security-concerned / etc.] ({N}+ mentions across {source list})
 
-[Optional pitch-vs-pulse sentence - ONLY if `RESOLVED_POSITIONING` was captured for this entity AND the month's evidence directly supports a specific claim, cuts against one, or is squarely about the pitched ground: one windowed prose sentence anchored to a real item with engagement. Otherwise omit entirely - silence, not a placeholder.]
+[Optional pitch-vs-pulse sentence - ONLY if `RESOLVED_POSITIONING` was captured for this entity AND the month's evidence directly supports a specific claim, cuts against one, or is squarely about the pitched ground: one windowed prose sentence anchored to a real, well-engaged item, named without its count. Otherwise omit entirely - silence, not a placeholder.]
 
 **Strengths (what people love)**
 - [Specific strength with `per <source>` attribution]
@@ -225,6 +225,7 @@ I've compared {TOPIC_A} vs {TOPIC_B} [vs ...] using the latest community data. S
 - Use bold-lead-in paragraphs with ` - ` separators for the body (that is general-query voice)
 - Use a `KEY PATTERNS from the research:` numbered list (replaced by per-entity Strengths/Weaknesses bullets and the emerging-stack paragraph)
 - Fabricate a `## Notable Stats` block (the engine footer IS the stats block, LAW 5)
+- Attach like, upvote, view, or point counts to quotes and attributions (`references/synthesis.md` COUNTS IN PROSE; entity scale figures stay)
 - Produce section headers outside the six listed above (`## Quick Verdict`, `## {Entity}` per entity, `## Head-to-Head`, `## The Bottom Line`, `## The emerging stack` are the only allowed `##` headers per LAW 4 comparison exception)
 
 **Reference exemplar:** `$LAST30DAYS_MEMORY_DIR/openclaw-vs-hermes-vs-paperclip-LAUNCH-VIDEO-april9-exemplar.md` preserves the April 9 canonical output with full structural analysis. Match this shape section-for-section.
