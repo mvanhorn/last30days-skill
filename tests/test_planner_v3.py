@@ -738,6 +738,16 @@ class EnablementIntentTests(unittest.TestCase):
             with self.subTest(topic=topic):
                 self.assertFalse(planner._is_enablement(topic))
 
+    def test_news_and_threat_words_outside_their_role_keep_enablement(self):
+        for topic in (
+            "get the latest Claude to control my browser",
+            "how to get the newly released Claude to use my mac",
+            "get claude to control my browser without malware",
+            "best AI agent to control my computer safely from hackers",
+        ):
+            with self.subTest(topic=topic):
+                self.assertEqual("how_to", planner._infer_intent(topic))
+
     def test_llm_news_verdict_is_not_overridden(self):
         topic = "latest news about malware controlling my browser"
         plan = planner._sanitize_plan(

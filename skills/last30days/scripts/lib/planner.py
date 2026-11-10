@@ -818,7 +818,7 @@ _DEVICE = r"(?:my|the|your|our)\s+(?:own\s+)?(?:computer|mac|pc|desktop|laptop|b
 # A tool acting on a device the person owns: "grok bot control my computer",
 # "agent that automates the browser". Plain "use the browser" is ordinary use.
 _ENABLEMENT_TARGET_RE = re.compile(
-    r"\b(?:control(?:s|ling)?|operat(?:e|es|ing)|automat(?:e|es|ing))\s+" + _DEVICE,
+    r"\b(?P<verb>control(?:s|ling)?|operat(?:e|es|ing)|automat(?:e|es|ing))\s+" + _DEVICE,
     re.IGNORECASE,
 )
 # A named tool made to act on the device: "get claude to control my browser",
@@ -828,15 +828,22 @@ _ENABLEMENT_AGENT_RE = re.compile(
     r"\b(?:get|make|let|have)\s+"
     r"(?!(?:to|me|us|them|you|sure|my|your|our|his|her|their|the\s+most|kids?|children|teens?|users?|people|customers?|employees?|students?|staff|team)\b)"
     r"[\w.-]+(?:\s+[\w.-]+){0,2}?\s+(?:to\s+)?"
-    r"(?:control(?:s|ling)?|operat(?:e|es|ing)|drives?|automat(?:e|es|ing)|uses?)\s+" + _DEVICE,
+    r"(?P<verb>control(?:s|ling)?|operat(?:e|es|ing)|drives?|automat(?:e|es|ing)|uses?)\s+" + _DEVICE,
     re.IGNORECASE,
 )
-# News about device control, or a threat doing it, is not a request to give a
-# tool that ability: "latest news about malware controlling my browser".
-_ENABLEMENT_EXCLUDE_RE = re.compile(
-    r"\b(?:latest|news|announced|just shipped|launched|released|breaking"
-    r"|malware|virus(?:es)?|spyware|ransomware|trojans?|keyloggers?|rootkits?"
-    r"|hack(?:ed|er|ers|ing)?|scam(?:s|mers?)?|attackers?|someone|somebody|stranger)\b",
+# Asking for news about device control is not asking how to enable it. Bare
+# "latest" or "released" stays allowed: "get the latest Claude to use my mac".
+_ENABLEMENT_NEWS_RE = re.compile(
+    r"\b(?:news|headlines?|announce(?:d|s|ment)|breaking"
+    r"|just\s+(?:shipped|launched|released)"
+    r"|(?:launch(?:ed|es)|release[sd]|unveil(?:ed|s)|ships)\s+(?:a|an|its|new)\b)",
+    re.IGNORECASE,
+)
+# A threat as the actor ("malware controlling my browser") is a security topic.
+# Only words before the verb count, so "...my browser without malware" is fine.
+_ENABLEMENT_THREAT_RE = re.compile(
+    r"\b(?:malware|virus(?:es)?|spyware|ransomware|trojans?|keyloggers?|rootkits?"
+    r"|hack(?:ed|er|ers)|scam(?:s|mers?)?|attackers?|someone|somebody|stranger)\b",
     re.IGNORECASE,
 )
 
@@ -844,9 +851,13 @@ _ENABLEMENT_EXCLUDE_RE = re.compile(
 def _is_enablement(topic: str) -> bool:
     """The topic asks how to give a named tool a capability, such as
     controlling the person's computer. That is a how-to, not a comparison."""
-    if _ENABLEMENT_EXCLUDE_RE.search(topic):
+    if _ENABLEMENT_NEWS_RE.search(topic):
         return False
-    return bool(_ENABLEMENT_TARGET_RE.search(topic) or _ENABLEMENT_AGENT_RE.search(topic))
+    for pattern in (_ENABLEMENT_TARGET_RE, _ENABLEMENT_AGENT_RE):
+        for match in pattern.finditer(topic):
+            if not _ENABLEMENT_THREAT_RE.search(topic, 0, match.start("verb")):
+                return True
+    return False
 
 
 def _infer_intent(topic: str) -> str:
