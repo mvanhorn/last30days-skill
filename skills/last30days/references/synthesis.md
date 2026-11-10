@@ -41,7 +41,7 @@ The Judge Agent must:
 2. Weight YouTube sources HIGH (they have views, likes, and transcript content)
 3. Weight TikTok sources HIGH (they have views, likes, and caption content - viral signal)
 4. Weight WebSearch sources LOWER (no engagement data)
-5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often contain the wittiest, most insightful, or funniest take. Quote them directly and attribute the commenter. Votes pick the quote; do not print the count beside it. A heavily voted comment outweighs the parent post's stats.
+5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often contain the wittiest, most insightful, or funniest take. Quote and attribute them. Votes pick the quote; its count appears only on a PULLED QUOTE line. A heavily voted comment outweighs the parent post's stats.
 6. **For YouTube: Quote transcript highlights AND top comments.** Transcript highlights capture the video's own words; top comments capture how viewers reacted. Attribute transcript quotes to the channel name.
 7. Identify patterns that appear across ALL sources (strongest signals)
 8. Note any contradictions between sources
@@ -97,7 +97,7 @@ Read the research output carefully. Pay attention to:
 
 **ANTI-PATTERN TO AVOID**: If user asks about "clawdbot skills" and research returns ClawdBot content (self-hosted AI agent), do NOT synthesize this as "Claude Code skills" just because both involve "skills". Read what the research actually says.
 
-**FUN CONTENT (see LAW 9): the EVIDENCE block's `## Top Community Comments` section (present when 2+ relevance-qualified comments exist and the GENERAL nothing-solid floor did not fire) and any `## Best Takes` section are the voice of the people - weave at least 2 of the funniest/cleverest VERBATIM quotes into your synthesis.** A thread's top comment saying "Where's the limewire link" tells you more about the cultural moment than a news article. Quote the text, not its vote count. Attribute the commenter using the citation form required by higher-priority host/tool requirements and user instructions. On a hidden-link host (Claude Code; Grok Bot / Cursor agent chat), copy comment URLs verbatim from the block. On a visible-URL host (Codex, Gemini CLI, raw CLI), use plain attribution only when links are not required. Never reconstruct a URL. Weave it in; no separate section. Do NOT wait for a `## Best Takes` section - it is often empty; `## Top Community Comments` is the always-on source when qualifying comments remain.
+**FUN CONTENT (see LAW 9): the EVIDENCE block's `## Top Community Comments` section (present when 2+ relevance-qualified comments exist and the GENERAL nothing-solid floor did not fire) and any `## Best Takes` section are the voice of the people - weave at least 2 of the funniest/cleverest quotes, VERBATIM or translated, into your synthesis.** A thread's top comment saying "Where's the limewire link" tells you more about the cultural moment than a news article. Attribute the commenter using the citation form required by higher-priority host/tool requirements and user instructions. On a hidden-link host (Claude Code; Grok Bot / Cursor agent chat), copy comment URLs verbatim from the block. On a visible-URL host (Codex, Gemini CLI, raw CLI), use plain attribution only when links are not required. Never reconstruct a URL. Weave it in or pull it; no separate section. `## Best Takes` is often empty; `## Top Community Comments` is the always-on source when qualifying comments remain.
 
 **ELI5 MODE: If REGISTER is `eli5` (including the legacy `ELI5_MODE=true` fallback), apply these writing guidelines to your ENTIRE synthesis. Otherwise skip this block completely and write normally.**
 
@@ -143,7 +143,9 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **If PROMPTING/NEWS/GENERAL** - Show synthesis and patterns:
 
-**COUNTS IN PROSE: engagement numbers choose what you show, rarely what you say.** Likes, upvotes, views, and points already ranked the evidence. In the body, KEY PATTERNS, and comparisons, print a count only when its size is the finding: a comparison, a contrast, or a surprise ("roughly 4x the likes of the next post", "but with only 5 points"). Otherwise use a rank word ("the top comment", "the month's biggest thread") or drop it, so `@x joked "..." (260 likes)` loses the parenthesis. A count that stays is rounded and single. Unaffected: Polymarket odds, the `creator` register, the `exec` lead number, entity scale figures, the footer.
+**COUNTS IN PROSE: engagement numbers choose what you show, rarely what you say.** Likes, upvotes, views, and points already ranked the evidence. In the body, KEY PATTERNS, and comparisons, print a count only when its size is the finding: a comparison, a contrast, or a surprise ("roughly 4x the likes of the next post", "but with only 5 points"). Otherwise use a rank word ("the top comment", "the month's biggest thread") or drop it. A prose count that stays is rounded and single. Unaffected: Polymarket odds, the `creator` register, the `exec` lead number, entity scale figures, the footer.
+
+**PULLED QUOTE (the named exception to COUNTS IN PROSE).** A story paragraph may be followed directly by at most one comment or X post on its own blockquote line: `> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`. Copy dot, author, community (`on r/sub`) and count as the engine printed them; no link here. Translate one not in the report's language and append ` · translated from Portuguese`. Never pull a comment attributed `Comment`; none fits, no quote. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
 
 **NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, one per line with no blank lines between. Other hosts keep normal lists.
 
@@ -178,13 +180,13 @@ When both a web article and an X post cover the same fact, cite the X post.
 users are saying/feeling, then add web context only if needed. The user came
 here for the conversation, not the press release.
 
-**MANDATORY - bold headline per narrative paragraph.** Every paragraph in the "What I learned" section MUST begin with a bolded headline phrase that summarizes the paragraph, followed by ` - ` (a SINGLE HYPHEN with spaces on both sides, NOT an em-dash) and the body text. Pattern: `**Headline phrase** - body text describing what people are saying...`. Without the bold headline, the output is unscannable slop.
+**MANDATORY - bold headline per narrative paragraph.** Every paragraph in the "What I learned" section MUST begin with a bolded headline phrase that summarizes the paragraph, followed by ` - ` (a SINGLE HYPHEN with spaces on both sides, NOT an em-dash) and the body text. Pattern: `**Headline phrase** - body text describing what people are saying...`. Without the bold headline, the output is unscannable slop. The headline is report structure: a general style preference alone does not remove it; the root output contract names the cases that do.
 
 
 Apply root LAWs 2–4 to the following normal-query template. Comparison uses its separate template.
 
 ```
-🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+{the engine's first line, copied verbatim}
 
 What I learned:
 
@@ -220,7 +222,7 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 
 If the research output does not contain the footer block, skip it and go straight from KEY PATTERNS to the invitation. If it is present, relay the emitted block under LAW 5 even when it has no saved-file pointer.
 
-**Citation requirements before the invitation:** include visible citations required by higher-priority host/tool requirements or user instructions as inline links in the body (LAW 1). Keep the engine footer where compatible with those requirements. The response ends at the invitation, which counts web pages in its link line, without an additional source list.
+**Citation requirements before the invitation:** include visible citations required by higher-priority host/tool requirements or user instructions as inline links in the body (LAW 1). Keep the engine footer where compatible with those requirements. The response ends at the invitation, without an additional source list.
 
 **SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no `##` headers in your response body (comparisons allow only the headers LAW 4 permits), (b) no em-dashes or en-dashes anywhere, (c) any emitted fenced engine footer appears between KEY PATTERNS and the invitation under LAW 5, with no added saved-file pointer.
 
@@ -282,7 +284,5 @@ For `/last30days kanye west` (GENERAL):
 > - What's the real story behind the apology letter - genuine or PR move?
 > - Break down the BULLY tracklist reactions and what fans are expecting
 > - Compare how Reddit vs X are reacting to the Bianca narrative
-
-Close with `I have all the links to the {N} {source list} I pulled from. Just ask.` where `{source list}` names only sources that returned results, including the web pages that informed the synthesis (e.g. "14 Reddit threads, 22 X posts, 6 YouTube videos, and 5 web articles"). Never mention a source with 0 results.
 
 ---

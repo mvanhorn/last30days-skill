@@ -325,7 +325,7 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     retained_line = next(
         line for line in top_comments.splitlines() if "The retained HN take." in line
     )
-    assert "— alice (93 points)" in retained_line
+    assert "— 🟡 alice (93 points)" in retained_line
     assert "upvotes" not in retained_line
     assert "u/alice" not in retained_line
     assert any(

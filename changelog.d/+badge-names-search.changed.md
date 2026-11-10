@@ -1,0 +1,1 @@
+The report's first line now names the search and its window: `🌐 last30days · {topic} · {Mon D} to {Mon D, YYYY} · v{VERSION}` replaces `🌐 last30days v{VERSION} · synced {YYYY-MM-DD}`. Comparison runs show the entities joined by " vs " and discovery runs show the domain.

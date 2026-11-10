@@ -25,7 +25,7 @@ Read for recommendation intent before ranking and rendering. The root citation a
 **Output shape:**
 
 ```
-🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+{the engine's first line, copied verbatim}
 
 What I learned:
 

@@ -205,18 +205,13 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         )
         self.assertIn(f"Resolved save directory: <{self.save_dir}>", result.stderr)
 
-    def test_badge_version_awk_fallback_survives_argument_substitution(self) -> None:
-        command = re.search(r"`(jq -r '\.version'.*?)`", root_text())
-        self.assertIsNotNone(command)
-        installed_skill = self.root / "badge skill"
-        installed_skill.mkdir()
-        self.env["SKILL_DIR"] = str(installed_skill)
-        for version_line in ('version: "3.12.7"', "version: 3.12.7"):
-            with self.subTest(version_line=version_line):
-                (installed_skill / "SKILL.md").write_text(f"---\n{version_line}\n---\n", encoding="utf-8")
-                result = self._run(command[1])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout, "3.12.7\n")
+    def test_badge_block_copies_the_engine_line_without_a_version_command(self) -> None:
+        # The engine prints the badge with the version already resolved, so
+        # the instructions carry no shell command to look the version up.
+        badge = root_text().split("**BADGE", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Copy the engine's first line", badge)
+        self.assertNotIn("jq -r '.version'", root_text())
+        self.assertNotIn("awk '/^version:/", root_text())
 
 
 if __name__ == "__main__":

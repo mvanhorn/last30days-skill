@@ -107,7 +107,8 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
         snapshot_markers = [
             "<!DOCTYPE html>",
             "<title>last30days · AI agent frameworks</title>",
-            '<div class="badge"><span class="accent">🌐</span> last30days v',
+            '<div class="badge"><span class="accent">🌐</span> '
+            "last30days · AI agent frameworks · Mar 30 to Apr 29, 2026 · v",
             '<div class="meta">2026-03-30 to 2026-04-29',
             '<div class="engine-footer"><pre>---\n✅ All agents reported back!',
             'Generated 2026-04-29 by /last30days v',
@@ -161,6 +162,45 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertIn("<ul>\n<li>Go deeper</li>\n<li>Compare</li>\n</ul>", rendered)
         self.assertNotIn("\\.", rendered)
         self.assertNotIn("•", rendered)
+
+    def test_each_story_keeps_its_own_pulled_quote(self):
+        md = (
+            "**North West takes the stage** - Fans say she sounds like her father.\n"
+            '> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes\n'
+            "\n"
+            "**The album debate** - Reddit is less convinced.\n"
+            "\n"
+            '> "Internet feelings vs reality." 🟠 u/CappaccinoJay on r/hiphopheads · 1,315 upvotes\n'
+        )
+        rendered = html_render._markdown_to_html(md)
+        self.assertEqual(2, rendered.count("<blockquote>"))
+        self.assertIn(
+            "<blockquote>&quot;Ofc shes literally him😭&quot; 🎵 @haktimel2 on TikTok · 825,451 likes</blockquote>",
+            rendered,
+        )
+        self.assertIn(
+            "<blockquote>&quot;Internet feelings vs reality.&quot; 🟠 u/CappaccinoJay"
+            " on r/hiphopheads · 1,315 upvotes</blockquote>",
+            rendered,
+        )
+        first_quote = rendered.index("<blockquote>")
+        self.assertLess(rendered.index("North West takes the stage"), first_quote)
+        self.assertLess(first_quote, rendered.index("The album debate"))
+        self.assertLess(rendered.index("The album debate"), rendered.rindex("<blockquote>"))
+
+    def test_pulled_quote_text_renders_literally(self):
+        md = (
+            '> "a > b, 5 * 4 | see https://example.test/x?a=1&b=2 <script>" '
+            "🟠 u/ada on r/math · 12 upvotes"
+        )
+        rendered = html_render._markdown_to_html(md)
+        self.assertEqual(
+            "<blockquote>&quot;a &gt; b, 5 * 4 | see https://example.test/x?a=1&amp;b=2"
+            " &lt;script&gt;&quot; 🟠 u/ada on r/math · 12 upvotes</blockquote>",
+            rendered.strip(),
+        )
+        for tag in ("<a ", "<em>", "<table", "<script>"):
+            self.assertNotIn(tag, rendered)
 
     def test_list_free_markers_inside_code_are_left_alone(self):
         rendered = html_render._markdown_to_html("```\n• keep\n1\\. keep\n```")
@@ -378,6 +418,102 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertNotIn("Pre-Research Status", rendered)
         # No blockquote at all in mock output - just badge + meta + footer + colophon
         self.assertEqual(0, rendered.count("<blockquote>"))
+
+
+SUGGESTIONS = (
+    "- What is the real story behind the apology letter?\n"
+    "- Break down the BULLY tracklist reactions\n"
+    "- Compare how Reddit and X are reacting"
+)
+EXPERT_INVITATIONS = {
+    "prompting": (
+        "---\nI'm now an expert on product photos for Midjourney. What do you want to make? For example:\n"
+        f"{SUGGESTIONS}\n\n"
+        "Just describe your vision and I'll write a prompt you can paste straight into Midjourney."
+    ),
+    "recommendations": f"---\nI'm now an expert on kids skis. Want me to go deeper? For example:\n{SUGGESTIONS}",
+    "news": f"---\nI'm now an expert on Kanye West. Some things you could ask:\n{SUGGESTIONS}",
+    "general": f"---\nI'm now an expert on Kanye West. Some things I can help with:\n{SUGGESTIONS}",
+}
+COMPARISON_INVITATION = (
+    "I've compared Cursor vs Windsurf using the latest community data. Some things you could ask:\n"
+    f"{SUGGESTIONS}"
+)
+OLD_LINK_LINE = (
+    "\n\nI have all the links to the 14 Reddit threads, 22 X posts, and 5 web articles I pulled from. Just ask."
+)
+REPORT_BODY = (
+    "What I learned:\n\n"
+    "**The apology letter** - fans are split, per [@example](https://example.com)\n\n"
+    "---\n\n"
+    "KEY PATTERNS from the research:\n"
+    "1. Closing pattern stays in the brief\n\n"
+)
+
+
+class InvitationStripTests(unittest.TestCase):
+    def test_old_reports_lose_each_expert_invitation(self):
+        for name, invitation in EXPERT_INVITATIONS.items():
+            with self.subTest(shape=name):
+                stripped = html_render._strip_invitation(REPORT_BODY + invitation + OLD_LINK_LINE)
+                self.assertNotIn("I'm now an expert", stripped)
+                self.assertNotIn("apology letter?", stripped)
+                self.assertNotIn("Just ask.", stripped)
+                self.assertIn("Closing pattern stays in the brief", stripped)
+
+    def test_old_comparison_report_loses_its_invitation(self):
+        stripped = html_render._strip_invitation(REPORT_BODY + COMPARISON_INVITATION + OLD_LINK_LINE)
+        self.assertNotIn("I've compared Cursor vs Windsurf", stripped)
+        self.assertNotIn("Just ask.", stripped)
+        self.assertIn("Closing pattern stays in the brief", stripped)
+
+    def test_reports_ending_at_the_invitation_lose_each_shape(self):
+        shapes = {**EXPERT_INVITATIONS, "comparison": COMPARISON_INVITATION}
+        for name, invitation in shapes.items():
+            with self.subTest(shape=name):
+                stripped = html_render._strip_invitation(REPORT_BODY + invitation + "\n")
+                self.assertNotIn("I'm now an expert", stripped)
+                self.assertNotIn("I've compared", stripped)
+                self.assertNotIn("apology letter?", stripped)
+                self.assertNotIn("Just describe your vision", stripped)
+                self.assertIn("Closing pattern stays in the brief", stripped)
+
+    def test_body_rule_before_the_invitation_keeps_the_body(self):
+        stripped = html_render._strip_invitation(REPORT_BODY + EXPERT_INVITATIONS["general"])
+        self.assertEqual(stripped, REPORT_BODY)
+
+    def test_report_ending_at_the_invitation_renders_ending_at_the_footer(self):
+        rendered = html_render.render_html(
+            _report("Kanye West", ["One"]),
+            synthesis_md=REPORT_BODY + EXPERT_INVITATIONS["general"],
+        )
+        self.assertNotIn("I'm now an expert", rendered)
+        self.assertNotIn("apology letter?", rendered)
+        self.assertIn("Closing pattern stays in the brief", rendered)
+        body = rendered.split('<div class="colophon">', 1)[0].rstrip()
+        self.assertIn("All agents reported back!", body)
+        self.assertTrue(body.endswith("---</pre></div>"), body[-200:])
+
+    def test_comparison_ending_at_the_invitation_renders_ending_at_the_footer(self):
+        rendered = html_render.render_html_comparison(
+            [("Cursor", _report("Cursor", ["One"])), ("Windsurf", _report("Windsurf", ["Two"]))],
+            synthesis_md=REPORT_BODY + COMPARISON_INVITATION,
+        )
+        self.assertNotIn("I've compared", rendered)
+        self.assertNotIn("apology letter?", rendered)
+        self.assertIn("Closing pattern stays in the brief", rendered)
+        self.assertIn("All agents reported back!", rendered)
+
+    def test_old_saved_report_renders_without_the_invitation(self):
+        rendered = html_render.render_html(
+            _report("Kanye West", ["One"]),
+            synthesis_md=REPORT_BODY + EXPERT_INVITATIONS["general"] + OLD_LINK_LINE,
+        )
+        self.assertNotIn("I'm now an expert", rendered)
+        self.assertNotIn("Just ask.", rendered)
+        self.assertIn("<strong>The apology letter</strong>", rendered)
+        self.assertIn("Closing pattern stays in the brief", rendered)
+        self.assertIn('<div class="engine-footer">', rendered)
 
 
 class HtmlCliIntegrationTests(unittest.TestCase):
