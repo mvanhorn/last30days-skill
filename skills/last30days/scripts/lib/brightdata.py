@@ -185,9 +185,7 @@ def _child_env(api_key: str) -> Dict[str, str]:
         if name.upper() in _CHILD_ENV_ALLOWLIST
     }
     key = api_key or os.environ.get(API_KEY_ENV)
-    if key:
-        child_env[API_KEY_ENV] = key
-    return child_env
+    return {**child_env, API_KEY_ENV: key} if key else child_env
 
 
 def _scrub(text: str, secret: str) -> str:
