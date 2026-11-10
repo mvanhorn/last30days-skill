@@ -1,0 +1,1 @@
+Reddit's keyless arctic-shift listing lane now waits and retries once when arctic-shift answers HTTP 422 "Timeout. Maybe slow down a bit", instead of dropping that subreddit from the run. The retry stays inside the existing listing deadline.

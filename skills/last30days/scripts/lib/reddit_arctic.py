@@ -42,6 +42,7 @@ _LISTING_SUPPLEMENT_MULTIPLIER = 2  # fetch 2x posts when supplementing multi-so
 # Total deadline for listing fetches to prevent unbounded stalls when many
 # subreddits are requested and arctic is slow/unreachable.
 _LISTING_DEADLINE_SECONDS = 45  # ~3 subs at 15s timeout each
+_SLOW_DOWN_BACKOFF_SECONDS = 2.0  # one wait-and-retry on arctic's 422 "slow down"
 # Comment fallback: fetch a wide recency slice, then rank by score client-side
 # (the archive's sort_type only supports created_utc).
 MAX_COMMENT_ROWS = 100
@@ -247,18 +248,39 @@ def fetch_listings(
         else:
             win = f"&after={from_date}" if from_date else ""
             win += f"&before={to_date}" if to_date else ""
-        try:
-            # DNS recovery may retry even with retries=1. Bound the whole
-            # request so those retries cannot consume other subreddits' time.
-            data = http.get(
-                f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}",
-                headers={"User-Agent": http.BROWSER_USER_AGENT},
-                timeout=min(TIMEOUT, remaining),
-                retries=1,
-                deadline_monotonic=min(deadline, now + TIMEOUT),
-            )
-        except Exception as e:  # network error / non-200 — degrade, never raise
-            _log(f"listing search failed r/{sub}: {e}")
+        data = None
+        fetched = False
+        for attempt in range(2):
+            try:
+                # DNS recovery may retry even with retries=1. Bound the whole
+                # request so those retries cannot consume other subreddits' time.
+                data = http.get(
+                    f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}",
+                    headers={"User-Agent": http.BROWSER_USER_AGENT},
+                    timeout=min(TIMEOUT, remaining),
+                    retries=1,
+                    deadline_monotonic=min(deadline, now + TIMEOUT),
+                )
+                fetched = True
+                break
+            except Exception as e:  # network error / non-200 — degrade, never raise
+                # arctic-shift answers HTTP 422 "Timeout. Maybe slow down a bit"
+                # when it is throttling. Back off once instead of dropping the
+                # whole subreddit, as long as the shared deadline allows it.
+                remaining = deadline - time.monotonic()
+                if (
+                    attempt == 0
+                    and getattr(e, "status_code", None) == 422
+                    and remaining > _SLOW_DOWN_BACKOFF_SECONDS + 1
+                ):
+                    _log(f"listing search throttled r/{sub}; retrying in {_SLOW_DOWN_BACKOFF_SECONDS:.0f}s")
+                    time.sleep(_SLOW_DOWN_BACKOFF_SECONDS)
+                    now = time.monotonic()
+                    remaining = deadline - now
+                    continue
+                _log(f"listing search failed r/{sub}: {e}")
+                break
+        if not fetched:
             continue
         rows = (data or {}).get("data")
         if not isinstance(rows, list):
