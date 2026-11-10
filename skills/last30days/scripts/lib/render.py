@@ -763,7 +763,8 @@ def _render_next30_scaffold(report: schema.Report) -> list[str]:
         "",
         "Close the brief with a `Next 30 days:` section: one or two predictions, each on one "
         "question listed here, logged with `forecast add`. The synthesis reference has the "
-        "rules. Each question's text is in the Open Questions list under the same id.",
+        "rules. Each question's text is in the Open Questions list under the same id; a "
+        "question missing here is over 90 days out, all but settled, or already called.",
         "",
         *(f"- {entry['id']} [{entry['kind']}] {entry['date']}" for entry in eligible),
     ]

@@ -659,7 +659,7 @@ def test_list_view_shows_the_baseline_and_the_reason(ledger):
         store.add_forecast(row)
     text = forecast.render_list(store.list_forecasts(), TODAY, "Forecast ledger")
     assert "market priced it at 55% when logged" in text
-    assert 'baseline: 80% (status quo: No stable 2.0 release ships)' in text
+    assert 'baseline for this claim: 80% (the status quo is: No stable 2.0 release ships)' in text
     assert "resolution page: https://github.com/example/widget/releases" in text
     assert "why: The release branch still has three open blockers" in text
     assert "legacy" not in text

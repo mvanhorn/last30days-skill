@@ -782,8 +782,8 @@ def render_prediction(row: dict[str, Any], today: _dt.date) -> str:
     if row.get("baseline_kind") == "status_quo":
         lines.append(f"    resolution page: {row['resolution_url']}")
         lines.append(
-            f"    baseline: {_pct(float(row['baseline_probability']))} "
-            f"(status quo: {row['baseline_outcome']})"
+            f"    baseline for this claim: {_pct(float(row['baseline_probability']))} "
+            f"(the status quo is: {row['baseline_outcome']})"
         )
     if row.get("reason"):
         lines.append(f"    why: {row['reason']}")

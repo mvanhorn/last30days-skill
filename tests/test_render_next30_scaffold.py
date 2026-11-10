@@ -99,7 +99,7 @@ def test_eligible_questions_are_listed_by_id_kind_and_date_only():
         "",
         "Close the brief with a `Next 30 days:` section: one or two predictions, each on one "
         "question listed here, logged with `forecast add`. The synthesis reference has the "
-        "rules. Each question's text is in the Open Questions list under the same id.",
+        "rules. Each question's text is in the Open Questions list under the same id; a question missing here is over 90 days out, all but settled, or already called.",
         "",
         f"- Q1 [market] {_day(20)}",
         f"- Q2 [decision] {_day(30)}",
