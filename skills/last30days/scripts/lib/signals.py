@@ -459,8 +459,13 @@ def prune_low_relevance(
     minimum: float = 0.15,
     first_party_handles: Iterable[str] | None = None,
     first_party_by_source: Mapping[str, Iterable[str]] | None = None,
+    passing_only: bool = False,
 ) -> list[schema.SourceItem]:
     """Drop weak lexical matches when stronger evidence exists.
+
+    ``passing_only`` returns just the items that pass, with no keep-all rescue
+    when none does: the count a caller needs to ask "how much of this batch is
+    on topic".
 
     Social-source items with genuinely zero engagement get a stricter
     threshold because zero engagement on a social platform is a strong noise
@@ -530,4 +535,6 @@ def prune_low_relevance(
         return True
 
     filtered = [item for item in items if passes(item)]
+    if passing_only:
+        return filtered
     return filtered or items

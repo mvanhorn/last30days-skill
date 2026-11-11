@@ -2,9 +2,17 @@
 
 Shells out to ``trustpilot-pp-cli`` to surface a company's TrustScore and
 Trustpilot's own AI review summary for brand/company topics. Trustpilot has no
-API key, but it sits behind AWS WAF: the CLI harvests an ``aws-waf-token`` via
-a one-time headless Chrome launch (~10s), then replays it over plain HTTP until
-it expires.
+API key, but it sits behind AWS WAF: the CLI replays an ``aws-waf-token`` that
+only a Chrome launch can harvest (``trustpilot-pp-cli auth login``) and that
+stays replayable for about four minutes.
+
+A research run never launches a browser on the user's machine. The CLI has no
+no-browser mode (every fetch command harvests by itself when its session is
+missing or stale), so this module asks ``auth status`` first, which is a local
+read, and calls a fetch command only while the saved session is fresh.
+Otherwise the lane is skipped quietly: one stderr line with the sign-in
+command, and a not-attempted "no results" outcome carrying ``SESSION_NEEDED``,
+never a failed or degraded source.
 
 Activation gate: only available when ``trustpilot-pp-cli`` is on PATH.
 ``pipeline.available_sources`` checks ``shutil.which`` before including
@@ -30,9 +38,8 @@ Priority chain: user flag (verbatim) > auto-resolve hint (retries via search
 on a miss) > domain token in the topic > CLI ``search`` name->domain lookup
 (cached per topic) > cleaned topic (legacy behavior).
 
-Session pre-flight: ``ensure_session_ready`` performs one serialized
-``auth status`` / ``auth login`` before the parallel fan-out so concurrent
-streams and vs-mode sub-runs never race their own Chrome harvests.
+Session pre-flight: ``ensure_session_ready`` runs ``auth status`` before each
+fetch command and never ``auth login``.
 """
 
 from __future__ import annotations
@@ -43,7 +50,8 @@ import re
 import shutil
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
 
 from . import dates, log, subproc
 from .relevance import token_overlap_relevance
@@ -56,6 +64,16 @@ SEARCH_TIMEOUT = 75  # generous: a cold run may harvest a WAF cookie (~10s).
 AUTH_STATUS_TIMEOUT = 20  # auth status is a local SQLite read; fast.
 
 NO_BROWSER_ENV = "LAST30DAYS_TRUSTPILOT_NO_BROWSER"
+
+# The source outcome when the saved session cannot be replayed.
+SESSION_NEEDED = (
+    "Trustpilot needs a browser session, and a research run never opens a browser: "
+    "run `trustpilot-pp-cli auth login`, then run again within 3 minutes"
+)
+# The CLI replays a session for 4 minutes from its harvest and launches Chrome
+# after that. A session this close to the limit could lapse during the call.
+CLI_SESSION_SECONDS = 240
+SESSION_MARGIN_SECONDS = 45
 
 # Among name-matching search hits, the top hit must have this many times the
 # runner-up's review volume to win automatically. Lookalike/squatter pages have
@@ -170,25 +188,12 @@ _domain_cache: Dict[str, Optional[str]] = {}
 _domain_cache_lock = threading.Lock()
 
 _warmup_lock = threading.Lock()
-_warmup_at: Optional[float] = None  # time.monotonic() of the last warm-up
-
-# Warm-up freshness window, matching the CLI's ~4-minute safe replay bound for
-# WAF tokens. A boolean-forever flag would leave long-lived host processes
-# running stale (and never retrying a failed login); the TTL re-checks cheaply
-# via `auth status` once the window lapses.
-WARMUP_TTL_SECONDS = 240
 
 
 def _reset_state_for_tests() -> None:
     """Clear module-level caches/flags (tests only)."""
-    global _warmup_at
     with _domain_cache_lock:
         _domain_cache.clear()
-    _warmup_at = None
-
-
-def _warmup_fresh() -> bool:
-    return _warmup_at is not None and (time.monotonic() - _warmup_at) < WARMUP_TTL_SECONDS
 
 
 def _select_search_hit(topic: str, hits: List[Any]) -> Optional[str]:
@@ -242,8 +247,13 @@ def _select_search_hit(topic: str, hits: List[Any]) -> Optional[str]:
     return None
 
 
-def _search_domain(topic: str) -> Optional[str]:
+def _search_domain(
+    topic: str, session_ready: Optional[Callable[[], bool]] = None,
+) -> Optional[str]:
     """Resolve a company name to its Trustpilot domain via the CLI's search.
+
+    ``session_ready`` is asked right before the CLI runs (a cached answer
+    needs no session); when it says no, nothing runs and None is returned.
 
     Cached per normalized topic (thread-safe), so repeat lookups cost one
     subprocess while vs-mode entities still resolve independently. Only
@@ -257,6 +267,8 @@ def _search_domain(topic: str) -> Optional[str]:
     with _domain_cache_lock:
         if key in _domain_cache:
             return _domain_cache[key]
+    if session_ready is not None and not session_ready():
+        return None
     data = _run_cli(
         [CLI_BIN, "search", topic.strip(), "--limit", "5", "--agent"],
         timeout=SEARCH_TIMEOUT,
@@ -291,57 +303,54 @@ def _is_session_fresh(status: Dict[str, Any]) -> bool:
     return False
 
 
+def _session_about_to_lapse(status: Dict[str, Any]) -> bool:
+    """True when the payload dates the harvest within the margin of the CLI's
+    replay limit. A payload with no readable harvest time is not judged."""
+    containers = [status, status.get("session")] if isinstance(status, dict) else []
+    for container in containers:
+        if not isinstance(container, dict) or not container.get("harvestedAt"):
+            continue
+        try:
+            harvested = datetime.fromisoformat(str(container["harvestedAt"]).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if harvested.tzinfo is None:
+            harvested = harvested.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - harvested).total_seconds()
+        return age > CLI_SESSION_SECONDS - SESSION_MARGIN_SECONDS
+    return False
+
+
 def ensure_session_ready(
     topic: str,
     config: Optional[Dict[str, Any]] = None,
     has_domain: bool = False,
-) -> None:
-    """Warm the CLI's WAF session, serialized, at the first Trustpilot fetch.
+) -> bool:
+    """Whether the CLI's saved WAF session can be replayed right now.
 
-    Called from ``search_trustpilot`` (never from the pipeline's fan-out
-    setup), so it only ever delays the one capped Trustpilot stream, never
-    the other sources -- and never fires for runs whose plan fetches no
-    Trustpilot at all. The module lock serializes concurrent streams (vs-mode
-    fans out up to 6 entity sub-runs) so they never race their own Chrome
-    harvests. Freshness is a monotonic TTL (WARMUP_TTL_SECONDS, matching the
-    CLI's ~4-minute token bound), not a boolean-forever flag: long-lived host
-    processes re-check via ``auth status`` after the window lapses, which
-    also retries a previously failed login. ``auth login`` fires only when
-    ``auth status`` reports the session missing or stale -- login always
-    harvests (~10s Chrome), it has no freshness no-op. Logs only structured
-    status strings; the raw CLI payload carries live WAF-token prefixes and
-    must never be logged. Never raises.
+    Checks only: ``auth status`` is a local read. It never runs ``auth
+    login``, which launches Chrome, and a False answer means the caller must
+    not run a fetch command either, since each of those harvests by itself
+    when the session is missing or stale. There is no memo: the session lasts
+    four minutes, so every fetch asks again. Logs only structured status
+    strings; the raw CLI payload carries live WAF-token prefixes and must
+    never be logged. Never raises.
     """
-    global _warmup_at
-    if _warmup_fresh():
-        return
     if not _is_available():
-        return
+        return False
     if not _harvest_allowed(config):
-        return
+        return False
     if not has_domain and not is_brand_shaped(topic):
-        return
+        return False
     with _warmup_lock:
-        if _warmup_fresh():
-            return
         status = _run_cli(
             [CLI_BIN, "auth", "status", "--agent"], timeout=AUTH_STATUS_TIMEOUT
         )
-        if _is_session_fresh(status):
-            _log("warm-up: fresh")
-            _warmup_at = time.monotonic()
-            return
-        # Missing session exits non-zero (an error dict here): that is the
-        # "login needed" signal, not a warm-up failure.
-        login = _run_cli([CLI_BIN, "auth", "login", "--agent"], timeout=SEARCH_TIMEOUT)
-        if isinstance(login, dict) and "error" in login:
-            _log("warm-up failed: auth login did not complete")
-        else:
-            _log("warm-up: harvested")
-        # Stamp even on failure: a broken Chrome will not fix itself within
-        # the TTL, per-call CLI auto-harvest remains the fallback, and the
-        # TTL lapse retries the warm-up later.
-        _warmup_at = time.monotonic()
+    if _is_session_fresh(status) and not _session_about_to_lapse(status):
+        _log("session: fresh")
+        return True
+    _log("session: missing or stale; not launching Chrome")
+    return False
 
 
 def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
@@ -400,7 +409,9 @@ def search_trustpilot(
 
     Returns ``{"results": [info_dict]}`` for a resolved company, or
     ``{"results": []}`` when the topic is not brand-shaped, the browser
-    opt-out is set, or the CLI fails.
+    opt-out is set, or the CLI fails. With no replayable session nothing is
+    fetched and the result carries ``needs_session`` and ``SESSION_NEEDED``
+    under ``skipped``: an expected skip, not an error.
     """
     explicit_domain = (explicit_domain or "").strip() or None
     user_domain = bool(explicit_domain) and not domain_is_hint
@@ -416,11 +427,18 @@ def search_trustpilot(
     if not _harvest_allowed(config):
         _log("skipped: browser opt-out set")
         return {"results": []}
-    # Serialized session check at first source touch (all gates above have
-    # passed, so this never fires for topics the source would not fetch).
-    ensure_session_ready(topic, config=config, has_domain=bool(explicit_domain))
-    # Retry-budget timer starts AFTER the warm-up: a slow Chrome harvest must
-    # not consume the hint-retry budget when the info call itself was fast.
+    # Asked before every fetch command (all gates above have passed, so this
+    # never fires for topics the source would not fetch).
+    def session_ready() -> bool:
+        return ensure_session_ready(topic, config=config, has_domain=bool(explicit_domain))
+
+    # No "error" key: a skipped lane is not a failed source.
+    needs_session = {"results": [], "needs_session": True, "skipped": SESSION_NEEDED}
+    if not session_ready():
+        _log(f"skipped: {SESSION_NEEDED}")
+        return needs_session
+    # Retry-budget timer starts AFTER the session check, so it measures the
+    # info call itself.
     started = time.monotonic()
     if explicit_domain:
         identifier = explicit_domain
@@ -429,7 +447,10 @@ def search_trustpilot(
         if not _DOMAIN_RE.search(topic.lower()):
             # No domain token in the topic: Trustpilot pages are keyed by
             # domain, so resolve name -> domain before the info lookup.
-            identifier = _search_domain(topic) or identifier
+            identifier = _search_domain(topic, session_ready) or identifier
+            if not session_ready():
+                _log(f"skipped: {SESSION_NEEDED}")
+                return needs_session
     _log(f"info '{identifier}'")
     data = _run_cli(_build_info_args(identifier), timeout=SEARCH_TIMEOUT)
     if ("error" in data or not data) and explicit_domain and domain_is_hint:
@@ -439,8 +460,8 @@ def search_trustpilot(
         # single-call budget (hung CLI) -- one stream must not chain three
         # sequential SEARCH_TIMEOUT-bound subprocesses.
         if time.monotonic() - started < SEARCH_TIMEOUT:
-            resolved = _search_domain(topic)
-            if resolved and resolved != identifier:
+            resolved = _search_domain(topic, session_ready)
+            if resolved and resolved != identifier and session_ready():
                 _log(f"hint '{identifier}' missed; retrying via search as '{resolved}'")
                 data = _run_cli(_build_info_args(resolved), timeout=SEARCH_TIMEOUT)
     if "error" in data or not data:

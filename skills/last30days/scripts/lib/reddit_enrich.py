@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from . import http, dates
+from . import http, dates, snippet
 
 
 def extract_reddit_path(url: str) -> Optional[str]:
@@ -117,7 +117,7 @@ def parse_thread_data(data: Any) -> Dict[str, Any]:
                     "score": c_data.get("score", 0),
                     "created_utc": c_data.get("created_utc"),
                     "author": c_data.get("author", "[deleted]"),
-                    "body": c_data.get("body", "")[:300],  # Truncate
+                    "body": c_data.get("body", "")[:600],  # Truncate; the stored excerpt is cut cleanly from this
                     "permalink": c_data.get("permalink"),
                 }
                 result["comments"].append(comment)
@@ -248,7 +248,7 @@ def enrich_reddit_item(
             "score": c.get("score", 0),
             "date": dates.timestamp_to_date(c.get("created_utc")),
             "author": c.get("author", ""),
-            "excerpt": c.get("body", "")[:200],
+            "excerpt": snippet.cut_quote(c.get("body", "")),
             "url": comment_url,
         })
 
@@ -301,7 +301,7 @@ def enrich_reddit_item_sc(
             "date": dates.timestamp_to_date(c.get("created_utc")) if c.get("created_utc") else None,
             "author": author,
             "body": body[:300],
-            "excerpt": body[:200],
+            "excerpt": snippet.cut_quote(body),
             "url": comment_url,
         })
 

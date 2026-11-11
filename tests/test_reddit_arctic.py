@@ -244,11 +244,12 @@ class TestWindowedFetchListings:
         assert reddit_arctic.time.time() <= reddit_arctic._LISTING_DEADLINE_SECONDS
 
     @pytest.mark.parametrize(("start", "end", "boundaries"), [
+        # Newest slice first, so a deadline drops the oldest week.
         ("2026-09-20", "2026-10-20", [
-            ("2026-09-20", "2026-09-28"),
-            ("2026-09-28", "2026-10-06"),
-            ("2026-10-06", "2026-10-14"),
             ("2026-10-14", "2026-10-20"),
+            ("2026-10-06", "2026-10-14"),
+            ("2026-09-28", "2026-10-06"),
+            ("2026-09-20", "2026-09-28"),
         ]),
         ("2026-10-19", "2026-10-20", [("2026-10-19", "2026-10-20")]),
     ])
@@ -269,8 +270,8 @@ class TestWindowedFetchListings:
         queries = [parse_qs(urlsplit(call.args[0]).query) for call in get.call_args_list]
         assert [query["subreddit"][0] for query in queries] == ["tea", "coffee"] * 4
         assert [query["after"][0] for query in queries] == [
-            "2026-09-20", "2026-09-20", "2026-09-28", "2026-09-28",
-            "2026-10-06", "2026-10-06", "2026-10-14", "2026-10-14",
+            "2026-10-14", "2026-10-14", "2026-10-06", "2026-10-06",
+            "2026-09-28", "2026-09-28", "2026-09-20", "2026-09-20",
         ]
 
     def test_keeps_highest_scores_across_slices_per_subreddit(self, listing_clock):
@@ -378,8 +379,8 @@ class TestWindowedFetchListings:
         for sub in ("matcha", "tea"):
             sub_queries = [query for query in queries if query["subreddit"] == [sub]]
             assert len(sub_queries) == 4
-            assert sub_queries[0]["after"] == ["2026-09-20"]
-            assert sub_queries[-1]["before"] == ["2026-10-20"]
+            assert sub_queries[0]["before"] == ["2026-10-20"]
+            assert sub_queries[-1]["after"] == ["2026-09-20"]
 
 
 def _comment_row(pid="mjwb1hg", author="u", body="great thread", score=42,

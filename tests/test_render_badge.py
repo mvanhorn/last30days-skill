@@ -148,3 +148,76 @@ def test_html_brief_wraps_the_badge_line_in_the_badge_element():
         '<div class="badge"><span class="accent">🌐</span> '
         "last30days · SpaceX · Oct 11 to Nov 10, 2026 · v9.9.9</div>"
     ) in rendered
+
+
+# --- The window ends on the reader's date, not on tomorrow ---
+#
+# On the evening of Nov 10 in Los Angeles every report's first line said
+# "Oct 12 to Nov 11, 2026": the window ends on the UTC date, which was
+# already Nov 11.
+
+from datetime import datetime, timedelta, timezone
+
+PACIFIC = timezone(timedelta(hours=-8))
+TOKYO = timezone(timedelta(hours=9))
+EVENING_NOV_10_PACIFIC = datetime(2026, 11, 10, 17, 47, tzinfo=PACIFIC)  # Nov 11 01:47 UTC
+
+
+def test_window_ending_today_in_utc_shows_the_readers_date():
+    assert (
+        dates.format_window("2026-10-12", "2026-11-11", now=EVENING_NOV_10_PACIFIC)
+        == "Oct 12 to Nov 10, 2026"
+    )
+
+
+def test_badge_line_never_says_tomorrow(monkeypatch):
+    monkeypatch.setattr(dates, "_local_now", lambda: EVENING_NOV_10_PACIFIC)
+
+    badge = render._render_badge("Disney", "2026-10-12", "2026-11-11")[0]
+
+    assert "Oct 12 to Nov 10, 2026" in badge
+    assert "Nov 11" not in badge
+
+
+def test_same_date_on_both_clocks_is_unchanged():
+    morning = datetime(2026, 11, 10, 9, 0, tzinfo=PACIFIC)  # Nov 10 17:00 UTC
+
+    assert dates.format_window("2026-10-11", "2026-11-10", now=morning) == "Oct 11 to Nov 10, 2026"
+
+
+def test_reader_ahead_of_utc_keeps_the_utc_date():
+    # Nov 11 08:00 in Tokyo is Nov 10 23:00 UTC: the UTC end is not the future.
+    tokyo_morning = datetime(2026, 11, 11, 8, 0, tzinfo=TOKYO)
+
+    assert (
+        dates.format_window("2026-10-11", "2026-11-10", now=tokyo_morning)
+        == "Oct 11 to Nov 10, 2026"
+    )
+
+
+def test_as_of_window_is_shown_as_asked():
+    # --as-of names the end date; it is not today's UTC date, so it stays.
+    assert (
+        dates.format_window("2026-09-01", "2026-10-01", now=EVENING_NOV_10_PACIFIC)
+        == "Sep 1 to Oct 1, 2026"
+    )
+
+
+def test_zero_day_window_does_not_start_after_it_ends():
+    assert (
+        dates.format_window("2026-11-11", "2026-11-11", now=EVENING_NOV_10_PACIFIC)
+        == "Nov 10 to Nov 10, 2026"
+    )
+
+
+def test_query_window_still_ends_on_the_utc_date(monkeypatch):
+    # The clamp is display only: the queried range keeps its UTC upper bound
+    # so a post from the last hours is not lost.
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return EVENING_NOV_10_PACIFIC.astimezone(tz)
+
+    monkeypatch.setattr(dates, "datetime", _Clock)
+
+    assert dates.get_date_range(30) == ("2026-10-12", "2026-11-11")

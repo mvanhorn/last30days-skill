@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 from . import http
 from . import reddit_arctic
 from . import reddit_enrich
+from . import snippet
 
 # Up to N posts enriched per subquery, by depth. Raised from 3/5/8 once the
 # per-command memo (http.reddit_keyless_get_text) collapsed repeat shreddit
@@ -175,7 +176,7 @@ def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, 
             "score": score,
             "author": author,
             "body": body[:300],
-            "excerpt": body[:200],
+            "excerpt": snippet.cut_quote(body),
             "permalink": permalink,
             "date": _iso_to_date(_attr(tag, "created")),
             "url": f"https://reddit.com{permalink}" if permalink else "",
