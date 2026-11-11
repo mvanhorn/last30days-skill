@@ -17,10 +17,13 @@ The next page is a lazy ``<faceplate-partial>`` whose ``src`` carries a
 code is unaffected.
 """
 
+import copy
 import html as _html
 import json
 import re
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
@@ -60,9 +63,50 @@ _NEXT_PAGE = re.compile(
 )
 
 
+# Run state. Reddit answers this endpoint with HTTP 403 "blocked by network
+# security" (or a challenge page) for some networks, for every query alike, so
+# the first such answer stops the remaining searches of the command instead of
+# spending a rate-limit token on each subreddit. The lane is dispatched with
+# the raw topic for every subquery, so one search also serves them all.
+_run_lock = threading.Lock()
+_blocked_reason: Optional[str] = None
+_failed_reason: Optional[str] = None
+_run_results: Dict[tuple, List[Dict[str, Any]]] = {}
+_run_inflight: Dict[tuple, threading.Event] = {}
+_BLOCK_SIGNALS = ("HTTP 403: Blocked", "not a Reddit search results page")
+
+
 def _log(msg: str) -> None:
     sys.stderr.write(f"[RedditSearch] {msg}\n")
     sys.stderr.flush()
+
+
+def reset_run_state() -> None:
+    """Forget the block flag and shared results. Called once per command, and by tests."""
+    global _blocked_reason, _failed_reason
+    with _run_lock:
+        _blocked_reason = None
+        _failed_reason = None
+        _run_results.clear()
+        _run_inflight.clear()
+
+
+def failed_reason() -> Optional[str]:
+    """Why site search found nothing this command, when Reddit refused it; else None."""
+    return _failed_reason
+
+
+def _note_block(error: Optional[str]) -> None:
+    global _blocked_reason
+    if not error or not any(signal in error for signal in _BLOCK_SIGNALS):
+        return
+    reason = "HTTP 403: Blocked" if "403" in error else "challenge page instead of results"
+    with _run_lock:
+        first = _blocked_reason is None
+        if first:
+            _blocked_reason = reason
+    if first:
+        _log(f"site search is blocked for this network ({reason}); skipping the remaining searches")
 
 
 def unrecognized_body(text: str) -> Optional[str]:
@@ -210,9 +254,12 @@ def _search_stream(
     used_cursors: set = set()
     cursor: Optional[str] = None
     for page in range(1, max_pages + 1):
+        if _blocked_reason:
+            break
         text, error = _fetch_page(search_url(query, time_filter, subreddit, cursor))
         if text is None:
             _log(f"{label} page {page} failed: {error or 'no response'}")
+            _note_block(error)
             break
         page_posts, next_cursor = parse_page(text, query)
         new = [p for p in page_posts if p["metadata"]["post_id"] not in seen_ids]
@@ -243,17 +290,21 @@ def search(
     subreddits: Optional[List[str]] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Discover Reddit posts for a query via the site search fragment.
+
+    ``deadline`` is a ``time.monotonic()`` bound: streams still running then
+    are left behind and the posts of the streams that answered are returned.
 
     Runs a paged global search plus one page of per-subreddit search for each
     targeted subreddit. Returns normalized, dated, scored posts, deduped by URL
     and capped by depth. Streams are interleaved round-robin before the cap so
     neither the targeted subreddits nor the global search crowds out the other. Returns ``[]`` on total failure and never raises; failures
-    land in the pipeline's failure sink.
+    land in the pipeline's failure sink. Callers of one command that ask for
+    the same search share one run of it.
     """
     try:
-        limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
         global_pages = GLOBAL_PAGE_CAPS.get(depth, GLOBAL_PAGE_CAPS["default"])
         time_filter = _time_filter(from_date, to_date)
         subs = []
@@ -261,11 +312,54 @@ def search(
             sub = (raw or "").strip().removeprefix("r/").strip("/")
             if sub and sub.lower() not in {s.lower() for s in subs}:
                 subs.append(sub)
+        key = (query, depth, time_filter, tuple(sub.lower() for sub in subs))
+        for _round in range(2):
+            with _run_lock:
+                if key in _run_results:
+                    return copy.deepcopy(_run_results[key])
+                gate = _run_inflight.get(key)
+                owner = gate is None
+                if owner:
+                    gate = threading.Event()
+                    _run_inflight[key] = gate
+            if owner:
+                break
+            gate.wait(timeout=_result_timeout(len(subs) + global_pages, global_pages))
+        try:
+            unique = _search_uncached(query, depth, subs, time_filter, global_pages, deadline)
+            # A clean empty page or a drifted one is asked for again by the
+            # next caller; found posts and a refused endpoint are shared.
+            if unique or (unique is not None and _blocked_reason):
+                with _run_lock:
+                    _run_results[key] = unique
+            return copy.deepcopy(unique or [])
+        finally:
+            if owner:
+                with _run_lock:
+                    _run_inflight.pop(key, None)
+                gate.set()
+    except Exception as e:  # defensive: discovery must never raise into the pipeline
+        _log(f"search failed: {e}")
+        return []
 
+
+def _search_uncached(
+    query: str,
+    depth: str,
+    subs: List[str],
+    time_filter: str,
+    global_pages: int,
+    deadline: Optional[float] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """One run of the search streams; None when it raised."""
+    global _failed_reason
+    try:
+        limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
         jobs = [(sub, SUB_PAGE_CAP) for sub in subs] + [(None, global_pages)]
         batch = sum(pages for _sub, pages in jobs)
         streams: List[List[Dict[str, Any]]] = []
-        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs))) as executor:
+        executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)))
+        try:
             # submit_with_context, not executor.submit: a plain submit starts the
             # worker with an empty context, dropping the pipeline's
             # capture_failures() sink so a 429/403 or a challenge page is
@@ -275,10 +369,19 @@ def search(
                 for sub, pages in jobs
             ]
             for future, sub, pages in futures:
+                wait = _result_timeout(batch, pages)
+                if deadline is not None:
+                    wait = max(0.0, min(wait, deadline - time.monotonic()))
                 try:
-                    streams.append(future.result(timeout=_result_timeout(batch, pages)))
+                    streams.append(future.result(timeout=wait))
                 except (Exception, FuturesTimeoutError) as e:
-                    _log(f"{'r/' + sub if sub else 'global'} search future failed: {e}")
+                    _log(
+                        f"{'r/' + sub if sub else 'global'} search future failed: "
+                        f"{e or 'still running at the deadline'}"
+                    )
+        finally:
+            # Under a deadline a stream still queued or running is not waited for.
+            executor.shutdown(wait=deadline is None, cancel_futures=deadline is not None)
 
         # Round-robin across streams, each in its own relevance order, so the
         # depth cap keeps a share of every stream.
@@ -298,7 +401,9 @@ def search(
         for i, post in enumerate(unique):
             post["id"] = f"R{i + 1}"
         _log(f"{len(unique)} posts (t={time_filter}, {len(subs)} targeted subs)")
+        if not unique and _blocked_reason:
+            _failed_reason = _blocked_reason
         return unique
     except Exception as e:  # defensive: discovery must never raise into the pipeline
         _log(f"search failed: {e}")
-        return []
+        return None

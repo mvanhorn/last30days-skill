@@ -1,0 +1,1 @@
+`doctor --postmortem` reports the run that just finished again. Since the report cache moved to its v2 format it printed "No saved run found" after every run, and plain `doctor` ignored the last run's per-source outcomes for the same reason.

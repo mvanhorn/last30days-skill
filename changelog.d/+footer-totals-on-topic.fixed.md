@@ -1,0 +1,1 @@
+Footer engagement totals and Top voices count on-topic items only. One unrelated video carried 12.5M of a Waymo run's 12.7M YouTube views, and posts from related X handles about other things counted toward a person's totals; items the ranking marked off topic, and related-handle posts that do not name the topic, are now left out of the sums. Item counts are unchanged.

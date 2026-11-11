@@ -1,0 +1,1 @@
+When Reddit answers its site search with "HTTP 403: Blocked", the run stops searching after the first refusal instead of retrying every subreddit for every subquery, and Reddit is listed under Partial Coverage ("Reddit site search was blocked (HTTP 403: Blocked); threads come from subreddit listings only") instead of reading as a complete source.

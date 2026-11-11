@@ -2432,14 +2432,18 @@ def _jobs_board_footer_line(report: schema.Report) -> str | None:
 
     Open roles always; a ``+`` when the board stopped short of its full count;
     roles new in the window only when the board gave every role a true
-    first-posted date. None when the run read no board directly.
+    first-posted date. A board that is not the topic's own (the company a
+    person leads) is named: ``💼 Jobs at SpaceX: ...``. None when the run
+    read no board directly.
     """
     board = (report.artifacts or {}).get("jobs")
     if not isinstance(board, dict) or not board.get("open_roles"):
         return None
     count = int(board["open_roles"])
+    of = " ".join(str(board.get("board_of") or "").split())
+    label = f"Jobs at {_format_untrusted_evidence(of, 60)}" if of else "Jobs"
     line = (
-        f"💼 Jobs: {count:,}{'+' if board.get('open_roles_floor') else ''} "
+        f"💼 {label}: {count:,}{'+' if board.get('open_roles_floor') else ''} "
         f"open role{'s' if count != 1 else ''}"
     )
     new = board.get("new_in_window")
@@ -2495,12 +2499,22 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
     if isinstance(new, int) and not isinstance(new, bool):
         header.append(f"{new:,} posted {report.range_from} to {report.range_to}")
     distinct = int(digest.get("distinct_roles") or len(entries))
+    ranked_first = 0
+    for entry in entries:
+        if not entry.get("engine"):
+            break
+        ranked_first += 1
+    chosen = (
+        f"the first {ranked_first:,} are the roles this run's own ranking and hiring "
+        "themes put highest, the rest are the rarest on this "
+        if ranked_first else "the rarest on this "
+    )
     out = [
         "## Jobs Digest",
         "",
         "- Board: " + " | ".join(header),
         (
-            f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, the rarest on this "
+            f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, {chosen}"
             "board by department, location and title wording. Each carries the text "
             "no other role on the board repeats."
         ),
@@ -2804,6 +2818,26 @@ def _polymarket_top_markets(
         key=lambda it: it.engagement.get("volume") or 0,
         reverse=True,
     )
+
+    # One market per series first, a substantive question before a recurring
+    # count bracket ("# tweets this week"); a count series is never repeated,
+    # and another rung of a substantive ladder only fills a slot left over.
+    firsts: list[schema.SourceItem] = []
+    repeats: list[schema.SourceItem] = []
+    seen_series: set[str] = set()
+    for item in sorted_items:
+        texts = (item.title, str(item.metadata.get("question") or ""))
+        counted = polymarket.is_count_series(*texts)
+        series = polymarket.series_key(*texts)
+        if series and series in seen_series:
+            if not counted:
+                repeats.append(item)
+            continue
+        seen_series.add(series)
+        firsts.append(item)
+    firsts.sort(key=lambda it: polymarket.is_count_series(
+        it.title, str(it.metadata.get("question") or "")))
+    sorted_items = firsts + repeats
 
     # (name, pct, question, label when the name is not the bare descriptor)
     markets: list[tuple[str, str, str, str]] = []
@@ -3172,6 +3206,31 @@ def _sum_engagement(items: list[schema.SourceItem], key: str) -> int:
     return total
 
 
+def _on_topic_items(
+    report: schema.Report, items: list[schema.SourceItem],
+) -> list[schema.SourceItem]:
+    """The items whose engagement and voices the footer counts.
+
+    The source dump keeps items the ranking found off topic (one unrelated
+    video carried 12.5M of a Waymo run's 12.7M YouTube views). An item is
+    left out only when the ranking judged it off topic: its candidate fails
+    ``rerank.candidate_counts_for_topic``, or the relevance prune removed it
+    (``rerank.REJECTED_ITEMS_ARTIFACT``). An item with no verdict counts: the
+    fusion's per-author cap and pool size drop on-topic items too. A source
+    left with nothing is counted whole.
+    """
+    rejected = (report.artifacts or {}).get(rerank.REJECTED_ITEMS_ARTIFACT)
+    verdicts = rerank.item_topic_verdicts(
+        report.ranked_candidates or [], report.topic,
+        rejected if isinstance(rejected, list) else None,
+    )
+    kept = [
+        item for item in items
+        if verdicts.get((item.source, item.url or item.item_id)) is not False
+    ]
+    return kept or items
+
+
 def _footer_line_for_source(
     emoji: str, label: str, count: int, item_word: str, stats: str
 ) -> str:
@@ -3213,8 +3272,9 @@ def _build_source_footer_lines(
         if not items:
             continue
         parts: list[str] = []
+        counted = _on_topic_items(report, items)
         for eng_key, word in engagement_fields:
-            total = _sum_engagement(items, eng_key)
+            total = _sum_engagement(counted, eng_key)
             if total > 0:
                 total_str = f"{total:,}" if total >= 1000 else str(total)
                 parts.append(f"{total_str} {word}")
@@ -3677,7 +3737,7 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
     and top subreddits, separated by │.
     """
     handle_items = {
-        source: report.items_by_source.get(source) or []
+        source: _on_topic_items(report, report.items_by_source.get(source) or [])
         for source in (
             "x",
             "bluesky",
@@ -3696,7 +3756,7 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
                 handle_counts[actor] += 1
 
     subreddit_counts: Counter[str] = Counter()
-    for item in report.items_by_source.get("reddit") or []:
+    for item in _on_topic_items(report, report.items_by_source.get("reddit") or []):
         if item.container:
             subreddit_counts[f"r/{item.container}"] += 1
 

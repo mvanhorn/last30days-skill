@@ -1,0 +1,1 @@
+The Polymarket footer names a recurring series once and puts substantive markets first. An "Elon Musk" run printed three brackets of the weekly "how many tweets" market in its three slots; it now names the net worth, Putin meeting and administration markets, and a tweet-count bracket only fills a slot that is left over.

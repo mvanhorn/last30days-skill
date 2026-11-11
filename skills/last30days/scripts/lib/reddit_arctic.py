@@ -15,6 +15,7 @@ count rather than failing the Reddit source.
 """
 
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -52,13 +53,133 @@ MAX_COMMENT_ROWS = 100
 _cache: Dict[str, Dict[str, int]] = {}
 
 
+# Run memo for listing and comment searches. The Reddit lane runs once per
+# subquery with the same subreddits and window, so a four-subquery run sent
+# each search four times at once, and the archive answers all but one of a
+# set of identical concurrent requests with HTTP 422 "Timeout. Maybe slow
+# down a bit" (measured 2026-11-10: 4 identical requests -> 3 x 422). One
+# request per URL per command: later callers wait for the first and reuse it.
+# The archive also sheds load with the same 422 on requests that are neither
+# duplicated nor fast (measured: 2 to 4 of 10 sequential searches, at 0.4s and
+# at 1.5s spacing alike, with or without a ``fields`` selection), and a retry
+# right after one tends to be refused again. A comment lookup retries once
+# after a pause; a listing walk asks again for its refused slices at the end.
+MEMO_MAX = 512
+RETRY_422_PAUSE = 1.5
+_memo: Dict[str, Any] = {}
+_inflight: Dict[str, threading.Event] = {}
+_memo_lock = threading.Lock()
+
+
 def _log(msg: str) -> None:
     sys.stderr.write(f"[ArcticShift] {msg}\n")
     sys.stderr.flush()
 
 
-def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
+def reset_memo() -> None:
+    """Forget memoized archive responses. Called once per command, and by tests."""
+    with _memo_lock:
+        _memo.clear()
+        _inflight.clear()
+    _cache.clear()
+
+
+def _is_slow_down(error: BaseException) -> bool:
+    return getattr(error, "status_code", None) == 422
+
+
+def _fetch_search(url: str, deadline: float, retry_422: bool = True) -> Any:
+    """One archive search, retried once after a pause when it answers 422.
+
+    With ``retry_422`` off a 422 is raised at once and kept out of the
+    pipeline's failure sink: the caller means to ask again later, and reports
+    it with ``_report_failures`` if it never does.
+    """
+    for attempt in range(2):
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            raise http.DeadlineExceeded()
+        # A 422 that the retry recovers is not a lost request, so it is kept
+        # out of the pipeline's failure sink unless the retry fails too.
+        with http.capture_failures() as failures:
+            try:
+                # DNS recovery may retry even with retries=1. Bound the whole
+                # request so those retries cannot consume other callers' time.
+                return http.get(
+                    url,
+                    headers={"User-Agent": http.BROWSER_USER_AGENT},
+                    timeout=min(TIMEOUT, remaining),
+                    retries=1,
+                    deadline_monotonic=min(deadline, now + TIMEOUT),
+                )
+            except Exception as exc:
+                error = exc
+        if _is_slow_down(error) and not retry_422:
+            error.unreported_failures = list(failures)  # type: ignore[attr-defined]
+            raise error
+        retryable = (
+            attempt == 0
+            and _is_slow_down(error)
+            and deadline - time.monotonic() > RETRY_422_PAUSE + 1
+        )
+        if not retryable:
+            for failure in failures:
+                http._record_failure(failure)
+            raise error
+        time.sleep(RETRY_422_PAUSE)
+    raise http.DeadlineExceeded()  # pragma: no cover - the loop always returns or raises
+
+
+def _report_failures(error: BaseException) -> None:
+    """Record a deferred 422 that was never asked for again."""
+    for failure in getattr(error, "unreported_failures", ()):
+        http._record_failure(failure)
+
+
+def _search_once(url: str, deadline: float, retry_422: bool = True) -> Any:
+    """Archive search shared across the run: memoized, one fetch in flight per URL.
+
+    Returns the decoded response, or raises what the fetch raised. Only a
+    response that carries a ``data`` list is memoized, so a rate-limit body is
+    asked for again by the next caller.
+    """
+    for _round in range(3):
+        with _memo_lock:
+            if url in _memo:
+                return _memo[url]
+            gate = _inflight.get(url)
+            owner = gate is None
+            if owner:
+                gate = threading.Event()
+                _inflight[url] = gate
+        if owner:
+            break
+        gate.wait(timeout=max(0.0, deadline - time.monotonic()))
+        if time.monotonic() >= deadline:
+            raise http.DeadlineExceeded()
+    else:
+        raise http.HTTPError(f"Shared archive request kept failing: {url}")
+    try:
+        data = _fetch_search(url, deadline, retry_422)
+        if isinstance((data or {}).get("data"), list):
+            with _memo_lock:
+                if len(_memo) < MEMO_MAX:
+                    _memo[url] = data
+        return data
+    finally:
+        with _memo_lock:
+            _inflight.pop(url, None)
+        gate.set()
+
+
+def fetch_scores(
+    post_ids: List[str], deadline: Optional[float] = None,
+) -> Dict[str, Dict[str, int]]:
     """Return ``{base36_post_id: {"score", "num_comments"}}`` for the given ids.
+
+    ``deadline`` is a ``time.monotonic()`` bound: no batch starts after it and
+    a running one is cut off at it, and the scores already found are returned.
 
     Batched, paced, in-run cached, and never raises. Ids that fail or are absent
     from the archive are simply missing from the result (caller degrades to no
@@ -78,11 +199,18 @@ def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
     for n, batch in enumerate(batches):
         if n:
             time.sleep(PACE_SECONDS)
+        bound: Dict[str, Any] = {"timeout": TIMEOUT}
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _log(f"lookup stopped at its deadline; {len(batch)} ids left unscored")
+                break
+            bound = {"timeout": min(TIMEOUT, remaining), "retries": 1, "deadline_monotonic": deadline}
         try:
             data = http.get(
                 f"{API}?ids={','.join(batch)}",
                 headers={"User-Agent": http.BROWSER_USER_AGENT},
-                timeout=TIMEOUT,
+                **bound,
             )
         except Exception as e:  # network error / non-200 — degrade, never raise
             _log(f"lookup failed ({e}); {len(batch)} ids left unscored")
@@ -170,6 +298,7 @@ def fetch_listings(
     limit: Optional[int] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    lane_deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Scored subreddit listings from the arctic-shift archive, keyless.
 
@@ -185,7 +314,9 @@ def fetch_listings(
     subreddit. Slice requests rotate across subreddits under a shared deadline;
     successful partial results survive failures. The 100-row cap per slice
     means the sample can miss popular posts in busy subreddits. Best-effort,
-    never raises: returns ``[]`` when no requests succeed.
+    never raises: returns ``[]`` when no requests succeed. ``lane_deadline``
+    is the Reddit lane's own ``time.monotonic()`` bound; the walk stops at
+    whichever deadline comes first.
     """
     if not subreddits:
         return []
@@ -228,42 +359,30 @@ def fetch_listings(
     seen_by_sub = {sub: set() for sub in posts_by_sub}
     # Give every subreddit a slice before spending the shared budget on more
     # slices for any one subreddit.
+    # Newest slice first: when the shared deadline cuts the walk short, the
+    # week that is dropped is the oldest one, not the one the run is about.
     requests = (
         (sub, span_pair)
-        for span_pair in (slices or [None])
+        for span_pair in (list(reversed(slices)) if slices else [None])
         for sub in posts_by_sub
     )
     deadline = time.monotonic() + _LISTING_DEADLINE_SECONDS
-    for fetched_count, (sub, span_pair) in enumerate(requests):
-        if fetched_count:
-            time.sleep(min(PACE_SECONDS, max(0, deadline - time.monotonic())))
-        now = time.monotonic()
-        remaining = deadline - now
-        if remaining <= 0:
-            _log(f"listing deadline reached after {fetched_count} requests; keeping partial results")
-            break
+    if lane_deadline is not None:
+        deadline = min(deadline, lane_deadline)
+
+    def url_for(sub: str, span_pair: Optional[tuple]) -> str:
         if span_pair:
             win = f"&after={span_pair[0].isoformat()}&before={span_pair[1].isoformat()}"
         else:
             win = f"&after={from_date}" if from_date else ""
             win += f"&before={to_date}" if to_date else ""
-        try:
-            # DNS recovery may retry even with retries=1. Bound the whole
-            # request so those retries cannot consume other subreddits' time.
-            data = http.get(
-                f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}",
-                headers={"User-Agent": http.BROWSER_USER_AGENT},
-                timeout=min(TIMEOUT, remaining),
-                retries=1,
-                deadline_monotonic=min(deadline, now + TIMEOUT),
-            )
-        except Exception as e:  # network error / non-200 — degrade, never raise
-            _log(f"listing search failed r/{sub}: {e}")
-            continue
+        return f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}"
+
+    def keep(sub: str, data: Any) -> None:
         rows = (data or {}).get("data")
         if not isinstance(rows, list):
             _log(f"unexpected listing response for r/{sub}: {str(data)[:80]}")
-            continue
+            return
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -271,6 +390,47 @@ def fetch_listings(
             if post["url"] and post["url"] not in seen_by_sub[sub]:
                 seen_by_sub[sub].add(post["url"])
                 posts_by_sub[sub].append(post)
+
+    # Two passes under the one deadline. The first asks for every (subreddit,
+    # slice) once and sets aside what the archive refuses with 422; the second
+    # asks for those again, so a refusal neither stalls the walk nor loses the
+    # slice while budget remains.
+    first_pass = [(sub, url_for(sub, span_pair), None) for sub, span_pair in requests]
+    refused: List[tuple] = []
+    paced = False
+    fetched_count = 0
+    out_of_time = False
+    for retrying, batch in ((False, first_pass), (True, refused)):
+        for sub, url, earlier_error in batch:
+            if out_of_time:
+                if earlier_error is not None:
+                    _report_failures(earlier_error)
+                    _log(f"listing search failed r/{sub}: {earlier_error}")
+                continue
+            with _memo_lock:
+                memoized = url in _memo
+            # Pace requests that reach the archive; a memoized answer costs nothing.
+            if paced and not memoized:
+                time.sleep(min(PACE_SECONDS, max(0, deadline - time.monotonic())))
+            if deadline - time.monotonic() <= 0:
+                _log(f"listing deadline reached after {fetched_count} requests; keeping partial results")
+                out_of_time = True
+                if earlier_error is not None:
+                    _report_failures(earlier_error)
+                    _log(f"listing search failed r/{sub}: {earlier_error}")
+                continue
+            paced = paced or not memoized
+            fetched_count += 1
+            try:
+                data = _search_once(url, deadline, retry_422=False)
+            except Exception as e:  # network error / non-200 — degrade, never raise
+                if not retrying and _is_slow_down(e):
+                    refused.append((sub, url, e))
+                    continue
+                _report_failures(e)
+                _log(f"listing search failed r/{sub}: {e}")
+                continue
+            keep(sub, data)
 
     out: List[Dict[str, Any]] = []
     for sub_posts in posts_by_sub.values():
@@ -313,12 +473,8 @@ def fetch_post_comments(
         _log(f"comments lookup skipped t3_{pid}: enrichment budget spent")
         return []
     try:
-        data = http.get(
-            f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}&sort=desc",
-            headers={"User-Agent": http.BROWSER_USER_AGENT},
-            timeout=end - now,
-            retries=1,
-            deadline_monotonic=end,
+        data = _search_once(
+            f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}&sort=desc", end,
         )
     except Exception as e:  # network error / non-200 — degrade, never raise
         _log(f"comments lookup failed t3_{pid}: {e}")
@@ -327,6 +483,8 @@ def fetch_post_comments(
     if not isinstance(rows, list):
         _log(f"unexpected comments response for t3_{pid}: {str(data)[:80]}")
         return []
+
+    from .snippet import cut_quote
 
     comments: List[Dict[str, Any]] = []
     for row in rows:
@@ -347,7 +505,7 @@ def fetch_post_comments(
             "score": score,
             "author": author,
             "body": body[:300],
-            "excerpt": body[:200],
+            "excerpt": cut_quote(body),
             "permalink": permalink,
             "date": _epoch_to_date(row.get("created_utc")),
             "url": f"https://reddit.com{permalink}" if permalink else "",

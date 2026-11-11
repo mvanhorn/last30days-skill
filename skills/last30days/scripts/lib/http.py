@@ -824,6 +824,7 @@ def request(
     owned_get: bool = False,
     on_retry: Callable[[], None] | None = None,
     bypass_proxy: bool = False,
+    retry_dns: bool = True,
 ) -> Union[Dict[str, Any], str]:
     """Make an HTTP request and return JSON response.
 
@@ -844,6 +845,9 @@ def request(
             its deadline. Requires deadline_monotonic; other methods are refused.
         on_retry: Called before each transport attempt after the first.
         bypass_proxy: Use a direct connection for this request and its redirects.
+        retry_dns: Widen the retry budget to MIN_DNS_RETRIES when the name does
+            not resolve. Off for a host the caller only guessed, where a name
+            that does not resolve is the answer.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True.
@@ -1105,7 +1109,7 @@ def request(
                 # default. Counts DNS attempts separately so other URLError
                 # causes don't bypass the regular retry budget.
                 dns_attempts += 1
-                if effective_retries < MIN_DNS_RETRIES:
+                if retry_dns and effective_retries < MIN_DNS_RETRIES:
                     log_request(
                         f"DNS resolution failed; expanding retry budget from "
                         f"{effective_retries} to {MIN_DNS_RETRIES}"
@@ -1189,6 +1193,8 @@ def get_text(
     retries: int = 2,
     accept: str = "*/*",
     headers: Optional[Dict[str, str]] = None,
+    deadline_monotonic: float | None = None,
+    retry_dns: bool = True,
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1203,6 +1209,8 @@ def get_text(
         retries: Number of retries on failure (kept low — these tiers fail fast)
         accept: Accept header value (e.g. "text/html")
         headers: Optional extra headers merged over the defaults
+        deadline_monotonic: Optional absolute monotonic deadline for the call
+        retry_dns: See ``request``
 
     Returns:
         Decoded response body as text, or None on failure.
@@ -1214,9 +1222,16 @@ def get_text(
     }
     if headers:
         merged.update(headers)
+    # Passed only when set, so the plain call stays what it always was.
+    bounds: Dict[str, Any] = {}
+    if deadline_monotonic is not None:
+        bounds["deadline_monotonic"] = deadline_monotonic
+    if not retry_dns:
+        bounds["retry_dns"] = False
     try:
         return request(
-            "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True
+            "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,
+            **bounds,
         )
     except HTTPError as e:
         log(f"get_text failed ({e}): {url}")

@@ -1,0 +1,1 @@
+Every Reddit thread that survives into the report now carries its top comments (author, score, permalink). Comment slots used to be spent before the run's own ranking, so only 3 to 5 of 12 kept threads had any; a second pass after ranking fetches comments for the kept threads that lack them, highest ranked first, up to 12 at default depth.

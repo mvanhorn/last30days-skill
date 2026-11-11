@@ -1047,7 +1047,10 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
 # doctor-cache block below already uses for its own schema stamp).
 # ---------------------------------------------------------------------------
 
-REPORT_CACHE_SCHEMA_VERSION = "last30days-report-cache/v1"
+# Must equal last30days.REPORT_CACHE_VERSION: a stamp the engine no longer
+# writes makes every run read as "No saved run found"
+# (tests/test_doctor_postmortem_after_run.py holds the two together).
+REPORT_CACHE_SCHEMA_VERSION = "last30days-report-cache/v2"
 REPORT_CACHE_FILENAME = "last-report.json"
 DEFAULT_REPORT_CACHE_TTL_SECONDS = 3600
 

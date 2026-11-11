@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Iterable
 from datetime import datetime
 
 from . import entity_extract, http, providers, relevance, schema, signals
@@ -30,6 +31,8 @@ _FALLBACK_ENTITY_MISS_EXPLANATION = "fallback-local-score (entity-miss demotion)
 # cleared by _apply_first_party_floor. Carries no "entity-miss" substring, so
 # every downstream relevance gate treats the post as grounded.
 _FIRST_PARTY_EXPLANATION = "first-party post (authored by a resolved handle)"
+# The fallback scorer's reason for the same exemption.
+_FIRST_PARTY_FALLBACK_EXPLANATION = "fallback-local-score (first-party authorship)"
 
 # Small additive credit for a post authored by one of the run's resolved
 # handles (see rerank_candidates / _fallback_tuple). Deliberately small: the
@@ -939,7 +942,7 @@ def _fallback_tuple(
         # person) but is not authored in the window, so it is not labeled so.
         if _is_repo_snapshot_candidate(candidate):
             return max(0.0, min(100.0, score)), "fallback-local-score (repo snapshot)"
-        return max(0.0, min(100.0, score)), "fallback-local-score (first-party authorship)"
+        return max(0.0, min(100.0, score)), _FIRST_PARTY_FALLBACK_EXPLANATION
     # Grounding-exempt evidence (currently Amazon): the adapter gated these
     # against the model-supplied keyword before they existed, so the
     # entity-miss demotion below would punish them for a match they were
@@ -1291,6 +1294,82 @@ def _apply_single_fun_fallback(candidate: schema.Candidate) -> None:
     marker_bonus = 10 if any(m in text.lower() for m in markers) else 0
     candidate.fun_score = max(0.0, min(100.0, shortness + vote_bonus + marker_bonus))
     candidate.fun_explanation = "heuristic-fallback"
+
+
+def candidate_counts_for_topic(candidate: schema.Candidate, topic: str) -> bool:
+    """Whether a candidate's engagement and voice belong in the topic's totals.
+
+    Stricter than :func:`candidate_relevance_ok` in one place. A post by one
+    of the run's handles is kept in the evidence whatever it says, since
+    nobody names themselves in their own post; that is right for the topic's
+    own account and wrong for the totals when the handle is a related one
+    (``--x-related``) posting about something else. Such a post counts only
+    when it is on topic by the same test that earns it the first-party floor:
+    its author is the topic's own account, or its text names the entity, or
+    it clears the relevance floor.
+    """
+    if not candidate_relevance_ok(candidate):
+        return False
+    if candidate.explanation not in (_FIRST_PARTY_EXPLANATION, _FIRST_PARTY_FALLBACK_EXPLANATION):
+        return True
+    if _handle_is_topic(_candidate_author_handle(candidate), topic):
+        return True
+    return (
+        _is_entity_positively_grounded(candidate, _primary_entity(topic))
+        or candidate.local_relevance >= relevance.RELEVANCE_FLOOR
+    )
+
+
+# Report artifact: ``[source, url or id]`` of every item behind a candidate the
+# relevance prune removed. Fusion also drops candidates for reasons that say
+# nothing about the topic (the per-author cap, the pool size), so an item with
+# no ranked candidate is only known to be off topic when it is listed here.
+REJECTED_ITEMS_ARTIFACT = "relevance_rejected_items"
+
+
+def _item_key(item: schema.SourceItem) -> tuple[str, str]:
+    return (item.source, item.url or item.item_id)
+
+
+def rejected_item_keys(
+    before: list[schema.Candidate], after: list[schema.Candidate],
+) -> list[list[str]]:
+    """The items behind candidates a relevance prune removed (``before`` minus
+    ``after``), as JSON-safe pairs for ``REJECTED_ITEMS_ARTIFACT``. An item
+    that also sits behind a surviving candidate is not rejected."""
+    kept_ids = {id(candidate) for candidate in after}
+    kept_items = {_item_key(item) for candidate in after for item in candidate.source_items}
+    rejected = {
+        _item_key(item)
+        for candidate in before if id(candidate) not in kept_ids
+        for item in candidate.source_items
+    } - kept_items
+    return [list(key) for key in sorted(rejected)]
+
+
+def item_topic_verdicts(
+    candidates: list[schema.Candidate],
+    topic: str,
+    rejected: Iterable[Iterable[str]] | None = None,
+) -> dict[tuple[str, str], bool]:
+    """Topical verdicts for the items the ranking judged, by ``(source, url or id)``.
+
+    True or False for an item behind a ranked candidate (True when any of its
+    candidates counts for the topic), False for an item listed in ``rejected``
+    (``REJECTED_ITEMS_ARTIFACT``). An item the ranking never judged is absent:
+    it was dropped by a selection limit, not by relevance.
+    """
+    verdicts: dict[tuple[str, str], bool] = {}
+    for pair in rejected or ():
+        pair = tuple(pair)
+        if len(pair) == 2:
+            verdicts[(str(pair[0]), str(pair[1]))] = False
+    for candidate in candidates:
+        counts = candidate_counts_for_topic(candidate, topic)
+        for item in candidate.source_items:
+            key = _item_key(item)
+            verdicts[key] = verdicts.get(key, False) or counts
+    return verdicts
 
 
 def _normalized_rrf(rrf_score: float) -> float:

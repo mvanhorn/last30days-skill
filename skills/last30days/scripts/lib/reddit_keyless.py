@@ -19,6 +19,8 @@ ScrapeCreators backup when every keyless lane comes up empty.
 """
 
 import concurrent.futures
+import contextlib
+import contextvars
 import math
 import sys
 import time
@@ -40,6 +42,68 @@ MAX_ENRICH_WORKERS = 4
 # wholly on-topic, so pull top+hot+new — the top-of-month listing alone misses
 # fresh threads — and keep every item (floor-exempt).
 DEDICATED_SORTS = ["top", "hot", "new"]
+# The lane's stages each carry their own budget (listing archive 45s twice,
+# site search, enrichment 45s plus the shared bucket's queue), and on a busy
+# run their sum passes the pipeline's wait for the source, which then reports
+# a timeout and keeps none of the threads already found. The caller's
+# deadline bounds the whole lane: a stage that no longer fits is skipped and
+# the lane returns what it has.
+MIN_STAGE_SECONDS = 2.0
+_lane_deadline: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "last30days_reddit_lane_deadline", default=None,
+)
+
+
+@contextlib.contextmanager
+def lane_deadline(deadline: Optional[float]):
+    """Bound search_and_enrich calls in this context by a ``time.monotonic()`` deadline."""
+    token = _lane_deadline.set(deadline)
+    try:
+        yield
+    finally:
+        _lane_deadline.reset(token)
+
+
+def _out_of_time(deadline: Optional[float]) -> bool:
+    return deadline is not None and deadline - time.monotonic() < MIN_STAGE_SECONDS
+
+
+# A stage is told to finish this long before the lane stops waiting for it,
+# so it has time to assemble and hand back what it fetched. With one shared
+# deadline the stage reached it mid-request, and the wait gave up at the same
+# moment and put an empty result in place of the threads already fetched.
+STAGE_RETURN_MARGIN_SECONDS = 3.0
+
+
+def _stage_deadline(deadline: Optional[float], name: str = "deadline") -> Dict[str, float]:
+    """The keyword that gives a stage its own, earlier deadline; ``{}`` with none."""
+    if deadline is None:
+        return {}
+    return {name: deadline - STAGE_RETURN_MARGIN_SECONDS}
+
+
+def _within(wait_until: Optional[float], stage: str, default: Any, call, /, *args, **kwargs) -> Any:
+    """Run one discovery call and stop waiting for it at the lane deadline.
+
+    The search, listing and score calls wait for their own workers on their
+    own timeouts, so a call started with seconds left could run past the
+    pipeline's wait for the source and take the threads already found with
+    it. Under a deadline the call runs on a worker that is abandoned when the
+    deadline passes, and ``default`` stands in for its result. With no
+    deadline the call runs inline, as before.
+    """
+    if wait_until is None:
+        return call(*args, **kwargs)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = http.submit_with_context(executor, call, *args, **kwargs)
+        try:
+            return future.result(timeout=max(0.0, wait_until - time.monotonic()))
+        except concurrent.futures.TimeoutError:
+            _log(f"{stage} still running at the lane deadline; returning without it")
+            return default
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _relevance_rank_key(post: Dict[str, Any]) -> float:
@@ -73,6 +137,7 @@ def _scored_listings(
     sorts: Optional[List[str]] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Scored subreddit listings: shreddit partials, arctic-shift supplement.
 
@@ -85,17 +150,27 @@ def _scored_listings(
     ``hot`` or ``new`` are recovered even when only ``top`` succeeded. Never
     raises.
     """
-    posts = reddit_listing.fetch_listings(subreddits, depth=depth, query=query, sorts=sorts)
+    posts = _within(
+        deadline, "subreddit listing", [],
+        reddit_listing.fetch_listings, subreddits, depth=depth, query=query, sorts=sorts,
+        **_stage_deadline(deadline),
+    )
+    arctic_posts: List[Dict[str, Any]] = []
 
     # Supplement with arctic for all requested subreddits. Shreddit's per-sort
     # success/failure is opaque, so arctic provides coverage for any failed
     # sort lanes (e.g., hot/new failing while top succeeded). Deduplication
     # ensures no redundant posts when shreddit fully succeeded.
-    if subreddits:
+    if subreddits and _out_of_time(deadline):
+        _log("arctic-shift supplement skipped: lane budget spent")
+    elif subreddits:
         try:
-            arctic_posts = reddit_arctic.fetch_listings(
+            arctic_posts = _within(
+                deadline, "arctic-shift supplement", [],
+                reddit_arctic.fetch_listings,
                 subreddits, depth=depth, query=query, sorts=sorts,
                 from_date=from_date, to_date=to_date,
+                **_stage_deadline(deadline, "lane_deadline"),
             )
         except Exception as exc:  # the fallback must never break the pipeline
             _log(f"arctic-shift listing supplement failed: {exc}")
@@ -121,6 +196,7 @@ def _discover(
     dedicated_subreddits: Optional[List[str]] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     # Dedicated lane: the entity's home subs are wholly on-topic. Pull
     # top+hot+new (real scores from the listing) and mark them floor-exempt so
@@ -129,7 +205,7 @@ def _discover(
     if dedicated_subreddits:
         dedicated_posts = _scored_listings(
             dedicated_subreddits, depth=depth, query=topic, sorts=DEDICATED_SORTS,
-            from_date=from_date, to_date=to_date,
+            from_date=from_date, to_date=to_date, deadline=deadline,
         )
         for p in dedicated_posts:
             p["dedicated"] = True
@@ -138,18 +214,26 @@ def _discover(
     # search.json is permanently 403/429 keyless (no Tier 0). Discovery is
     # Reddit's site search: global, plus per-sub for targeted subreddits. The
     # dedicated subs keep their full-listing lane above and are not searched.
-    search_posts = reddit_search.search(
-        topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date
-    )
+    if _out_of_time(deadline):
+        _log("site search skipped: lane budget spent")
+        search_posts = []
+    else:
+        search_posts = _within(
+            deadline, "site search", [],
+            reddit_search.search,
+            topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date,
+            **_stage_deadline(deadline),
+        )
 
     # Targeted run: the caller chose these subreddits, so their listing cards
     # are on-topic; include them as scored discovery. A bare run fetches no
     # listings, so high-upvote off-topic posts cannot flood the results.
     listing_posts = (
         _scored_listings(
-            subreddits, depth=depth, query=topic, from_date=from_date, to_date=to_date
+            subreddits, depth=depth, query=topic, from_date=from_date, to_date=to_date,
+            deadline=deadline,
         )
-        if subreddits
+        if subreddits and not _out_of_time(deadline)
         else []
     )
     _log(
@@ -189,8 +273,11 @@ def _discover(
     need = [pid for p in merged
             if not (p.get("engagement", {}).get("score"))
             for pid in [reddit_listing._post_id(p["url"])] if pid]
-    if need:
-        scores = reddit_arctic.fetch_scores(need)
+    if need and not _out_of_time(deadline):
+        scores = _within(
+            deadline, "score lookup", {}, reddit_arctic.fetch_scores, need,
+            **_stage_deadline(deadline),
+        )
         filled = 0
         for p in merged:
             if p.get("engagement", {}).get("score"):
@@ -221,30 +308,50 @@ def _enrich_one(post: Dict[str, Any], deadline: Optional[float] = None) -> Dict[
     return post
 
 
-def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
+@contextlib.contextmanager
+def _enrich_executor(max_workers: int, lane_deadline: Optional[float]):
+    """The enrichment pool. Under a lane deadline its exit does not join a
+    worker still queued in the shared bucket, so the lane returns on time
+    with the comments fetched so far."""
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        yield executor
+    finally:
+        executor.shutdown(wait=lane_deadline is None, cancel_futures=lane_deadline is not None)
+
+
+def _enrich(
+    posts: List[Dict[str, Any]], depth: str, lane_deadline: Optional[float] = None,
+) -> List[Dict[str, Any]]:
     """Enrich the top N posts with comments under a total time budget."""
     limit = ENRICH_LIMITS.get(depth, ENRICH_LIMITS["default"])
     to_enrich = posts[:limit]
     rest = posts[limit:]
     if not to_enrich:
         return posts
+    if _out_of_time(lane_deadline):
+        _log("comment enrichment skipped: lane budget spent")
+        return posts
 
     result_map: Dict[int, Dict[str, Any]] = {}
     # Leaving the executor joins running workers, so the archive fallback
     # must stop by the same budget the wait below enforces.
-    deadline = time.monotonic() + ENRICH_BUDGET
+    budget = ENRICH_BUDGET
+    wait_timeout = ENRICH_BUDGET + http.reddit_keyless_wait_allowance(len(to_enrich))
+    if lane_deadline is not None:
+        lane_left = lane_deadline - time.monotonic()
+        budget = min(budget, lane_left)
+        wait_timeout = min(wait_timeout, lane_left)
+    deadline = time.monotonic() + budget
     try:
-        with ThreadPoolExecutor(max_workers=min(limit, MAX_ENRICH_WORKERS)) as executor:
+        with _enrich_executor(min(limit, MAX_ENRICH_WORKERS), lane_deadline) as executor:
             futures = {
                 http.submit_with_context(executor, _enrich_one, post, deadline): i
                 for i, post in enumerate(to_enrich)
             }
             # The budget covers the fetches; the allowance covers the shared
             # bucket's queue (other lanes, other entities in compare mode).
-            done, not_done = concurrent.futures.wait(
-                futures,
-                timeout=ENRICH_BUDGET + http.reddit_keyless_wait_allowance(len(to_enrich)),
-            )
+            done, not_done = concurrent.futures.wait(futures, timeout=wait_timeout)
             for future in done:
                 idx = futures[future]
                 try:
@@ -344,8 +451,10 @@ def search_and_enrich(
         with top_comments/comment_insights attached on enriched posts.
         Empty list when all keyless tiers fail (so SC backup can engage).
     """
+    deadline = _lane_deadline.get()
     posts = _discover(
-        topic, depth, subreddits, dedicated_subreddits, from_date=from_date, to_date=to_date
+        topic, depth, subreddits, dedicated_subreddits, from_date=from_date, to_date=to_date,
+        **({"deadline": deadline} if deadline is not None else {}),
     )
     if not posts:
         return []
@@ -389,7 +498,10 @@ def search_and_enrich(
     # entity-matching posts claim the scarce comment slots first, and within
     # each tier the most-commented threads get slots first (score order is the
     # stable tiebreak for equal counts).
-    posts = _enrich(_slot_priority(topic, posts), depth)
+    posts = _enrich(
+        _slot_priority(topic, posts), depth,
+        **({"lane_deadline": deadline} if deadline is not None else {}),
+    )
 
     # Final display order ranks relevance-first with a bounded engagement bonus,
     # so an off-topic high-upvote post can't outrank an on-topic one in what the
@@ -400,3 +512,73 @@ def search_and_enrich(
         post["id"] = f"R{i + 1}"
 
     return posts
+
+
+# Comments for the threads the report keeps. Lane-time enrichment above picks
+# its slots before the pipeline's own relevance prune and ranking, so most of
+# the threads that survive arrived without comments (3 to 5 of 12 in the
+# 2026-11-10 runs), and a thread's top comment is usually its best quote.
+# This pass runs from ``_finalize_items_by_source`` on the survivors, highest
+# ranked first. Threads the lane already enriched cost nothing, and repeat
+# URLs are served from the run memo.
+FINAL_ENRICH_LIMITS = {"quick": 6, "default": 12, "deep": 16}
+FINAL_ENRICH_BUDGET = 30  # seconds, at the shared 1 req/s pacing
+
+
+def enrich_source_items(
+    items: List[Any],
+    depth: str = "default",
+    deadline: Optional[float] = None,
+) -> List[Any]:
+    """Attach top comments to the kept Reddit SourceItems that lack them.
+
+    Considers the first ``FINAL_ENRICH_LIMITS[depth]`` items (they arrive
+    ranked), skips threads that have comments already or report none, and
+    fetches the rest through the same paced, memoized comment fetch as the
+    lane, under ``FINAL_ENRICH_BUDGET`` and the caller's ``deadline``. Each
+    comment carries author, score and its own permalink. Never raises and
+    never waits for a straggler: a thread whose fetch did not finish stays as
+    it was.
+    """
+    limit = FINAL_ENRICH_LIMITS.get(depth, FINAL_ENRICH_LIMITS["default"])
+    kept = [item for item in items if getattr(item, "source", None) == "reddit"][:limit]
+    targets = [
+        item for item in kept
+        if item.url
+        and not (item.metadata or {}).get("top_comments")
+        and (item.engagement or {}).get("num_comments") != 0
+    ]
+    if not targets:
+        return items
+    budget = float(FINAL_ENRICH_BUDGET)
+    if deadline is not None:
+        budget = min(budget, deadline - time.monotonic())
+    if budget < MIN_STAGE_SECONDS:
+        _log("comments for kept threads skipped: no time left")
+        return items
+    end = time.monotonic() + budget
+    executor = ThreadPoolExecutor(max_workers=min(len(targets), MAX_ENRICH_WORKERS))
+    try:
+        futures = {
+            http.submit_with_context(executor, reddit_shreddit.fetch_comments, item.url, deadline=end): item
+            for item in targets
+        }
+        done, _not_done = concurrent.futures.wait(futures, timeout=budget)
+        for future in done:
+            item = futures[future]
+            try:
+                data = future.result(timeout=0) or {}
+            except Exception:
+                continue
+            if data.get("top_comments"):
+                item.metadata["top_comments"] = data["top_comments"]
+                item.metadata["comment_insights"] = data.get("comment_insights") or []
+            if data.get("num_comments") is not None:
+                item.engagement["num_comments"] = data["num_comments"]
+    except Exception as exc:
+        _log(f"comments for kept threads failed: {exc}")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    have = sum(1 for item in kept if (item.metadata or {}).get("top_comments"))
+    _log(f"comments on {have} of {len(kept)} kept threads ({len(targets)} fetched after ranking)")
+    return items

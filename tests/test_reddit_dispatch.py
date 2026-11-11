@@ -19,7 +19,12 @@ def _runtime():
 
 
 def _item(rid):
-    return {"url": f"https://www.reddit.com/r/x/comments/{rid}/t/", "title": rid}
+    # On topic for the "kanye" stream: the backfill floor counts the free
+    # threads its relevance prune will keep.
+    return {
+        "url": f"https://www.reddit.com/r/x/comments/{rid}/t/", "title": f"kanye {rid}",
+        "engagement": {"score": 40, "num_comments": 5},
+    }
 
 
 def _ids(items):
