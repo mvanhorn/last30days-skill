@@ -59,8 +59,10 @@ from . import (
     providers,
     query,
     reddit,
+    reddit_keyless,
     reddit_listing,
     reddit_public,
+    reddit_search,
     relevance,
     rerank,
     schema,
@@ -152,6 +154,16 @@ STREAM_FUTURE_TIMEOUT_SECONDS = 180.0
 # ended in the past.
 JOBS_PAST_WINDOW_SKIP = "skipped: a job board shows the roles open today, not those of a past window"
 DISCOVERY_FUTURE_TIMEOUT_SECONDS = 60.0
+# The keyless Reddit lane stops this long before the stream wait ends, which
+# leaves time to return, normalize and score the threads it found.
+REDDIT_LANE_RETURN_MARGIN_SECONDS = 20.0
+# With a ScrapeCreators key the free lane stops this much earlier still, so a
+# backfill of a thin or timed-out free result gets a turn inside the same wait.
+REDDIT_SC_BACKFILL_RESERVE_SECONDS = 45.0
+# A backfill is not started with less than this left, and is abandoned this
+# long before the stream wait ends so the free threads are still returned.
+REDDIT_SC_BACKFILL_MIN_SECONDS = 8.0
+REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS = 5.0
 THIN_RETRY_FUTURE_TIMEOUT_SECONDS = 120.0
 # One X source, ordered backends: grok (up to 240s/call) + xai (90-180s) would
 # stack sequentially inside one unbounded future under MCP's kill. The chain
@@ -2835,6 +2847,17 @@ def run(
                     state, attempted = _classify_source_failure(exc)
                     bundle.record_failure(source, state, str(exc), attempted=attempted)
                     continue
+            if isinstance(artifact, dict) and artifact.get("_source_skipped"):
+                # The lane chose not to run (jobs' past-window skip is the
+                # precedent): not attempted, so it is no failure, no degraded
+                # source and no warning.
+                bundle.source_status[source] = schema.SourceOutcome(
+                    source=source,
+                    state=schema.NO_RESULTS,
+                    attempted=False,
+                    detail=artifact["_source_skipped"],
+                )
+                continue
             outcome_note = None
             if isinstance(artifact, dict) and artifact.get("_source_outcome"):
                 artifact = dict(artifact)
@@ -3729,6 +3752,17 @@ def _finalize_items_by_source(
             else:
                 digg.enrich_source_items(items, top_k=3)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+        if source == "reddit" and items and not mock:
+            # The lane enriched its own top picks before this ranking; give
+            # the threads that survived their top comments too.
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = _merge_replayed_enrichment(items, replayed)
+            else:
+                reddit_keyless.enrich_source_items(
+                    items, depth=depth, deadline=(config or {}).get("_research_deadline"),
+                )
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
         if source == "devto" and items and not mock:
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
@@ -4088,6 +4122,75 @@ def _classify_source_failure(exc: Exception) -> tuple[schema.RunOutcomeState, bo
         message=detail,
     )
     return state, True
+
+
+def _reddit_on_topic_count(
+    items: list[dict],
+    from_date: str,
+    to_date: str,
+    ranking_query: str,
+    freshness_mode: str | None,
+) -> int:
+    """How many free Reddit threads will survive this stream's relevance prune.
+
+    The ScrapeCreators floor is measured on this, not on the raw count: a run
+    whose site search is refused still returns dozens of listing threads from
+    the targeted subreddits, nearly all pruned as off topic a moment later
+    ("relevance prune dropped 99 of 106"), so the raw count never fell under
+    the floor and the backfill never ran. Same normalize, annotate and prune
+    as ``_normalize_score_dedupe``; on any error the raw count is used.
+    """
+    if not items:
+        return 0
+    try:
+        mode = freshness_mode or "balanced_recent"
+        normalized = normalize.normalize_source_items(
+            "reddit", copy.deepcopy(items), from_date, to_date, freshness_mode=mode,
+        )
+        days = (date.fromisoformat(to_date) - date.fromisoformat(from_date)).days
+        annotated = signals.annotate_stream(
+            normalized, relevance.PreparedQuery(ranking_query), mode,
+            reference_date=to_date, max_days=days,
+        )
+        return len(signals.prune_low_relevance(annotated, passing_only=True))
+    except Exception:
+        return len(items)
+
+
+def _run_reddit_backfill(config: dict[str, Any], call) -> Any:
+    """Run the ScrapeCreators backfill, giving up shortly before the stream
+    wait ends so a slow backfill cannot turn the free threads into a timeout.
+    Raises ``TimeoutError`` when it does not finish in time."""
+    research_deadline = config.get("_research_deadline")
+    if research_deadline is None:
+        return call()
+    remaining = research_deadline - REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS - time.monotonic()
+    if remaining < REDDIT_SC_BACKFILL_MIN_SECONDS:
+        raise TimeoutError("no time left in the run's budget for the ScrapeCreators backfill")
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = http.submit_with_context(executor, call)
+        try:
+            return future.result(timeout=remaining)
+        except TimeoutError:
+            raise TimeoutError(
+                f"ScrapeCreators backfill did not finish in {remaining:.0f}s"
+            ) from None
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _reddit_search_blocked_artifact(items: list[dict]) -> dict[str, Any]:
+    """Mark Reddit partial when its site search was refused and threads came
+    from subreddit listings alone; ``{}`` when search worked or nothing came."""
+    reason = reddit_search.failed_reason()
+    if not reason or not items:
+        return {}
+    return _outcome_artifact(
+        health.PARTIAL,
+        f"Reddit site search was blocked ({reason}); threads come from subreddit "
+        "listings only",
+    )
 
 
 def _outcome_artifact(
@@ -5897,11 +6000,20 @@ def _retrieve_stream_impl(
         min_items = env.reddit_sc_min_items(config)
         public_results: list[dict] = []
         public_failure: Exception | None = None
+        # The lane returns what it has before the stream wait gives up on
+        # it; a lane still running then is reported as a timeout with nothing.
+        research_deadline = config.get("_research_deadline")
+        lane_deadline = (
+            research_deadline - REDDIT_LANE_RETURN_MARGIN_SECONDS
+            - (REDDIT_SC_BACKFILL_RESERVE_SECONDS if has_sc_key else 0.0)
+            if research_deadline is not None else None
+        )
         try:
-            public_results = reddit_public.search_reddit_public(
-                reddit_query, from_date, to_date, depth=depth,
-                subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
-            ) or []
+            with reddit_keyless.lane_deadline(lane_deadline):
+                public_results = reddit_public.search_reddit_public(
+                    reddit_query, from_date, to_date, depth=depth,
+                    subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
+                ) or []
         except Exception as exc:
             public_failure = exc
             sys.stderr.write(
@@ -5912,15 +6024,38 @@ def _retrieve_stream_impl(
                 state = reddit.classify_run_failure(str(exc))
                 raise SourceRunError(f"Reddit public search failed: {exc}", state) from exc
             sys.stderr.write(", using ScrapeCreators backup\n")
-        # Enough free results, or no key to backfill with -> done. max(min_items,
-        # 1) keeps the default (min_items=0) as empty-only AND treats exactly
-        # `min_items` results as acceptable (no backfill) for min_items > 0.
-        if len(public_results) >= max(min_items, 1) or not has_sc_key:
-            return public_results, {}
+        free_timed_out = (
+            not public_results and public_failure is None
+            and reddit_keyless._out_of_time(lane_deadline)
+        )
+        if free_timed_out and not has_sc_key:
+            # The lane started with no budget left (queued behind slower
+            # streams): that is a timeout, not a topic nobody posted about.
+            return [], _outcome_artifact(
+                health.TIMEOUT,
+                "Reddit had no time left in the run's budget before it found threads",
+            )
+        # The floor counts the free threads that are on topic for this stream,
+        # the ones its relevance prune will keep. Enough of them, or no key to
+        # backfill with -> done. max(min_items, 1) keeps the default
+        # (min_items=0) as empty-only AND treats exactly `min_items` results
+        # as acceptable (no backfill) for min_items > 0.
+        on_topic = _reddit_on_topic_count(
+            public_results, from_date, to_date,
+            subquery.ranking_query or reddit_query, freshness_mode,
+        ) if has_sc_key and min_items > 0 else len(public_results)
+        if on_topic >= max(min_items, 1) or not has_sc_key:
+            return public_results, _reddit_search_blocked_artifact(public_results)
         if public_results:
             sys.stderr.write(
                 f"[Reddit] Free path returned {len(public_results)} "
-                f"(below the {min_items}-item floor); backfilling with ScrapeCreators\n"
+                f"({on_topic} on topic, below the {min_items}-item floor); "
+                "backfilling with ScrapeCreators\n"
+            )
+        elif free_timed_out:
+            sys.stderr.write(
+                "[Reddit] Free path ran out of time with no threads; "
+                "backfilling with ScrapeCreators\n"
             )
         # With free items in hand, scope the backfill's own HTTP failures
         # away from the stream's capture sink: a ScrapeCreators 429 is not a
@@ -5934,11 +6069,11 @@ def _retrieve_stream_impl(
         )
         try:
             with backfill_scope as backfill_failures:
-                result = reddit.search_and_enrich_memo(
+                result = _run_reddit_backfill(config, lambda: reddit.search_and_enrich_memo(
                     reddit_query, from_date, to_date, depth=depth,
                     token=config.get("SCRAPECREATORS_API_KEY"),
                     subreddits=subreddits,
-                )
+                ))
             sc_items = reddit.parse_reddit_response(result)
         except Exception as exc:
             sys.stderr.write(
@@ -6416,6 +6551,10 @@ def _retrieve_stream_impl(
             explicit_domain=trustpilot_domain,
             domain_is_hint=trustpilot_domain_is_hint,
         )
+        if result.get("needs_session"):
+            # An expected skip (no browser is ever opened for a session), not
+            # a failure: recorded like a board that cannot answer the window.
+            return [], {"_source_skipped": str(result.get("skipped") or "")}
         return (
             trustpilot.parse_trustpilot_response(result, query=relevance_topic),
             _result_outcome_artifact(source, result),

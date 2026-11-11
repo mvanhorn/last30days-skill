@@ -301,15 +301,22 @@ class TestTargetedSubs:
 
 
 class TestOutcomes:
-    def test_challenge_page_records_failure_and_is_not_memoized(self, fake_reddit):
+    def test_challenge_page_records_failure_and_stops_the_commands_searches(self, fake_reddit):
         fake_reddit.default = _fixture("reddit_search_challenge.html")
         with http.capture_failures() as failures:
             first = reddit_search.search("ButcherBox", depth="quick")
             second = reddit_search.search("ButcherBox", depth="quick")
         assert first == [] and second == []
-        assert fake_reddit.requests == [PAGE1_URL, PAGE1_URL]
-        assert len(failures) == 2
+        # Reddit refused the endpoint: the same command does not ask again.
+        assert fake_reddit.requests == [PAGE1_URL]
+        assert len(failures) == 1
         assert all(f.outcome_state == health.SCHEMA_DRIFT for f in failures)
+        assert reddit_search.failed_reason() == "challenge page instead of results"
+
+        # The body itself is never memoized: the next command fetches again.
+        reddit_search.reset_run_state()
+        assert reddit_search.search("ButcherBox", depth="quick") == []
+        assert fake_reddit.requests == [PAGE1_URL, PAGE1_URL]
 
     @pytest.mark.parametrize("drift", [
         # Tracking context attribute gone entirely.

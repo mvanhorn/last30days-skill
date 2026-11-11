@@ -829,6 +829,43 @@ def names_whole_topic(topic: str, *texts: str) -> bool:
     return not checked
 
 
+_SERIES_DROP_WORDS = frozenset(
+    {name.casefold() for name in _MONTH_NAMES.split("|")}
+    | {"will", "the", "a", "an", "in", "on", "by", "from", "to", "of", "between",
+       "and", "be", "before", "after", "through", "until", "week", "month"}
+)
+# A recurring count market: "Elon Musk # tweets November 6 - November 13,
+# 2026?", "How many times will X say ...", "... post 260-279 tweets ...",
+# "What will X say during ...", "X mentions ...".
+_COUNT_SERIES = re.compile(
+    r"#\s*(?:of\s+)?(?:tweets|posts|mentions|truths)\b"
+    r"|\b(?:how many|number of)\s+(?:times|tweets|posts|mentions)\b"
+    r"|\b(?:post|tweet|say|mention)s?\s+[<>]?\d[\d,]*\s*(?:[-–+]\s*\d*[\d,]*)?\+?\s*(?:tweets|posts|times)\b"
+    r"|\bmentions?\s+market\b"
+    r"|^what will .+ say\b",
+    re.IGNORECASE,
+)
+
+
+def series_key(*texts: str) -> str:
+    """A market's question stem with its numbers, dates and brackets removed.
+
+    Weekly reruns of one question ("Elon Musk # tweets November 6 - November
+    13, 2026?", "Elon Musk # tweets in November 2026?") share a key, so a
+    caller can name the series once. The first non-empty text is used.
+    """
+    text = next((t for t in texts if t and t.strip()), "")
+    text = re.sub(r"['’]s\b", "", text.casefold())
+    text = re.sub(r"[<>$]?\d[\d,.]*\s*[kmbt%+]?", " ", text)
+    words = [w for w in re.sub(r"[^\w\s]", " ", text).split() if w not in _SERIES_DROP_WORDS]
+    return " ".join(words)
+
+
+def is_count_series(*texts: str) -> bool:
+    """Whether a market is a recurring count bracket (tweets, posts, mentions)."""
+    return any(_COUNT_SERIES.search(text or "") for text in texts)
+
+
 def _legacy_shorten_question(question: str) -> str:
     """The name older builds gave a market question; saved reports hold it.
 

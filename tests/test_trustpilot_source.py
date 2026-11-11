@@ -134,7 +134,8 @@ def test_search_returns_info_for_brand(monkeypatch):
     monkeypatch.setattr(trustpilot, "_is_available", lambda: True)
     monkeypatch.setattr(
         trustpilot, "_run_cli",
-        lambda *a, **k: {"name": "ChowNow", "trustScore": 1.2, "reviewCount": 49, "aiSummary": "Bad."},
+        lambda cmd, **k: {"isFresh": True} if cmd[1] == "auth" else
+        {"name": "ChowNow", "trustScore": 1.2, "reviewCount": 49, "aiSummary": "Bad."},
     )
     out = trustpilot.search_trustpilot("ChowNow", "2026-06-01", "2026-06-27")
     assert len(out["results"]) == 1
@@ -145,7 +146,10 @@ def test_search_returns_info_for_brand(monkeypatch):
 
 def test_cli_error_degrades_to_empty(monkeypatch):
     monkeypatch.setattr(trustpilot, "_is_available", lambda: True)
-    monkeypatch.setattr(trustpilot, "_run_cli", lambda *a, **k: {"error": "no chrome"})
+    monkeypatch.setattr(
+        trustpilot, "_run_cli",
+        lambda cmd, **k: {"isFresh": True} if cmd[1] == "auth" else {"error": "HTTP 500"},
+    )
     out = trustpilot.search_trustpilot("ChowNow", "2026-06-01", "2026-06-27")
     assert out == {"results": []}
 
@@ -189,6 +193,9 @@ def _capture_cli(monkeypatch, responses):
     ("info", "search", "auth status", "auth login") to a dict, or to a list of
     dicts consumed in order."""
     calls: list[list[str]] = []
+    # A replayable session unless the test says otherwise: without one the
+    # lane runs no fetch command at all.
+    responses = {"auth status": {"isFresh": True, "hasSession": True}, **responses}
 
     def fake(cmd, timeout):
         calls.append(list(cmd))
@@ -323,71 +330,118 @@ def test_search_cached_per_topic_not_per_process(monkeypatch):
     assert len(_search_args(calls)) == len(responses_seen) + 1
 
 
-# ---- session warm-up (ensure_session_ready) ----
+# ---- session check (ensure_session_ready): never launches Chrome ----
 
-def test_warmup_fresh_session_skips_login(monkeypatch):
+def test_fresh_session_is_ready_without_login(monkeypatch):
     calls = _capture_cli(monkeypatch, {"auth status": {"isFresh": True, "hasSession": True}})
-    trustpilot.ensure_session_ready("ThriftBooks")
+    assert trustpilot.ensure_session_ready("ThriftBooks") is True
     assert [c[2] for c in calls if c[1] == "auth"] == ["status"]
 
 
-def test_warmup_stale_session_logs_in_once(monkeypatch):
+@pytest.mark.parametrize("status", [
+    {"error": "no session"},
+    {"hasSession": False, "isFresh": False, "harvestedAt": "0001-01-01T00:00:00Z"},
+    {},
+])
+def test_missing_or_stale_session_never_logs_in(monkeypatch, status):
+    # `auth login` is the command that printed "Launching Chrome via
+    # agent-browser (about 10 seconds)..." in the 2026-11-10 runs.
+    calls = _capture_cli(monkeypatch, {"auth status": status, "auth login": {"ok": True}})
+    assert trustpilot.ensure_session_ready("ThriftBooks") is False
+    assert [c[2] for c in calls if c[1] == "auth"] == ["status"]
+
+
+def test_session_about_to_lapse_is_not_ready(monkeypatch):
+    # The CLI replays a session for four minutes and launches Chrome after
+    # that, so one in its last seconds could lapse inside the fetch command.
+    from datetime import datetime, timedelta, timezone
+
+    def harvested(seconds_ago):
+        return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()
+
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": True, "harvestedAt": harvested(230)}})
+    assert trustpilot.ensure_session_ready("ThriftBooks") is False
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": True, "harvestedAt": harvested(60)}})
+    assert trustpilot.ensure_session_ready("ThriftBooks") is True
+
+
+def test_every_check_reads_the_session_again(monkeypatch):
+    # No memo: the session lasts four minutes, so a remembered "fresh" could
+    # send a fetch command after it lapsed.
+    calls = _capture_cli(monkeypatch, {"auth status": [{"isFresh": True}, {"isFresh": False}]})
+    assert trustpilot.ensure_session_ready("ThriftBooks") is True
+    assert trustpilot.ensure_session_ready("ThriftBooks") is False
+    assert len(calls) == 2
+
+
+# ---- the lane with no replayable session (2026-11-10 Waymo run) ----
+
+def test_stale_session_skips_the_lane_with_the_sign_in_command(monkeypatch):
     calls = _capture_cli(monkeypatch, {
-        "auth status": {"error": "no session"},
-        "auth login": {"ok": True},
+        "auth status": {"hasSession": False, "isFresh": False},
+        "info": INFO_OK,
     })
-    trustpilot.ensure_session_ready("ThriftBooks")
-    trustpilot.ensure_session_ready("ThriftBooks")  # idempotent: no second pass
-    auth_calls = [c[2] for c in calls if c[1] == "auth"]
-    assert auth_calls == ["status", "login"]
+    logged: list[str] = []
+    monkeypatch.setattr(trustpilot, "_log", lambda msg: logged.append(msg))
+
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+
+    # No fetch command ran: `info` and `search` harvest by themselves.
+    assert [c[1] for c in calls] == ["auth"]
+    assert [c[2] for c in calls] == ["status"]
+    assert out == {"results": [], "needs_session": True, "skipped": trustpilot.SESSION_NEEDED}
+    assert "trustpilot-pp-cli auth login" in out["skipped"]
+    assert "error" not in out
+    assert f"skipped: {trustpilot.SESSION_NEEDED}" in logged
 
 
-def test_warmup_concurrent_calls_single_warmup(monkeypatch):
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
+def test_session_lapsing_between_search_and_info_stops_before_info(monkeypatch):
+    calls = _capture_cli(monkeypatch, {
+        "auth status": [{"isFresh": True}, {"isFresh": True}, {"isFresh": False}],
+        "search": THRIFTBOOKS_HITS,
+        "info": INFO_OK,
+    })
 
-    started = threading.Event()
-    release = threading.Event()
-    contender_reached = threading.Event()
-    real_lock = trustpilot._warmup_lock
-    calls = []
+    out = trustpilot.search_trustpilot("ThriftBooks", D1, D2)
 
-    class ObservedLock:
-        def __enter__(self):
-            if started.is_set():
-                contender_reached.set()
-            return real_lock.__enter__()
+    assert out["needs_session"] is True
+    assert _info_args(calls) == []
 
-        def __exit__(self, *args):
-            return real_lock.__exit__(*args)
 
-    def blocked_cli(cmd, timeout):
-        calls.append(list(cmd))
-        if started.is_set():
-            contender_reached.set()
-        started.set()
-        assert release.wait(timeout=5), "warm-up was not released"
-        return {"isFresh": True}
+def _run_with_stale_session(monkeypatch):
+    """A whole pipeline run (mock sources) whose only real lane is Trustpilot
+    with no replayable session."""
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "info": INFO_OK})
+    monkeypatch.setattr(pipeline, "which", lambda name: f"/usr/bin/{name}")
+    real_impl = pipeline._retrieve_stream_impl
 
-    monkeypatch.setattr(trustpilot, "_is_available", lambda: True)
-    monkeypatch.setattr(trustpilot, "_warmup_lock", ObservedLock())
-    monkeypatch.setattr(trustpilot, "_run_cli", blocked_cli)
-    expected = [[trustpilot.CLI_BIN, "auth", "status", "--agent"]]
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(trustpilot.ensure_session_ready, "ThriftBooks")
-        try:
-            assert started.wait(timeout=5), "first warm-up did not reach CLI"
-            second = pool.submit(trustpilot.ensure_session_ready, "ThriftBooks")
-            assert contender_reached.wait(timeout=5), "second caller did not reach lock or CLI"
-            assert calls == expected
-            assert not first.done()
-            assert not second.done()
-            release.set()
-            first.result(timeout=5)
-            second.result(timeout=5)
-        finally:
-            release.set()
-    assert calls == expected
+    def impl(**kwargs):
+        if kwargs["source"] == "trustpilot":
+            return real_impl(**{**kwargs, "mock": False})
+        return real_impl(**kwargs)
+
+    monkeypatch.setattr(pipeline, "_retrieve_stream_impl", impl)
+    return pipeline.run(
+        topic="Waymo", config={"LAST30DAYS_REASONING_PROVIDER": "gemini"}, depth="quick",
+        requested_sources=["hackernews", "trustpilot"], mock=True,
+        trustpilot_domain="waymo.com",
+    )
+
+
+def test_skipped_lane_is_a_quiet_skip_not_a_failed_source(monkeypatch):
+    from lib import render
+
+    report = _run_with_stale_session(monkeypatch)
+
+    outcome = report.source_status["trustpilot"]
+    assert (outcome.state, outcome.attempted, outcome.detail) == (
+        "no-results", False, trustpilot.SESSION_NEEDED,
+    )
+    assert "trustpilot" not in report.errors_by_source
+    assert not any("trustpilot" in warning.lower() for warning in report.warnings)
+    compact = render.render_compact(report)
+    assert "Some sources failed" not in compact
+    assert "Partial Coverage" not in compact or "Trustpilot" not in compact.split("Partial Coverage")[1].split("\n## ")[0]
 
 
 def test_warmup_skips_non_brand_topic(monkeypatch):
@@ -407,15 +461,6 @@ def test_warmup_respects_browser_opt_out(monkeypatch):
     calls = _capture_cli(monkeypatch, {})
     trustpilot.ensure_session_ready("ThriftBooks", config={trustpilot.NO_BROWSER_ENV: "1"})
     assert calls == []
-
-
-def test_warmup_failure_never_raises(monkeypatch):
-    calls = _capture_cli(monkeypatch, {
-        "auth status": {"error": "no session"},
-        "auth login": {"error": "chrome missing"},
-    })
-    trustpilot.ensure_session_ready("ThriftBooks")  # must not raise
-    assert [c[2] for c in calls if c[1] == "auth"] == ["status", "login"]
 
 
 def test_warmup_logs_no_token_bytes(monkeypatch):
@@ -451,20 +496,6 @@ def test_search_trustpilot_warms_session_at_first_touch(monkeypatch):
         "ThriftBooks", D1, D2, explicit_domain="www.thriftbooks.com")
     assert calls[0][1] == "auth" and calls[0][2] == "status"
     assert [c for c in calls if c[1] == "info"]
-
-
-def test_warmup_ttl_lapse_rechecks(monkeypatch):
-    import time as _time
-    calls = _capture_cli(monkeypatch, {"auth status": {"isFresh": True}})
-    trustpilot.ensure_session_ready("ThriftBooks")
-    assert len(calls) == 1
-    # Within the TTL: no re-check.
-    trustpilot.ensure_session_ready("ThriftBooks")
-    assert len(calls) == 1
-    # After the TTL lapses (long-lived host process): cheap re-check fires.
-    trustpilot._warmup_at = _time.monotonic() - (trustpilot.WARMUP_TTL_SECONDS + 1)
-    trustpilot.ensure_session_ready("ThriftBooks")
-    assert len(calls) == 2
 
 
 def test_hint_on_non_brand_topic_stays_quiet(monkeypatch):

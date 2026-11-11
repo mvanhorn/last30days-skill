@@ -2784,6 +2784,26 @@ def _polymarket_top_markets(
         reverse=True,
     )
 
+    # One market per series first, a substantive question before a recurring
+    # count bracket ("# tweets this week"); a count series is never repeated,
+    # and another rung of a substantive ladder only fills a slot left over.
+    firsts: list[schema.SourceItem] = []
+    repeats: list[schema.SourceItem] = []
+    seen_series: set[str] = set()
+    for item in sorted_items:
+        texts = (item.title, str(item.metadata.get("question") or ""))
+        counted = polymarket.is_count_series(*texts)
+        series = polymarket.series_key(*texts)
+        if series and series in seen_series:
+            if not counted:
+                repeats.append(item)
+            continue
+        seen_series.add(series)
+        firsts.append(item)
+    firsts.sort(key=lambda it: polymarket.is_count_series(
+        it.title, str(it.metadata.get("question") or "")))
+    sorted_items = firsts + repeats
+
     # (name, pct, question, label when the name is not the bare descriptor)
     markets: list[tuple[str, str, str, str]] = []
     for item in sorted_items[:limit]:
@@ -3151,6 +3171,23 @@ def _sum_engagement(items: list[schema.SourceItem], key: str) -> int:
     return total
 
 
+def _on_topic_items(
+    report: schema.Report, items: list[schema.SourceItem],
+) -> list[schema.SourceItem]:
+    """The items whose engagement and voices the footer counts.
+
+    The source dump keeps items the ranking found off topic (one unrelated
+    video carried 12.5M of a Waymo run's 12.7M YouTube views). Only items
+    behind a ranked candidate that passes ``rerank.candidate_counts_for_topic``
+    are counted. A source the ranking never judged, or one left with nothing,
+    is counted whole, as before.
+    """
+    verdicts = rerank.item_topic_verdicts(report.ranked_candidates or [], report.topic)
+    judged = [verdicts.get((item.source, item.url or item.item_id)) for item in items]
+    kept = [item for item, counts in zip(items, judged) if counts]
+    return kept or items
+
+
 def _footer_line_for_source(
     emoji: str, label: str, count: int, item_word: str, stats: str
 ) -> str:
@@ -3192,8 +3229,9 @@ def _build_source_footer_lines(
         if not items:
             continue
         parts: list[str] = []
+        counted = _on_topic_items(report, items)
         for eng_key, word in engagement_fields:
-            total = _sum_engagement(items, eng_key)
+            total = _sum_engagement(counted, eng_key)
             if total > 0:
                 total_str = f"{total:,}" if total >= 1000 else str(total)
                 parts.append(f"{total_str} {word}")
@@ -3656,7 +3694,7 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
     and top subreddits, separated by │.
     """
     handle_items = {
-        source: report.items_by_source.get(source) or []
+        source: _on_topic_items(report, report.items_by_source.get(source) or [])
         for source in (
             "x",
             "bluesky",
@@ -3675,7 +3713,7 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
                 handle_counts[actor] += 1
 
     subreddit_counts: Counter[str] = Counter()
-    for item in report.items_by_source.get("reddit") or []:
+    for item in _on_topic_items(report, report.items_by_source.get("reddit") or []):
         if item.container:
             subreddit_counts[f"r/{item.container}"] += 1
 
