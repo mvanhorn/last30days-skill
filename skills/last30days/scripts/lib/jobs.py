@@ -218,15 +218,17 @@ def _resolve_careers_page(
     careers page when a backend is configured. Returns (html, url) or
     (None, None). Never raises.
     """
+    # Only a host guessed from the company's name may turn out not to exist.
+    guessed = not (site and _host(site))
     for host in _site_hosts(company, site):
         for path in ("/careers", "/jobs"):
             url = f"https://{host}{path}"
-            html, no_host = _careers_text(url)
+            html, no_host = _careers_text(url, guessed=guessed)
             if no_host:
                 # Nothing answers at this host, so its other page is not tried.
                 break
             if html and _looks_like_careers_html(html):
-                return _board_page(html, url)
+                return _board_page(html, url, guessed=guessed)
 
     if backend != "none":
         careers_url = _search_for_careers_url(company, date_range, config, backend=backend)
@@ -238,17 +240,24 @@ def _resolve_careers_page(
     return None, None
 
 
-def _careers_text(url: str) -> tuple[str | None, bool]:
+def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
     """Fetch a careers page on the company's site or on a guessed domain.
 
-    Returns the page text, and whether no host answered. A name that does not
-    resolve or a refused connection there means the company has no such site:
-    no board was found, which is not a failed source. So neither is recorded
-    as a run failure, and nor is a 403 or 404. A timeout or a server error is.
+    Returns the page text, and whether no host answered. A 403 or 404 is a
+    page that is not there, never a run failure. On a ``guessed`` domain a
+    name that does not resolve or a refused connection means the company has
+    no such site: no board was found, so that is not recorded either. On the
+    known official site the same failure is an outage and is recorded like a
+    timeout or a server error.
     """
-    with http.expected_misses(403, 404), http.expected_no_host() as no_host:
-        html = http.get_text(url, accept="text/html", retries=1)
-    return html, bool(no_host)
+    with http.expected_misses(403, 404):
+        if guessed:
+            with http.expected_no_host() as no_host:
+                html = http.get_text(url, accept="text/html", retries=1)
+            return html, bool(no_host)
+        with http.tee_failures() as failures:
+            html = http.get_text(url, accept="text/html", retries=1)
+    return html, any(failure.no_host for failure in failures)
 
 
 # How many pages linked from a careers page are read when looking for the board.
@@ -256,7 +265,7 @@ _LINKED_PAGE_LIMIT = 2
 _JOBS_LINK_WORDS = re.compile(r"job|position|opening|vacanc|search", re.I)
 
 
-def _board_page(html: str, url: str) -> tuple[str, str]:
+def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str]:
     """The page that names the company's board: the careers page, or a jobs
     page of the same site that it links to.
 
@@ -269,7 +278,7 @@ def _board_page(html: str, url: str) -> tuple[str, str]:
     if detect_ats(html)[0]:
         return html, url
     for link in _jobs_links(html, url)[:_LINKED_PAGE_LIMIT]:
-        linked, _no_host = _careers_text(link)
+        linked, _no_host = _careers_text(link, guessed=guessed)
         if linked and detect_ats(linked)[0]:
             return linked, link
     return html, url

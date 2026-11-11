@@ -7,7 +7,7 @@ Evidence, two live runs on 2026-11-10: "Jensen Huang" with
 
 import socket
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import last30days as cli
 from lib import http, jobs, pipeline, schema, yahoo_finance
@@ -300,3 +300,60 @@ def test_dns_failure_outside_a_guessed_host_is_recorded_as_before():
             http.capture_failures() as failures:
         assert http.get_text("https://api.example.com/x", retries=1) is None
     assert len(failures) == 1 and failures[0].no_host
+
+
+# --- A known official site that does not answer is an outage, not "no board" ---
+
+OFFICIAL = "https://www.acmecorp.com/"
+
+
+def _search_official(opener):
+    with patch.object(http, "_open_request", side_effect=opener), \
+            patch.object(http.time, "sleep"), \
+            http.capture_failures() as failures:
+        result = jobs.search_jobs(
+            "Acme", WINDOW, {}, web_backend="none", site=OFFICIAL,
+        )
+    return result, failures
+
+
+def _official_host_fails(careers_open):
+    def opener(req, timeout=None, **_kwargs):
+        if req.full_url.split("/")[2] == "www.acmecorp.com":
+            return careers_open()
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+    return opener
+
+
+def test_official_site_that_does_not_resolve_is_recorded_as_a_failure():
+    (items, _artifact), failures = _search_official(_official_host_fails(_dns_failure))
+    assert items == []
+    assert failures and all(
+        f.no_host and f.outcome_state == http.health.UNREACHABLE for f in failures
+    )
+
+
+def test_official_site_that_refuses_the_connection_is_recorded_as_a_failure():
+    _result, failures = _search_official(_official_host_fails(_refused))
+    assert failures and all(f.no_host for f in failures)
+
+
+def test_jobs_page_linked_from_the_official_site_that_does_not_resolve_is_recorded():
+    landing = '<a href="https://jobs.acmecorp.com/careers">Open Positions</a><h2>Join our team</h2>'
+
+    def opener(req, timeout=None, **_kwargs):
+        host = req.full_url.split("/")[2]
+        if host == "www.acmecorp.com":
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.__exit__.return_value = False
+            response.read.return_value = landing.encode("utf-8")
+            response.status = 200
+            response.headers = {}
+            return response
+        if host == "jobs.acmecorp.com":
+            return _dns_failure()
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    _result, failures = _search_official(opener)
+    assert [f for f in failures if f.no_host]

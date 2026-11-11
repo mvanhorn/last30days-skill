@@ -480,6 +480,10 @@ def _fixture_replay(request_data: dict[str, Any]) -> Any:
             body=error.get("body"),
             outcome_state=error.get("outcome_state"),
         )
+        # Callers branch on this (a dead careers host is not asked for its
+        # second page), so a replay without it makes requests the live run
+        # never recorded.
+        recorded_error.no_host = bool(error.get("no_host"))
         _raise(recorded_error)
     return response.get("value")
 
@@ -518,6 +522,8 @@ def _fixture_record(
                     redactions=redactions,
                 )
             }
+            if error.no_host:
+                response["error"]["no_host"] = True
         state["exchanges"].append({"request": request_data, "response": response})
 
 

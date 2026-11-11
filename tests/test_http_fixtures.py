@@ -355,3 +355,60 @@ def test_record_fixtures_flag_is_dev_only_and_hidden_from_help():
 
     assert args.record_fixtures == "tmp/eval-topic"
     assert "--record-fixtures" not in parser.format_help()
+
+
+def _no_such_host(*_args, **_kwargs):
+    raise http.urllib.error.URLError(
+        http.socket.gaierror(8, "nodename nor servname provided, or not known")
+    )
+
+
+def test_recorded_no_host_failure_replays_as_no_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(http, "_open_request", _no_such_host)
+    monkeypatch.setattr(http.time, "sleep", lambda *_args: None)
+    fixture_dir = tmp_path / "fixture"
+
+    with http.recording_requests(fixture_dir), http.expected_no_host() as live:
+        assert http.get_text("https://nosuchhost.test/careers", retries=1) is None
+    assert len(live) == 1
+
+    monkeypatch.setattr(
+        http, "_open_request",
+        lambda *_args, **_kwargs: pytest.fail("fixture replay attempted the network"),
+    )
+    with http.replaying_requests(fixture_dir), \
+            http.capture_failures() as failures, \
+            http.expected_no_host() as replayed:
+        assert http.get_text("https://nosuchhost.test/careers", retries=1) is None
+
+    assert len(replayed) == 1 and replayed[0].no_host
+    assert failures == []
+
+
+def test_jobs_run_that_skipped_a_dead_hosts_second_page_replays(tmp_path, monkeypatch):
+    # Live, a careers host that does not resolve is asked for /careers only.
+    # Replay must skip its /jobs page too, as that request was never recorded.
+    from lib import jobs
+
+    def opener(req, timeout=None, **_kwargs):
+        if req.full_url.split("/")[2].startswith("kanyewest."):
+            _no_such_host()
+        raise http.urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(http, "_open_request", opener)
+    monkeypatch.setattr(http.time, "sleep", lambda *_args: None)
+    window = ("2026-10-12", "2026-11-11")
+    fixture_dir = tmp_path / "fixture"
+
+    with http.recording_requests(fixture_dir):
+        live = jobs.search_jobs("Kanye West", window, {}, web_backend="none")
+
+    monkeypatch.setattr(
+        http, "_open_request",
+        lambda *_args, **_kwargs: pytest.fail("fixture replay attempted the network"),
+    )
+    with http.replaying_requests(fixture_dir), http.capture_failures() as failures:
+        replayed = jobs.search_jobs("Kanye West", window, {}, web_backend="none")
+
+    assert replayed == live
+    assert failures == []
