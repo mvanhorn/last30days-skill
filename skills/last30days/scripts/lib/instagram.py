@@ -785,6 +785,7 @@ def fetch_captions(
                     if len(words) > CAPTION_MAX_WORDS:
                         transcript_text = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
                     captions[vid] = transcript_text
+                    item["caption_is_transcript"] = True
         except Exception as e:
             _log(f"Transcript fetch failed for {vid}: {e}")
 

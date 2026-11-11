@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import pathlib
 import re
@@ -4173,6 +4174,9 @@ def _comment_attribution(source: str | None, author: str | None) -> str:
     # strip it before re-prefixing so we don't emit '@@handle'.
     if prefix and author.startswith(prefix):
         author = author[len(prefix) :]
+    # A display name with spaces (a YouTube channel, "WSJ Events") is no handle.
+    if any(ch.isspace() for ch in author):
+        return author
     return f"{prefix}{author}" if prefix else author
 
 
@@ -4440,7 +4444,19 @@ _QUOTE_POOL_COMMENTS_PER_ITEM = 2
 _QUOTE_POOL_POSTS_PER_STORY = 2
 # Sources whose post is itself the quotable text, so the post joins the pool
 # beside the comments other sources carry.
-_QUOTABLE_POST_SOURCES = frozenset({"x", "threads", "bluesky", "truthsocial"})
+_QUOTABLE_POST_SOURCES = frozenset(
+    {"x", "threads", "bluesky", "truthsocial", "linkedin"}
+)
+# Sources whose content is spoken, so a line said in the video (a YouTube
+# transcript highlight, a reel's or TikTok's spoken caption) joins the pool as
+# a ``said`` entry beside the comments on it. One per item, the extractor's
+# best, and only from a video with as many likes as a standalone post needs.
+_QUOTABLE_CONTENT_SOURCES = frozenset({"youtube", "tiktok", "instagram"})
+_QUOTE_POOL_CONTENT_PER_ITEM = 1
+# Short-form spoken captions run long sentences together.
+_SHORTFORM_HIGHLIGHT_MAX_WORDS = 70
+# A source author that only names the platform is no author to quote.
+_PLACEHOLDER_POST_AUTHORS = frozenset({"linkedin"})
 # On a platform that counts likes or upvotes, a comment nobody voted for is
 # not a quote (a zero-like reel comment is as often an ad), so it needs one
 # vote, and an item whose top comment has none gives the pool nothing. A
@@ -4458,8 +4474,14 @@ _QUOTE_POOL_MIN_VOTES = 1
 # community comment a "top comment", so on a platform that counts votes that
 # comment needs a few. A one-upvote reply on a small thread is nobody's pick.
 _QUOTE_POOL_ITEM_MIN_TOP_VOTES = 5
+# A small Reddit thread's best comment has few votes to win: the item floor
+# scales with the thread's own score, from 2 on a thread under 40 points to
+# the full 5 at 100.
+_QUOTE_POOL_SMALL_THREAD_MIN_TOP_VOTES = 2
+_QUOTE_POOL_THREAD_SCORE_PER_VOTE = 20
 _QUOTE_POOL_POST_MIN_LIKES = 10
 _QUOTE_POOL_POSITION_LABELS = ("top comment", "#2 comment")
+_QUOTE_POOL_SAID_LABEL = "said"
 _QUOTE_TEXT_LIMIT = 240
 _SUBJECT_POST_TEXT_LIMIT = 280
 
@@ -4769,6 +4791,49 @@ def _render_polymarket_markets(
     return ["## Polymarket Markets", "", *lines] if lines else []
 
 
+def _quote_pool_item_floor(item: schema.SourceItem) -> int:
+    """Votes an item's top community comment needs for the item to join the pool."""
+    if item.source != "reddit":
+        return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
+    score = (item.engagement or {}).get("score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
+    return min(
+        _QUOTE_POOL_ITEM_MIN_TOP_VOTES,
+        max(
+            _QUOTE_POOL_SMALL_THREAD_MIN_TOP_VOTES,
+            int(score) // _QUOTE_POOL_THREAD_SCORE_PER_VOTE,
+        ),
+    )
+
+
+_CAPTION_ARTIFACTS = re.compile(r"(?:&gt;|>){2,}\s*")
+
+
+def _clean_spoken(text: str) -> str:
+    """Auto-caption text without speaker-change markers or escaped entities."""
+    unescaped = html.unescape(str(text or ""))
+    return " ".join(_CAPTION_ARTIFACTS.sub(" ", unescaped).split())
+
+
+def _content_quotes(item: schema.SourceItem, topic: str) -> list[str]:
+    """Lines said in a video, best first: YouTube's transcript highlights, or
+    highlights drawn from a reel's or TikTok's spoken caption."""
+    if item.source == "youtube":
+        lines = list(item.metadata.get("transcript_highlights") or [])
+    elif not item.metadata.get("spoken_caption"):
+        # The snippet is the written description when no transcript came back.
+        return []
+    else:
+        from . import youtube_yt
+
+        spoken = _clean_spoken(item.snippet)
+        lines = youtube_yt.extract_transcript_highlights(
+            spoken, topic, max_words=_SHORTFORM_HIGHLIGHT_MAX_WORDS
+        )
+    return [_clean_spoken(line) for line in lines if str(line or "").strip()]
+
+
 def _quote_pool_has_vote(source: str, score) -> bool:
     """Whether a comment clears the one-vote floor of a vote-counting platform."""
     if source not in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
@@ -4925,7 +4990,7 @@ def _render_top_comments(
                 if not (
                     isinstance(top_score, (int, float))
                     and not isinstance(top_score, bool)
-                    and top_score >= _QUOTE_POOL_ITEM_MIN_TOP_VOTES
+                    and top_score >= _quote_pool_item_floor(item)
                 ):
                     # Too few voted for the item's best comment: skip the item.
                     community = []
@@ -4948,8 +5013,28 @@ def _render_top_comments(
             likes = _post_likes(item)
             text = (item.body or item.title or "").strip()
             if (
+                item.source in _QUOTABLE_CONTENT_SOURCES
+                and (likes or 0) >= _QUOTE_POOL_POST_MIN_LIKES
+            ):
+                said = [
+                    body
+                    for body in (
+                        _quote_text(line, _QUOTE_TEXT_LIMIT)
+                        for line in _content_quotes(item, report.topic or "")
+                    )
+                    if _quotable(body)
+                ]
+                for body in said[:_QUOTE_POOL_CONTENT_PER_ITEM]:
+                    rows.append({
+                        "position": None, "cand": cand, "item": item, "funny": funny,
+                        "author": item.author, "score": int(likes),
+                        "vote_label": "likes", "body": body,
+                        "url": item.url or cand.url, "said": True,
+                    })
+            if (
                 item.source in _QUOTABLE_POST_SOURCES
                 and author_key
+                and author_key not in _PLACEHOLDER_POST_AUTHORS
                 and not (item.source == "x" and author_key == subject_handle)
                 and (likes or 0) >= _QUOTE_POOL_POST_MIN_LIKES
                 and not text.startswith("RT @")
@@ -5036,7 +5121,12 @@ def _render_top_comments(
             origin = f' — re: "{thread}"' if thread else ""
         else:
             origin = ""
-        label = "post" if position is None else _QUOTE_POOL_POSITION_LABELS[position]
+        if row.get("said"):
+            label = _QUOTE_POOL_SAID_LABEL
+        elif position is None:
+            label = "post"
+        else:
+            label = _QUOTE_POOL_POSITION_LABELS[position]
         lines.append(
             f'- "{row["body"]}" '
             f"{_quote_attribution(item, row['author'], row['score'], row['vote_label'])}"

@@ -111,8 +111,13 @@ _NO_CAPTION_RE = re.compile(
 )
 
 
-def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -> list[str]:
+def extract_transcript_highlights(
+    transcript: str, topic: str, limit: int = 5, *, max_words: int = 50,
+) -> list[str]:
     """Extract quotable highlights from a YouTube transcript.
+
+    ``max_words`` bounds a sentence; short-form spoken captions run long
+    sentences together, so their callers pass a higher bound.
 
     Filters filler (subscribe, welcome back, etc.), scores sentences by
     specificity (numbers, proper nouns, topic relevance), and returns
@@ -124,8 +129,8 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
     sentences = re.split(r'(?<=[.!?])\s+', transcript)
 
     # Fallback for punctuation-free transcripts (common with auto-captions):
-    # chunk into ~20-word segments so they pass the 8-50 word filter.
-    if len(sentences) <= 1 and len(transcript.split()) > 50:
+    # chunk into ~20-word segments so they pass the 8-to-max_words filter.
+    if len(sentences) <= 1 and len(transcript.split()) > max_words:
         words = transcript.split()
         sentences = [' '.join(words[i:i+20]) for i in range(0, len(words), 20)]
 
@@ -142,7 +147,7 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
     for sent in sentences:
         sent = sent.strip()
         words = sent.split()
-        if len(words) < 8 or len(words) > 50:
+        if len(words) < 8 or len(words) > max_words:
             continue
         if any(re.search(p, sent, re.IGNORECASE) for p in filler):
             continue

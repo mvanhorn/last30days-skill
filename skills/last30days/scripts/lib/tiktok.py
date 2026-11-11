@@ -421,6 +421,7 @@ def fetch_captions(
                         transcript = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
                     captions[vid] = transcript
                     item["caption_snippet"] = transcript
+                    item["caption_is_transcript"] = True
         except http.DeadlineExceeded:
             raise
         except Exception as e:
