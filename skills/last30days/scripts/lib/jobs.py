@@ -116,6 +116,9 @@ class LaneBudget:
         self.step_deadline = self.deadline
         self.slow: list[str] = []
         self.stopped_at = ""
+        # Board APIs that reached their own request limit while the lane
+        # still had time: that call's failure, not the lane's.
+        self.unanswered: list[str] = []
         # Set once the lane reached its answer for the topic, so a second
         # pass of the same run does not ask the same hosts again.
         self.settled = False
@@ -143,7 +146,10 @@ class LaneBudget:
 
     def reason(self) -> str:
         """Where the time went, for a lane that ran out of it."""
-        text = f"jobs lane ran out of time ({self.seconds:g}s budget)"
+        text = (
+            f"jobs lane ran out of time ({self.seconds:g}s budget)" if self.spent()
+            else f"jobs search used up its share of the lane's {self.seconds:g}s"
+        )
         if self.stopped_at:
             text += f" before {self.stopped_at}"
         if self.slow:
@@ -299,8 +305,21 @@ def _with_budget_outcome(
             artifact["_source_outcome"] = {
                 "state": health.TIMEOUT, "detail": reason, "attempted": True,
             }
-            artifact["_source_out_of_time"] = True
+            # Only the lane's own budget running out means a second pass
+            # would run out again. A share of it running out, for one of
+            # several companies, leaves the rest of the budget to a retry.
+            if budget.spent():
+                artifact["_source_out_of_time"] = True
         return artifact
+    if budget.unanswered and not items:
+        # Time was left, but a board's API never answered: the lane cannot
+        # say there is no board. Named, and open to a retry.
+        reason = f"{company}: {'; '.join(budget.unanswered[:4])}"
+        log.source_log("Jobs", reason, tty_only=False)
+        return {
+            **artifact,
+            "_source_outcome": {"state": health.TIMEOUT, "detail": reason, "attempted": True},
+        }
     if artifact.get("tier") == "web" and not items and not quiet:
         log_no_board([company])
     return artifact
@@ -377,6 +396,9 @@ def _search_jobs(
         except http.HTTPError as exc:
             if exc.outcome_state == health.TIMEOUT:
                 _note_slow(f"the {provider} board {slug} did not answer")
+                # Its own request limit or the lane's: either way the board
+                # was found and not read, which is said by name.
+                budget.unanswered.append(f"the {provider} board {slug} did not answer")
             items = []
         if items:
             artifact = _artifact("jobs", company, attempted, items, explicit,
@@ -824,12 +846,21 @@ def _probe_boards(
                 with http.expected_misses(400, 401, 403, 404):
                     items = _fetch_ats(provider, slug)
             except http.DeadlineExceeded:
-                # The deadline handed to the request was the budget's own.
+                # The request's hard deadline is the earlier of its own
+                # limit and the time the lane has left (``_bounds``). Only
+                # the second ends the probing; a provider that used up its
+                # own limit is that probe's failure, and the next is asked.
                 budget = _BUDGET.get()
                 if budget is not None:
                     budget.note_slow(f"the {provider} API had not answered for the slug {slug}")
-                    budget.stop(f"the {provider} probe for the slug {slug} answered")
-                return None, None, attempts, None
+                    if budget.remaining() <= 0:
+                        budget.stop(f"the {provider} probe for the slug {slug} answered")
+                        return None, None, attempts, None
+                    budget.unanswered.append(
+                        f"the {provider} API did not answer for the slug {slug}"
+                    )
+                attempts.append(f"no-answer:{provider}:{slug}")
+                continue
             except http.HTTPError as exc:
                 if exc.status_code in {400, 401, 403, 404}:
                     continue

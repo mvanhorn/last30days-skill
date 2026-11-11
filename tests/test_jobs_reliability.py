@@ -937,3 +937,87 @@ def test_listing_page_of_a_paged_board_has_its_own_hard_deadline():
     with patch("lib.jobs.http.post", side_effect=post):
         jobs.search_workday_board("acme.wd5/AcmeCareers")
     assert seen and seen[0] <= jobs.API_TIMEOUT_SECONDS * 2 + 5
+
+
+def _stalled_greenhouse_working_ashby(url, *_args, **_kwargs):
+    if "greenhouse" in url:
+        raise http.DeadlineExceeded()  # this request reached its own limit
+    if url == "https://api.ashbyhq.com/posting-api/job-board/acme":
+        return {"jobs": [{"id": "1", "title": "Engineer", "jobUrl": "https://jobs.ashbyhq.com/acme/1"}]}
+    raise http.HTTPError("HTTP 404: Not Found", status_code=404)
+
+
+def test_probe_that_reaches_its_own_time_limit_does_not_end_the_probing():
+    # Greenhouse stalls for its ~22 s; half the lane's budget is left and the
+    # company's board is on Ashby.
+    budget = jobs.LaneBudget(45.0)
+    with patch("lib.jobs.http.get_text", return_value=None), \
+            patch("lib.jobs.http.get", side_effect=_stalled_greenhouse_working_ashby):
+        items, artifact = jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", budget=budget)
+    assert [item["title"] for item in items] == ["Engineer"]
+    assert artifact["tier"] == "ats" and artifact["provider"] == "ashby"
+    assert budget.stopped_at == ""
+    assert "_source_out_of_time" not in artifact
+
+
+def test_probe_that_reached_its_own_limit_with_no_board_elsewhere_is_named_and_can_be_retried(capsys):
+    asked = []
+
+    def api(url, *_args, **_kwargs):
+        asked.append(url.split("/")[2])
+        if "greenhouse" in url:
+            raise http.DeadlineExceeded()
+        raise http.HTTPError("HTTP 404: Not Found", status_code=404)
+
+    budget = jobs.LaneBudget(45.0)
+    with patch("lib.jobs.http.get_text", return_value=None), patch("lib.jobs.http.get", side_effect=api):
+        items, artifact = jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", budget=budget)
+    assert asked == ["boards-api.greenhouse.io", "api.ashbyhq.com", "api.lever.co"]
+    assert items == []
+    outcome = artifact["_source_outcome"]
+    assert outcome["state"] == health.TIMEOUT
+    assert "the greenhouse API did not answer for the slug acme" in outcome["detail"]
+    assert "budget" not in outcome["detail"]
+    # The lane had time left: the thin-results retry may ask again.
+    assert "_source_out_of_time" not in artifact
+    assert budget.stopped_at == ""
+    assert outcome["detail"] in capsys.readouterr().err
+
+
+def test_probe_cut_off_by_the_lanes_own_deadline_still_ends_the_probing():
+    clock = Clock()
+    budget = jobs.LaneBudget(45.0, clock=clock)
+    asked = []
+
+    def api(url, *_args, **_kwargs):
+        asked.append(url)
+        clock.advance(50.0)  # the lane's budget ran out during this request
+        raise http.DeadlineExceeded()
+
+    with patch("lib.jobs.http.get_text", return_value=None), patch("lib.jobs.http.get", side_effect=api):
+        items, artifact = jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", budget=budget)
+    assert len(asked) == 1
+    assert items == []
+    assert "45s budget" in artifact["_source_outcome"]["detail"]
+    assert artifact["_source_out_of_time"] is True
+
+
+def test_discovery_share_running_out_is_not_the_lane_running_out():
+    # The topic used its share; the lane still has time for the next company
+    # and for a retry, so the source is not marked out of time.
+    clock = Clock()
+    budget = jobs.LaneBudget(45.0, clock=clock)
+
+    def page(url, **_kwargs):
+        clock.advance(6.0)
+        return None
+
+    with patch("lib.jobs.http.get_text", side_effect=page), \
+            patch("lib.jobs.http.get", side_effect=AssertionError("the share is spent")):
+        items, artifact = jobs.search_jobs(
+            "Kanye West", WINDOW, {}, web_backend="none", budget=budget, discovery_seconds=10.0,
+        )
+    assert items == []
+    assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+    assert "_source_out_of_time" not in artifact
+    assert not budget.spent()

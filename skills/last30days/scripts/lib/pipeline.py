@@ -3882,14 +3882,14 @@ def _search_jobs_lane(
                     if key in host_artifact and not items:
                         artifact = {**artifact, key: host_artifact[key]}
     if not items and not _is_jobs_board("jobs", artifact) and not (
-        budget.stopped_at or budget.spent()
+        budget.stopped_at or budget.spent() or budget.unanswered
     ):
         jobs.log_no_board([name, *hosts])
     # Nothing failed and time was left: the answer will not change on a
     # second pass. A failure or a spent budget leaves the retry its chance
     # within what is left of the budget.
     budget.settled = _is_jobs_board("jobs", artifact) or not (
-        failures or budget.stopped_at or budget.spent()
+        failures or budget.stopped_at or budget.spent() or budget.unanswered
     )
     return items, artifact
 
