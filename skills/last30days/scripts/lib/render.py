@@ -2411,14 +2411,18 @@ def _jobs_board_footer_line(report: schema.Report) -> str | None:
 
     Open roles always; a ``+`` when the board stopped short of its full count;
     roles new in the window only when the board gave every role a true
-    first-posted date. None when the run read no board directly.
+    first-posted date. A board that is not the topic's own (the company a
+    person leads) is named: ``💼 Jobs at SpaceX: ...``. None when the run
+    read no board directly.
     """
     board = (report.artifacts or {}).get("jobs")
     if not isinstance(board, dict) or not board.get("open_roles"):
         return None
     count = int(board["open_roles"])
+    of = " ".join(str(board.get("board_of") or "").split())
+    label = f"Jobs at {_format_untrusted_evidence(of, 60)}" if of else "Jobs"
     line = (
-        f"💼 Jobs: {count:,}{'+' if board.get('open_roles_floor') else ''} "
+        f"💼 {label}: {count:,}{'+' if board.get('open_roles_floor') else ''} "
         f"open role{'s' if count != 1 else ''}"
     )
     new = board.get("new_in_window")
@@ -2474,12 +2478,22 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
     if isinstance(new, int) and not isinstance(new, bool):
         header.append(f"{new:,} posted {report.range_from} to {report.range_to}")
     distinct = int(digest.get("distinct_roles") or len(entries))
+    ranked_first = 0
+    for entry in entries:
+        if not entry.get("engine"):
+            break
+        ranked_first += 1
+    chosen = (
+        f"the first {ranked_first:,} are the roles this run's own ranking and hiring "
+        "themes put highest, the rest are the rarest on this "
+        if ranked_first else "the rarest on this "
+    )
     out = [
         "## Jobs Digest",
         "",
         "- Board: " + " | ".join(header),
         (
-            f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, the rarest on this "
+            f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, {chosen}"
             "board by department, location and title wording. Each carries the text "
             "no other role on the board repeats."
         ),

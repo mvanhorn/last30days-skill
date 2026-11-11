@@ -1138,25 +1138,41 @@ def _resolved_company(entity: str, *, mock: bool, config: dict, host_ticker: boo
     return company
 
 
-def _company_for_jobs(company: dict, host_tickers: list[dict] | None, topic: str) -> dict:
+def _company_for_jobs(
+    company: dict,
+    host_tickers: list[dict] | None,
+    topic: str,
+    official_site: str = "",
+) -> dict:
     """The company the jobs lane searches for the main topic.
 
     The company Wikidata resolved, as it is. When Wikidata named none (it
-    failed, or the topic is a person it is not certain about) and the host
-    passed exactly one usable ``--ticker`` pair for a company that is not the
-    topic itself, that company's name is added as ``host_company``: the jobs
-    lane tries it after the topic's own name finds no board. Two pairs name
-    two companies, so neither is used.
+    failed, or the topic is a person it is not certain about):
+
+    - the topic's own official site, when the run knows one, is added as
+      ``topic_site``, so the lane reads that site's careers page instead of
+      guessing a domain from the topic's name;
+    - the companies of the host's usable ``--ticker`` pairs that are not the
+      topic itself are added as ``host_companies``, in the order given: the
+      jobs lane tries each after the topic's own name finds no board, and
+      uses the first one that has a board.
     """
-    if company.get("company") or not host_tickers:
+    if company.get("company"):
         return company
-    usable = [pair for pair in host_tickers if not pair.get("reason")]
-    if len(usable) != 1:
-        return company
-    name = usable[0]["company"]
-    if yahoo_finance._same_company_name(topic, name):
-        return company
-    return {**company, "host_company": name}
+    found = dict(company)
+    if official_site.strip():
+        found["topic_site"] = official_site.strip()
+    names: list[str] = []
+    for pair in host_tickers or []:
+        name = pair.get("company") or ""
+        if pair.get("reason") or not name or name in names:
+            continue
+        if yahoo_finance._same_company_name(topic, name):
+            continue
+        names.append(name)
+    if names:
+        found["host_companies"] = names
+    return found if found != dict(company) else company
 
 
 def truncate_comparison_entities(entities: list[str], *, warn: bool = True) -> list[str]:
@@ -4400,7 +4416,9 @@ def _main(
         )
         # The jobs lane reads the company from here; each comparison peer
         # replaces it with its own.
-        config["_company"] = _company_for_jobs(main_company, host_tickers, topic)
+        config["_company"] = _company_for_jobs(
+            main_company, host_tickers, topic, official_site=official_site,
+        )
         if comp_enabled:
             config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget(
                 owner=topic,

@@ -355,6 +355,9 @@ class RetrievalBundle:
     # what a healthy-looking run lost without branding the source partial.
     detail_by_source: dict[str, str] = field(default_factory=dict)
     lane_state_by_source: dict[str, RunOutcomeState] = field(default_factory=dict)
+    # The raw rows of the company's job board, kept until ranking is done so
+    # the Jobs Digest can add the roles the run ranked highest. Never rendered.
+    jobs_board_rows: list[dict[str, Any]] = field(default_factory=list)
 
     def mark_attempted(self, source: str) -> None:
         """Register a planned source before its first retrieval starts."""

@@ -1,0 +1,1 @@
+A person who leads more than one listed company now gets a jobs board: with `--ticker "TSLA:Tesla,SPCX:SpaceX"` each company is tried in order inside the lane's budget and the first one with a board is used. When the board is not the topic's own, the footer names the company (`💼 Jobs at SpaceX: 2,908 open roles │ 716 new in the L30`), as does the digest's `Board:` line.
