@@ -4375,6 +4375,9 @@ def _main(
         main_company = _resolved_company(
             topic, mock=args.mock, config=config, host_ticker=host_tickers is not None,
         )
+        # The jobs lane reads the company from here; each comparison peer
+        # replaces it with its own.
+        config["_company"] = main_company
         if comp_enabled:
             config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget(
                 owner=topic,
@@ -4600,6 +4603,7 @@ def _main(
                     "context": kwargs["_context"],
                     **_resolved_company(entity, mock=args.mock, config=entity_config),
                 }
+                entity_config["_company"] = resolved_effective
                 if kwargs["_context"]:
                     entity_config["_auto_resolve_context"] = kwargs["_context"]
                 sys.stderr.write(

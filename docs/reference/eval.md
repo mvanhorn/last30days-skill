@@ -85,3 +85,19 @@ Include in the review:
 4. An explanation for any lower floor; never lower a floor solely to make CI green.
 
 `test_intentional_out_of_window_regression_fails_recency_floor` is the standing negative control: it injects stale ranked evidence and proves the baseline check detects the regression.
+
+## Jobs Page Secret Signals labelled set
+
+This set is separate from the harness above, which runs the pipeline and never a model. Whether a report carries a Jobs Page Secret Signals section is the host model's judgment of the `## Jobs Digest` evidence, following `skills/last30days/references/hiring-signals.md`, so it cannot be scored offline.
+
+`tests/fixtures/jobs_signals_labelled.json` holds a person's labels for four saved boards (Anthropic, Stripe, SpaceX, Nvidia): each candidate signal with the posting's words, which of the four tests of the bar it meets, whether it is already public, and whether it should qualify, plus whether the board should get a section. `tests/test_hiring_signals_contract.py` checks two things with it in CI: that the written rules say what the labels assume, and that the labels agree with the decision rule restated in `tests/jobs_signals_rule.py` (two of the first three tests or the fourth; two qualifying signals, or one on a `--hiring-signals` run; no section without web search; public signals worded as public).
+
+That proves the arithmetic and the labels' consistency. It does not prove a model finds those signals or judges the tests the same way. For that, check by hand on a host with web search:
+
+1. Run `/last30days <Company>` for each of the four companies.
+2. Compare the section with the board's `expected_section`. Stripe should have no section and still show the footer Jobs line.
+3. Where a section appears, compare its signals with the candidates labelled `qualifies`. Boards change, so match on what the signal is, not on the exact role title, and look for a signal labelled `does not qualify` being shown.
+4. Check the wording against `public`: SpaceX's Starmind may appear only as already public, never as unreported.
+5. Check the form: bold lead-in with the board's counts, one paragraph per signal with a quote and the posting link, no list, and the closing sentence about open postings.
+
+The Nvidia label that rests on a report story applies only when that month's report carries that story.
