@@ -911,3 +911,26 @@ def test_page_that_is_not_text_is_no_page_and_no_failure():
         )
     assert items == [] and artifact["tier"] == "web"
     assert failures == []
+
+
+def test_first_page_with_no_reported_total_and_a_full_page_is_a_floor():
+    # The API left `totalFound` out: a full first page may not be the whole board.
+    def get(url, *, params=None, **_kwargs):
+        return {"content": [
+            {"id": str(index), "name": f"Cook {index}", "company": {"name": "Other Burgers"}}
+            for index in range(jobs.SMARTRECRUITERS_PAGE_SIZE)
+        ]}
+
+    with patch("lib.jobs.http.get", side_effect=get):
+        items, info = jobs.read_smartrecruiters_board("OtherBurgers", first_page_only=True)
+    assert len(items) == jobs.SMARTRECRUITERS_PAGE_SIZE
+    assert info["board_cut_short"] is True and info["board_first_page_only"] is True
+
+
+def test_first_page_with_no_reported_total_and_a_short_page_is_exact():
+    def get(url, *, params=None, **_kwargs):
+        return {"content": [{"id": "1", "name": "Cook", "company": {"name": "Other Burgers"}}]}
+
+    with patch("lib.jobs.http.get", side_effect=get):
+        _items, info = jobs.read_smartrecruiters_board("OtherBurgers", first_page_only=True)
+    assert info["board_cut_short"] is False

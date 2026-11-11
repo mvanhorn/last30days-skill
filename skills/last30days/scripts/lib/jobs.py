@@ -1366,7 +1366,13 @@ def read_smartrecruiters_board(
     info["board_total"] = total
     info["board_capped"] = total > SMARTRECRUITERS_ROW_CEILING
     if first_page_only:
-        info.update(board_cut_short=total > len(items), board_first_page_only=True)
+        # With no reported total, a full page may not be the whole board.
+        info.update(
+            board_cut_short=total > len(items) or (
+                "totalFound" not in first and len(items) >= SMARTRECRUITERS_PAGE_SIZE
+            ),
+            board_first_page_only=True,
+        )
         return items, info
     rest = _workday_run(
         [
