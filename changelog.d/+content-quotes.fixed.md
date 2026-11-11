@@ -1,1 +1,0 @@
-Reports can now quote what was said in the content itself, not only comments: a YouTube transcript highlight or a reel's or TikTok's spoken line joins the quote pool as a `said` entry, LinkedIn posts with a real author join as posts, and a small on-topic Reddit thread no longer needs a 5-vote top comment to be quoted.

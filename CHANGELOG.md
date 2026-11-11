@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.36.1] - 2026-11-11
+
+### Fixed
+
+- Reports can now quote what was said in the content itself, not only comments: a YouTube transcript highlight or a reel's or TikTok's spoken line joins the quote pool as a `said` entry, LinkedIn posts with a real author join as posts, and a small on-topic Reddit thread no longer needs a 5-vote top comment to be quoted.
+
+
 ## [3.36.0] - 2026-11-11
 
 ### Added
