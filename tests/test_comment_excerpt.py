@@ -115,3 +115,15 @@ def test_scrapecreators_enrichment_stores_clean_excerpts(position):
         out = reddit_enrich.enrich_reddit_item_sc(item, "dummy-key")
 
     assert out["top_comments"][position]["excerpt"].endswith("off years.")
+
+
+def test_newline_or_tab_is_a_word_boundary_too():
+    # A long list pasted on separate lines: the only boundaries near the
+    # limit are newlines, and the cut must not fall inside a word.
+    lines = "intro words\n" + "\n".join(f"item{n:03d}" for n in range(60))
+    cut = snippet.cut_quote(lines, limit=100)
+    assert len(cut) <= 100
+    assert cut.endswith(tuple(f"item{n:03d}" for n in range(60)))
+    assert len(cut) > 80
+    tabbed = "alpha\t" + "b" * 30 + "\t" + "c" * 30
+    assert snippet.cut_quote(tabbed, limit=50) == "alpha\t" + "b" * 30

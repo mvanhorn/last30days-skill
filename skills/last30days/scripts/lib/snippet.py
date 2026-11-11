@@ -31,7 +31,8 @@ def cut_quote(text: str, limit: int = QUOTE_LIMIT) -> str:
     ends = [match.end() for match in _SENTENCE_END.finditer(window) if match.end() <= limit]
     if ends and ends[-1] >= limit * _QUOTE_SENTENCE_ZONE:
         return window[: ends[-1]].rstrip()
-    space = window.rfind(" ")
+    # Any whitespace is a word boundary: comments carry newlines and tabs.
+    space = next((i for i in range(len(window) - 1, -1, -1) if window[i].isspace()), -1)
     if space > 0:
         return window[:space].rstrip()
     return text[:limit]
