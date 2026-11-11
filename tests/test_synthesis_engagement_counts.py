@@ -216,3 +216,51 @@ def test_final_check_strips_counts_that_are_not_the_finding():
     assert "Engagement counts select evidence" in checklist
     assert "size is the finding" in checklist
     assert "COUNTS IN PROSE exceptions" in checklist
+
+
+def _odds_line_rule() -> str:
+    return reference_text("synthesis").split("**ODDS LINE.**", 1)[1].split("\n\n", 1)[0]
+
+
+def test_odds_line_rule_sits_beside_the_pulled_quote_with_its_shape():
+    text = reference_text("synthesis")
+    assert text.index(PULLED_MARKER) < text.index("**ODDS LINE.**") < text.index("**NO MARKDOWN LISTS")
+    rule = _odds_line_rule()
+    assert "names the topic and bears on a story" in rule
+    assert "its own blockquote line under that story's paragraph" in rule
+    assert "`> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · 18% by Mar 31, 2027`" in rule
+    assert "from `## Polymarket Markets` through its last price" in rule
+
+
+def test_odds_lines_are_capped_at_three_and_apart_from_the_six_quotes():
+    rule = _odds_line_rule()
+    assert "At most three in the report, apart from the six quote lines" in rule
+    assert "does not repeat the line's numbers" in rule
+    assert "says what the market is about and links it" in rule
+    assert "Other markets may be cited inline" in rule
+    for shape in ("`exec`", "RECOMMENDATIONS", "COMPARISON"):
+        assert shape in rule.rsplit("Not in", 1)[1]
+
+
+def test_polymarket_guidance_points_at_odds_lines_and_keeps_odds_only():
+    text = reference_text("synthesis")
+    section = text.split("### Prediction Markets (Polymarket)", 1)[1].split("\n### ", 1)[0]
+    assert "ODDS LINE" in section
+    assert "NEVER mention dollar volumes, liquidity, or betting amounts" in section
+    assert "Prefer structural/long-term markets over near-term deadlines" in section
+    assert "Weave odds into the narrative" not in section
+    assert "highlight 3-5" not in section
+    assert "pts" in section and "up 10% this month" not in section
+
+
+def test_final_check_names_odds_lines():
+    text = SKILL_MD.read_text(encoding="utf-8")
+    checklist = text.split("## PRE-PRESENT SELF-CHECK", 1)[1].split("\n## ", 1)[0]
+    assert "odds lines (at most three) or inline" in checklist
+    assert "never dollar volume" in checklist
+
+
+def test_report_template_shows_one_odds_line():
+    text = reference_text("synthesis")
+    template = text.split("{the engine's first line, copied verbatim}", 1)[1].split("```", 1)[0]
+    assert template.count("\n> 📊 Polymarket · ") == 1

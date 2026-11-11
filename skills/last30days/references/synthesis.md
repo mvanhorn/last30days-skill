@@ -54,23 +54,13 @@ The Judge Agent must:
 
 **CRITICAL: When Polymarket returns relevant markets, prediction market odds are among the highest-signal data points in your research.** Real money on outcomes cuts through opinion.
 
-**How to interpret and synthesize Polymarket data:**
+1. **Prefer structural/long-term markets over near-term deadlines.** Championship odds > regular season title. Regime change > near-term strike deadline. IPO/major milestone > incremental update. Presidency > individual state primary.
 
-1. **Prefer structural/long-term markets over near-term deadlines.** Championship odds > regular season title. Regime change > near-term strike deadline. IPO/major milestone > incremental update. Presidency > individual state primary. When multiple markets exist, the bigger question is more interesting to the user.
+2. **When the topic is an outcome in a multi-outcome market, give that outcome's odds and movement**, not "Polymarket has a #1 seed market".
 
-2. **When the topic is an outcome in a multi-outcome market, call out that specific outcome's odds and movement** (`## Polymarket Markets` lists each outcome under its own label). Don't just say "Polymarket has a #1 seed market" - say "Arizona has a 28% chance of being the #1 overall seed, up 10% this month." The user cares about THEIR topic's position in the market.
+3. **Odds go on an ODDS LINE (below), not in a clause.** A market with no line may be cited inline: "Polymarket has Arizona at 28% for a #1 seed (up 10 pts this month)".
 
-3. **Weave odds into the narrative as supporting evidence.** Don't isolate Polymarket data in its own paragraph. Instead: "Final Four buzz is building - Polymarket gives Arizona a 12% chance to win the championship (up 3% this week), and 28% to earn a #1 seed."
-
-4. **Citation format: show ONLY % odds. NEVER mention dollar volumes, liquidity, or betting amounts.** The % odds are the magic of Polymarket -- the dollar amounts are internal liquidity metrics that mean nothing to readers. Say "Polymarket has Arizona at 28% for a #1 seed (up 10% this month)" -- NOT "28% ($24K volume)".
-
-5. **When multiple relevant markets exist, highlight 3-5 of the most interesting ones** in your synthesis, ordered by importance (structural > near-term). Don't just pick the highest-volume one.
-
-**Domain examples of market importance ranking:**
-- **Sports:** Championship/tournament odds > conference title > regular season > weekly matchup
-- **Geopolitics:** Regime change/structural outcomes > near-term strike deadlines > sanctions
-- **Tech/Business:** IPO, major product launch, company milestones > incremental updates
-- **Elections:** Presidency > primary > individual state
+4. **Show ONLY % odds. NEVER mention dollar volumes, liquidity, or betting amounts.**
 
 ### X Reply Cluster Weighting
 
@@ -143,6 +133,8 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **PULLED QUOTE (the named exception to COUNTS IN PROSE).** The report's best six quotes of a community comment, a post (X, TikTok, Instagram, YouTube, HN, LinkedIn) or the subject's own post each go on their own blockquote line directly under the paragraph they support: `> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`. Six in the whole report is a ceiling, not a target: each thread's or video's top comment first, then its #2, and the subject's standout posts, `funny` entries breaking ties; like counts do not rank a comment from one place against another; a blank line between. Another good quote may stay inside its paragraph in quotation marks, author linked (LAW 8), with no count: allowed, not required. Never use one quote both ways; never quote weak or off-topic comments. Copy the entry through its count (through the platform name when it has none) from `## Top Community Comments` or `## Posts by @handle`; no link here, the paragraph above keeps the source link. Translate one not in the report's language and append ` · translated from Portuguese`. Never pull a comment attributed `Comment`; none fits, no quote. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
 
+**ODDS LINE.** Polymarket odds for a market that names the topic and bears on a story go on its own blockquote line under that story's paragraph: `> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · 18% by Mar 31, 2027`. Copy the entry from `## Polymarket Markets` through its last price. At most three in the report, apart from the six quote lines. The paragraph says what the market is about and links it, and does not repeat the line's numbers. Other markets may be cited inline. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
+
 **NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, one per line with no blank lines between. Other hosts keep normal lists.
 
 CITATION RULE: Meet higher-priority host/tool requirements and user instructions for attribution. Apply the following brevity defaults only after including the required citations.
@@ -191,6 +183,7 @@ What I learned:
 > "{post}" 🔵 @handle on X · 48,213 likes
 
 **{Headline summarizing topic 2}** - [1-2 sentences, per [@handle](https://x.com/handle) or [r/sub](https://reddit.com/r/sub)]
+> 📊 Polymarket · {market}: 16% by Dec 31 · 24% by Mar 31, 2027
 
 **{Headline summarizing topic 3}** - [1-2 sentences, per [@handle](https://x.com/handle) or [r/sub](https://reddit.com/r/sub)]
 

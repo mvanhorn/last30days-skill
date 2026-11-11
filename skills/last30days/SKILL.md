@@ -204,7 +204,7 @@ Check governing formatting/citation instructions first. Skip a conflicting prese
 2. Relay the emitted fenced footer exactly, including every active nonzero source's emoji/count/engagement lines. Add no zero-result source, outcome/⚠ text, or saved path.
 3. At most six quote lines, the report's best; no quote both on a line and inline. The GENERAL nothing-solid floor overrides rejected comments. Run LAW 8's citation check separately; never reconstruct URLs.
 4. Remove tooling meta-commentary. Keep claims grounded in the actual output and resolved entity.
-5. If Polymarket returned markets, include specific percentages and directional movement; do not substitute dollar volume for odds.
+5. If Polymarket markets bear on a story, give odds and movement on odds lines (at most three) or inline; never dollar volume.
 6. Preserve every required citation. Omit only unnecessary duplicate trailing source lists.
 7. Engagement counts select evidence; outside COUNTS IN PROSE exceptions, print one only when its size is the finding.
 8. On host-WebSearch paths, verify `--emit=compact --plan -` with a quoted JSON heredoc and every applicable resolved handle/subreddit/hashtag/creator flag. If protocol was skipped, return to resolution/planning and run it; do not hide the engine's pre-research warning.

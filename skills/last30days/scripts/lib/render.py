@@ -4530,25 +4530,130 @@ def _render_subject_posts(
     return lines
 
 
-_POLYMARKET_MOVEMENT = re.compile(
-    r"^(?:up|down) \d+(?:\.\d+)?% (?:today|this week|this month)$"
+def _polymarket_percent(price: float) -> str:
+    return f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%"
+
+
+# An outcome under this is left off an odds line after the first: it says
+# only that the market gives it almost no chance.
+_ODDS_LINE_MIN_PRICE = 0.05
+_ODDS_PLACEHOLDER = re.compile(r"\s*_{2,}\s*|\s*\.{3}\s*$")
+
+
+def _odds_points(move) -> str:
+    """``(up 2 pts today)``: a change in percentage points, or ""."""
+    if not (isinstance(move, (list, tuple)) and len(move) == 2):
+        return ""
+    points, period = move
+    if isinstance(points, bool) or not isinstance(points, (int, float)) or not points:
+        return ""
+    size = f"{abs(points):.1f}".rstrip("0").rstrip(".")
+    unit = "pt" if size == "1" else "pts"
+    return f" ({'up' if points > 0 else 'down'} {size} {unit} {_one_line_quote(period, 12)})"
+
+
+def _odds_label(text) -> str:
+    """An outcome's own label on one line, with no long dash: the entry uses
+    one as its separator and the report prints none."""
+    return _one_line_quote(text, 60).replace("\u2013", "-").replace("\u2014", "-")
+
+
+def _odds_subject(text: str) -> str:
+    """A market's whole phrase as the line's subject."""
+    phrase = _polymarket_phrase(_ODDS_PLACEHOLDER.sub(" ", text or ""))
+    return _odds_label(_safe_title(phrase.rstrip(" ?:.,")))
+
+
+def _polymarket_odds(item: schema.SourceItem) -> dict | None:
+    """The stored odds summary, or one built from the listed outcomes for an
+    item saved before the parser stored it."""
+    odds = item.metadata.get("odds")
+    if isinstance(odds, dict) and isinstance(odds.get("parts"), list) and odds["parts"]:
+        return odds
+    pairs = [
+        (name, price)
+        for name, price in (
+            pair for pair in item.metadata.get("outcome_prices") or []
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+        )
+        if isinstance(price, (int, float)) and not isinstance(price, bool)
+    ]
+    if not pairs:
+        return None
+    question = str(item.metadata.get("question") or item.title or "")
+    by_name = {str(name).casefold(): price for name, price in pairs}
+    if set(by_name) == {"yes", "no"}:
+        # The snippet is this market's own movement, worded "up 2.5% this
+        # week" for what is a change in points.
+        match = _POLYMARKET_MOVEMENT_PARTS.match(" ".join((item.snippet or "").split()))
+        move = (
+            [float(match["size"]) * (1 if match["direction"] == "up" else -1), match["period"]]
+            if match
+            else None
+        )
+        return {"kind": "single", "subject": question,
+                "parts": [{"price": by_name["yes"], "move": move}]}
+    return {
+        "kind": "outcomes", "subject": item.title or question,
+        "parts": [{"label": str(name), "price": price, "move": None} for name, price in pairs[:3]],
+    }
+
+
+_POLYMARKET_MOVEMENT_PARTS = re.compile(
+    r"^(?P<direction>up|down) (?P<size>\d+(?:\.\d+)?)% (?P<period>today|this week|this month)$"
 )
 
 
-def _polymarket_percent(price: float) -> str:
-    return f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%"
+def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
+    """``📊 Polymarket · {subject}: {outcome} {price} · ...``: a market's odds
+    as the report prints them on a line of their own.
+
+    At most three outcomes: a deadline ladder's nearest live deadlines in date
+    order (``16% by Dec 31``, the year only when it is not the window's), the
+    leading outcomes of brackets under their own labels (``12-15 at 79%``),
+    or a single market's one price. A movement follows the outcome it belongs
+    to, in points. Never a volume.
+    """
+    odds = _polymarket_odds(item)
+    if not odds:
+        return ""
+    parts: list[str] = []
+    for index, entry in enumerate(odds["parts"][:3]):
+        if not isinstance(entry, dict):
+            continue
+        price = entry.get("price")
+        if isinstance(price, bool) or not isinstance(price, (int, float)):
+            continue
+        if index and odds.get("kind") != "ladder" and price < _ODDS_LINE_MIN_PRICE:
+            continue
+        percent = _polymarket_percent(price)
+        by = entry.get("by")
+        if odds.get("kind") == "ladder" and isinstance(by, (list, tuple)) and len(by) == 3:
+            month, day, year = by
+            when = f"{_one_line_quote(month, 4)} {day}"
+            if year and str(year) != window_year:
+                when += f", {year}"
+            text = f"{percent} by {when}"
+        elif entry.get("label"):
+            text = f"{_odds_label(entry['label'])} at {percent}"
+        else:
+            text = percent
+        parts.append(text + _odds_points(entry.get("move")))
+    subject = _odds_subject(str(odds.get("subject") or item.title or ""))
+    if not parts or not subject:
+        return ""
+    return f"📊 Polymarket · {subject}: {' · '.join(parts)}"
 
 
 def _render_polymarket_markets(
     report: schema.Report, limit: int = POLYMARKET_MARKETS_LIMIT,
 ) -> list[str]:
-    """Each market that names the topic: its question, every listed outcome
-    under that outcome's own label, the movement, the close date and the URL.
+    """Each market that names the topic, as a ready-to-copy odds line, then
+    metadata: the URL, the close date, and how many outcomes are not listed.
 
-    Largest volume first, as in the footer, and like the footer it prints odds
-    only, never a dollar amount. The movement belongs to the event's most
-    traded market, so that market's question follows it when the event's
-    title is a different sentence.
+    The copyable part ends before the first `` — ``, as a quote pool entry's
+    does. Largest volume first, as in the footer, and like the footer it
+    prints odds only, never a dollar amount.
     """
     items = [
         item
@@ -4561,36 +4666,23 @@ def _render_polymarket_markets(
         )
     ]
     items.sort(key=lambda item: -((item.engagement or {}).get("volume") or 0))
+    window_year = str(report.range_to or "")[:4]
     lines: list[str] = []
     for item in items:
-        odds = [
-            f"{_one_line_quote(name, 60)}: {_polymarket_percent(price)}"
-            for name, price in (
-                pair for pair in item.metadata.get("outcome_prices") or []
-                if isinstance(pair, (list, tuple)) and len(pair) == 2
-            )
-            if isinstance(price, (int, float)) and not isinstance(price, bool)
-        ]
-        if not odds:
+        odds_line = _polymarket_odds_line(item, window_year)
+        if not odds_line:
             continue
-        title = _safe_title(item.title)
-        odds_part = " | ".join(odds)
-        remaining = item.metadata.get("outcomes_remaining") or 0
-        if isinstance(remaining, int) and remaining > 0:
-            odds_part += f" (+{remaining} more outcomes)"
-        parts = [title, odds_part]
-        movement = " ".join((item.snippet or "").split())
-        if _POLYMARKET_MOVEMENT.match(movement):
-            question = _safe_title(str(item.metadata.get("question") or ""))
-            parts.append(
-                f"{movement} ({question})" if question and question != title else movement
-            )
-        end_date = str(item.metadata.get("end_date") or "").strip()
-        if end_date:
-            parts.append(f"closes {_one_line_quote(end_date, 20)}")
+        parts = [odds_line]
         url = _sanitize_url_for_single_line_output(item.url or "")
         if url:
             parts.append(url)
+        odds = _polymarket_odds(item) or {}
+        end_date = str(item.metadata.get("end_date") or "").strip()
+        if end_date and odds.get("kind") != "ladder":
+            parts.append(f"closes {_one_line_quote(end_date, 20)}")
+        remaining = item.metadata.get("outcomes_remaining") or 0
+        if isinstance(remaining, int) and remaining > 0:
+            parts.append(f"+{remaining} more outcome{'s' if remaining != 1 else ''}")
         lines.append("- " + " — ".join(parts))
         if len(lines) >= limit:
             break

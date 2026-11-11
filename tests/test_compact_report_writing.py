@@ -247,12 +247,15 @@ def test_polymarket_block_keeps_each_outcomes_own_label_price_movement_and_url()
 
     entries = _entries(_section(render.render_compact(report), "## Polymarket Markets"))
 
+    # These items carry no stored odds summary (as one saved by an older
+    # build), so the line is built from the listed outcomes; a single
+    # market's own movement is reworded in points.
     assert entries == [
-        "- Kanye West album first week sales? — 150-200K: 43% | 200-250K: 33% | 100-150K: 7.0%"
-        " (+4 more outcomes) — up 13.0% today (Will Kanye West sell 200-250K in the first week?)"
-        " — closes 2026-12-01 — https://polymarket.com/event/market-2",
-        "- Will Kanye West and Bianca Censori separate in 2026? — Yes: 6.5% | No: 94%"
-        " — down 2.5% this week — closes 2027-01-01 — https://polymarket.com/event/market-1",
+        "- 📊 Polymarket · Kanye West album first week sales: 150-200K at 43% · 200-250K at 33%"
+        " · 100-150K at 7.0% — https://polymarket.com/event/market-2 — closes 2026-12-01"
+        " — +4 more outcomes",
+        "- 📊 Polymarket · Kanye West and Bianca Censori separate in 2026: 6.5%"
+        " (down 2.5 pts this week) — https://polymarket.com/event/market-1 — closes 2027-01-01",
     ]
 
 
@@ -277,7 +280,7 @@ def test_polymarket_block_is_bounded_and_skips_markets_that_do_not_name_the_topi
     entries = _entries(_section(render.render_compact(report), "## Polymarket Markets"))
     assert len(entries) == render.POLYMARKET_MARKETS_LIMIT == 8
     assert all("Mae West" not in line for line in entries)
-    assert "thing 11?" in entries[0]
+    assert "thing 11:" in entries[0]
 
 
 def test_polymarket_snippet_that_is_not_a_movement_is_left_out():
@@ -288,8 +291,8 @@ def test_polymarket_snippet_that_is_not_a_movement_is_left_out():
         "## Polymarket Markets",
     ))
     assert entry == (
-        "- Will Kanye West tour in 2027? — Yes: 50% | No: 50% — closes 2027-01-01"
-        " — https://polymarket.com/event/market-1"
+        "- 📊 Polymarket · Kanye West tour in 2027: 50%"
+        " — https://polymarket.com/event/market-1 — closes 2027-01-01"
     )
 
 
@@ -1153,3 +1156,41 @@ def test_comment_that_only_quotes_its_parent_is_skipped_and_the_next_takes_its_p
     entries = [line for line in _pool(_report([_candidate(item)]))]
     assert [re.search(r"u/(\w+)", line).group(1) for line in entries] == ["person", "fourth"]
     assert entries[0].endswith(" — top comment") and entries[1].endswith(" — #2 comment")
+
+
+# --- odds lines: the checklist names them only when the block is printed -----
+
+ODDS_FACT = (
+    "Polymarket odds for a story go on their own line under it, copied from "
+    "`## Polymarket Markets` through the last price (at most three in the report); "
+    "the paragraph links the market and does not repeat the numbers."
+)
+
+
+def _report_with_market():
+    report = _mixed_pool_report()
+    report.items_by_source["polymarket"] = [
+        _market(1, title="Will Kanye West tour in 2027?", outcomes=[("Yes", 0.5), ("No", 0.5)]),
+    ]
+    return report
+
+
+def test_checklist_has_the_odds_line_fact_only_when_the_block_is_printed(monkeypatch):
+    with_block = _stdout(_report_with_market(), monkeypatch, claude_code=False)
+    assert "\n## Polymarket Markets\n" in with_block
+    assert ODDS_FACT in _checklist(with_block)
+    assert "📊 Polymarket · " in _checklist(with_block)
+    without = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=False))
+    assert "Polymarket" not in without
+
+
+def test_exec_recommendation_and_comparison_checklists_have_no_odds_line_fact(monkeypatch):
+    report = _report_with_market()
+    assert "Polymarket odds" not in _checklist(_stdout(report, monkeypatch, claude_code=False, register="exec"))
+    assert "Polymarket odds" not in _checklist(_stdout(
+        report, monkeypatch, claude_code=False,
+        entity_reports=[("Kanye West", report), ("Drake", report)],
+    ))
+    picks = _report_with_market()
+    picks.topic = picks.query_plan.raw_topic = "best Kanye West albums"
+    assert "Polymarket odds" not in _checklist(_stdout(picks, monkeypatch, claude_code=False))

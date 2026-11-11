@@ -24,6 +24,7 @@ HEADING = "## Before you write the report"
 _QUOTE_POOL_HEADING = "## Top Community Comments"
 _SUBJECT_POSTS_HEADING = re.compile(r"^## Posts by (@\S+)$", re.MULTILINE)
 _JOBS_DIGEST_HEADING = "## Jobs Digest"
+_POLYMARKET_HEADING = "## Polymarket Markets"
 # Registers and shapes whose template has no story paragraphs or quote lines.
 _REGISTERS_WITHOUT_QUOTE_LINES = frozenset({"exec"})
 
@@ -112,6 +113,14 @@ def build(
             "like counts do not rank a comment from one place against another."
             + source
         )
+        if _has_heading(rendered, _POLYMARKET_HEADING):
+            lines.append(
+                "• Polymarket odds for a story go on their own line under it, copied from "
+                f"`{_POLYMARKET_HEADING}` through the last price (at most three in the "
+                "report); the paragraph links the market and does not repeat the numbers. "
+                "Shape: `> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · "
+                "18% by Mar 31, 2027`. They do not count toward the six quote lines."
+            )
     if on_claude_code(environ):
         lines.append(
             "• `CLAUDECODE` is set: no markdown lists anywhere in the reply "

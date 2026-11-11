@@ -1013,6 +1013,8 @@ def _normalize_polymarket(
             "outcomes_remaining": item.get("outcomes_remaining"),
             # The market and price that stand for the event in the footer.
             **({"headline": item["headline"]} if item.get("headline") else {}),
+            # What the compact output's one-line odds summary is built from.
+            **({"odds": item["odds"]} if item.get("odds") else {}),
         },
     )
 
