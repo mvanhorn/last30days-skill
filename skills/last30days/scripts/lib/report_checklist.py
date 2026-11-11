@@ -104,8 +104,10 @@ def build(
         )
         lines.append(
             "• Every quoted comment or post is on its own line under its paragraph, "
-            "up to six per story (six is a ceiling, not a target: only the strongest), "
-            'never inside a paragraph: `> "quote" 🟠 u/author on r/sub · 1,315 upvotes`.'
+            "up to six per story (six is a ceiling, not a target; never pad), "
+            'never inside a paragraph: `> "quote" 🟠 u/author on r/sub · 1,315 upvotes`. '
+            "Use each thread's or video's top comment first, then its #2; like counts "
+            "do not rank a comment from one place against another."
             + source
         )
     if on_claude_code(environ):

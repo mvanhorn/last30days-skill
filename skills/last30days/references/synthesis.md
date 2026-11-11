@@ -41,7 +41,7 @@ The Judge Agent must:
 2. Weight YouTube sources HIGH (they have views, likes, and transcript content)
 3. Weight TikTok sources HIGH (they have views, likes, and caption content - viral signal)
 4. Weight WebSearch sources LOWER (no engagement data)
-5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often hold the wittiest or funniest take. Votes pick the quote; its count appears only on a PULLED QUOTE line. A heavily voted comment outweighs the parent post's stats.
+5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often hold the wittiest or funniest take. Position picks the quote; its count appears only on a PULLED QUOTE line. A heavily voted comment outweighs the parent post's stats.
 6. **For YouTube: Quote transcript highlights AND top comments.** Transcript highlights capture the video's own words; top comments capture how viewers reacted. Both go on PULLED QUOTE lines; attribute transcript quotes to the channel.
 7. Identify patterns that appear across ALL sources (strongest signals)
 8. Note any contradictions between sources
@@ -141,7 +141,7 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **COUNTS IN PROSE: engagement numbers choose what you show, rarely what you say.** Likes, upvotes, views, and points already ranked the evidence. In the body, KEY PATTERNS, and comparisons, print a count only when its size is the finding: a comparison, a contrast, or a surprise ("roughly 4x the likes of the next post", "but with only 5 points"). Otherwise use a rank word ("the top comment", "the month's biggest thread") or drop it. A prose count that stays is rounded and single. Unaffected: Polymarket odds, the `creator` register, the `exec` lead number, entity scale figures, the footer.
 
-**PULLED QUOTE (the named exception to COUNTS IN PROSE).** Every quote of a community comment, a post (X, TikTok, Instagram, YouTube, HN, LinkedIn) or the subject's own post goes on its own blockquote line directly under the paragraph it supports: `> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`. None goes inside a paragraph: prose describes, attributes and links. Give each paragraph only the strongest (highest-voted, funniest, most pointed, the subject's own posts), a blank line between; six is a ceiling, not a target; never pad with weak or off-topic ones. Copy the entry through its count (through the platform name when it has none) from `## Top Community Comments` or `## Posts by @handle`; no link here, the paragraph above keeps the source link. A short phrase from a news article or official statement may stay inline. Translate one not in the report's language and append ` · translated from Portuguese`. Never pull a comment attributed `Comment`; none fits, no quote. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
+**PULLED QUOTE (the named exception to COUNTS IN PROSE).** Every quote of a community comment, a post (X, TikTok, Instagram, YouTube, HN, LinkedIn) or the subject's own post goes on its own blockquote line directly under the paragraph it supports: `> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`. None goes inside a paragraph: prose describes, attributes and links. Use each thread's or video's top comment first, then its #2; like counts do not rank a comment from one place against another; a blank line between; six is a ceiling, not a target; never pad with weak or off-topic ones. Copy the entry through its count (through the platform name when it has none) from `## Top Community Comments` or `## Posts by @handle`; no link here, the paragraph above keeps the source link. A short phrase from a news article or official statement may stay inline. Translate one not in the report's language and append ` · translated from Portuguese`. Never pull a comment attributed `Comment`; none fits, no quote. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
 
 **NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, one per line with no blank lines between. Other hosts keep normal lists.
 
@@ -191,7 +191,6 @@ What I learned:
 > "{post}" 🔵 @handle on X · 48,213 likes
 
 **{Headline summarizing topic 2}** - [1-2 sentences, per [@handle](https://x.com/handle) or [r/sub](https://reddit.com/r/sub)]
-> "{comment}" 🔴 @author on YouTube · 409 likes
 
 **{Headline summarizing topic 3}** - [1-2 sentences, per [@handle](https://x.com/handle) or [r/sub](https://reddit.com/r/sub)]
 

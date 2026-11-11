@@ -39,7 +39,8 @@ def test_synthesis_no_longer_asks_for_a_count_beside_each_quote():
     assert "including the vote count" not in text
     assert '"N upvotes" for Reddit' not in text
     top_comments = text.split("Pay special attention to top comments", 1)[1].splitlines()[0]
-    assert "Votes pick the quote" in top_comments
+    assert "Position picks the quote" in top_comments
+    assert "Votes pick the quote" not in text
     assert "its count appears only on a PULLED QUOTE line" in top_comments
     assert "do not print the count" not in text
     assert "Quote the text, not its vote count" not in text
@@ -86,7 +87,9 @@ def test_no_quoted_comment_or_post_sits_inside_a_paragraph():
 
 def test_pulled_quotes_run_up_to_six_per_story_with_a_quality_bar():
     rule = _pulled_quote_rule()
-    assert "Give each paragraph only the strongest" in rule
+    assert "top comment first, then its #2" in rule
+    assert "like counts do not rank a comment from one place against another" in rule
+    assert "highest-voted" not in rule
     assert "six is a ceiling, not a target" in rule
     assert "never pad with weak or off-topic ones" in rule
     assert "a blank line between" in rule

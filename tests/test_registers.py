@@ -222,8 +222,9 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
         # and job roles reported on their own Stats line, outside the total,
         # and the quote pool: up to 40 entries in the quote line's own shape
         # (platform name, `· count`), posts beside comments, each naming its
-        # cluster or thread.
-        "bda8aa41d92dcc1aa18d3d38ad25a23137ca586d9229585ea0df9f674efd24fd"
+        # cluster or thread, chosen and ordered by position in its item
+        # (top comment, then #2), not by like count.
+        "b2d47dd6d094fe5b3934886e9766a13708fc535d4055244d97b81272330b28ff"
     )
 
 

@@ -302,7 +302,7 @@ def test_no_polymarket_block_without_markets():
 QUOTE_ENTRY = re.compile(
     r'^- "(?P<quote>.+)" (?P<dot>\S+) (?P<author>\S+) on (?P<place>r/\w+|[A-Z][\w. ]*?)'
     r"(?: · (?P<count>[\d,]+) (?P<unit>upvotes|likes|points|replies|votes))?"
-    r" — (?P<url>https://\S+)(?: — (?:cluster \d+|re: .+))?$"
+    r" — (?P<url>https://\S+)(?: — (?:cluster \d+|re: .+))? — (?P<position>top comment|#2 comment|post)(?: — funny)?$"
 )
 
 
@@ -405,30 +405,6 @@ def test_comment_without_its_own_url_links_the_item_it_sits_on_not_another_one()
     assert "https://www.youtube.com/watch?v=VIDEO9" in line
     assert "reddit.com" not in line
 
-
-def test_quote_pool_is_bounded_and_gives_every_shown_cluster_its_best_comment():
-    candidates = []
-    # Eight quiet story clusters, then one loud thread with many strong comments.
-    for index in range(1, 9):
-        candidates.append(_candidate(_reddit_thread(index, [
-            {"author": f"quiet{index}", "score": 2, "excerpt": f"Quiet remark on story number {index}."},
-        ])))
-    for index in range(9, 49):
-        candidates.append(_candidate(_reddit_thread(index, [
-            {"author": f"loud{index}", "score": 5000 + index, "excerpt": f"Loud remark number {index} here."},
-        ])))
-    report = _report(candidates)
-
-    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
-
-    assert len(entries) == render.QUOTE_POOL_LIMIT == 40
-    for index in range(1, 9):
-        (entry,) = [line for line in entries if f"u/quiet{index} " in line]
-        assert entry.endswith(f" — cluster {index}")
-    # An entry from a cluster the output does not show names its thread.
-    loud = [line for line in entries if "u/loud" in line]
-    assert len(loud) == 32
-    assert all(re.search(r' — re: "Reddit thread number \d+"$', line) for line in loud)
 
 
 def test_quote_pool_text_is_one_line():
@@ -646,40 +622,6 @@ def test_quote_pool_takes_no_unliked_post_and_no_wordless_comment():
     assert len(_entries(section)) == 2
 
 
-def test_quote_pool_tail_needs_votes_but_a_shown_clusters_own_comments_do_not():
-    comments = [
-        {"author": f"voter{index}", "score": score, "excerpt": f"Remark number {index} on the same video."}
-        for index, score in enumerate([900, 400, 90, 30, 2, 0])
-    ]
-    video = _item("youtube", "yt1", title="One video", url="https://www.youtube.com/watch?v=ONE",
-                  metadata={"top_comments": comments})
-    candidate = _candidate(video)
-
-    in_cluster = _entries(_section(render.render_compact(_report([candidate])), "## Top Community Comments"))
-    # A tenth of the story's top comment (900) keeps 900, 400 and 90; the
-    # 30-like comment and the two-vote and zero-vote ones are left out.
-    assert [re.search(r"@(voter\d)", line).group(1) for line in in_cluster] == [
-        "voter0", "voter1", "voter2",
-    ]
-
-
-@pytest.mark.parametrize(
-    "source", ["instagram", "tiktok", "youtube", "x", "reddit", "threads", "bluesky", "linkedin"]
-)
-def test_quote_pool_takes_no_zero_vote_comment_from_a_platform_that_counts_votes(source):
-    """Even as its platform's top-ranked comment: nobody picked it."""
-    post = _item(source, "p1", title="A post", url=f"https://example.com/{source}/p1", metadata={
-        "top_comments": [
-            {"author": "spammer", "score": 0, "excerpt": "Come try our fitness class this week!"},
-            {"author": "unscored", "score": None, "excerpt": "Nobody measured a vote on this one."},
-            {"author": "onevote", "score": 1, "excerpt": "One person liked this remark."},
-        ],
-    })
-    report = _report([*_two_comment_candidates(), _candidate(post)])
-    section = _section(render.render_compact(report), "## Top Community Comments")
-    assert "spammer" not in section
-    assert "unscored" not in section
-    assert "onevote" in section
 
 
 def test_quote_pool_keeps_hacker_news_comments_with_no_or_zero_points():
@@ -735,8 +677,7 @@ def test_checklist_says_copy_through_the_count_and_that_six_is_a_ceiling(monkeyp
     block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=False))
     assert "Copy the entry through its count (through the platform name when it has no count)" in block
     assert "up to its URL" not in block
-    assert "six is a ceiling, not a target" in block
-    assert "only the strongest" in block
+    assert "six is a ceiling, not a target; never pad" in block
 
 
 def test_checklist_names_the_marker_for_key_patterns_and_for_the_invitation(monkeypatch):
@@ -825,55 +766,186 @@ def test_quote_text_carries_no_raw_url():
     assert quote == '- "ICEYE already announced this: and see too. Worth a read.'
 
 
-def test_pool_keeps_only_comments_within_a_tenth_of_their_storys_top_comment():
-    thread = _reddit_thread(1, [
-        {"author": f"voter{index}", "score": score, "excerpt": f"Remark number {index} in one thread."}
-        for index, score in enumerate([805, 300, 81, 80, 42, 12])
-    ])
-    other = _reddit_thread(2, [
-        {"author": "small", "score": 12, "excerpt": "The best remark in a small thread."},
-        {"author": "smaller", "score": 2, "excerpt": "A second remark in a small thread."},
-        {"author": "tiny", "score": 1, "excerpt": "A third remark in that small thread."},
-    ])
-    section = _section(
-        render.render_compact(_report([_candidate(thread), _candidate(other)])), "## Top Community Comments",
+
+
+# --- round 3: the pool is chosen and ordered by position, not by likes --------
+
+
+def _thread(source, index, scores, *, container=None):
+    return _item(
+        source, f"{source}{index}", title=f"{source} item {index}",
+        url=f"https://example.com/{source}/{index}", container=container,
+        metadata={"top_comments": [
+            {"author": f"{source}{index}rank{rank}", "score": score,
+             "excerpt": f"Rank {rank} remark on {source} item {index}."}
+            for rank, score in enumerate(scores, start=1)
+        ]},
     )
-    kept = re.findall(r"u/(\w+) on", section)
-    # 10% of 805 keeps 805, 300 and 81; 80, 42 and 12 go. The small thread is
-    # judged against its own top comment: 12 and 2 stay, 1 goes.
-    assert sorted(kept) == sorted(["voter0", "voter1", "voter2", "small", "smaller"])
 
 
-def test_story_floor_applies_to_threads_outside_the_shown_clusters_too():
-    shown = [_candidate(_reddit_thread(index, [
-        {"author": f"shown{index}", "score": 500, "excerpt": f"Shown story remark number {index}."},
-    ])) for index in range(1, 3)]
-    hidden = _candidate(_reddit_thread(9, [
-        {"author": "top", "score": 4500, "excerpt": "The top remark in a thread not shown."},
-        {"author": "weak", "score": 56, "excerpt": "A weak remark in a thread not shown."},
-    ]))
-    clusters = [
-        schema.Cluster(cluster_id=f"cl-{index}", title=f"Story {index}",
-                       candidate_ids=[candidate.candidate_id], representative_ids=[candidate.candidate_id],
-                       sources=["reddit"], score=90 - index)
-        for index, candidate in enumerate([*shown, hidden], start=1)
+def _cluster(index, candidates):
+    return schema.Cluster(
+        cluster_id=f"cl-{index}", title=f"Story {index}",
+        candidate_ids=[candidate.candidate_id for candidate in candidates],
+        representative_ids=[candidates[0].candidate_id],
+        sources=sorted({candidate.source for candidate in candidates}), score=90 - index,
+    )
+
+
+def _pool_authors(lines):
+    return [re.search(r"(\w+rank\d)", line.split('" ', 1)[1]).group(1) for line in lines if "rank" in line]
+
+
+def test_each_item_gives_its_top_two_comments_and_nothing_below():
+    report = _report([_candidate(_thread("reddit", 1, [900, 800, 700, 600], container="sub"))])
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+    assert _pool_authors(entries) == ["reddit1rank1", "reddit1rank2"]
+    assert entries[0].endswith(" — cluster 1 — top comment")
+    assert entries[1].endswith(" — cluster 1 — #2 comment")
+    assert entries[0].split(" — ")[0].endswith("🟠 u/reddit1rank1 on r/sub · 900 upvotes")
+
+
+def test_pool_runs_every_top_comment_in_story_order_then_every_second_never_by_likes():
+    quiet = _candidate(_thread("tiktok", 1, [1200, 40]))
+    loud = _candidate(_thread("reddit", 2, [20000, 19000, 18000, 17000, 16000], container="sub"))
+    video = _candidate(_thread("youtube", 3, [7, 3]))
+    report = _report([quiet, loud, video])
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+    assert _pool_authors(entries) == [
+        "tiktok1rank1", "reddit2rank1", "youtube3rank1",
+        "tiktok1rank2", "reddit2rank2", "youtube3rank2",
     ]
-    report = _report([*shown, hidden], clusters=clusters)
-    section = "\n".join(render._render_top_comments(report, clusters=clusters[:2]))
-    assert 'u/top on r/hiphopheads · 4,500 upvotes' in section and ' — re: "' in section
-    assert "u/weak" not in section
+    assert [line.rsplit(" — ", 1)[1] for line in entries] == ["top comment"] * 3 + ["#2 comment"] * 3
+    assert [re.search(r"cluster (\d)", line).group(1) for line in entries] == ["1", "2", "3", "1", "2", "3"]
 
 
-def test_uncounted_comments_are_limited_to_three_a_story():
-    story = _item("hackernews", "42", title="A story", url="https://example.com/article", metadata={
-        "hn_url": "https://news.ycombinator.com/item?id=42",
-        "top_comments": [
-            {"author": f"hn{index}", "score": None, "excerpt": f"Hacker News remark number {index}."}
-            for index in range(6)
-        ],
-    })
-    section = _section(
-        render.render_compact(_report([*_two_comment_candidates(), _candidate(story)])),
-        "## Top Community Comments",
+def test_items_follow_their_clusters_rank_not_the_candidate_list():
+    first = _candidate(_thread("reddit", 1, [5, 4], container="sub"))
+    second = _candidate(_thread("youtube", 2, [50000, 40000]))
+    # Ranked candidates list the second story's item first; the clusters do not.
+    report = _report([second, first], clusters=[_cluster(1, [first]), _cluster(2, [second])])
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+    assert _pool_authors(entries) == ["reddit1rank1", "youtube2rank1", "reddit1rank2", "youtube2rank2"]
+
+
+def test_position_is_the_items_own_stored_order_not_a_resort_by_votes():
+    """YouTube and Hacker News store the platform's order, which is not by count."""
+    video = _candidate(_thread("youtube", 1, [12, 900, 5000]))
+    other = _candidate(_thread("reddit", 2, [30, 20], container="sub"))
+    entries = _entries(_section(render.render_compact(_report([video, other])), "## Top Community Comments"))
+    assert _pool_authors(entries) == ["youtube1rank1", "reddit2rank1", "youtube1rank2", "reddit2rank2"]
+
+
+def test_posts_follow_the_top_comments_of_their_cluster_and_are_labelled_post():
+    thread = _candidate(_thread("reddit", 1, [300, 200], container="sub"))
+    post = _candidate(_item("x", "fan1", title="Kanye sold out AT&T Stadium in nine minutes",
+                            url="https://x.com/PopBase/status/77", author="PopBase",
+                            engagement={"likes": 48213}))
+    video = _candidate(_thread("youtube", 2, [90, 80]))
+    report = _report(
+        [post, thread, video],
+        clusters=[_cluster(1, [post, thread]), _cluster(2, [video])],
     )
-    assert re.findall(r"🟡 (hn\d)", section) == ["hn0", "hn1", "hn2"]
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+    assert [line.rsplit(" — ", 1)[1] for line in entries] == [
+        "top comment", "post", "top comment", "#2 comment", "#2 comment",
+    ]
+    assert "u/reddit1rank1" in entries[0]
+    assert entries[1].endswith("🔵 @PopBase on X · 48,213 likes — https://x.com/PopBase/status/77 — cluster 1 — post")
+    assert "youtube2rank1" in entries[2]
+
+
+def test_pool_covers_shown_clusters_before_other_items_within_the_cap():
+    shown = [_candidate(_thread("reddit", index, [3, 2], container="sub")) for index in range(1, 9)]
+    others = [_candidate(_thread("tiktok", index, [90000, 80000])) for index in range(9, 49)]
+    clusters = [_cluster(index, [candidate]) for index, candidate in enumerate([*shown, *others], start=1)]
+    report = _report([*shown, *others], clusters=clusters)
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+    assert len(entries) == render.QUOTE_POOL_LIMIT == 40
+    authors = _pool_authors(entries)
+    # All sixteen comments of the eight shown stories are in, top and second.
+    # The other 24 places go to other items' top comments, in ranked order.
+    assert authors[:8] == [f"reddit{index}rank1" for index in range(1, 9)]
+    assert authors[8:32] == [f"tiktok{index}rank1" for index in range(9, 33)]
+    assert authors[32:] == [f"reddit{index}rank2" for index in range(1, 9)]
+    assert all(' — re: "tiktok item' in line for line in entries[8:32])
+
+
+@pytest.mark.parametrize(
+    "source", ["instagram", "tiktok", "youtube", "reddit", "threads", "bluesky", "linkedin", "x"]
+)
+def test_item_whose_top_comment_has_no_vote_gives_the_pool_nothing(source):
+    spam = _candidate(_thread(source, 1, [0, 5]))
+    unscored = _candidate(_thread(source, 2, [None, 5]))
+    partly = _candidate(_thread(source, 3, [3, 0]))
+    report = _report([*_two_comment_candidates(), spam, unscored, partly])
+    authors = _pool_authors(_entries(_section(render.render_compact(report), "## Top Community Comments")))
+    assert authors == [f"{source}3rank1"]
+
+
+def test_hacker_news_gives_its_first_two_comments_by_thread_position():
+    story = _candidate(_thread("hackernews", 1, [None, 0, 400]))
+    report = _report([*_two_comment_candidates(), story])
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+    assert _pool_authors(entries) == ["hackernews1rank1", "hackernews1rank2"]
+    (first,) = [line for line in entries if "hackernews1rank1" in line]
+    assert '" 🟡 hackernews1rank1 on Hacker News — ' in first
+
+
+def test_unquotable_top_comment_leaves_the_second_with_its_own_label():
+    thread = _thread("reddit", 1, [900, 800], container="sub")
+    thread.metadata["top_comments"][0]["excerpt"] = "😂😂😂😂😂😂😂😂😂😂😂😂"
+    report = _report([*_two_comment_candidates(), _candidate(thread)])
+    (entry,) = [
+        line for line in _entries(_section(render.render_compact(report), "## Top Community Comments"))
+        if "reddit1rank" in line
+    ]
+    assert "reddit1rank2" in entry and entry.endswith(" — #2 comment")
+
+
+def test_duplicate_text_does_not_hide_the_copy_that_is_eligible():
+    """The first copy met is rejected (nobody voted for it); the later one stays."""
+    rejected = _thread("instagram", 1, [0, 0])
+    kept = _thread("reddit", 2, [500, 40], container="sub")
+    for item in (rejected, kept):
+        item.metadata["top_comments"][0]["excerpt"] = "He really said the quiet part out loud."
+    report = _report([*_two_comment_candidates(), _candidate(rejected), _candidate(kept)])
+    section = _section(render.render_compact(report), "## Top Community Comments")
+    assert section.count("He really said the quiet part out loud.") == 1
+    assert '"He really said the quiet part out loud." 🟠 u/reddit2rank1 on r/sub · 500 upvotes' in section
+
+
+def test_checklist_and_rule_rank_by_position_not_likes(monkeypatch):
+    block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=False))
+    assert "each thread's or video's top comment first, then its #2" in block
+    assert "like counts do not rank a comment from one place against another" in block
+    assert "six is a ceiling, not a target" in block
+    assert "highest-voted" not in block
+
+
+def test_funny_candidates_lead_their_storys_position_and_are_tagged():
+    """The fun score belongs to the candidate, so its comments share the tag."""
+    plain = _candidate(_thread("reddit", 1, [900, 800], container="sub"))
+    funny = _candidate(_thread("youtube", 2, [40, 30]))
+    funny.fun_score = render._QUOTE_POOL_FUNNY_FLOOR
+    nearly = _candidate(_thread("tiktok", 3, [70, 60]))
+    nearly.fun_score = render._BEST_TAKE_FUNNY_FLOOR - 1
+    later = _candidate(_thread("instagram", 4, [9, 8]))
+    later.fun_score = 95.0
+    report = _report(
+        [plain, funny, nearly, later],
+        clusters=[_cluster(1, [plain, funny, nearly]), _cluster(2, [later])],
+    )
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+    # Position still leads, and a funny entry never jumps to another story.
+    assert _pool_authors(entries) == [
+        "youtube2rank1", "reddit1rank1", "tiktok3rank1", "instagram4rank1",
+        "youtube2rank2", "reddit1rank2", "tiktok3rank2", "instagram4rank2",
+    ]
+    assert entries[0].endswith(" — cluster 1 — top comment — funny")
+    assert entries[4].endswith(" — cluster 1 — #2 comment — funny")
+    assert entries[3].endswith(" — cluster 2 — top comment — funny")
+    assert [line.endswith(" — funny") for line in entries] == [
+        True, False, False, True, True, False, False, True,
+    ]
+    assert entries[0].split(" — ")[0].endswith("🔴 @youtube2rank1 on YouTube · 40 likes")

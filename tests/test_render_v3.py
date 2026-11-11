@@ -593,9 +593,9 @@ class RenderTopCommentsTests(unittest.TestCase):
             items_by_source={}, errors_by_source={})
 
     def test_top_comments_rank_based_diversity(self):
-        """U3: a viral platform can't sweep the list -- top-3-of-each beats
-        4th-of-any. 4 YouTube videos (3 high-vote comments each) + 1 TikTok video
-        (2 low-vote comments) must still surface BOTH TikTok comments."""
+        """A viral platform can't sweep the list: every item's top comment
+        comes before any item's #2, whatever the like counts. 4 YouTube videos
+        (3 high-vote comments each) + 1 TikTok video (2 low-vote comments)."""
         yt_cands = []
         for v in range(4):
             comments = [
@@ -608,13 +608,18 @@ class RenderTopCommentsTests(unittest.TestCase):
             {"score": 40, "excerpt": "tiktok killer comment two text", "author": "ttB"},
         ])
         report = self._diversity_report(yt_cands + [tt_cand])
-        lines = render._render_top_comments(report, limit=8)
+        lines = render._render_top_comments(report, limit=10)
         blob = "\n".join(lines)
         # Both low-vote TikTok comments surface despite 12 higher-vote YouTube ones.
         self.assertIn("tiktok killer comment one text", blob)
         self.assertIn("tiktok killer comment two text", blob)
-        # TikTok's #1 appears before YouTube's 3rd-ranked comment (round-robin).
-        self.assertLess(blob.index("tiktok killer comment one"), blob.index("comment 2 text"))
+        # TikTok's top comment comes before any video's #2, and no #3 is listed.
+        self.assertLess(blob.index("tiktok killer comment one"), blob.index("comment 1 text"))
+        self.assertNotIn("comment 2 text", blob)
+        # Under a tighter limit the top comments are kept ahead of the #2s.
+        tight = "\n".join(render._render_top_comments(report, limit=6))
+        self.assertIn("tiktok killer comment one text", tight)
+        self.assertNotIn("tiktok killer comment two text", tight)
 
     def test_reddit_5_comments_renders_top_3(self):
         """Reddit candidate with 5 comments (scores 500, 200, 50, 8, 3) renders 3."""
@@ -679,10 +684,11 @@ class RenderTopCommentsTests(unittest.TestCase):
         # The per-candidate CARD still applies the 50-like threshold: carol (20)
         # does not appear on the card (colon-format line).
         self.assertNotIn("@carol (20 likes):", text)
-        # But the cross-platform Top Community Comments list surfaces her (U3:
-        # rank-based, no absolute floor -- a low-vote comment can be gold), as
-        # she is within a tenth of the video's top comment.
-        self.assertIn('"below threshold" 🔴 @carol on YouTube · 20 likes', text)
+        # The quote pool takes the video's top comment and its #2 with no
+        # 50-like floor, and nothing below them: carol is the video's #3.
+        self.assertIn('"legit fire tutorial" 🔴 @alice on YouTube · 120 likes', text)
+        self.assertIn('"saved me hours" 🔴 @bob on YouTube · 60 likes', text)
+        self.assertNotIn("@carol", text)
 
     def test_reddit_comment_without_author_falls_back_to_legacy_label(self):
         """When author is missing or [deleted], render falls back to 'Comment (...)'."""
@@ -727,12 +733,13 @@ class RenderTopCommentsTests(unittest.TestCase):
         self.assertIn("@b (600 likes): so real", text)
         # Card still applies the 500 threshold: c (400) not on the card.
         self.assertNotIn("@c (400 likes):", text)
-        # Community list surfaces c (it's the item's #3, within the 3-per-item cap;
-        # U3 drops the absolute floor there).
-        self.assertIn('"below tt threshold" 🎵 @c on TikTok · 400 likes', text)
-        # d (50) is the item's 4th comment -> dropped by the 3-per-item cap, so it
-        # never appears anywhere.
+        # The quote pool holds the video's top comment and its #2 only: c is
+        # its #3 and d its #4, so neither appears anywhere.
+        # ("so real" is too short to quote, which leaves one entry, and a
+        # pool of one is not printed.)
+        self.assertNotIn("@c on TikTok", text)
         self.assertNotIn("@d (50 likes)", text)
+        self.assertNotIn("@d on TikTok", text)
 
 
 class RenderBestTakesCompactTests(unittest.TestCase):

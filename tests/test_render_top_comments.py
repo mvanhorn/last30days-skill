@@ -87,7 +87,7 @@ def test_reddit_line_carries_dot_author_subreddit_and_upvotes():
     line = _line(lines, "Internet feelings")
     assert line == (
         '- "Internet feelings vs reality." 🟠 u/CappaccinoJay on r/hiphopheads'
-        " · 1,315 upvotes — https://www.reddit.com/r/hiphopheads/comments/abc/thread/"
+        " · 1,315 upvotes — https://www.reddit.com/r/hiphopheads/comments/abc/thread/ — top comment"
     )
 
 
@@ -96,7 +96,7 @@ def test_tiktok_line_carries_dot_handle_platform_name_and_likes():
     line = _line(lines, "literally him")
     assert line == (
         '- "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes'
-        " — https://www.tiktok.com/@north/video/1"
+        " — https://www.tiktok.com/@north/video/1 — top comment"
     )
 
 
@@ -151,7 +151,7 @@ def test_web_page_comment_gets_no_dot_and_no_platform_name():
         [{"author": "ada", "score": 12, "excerpt": "A reader comment on a web page."}],
     )
     line = _line(render._render_top_comments(_report(item, TIKTOK)), "reader comment")
-    assert line == '- "A reader comment on a web page." ada · 12 votes — https://example.com/post'
+    assert line == '- "A reader comment on a web page." ada · 12 votes — https://example.com/post — top comment'
 
 
 def test_dots_come_from_the_footer_table():

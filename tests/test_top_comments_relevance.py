@@ -91,28 +91,23 @@ class TestTopCommentsRelevanceGate:
         assert "viral off-topic comment" not in combined
         assert "directly about the topic" in combined
 
-    def test_high_relevance_beats_low_relevance_despite_moderate_vote_lead(self):
-        """On-topic comment (high relevance) should outrank a moderately more-voted off-topic one.
+    def test_order_follows_the_ranking_not_the_vote_count(self):
+        """The pool lists top comments in the order the candidates are ranked.
 
-        Vote normalization: reddit ref = log1p(2000) ≈ 7.6
-        - 200 upvotes: log1p(200)/7.6 ≈ 0.70
-        - 50 upvotes:  log1p(50)/7.6  ≈ 0.52
-
-        Blended scores (60% vote, 40% relevance):
-        - viral_offtopic (200 votes, rel=0.12):  0.6*0.70 + 0.4*0.12 = 0.468
-        - on_topic (50 votes, rel=0.90):         0.6*0.52 + 0.4*0.90 = 0.672
+        Ranking already weighs relevance, so the on-topic thread ranked first
+        leads with 50 upvotes, ahead of a barely related one with 200.
         """
-        viral_offtopic = _candidate(
-            url="https://example.com/viral",
-            local_relevance=0.12,  # just above RELEVANCE_FLOOR
-            top_comments=[{"body": "Viral off-topic comment with moderate vote lead", "score": 200}],
-        )
         ontopic_modest = _candidate(
             url="https://example.com/ontopic",
             local_relevance=0.90,
             top_comments=[{"body": "On-topic comment fewer votes but on-topic", "score": 50}],
         )
-        report = _make_report(viral_offtopic, ontopic_modest)
+        viral_offtopic = _candidate(
+            url="https://example.com/viral",
+            local_relevance=0.12,  # just above RELEVANCE_FLOOR
+            top_comments=[{"body": "Viral off-topic comment with moderate vote lead", "score": 200}],
+        )
+        report = _make_report(ontopic_modest, viral_offtopic)
         lines = render._render_top_comments(report)
         combined = "\n".join(lines)
         assert combined.index("On-topic comment") < combined.index("Viral off-topic")
@@ -141,25 +136,6 @@ class TestTopCommentsRelevanceGate:
 
         assert "Sparse topic comment" in combined
         assert "Another sparse topic comment" in combined
-
-    def test_maximally_viral_low_relevance_comment_loses_to_on_topic_comment(self):
-        """A clamped 5000-vote comment should still lose to a highly relevant 50-vote one."""
-        viral_low_relevance = _candidate(
-            url="https://example.com/max-viral",
-            local_relevance=0.12,
-            top_comments=[{"body": "Maximally viral but barely related comment", "score": 5000}],
-        )
-        on_topic = _candidate(
-            url="https://example.com/on-topic-boundary",
-            local_relevance=0.90,
-            top_comments=[{"body": "Highly relevant lower voted boundary comment", "score": 50}],
-        )
-        report = _make_report(viral_low_relevance, on_topic)
-
-        lines = render._render_top_comments(report)
-        combined = "\n".join(lines)
-
-        assert combined.index("Highly relevant") < combined.index("Maximally viral")
 
     def test_no_duplicate_comments(self):
         """Same comment body must appear at most once even if two candidates share the text."""

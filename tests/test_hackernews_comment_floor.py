@@ -309,16 +309,12 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     fused.fun_score = 80.0
     control.fun_score = 80.0
 
-    with patch(
-        "lib.render.signals.normalized_comment_vote",
-        wraps=render.signals.normalized_comment_vote,
-    ) as normalized_vote:
-        top_comments = "\n".join(
-            render._render_top_comments(
-                _report(reddit, fused),
-                candidates=[fused, control],
-            )
+    top_comments = "\n".join(
+        render._render_top_comments(
+            _report(reddit, fused),
+            candidates=[fused, control],
         )
+    )
     rendered = "\n".join(
         render._render_best_takes([fused, control], threshold=70.0, vote_weight=0.0)
     )
@@ -335,9 +331,7 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     assert '" 🟡 alice on Hacker News · 93 points' in retained_line
     assert "upvotes" not in retained_line
     assert "u/alice" not in retained_line
-    assert any(
-        call.args == ("hackernews", 93) for call in normalized_vote.call_args_list
-    )
+    assert retained_line.endswith(" — top comment — funny")
 
 
 # --- Comment permalinks (R7/R8): a quote links to where it was said. -------
