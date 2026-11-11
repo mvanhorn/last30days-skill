@@ -653,6 +653,7 @@ Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json
 | `LAST30DAYS_YOUTUBE_BACKEND` | `yt-dlp` keeps YouTube off ScrapeCreators (search backfill, transcript rescue, and comments) while `SCRAPECREATORS_API_KEY` still serves TikTok, Instagram, and Reddit; yt-dlp then uses the keyless retry budget. Unset or any other value keeps the default yt-dlp → ScrapeCreators chain. Doctor shows the pin and the disarmed backstop. |
 | `LAST30DAYS_YT_SC_MIN_ITEMS` | Keyed YouTube search backfill floor. Default `3`; `0` restores empty-only search fallback. Invalid values behave like `0`. See [YouTube search backfill](#youtube-search-backfill) for per-stream credit usage and retry behavior. |
 | `LAST30DAYS_NO_JOBS_DIGEST` | Truthy (`1`/`true`/`yes`/`on`): leaves the `## Jobs Digest` section out of the output; the footer Jobs line stays, and each ranked job posting keeps its own evidence line. For callers whose reader never sees the skill's instruction files: the MCP `research` tool sets it on every run. Process environment only. |
+| `LAST30DAYS_NO_REPORT_CHECKLIST` | Truthy (`1`/`true`/`yes`/`on`): `--emit=compact` stdout ends at the canonical boundary, without the `## Before you write the report` format checklist the command line otherwise prints after it. For the same callers: the MCP `research` tool sets it on every run. Process environment only. |
 
 Web search has **no** env pin — pin it per-run with `--web-backend=<name>` only (see [Web search backend priority](#web-search-backend-priority)).
 

@@ -20,7 +20,7 @@ Results group evidence by story/theme across platforms.
 3. **Check uncertainty tags.** "single-source" means treat with caution. "thin-evidence" means mention but caveat.
 4. **Cross-cluster synthesis second.** After covering individual stories, identify themes that span clusters.
 5. **Engagement signals choose the evidence.** Items with high likes/upvotes/views within a cluster are the strongest evidence points.
-6. **Quote directly from evidence snippets.** The snippets are pre-extracted best passages - use them.
+6. **Quote from evidence snippets** on PULLED QUOTE lines. They are pre-extracted best passages.
 7. Extract the top 3-5 actionable insights across all clusters.
 8. **Disambiguation: trust your resolved entity.** When Step 0.55 resolved a specific entity (handles, subreddits, location context), prioritize content about THAT entity in your synthesis. If search results contain a different entity with the same name (e.g., a Spanish resort vs a WA athletic club both called "Bellevue Club"), lead with the entity your resolution identified. Drop the other entity silently, including from the invitation; never note that it exists or is unrelated (LAW 9). The resolved handles are the strongest signal for user intent.
 
@@ -41,8 +41,8 @@ The Judge Agent must:
 2. Weight YouTube sources HIGH (they have views, likes, and transcript content)
 3. Weight TikTok sources HIGH (they have views, likes, and caption content - viral signal)
 4. Weight WebSearch sources LOWER (no engagement data)
-5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often contain the wittiest, most insightful, or funniest take. Quote and attribute them. Votes pick the quote; its count appears only on a PULLED QUOTE line. A heavily voted comment outweighs the parent post's stats.
-6. **For YouTube: Quote transcript highlights AND top comments.** Transcript highlights capture the video's own words; top comments capture how viewers reacted. Attribute transcript quotes to the channel name.
+5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** - they often hold the wittiest or funniest take. Votes pick the quote; its count appears only on a PULLED QUOTE line. A heavily voted comment outweighs the parent post's stats.
+6. **For YouTube: Quote transcript highlights AND top comments.** Transcript highlights capture the video's own words; top comments capture how viewers reacted. Both go on PULLED QUOTE lines; attribute transcript quotes to the channel.
 7. Identify patterns that appear across ALL sources (strongest signals)
 8. Note any contradictions between sources
 9. **Multi-source clusters (items from 3+ platforms) are the strongest signals.** Lead with these.
@@ -58,7 +58,7 @@ The Judge Agent must:
 
 1. **Prefer structural/long-term markets over near-term deadlines.** Championship odds > regular season title. Regime change > near-term strike deadline. IPO/major milestone > incremental update. Presidency > individual state primary. When multiple markets exist, the bigger question is more interesting to the user.
 
-2. **When the topic is an outcome in a multi-outcome market, call out that specific outcome's odds and movement.** Don't just say "Polymarket has a #1 seed market" - say "Arizona has a 28% chance of being the #1 overall seed, up 10% this month." The user cares about THEIR topic's position in the market.
+2. **When the topic is an outcome in a multi-outcome market, call out that specific outcome's odds and movement** (`## Polymarket Markets` lists each outcome under its own label). Don't just say "Polymarket has a #1 seed market" - say "Arizona has a 28% chance of being the #1 overall seed, up 10% this month." The user cares about THEIR topic's position in the market.
 
 3. **Weave odds into the narrative as supporting evidence.** Don't isolate Polymarket data in its own paragraph. Instead: "Final Four buzz is building - Polymarket gives Arizona a 12% chance to win the championship (up 3% this week), and 28% to earn a #1 seed."
 
@@ -71,10 +71,6 @@ The Judge Agent must:
 - **Geopolitics:** Regime change/structural outcomes > near-term strike deadlines > sanctions
 - **Tech/Business:** IPO, major product launch, company milestones > incremental updates
 - **Elections:** Presidency > primary > individual state
-
-**Do NOT display stats here - they come at the end, right before the invitation.**
-
-6. **Polymarket odds with real money behind them are STRONGER signals than opinions.** A $66K volume market with 96% odds is more reliable than 100 tweets. Always include specific percentages in the synthesis when Polymarket markets are confirmed relevant.
 
 ### X Reply Cluster Weighting
 
@@ -97,7 +93,7 @@ Read the research output carefully. Pay attention to:
 
 **ANTI-PATTERN TO AVOID**: If user asks about "clawdbot skills" and research returns ClawdBot content (self-hosted AI agent), do NOT synthesize this as "Claude Code skills" just because both involve "skills". Read what the research actually says.
 
-**FUN CONTENT (see LAW 9): the EVIDENCE block's `## Top Community Comments` section (present when 2+ relevance-qualified comments exist and the GENERAL nothing-solid floor did not fire) and any `## Best Takes` section are the voice of the people - weave at least 2 of the funniest/cleverest quotes, VERBATIM or translated, into your synthesis.** A thread's top comment saying "Where's the limewire link" tells you more about the cultural moment than a news article. Attribute the commenter using the citation form required by higher-priority host/tool requirements and user instructions. On a hidden-link host (Claude Code; Grok Bot / Cursor agent chat), copy comment URLs verbatim from the block. On a visible-URL host (Codex, Gemini CLI, raw CLI), use plain attribution only when links are not required. Never reconstruct a URL. Weave it in or pull it; no separate section. `## Best Takes` is often empty; `## Top Community Comments` is the always-on source when qualifying comments remain.
+**FUN CONTENT (see LAW 9): `## Top Community Comments` (present when 2+ relevance-qualified comments exist and the GENERAL nothing-solid floor did not fire) and any `## Best Takes` are the voice of the people - put the funniest/cleverest, VERBATIM or translated, on PULLED QUOTE lines.** A top comment saying "Where's the limewire link" tells you more about the cultural moment than a news article. Cite the commenter in the paragraph above, in the form higher-priority host/tool requirements and user instructions require. On a hidden-link host (Claude Code; Grok Bot / Cursor agent chat), copy comment URLs verbatim from the block. On a visible-URL host (Codex, Gemini CLI, raw CLI), use plain attribution only when links are not required. Never reconstruct a URL. No separate section. `## Best Takes` is often empty.
 
 **ELI5 MODE: If REGISTER is `eli5` (including the legacy `ELI5_MODE=true` fallback), apply these writing guidelines to your ENTIRE synthesis. Otherwise skip this block completely and write normally.**
 
@@ -145,7 +141,7 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **COUNTS IN PROSE: engagement numbers choose what you show, rarely what you say.** Likes, upvotes, views, and points already ranked the evidence. In the body, KEY PATTERNS, and comparisons, print a count only when its size is the finding: a comparison, a contrast, or a surprise ("roughly 4x the likes of the next post", "but with only 5 points"). Otherwise use a rank word ("the top comment", "the month's biggest thread") or drop it. A prose count that stays is rounded and single. Unaffected: Polymarket odds, the `creator` register, the `exec` lead number, entity scale figures, the footer.
 
-**PULLED QUOTE (the named exception to COUNTS IN PROSE).** A story paragraph may be followed directly by at most one comment or X post on its own blockquote line: `> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`. Copy dot, author, community (`on r/sub`) and count as the engine printed them; no link here. Translate one not in the report's language and append ` · translated from Portuguese`. Never pull a comment attributed `Comment`; none fits, no quote. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
+**PULLED QUOTE (the named exception to COUNTS IN PROSE).** Every quote of a community comment, a post (X, TikTok, Instagram, YouTube, HN, LinkedIn) or the subject's own post goes on its own blockquote line directly under the paragraph it supports: `> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`. None goes inside a paragraph: prose describes, attributes and links. Give each paragraph up to six that are good (highest-voted, funniest, most pointed, the subject's own posts), a blank line between; never pad with weak or off-topic ones. Copy dot, author, community (`on r/sub` or the platform) and count as the engine printed them in `## Top Community Comments` or `## Posts by @handle`; no link here, the paragraph above keeps the source link. A short phrase from a news article or official statement may stay inline. Translate one not in the report's language and append ` · translated from Portuguese`. Never pull a comment attributed `Comment`; none fits, no quote. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
 
 **NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, one per line with no blank lines between. Other hosts keep normal lists.
 
@@ -158,7 +154,7 @@ CITATION RULE: Meet higher-priority host/tool requirements and user instructions
 
 CITATION PRIORITY (most to least preferred). Examples are shown in plain-label shape. Use `[label](url)` on a hidden-link host or whenever higher-priority host/tool requirements or user instructions require links:
 1. @handles from X - `per @handle` (these prove the tool's unique value)
-2. r/subreddits from Reddit - `per r/subreddit` (when citing Reddit, YouTube, or TikTok, prefer quoting top comments over just the thread title)
+2. r/subreddits from Reddit - `per r/subreddit`
 3. YouTube channels - `per channel name on YouTube` (transcript-backed insights)
 4. TikTok creators - `per @creator on TikTok` (viral/trending signal)
 5. Instagram creators - `per @creator on Instagram` (influencer/creator signal)
@@ -190,8 +186,12 @@ Apply root LAWs 2–4 to the following normal-query template. Comparison uses it
 What I learned:
 
 **{Headline summarizing topic 1}** - [1-2 sentences about what people are saying, per [@handle](https://x.com/handle) or [r/sub](https://reddit.com/r/sub)]
+> "{comment}" 🟠 u/author on r/sub · 1,315 upvotes
+
+> "{post}" 🔵 @handle on X · 48,213 likes
 
 **{Headline summarizing topic 2}** - [1-2 sentences, per [@handle](https://x.com/handle) or [r/sub](https://reddit.com/r/sub)]
+> "{comment}" 🔴 @author on YouTube · 409 likes
 
 **{Headline summarizing topic 3}** - [1-2 sentences, per [@handle](https://x.com/handle) or [r/sub](https://reddit.com/r/sub)]
 

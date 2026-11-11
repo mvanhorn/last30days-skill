@@ -1,8 +1,10 @@
 """Engagement counts select evidence; one place prints them beside a quote.
 
-Prose carries a count only when its size is the finding. The pulled quote, one
-blockquote line after a story paragraph, is the named exception: it shows the
-comment's author and count as the engine printed them.
+Prose carries a count only when its size is the finding. The pulled quote, a
+blockquote line under a story paragraph, is the named exception: it shows the
+comment's author and count as the engine printed them. Every quoted comment
+or post is such a line, up to six under a story paragraph, and none sits
+inside a paragraph.
 
 These pin the instruction text only. They catch the old "include the vote
 count" instruction coming back; they cannot catch a model that prints counts
@@ -66,13 +68,40 @@ def test_prose_rule_stays_beside_the_pulled_quote():
     assert PULLED_MARKER not in rule
 
 
-def test_pulled_quote_is_the_named_exception_with_one_line_per_story():
+def test_pulled_quote_is_the_named_exception_and_every_quote_is_one():
     rule = _pulled_quote_rule()
     assert rule.startswith(" (the named exception to COUNTS IN PROSE).**")
-    assert "at most one comment" in rule
-    assert "its own blockquote line" in rule
-    assert "directly" in rule
+    assert "Every quote of a community comment, a post" in rule
+    assert "the subject's own post" in rule
+    assert "its own blockquote line directly under the paragraph it supports" in rule
     assert '`> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`' in rule
+
+
+def test_no_quoted_comment_or_post_sits_inside_a_paragraph():
+    rule = _pulled_quote_rule()
+    assert "None goes inside a paragraph" in rule
+    assert "prose describes, attributes and links" in rule
+    assert "news article or official statement may stay inline" in rule
+
+
+def test_pulled_quotes_run_up_to_six_per_story_with_a_quality_bar():
+    rule = _pulled_quote_rule()
+    assert "Give each paragraph up to six that are good" in rule
+    assert "never pad with weak or off-topic ones" in rule
+    assert "a blank line between" in rule
+    for cap in ("at most one", "up to three", "up to five", "one per story"):
+        assert cap not in rule
+    text = reference_text("synthesis") + SKILL_MD.read_text(encoding="utf-8")
+    assert "at most one comment" not in text
+    assert "at least two attributed comments" not in text
+    assert "weave at least 2" not in text
+
+
+def test_pulled_quote_names_the_engine_blocks_it_copies_from():
+    rule = _pulled_quote_rule()
+    assert "`## Top Community Comments`" in rule
+    assert "`## Posts by @handle`" in rule
+    assert "the paragraph above keeps the source link" in rule
 
 
 def test_pulled_quote_copies_the_engine_attribution_and_carries_no_link():
@@ -94,7 +123,6 @@ def test_pulled_quote_skips_authorless_comments_and_stories_without_one():
     rule = _pulled_quote_rule()
     assert "attributed `Comment`" in rule
     assert "none fits, no quote" in rule
-    assert "comment or X post" in rule
 
 
 def test_pulled_quote_stays_out_of_fixed_shape_reports():
@@ -108,17 +136,54 @@ def test_pulled_quote_rule_adds_no_markdown_list():
         assert not line.lstrip().startswith(("- ", "* ", "1. "))
 
 
-def test_fun_content_allows_a_translated_or_pulled_quote():
+def test_fun_content_sends_translated_or_verbatim_quotes_to_quote_lines():
     text = reference_text("synthesis")
     fun = text.split("**FUN CONTENT (see LAW 9)", 1)[1].split("\n\n", 1)[0]
-    assert "VERBATIM or translated" in fun
-    assert "Weave it in or pull it; no separate section." in fun
+    assert "VERBATIM or translated, on PULLED QUOTE lines" in fun
+    assert "No separate section." in fun
+    assert "eave" not in fun
 
 
-def test_root_law_counts_pulled_quotes_as_woven_comments():
+def test_root_law_puts_every_quoted_comment_on_a_quote_line():
     law9 = _law9()
-    assert "weave at least two attributed comments, verbatim or translated, into the narrative or as pulled quotes" in law9
+    assert "QUOTE THE COMMUNITY ON QUOTE LINES" in law9
+    assert "each quoted comment or post, verbatim or translated, goes on its own quote line" in law9
+    assert "never inside a paragraph" in law9
+    assert "synthesis PULLED QUOTE" in law9
     assert "Do not create a separate Comments section." in law9
+    assert "eave" not in law9
+
+
+def test_root_law_quotes_the_subjects_own_posts_on_quote_lines():
+    text = SKILL_MD.read_text(encoding="utf-8")
+    law10 = text.split("**LAW 10 -", 1)[1].split("**LAW 11 -", 1)[0]
+    assert "`## Posts by @handle`" in law10
+    assert "quote them on quote lines" in law10
+
+
+def test_final_check_looks_for_quotes_left_inside_paragraphs():
+    text = SKILL_MD.read_text(encoding="utf-8")
+    checklist = text.split("## PRE-PRESENT SELF-CHECK", 1)[1].split("\n## ", 1)[0]
+    assert "Every quoted comment or post is on its own quote line, none inside a paragraph" in checklist
+    assert "Weave" not in checklist
+
+
+def test_report_template_shows_quote_lines_under_paragraphs():
+    text = reference_text("synthesis")
+    template = text.split("{the engine's first line, copied verbatim}", 1)[1].split("```", 1)[0]
+    assert template.count('\n> "') >= 2
+    assert "](" not in "".join(line for line in template.splitlines() if line.startswith("> "))
+
+
+def test_runbook_describes_what_compact_output_really_holds():
+    runbook = reference_text("research-runbook")
+    assert "EIGHT data sections" not in runbook
+    line = next(line for line in runbook.splitlines() if line.startswith("**Read the ENTIRE output.**"))
+    for part in (
+        "`## Posts by @handle`", "`## Polymarket Markets`", "`## Top Community Comments`",
+        "top ranked clusters", "closing format checklist",
+    ):
+        assert part in line, part
 
 
 def test_instruction_examples_do_not_model_tacked_on_counts():

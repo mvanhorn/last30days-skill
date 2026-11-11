@@ -1,0 +1,1 @@
+Reports now put every quoted comment or post on its own quote line under the paragraph it supports (`> "quote" 🟠 u/author on r/sub · 1,315 upvotes`), up to six per story, and no longer quote comments or posts inside paragraphs. The earlier rule allowed one pulled quote per story and wove the rest inline.

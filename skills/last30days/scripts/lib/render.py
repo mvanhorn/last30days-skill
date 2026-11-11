@@ -757,8 +757,9 @@ def _render_registered_sections(
 
         top_comments = _render_top_comments(
             report,
-            limit=audience.budget_for("top_comments", 8),
+            limit=audience.budget_for("top_comments", QUOTE_POOL_LIMIT),
             candidates=aux_candidates,
+            clusters=solid_clusters,
         )
         if not top_comments:
             top_comments = [
@@ -766,6 +767,10 @@ def _render_registered_sections(
                 "",
                 "- No qualifying community comments surfaced in this run.",
             ]
+        # The subject's posts and the markets travel with the quote pool, in
+        # whatever place the preset gives it.
+        for block in reversed(_first_party_and_market_blocks(report)):
+            top_comments = [*block, "", *top_comments]
 
     sections = {
         "hiring_signals": (
@@ -800,6 +805,15 @@ def _render_registered_sections(
             lines.append("")
         lines.extend(block)
     return lines
+
+
+def _first_party_and_market_blocks(report: schema.Report) -> list[list[str]]:
+    """The subject's own posts and the Polymarket markets, each as a block."""
+    return [
+        block
+        for block in (_render_subject_posts(report), _render_polymarket_markets(report))
+        if block
+    ]
 
 
 def render_compact(
@@ -911,9 +925,13 @@ def render_compact(
             if best_takes:
                 lines.extend([""] + best_takes)
 
+            for block in _first_party_and_market_blocks(evidence_report):
+                lines.extend([""] + block)
+
             top_comments = _render_top_comments(
                 evidence_report,
                 candidates=aux_candidates,
+                clusters=solid_clusters,
             )
             if top_comments:
                 lines.extend([""] + top_comments)
@@ -4090,12 +4108,21 @@ def _comment_platform_dot(source: str | None) -> str:
     return ""
 
 
+# Sources whose label names no platform a reader would recognise in a quote
+# attribution ("on Web").
+_SOURCES_WITHOUT_A_PLACE = frozenset({"grounding", "corpus", "perplexity"})
+
+
 def _comment_community(item: schema.SourceItem) -> str:
-    """Where a comment was posted, as ``on r/sub``. Only Reddit has one."""
-    if item.source != "reddit":
+    """Where a comment or post was said: ``on r/sub`` for Reddit with a known
+    subreddit, else ``on <platform>`` (``on YouTube``, ``on Hacker News``)."""
+    if item.source == "reddit":
+        subreddit = (item.container or "").strip().removeprefix("r/")
+        if subreddit:
+            return f" on r/{subreddit}"
+    if not item.source or item.source in _SOURCES_WITHOUT_A_PLACE:
         return ""
-    subreddit = (item.container or "").strip().removeprefix("r/")
-    return f" on r/{subreddit}" if subreddit else ""
+    return f" on {_source_label(item.source)}"
 
 
 def _comment_count(score) -> str:
@@ -4321,28 +4348,220 @@ def _render_best_takes(
     return lines
 
 
+# Compact output budgets for the three blocks a report's quote lines and
+# first-party paragraphs are written from. Each entry is one line. A report
+# runs up to six quote lines under each of its six to eight stories, so the
+# pool leaves that choice to the writer rather than making it.
+QUOTE_POOL_LIMIT = 40
+SUBJECT_POSTS_LIMIT = 8
+POLYMARKET_MARKETS_LIMIT = 8
+# How many of a shown cluster's best entries are kept before the rest of the
+# pool is filled by cross-platform rank.
+_QUOTE_POOL_PER_CLUSTER = 3
+# A story told by one thread can still offer a paragraph's six quote lines.
+_QUOTE_POOL_PER_ITEM = 6
+# Sources whose post is itself the quotable text, so the post joins the pool
+# beside the comments other sources carry.
+_QUOTABLE_POST_SOURCES = frozenset({"x", "threads", "bluesky", "truthsocial"})
+# Quality floors for the pool. On a platform that counts likes or upvotes, a
+# comment nobody voted for is not a quote (a zero-like reel comment is as
+# often an ad), so it needs one vote to enter at all, and a post needs ten.
+# A quiet video's one-like best comment still gets in: the first three ranks
+# of a platform have no higher floor, and past them an entry needs a handful
+# of votes. A source that measures no votes (Hacker News comments) is held to
+# none of these. The comment lines inside the ranked clusters are not the
+# pool and keep their own per-source floors.
+_QUOTE_POOL_VOTE_COUNTING_SOURCES = frozenset(
+    {"instagram", "tiktok", "youtube", "x", "reddit", "threads", "bluesky", "linkedin"}
+)
+_QUOTE_POOL_MIN_VOTES = 1
+_QUOTE_POOL_POST_MIN_LIKES = 10
+_QUOTE_POOL_TAIL_MIN_VOTES = 5
+_QUOTE_POOL_FLOORLESS_RANKS = 3
+_QUOTE_TEXT_LIMIT = 240
+_SUBJECT_POST_TEXT_LIMIT = 280
+
+
+def _one_line_quote(text: str, limit: int) -> str:
+    """Scraped quote text on one line, bounded and defanged."""
+    return _format_untrusted_evidence(" ".join(str(text or "").split()), limit)
+
+
+def _quote_attribution(
+    item: schema.SourceItem, author: str | None, score, vote_label: str,
+) -> str:
+    """``🟠 u/author on r/sub · 1,315 upvotes``: the part of a quote line that
+    follows the quoted text, in the shape the report prints it. The count is
+    left out when the source measured none."""
+    dot = _comment_platform_dot(item.source)
+    count = (
+        f" · {_comment_count(score)} {vote_label}"
+        if score is not None and score != ""
+        else ""
+    )
+    return (
+        f"{dot + ' ' if dot else ''}{_comment_attribution(item.source, author)}"
+        f"{_comment_community(item)}{count}"
+    )
+
+
+def _subject_x_handle(report: schema.Report) -> str:
+    """The X handle this run resolved for its subject, lowercased, or ""."""
+    resolved = report.artifacts.get("resolved")
+    if not isinstance(resolved, dict):
+        return ""
+    return str(resolved.get("x_handle") or "").strip().lstrip("@").lower()
+
+
+def _post_likes(item: schema.SourceItem):
+    likes = (item.engagement or {}).get("likes")
+    return likes if isinstance(likes, (int, float)) and not isinstance(likes, bool) else None
+
+
+def _render_subject_posts(
+    report: schema.Report, limit: int = SUBJECT_POSTS_LIMIT,
+) -> list[str]:
+    """The subject's own X posts in the window, most liked first.
+
+    These are the posts returned for the resolved ``--x-handle``. Most never
+    reach a shown cluster, so without this block the only copy is the saved
+    file. Each line ends with the post's date and its own URL.
+    """
+    handle = _subject_x_handle(report)
+    if not handle:
+        return []
+    posts = [
+        item
+        for item in report.items_by_source.get("x") or []
+        if (item.author or "").strip().lstrip("@").lower() == handle
+        and (item.body or item.title or "").strip()
+        # A repost is someone else's words.
+        and not (item.body or item.title or "").lstrip().startswith("RT @")
+    ]
+    if not posts:
+        return []
+    posts.sort(key=lambda item: -(_post_likes(item) or 0))
+    lines = [f"## Posts by @{handle}", ""]
+    for item in posts[:limit]:
+        likes = _post_likes(item)
+        tail = "".join(
+            f" — {part}"
+            for part in (
+                item.published_at or "",
+                _sanitize_url_for_single_line_output(item.url or ""),
+            )
+            if part
+        )
+        lines.append(
+            f'- "{_one_line_quote(item.body or item.title, _SUBJECT_POST_TEXT_LIMIT)}" '
+            f"{_quote_attribution(item, item.author, None if likes is None else int(likes), 'likes')}"
+            f"{tail}"
+        )
+    return lines
+
+
+_POLYMARKET_MOVEMENT = re.compile(
+    r"^(?:up|down) \d+(?:\.\d+)?% (?:today|this week|this month)$"
+)
+
+
+def _polymarket_percent(price: float) -> str:
+    return f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%"
+
+
+def _render_polymarket_markets(
+    report: schema.Report, limit: int = POLYMARKET_MARKETS_LIMIT,
+) -> list[str]:
+    """Each market that names the topic: its question, every listed outcome
+    under that outcome's own label, the movement, the close date and the URL.
+
+    Largest volume first, as in the footer, and like the footer it prints odds
+    only, never a dollar amount. The movement belongs to the event's most
+    traded market, so that market's question follows it when the event's
+    title is a different sentence.
+    """
+    items = [
+        item
+        for item in report.items_by_source.get("polymarket") or []
+        if polymarket.names_whole_topic(
+            report.topic,
+            item.title,
+            str(item.metadata.get("question") or ""),
+            (_polymarket_headline(item) or ("",))[0],
+        )
+    ]
+    items.sort(key=lambda item: -((item.engagement or {}).get("volume") or 0))
+    lines: list[str] = []
+    for item in items:
+        odds = [
+            f"{_one_line_quote(name, 60)}: {_polymarket_percent(price)}"
+            for name, price in (
+                pair for pair in item.metadata.get("outcome_prices") or []
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            )
+            if isinstance(price, (int, float)) and not isinstance(price, bool)
+        ]
+        if not odds:
+            continue
+        title = _safe_title(item.title)
+        odds_part = " | ".join(odds)
+        remaining = item.metadata.get("outcomes_remaining") or 0
+        if isinstance(remaining, int) and remaining > 0:
+            odds_part += f" (+{remaining} more outcomes)"
+        parts = [title, odds_part]
+        movement = " ".join((item.snippet or "").split())
+        if _POLYMARKET_MOVEMENT.match(movement):
+            question = _safe_title(str(item.metadata.get("question") or ""))
+            parts.append(
+                f"{movement} ({question})" if question and question != title else movement
+            )
+        end_date = str(item.metadata.get("end_date") or "").strip()
+        if end_date:
+            parts.append(f"closes {_one_line_quote(end_date, 20)}")
+        url = _sanitize_url_for_single_line_output(item.url or "")
+        if url:
+            parts.append(url)
+        lines.append("- " + " — ".join(parts))
+        if len(lines) >= limit:
+            break
+    return ["## Polymarket Markets", "", *lines] if lines else []
+
+
 def _render_top_comments(
     report,
-    limit: int = 8,
+    limit: int = QUOTE_POOL_LIMIT,
     *,
     candidates: list[schema.Candidate] | None = None,
+    clusters: list[schema.Cluster] | None = None,
 ) -> list[str]:
-    """Vote-ranked community comments across ALL ranked candidates — not just the
-    top-cluster representatives — surfaced into the EVIDENCE block so the reading
-    model can weave the funniest/highest-engagement lines into the synthesis.
+    """The quote pool: vote-ranked community comments, and the posts of
+    sources whose post is the quotable text, across ALL ranked candidates —
+    not just the top-cluster representatives — surfaced into the EVIDENCE block
+    so the reading model can put the best lines on the report's quote lines.
 
     This exists because `_render_best_takes` only populates when the engine has an
     LLM fun-scorer (a paid provider the subprocess usually lacks), so in normal
     use the funniest comments never reach the model. This block always surfaces
     the crowd-voted comments and leaves the funny/quotable SELECTION to the model
     (a capable fun judge). Ranking is per-platform-normalized so one platform
-    can't crowd out the rest; each line carries the platform dot, the author,
-    the subreddit for Reddit, the count and the verbatim comment/post URL, so
-    the model can attribute and cite without looking anything up.
+    can't crowd out the rest. Every line has one shape, the quote line's own:
+    the quoted text, the platform dot, the author, the subreddit or platform,
+    the count when the source measured one, then the URL of the comment or of
+    the post it sits on, so the model attributes and cites without looking
+    anything up.
+
+    ``clusters`` are the clusters the output shows, in the order it numbers
+    them. Each keeps its own best entries ahead of the cross-platform fill, so
+    every shown story has a quote to offer, and its entries end ``cluster N``.
+    An entry from elsewhere ends with the title of the thread it came from.
+    The subject's own X posts are left to ``_render_subject_posts``.
     """
     seen: set[str] = set()
-    scored: list[tuple[float, schema.Candidate, schema.SourceItem, dict, str]] = []
+    post_rows: set[str] = set()
+    # (strength, raw count, candidate, item, author, score, vote label, body, url)
+    scored: list[tuple] = []
     candidate_pool = report.ranked_candidates if candidates is None else candidates
+    subject_handle = _subject_x_handle(report)
     floor_candidates = [
         cand
         for cand in candidate_pool
@@ -4361,18 +4580,49 @@ def _render_top_comments(
         ):
             continue
         for item in cand.source_items:
+            entries: list[tuple] = []
             # Pass min_score=0 here: the cross-platform list deliberately does
             # NOT gate on the per-platform absolute floor, because a less-watched
-            # video's killer low-vote top comment is gold too. The 3-per-item cap
+            # video's killer low-vote top comment is gold too. One vote is
+            # still required where the platform counts them (below). A per-item cap
             # still applies; cross-platform fairness is handled by the rank-based
             # round-robin below, and the model makes the final quotable pick.
-            for tc in _top_comments_list(item, min_score=0):
+            for tc in _top_comments_list(
+                item, limit=_QUOTE_POOL_PER_ITEM, min_score=0
+            ):
                 if not isinstance(tc, dict):
+                    continue
+                votes = tc.get("score")
+                if item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES and not (
+                    isinstance(votes, (int, float))
+                    and not isinstance(votes, bool)
+                    and votes >= _QUOTE_POOL_MIN_VOTES
+                ):
                     continue
                 body = (
                     tc.get("excerpt") or tc.get("text") or tc.get("body") or ""
                 ).strip()
-                if len(body) < 12:
+                # A comment with no link of its own is cited by the item it
+                # sits on. The candidate's URL is another item's whenever the
+                # candidate fused several.
+                url = _comment_link(item, tc, fallback=item.url or cand.url)
+                entries.append(
+                    (tc.get("author"), tc.get("score"), _vote_label_for(item.source), body, url)
+                )
+            author_key = (item.author or "").strip().lstrip("@").lower()
+            if (
+                item.source in _QUOTABLE_POST_SOURCES
+                and author_key
+                and not (item.source == "x" and author_key == subject_handle)
+            ):
+                likes = _post_likes(item)
+                text = (item.body or item.title or "").strip()
+                if (likes or 0) >= _QUOTE_POOL_POST_MIN_LIKES and not text.startswith("RT @"):
+                    entries.append((item.author, int(likes), "likes", text, item.url or cand.url))
+                    post_rows.add(text[:60].lower())
+            for author, score, vote_label, body, url in entries:
+                # Too short to quote, or no words at all (a row of emoji).
+                if len(body) < 12 or sum(ch.isalnum() for ch in body) < 4:
                     continue
                 key = body[:60].lower()
                 if key in seen:
@@ -4380,13 +4630,20 @@ def _render_top_comments(
                 seen.add(key)
                 # Blend vote strength (60%) with thread relevance (40%) so comments
                 # from on-topic threads rank above off-topic viral comments.
-                vote_strength = signals.normalized_comment_vote(
-                    item.source, tc.get("score")
-                )
+                vote_strength = signals.normalized_comment_vote(item.source, score)
                 strength = 0.6 * vote_strength + 0.4 * (cand.local_relevance or 0.0)
-                scored.append((strength, cand, item, tc, body))
+                raw = score if isinstance(score, (int, float)) else 0
+                scored.append(
+                    (strength, raw, cand, item, author, score, vote_label, body, url)
+                )
     if len(scored) < 2:
         return []
+
+    def by_strength(row):
+        # The normalized vote saturates at the platform's reference, so the raw
+        # count orders the comments above it.
+        return (-row[0], -row[1])
+
     # Rank-based cross-platform diversity: group by platform, rank each
     # platform's comments by within-platform vote strength, then interleave by
     # rank -- every platform's #1, then every #2, then every #3, and so on. This
@@ -4398,32 +4655,65 @@ def _render_top_comments(
     # among same-rank picks. The model still makes the final quotable pick.
     by_source: dict[str, list] = {}
     for row in scored:
-        by_source.setdefault(row[2].source, []).append(row)
+        by_source.setdefault(row[3].source, []).append(row)
     for src_rows in by_source.values():
-        src_rows.sort(key=lambda row: -row[0])
+        src_rows.sort(key=by_strength)
     ordered: list = []
     deepest = max(len(rows) for rows in by_source.values())
+    fill: set[int] = set()
     for rank in range(deepest):
         tier = [rows[rank] for rows in by_source.values() if len(rows) > rank]
         tier.sort(key=lambda row: -row[0])  # among same-rank picks, strongest first
         ordered.extend(tier)
-    lines = ["## Top Community Comments", ""]
-    for _strength, cand, item, tc, body in ordered[:limit]:
-        score = tc.get("score", "")
-        vote_label = _vote_label_for(item.source)
-        attribution = _comment_attribution(item.source, tc.get("author"))
-        url = _comment_link(item, tc, fallback=cand.url)
-        url_part = f" — {url}" if url else ""
-        vote_part = (
-            f" ({_comment_count(score)} {vote_label})"
-            if score is not None and score != ""
-            else ""
+        fill.update(
+            id(row)
+            for row in tier
+            if rank < _QUOTE_POOL_FLOORLESS_RANKS
+            or row[5] is None
+            or row[5] == ""
+            or row[1] >= _QUOTE_POOL_TAIL_MIN_VOTES
         )
-        dot = _comment_platform_dot(item.source)
-        dot_part = f"{dot} " if dot else ""
+
+    # Each shown cluster keeps its own best entries before the fill, in the
+    # order the clusters are shown, so a quiet story is not left without a quote
+    # by a loud thread elsewhere.
+    cluster_number: dict[str, int] = {}
+    for number, cluster in enumerate(clusters or [], start=1):
+        for candidate_id in cluster.candidate_ids:
+            cluster_number.setdefault(candidate_id, number)
+    kept: set[int] = set()
+    for number in range(1, len(clusters or []) + 1):
+        own = sorted(
+            (row for row in scored if cluster_number.get(row[2].candidate_id) == number),
+            key=by_strength,
+        )
+        for row in own[:_QUOTE_POOL_PER_CLUSTER]:
+            if len(kept) < limit:
+                kept.add(id(row))
+    for row in ordered:
+        if len(kept) >= limit:
+            break
+        if id(row) in fill:
+            kept.add(id(row))
+
+    lines = ["## Top Community Comments", ""]
+    for row in ordered:
+        if id(row) not in kept:
+            continue
+        _strength, _raw, cand, item, author, score, vote_label, body, url = row
+        url = _sanitize_url_for_single_line_output(url or "")
+        url_part = f" — {url}" if url else ""
+        number = cluster_number.get(cand.candidate_id)
+        if number:
+            origin = f" — cluster {number}"
+        elif clusters and body[:60].lower() not in post_rows:
+            thread = _truncate(_safe_title(cand.title or ""), 60)
+            origin = f' — re: "{thread}"' if thread else ""
+        else:
+            origin = ""
         lines.append(
-            f'- "{_format_untrusted_evidence(body, 240, continuation_indent="  ")}" '
-            f"— {dot_part}{attribution}{_comment_community(item)}{vote_part}{url_part}"
+            f'- "{_one_line_quote(body, _QUOTE_TEXT_LIMIT)}" '
+            f"{_quote_attribution(item, author, score, vote_label)}{url_part}{origin}"
         )
     return lines
 

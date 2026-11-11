@@ -50,7 +50,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, report_checklist, schema, subproc, ui, x_envelope, yahoo_finance
 from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -2794,8 +2794,29 @@ def _render_save_and_print(
         except Exception as exc:
             sys.stderr.write(f"[last30days] HTML publish failed: {exc}\n")
             sys.stderr.flush()
-    print(rendered)
+    checklist = _report_checklist_for_stdout(args, rendered, entity_reports, audience.name)
+    if checklist:
+        print(rendered + checklist, end="")
+    else:
+        print(rendered)
     return _strict_exit_code(report, entity_reports, config)
+
+
+def _report_checklist_for_stdout(
+    args: argparse.Namespace,
+    rendered: str,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+    register: str,
+) -> str:
+    """The format checklist that follows compact stdout, or "" for any other
+    output. It is added here, at the print, so no saved or ``--output`` file,
+    no other emit mode and no renderer ever carries it. A hiring-signals run
+    writes its own scoped report, which the checklist does not describe."""
+    if args.emit != "compact" or getattr(args, "hiring_signals", False):
+        return ""
+    return report_checklist.build(
+        rendered, comparison=bool(entity_reports), register=register,
+    )
 
 
 def _propagate_config_to_environ(config: dict[str, object]) -> None:

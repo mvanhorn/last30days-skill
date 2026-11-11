@@ -681,7 +681,7 @@ class RenderTopCommentsTests(unittest.TestCase):
         self.assertNotIn("@carol (10 likes):", text)
         # But the cross-platform Top Community Comments list surfaces her (U3:
         # rank-based, no absolute floor -- a low-vote comment can be gold).
-        self.assertIn('"below threshold" — 🔴 @carol (10 likes)', text)
+        self.assertIn('"below threshold" 🔴 @carol on YouTube · 10 likes', text)
 
     def test_reddit_comment_without_author_falls_back_to_legacy_label(self):
         """When author is missing or [deleted], render falls back to 'Comment (...)'."""
@@ -728,7 +728,7 @@ class RenderTopCommentsTests(unittest.TestCase):
         self.assertNotIn("@c (400 likes):", text)
         # Community list surfaces c (it's the item's #3, within the 3-per-item cap;
         # U3 drops the absolute floor there).
-        self.assertIn('"below tt threshold" — 🎵 @c (400 likes)', text)
+        self.assertIn('"below tt threshold" 🎵 @c on TikTok · 400 likes', text)
         # d (50) is the item's 4th comment -> dropped by the 3-per-item cap, so it
         # never appears anywhere.
         self.assertNotIn("@d (50 likes)", text)

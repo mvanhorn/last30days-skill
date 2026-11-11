@@ -155,10 +155,10 @@ def _bullet_count(output: str, heading: str) -> int:
             "creator",
             ["Best Takes", "Top Community Comments", "Stats", "Ranked Evidence Clusters", "Source Coverage"],
             6,
-            # The register's own top_comments budget. It used to read 6 only
-            # because the comments pool was limited to the 6 visible clusters;
-            # the pool now spans every floor-clearing cluster.
-            8,
+            # Every quotable entry the fixture holds (12 comments and the X
+            # and Bluesky posts): the creator budget is the full quote pool,
+            # 40, as the default register's is. exec and dev keep theirs.
+            14,
         ),
     ],
 )
@@ -219,8 +219,11 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
         # text footer, and #1082's removal of LAW N framing from model-visible
         # contract text, then moving presentation commands out of the payload,
         # and Top Community Comments lines naming the platform dot and subreddit,
-        # and job roles reported on their own Stats line, outside the total.
-        "bca898a092634775109f7c2f2bea3e29dc24cb064f64cbb5e1fb34f4747b8c36"
+        # and job roles reported on their own Stats line, outside the total,
+        # and the quote pool: up to 40 entries in the quote line's own shape
+        # (platform name, `· count`), posts beside comments, each naming its
+        # cluster or thread.
+        "bda8aa41d92dcc1aa18d3d38ad25a23137ca586d9229585ea0df9f674efd24fd"
     )
 
 
