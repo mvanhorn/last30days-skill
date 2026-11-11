@@ -185,13 +185,20 @@ def _render_vote_paths(points):
     }
 
 
+def _points(path, count):
+    """How a path prints an HN vote count: the quote pool uses the quote
+    line's own shape, the other two the parenthesised one."""
+    return f"· {count} points" if path == "top_comments" else f"({count} points)"
+
+
 def test_absent_hn_vote_is_omitted_across_comment_renderers():
     """A missing vote must not display a fabricated numeric measurement."""
     normalized_score, rendered_paths = _render_vote_paths(None)
     assert normalized_score is None
     for path, rendered in rendered_paths.items():
-        assert "(0 points)" not in rendered, f"{path}:\n{rendered}"
-        assert "(93 points)" in rendered, f"{path} dropped a real vote count"
+        assert _points(path, 0) not in rendered, f"{path}:\n{rendered}"
+        assert _points(path, 93) in rendered, f"{path} dropped a real vote count"
+    assert '" 🟡 bob on Hacker News — ' in rendered_paths["top_comments"]
 
 
 def test_explicit_zero_hn_vote_is_rendered_across_comment_renderers():
@@ -199,7 +206,7 @@ def test_explicit_zero_hn_vote_is_rendered_across_comment_renderers():
     normalized_score, rendered_paths = _render_vote_paths(0)
     assert normalized_score == 0
     for path, rendered in rendered_paths.items():
-        assert "(0 points)" in rendered, f"{path} hid an explicit numeric zero"
+        assert _points(path, 0) in rendered, f"{path} hid an explicit numeric zero"
 
 
 def test_best_takes_uses_normalized_hn_comment_excerpt():
@@ -302,16 +309,12 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     fused.fun_score = 80.0
     control.fun_score = 80.0
 
-    with patch(
-        "lib.render.signals.normalized_comment_vote",
-        wraps=render.signals.normalized_comment_vote,
-    ) as normalized_vote:
-        top_comments = "\n".join(
-            render._render_top_comments(
-                _report(reddit, fused),
-                candidates=[fused, control],
-            )
+    top_comments = "\n".join(
+        render._render_top_comments(
+            _report(reddit, fused),
+            candidates=[fused, control],
         )
+    )
     rendered = "\n".join(
         render._render_best_takes([fused, control], threshold=70.0, vote_weight=0.0)
     )
@@ -325,12 +328,10 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     retained_line = next(
         line for line in top_comments.splitlines() if "The retained HN take." in line
     )
-    assert "— 🟡 alice (93 points)" in retained_line
+    assert '" 🟡 alice on Hacker News · 93 points' in retained_line
     assert "upvotes" not in retained_line
     assert "u/alice" not in retained_line
-    assert any(
-        call.args == ("hackernews", 93) for call in normalized_vote.call_args_list
-    )
+    assert retained_line.endswith(" — top comment — funny")
 
 
 # --- Comment permalinks (R7/R8): a quote links to where it was said. -------

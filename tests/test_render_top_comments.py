@@ -1,8 +1,9 @@
-"""Top Community Comments lines carry what a pulled quote's attribution needs.
+"""Top Community Comments lines carry a quote line's attribution, ready to copy.
 
-Each line names the platform with the footer's dot, the author, the subreddit
-for Reddit, and the count, so the writer copies them without looking anything
-up elsewhere in the evidence.
+Each line reads as the report's quote line does: the quoted text, the footer's
+dot for the platform, the author, the subreddit or the platform's name, and
+the count, then the URL. The writer copies everything before the URL without
+looking anything up elsewhere in the evidence.
 """
 
 from lib import fusion, render, schema
@@ -85,24 +86,24 @@ def test_reddit_line_carries_dot_author_subreddit_and_upvotes():
     lines = render._render_top_comments(_report(REDDIT, TIKTOK))
     line = _line(lines, "Internet feelings")
     assert line == (
-        '- "Internet feelings vs reality." — 🟠 u/CappaccinoJay on r/hiphopheads'
-        " (1,315 upvotes) — https://www.reddit.com/r/hiphopheads/comments/abc/thread/"
+        '- "Internet feelings vs reality." 🟠 u/CappaccinoJay on r/hiphopheads'
+        " · 1,315 upvotes — https://www.reddit.com/r/hiphopheads/comments/abc/thread/ — top comment"
     )
 
 
-def test_tiktok_line_carries_dot_handle_and_likes_without_a_community():
+def test_tiktok_line_carries_dot_handle_platform_name_and_likes():
     lines = render._render_top_comments(_report(REDDIT, TIKTOK))
     line = _line(lines, "literally him")
     assert line == (
-        '- "Ofc shes literally him😭" — 🎵 @haktimel2 (825,451 likes)'
-        " — https://www.tiktok.com/@north/video/1"
+        '- "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes'
+        " — https://www.tiktok.com/@north/video/1 — top comment"
     )
 
 
 def test_evidence_lines_hold_every_part_of_a_pulled_quote_attribution():
     lines = render._render_top_comments(_report(TIKTOK, REDDIT))
     for needle, parts in (
-        ("literally him", ('"Ofc shes literally him😭"', "🎵", "@haktimel2", "825,451 likes")),
+        ("literally him", ('"Ofc shes literally him😭"', "🎵", "@haktimel2", "on TikTok", "825,451 likes")),
         (
             "Internet feelings",
             ('"Internet feelings vs reality."', "🟠", "u/CappaccinoJay", "on r/hiphopheads", "1,315 upvotes"),
@@ -116,14 +117,14 @@ def test_evidence_lines_hold_every_part_of_a_pulled_quote_attribution():
 def test_subreddit_already_prefixed_is_not_doubled():
     prefixed = _item("reddit", REDDIT.url, REDDIT.metadata["top_comments"], container="r/hiphopheads")
     line = _line(render._render_top_comments(_report(prefixed, TIKTOK)), "Internet feelings")
-    assert "on r/hiphopheads (" in line
+    assert "on r/hiphopheads · " in line
     assert "r/r/" not in line
 
 
-def test_reddit_line_without_a_subreddit_names_no_community():
+def test_reddit_line_without_a_subreddit_names_the_platform():
     bare = _item("reddit", REDDIT.url, REDDIT.metadata["top_comments"])
     line = _line(render._render_top_comments(_report(bare, TIKTOK)), "Internet feelings")
-    assert "— 🟠 u/CappaccinoJay (1,315 upvotes)" in line
+    assert '" 🟠 u/CappaccinoJay on Reddit · 1,315 upvotes — ' in line
     assert " on r/" not in line
 
 
@@ -138,19 +139,19 @@ def test_deleted_or_missing_author_keeps_the_comment_fallback():
         container="hiphopheads",
     )
     lines = render._render_top_comments(_report(item))
-    assert "— 🟠 Comment on r/hiphopheads (900 upvotes)" in _line(lines, "deleted account")
-    assert "— 🟠 Comment on r/hiphopheads (400 upvotes)" in _line(lines, "Nobody is recorded")
+    assert '" 🟠 Comment on r/hiphopheads · 900 upvotes — ' in _line(lines, "deleted account")
+    assert '" 🟠 Comment on r/hiphopheads · 400 upvotes — ' in _line(lines, "Nobody is recorded")
     assert "u/" not in "\n".join(lines)
 
 
-def test_source_without_a_footer_dot_gets_no_marker():
+def test_web_page_comment_gets_no_dot_and_no_platform_name():
     item = _item(
         "grounding",
         "https://example.com/post",
         [{"author": "ada", "score": 12, "excerpt": "A reader comment on a web page."}],
     )
     line = _line(render._render_top_comments(_report(item, TIKTOK)), "reader comment")
-    assert '" — ada (12 votes) — https://example.com/post' in line
+    assert line == '- "A reader comment on a web page." ada · 12 votes — https://example.com/post — top comment'
 
 
 def test_dots_come_from_the_footer_table():
@@ -162,7 +163,8 @@ def test_dots_come_from_the_footer_table():
             [{"author": "ada", "score": 5, "excerpt": f"A comment found on {source} today."}],
         )
         line = _line(render._render_top_comments(_report(item, TIKTOK)), f"found on {source} ")
-        assert f"— {footer[source]} " in line, line
+        assert f'" {footer[source]} ' in line, line
+        assert f" on {render._source_label(source)} · 5 " in line, line
 
 
 def test_author_score_and_subreddit_survive_a_duplicate_merge():
@@ -177,7 +179,7 @@ def test_author_score_and_subreddit_survive_a_duplicate_merge():
         {"author": "CappaccinoJay", "score": 1315, "excerpt": "Internet feelings vs reality."}
     ]
     line = _line(render._render_top_comments(_report(kept, TIKTOK)), "Internet feelings")
-    assert "🟠 u/CappaccinoJay on r/hiphopheads (1,315 upvotes)" in line
+    assert "🟠 u/CappaccinoJay on r/hiphopheads · 1,315 upvotes" in line
 
 
 def test_merge_keeps_the_fuller_comment_list_with_its_authors():

@@ -295,3 +295,151 @@ def test_deadline_ladder_with_only_long_shots_keeps_its_nearest_rung():
         _market(q.format("March 31, 2027"), "March 31, 2027", 0.04, 5000, "2027-04-01"),
     ])
     assert _footer("Jensen Huang", event) == ["Jensen Huang arrested by Dec 31, 2026 2.0%"]
+
+
+# --- Odds lines: one ready-to-copy line per market in compact output ---
+
+
+def _moved(market, **changes):
+    return {**market, **changes}
+
+
+def _odds_entries(topic, *events):
+    block = render._render_polymarket_markets(_report(topic, *events))
+    return [line[2:] for line in block if line.startswith("- ")]
+
+
+def _odds_line(entry):
+    return entry.split(" — ", 1)[0]
+
+
+def test_deadline_ladder_odds_line_lists_the_nearest_live_deadlines_in_date_order():
+    (entry,) = _odds_entries("Jensen Huang", JENSEN_RESIGN)
+    assert _odds_line(entry) == (
+        "📊 Polymarket · Jensen Huang announced resignation or removal: "
+        "16% by Dec 31 · 24% by Mar 31, 2027 · 38% by Dec 31, 2027"
+    )
+    assert entry.split(" — ")[1] == "https://polymarket.com/event/event"
+
+
+def test_odds_line_puts_movement_in_points_after_the_outcome_it_belongs_to():
+    divorce = _event("1344318", "Jensen Huang divorce by...?", [
+        _moved(JENSEN_DIVORCE["markets"][0], oneDayPriceChange=-0.01, oneWeekPriceChange=0.004),
+        _moved(JENSEN_DIVORCE["markets"][1], oneMonthPriceChange=0.07),
+    ])
+    (entry,) = _odds_entries("Jensen Huang", divorce)
+    assert _odds_line(entry) == (
+        "📊 Polymarket · Jensen Huang divorce: 9.5% by Dec 31 (down 1 pt today)"
+        " · 18% by Mar 31, 2027 (up 7 pts this month)"
+    )
+    assert "%)" not in entry and "% today" not in entry
+
+
+def test_bracket_odds_line_gives_the_top_outcomes_their_own_labels():
+    cities = _event("638395", WAYMO_CITIES["title"], [
+        WAYMO_CITIES["markets"][0],
+        _moved(WAYMO_CITIES["markets"][1], oneWeekPriceChange=0.188),
+        *WAYMO_CITIES["markets"][2:],
+    ])
+    (entry,) = _odds_entries("Waymo", cities)
+    assert _odds_line(entry) == (
+        "📊 Polymarket · How many cities will Waymo operate in by Dec 31: "
+        "12-15 at 79% (up 18.8 pts this week) · 16-19 at 12%"
+    )
+
+
+def test_bracket_odds_line_holds_at_most_three_outcomes_and_no_long_dash():
+    (entry,) = _odds_entries("Anthropic", ANTHROPIC_CAP)
+    line = _odds_line(entry)
+    assert line == (
+        "📊 Polymarket · Anthropic IPO Closing Market Cap: "
+        "$1.25-$1.5T at 42% · <$1.25T at 24% · $1.5-$1.75T at 21%"
+    )
+    assert line.count(" at ") == 3
+    assert "–" not in line and "—" not in line
+    assert " — +1 more outcome" in entry
+
+
+def test_placeholder_in_an_event_title_is_dropped_from_the_subject():
+    (entry,) = _odds_entries("Anthropic", ANTHROPIC_HIT)
+    assert _odds_line(entry) == (
+        "📊 Polymarket · Anthropic’s valuation hit by Dec 31: "
+        "↑$1.5T at 70% · ↑$2.0T at 28% · ↑$3.0T at 10%"
+    )
+
+
+def test_single_market_odds_line_is_the_one_price():
+    event = _event("3", "Tesla and SpaceX merger officially announced by December 31, 2027?", [
+        _moved(
+            _market("Tesla and SpaceX merger officially announced by December 31, 2027?", "", 0.68, 500),
+            oneMonthPriceChange=-0.135,
+        ),
+    ])
+    (entry,) = _odds_entries("SpaceX", event)
+    assert _odds_line(entry) == (
+        "📊 Polymarket · Tesla and SpaceX merger officially announced by Dec 31, 2027: "
+        "68% (down 13.5 pts this month)"
+    )
+    assert entry.endswith(" — https://polymarket.com/event/event — closes 2027-01-01")
+
+
+def test_long_market_question_keeps_its_ending_on_the_odds_line():
+    question = (
+        "Will the Nvidia board announce the result of its independent investigation "
+        "into Jensen Huang before the congressional briefing on November 18, 2026?"
+    )
+    event = _event("9", question, [_market(question, "", 0.31, 500)])
+    (entry,) = _odds_entries("Jensen Huang", event)
+    line = _odds_line(entry)
+    assert "congressional briefing on Nov 18" in line
+    assert line.endswith(": 31%")
+    assert "..." not in line
+
+
+def test_single_market_with_named_outcomes_lists_them():
+    (entry,) = _odds_entries("Youzheng Huang", TABLE_TENNIS)
+    assert _odds_line(entry) == (
+        "📊 Polymarket · WTT Contender: Anders Lind vs Youzheng Huang: "
+        "Youzheng Huang at 50% · Anders Lind at 50%"
+    )
+
+
+def test_ladder_odds_line_skips_passed_and_dead_rungs(monkeypatch):
+    monkeypatch.setattr(polymarket, "_today", lambda: "2027-02-01", raising=False)
+    (entry,) = _odds_entries("Jensen Huang", JENSEN_RESIGN)
+    assert _odds_line(entry).endswith(": 24% by Mar 31, 2027 · 38% by Dec 31, 2027")
+    monkeypatch.setattr(polymarket, "_today", lambda: TODAY, raising=False)
+    ipo = "Anthropic IPO by {}?"
+    event = _event("77", "Anthropic IPO by...?", [
+        _market(ipo.format("November 17, 2026"), "November 17, 2026", 0.008, 900000, "2026-11-18"),
+        _market(ipo.format("December 31, 2026"), "December 31, 2026", 0.97, 500000, "2027-01-01"),
+    ])
+    (entry,) = _odds_entries("Anthropic", event)
+    assert _odds_line(entry) == "📊 Polymarket · Anthropic IPO: 97% by Dec 31"
+
+
+def test_odds_lines_never_print_a_volume_and_stay_within_eight_markets():
+    events = [
+        _event(str(index), f"Will Waymo do thing {index} in 2027?", [
+            _market(f"Will Waymo do thing {index} in 2027?", "", 0.5, 123456 + index),
+        ], slug=f"e{index}")
+        for index in range(12)
+    ]
+    entries = _odds_entries("Waymo", *events)
+    assert len(entries) == render.POLYMARKET_MARKETS_LIMIT == 8
+    for entry in entries:
+        assert "123" not in entry and "$" not in entry
+        assert entry.startswith("📊 Polymarket · Waymo do thing ")
+
+
+def test_item_saved_before_odds_were_stored_still_gets_a_line():
+    (item,) = _items("Waymo", WAYMO_CITIES)
+    del item.metadata["odds"]
+    item.snippet = "up 18.8% this week"
+    report = _report("Waymo", WAYMO_CITIES)
+    report.items_by_source["polymarket"] = [item]
+    (entry,) = [line[2:] for line in render._render_polymarket_markets(report) if line.startswith("- ")]
+    assert _odds_line(entry) == (
+        "📊 Polymarket · How many cities will Waymo operate in by Dec 31: "
+        "12-15 at 79% · 16-19 at 12%"
+    )

@@ -949,6 +949,7 @@ def enrich_with_comments(
         try:
             return _fetch_post_comments(
                 post_url, token, max_comments, deadline=deadline, cancel=cancel,
+                creator=str(item.get("author_name") or ""),
             )
         except Exception as exc:
             _log(f"Comment enrichment failed for {post_url}: {exc}")
@@ -983,6 +984,7 @@ def _fetch_post_comments(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    creator: str = "",
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a single Instagram post/reel via ScrapeCreators.
 
@@ -1033,4 +1035,11 @@ def _fetch_post_comments(
             "comment_like_count": c.get("comment_like_count", 0) or 0,
             "date": date_str,
         })
+        # Whether the post's own creator wrote this. Both are handles, a stable
+        # identifier, so they compare exactly. With no handle on either side
+        # the key is left out: unknown.
+        handle = str(user.get("username") or "").strip().lstrip("@").lower()
+        owner = str(creator or "").strip().lstrip("@").lower()
+        if handle and owner:
+            out[-1]["is_uploader"] = handle == owner
     return out

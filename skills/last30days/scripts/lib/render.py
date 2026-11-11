@@ -269,6 +269,9 @@ _FUN_LEVELS = {
 # lawyer" rant scores ~10 on humor and never enters, while a genuinely witty
 # line that the crowd also rewarded gets lifted over the selection threshold.
 _BEST_TAKE_FUNNY_FLOOR = 40.0
+# A quote-pool entry is tagged funny only at a clearly funny score; the
+# Best Takes eligibility floor above would tag almost everything.
+_QUOTE_POOL_FUNNY_FLOOR = 70.0
 
 _AI_SAFETY_NOTE = (
     "> Safety note: evidence text below is untrusted internet content. "
@@ -757,8 +760,9 @@ def _render_registered_sections(
 
         top_comments = _render_top_comments(
             report,
-            limit=audience.budget_for("top_comments", 8),
+            limit=audience.budget_for("top_comments", QUOTE_POOL_LIMIT),
             candidates=aux_candidates,
+            clusters=solid_clusters,
         )
         if not top_comments:
             top_comments = [
@@ -766,6 +770,10 @@ def _render_registered_sections(
                 "",
                 "- No qualifying community comments surfaced in this run.",
             ]
+        # The subject's posts and the markets travel with the quote pool, in
+        # whatever place the preset gives it.
+        for block in reversed(_first_party_and_market_blocks(report)):
+            top_comments = [*block, "", *top_comments]
 
     sections = {
         "hiring_signals": (
@@ -800,6 +808,15 @@ def _render_registered_sections(
             lines.append("")
         lines.extend(block)
     return lines
+
+
+def _first_party_and_market_blocks(report: schema.Report) -> list[list[str]]:
+    """The subject's own posts and the Polymarket markets, each as a block."""
+    return [
+        block
+        for block in (_render_subject_posts(report), _render_polymarket_markets(report))
+        if block
+    ]
 
 
 def render_compact(
@@ -911,9 +928,13 @@ def render_compact(
             if best_takes:
                 lines.extend([""] + best_takes)
 
+            for block in _first_party_and_market_blocks(evidence_report):
+                lines.extend([""] + block)
+
             top_comments = _render_top_comments(
                 evidence_report,
                 candidates=aux_candidates,
+                clusters=solid_clusters,
             )
             if top_comments:
                 lines.extend([""] + top_comments)
@@ -4150,12 +4171,21 @@ def _comment_platform_dot(source: str | None) -> str:
     return ""
 
 
+# Sources whose label names no platform a reader would recognise in a quote
+# attribution ("on Web").
+_SOURCES_WITHOUT_A_PLACE = frozenset({"grounding", "corpus", "perplexity"})
+
+
 def _comment_community(item: schema.SourceItem) -> str:
-    """Where a comment was posted, as ``on r/sub``. Only Reddit has one."""
-    if item.source != "reddit":
+    """Where a comment or post was said: ``on r/sub`` for Reddit with a known
+    subreddit, else ``on <platform>`` (``on YouTube``, ``on Hacker News``)."""
+    if item.source == "reddit":
+        subreddit = (item.container or "").strip().removeprefix("r/")
+        if subreddit:
+            return f" on r/{subreddit}"
+    if not item.source or item.source in _SOURCES_WITHOUT_A_PLACE:
         return ""
-    subreddit = (item.container or "").strip().removeprefix("r/")
-    return f" on r/{subreddit}" if subreddit else ""
+    return f" on {_source_label(item.source)}"
 
 
 def _comment_count(score) -> str:
@@ -4381,28 +4411,445 @@ def _render_best_takes(
     return lines
 
 
+# Compact output budgets for the three blocks a report's quote lines and
+# first-party paragraphs are written from. Each entry is one line. A report
+# runs up to six quote lines in all, across its six to eight stories, so the
+# pool leaves that choice to the writer rather than making it.
+QUOTE_POOL_LIMIT = 40
+SUBJECT_POSTS_LIMIT = 8
+POLYMARKET_MARKETS_LIMIT = 8
+# An item (a thread, a video, a reel, a story) gives the pool its top comment
+# and its second, by its own order. The best comment on a thread is usually
+# the best quote, and a like count does not rank a comment from one place
+# against a comment from another, so nothing here sorts across items by count.
+_QUOTE_POOL_COMMENTS_PER_ITEM = 2
+# Standalone posts a story may add after its top comments.
+_QUOTE_POOL_POSTS_PER_STORY = 2
+# Sources whose post is itself the quotable text, so the post joins the pool
+# beside the comments other sources carry.
+_QUOTABLE_POST_SOURCES = frozenset({"x", "threads", "bluesky", "truthsocial"})
+# On a platform that counts likes or upvotes, a comment nobody voted for is
+# not a quote (a zero-like reel comment is as often an ad), so it needs one
+# vote, and an item whose top comment has none gives the pool nothing. A
+# standalone post needs ten likes. A source that measures no votes (Hacker
+# News comments) is held to neither. The comment lines inside the ranked
+# clusters are not the pool and keep their own per-source floors.
+_QUOTE_POOL_VOTE_COUNTING_SOURCES = frozenset(
+    {
+        "instagram", "tiktok", "youtube", "x", "reddit", "threads", "bluesky",
+        "linkedin", "github",
+    }
+)
+_QUOTE_POOL_MIN_VOTES = 1
+# The bar an item clears to join the pool at all: position makes its best
+# community comment a "top comment", so on a platform that counts votes that
+# comment needs a few. A one-upvote reply on a small thread is nobody's pick.
+_QUOTE_POOL_ITEM_MIN_TOP_VOTES = 5
+_QUOTE_POOL_POST_MIN_LIKES = 10
+_QUOTE_POOL_POSITION_LABELS = ("top comment", "#2 comment")
+_QUOTE_TEXT_LIMIT = 240
+_SUBJECT_POST_TEXT_LIMIT = 280
+
+
+def _one_line_quote(text: str, limit: int) -> str:
+    """Scraped text on one line, bounded and defanged."""
+    return _format_untrusted_evidence(" ".join(str(text or "").split()), limit)
+
+
+_RAW_URL = re.compile(r"(?:https?://|www\.)\S+")
+# A line that quotes the parent comment (markdown ``>``, also as scraped:
+# ``&gt;`` or escaped ``\\>``). The commenter's own words are the other lines.
+_QUOTED_PARENT_LINE = re.compile(r"^\s*(?:\\?>|&gt;)")
+# Emphasis delimiters (``*x*``, ``**x**``, ``__x__``, ``_x_``, ``~~x~~``): the
+# markers that open or close a run, not an asterisk between spaces or an
+# underscore inside a word.
+_EMPHASIS_MARKERS = re.compile(
+    r"(?<![\w*])\*{1,3}(?=[^\s*])|(?<=[^\s*])\*{1,3}(?![\w*])"
+    r"|(?<![\w_])_{1,3}(?=[^\s_])|(?<=[^\s_])_{1,3}(?![\w_])"
+    r"|~~"
+)
+_LEADING_REPLY_HANDLES = re.compile(r"^(?:@\w+[\s,:]*)+")
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?=\s)")
+# A cut at a sentence end must leave at least this much of the quote.
+_QUOTE_MIN_SENTENCE_CUT = 40
+
+
+def _quote_text(text: str, limit: int, *, strip_reply_handles: bool = False) -> str:
+    """Text as a quote line prints it, between one pair of outer quotes.
+
+    One line. Raw URLs are dropped, so a quote line never carries a link or
+    half of one. A reply's leading run of @mentions is dropped on request
+    (the rest stays verbatim). Straight double quotes inside become single
+    ones, so a comment that is itself a quotation does not double the outer
+    pair. Lines that quote the parent comment are dropped, and markdown
+    emphasis markers are removed, since either would break a blockquote line.
+    Text over ``limit`` ends at the last sentence that fits, or failing that at
+    a word, with one ``...``.
+    """
+    own_lines = [
+        line for line in str(text or "").splitlines()
+        if not _QUOTED_PARENT_LINE.match(line)
+    ]
+    flat = " ".join(_RAW_URL.sub(" ", " ".join(own_lines)).split())
+    flat = " ".join(_EMPHASIS_MARKERS.sub("", flat).split())
+    if strip_reply_handles:
+        flat = _LEADING_REPLY_HANDLES.sub("", flat)
+    flat = flat.replace('"', "'")
+    if len(flat) > limit:
+        window = flat[: limit + 1]
+        ends = [
+            match.end()
+            for match in _SENTENCE_END.finditer(window)
+            if _QUOTE_MIN_SENTENCE_CUT <= match.end() <= limit
+        ]
+        if ends:
+            flat = window[: ends[-1]]
+        else:
+            head = flat[: limit - 3]
+            if not flat[limit - 3].isspace() and " " in head:
+                head = head[: head.rfind(" ")]
+            flat = head.rstrip(" .,;:!?") + "..."
+    return _format_untrusted_evidence(flat, len(flat) + 1)
+
+
+def _quote_attribution(
+    item: schema.SourceItem, author: str | None, score, vote_label: str,
+) -> str:
+    """``🟠 u/author on r/sub · 1,315 upvotes``: the part of a quote line that
+    follows the quoted text, in the shape the report prints it. The count is
+    left out when the source measured none."""
+    dot = _comment_platform_dot(item.source)
+    count = (
+        f" · {_comment_count(score)} {vote_label}"
+        if score is not None and score != ""
+        else ""
+    )
+    return (
+        f"{dot + ' ' if dot else ''}{_comment_attribution(item.source, author)}"
+        f"{_comment_community(item)}{count}"
+    )
+
+
+def _subject_x_handle(report: schema.Report) -> str:
+    """The X handle this run resolved for its subject, lowercased, or ""."""
+    resolved = report.artifacts.get("resolved")
+    if not isinstance(resolved, dict):
+        return ""
+    return str(resolved.get("x_handle") or "").strip().lstrip("@").lower()
+
+
+def _post_likes(item: schema.SourceItem):
+    likes = (item.engagement or {}).get("likes")
+    return likes if isinstance(likes, (int, float)) and not isinstance(likes, bool) else None
+
+
+def _render_subject_posts(
+    report: schema.Report, limit: int = SUBJECT_POSTS_LIMIT,
+) -> list[str]:
+    """The subject's own X posts in the window, most liked first.
+
+    These are the posts returned for the resolved ``--x-handle``. Most never
+    reach a shown cluster, so without this block the only copy is the saved
+    file. Each line ends with the post's date and its own URL.
+    """
+    handle = _subject_x_handle(report)
+    if not handle:
+        return []
+    posts = [
+        item
+        for item in report.items_by_source.get("x") or []
+        if (item.author or "").strip().lstrip("@").lower() == handle
+        # A repost is someone else's words.
+        and not (item.body or item.title or "").lstrip().startswith("RT @")
+        # A reply that is only the handles it answers says nothing.
+        and _quote_text(item.body or item.title, _SUBJECT_POST_TEXT_LIMIT, strip_reply_handles=True)
+    ]
+    if not posts:
+        return []
+    posts.sort(key=lambda item: -(_post_likes(item) or 0))
+    lines = [f"## Posts by @{handle}", ""]
+    for item in posts[:limit]:
+        likes = _post_likes(item)
+        quote = _quote_text(
+            item.body or item.title, _SUBJECT_POST_TEXT_LIMIT, strip_reply_handles=True
+        )
+        tail = "".join(
+            f" — {part}"
+            for part in (
+                item.published_at or "",
+                _sanitize_url_for_single_line_output(item.url or ""),
+            )
+            if part
+        )
+        # The quote line's own part ends at the count; date and URL follow it.
+        lines.append(
+            f'- "{quote}" '
+            f"{_quote_attribution(item, item.author, None if likes is None else int(likes), 'likes')}"
+            f"{tail}"
+        )
+    return lines
+
+
+def _polymarket_percent(price: float) -> str:
+    return f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%"
+
+
+# An outcome under this is left off an odds line after the first: it says
+# only that the market gives it almost no chance.
+_ODDS_LINE_MIN_PRICE = 0.05
+_ODDS_PLACEHOLDER = re.compile(r"\s*_{2,}\s*|\s*\.{3}\s*$")
+
+
+def _odds_points(move) -> str:
+    """``(up 2 pts today)``: a change in percentage points, or ""."""
+    if not (isinstance(move, (list, tuple)) and len(move) == 2):
+        return ""
+    points, period = move
+    if isinstance(points, bool) or not isinstance(points, (int, float)) or not points:
+        return ""
+    size = f"{abs(points):.1f}".rstrip("0").rstrip(".")
+    unit = "pt" if size == "1" else "pts"
+    return f" ({'up' if points > 0 else 'down'} {size} {unit} {_one_line_quote(period, 12)})"
+
+
+def _odds_label(text) -> str:
+    """An outcome's own label on one line, with no long dash: the entry uses
+    one as its separator and the report prints none."""
+    return _one_line_quote(text, 60).replace("\u2013", "-").replace("\u2014", "-")
+
+
+# A market question is one sentence; this only bounds a malformed one. The
+# short limit is for outcome labels: a subject cut at 60 characters lost its
+# deadline or condition.
+_ODDS_SUBJECT_LIMIT = 200
+
+
+def _odds_subject(text: str) -> str:
+    """A market's whole phrase as the line's subject."""
+    phrase = _polymarket_phrase(_ODDS_PLACEHOLDER.sub(" ", text or ""))
+    subject = _one_line_quote(_safe_title(phrase.rstrip(" ?:.,")), _ODDS_SUBJECT_LIMIT)
+    return subject.replace("\u2013", "-").replace("\u2014", "-")
+
+
+def _polymarket_odds(item: schema.SourceItem) -> dict | None:
+    """The stored odds summary, or one built from the listed outcomes for an
+    item saved before the parser stored it."""
+    odds = item.metadata.get("odds")
+    if isinstance(odds, dict) and isinstance(odds.get("parts"), list) and odds["parts"]:
+        return odds
+    pairs = [
+        (name, price)
+        for name, price in (
+            pair for pair in item.metadata.get("outcome_prices") or []
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+        )
+        if isinstance(price, (int, float)) and not isinstance(price, bool)
+    ]
+    if not pairs:
+        return None
+    question = str(item.metadata.get("question") or item.title or "")
+    by_name = {str(name).casefold(): price for name, price in pairs}
+    if set(by_name) == {"yes", "no"}:
+        # The snippet is this market's own movement, worded "up 2.5% this
+        # week" for what is a change in points.
+        match = _POLYMARKET_MOVEMENT_PARTS.match(" ".join((item.snippet or "").split()))
+        move = (
+            [float(match["size"]) * (1 if match["direction"] == "up" else -1), match["period"]]
+            if match
+            else None
+        )
+        return {"kind": "single", "subject": question,
+                "parts": [{"price": by_name["yes"], "move": move}]}
+    return {
+        "kind": "outcomes", "subject": item.title or question,
+        "parts": [{"label": str(name), "price": price, "move": None} for name, price in pairs[:3]],
+    }
+
+
+_POLYMARKET_MOVEMENT_PARTS = re.compile(
+    r"^(?P<direction>up|down) (?P<size>\d+(?:\.\d+)?)% (?P<period>today|this week|this month)$"
+)
+
+
+def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
+    """``📊 Polymarket · {subject}: {outcome} {price} · ...``: a market's odds
+    as the report prints them on a line of their own.
+
+    At most three outcomes: a deadline ladder's nearest live deadlines in date
+    order (``16% by Dec 31``, the year only when it is not the window's), the
+    leading outcomes of brackets under their own labels (``12-15 at 79%``),
+    or a single market's one price. A movement follows the outcome it belongs
+    to, in points. Never a volume.
+    """
+    odds = _polymarket_odds(item)
+    if not odds:
+        return ""
+    parts: list[str] = []
+    for index, entry in enumerate(odds["parts"][:3]):
+        if not isinstance(entry, dict):
+            continue
+        price = entry.get("price")
+        if isinstance(price, bool) or not isinstance(price, (int, float)):
+            continue
+        if index and odds.get("kind") != "ladder" and price < _ODDS_LINE_MIN_PRICE:
+            continue
+        percent = _polymarket_percent(price)
+        by = entry.get("by")
+        if odds.get("kind") == "ladder" and isinstance(by, (list, tuple)) and len(by) == 3:
+            month, day, year = by
+            when = f"{_one_line_quote(month, 4)} {day}"
+            if year and str(year) != window_year:
+                when += f", {year}"
+            text = f"{percent} by {when}"
+        elif entry.get("label"):
+            text = f"{_odds_label(entry['label'])} at {percent}"
+        else:
+            text = percent
+        parts.append(text + _odds_points(entry.get("move")))
+    subject = _odds_subject(str(odds.get("subject") or item.title or ""))
+    if not parts or not subject:
+        return ""
+    return f"📊 Polymarket · {subject}: {' · '.join(parts)}"
+
+
+def _render_polymarket_markets(
+    report: schema.Report, limit: int = POLYMARKET_MARKETS_LIMIT,
+) -> list[str]:
+    """Each market that names the topic, as a ready-to-copy odds line, then
+    metadata: the URL, the close date, and how many outcomes are not listed.
+
+    The copyable part ends before the first `` — ``, as a quote pool entry's
+    does. Largest volume first, as in the footer, and like the footer it
+    prints odds only, never a dollar amount.
+    """
+    items = [
+        item
+        for item in report.items_by_source.get("polymarket") or []
+        if polymarket.names_whole_topic(
+            report.topic,
+            item.title,
+            str(item.metadata.get("question") or ""),
+            (_polymarket_headline(item) or ("",))[0],
+        )
+    ]
+    items.sort(key=lambda item: -((item.engagement or {}).get("volume") or 0))
+    window_year = str(report.range_to or "")[:4]
+    lines: list[str] = []
+    for item in items:
+        odds_line = _polymarket_odds_line(item, window_year)
+        if not odds_line:
+            continue
+        parts = [odds_line]
+        url = _sanitize_url_for_single_line_output(item.url or "")
+        if url:
+            parts.append(url)
+        odds = _polymarket_odds(item) or {}
+        end_date = str(item.metadata.get("end_date") or "").strip()
+        if end_date and odds.get("kind") != "ladder":
+            parts.append(f"closes {_one_line_quote(end_date, 20)}")
+        remaining = item.metadata.get("outcomes_remaining") or 0
+        if isinstance(remaining, int) and remaining > 0:
+            parts.append(f"+{remaining} more outcome{'s' if remaining != 1 else ''}")
+        lines.append("- " + " — ".join(parts))
+        if len(lines) >= limit:
+            break
+    return ["## Polymarket Markets", "", *lines] if lines else []
+
+
+def _quote_pool_has_vote(source: str, score) -> bool:
+    """Whether a comment clears the one-vote floor of a vote-counting platform."""
+    if source not in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
+        return True
+    return (
+        isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and score >= _QUOTE_POOL_MIN_VOTES
+    )
+
+
+_BOT_AUTHOR = re.compile(
+    r"\[bot\]$|(?:^|[-_.])bot(?:$|[-_.])|^(?:automoderator|github-actions|dependabot)$",
+    re.IGNORECASE,
+)
+_BOT_TEXT = re.compile(
+    r"automated review|\bi am a bot\b|\bperformed automatically\b", re.IGNORECASE
+)
+_HTML_COMMENT_START = re.compile(r"^\s*<!-\s?-")
+
+
+def _author_key(name: str | None) -> str:
+    """An author name for comparison: no case, no spaces, no ``@`` or ``u/``."""
+    key = "".join(str(name or "").split()).lower().lstrip("@")
+    return key.removeprefix("u/")
+
+
+def _is_community_comment(item: schema.SourceItem, comment: dict, text: str) -> bool:
+    """False for what is not a reaction from the community, on any platform:
+    a bot's comment, machine markup (an HTML comment), or a comment by the
+    item's own author (a channel's pinned note, the original poster)."""
+    author = str(comment.get("author") or "").strip()
+    if _BOT_AUTHOR.search(author) or _BOT_TEXT.search(text):
+        return False
+    if _HTML_COMMENT_START.match(text):
+        return False
+    # The source's own word on it comes first: a channel's display name and
+    # the handle on its comments can differ, and a fan account can share the
+    # name. Names are compared only when the comment was stored without it.
+    if isinstance(comment.get("is_uploader"), bool):
+        return not comment["is_uploader"]
+    return not (_author_key(author) and _author_key(author) == _author_key(item.author))
+
+
+def _quotable(body: str) -> bool:
+    """Long enough to quote, and words rather than a row of emoji."""
+    return len(body) >= 12 and sum(ch.isalnum() for ch in body) >= 4
+
+
 def _render_top_comments(
     report,
-    limit: int = 8,
+    limit: int = QUOTE_POOL_LIMIT,
     *,
     candidates: list[schema.Candidate] | None = None,
+    clusters: list[schema.Cluster] | None = None,
 ) -> list[str]:
-    """Vote-ranked community comments across ALL ranked candidates — not just the
-    top-cluster representatives — surfaced into the EVIDENCE block so the reading
-    model can weave the funniest/highest-engagement lines into the synthesis.
+    """The quote pool: each item's top comment and its second, and the posts
+    of sources whose post is the quotable text, across ALL ranked candidates —
+    not just the top-cluster representatives — surfaced into the EVIDENCE block
+    so the reading model can put the best lines on the report's quote lines.
 
     This exists because `_render_best_takes` only populates when the engine has an
     LLM fun-scorer (a paid provider the subprocess usually lacks), so in normal
     use the funniest comments never reach the model. This block always surfaces
-    the crowd-voted comments and leaves the funny/quotable SELECTION to the model
-    (a capable fun judge). Ranking is per-platform-normalized so one platform
-    can't crowd out the rest; each line carries the platform dot, the author,
-    the subreddit for Reddit, the count and the verbatim comment/post URL, so
-    the model can attribute and cite without looking anything up.
+    the comments and leaves the funny/quotable SELECTION to the model (a
+    capable fun judge).
+
+    Position chooses and orders the pool, never a like count compared across
+    items. "Position" is the comment's place in the item's own stored list
+    (``metadata["top_comments"]``): by score for Reddit, by like count for
+    TikTok and Instagram, YouTube's own "top comments" order, and Hacker
+    News's thread order. Every story's top comments come first, in the order
+    of the stories (``clusters``, the clusters the output shows, as it numbers
+    them; then every other kept item as ranked), each story's standalone posts
+    after its top comments; then every second comment in the same order. Among
+    a story's entries of one position, those on a candidate that cleared the
+    Best Takes funny floor come first and end ``funny``: the fun score belongs
+    to the candidate, not to one comment.
+
+    Within ``limit`` the shown stories are covered first, taking turns (one top
+    comment each, then the rest round by round, then posts and #2s the same
+    way), then the other items. The printed order stays position first. Every eligibility test (relevance, the one-vote floor,
+    quotable text) runs before duplicates are removed, so a rejected copy of a
+    line never hides an eligible one.
+
+    Every line has one shape, the quote line's own: the quoted text, the
+    platform dot, the author, the subreddit or platform, the count when the
+    source measured one; then metadata: the URL of the comment or of the post
+    it sits on, ``cluster N`` or the title of a thread outside the shown
+    clusters, and the position. The subject's own X posts are left to
+    ``_render_subject_posts``.
     """
-    seen: set[str] = set()
-    scored: list[tuple[float, schema.Candidate, schema.SourceItem, dict, str]] = []
     candidate_pool = report.ranked_candidates if candidates is None else candidates
+    subject_handle = _subject_x_handle(report)
     floor_candidates = [
         cand
         for cand in candidate_pool
@@ -4410,80 +4857,177 @@ def _render_top_comments(
         and (cand.local_relevance or 0.0) >= relevance.RELEVANCE_FLOOR
     ]
     apply_relevance_floor = len(floor_candidates) >= relevance.MIN_ON_TOPIC
-    for cand in candidate_pool:
-        if not _best_take_relevance_ok(cand):
-            continue
+    eligible = [
+        cand
+        for cand in candidate_pool
+        if _best_take_relevance_ok(cand)
         # Skip comments from off-topic threads when enough candidates clear the
         # floor; sparse niche topics still surface their best comments (#641).
-        if (
+        and not (
             apply_relevance_floor
             and (cand.local_relevance or 0.0) < relevance.RELEVANCE_FLOOR
-        ):
-            continue
+        )
+    ]
+
+    cluster_number: dict[str, int] = {}
+    for number, cluster in enumerate(clusters or [], start=1):
+        for candidate_id in cluster.candidate_ids:
+            cluster_number.setdefault(candidate_id, number)
+
+    # Stories in order: each shown cluster's candidates as the cluster lists
+    # them, then every other candidate, one story each, as ranked.
+    by_id = {cand.candidate_id: cand for cand in eligible}
+    stories: list[tuple[int | None, list[schema.Candidate]]] = []
+    for number, cluster in enumerate(clusters or [], start=1):
+        members = [
+            by_id[candidate_id]
+            for candidate_id in dict.fromkeys(cluster.candidate_ids)
+            if candidate_id in by_id and cluster_number.get(candidate_id) == number
+        ]
+        if members:
+            stories.append((number, members))
+    stories.extend(
+        (None, [cand]) for cand in eligible if cand.candidate_id not in cluster_number
+    )
+
+    def entries_for(cand: schema.Candidate) -> list[dict]:
+        funny = (cand.fun_score or 0.0) >= _QUOTE_POOL_FUNNY_FLOOR
+        rows: list[dict] = []
         for item in cand.source_items:
-            # Pass min_score=0 here: the cross-platform list deliberately does
-            # NOT gate on the per-platform absolute floor, because a less-watched
-            # video's killer low-vote top comment is gold too. The 3-per-item cap
-            # still applies; cross-platform fairness is handled by the rank-based
-            # round-robin below, and the model makes the final quotable pick.
-            for tc in _top_comments_list(item, min_score=0):
+            # The item's community comments, in its own order. A bot's, the
+            # item author's own, or one with nothing quotable in it is not a
+            # reaction to quote, so the next comment takes its position.
+            community: list[tuple[dict, str]] = []
+            for tc in item.metadata.get("top_comments") or []:
                 if not isinstance(tc, dict):
                     continue
-                body = (
-                    tc.get("excerpt") or tc.get("text") or tc.get("body") or ""
-                ).strip()
-                if len(body) < 12:
+                raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
+                if not _is_community_comment(item, tc, raw):
                     continue
-                key = body[:60].lower()
-                if key in seen:
+                body = _quote_text(raw, _QUOTE_TEXT_LIMIT)
+                if _quotable(body):
+                    community.append((tc, body))
+            if community and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
+                top_score = community[0][0].get("score")
+                if not (
+                    isinstance(top_score, (int, float))
+                    and not isinstance(top_score, bool)
+                    and top_score >= _QUOTE_POOL_ITEM_MIN_TOP_VOTES
+                ):
+                    # Too few voted for the item's best comment: skip the item.
+                    community = []
+            for position, (tc, body) in enumerate(
+                community[:_QUOTE_POOL_COMMENTS_PER_ITEM]
+            ):
+                score = tc.get("score")
+                if not _quote_pool_has_vote(item.source, score):
                     continue
-                seen.add(key)
-                # Blend vote strength (60%) with thread relevance (40%) so comments
-                # from on-topic threads rank above off-topic viral comments.
-                vote_strength = signals.normalized_comment_vote(
-                    item.source, tc.get("score")
+                rows.append({
+                    "position": position, "cand": cand, "item": item, "funny": funny,
+                    "author": tc.get("author"), "score": score,
+                    "vote_label": _vote_label_for(item.source), "body": body,
+                    # A comment with no link of its own is cited by the item it
+                    # sits on. The candidate's URL is another item's whenever
+                    # the candidate fused several.
+                    "url": _comment_link(item, tc, fallback=item.url or cand.url),
+                })
+            author_key = (item.author or "").strip().lstrip("@").lower()
+            likes = _post_likes(item)
+            text = (item.body or item.title or "").strip()
+            if (
+                item.source in _QUOTABLE_POST_SOURCES
+                and author_key
+                and not (item.source == "x" and author_key == subject_handle)
+                and (likes or 0) >= _QUOTE_POOL_POST_MIN_LIKES
+                and not text.startswith("RT @")
+            ):
+                body = _quote_text(
+                    text, _QUOTE_TEXT_LIMIT, strip_reply_handles=item.source == "x"
                 )
-                strength = 0.6 * vote_strength + 0.4 * (cand.local_relevance or 0.0)
-                scored.append((strength, cand, item, tc, body))
-    if len(scored) < 2:
+                if _quotable(body):
+                    rows.append({
+                        "position": None, "cand": cand, "item": item, "funny": funny,
+                        "author": item.author, "score": int(likes),
+                        "vote_label": "likes", "body": body, "url": item.url or cand.url,
+                    })
+        return rows
+
+    # Per story: (first block: top comments then posts, second block: #2s),
+    # with a story's funny entries leading each position.
+    shown: list[tuple[list[dict], list[dict], list[dict]]] = []
+    other_first: list[dict] = []
+    other_second: list[dict] = []
+    first_order: list[dict] = []
+    second_order: list[dict] = []
+    for number, members in stories:
+        rows = [row for cand in members for row in entries_for(cand)]
+        tops = sorted((r for r in rows if r["position"] == 0), key=lambda r: not r["funny"])
+        posts = sorted((r for r in rows if r["position"] is None), key=lambda r: not r["funny"])
+        posts = posts[:_QUOTE_POOL_POSTS_PER_STORY]
+        seconds = sorted((r for r in rows if r["position"] == 1), key=lambda r: not r["funny"])
+        if number:
+            shown.append((tops, posts, seconds))
+        else:
+            other_first.extend(tops + posts)
+            other_second.extend(seconds)
+        first_order.extend(tops + posts)
+        second_order.extend(seconds)
+
+    def round_by_round(per_story: list[list[dict]]) -> list[dict]:
+        """Every story's first entry, then every story's second, and so on."""
+        return [
+            rows[turn]
+            for turn in range(max((len(rows) for rows in per_story), default=0))
+            for rows in per_story
+            if len(rows) > turn
+        ]
+
+    # Who gets a place within the limit. A cluster has no size cap, so the
+    # shown stories take turns: one top comment each before any gets a second,
+    # then their posts and their #2s the same way. A busy first story cannot
+    # leave a later one with no quote. Other items follow, as ranked.
+    priority = [
+        *round_by_round([tops for tops, _posts, _seconds in shown]),
+        *round_by_round([posts for _tops, posts, _seconds in shown]),
+        *round_by_round([seconds for _tops, _posts, seconds in shown]),
+        *other_first,
+        *other_second,
+    ]
+
+    # Eligibility is settled above; only now are duplicates removed, and the
+    # limit applied, in the order of who is covered first.
+    kept: set[int] = set()
+    seen: set[str] = set()
+    for row in priority:
+        key = row["body"][:60].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(kept) < limit:
+            kept.add(id(row))
+    if len(seen) < 2:
         return []
-    # Rank-based cross-platform diversity: group by platform, rank each
-    # platform's comments by within-platform vote strength, then interleave by
-    # rank -- every platform's #1, then every #2, then every #3, and so on. This
-    # makes the top-3-of-each-platform outrank the 4th-of-any and guarantees each
-    # platform's #1 a slot, instead of a global vote sort where one viral
-    # platform sweeps the list. Absolute vote counts are NOT compared across
-    # platforms (a less-watched video's killer 50-like comment is gold too);
-    # vote strength only orders comments *within* a platform and breaks ties
-    # among same-rank picks. The model still makes the final quotable pick.
-    by_source: dict[str, list] = {}
-    for row in scored:
-        by_source.setdefault(row[2].source, []).append(row)
-    for src_rows in by_source.values():
-        src_rows.sort(key=lambda row: -row[0])
-    ordered: list = []
-    deepest = max(len(rows) for rows in by_source.values())
-    for rank in range(deepest):
-        tier = [rows[rank] for rows in by_source.values() if len(rows) > rank]
-        tier.sort(key=lambda row: -row[0])  # among same-rank picks, strongest first
-        ordered.extend(tier)
+
     lines = ["## Top Community Comments", ""]
-    for _strength, cand, item, tc, body in ordered[:limit]:
-        score = tc.get("score", "")
-        vote_label = _vote_label_for(item.source)
-        attribution = _comment_attribution(item.source, tc.get("author"))
-        url = _comment_link(item, tc, fallback=cand.url)
+    for row in (*first_order, *second_order):
+        if id(row) not in kept:
+            continue
+        cand, item, position = row["cand"], row["item"], row["position"]
+        url = _sanitize_url_for_single_line_output(row["url"] or "")
         url_part = f" — {url}" if url else ""
-        vote_part = (
-            f" ({_comment_count(score)} {vote_label})"
-            if score is not None and score != ""
-            else ""
-        )
-        dot = _comment_platform_dot(item.source)
-        dot_part = f"{dot} " if dot else ""
+        number = cluster_number.get(cand.candidate_id)
+        if number:
+            origin = f" — cluster {number}"
+        elif clusters and position is not None:
+            thread = _truncate(_safe_title(cand.title or ""), 60)
+            origin = f' — re: "{thread}"' if thread else ""
+        else:
+            origin = ""
+        label = "post" if position is None else _QUOTE_POOL_POSITION_LABELS[position]
         lines.append(
-            f'- "{_format_untrusted_evidence(body, 240, continuation_indent="  ")}" '
-            f"— {dot_part}{attribution}{_comment_community(item)}{vote_part}{url_part}"
+            f'- "{row["body"]}" '
+            f"{_quote_attribution(item, row['author'], row['score'], row['vote_label'])}"
+            f"{url_part}{origin} — {label}{' — funny' if row['funny'] else ''}"
         )
     return lines
 

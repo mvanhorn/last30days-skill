@@ -555,6 +555,29 @@ def _format_price_movement(market: Dict[str, Any]) -> Optional[str]:
     return f"{direction} {pct:.1f}% {period}"
 
 
+def _price_movement_points(market: Dict[str, Any]) -> Optional[List[Any]]:
+    """The same change ``_format_price_movement`` words, as ``[points, period]``.
+
+    Gamma's ``oneDayPriceChange`` / ``oneWeekPriceChange`` /
+    ``oneMonthPriceChange`` are differences between two prices on the 0-to-1
+    scale, so times 100 they are percentage points, signed, not a relative
+    change. None under one point.
+    """
+    changes = [
+        (market.get("oneDayPriceChange") or 0, "today"),
+        (market.get("oneWeekPriceChange") or 0, "this week"),
+        (market.get("oneMonthPriceChange") or 0, "this month"),
+    ]
+    changes = [(c, p) for c, p in changes if isinstance(c, (int, float)) and not isinstance(c, bool)]
+    if not changes:
+        return None
+    # Stable sort: the shorter period wins a tie, as in _format_price_movement.
+    change, period = sorted(changes, key=lambda pair: -abs(pair[0]))[0]
+    if abs(change) < 0.01:
+        return None
+    return [round(change * 100, 1), period]
+
+
 def _parse_outcome_prices(market: Dict[str, Any]) -> List[tuple]:
     """Parse outcomePrices JSON string into list of (outcome_name, price) tuples."""
     outcomes_raw = market.get("outcomes") or []
@@ -728,12 +751,115 @@ def _deadline_date(question: str, market: Dict[str, Any]) -> Optional[str]:
     return end if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) else None
 
 
+def _deadline_label(question: str) -> Optional[List[Any]]:
+    """The deadline a question names, as ``[month, day, year or None]``, the
+    way the question spells it (a market's end date is often the day after)."""
+    found = _DEADLINE.findall(question)
+    if len(found) != 1:
+        return None
+    month, day, year = found[0]
+    return [month[:3].title(), int(day), int(year) if year else None]
+
+
 def _today() -> str:
     return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
 
 
 # A deadline rung priced under this says only that the date is too soon.
 _LIVE_RUNG_PRICE = 0.05
+
+
+def _ladder_ends(
+    outcome_questions: List[Optional[str]],
+    outcome_markets: List[Dict[str, Any]],
+) -> Optional[List[str]]:
+    """Each sub-market's deadline as an ISO date when the sub-markets are one
+    question asked for several deadlines, else None."""
+    if len(outcome_questions) < 2:
+        return None
+    stems = set()
+    ends: List[str] = []
+    for question, market in zip(outcome_questions, outcome_markets):
+        if not question:
+            return None
+        end = _deadline_date(question, market)
+        if end is None:
+            return None
+        stems.add(" ".join(_DEADLINE.sub("", question).casefold().split()))
+        ends.append(end)
+    return ends if len(stems) == 1 else None
+
+
+# The most outcomes one odds line carries.
+ODDS_LINE_OUTCOMES = 3
+
+
+def _odds_summary(
+    title: str,
+    top_market: Dict[str, Any],
+    outcome_prices: List[tuple],
+    outcome_questions: List[Optional[str]],
+    outcome_markets: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """What a one-line odds summary of the event is built from.
+
+    ``kind`` is ``ladder`` (one question, several deadlines: the nearest live
+    deadlines in date order, each with its date in ``by``), ``outcomes``
+    (brackets, places, candidates: the leading outcomes under their own
+    labels) or ``single`` (one Yes/No market: its Yes price). Each part's
+    ``move`` is that outcome's own change in points, where the outcome is a
+    market of its own. Never a volume.
+    """
+    if not outcome_prices:
+        return None
+
+    def part(index: int, **extra: Any) -> Dict[str, Any]:
+        market = outcome_markets[index]
+        priced_alone = outcome_questions[index] is not None
+        return {
+            "price": outcome_prices[index][1],
+            "move": _price_movement_points(market) if priced_alone else None,
+            **extra,
+        }
+
+    if outcome_questions[0] is not None:
+        prices = [price for _name, price in outcome_prices]
+        ends = _ladder_ends(outcome_questions, outcome_markets)
+        start = _nearest_deadline(outcome_questions, outcome_markets, prices)
+        if ends is not None and start is not None:
+            rungs = sorted(
+                (index for index in range(len(ends)) if ends[index] >= ends[start]),
+                key=lambda index: ends[index],
+            )[:ODDS_LINE_OUTCOMES]
+            return {
+                "kind": "ladder",
+                "subject": " ".join(_DEADLINE.sub("", outcome_questions[start]).split()),
+                "parts": [
+                    part(index, by=_deadline_label(outcome_questions[index])) for index in rungs
+                ],
+            }
+        indexes = range(min(len(outcome_prices), ODDS_LINE_OUTCOMES))
+        return {
+            "kind": "outcomes",
+            "subject": title,
+            "parts": [part(index, label=str(outcome_prices[index][0])) for index in indexes],
+        }
+    question = str(top_market.get("question") or title)
+    by_name = {str(name).casefold(): price for name, price in outcome_prices}
+    if set(by_name) == {"yes", "no"}:
+        return {
+            "kind": "single",
+            "subject": question,
+            "parts": [{"price": by_name["yes"], "move": _price_movement_points(top_market)}],
+        }
+    return {
+        "kind": "outcomes",
+        "subject": question,
+        "parts": [
+            {"label": str(name), "price": price, "move": None}
+            for name, price in outcome_prices[:ODDS_LINE_OUTCOMES]
+        ],
+    }
 
 
 def _nearest_deadline(
@@ -752,19 +878,8 @@ def _nearest_deadline(
     higher, so the highest price is only the furthest date. None when the
     sub-markets are not one question with different deadlines.
     """
-    if len(outcome_questions) < 2:
-        return None
-    stems = set()
-    ends: List[str] = []
-    for question, market in zip(outcome_questions, outcome_markets):
-        if not question:
-            return None
-        end = _deadline_date(question, market)
-        if end is None:
-            return None
-        stems.add(" ".join(_DEADLINE.sub("", question).casefold().split()))
-        ends.append(end)
-    if len(stems) != 1:
+    ends = _ladder_ends(outcome_questions, outcome_markets)
+    if ends is None:
         return None
     today = _today()
     open_ends = [index for index, end in enumerate(ends) if end >= today]
@@ -1170,6 +1285,9 @@ def parse_polymarket_response(
             "outcome_questions": outcome_questions[: len(top_outcomes)],
             "outcomes_remaining": remaining,
             "headline": headline,
+            "odds": _odds_summary(
+                title, top_market, outcome_prices, outcome_questions, outcome_markets,
+            ),
             "price_movement": price_movement,
             "volume24hr": volume24hr,
             "volume1mo": event_volume1mo,

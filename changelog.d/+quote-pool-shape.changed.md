@@ -1,0 +1,1 @@
+Every `## Top Community Comments` entry now has one shape that copies straight into a quote line: quoted text on one line, platform dot, author, subreddit or platform name (`on YouTube`, `on Hacker News`), count with its unit when the source measured one, then the URL. The `creator` register's pool grows from 8 to 40 entries.

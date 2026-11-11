@@ -1510,6 +1510,17 @@ def jobs_digest_disabled(environ: Any = None) -> bool:
     source = os.environ if environ is None else environ
     return _truthy(source.get(NO_JOBS_DIGEST_VAR))
 
+
+# The same kind of caller asks for compact stdout that ends at the canonical
+# boundary, with no report-format checklist after it.
+NO_REPORT_CHECKLIST_VAR = 'LAST30DAYS_NO_REPORT_CHECKLIST'
+
+
+def report_checklist_disabled(environ: Any = None) -> bool:
+    """True when ``LAST30DAYS_NO_REPORT_CHECKLIST`` asks for no checklist."""
+    source = os.environ if environ is None else environ
+    return _truthy(source.get(NO_REPORT_CHECKLIST_VAR))
+
 # Public routing definitions for the doctor/backend-descriptor layer
 # (lib/backends.py). These are aliases for knowledge this module already
 # owns — the declared X chain order and the pin/floor env var names — so

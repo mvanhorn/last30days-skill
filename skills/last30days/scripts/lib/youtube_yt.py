@@ -2115,17 +2115,27 @@ def _ytdlp_comments_result(
         _log(f"yt-dlp comment JSON parse failed for {video_id}: {exc}")
         return [], False
 
+    channel_id = str(payload.get("channel_id") or "")
     comments = []
     for c in (payload.get("comments") or [])[:max_comments]:
         text = c.get("text") or ""
         if not text:
             continue
-        comments.append({
+        comment = {
             "author": c.get("author") or "",
             "text": text[:400],
             "likes": c.get("like_count") or 0,
             "date": c.get("_time_text") or "",
-        })
+        }
+        # Whether the channel itself wrote this. A channel's display name and
+        # the handle on its comments can differ, so the name cannot say: yt-dlp
+        # does (author_is_uploader), and failing that the channel ids do. The
+        # key is left out when neither is known.
+        if isinstance(c.get("author_is_uploader"), bool):
+            comment["is_uploader"] = c["author_is_uploader"]
+        elif channel_id and c.get("author_id"):
+            comment["is_uploader"] = str(c["author_id"]) == channel_id
+        comments.append(comment)
     return comments, True
 
 
@@ -2194,6 +2204,7 @@ def _fetch_video_comments(
 
         # SC returns author as {"name": "@handle", ...}; legacy mocks may pass a string.
         author = c.get("author") or c.get("author_name", "")
+        is_uploader = _sc_comment_is_uploader(c)
         if isinstance(author, dict):
             author = author.get("name") or author.get("handle") or ""
 
@@ -2212,14 +2223,36 @@ def _fetch_video_comments(
             or c.get("publishedTimeText", "")
         )
 
-        comments.append({
+        comment = {
             "author": author,
             "text": text[:400],
             "likes": likes,
             "date": date,
-        })
+        }
+        if is_uploader is not None:
+            comment["is_uploader"] = is_uploader
+        comments.append(comment)
 
     return comments
+
+
+# Keys under which a comment payload may say its author is the video's
+# channel. Read from the comment and from its author object; a payload with
+# none of them leaves the comment's authorship unknown.
+_SC_UPLOADER_FLAG_KEYS = (
+    "author_is_uploader", "authorIsChannelOwner", "isChannelOwner", "isCreator",
+    "is_creator",
+)
+
+
+def _sc_comment_is_uploader(comment: Dict[str, Any]) -> Optional[bool]:
+    """The channel-owner flag a ScrapeCreators comment carries, or None."""
+    author = comment.get("author")
+    for holder in (comment, author if isinstance(author, dict) else {}):
+        for key in _SC_UPLOADER_FLAG_KEYS:
+            if isinstance(holder.get(key), bool):
+                return holder[key]
+    return None
 
 
 def search_youtube_sc(

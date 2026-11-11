@@ -36,6 +36,17 @@ const allowEnginePlanEnv = "LAST30DAYS_ALLOW_ENGINE_PLAN=1"
 // evidence snippet, which it otherwise drops for the roles the digest lists.
 const noJobsDigestEnv = "LAST30DAYS_NO_JOBS_DIGEST=1"
 
+// noReportChecklistEnv has the engine end compact output at its canonical
+// boundary. Otherwise it prints, after the boundary, a checklist of the
+// skill's report format, which an MCP client is not asked to follow: the tool
+// description above is this server's presentation guidance.
+const noReportChecklistEnv = "LAST30DAYS_NO_REPORT_CHECKLIST=1"
+
+const (
+	canonicalOutputEnd     = "# END OF last30days CANONICAL OUTPUT"
+	reportChecklistHeading = "## Before you write the report"
+)
+
 // Register adds every tool this server exposes to s. The caller supplies a
 // Config so test harnesses can pin a version without touching globals.
 func Register(s *server.MCPServer, cfg Config) {
@@ -110,7 +121,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 		if runErr != nil {
 			return mcplib.NewToolResultError(formatRunError(runErr, res)), nil
 		}
-		return mcplib.NewToolResultText(withoutJobsDigest(string(res.Stdout))), nil
+		return mcplib.NewToolResultText(withoutReportChecklist(withoutJobsDigest(string(res.Stdout)))), nil
 	}
 }
 
@@ -142,6 +153,23 @@ func withoutJobsDigest(output string) string {
 	return strings.Join(kept, "")
 }
 
+// withoutReportChecklist ends the engine's output at its canonical boundary
+// when a report checklist follows it. The engine is already asked for none
+// (noReportChecklistEnv), so this is the second check, for an engine that
+// prints one anyway. Only a heading after the last boundary line counts: the
+// same words earlier in the output are evidence text.
+func withoutReportChecklist(output string) string {
+	boundary := strings.LastIndex(output, canonicalOutputEnd)
+	if boundary < 0 {
+		return output
+	}
+	end := boundary + len(canonicalOutputEnd)
+	if !strings.Contains(output[end:], "\n"+reportChecklistHeading) {
+		return output
+	}
+	return output[:end] + "\n"
+}
+
 func researchRunArgs(topic, emit, saveDir string) []string {
 	// Options first, positional topic last behind a `--` separator: a
 	// dash-prefixed topic must never be parsed as engine flags.
@@ -157,7 +185,7 @@ func researchRunArgs(topic, emit, saveDir string) []string {
 }
 
 func researchExtraEnv() []string {
-	return []string{allowEnginePlanEnv, noJobsDigestEnv}
+	return []string{allowEnginePlanEnv, noJobsDigestEnv, noReportChecklistEnv}
 }
 
 func browserCookiesAllowed() bool {
