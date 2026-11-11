@@ -949,3 +949,55 @@ def test_funny_candidates_lead_their_storys_position_and_are_tagged():
         True, False, False, True, True, False, False, True,
     ]
     assert entries[0].split(" — ")[0].endswith("🔴 @youtube2rank1 on YouTube · 40 likes")
+
+
+def test_busy_story_does_not_use_the_slots_of_the_stories_after_it():
+    busy = [_candidate(_thread("reddit", index, [50, 40], container="sub")) for index in range(1, 46)]
+    second = _candidate(_thread("youtube", 60, [9, 8]))
+    third = _candidate(_thread("tiktok", 70, [7, 6]))
+    post = _candidate(_item("x", "fan70", title="A fan post about the third story tonight",
+                            url="https://x.com/fan/status/70", author="fan", engagement={"likes": 25}))
+    clusters = [_cluster(1, busy), _cluster(2, [second]), _cluster(3, [third, post])]
+    report = _report([*busy, second, third, post], clusters=clusters)
+
+    entries = _entries(_section(render.render_compact(report), "## Top Community Comments"))
+
+    assert len(entries) == render.QUOTE_POOL_LIMIT
+    authors = _pool_authors(entries)
+    assert "youtube60rank1" in authors and "tiktok70rank1" in authors
+    # The busy story fills what is left after every story has its top comment,
+    # in its own order, and the pool still prints story by story.
+    assert authors[:38] == [f"reddit{index}rank1" for index in range(1, 39)]
+    assert authors[38:] == ["youtube60rank1", "tiktok70rank1"]
+    assert all(line.endswith(" — top comment") for line in entries)
+
+
+def test_each_shown_story_gets_one_slot_before_any_gets_two():
+    stories = [
+        [_candidate(_thread("reddit", 10 * story + index, [50, 40], container="sub")) for index in range(3)]
+        for story in range(1, 4)
+    ]
+    clusters = [_cluster(number, members) for number, members in enumerate(stories, start=1)]
+    report = _report([cand for members in stories for cand in members], clusters=clusters)
+
+    three = render._render_top_comments(report, limit=3, clusters=clusters)
+    assert _pool_authors(three[2:]) == ["reddit10rank1", "reddit20rank1", "reddit30rank1"]
+
+    five = render._render_top_comments(report, limit=5, clusters=clusters)
+    assert _pool_authors(five[2:]) == [
+        "reddit10rank1", "reddit11rank1", "reddit20rank1", "reddit21rank1", "reddit30rank1",
+    ]
+
+
+def test_second_comments_are_shared_round_by_round_once_top_comments_are_in():
+    stories = [
+        [_candidate(_thread("reddit", 10 * story + index, [50, 40], container="sub")) for index in range(2)]
+        for story in range(1, 4)
+    ]
+    clusters = [_cluster(number, members) for number, members in enumerate(stories, start=1)]
+    report = _report([cand for members in stories for cand in members], clusters=clusters)
+    lines = render._render_top_comments(report, limit=9, clusters=clusters)
+    authors = _pool_authors(lines[2:])
+    assert authors[:6] == [f"reddit{n}rank1" for n in (10, 11, 20, 21, 30, 31)]
+    # Three slots left for six second comments: one for each story.
+    assert authors[6:] == ["reddit10rank2", "reddit20rank2", "reddit30rank2"]

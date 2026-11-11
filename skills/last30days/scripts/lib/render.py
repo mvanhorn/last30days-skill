@@ -4618,8 +4618,9 @@ def _render_top_comments(
     Best Takes funny floor come first and end ``funny``: the fun score belongs
     to the candidate, not to one comment.
 
-    Within ``limit`` the shown stories are covered first, top and second, then
-    the other items. Every eligibility test (relevance, the one-vote floor,
+    Within ``limit`` the shown stories are covered first, taking turns (one top
+    comment each, then the rest round by round, then posts and #2s the same
+    way), then the other items. The printed order stays position first. Every eligibility test (relevance, the one-vote floor,
     quotable text) runs before duplicates are removed, so a rejected copy of a
     line never hides an eligible one.
 
@@ -4723,8 +4724,7 @@ def _render_top_comments(
 
     # Per story: (first block: top comments then posts, second block: #2s),
     # with a story's funny entries leading each position.
-    shown_first: list[dict] = []
-    shown_second: list[dict] = []
+    shown: list[tuple[list[dict], list[dict], list[dict]]] = []
     other_first: list[dict] = []
     other_second: list[dict] = []
     first_order: list[dict] = []
@@ -4733,18 +4733,42 @@ def _render_top_comments(
         rows = [row for cand in members for row in entries_for(cand)]
         tops = sorted((r for r in rows if r["position"] == 0), key=lambda r: not r["funny"])
         posts = sorted((r for r in rows if r["position"] is None), key=lambda r: not r["funny"])
+        posts = posts[:_QUOTE_POOL_POSTS_PER_STORY]
         seconds = sorted((r for r in rows if r["position"] == 1), key=lambda r: not r["funny"])
-        first = tops + posts[:_QUOTE_POOL_POSTS_PER_STORY]
-        (shown_first if number else other_first).extend(first)
-        (shown_second if number else other_second).extend(seconds)
-        first_order.extend(first)
+        if number:
+            shown.append((tops, posts, seconds))
+        else:
+            other_first.extend(tops + posts)
+            other_second.extend(seconds)
+        first_order.extend(tops + posts)
         second_order.extend(seconds)
+
+    def round_by_round(per_story: list[list[dict]]) -> list[dict]:
+        """Every story's first entry, then every story's second, and so on."""
+        return [
+            rows[turn]
+            for turn in range(max((len(rows) for rows in per_story), default=0))
+            for rows in per_story
+            if len(rows) > turn
+        ]
+
+    # Who gets a place within the limit. A cluster has no size cap, so the
+    # shown stories take turns: one top comment each before any gets a second,
+    # then their posts and their #2s the same way. A busy first story cannot
+    # leave a later one with no quote. Other items follow, as ranked.
+    priority = [
+        *round_by_round([tops for tops, _posts, _seconds in shown]),
+        *round_by_round([posts for _tops, posts, _seconds in shown]),
+        *round_by_round([seconds for _tops, _posts, seconds in shown]),
+        *other_first,
+        *other_second,
+    ]
 
     # Eligibility is settled above; only now are duplicates removed, and the
     # limit applied, in the order of who is covered first.
     kept: set[int] = set()
     seen: set[str] = set()
-    for row in (*shown_first, *shown_second, *other_first, *other_second):
+    for row in priority:
         key = row["body"][:60].lower()
         if key in seen:
             continue
