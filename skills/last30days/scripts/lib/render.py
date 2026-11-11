@@ -4633,6 +4633,11 @@ def _is_community_comment(item: schema.SourceItem, comment: dict, text: str) -> 
         return False
     if _HTML_COMMENT_START.match(text):
         return False
+    # The source's own word on it comes first: a channel's display name and
+    # the handle on its comments can differ, and a fan account can share the
+    # name. Names are compared only when the comment was stored without it.
+    if isinstance(comment.get("is_uploader"), bool):
+        return not comment["is_uploader"]
     return not (_author_key(author) and _author_key(author) == _author_key(item.author))
 
 

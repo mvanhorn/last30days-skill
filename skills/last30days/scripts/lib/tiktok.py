@@ -579,6 +579,7 @@ def enrich_with_comments(
         try:
             comments = _fetch_post_comments(
                 post_url, token, max_comments, deadline=deadline, cancel=cancel,
+                creator=str(item.get("author_name") or ""),
             )
             if comments:
                 item["top_comments"] = comments
@@ -607,6 +608,7 @@ def _fetch_post_comments(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    creator: str = "",
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a single TikTok post via ScrapeCreators.
 
@@ -668,4 +670,11 @@ def _fetch_post_comments(
             "digg_count": c.get("digg_count", 0) or 0,
             "date": date_str,
         })
+        # Whether the post's own creator wrote this. Both are handles, a stable
+        # identifier, so they compare exactly. With no handle on either side
+        # the key is left out: unknown.
+        handle = str(user.get("unique_id") or "").strip().lstrip("@").lower()
+        owner = str(creator or "").strip().lstrip("@").lower()
+        if handle and owner:
+            out[-1]["is_uploader"] = handle == owner
     return out

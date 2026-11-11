@@ -741,6 +741,12 @@ def enrich_with_comments(
                     "author": author,
                     "excerpt": body[:max_excerpt],
                     "url": comment_url,
+                    # The thread's own poster, when the payload says so.
+                    **(
+                        {"is_uploader": c["is_submitter"]}
+                        if isinstance(c.get("is_submitter"), bool)
+                        else {}
+                    ),
                 })
 
                 if len(body) >= 30 and author not in ("[deleted]", "[removed]", "AutoModerator"):

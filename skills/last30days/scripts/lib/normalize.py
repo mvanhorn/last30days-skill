@@ -173,6 +173,10 @@ def _remap_comments(
         }
         if raw_c.get("url"):
             entry["url"] = str(raw_c["url"])
+        # Whether the item's own author wrote the comment, where the source
+        # said so. A comment stored without the key is unknown.
+        if isinstance(raw_c.get("is_uploader"), bool):
+            entry["is_uploader"] = raw_c["is_uploader"]
         out.append(entry)
     return out
 
