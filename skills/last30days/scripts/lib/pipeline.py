@@ -3164,7 +3164,13 @@ def run(
         resolved_handles=resolved_handles,
         primary_handle=x_handle,
     )
+    reranked_public = ranked_public
     ranked_public = rerank.prune_fallback_entity_misses(ranked_public, topic=topic)
+    # The footer leaves these out of its totals; an item that merely has no
+    # candidate (author cap, pool size) is not among them and still counts.
+    rejected_items = rerank.rejected_item_keys(reranked_public, ranked_public)
+    if rejected_items:
+        bundle.artifacts[rerank.REJECTED_ITEMS_ARTIFACT] = rejected_items
     if hiring_summary:
         # The diagnostic source dump retains pruned jobs; hiring aggregation
         # needs their rejection identities after they leave the ranked pool.

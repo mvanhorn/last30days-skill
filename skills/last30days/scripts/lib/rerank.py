@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Iterable
 from datetime import datetime
 
 from . import entity_extract, http, providers, relevance, schema, signals
@@ -1319,17 +1320,54 @@ def candidate_counts_for_topic(candidate: schema.Candidate, topic: str) -> bool:
     )
 
 
+# Report artifact: ``[source, url or id]`` of every item behind a candidate the
+# relevance prune removed. Fusion also drops candidates for reasons that say
+# nothing about the topic (the per-author cap, the pool size), so an item with
+# no ranked candidate is only known to be off topic when it is listed here.
+REJECTED_ITEMS_ARTIFACT = "relevance_rejected_items"
+
+
+def _item_key(item: schema.SourceItem) -> tuple[str, str]:
+    return (item.source, item.url or item.item_id)
+
+
+def rejected_item_keys(
+    before: list[schema.Candidate], after: list[schema.Candidate],
+) -> list[list[str]]:
+    """The items behind candidates a relevance prune removed (``before`` minus
+    ``after``), as JSON-safe pairs for ``REJECTED_ITEMS_ARTIFACT``. An item
+    that also sits behind a surviving candidate is not rejected."""
+    kept_ids = {id(candidate) for candidate in after}
+    kept_items = {_item_key(item) for candidate in after for item in candidate.source_items}
+    rejected = {
+        _item_key(item)
+        for candidate in before if id(candidate) not in kept_ids
+        for item in candidate.source_items
+    } - kept_items
+    return [list(key) for key in sorted(rejected)]
+
+
 def item_topic_verdicts(
-    candidates: list[schema.Candidate], topic: str,
+    candidates: list[schema.Candidate],
+    topic: str,
+    rejected: Iterable[Iterable[str]] | None = None,
 ) -> dict[tuple[str, str], bool]:
-    """``(source, url or id)`` of every item behind a ranked candidate, with
-    whether it counts for the topic. An item behind several candidates counts
-    when any of them does; an item behind none is absent."""
+    """Topical verdicts for the items the ranking judged, by ``(source, url or id)``.
+
+    True or False for an item behind a ranked candidate (True when any of its
+    candidates counts for the topic), False for an item listed in ``rejected``
+    (``REJECTED_ITEMS_ARTIFACT``). An item the ranking never judged is absent:
+    it was dropped by a selection limit, not by relevance.
+    """
     verdicts: dict[tuple[str, str], bool] = {}
+    for pair in rejected or ():
+        pair = tuple(pair)
+        if len(pair) == 2:
+            verdicts[(str(pair[0]), str(pair[1]))] = False
     for candidate in candidates:
         counts = candidate_counts_for_topic(candidate, topic)
         for item in candidate.source_items:
-            key = (item.source, item.url or item.item_id)
+            key = _item_key(item)
             verdicts[key] = verdicts.get(key, False) or counts
     return verdicts
 

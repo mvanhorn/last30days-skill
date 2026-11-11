@@ -68,6 +68,30 @@ def _out_of_time(deadline: Optional[float]) -> bool:
     return deadline is not None and deadline - time.monotonic() < MIN_STAGE_SECONDS
 
 
+def _within(deadline: Optional[float], stage: str, default: Any, call, *args, **kwargs) -> Any:
+    """Run one discovery call and stop waiting for it at the lane deadline.
+
+    The search, listing and score calls wait for their own workers on their
+    own timeouts, so a call started with seconds left could run past the
+    pipeline's wait for the source and take the threads already found with
+    it. Under a deadline the call runs on a worker that is abandoned when the
+    deadline passes, and ``default`` stands in for its result. With no
+    deadline the call runs inline, as before.
+    """
+    if deadline is None:
+        return call(*args, **kwargs)
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = http.submit_with_context(executor, call, *args, **kwargs)
+        try:
+            return future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except concurrent.futures.TimeoutError:
+            _log(f"{stage} still running at the lane deadline; returning without it")
+            return default
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 def _relevance_rank_key(post: Dict[str, Any]) -> float:
     """Rank by relevance first, with a bounded engagement bonus as tiebreaker.
 
@@ -112,7 +136,11 @@ def _scored_listings(
     ``hot`` or ``new`` are recovered even when only ``top`` succeeded. Never
     raises.
     """
-    posts = reddit_listing.fetch_listings(subreddits, depth=depth, query=query, sorts=sorts)
+    posts = _within(
+        deadline, "subreddit listing", [],
+        reddit_listing.fetch_listings, subreddits, depth=depth, query=query, sorts=sorts,
+    )
+    arctic_posts: List[Dict[str, Any]] = []
 
     # Supplement with arctic for all requested subreddits. Shreddit's per-sort
     # success/failure is opaque, so arctic provides coverage for any failed
@@ -122,7 +150,9 @@ def _scored_listings(
         _log("arctic-shift supplement skipped: lane budget spent")
     elif subreddits:
         try:
-            arctic_posts = reddit_arctic.fetch_listings(
+            arctic_posts = _within(
+                deadline, "arctic-shift supplement", [],
+                reddit_arctic.fetch_listings,
                 subreddits, depth=depth, query=query, sorts=sorts,
                 from_date=from_date, to_date=to_date,
                 **({"lane_deadline": deadline} if deadline is not None else {}),
@@ -173,8 +203,10 @@ def _discover(
         _log("site search skipped: lane budget spent")
         search_posts = []
     else:
-        search_posts = reddit_search.search(
-            topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date
+        search_posts = _within(
+            deadline, "site search", [],
+            reddit_search.search,
+            topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date,
         )
 
     # Targeted run: the caller chose these subreddits, so their listing cards
@@ -226,7 +258,7 @@ def _discover(
             if not (p.get("engagement", {}).get("score"))
             for pid in [reddit_listing._post_id(p["url"])] if pid]
     if need and not _out_of_time(deadline):
-        scores = reddit_arctic.fetch_scores(need)
+        scores = _within(deadline, "score lookup", {}, reddit_arctic.fetch_scores, need)
         filled = 0
         for p in merged:
             if p.get("engagement", {}).get("score"):

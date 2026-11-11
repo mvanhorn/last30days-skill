@@ -83,13 +83,63 @@ def test_saved_waymo_run_counts_views_of_on_topic_videos_only():
     assert line == "🔴 YouTube: 4 videos │ 225,428 views │ 4/4 with transcripts"
 
 
-def test_item_pruned_from_the_ranking_is_not_counted():
-    # prune_fallback_entity_misses drops the candidate; the item stays in the dump.
+def test_item_pruned_as_off_topic_is_not_counted():
+    # prune_fallback_entity_misses drops the candidate; the item stays in the
+    # dump and the pipeline records that it failed the relevance check.
     candidates = [_candidate(ROBOTAXIS), _candidate(CYBERCAB), _candidate(FOURTH)]
+    report = _report("Waymo", WAYMO_VIDEOS, candidates)
+    report.artifacts[rerank.REJECTED_ITEMS_ARTIFACT] = rerank.rejected_item_keys(
+        [*candidates, _candidate(ROADSTER, explanation=ENTITY_MISS, final_score=12.0)], candidates,
+    )
 
-    line = _youtube_line(_report("Waymo", WAYMO_VIDEOS, candidates))
+    assert "225,428 views" in _youtube_line(report)
 
-    assert "225,428 views" in line
+
+def test_item_with_no_ranking_verdict_still_counts():
+    # Fusion drops candidates for reasons that are not relevance (the
+    # per-author cap, the pool size), so a missing verdict is not "off topic":
+    # four on-topic posts by one author leave three candidates.
+    posts = [
+        _item("x", f"p{i}", f"Elon Musk on Starship flight {i}", "SawyerMerritt",
+              {"likes": 100, "reposts": 10})
+        for i in range(4)
+    ]
+    report = _report("Elon Musk", posts, [_candidate(post) for post in posts[:3]])
+
+    lines = render._build_source_footer_lines(report)
+
+    assert lines == ["🔵 X: 4 posts │ 400 likes │ 40 reposts"]
+    assert render._top_voices_footer_line(report) == "🗣️ Top voices: @SawyerMerritt"
+
+
+def test_fusion_author_cap_really_leaves_on_topic_items_without_a_candidate():
+    # The premise of the test above, from the code: weighted_rrf keeps fewer
+    # candidates than one author's on-topic posts.
+    from lib import fusion
+
+    posts = [
+        _item("x", f"p{i}", f"Elon Musk on Starship flight {i}", "SawyerMerritt",
+              {"likes": 100, "reposts": 10})
+        for i in range(8)
+    ]
+    for post in posts:
+        post.local_relevance, post.freshness, post.source_quality = 0.8, 80, 0.7
+    plan = schema.QueryPlan(
+        intent="breaking_news", freshness_mode="strict_recent", cluster_mode="story",
+        raw_topic="Elon Musk", source_weights={},
+        subqueries=[schema.SubQuery(label="primary", search_query="Elon Musk",
+                                    ranking_query="Elon Musk", sources=["x"])],
+    )
+
+    candidates = fusion.weighted_rrf({("primary", "x"): posts}, plan, pool_limit=50)
+
+    assert 0 < len(candidates) < len(posts)
+
+
+def test_pipeline_records_what_the_relevance_prune_rejected():
+    kept, dropped = _candidate(ROBOTAXIS), _candidate(ROADSTER, explanation=ENTITY_MISS)
+
+    assert rerank.rejected_item_keys([kept, dropped], [kept]) == [["youtube", ROADSTER.url]]
 
 
 def test_report_with_no_ranking_counts_every_item():

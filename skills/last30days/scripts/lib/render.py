@@ -3177,14 +3177,22 @@ def _on_topic_items(
     """The items whose engagement and voices the footer counts.
 
     The source dump keeps items the ranking found off topic (one unrelated
-    video carried 12.5M of a Waymo run's 12.7M YouTube views). Only items
-    behind a ranked candidate that passes ``rerank.candidate_counts_for_topic``
-    are counted. A source the ranking never judged, or one left with nothing,
-    is counted whole, as before.
+    video carried 12.5M of a Waymo run's 12.7M YouTube views). An item is
+    left out only when the ranking judged it off topic: its candidate fails
+    ``rerank.candidate_counts_for_topic``, or the relevance prune removed it
+    (``rerank.REJECTED_ITEMS_ARTIFACT``). An item with no verdict counts: the
+    fusion's per-author cap and pool size drop on-topic items too. A source
+    left with nothing is counted whole.
     """
-    verdicts = rerank.item_topic_verdicts(report.ranked_candidates or [], report.topic)
-    judged = [verdicts.get((item.source, item.url or item.item_id)) for item in items]
-    kept = [item for item, counts in zip(items, judged) if counts]
+    rejected = (report.artifacts or {}).get(rerank.REJECTED_ITEMS_ARTIFACT)
+    verdicts = rerank.item_topic_verdicts(
+        report.ranked_candidates or [], report.topic,
+        rejected if isinstance(rejected, list) else None,
+    )
+    kept = [
+        item for item in items
+        if verdicts.get((item.source, item.url or item.item_id)) is not False
+    ]
     return kept or items
 
 

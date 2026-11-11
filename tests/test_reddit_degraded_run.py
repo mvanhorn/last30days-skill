@@ -589,3 +589,77 @@ class TestKeptThreadsGetTheirTopComments:
             finalized = pipeline._finalize_items_by_source({"reddit": items}, topic="Elon Musk", config={})
 
         assert [bool(item.metadata.get("top_comments")) for item in finalized["reddit"]] == [True] * 3
+
+
+# --- Review findings on the lane deadline (PR #1408) ---
+
+
+class TestLaneDeadlineIsHard:
+    def test_listing_that_spends_the_budget_still_returns_its_threads(self):
+        # The shreddit listing returns with the budget gone: the archive
+        # supplement is skipped and the threads already fetched come back.
+        deadline = time.monotonic() + 3
+
+        def slow_listing(*_args, **_kwargs):
+            time.sleep(1.5)  # under MIN_STAGE_SECONDS left afterwards
+            return [_post("a"), _post("b")]
+
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", side_effect=slow_listing), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings") as archive:
+            posts = reddit_keyless._scored_listings(["elonmusk"], deadline=deadline)
+
+        archive.assert_not_called()
+        assert [post["metadata"]["post_id"] for post in posts] == ["a", "b"]
+
+    def test_running_site_search_is_abandoned_at_the_deadline(self):
+        release = threading.Event()
+
+        def slow_search(*_args, **_kwargs):
+            release.wait(10)
+            return [_post("late")]
+
+        started = time.monotonic()
+        try:
+            with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                                   return_value=[_post("a"), _post("b")]), \
+                 mock.patch.object(reddit_keyless.reddit_search, "search", side_effect=slow_search), \
+                 mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[]), \
+                 mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores", return_value={}):
+                out = reddit_keyless._discover(
+                    "Elon Musk", "default", None, dedicated_subreddits=["elonmusk"],
+                    from_date="2026-10-12", to_date="2026-11-11", deadline=time.monotonic() + 3,
+                )
+        finally:
+            release.set()
+
+        # The search started with budget left and never came back: the lane
+        # stops waiting at its deadline and keeps the dedicated threads.
+        assert time.monotonic() - started < 5
+        assert [post["metadata"]["post_id"] for post in out] == ["a", "b"]
+
+    @pytest.mark.parametrize("slow", ["listing", "scores"])
+    def test_running_listing_and_score_calls_are_abandoned_too(self, slow):
+        release = threading.Event()
+
+        def hang(*_args, **_kwargs):
+            release.wait(10)
+            return [] if slow == "listing" else {}
+
+        unscored = {**_post("s"), "score": 0, "engagement": {"score": 0, "num_comments": 0}}
+        listing = hang if slow == "listing" else (lambda *_a, **_k: [])
+        scores = hang if slow == "scores" else (lambda *_a, **_k: {})
+        started = time.monotonic()
+        try:
+            with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", side_effect=listing), \
+                 mock.patch.object(reddit_keyless.reddit_search, "search", return_value=[unscored]), \
+                 mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[]), \
+                 mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores", side_effect=scores):
+                out = reddit_keyless._discover(
+                    "Elon Musk", "default", ["elonmusk"],
+                    from_date="2026-10-12", to_date="2026-11-11", deadline=time.monotonic() + 3,
+                )
+        finally:
+            release.set()
+
+        assert time.monotonic() - started < 5
+        assert [post["metadata"]["post_id"] for post in out] == ["s"]
