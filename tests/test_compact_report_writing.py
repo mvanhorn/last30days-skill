@@ -856,7 +856,7 @@ def test_posts_follow_the_top_comments_of_their_cluster_and_are_labelled_post():
 
 
 def test_pool_covers_shown_clusters_before_other_items_within_the_cap():
-    shown = [_candidate(_thread("reddit", index, [3, 2], container="sub")) for index in range(1, 9)]
+    shown = [_candidate(_thread("reddit", index, [30, 20], container="sub")) for index in range(1, 9)]
     others = [_candidate(_thread("tiktok", index, [90000, 80000])) for index in range(9, 49)]
     clusters = [_cluster(index, [candidate]) for index, candidate in enumerate([*shown, *others], start=1)]
     report = _report([*shown, *others], clusters=clusters)
@@ -877,7 +877,7 @@ def test_pool_covers_shown_clusters_before_other_items_within_the_cap():
 def test_item_whose_top_comment_has_no_vote_gives_the_pool_nothing(source):
     spam = _candidate(_thread(source, 1, [0, 5]))
     unscored = _candidate(_thread(source, 2, [None, 5]))
-    partly = _candidate(_thread(source, 3, [3, 0]))
+    partly = _candidate(_thread(source, 3, [6, 0]))
     report = _report([*_two_comment_candidates(), spam, unscored, partly])
     authors = _pool_authors(_entries(_section(render.render_compact(report), "## Top Community Comments")))
     assert authors == [f"{source}3rank1"]
@@ -892,7 +892,7 @@ def test_hacker_news_gives_its_first_two_comments_by_thread_position():
     assert '" 🟡 hackernews1rank1 on Hacker News — ' in first
 
 
-def test_unquotable_top_comment_leaves_the_second_with_its_own_label():
+def test_unquotable_top_comment_gives_its_position_to_the_next():
     thread = _thread("reddit", 1, [900, 800], container="sub")
     thread.metadata["top_comments"][0]["excerpt"] = "😂😂😂😂😂😂😂😂😂😂😂😂"
     report = _report([*_two_comment_candidates(), _candidate(thread)])
@@ -900,7 +900,7 @@ def test_unquotable_top_comment_leaves_the_second_with_its_own_label():
         line for line in _entries(_section(render.render_compact(report), "## Top Community Comments"))
         if "reddit1rank" in line
     ]
-    assert "reddit1rank2" in entry and entry.endswith(" — #2 comment")
+    assert "reddit1rank2" in entry and entry.endswith(" — top comment")
 
 
 def test_duplicate_text_does_not_hide_the_copy_that_is_eligible():
@@ -1001,3 +1001,149 @@ def test_second_comments_are_shared_round_by_round_once_top_comments_are_in():
     assert authors[:6] == [f"reddit{n}rank1" for n in (10, 11, 20, 21, 30, 31)]
     # Three slots left for six second comments: one for each story.
     assert authors[6:] == ["reddit10rank2", "reddit20rank2", "reddit30rank2"]
+
+
+# --- round 5: what is not a community comment, and the item bar --------------
+
+
+def _comments_item(source, index, comments, *, author=None, container=None):
+    return _item(
+        source, f"{source}{index}", title=f"{source} item {index}",
+        url=f"https://example.com/{source}/{index}", author=author, container=container,
+        metadata={"top_comments": comments},
+    )
+
+
+def _pool(report):
+    text = render.render_compact(report)
+    if "\n## Top Community Comments\n" not in text:
+        return []
+    return _entries(_section(text, "## Top Community Comments"))
+
+
+def test_github_comment_needs_a_reaction_like_any_vote_counting_platform():
+    issue = _comments_item("github", 1, [
+        {"author": "Asif2BD", "score": 0, "excerpt": "This breaks on every install since Tuesday."},
+        {"author": "helper", "score": 9, "excerpt": "Pinning the old version works around it."},
+    ])
+    entries = _pool(_report([*_two_comment_candidates(), _candidate(issue)]))
+    assert not [line for line in entries if "GitHub" in line]
+
+
+@pytest.mark.parametrize(("author", "text"), [
+    ("Asif2BD", "<!-- proskills:review v1 psk-id=abc --> **ProSkills automated review** (deterministic, no AI)."),
+    ("Asif2BD", "<!- - proskills:review v1 - -> A review body that looks like a comment."),
+    ("someone", "ProSkills Automated Review: three findings in this pull request."),
+    ("dependabot[bot]", "Bumps the minor group with four updates to the lockfile."),
+    ("github-actions", "Coverage went down by two percent on this branch."),
+    ("AutoModerator", "Welcome to the sub! Please read the rules before posting."),
+    ("review-bot", "Looks good to me, merging when the checks pass."),
+    ("friendly", "I am a bot, and this action was performed automatically."),
+])
+@pytest.mark.parametrize("source", ["github", "reddit", "youtube", "hackernews"])
+def test_bot_and_markup_comments_are_never_quoted(source, author, text):
+    item = _comments_item(source, 1, [
+        {"author": author, "score": 900, "excerpt": text},
+        {"author": "person", "score": 40, "excerpt": "A real person's reaction to the thing."},
+    ])
+    entries = _pool(_report([*_two_comment_candidates(), _candidate(item)]))
+    assert not [line for line in entries if author in line or text[:20] in line]
+    # The next comment takes the position the bot comment held.
+    (person,) = [line for line in entries if "person" in line]
+    assert person.endswith(" — top comment")
+
+
+def test_usernames_that_only_contain_bot_are_people():
+    item = _comments_item("reddit", 1, [
+        {"author": "Talbot_Abbott", "score": 900, "excerpt": "Robots are not what this thread is about."},
+    ], container="sub")
+    entries = _pool(_report([*_two_comment_candidates(), _candidate(item)]))
+    assert [line for line in entries if "u/Talbot_Abbott" in line]
+
+
+@pytest.mark.parametrize(("source", "item_author", "comment_author"), [
+    ("youtube", "Engineering Explained", "@EngineeringExplained"),
+    ("tiktok", "yeniuswest", "@YeniusWest"),
+    ("instagram", "@iamkevinwong", "iamkevinwong"),
+    ("reddit", "thread_op", "u/Thread_OP"),
+    ("hackernews", "submitter", "Submitter"),
+])
+def test_the_items_own_author_is_skipped_and_the_next_comment_takes_the_position(
+    source, item_author, comment_author,
+):
+    item = _comments_item(source, 1, [
+        {"author": comment_author, "score": 683, "excerpt": "Addressing technical questions from the video!"},
+        {"author": "viewer1", "score": 120, "excerpt": "The best community reaction here."},
+        {"author": "viewer2", "score": 60, "excerpt": "The second community reaction here."},
+        {"author": "viewer3", "score": 30, "excerpt": "The third community reaction here."},
+    ], author=item_author)
+    entries = _pool(_report([_candidate(item)]))
+    assert ["viewer1" in entries[0], "viewer2" in entries[1], len(entries)] == [True, True, 2]
+    assert entries[0].endswith(" — top comment") and entries[1].endswith(" — #2 comment")
+    assert "Addressing technical questions" not in "\n".join(entries)
+
+
+@pytest.mark.parametrize(
+    "source", ["reddit", "youtube", "tiktok", "instagram", "github", "threads", "bluesky", "linkedin", "x"]
+)
+def test_item_joins_the_pool_only_when_its_top_community_comment_has_five_votes(source):
+    small = _comments_item(source, 1, [
+        {"author": "lol", "score": 1, "excerpt": "$500,000,000.00 on midterms LOL"},
+        {"author": "also", "score": 1, "excerpt": "Another remark on the small thread."},
+    ])
+    four = _comments_item(source, 2, [{"author": "four", "score": 4, "excerpt": "Four people liked this remark."}])
+    five = _comments_item(source, 3, [
+        {"author": "five", "score": 5, "excerpt": "Five people liked this remark."},
+        {"author": "one", "score": 1, "excerpt": "One person liked this second remark."},
+    ])
+    entries = _pool(_report([*_two_comment_candidates(), _candidate(small), _candidate(four), _candidate(five)]))
+    joined = "\n".join(entries)
+    assert "midterms" not in joined and "Another remark" not in joined and "Four people" not in joined
+    # Past the bar, the item's #2 still needs only one vote.
+    assert "Five people liked this remark." in joined and "One person liked this second remark." in joined
+
+
+def test_item_bar_does_not_apply_to_hacker_news():
+    story = _comments_item("hackernews", 1, [
+        {"author": "alice", "score": None, "excerpt": "The checkout flow is one page now."},
+        {"author": "bob", "score": 0, "excerpt": "A measured zero is still shown here."},
+    ])
+    joined = "\n".join(_pool(_report([*_two_comment_candidates(), _candidate(story)])))
+    assert "alice on Hacker News" in joined and "bob on Hacker News" in joined
+
+
+def test_markdown_emphasis_is_stripped_from_quote_text():
+    item = _comments_item("youtube", 1, [
+        {"author": "viewer", "score": 683,
+         "excerpt": "*Addressing technical questions!* It is **really** __not__ a _torque_ thing, ~~sorry~~ ok. snake_case and 2 * 3 stay."},
+    ])
+    own = _own_post(1, 50, text="This is **the** best *show* yet")
+    text = render.render_compact(_report([*_two_comment_candidates(), _candidate(item)], extra_items=[own]))
+    assert (
+        '- "Addressing technical questions! It is really not a torque thing, sorry ok. '
+        'snake_case and 2 * 3 stay." 🔴 @viewer on YouTube · 683 likes'
+    ) in _section(text, "## Top Community Comments")
+    assert '- "This is the best show yet" 🔵 @kanyewest' in _section(text, "## Posts by @kanyewest")
+
+
+@pytest.mark.parametrize("marker", [">", "&gt;", "\\>", "> ", "  >"])
+def test_quoted_parent_lines_are_dropped_and_the_commenters_words_kept(marker):
+    item = _comments_item("reddit", 1, [
+        {"author": "replier", "score": 300,
+         "excerpt": f"{marker}Cybercab costs 20,000\n\nTesla does not have a US$20,000 car.\n{marker}second quoted line\nNot even close."},
+    ], container="sub")
+    (entry,) = [line for line in _pool(_report([*_two_comment_candidates(), _candidate(item)])) if "replier" in line]
+    assert entry.startswith('- "Tesla does not have a US$20,000 car. Not even close." 🟠 u/replier on r/sub · 300 upvotes')
+
+
+def test_comment_that_only_quotes_its_parent_is_skipped_and_the_next_takes_its_position():
+    item = _comments_item("reddit", 1, [
+        {"author": "echo", "score": 900, "excerpt": "> Cybercab costs 20,000 and nothing else is said"},
+        {"author": "emoji", "score": 800, "excerpt": "😂😂😂😂😂😂😂😂😂😂😂😂"},
+        {"author": "person", "score": 700, "excerpt": "Tesla does not have a car at that price."},
+        {"author": "fourth", "score": 600, "excerpt": "A second remark in the commenter's own words."},
+        {"author": "fifth", "score": 500, "excerpt": "A third remark that stays out of the pool."},
+    ], container="sub")
+    entries = [line for line in _pool(_report([_candidate(item)]))]
+    assert [re.search(r"u/(\w+)", line).group(1) for line in entries] == ["person", "fourth"]
+    assert entries[0].endswith(" — top comment") and entries[1].endswith(" — #2 comment")

@@ -733,11 +733,12 @@ class RenderTopCommentsTests(unittest.TestCase):
         self.assertIn("@b (600 likes): so real", text)
         # Card still applies the 500 threshold: c (400) not on the card.
         self.assertNotIn("@c (400 likes):", text)
-        # The quote pool holds the video's top comment and its #2 only: c is
-        # its #3 and d its #4, so neither appears anywhere.
-        # ("so real" is too short to quote, which leaves one entry, and a
-        # pool of one is not printed.)
-        self.assertNotIn("@c on TikTok", text)
+        # The quote pool holds the video's top two quotable comments: "so
+        # real" is too short to quote, so c takes the #2 position, and d, the
+        # next one down, stays out.
+        self.assertIn('"this aged well" 🎵 @a on TikTok · 2,000 likes', text)
+        self.assertIn('"below tt threshold" 🎵 @c on TikTok · 400 likes', text)
+        self.assertNotIn("@b on TikTok", text)
         self.assertNotIn("@d (50 likes)", text)
         self.assertNotIn("@d on TikTok", text)
 

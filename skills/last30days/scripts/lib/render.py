@@ -4375,9 +4375,16 @@ _QUOTABLE_POST_SOURCES = frozenset({"x", "threads", "bluesky", "truthsocial"})
 # News comments) is held to neither. The comment lines inside the ranked
 # clusters are not the pool and keep their own per-source floors.
 _QUOTE_POOL_VOTE_COUNTING_SOURCES = frozenset(
-    {"instagram", "tiktok", "youtube", "x", "reddit", "threads", "bluesky", "linkedin"}
+    {
+        "instagram", "tiktok", "youtube", "x", "reddit", "threads", "bluesky",
+        "linkedin", "github",
+    }
 )
 _QUOTE_POOL_MIN_VOTES = 1
+# The bar an item clears to join the pool at all: position makes its best
+# community comment a "top comment", so on a platform that counts votes that
+# comment needs a few. A one-upvote reply on a small thread is nobody's pick.
+_QUOTE_POOL_ITEM_MIN_TOP_VOTES = 5
 _QUOTE_POOL_POST_MIN_LIKES = 10
 _QUOTE_POOL_POSITION_LABELS = ("top comment", "#2 comment")
 _QUOTE_TEXT_LIMIT = 240
@@ -4390,6 +4397,17 @@ def _one_line_quote(text: str, limit: int) -> str:
 
 
 _RAW_URL = re.compile(r"(?:https?://|www\.)\S+")
+# A line that quotes the parent comment (markdown ``>``, also as scraped:
+# ``&gt;`` or escaped ``\\>``). The commenter's own words are the other lines.
+_QUOTED_PARENT_LINE = re.compile(r"^\s*(?:\\?>|&gt;)")
+# Emphasis delimiters (``*x*``, ``**x**``, ``__x__``, ``_x_``, ``~~x~~``): the
+# markers that open or close a run, not an asterisk between spaces or an
+# underscore inside a word.
+_EMPHASIS_MARKERS = re.compile(
+    r"(?<![\w*])\*{1,3}(?=[^\s*])|(?<=[^\s*])\*{1,3}(?![\w*])"
+    r"|(?<![\w_])_{1,3}(?=[^\s_])|(?<=[^\s_])_{1,3}(?![\w_])"
+    r"|~~"
+)
 _LEADING_REPLY_HANDLES = re.compile(r"^(?:@\w+[\s,:]*)+")
 _SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?=\s)")
 # A cut at a sentence end must leave at least this much of the quote.
@@ -4403,10 +4421,17 @@ def _quote_text(text: str, limit: int, *, strip_reply_handles: bool = False) -> 
     half of one. A reply's leading run of @mentions is dropped on request
     (the rest stays verbatim). Straight double quotes inside become single
     ones, so a comment that is itself a quotation does not double the outer
-    pair. Text over ``limit`` ends at the last sentence that fits, or failing
-    that at a word, with one ``...``.
+    pair. Lines that quote the parent comment are dropped, and markdown
+    emphasis markers are removed, since either would break a blockquote line.
+    Text over ``limit`` ends at the last sentence that fits, or failing that at
+    a word, with one ``...``.
     """
-    flat = " ".join(_RAW_URL.sub(" ", str(text or "")).split())
+    own_lines = [
+        line for line in str(text or "").splitlines()
+        if not _QUOTED_PARENT_LINE.match(line)
+    ]
+    flat = " ".join(_RAW_URL.sub(" ", " ".join(own_lines)).split())
+    flat = " ".join(_EMPHASIS_MARKERS.sub("", flat).split())
     if strip_reply_handles:
         flat = _LEADING_REPLY_HANDLES.sub("", flat)
     flat = flat.replace('"', "'")
@@ -4583,6 +4608,34 @@ def _quote_pool_has_vote(source: str, score) -> bool:
     )
 
 
+_BOT_AUTHOR = re.compile(
+    r"\[bot\]$|(?:^|[-_.])bot(?:$|[-_.])|^(?:automoderator|github-actions|dependabot)$",
+    re.IGNORECASE,
+)
+_BOT_TEXT = re.compile(
+    r"automated review|\bi am a bot\b|\bperformed automatically\b", re.IGNORECASE
+)
+_HTML_COMMENT_START = re.compile(r"^\s*<!-\s?-")
+
+
+def _author_key(name: str | None) -> str:
+    """An author name for comparison: no case, no spaces, no ``@`` or ``u/``."""
+    key = "".join(str(name or "").split()).lower().lstrip("@")
+    return key.removeprefix("u/")
+
+
+def _is_community_comment(item: schema.SourceItem, comment: dict, text: str) -> bool:
+    """False for what is not a reaction from the community, on any platform:
+    a bot's comment, machine markup (an HTML comment), or a comment by the
+    item's own author (a channel's pinned note, the original poster)."""
+    author = str(comment.get("author") or "").strip()
+    if _BOT_AUTHOR.search(author) or _BOT_TEXT.search(text):
+        return False
+    if _HTML_COMMENT_START.match(text):
+        return False
+    return not (_author_key(author) and _author_key(author) == _author_key(item.author))
+
+
 def _quotable(body: str) -> bool:
     """Long enough to quote, and words rather than a row of emoji."""
     return len(body) >= 12 and sum(ch.isalnum() for ch in body) >= 4
@@ -4677,20 +4730,33 @@ def _render_top_comments(
         funny = (cand.fun_score or 0.0) >= _QUOTE_POOL_FUNNY_FLOOR
         rows: list[dict] = []
         for item in cand.source_items:
-            comments = item.metadata.get("top_comments") or []
-            comments = [tc for tc in comments if isinstance(tc, dict)]
-            for position, tc in enumerate(comments[:_QUOTE_POOL_COMMENTS_PER_ITEM]):
+            # The item's community comments, in its own order. A bot's, the
+            # item author's own, or one with nothing quotable in it is not a
+            # reaction to quote, so the next comment takes its position.
+            community: list[tuple[dict, str]] = []
+            for tc in item.metadata.get("top_comments") or []:
+                if not isinstance(tc, dict):
+                    continue
+                raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
+                if not _is_community_comment(item, tc, raw):
+                    continue
+                body = _quote_text(raw, _QUOTE_TEXT_LIMIT)
+                if _quotable(body):
+                    community.append((tc, body))
+            if community and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
+                top_score = community[0][0].get("score")
+                if not (
+                    isinstance(top_score, (int, float))
+                    and not isinstance(top_score, bool)
+                    and top_score >= _QUOTE_POOL_ITEM_MIN_TOP_VOTES
+                ):
+                    # Too few voted for the item's best comment: skip the item.
+                    community = []
+            for position, (tc, body) in enumerate(
+                community[:_QUOTE_POOL_COMMENTS_PER_ITEM]
+            ):
                 score = tc.get("score")
                 if not _quote_pool_has_vote(item.source, score):
-                    if position == 0:
-                        # Nobody voted for the item's best comment: skip the item.
-                        break
-                    continue
-                body = _quote_text(
-                    tc.get("excerpt") or tc.get("text") or tc.get("body") or "",
-                    _QUOTE_TEXT_LIMIT,
-                )
-                if not _quotable(body):
                     continue
                 rows.append({
                     "position": position, "cand": cand, "item": item, "funny": funny,
