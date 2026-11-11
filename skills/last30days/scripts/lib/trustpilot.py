@@ -10,9 +10,13 @@ A research run never launches a browser on the user's machine. The CLI has no
 no-browser mode (every fetch command harvests by itself when its session is
 missing or stale), so this module asks ``auth status`` first, which is a local
 read, and calls a fetch command only while the saved session is fresh.
-Otherwise the lane is skipped quietly: one stderr line with the sign-in
-command, and a not-attempted "no results" outcome carrying ``SESSION_NEEDED``,
-never a failed or degraded source.
+Otherwise it reads the CLI's cached company record (``info <domain> --local``,
+a local read that needs no session) and labels the data with its cache age.
+With no usable cached record the lane is skipped quietly: one stderr line with
+the sign-in command, and a not-attempted "no results" outcome carrying
+``SESSION_NEEDED``, never a failed or degraded source. ``can_run_now`` tells
+``--diagnose`` and doctor which of these a run would get, so the host does not
+resolve a domain for a lane that would skip.
 
 Activation gate: only available when ``trustpilot-pp-cli`` is on PATH.
 ``pipeline.available_sources`` checks ``shutil.which`` before including
@@ -62,6 +66,13 @@ CLI_BIN = "trustpilot-pp-cli"
 SEARCH_TIMEOUT = 75  # generous: a cold run may harvest a WAF cookie (~10s).
 
 AUTH_STATUS_TIMEOUT = 20  # auth status is a local SQLite read; fast.
+
+# `info <domain> --local` and `doctor-tp` read the CLI's local store only.
+LOCAL_READ_TIMEOUT = 10
+
+# A cached company record older than the research window is not evidence
+# about the last 30 days, so it is not used.
+CACHE_MAX_AGE_DAYS = 30
 
 NO_BROWSER_ENV = "LAST30DAYS_TRUSTPILOT_NO_BROWSER"
 
@@ -372,7 +383,10 @@ def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
     if result.returncode != 0:
         snippet = (result.stderr or "").strip().splitlines()[:1]
         first = snippet[0] if snippet else f"exit {result.returncode}"
-        _log(f"CLI exit {result.returncode}: {first}")
+        # A --local miss is the normal "nothing cached" answer, and the CLI's
+        # message for it suggests a command that opens a browser.
+        if "--local" not in cmd:
+            _log(f"CLI exit {result.returncode}: {first}")
         return {"error": first}
 
     stdout = result.stdout or ""
@@ -432,11 +446,22 @@ def search_trustpilot(
     def session_ready() -> bool:
         return ensure_session_ready(topic, config=config, has_domain=bool(explicit_domain))
 
-    # No "error" key: a skipped lane is not a failed source.
-    needs_session = {"results": [], "needs_session": True, "skipped": SESSION_NEEDED}
-    if not session_ready():
+    def without_session(identifier: Optional[str]) -> Dict[str, Any]:
+        """The cached record for a known domain, else the quiet skip."""
+        cached = _cached_info(identifier) if identifier else None
+        if cached:
+            return {"results": [cached]}
         _log(f"skipped: {SESSION_NEEDED}")
-        return needs_session
+        # No "error" key: a skipped lane is not a failed source.
+        return {"results": [], "needs_session": True, "skipped": SESSION_NEEDED}
+
+    # Cached records are keyed by domain; a bare name cannot be looked up
+    # without the session its name -> domain search needs.
+    known_domain = explicit_domain or (
+        _company_identifier(topic) if _DOMAIN_RE.search(topic.lower()) else None
+    )
+    if not session_ready():
+        return without_session(known_domain)
     # Retry-budget timer starts AFTER the session check, so it measures the
     # info call itself.
     started = time.monotonic()
@@ -447,10 +472,10 @@ def search_trustpilot(
         if not _DOMAIN_RE.search(topic.lower()):
             # No domain token in the topic: Trustpilot pages are keyed by
             # domain, so resolve name -> domain before the info lookup.
-            identifier = _search_domain(topic, session_ready) or identifier
+            resolved_domain = _search_domain(topic, session_ready)
+            identifier = resolved_domain or identifier
             if not session_ready():
-                _log(f"skipped: {SESSION_NEEDED}")
-                return needs_session
+                return without_session(resolved_domain)
     _log(f"info '{identifier}'")
     data = _run_cli(_build_info_args(identifier), timeout=SEARCH_TIMEOUT)
     if ("error" in data or not data) and explicit_domain and domain_is_hint:
@@ -467,6 +492,64 @@ def search_trustpilot(
     if "error" in data or not data:
         return {"results": []}
     return {"results": [data]}
+
+
+def _cache_label(info: Dict[str, Any]) -> Optional[str]:
+    """``cached 3 days ago`` for a cached record, or None when it is too old
+    to use. A record with no readable fetch time is used and says so."""
+    raw = info.get("fetchedAt") or info.get("updatedAt") or info.get("updated_at")
+    try:
+        fetched = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return "cached, age unknown"
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    days = max(0, (datetime.now(timezone.utc) - fetched).days)
+    if days > CACHE_MAX_AGE_DAYS:
+        return None
+    if days == 0:
+        return "cached today"
+    return f"cached {days} day{'s' if days != 1 else ''} ago"
+
+
+def _cached_info(identifier: str) -> Optional[Dict[str, Any]]:
+    """The CLI's cached company record for a domain, labelled with its age.
+
+    ``info <domain> --local`` reads the local store and needs no session, so
+    it never opens a browser. None when nothing usable is cached.
+    """
+    data = _run_cli(
+        [CLI_BIN, "info", identifier, "--local", "--agent"], timeout=LOCAL_READ_TIMEOUT
+    )
+    if not isinstance(data, dict) or not data or "error" in data:
+        return None
+    label = _cache_label(data)
+    if label is None:
+        _log(f"cached record for '{identifier}' is over {CACHE_MAX_AGE_DAYS} days old; not used")
+        return None
+    _log(f"no fresh session; using the cached record for '{identifier}' ({label})")
+    return {**data, "_cache_label": label}
+
+
+def can_run_now(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Whether a run started now could get Trustpilot data without a browser.
+
+    True with a replayable session, or with at least one cached company
+    record (``doctor-tp`` counts them; whether it covers a given company is
+    known only once its domain is). Local reads only; never raises.
+    """
+    answer = {"can_run": False, "session_fresh": False, "cached_companies": 0}
+    if not _is_available() or not _harvest_allowed(config):
+        return answer
+    status = _run_cli([CLI_BIN, "auth", "status", "--agent"], timeout=LOCAL_READ_TIMEOUT)
+    answer["session_fresh"] = _is_session_fresh(status) and not _session_about_to_lapse(status)
+    if not answer["session_fresh"]:
+        cache = _run_cli([CLI_BIN, "doctor-tp", "--agent"], timeout=LOCAL_READ_TIMEOUT)
+        answer["cached_companies"] = _coerce_int(
+            cache.get("companies") if isinstance(cache, dict) else None
+        ) or 0
+    answer["can_run"] = bool(answer["session_fresh"] or answer["cached_companies"])
+    return answer
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -535,6 +618,11 @@ def parse_trustpilot_response(
         why = f"Trustpilot: TrustScore {trust_score} across {review_count} reviews"
     elif trust_score is not None:
         why = f"Trustpilot: TrustScore {trust_score}"
+    # A cached record (no fresh session this run) says so wherever it is read.
+    cache_label = str(info.get("_cache_label") or "").strip()
+    if cache_label:
+        title = f"{title} ({cache_label})"
+        why = f"{why} ({cache_label})"
 
     return [
         {

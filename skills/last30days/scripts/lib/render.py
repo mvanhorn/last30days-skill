@@ -3552,6 +3552,19 @@ def _amazon_footer_line(report: schema.Report) -> str | None:
             parts.append(f"{sum(rated) / len(rated):.1f}★ average")
         if total_ratings:
             parts.append(f"{total_ratings:,} ratings")
+        prices = [
+            float(price) for item in items
+            if isinstance(price := (getattr(item, "metadata", None) or {}).get("price"), (int, float))
+            and not isinstance(price, bool) and price > 0
+            and ((item.metadata.get("currency") or "USD") == "USD")
+        ]
+        if prices:
+            low, high = f"${min(prices):,.0f}", f"${max(prices):,.0f}"
+            parts.append(low if low == high else f"{low} to {high}")
+        # Pulls were fired and none answered: say so, so the inventory form is
+        # not read as a product nobody reviews.
+        if outcome and amazon.REVIEWS_UNAVAILABLE_NOTE in str(outcome.detail or ""):
+            parts.append(amazon.REVIEWS_UNAVAILABLE_NOTE)
         line = f"📦 Amazon: {' │ '.join(parts)}"
         return line
 

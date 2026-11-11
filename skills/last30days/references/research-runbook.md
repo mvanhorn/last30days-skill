@@ -162,7 +162,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--ticker="{SYMBOL}:{Company}"` | Step 0.5 (Section B below) | Topic is a listed company, a person who leads one, or a product or subsidiary of one |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
 | `--github-repo={owner/repo}` | Step 0.5c | Topic is a product / project / open-source tool |
-| `--trustpilot-domain={domain}` | Step 0.5d | Topic is a company / brand / service with a Trustpilot presence (passing the flag also auto-activates the opt-in Trustpilot source for this run) |
+| `--trustpilot-domain={domain}` | Step 0.5d | Topic is a company / brand / service and `--diagnose` reports `trustpilot_can_run` (the flag also activates the opt-in Trustpilot source) |
 | `--amazon-query={keyword}` | Step 0.5e | Recent buyer sentiment would materially inform the report AND `brightdata` is on PATH and logged in. Keyword is brand-plus-category (`Weber grill`), and for a person topic it is their company's product line (`June Oven`), not their name. Also add `amazon` to `--search` |
 | `--meta-ads-page={page_id}` | Step 0.5f | Name-based advertiser resolution picked the wrong company, or the brand advertises only under product-line page names. Accepts a numeric Ad Library page id or an Ad Library URL with `view_all_page_id`; a facebook.com vanity URL is not a page id. Also add `meta_ads` to `--search` |
 | `--subreddits={sub1,sub2,...}` | Step 0.55 | Always — almost every topic has active Reddit communities |
@@ -269,9 +269,11 @@ Store: `RESOLVED_GITHUB_REPOS = {comma-separated owner/repo or empty}`
 
 ### Step 0.5d: Resolve Trustpilot Domain (if topic is a company/brand)
 
-When TOPIC is a company, brand, or service and you want Trustpilot review evidence, resolve its Trustpilot review-page domain. Trustpilot pages are keyed by domain (`www.thriftbooks.com`), not company name — a bare name 404s. Passing `--trustpilot-domain` (or a per-entity `trustpilot_domain` in `--competitors-plan`) auto-activates the opt-in Trustpilot source for that run — you do not also need `INCLUDE_SOURCES=trustpilot`.
+**Availability first.** Do this step only when `--diagnose` reports `trustpilot_can_run: true` (a fresh `trustpilot-pp-cli` session or a cached company record; the engine never opens a browser, so otherwise the lane skips). When it is false, skip the step: no lookup, no flag.
 
-**You usually already have it.** Step 0.55 item 6 (first-party positioning) fetches the official site — capture the bare hostname while you're there. When positioning wasn't fetched, one lookup covers it:
+When TOPIC is a company, brand, or service and you want Trustpilot review evidence, resolve its review-page domain. Pages are keyed by domain (`www.thriftbooks.com`), not company name — a bare name 404s. Passing `--trustpilot-domain` (or a per-entity `trustpilot_domain` in `--competitors-plan`) activates the opt-in source for that run without `INCLUDE_SOURCES=trustpilot`.
+
+**You usually already have it.** Step 0.55 item 6 fetches the official site — capture the bare hostname there. Otherwise one lookup covers it:
 
 ```
 WebSearch("{TOPIC} official site")
@@ -279,13 +281,11 @@ WebSearch("{TOPIC} official site")
 
 Pass to the CLI: `--trustpilot-domain={domain}` (e.g., `--trustpilot-domain=www.thriftbooks.com`)
 
-The flag is used verbatim, bypasses the engine's brand-shape gate, and auto-activates Trustpilot for the run, so it also unlocks Trustpilot for multi-word company names ("Stanley Steemer carpet cleaning"). For comparisons, put a per-entity `trustpilot_domain` in each PEER entity's `--competitors-plan` entry; the MAIN topic's domain must ride the outer `--trustpilot-domain` flag (the engine does not read a main-topic entry out of the plan).
+The flag is used verbatim and bypasses the engine's brand-shape gate, so it also unlocks Trustpilot for multi-word company names ("Stanley Steemer carpet cleaning"). For comparisons, put a per-entity `trustpilot_domain` in each PEER entity's `--competitors-plan` entry; the MAIN topic's domain must ride the outer `--trustpilot-domain` flag (the engine does not read a main-topic entry out of the plan).
 
 **A miss is not fatal.** When the flag is absent, the engine resolves name → domain itself via the CLI's search **only when Trustpilot is already active** (`INCLUDE_SOURCES=trustpilot` or `--search` includes it); headless `--auto-resolve` fills a hint the engine verifies, but that hint alone does not activate the source. Resolve the flag when the domain is already in hand or the company name is ambiguous (lookalike or same-named companies) — an explicit domain is the only way to guarantee the right company *and* turn the source on.
 
-**Skip this step if:**
-- TOPIC is a person, event, or abstract concept (no company reviews to fetch)
-- You intentionally want Trustpilot off for this run (`EXCLUDE_SOURCES=trustpilot`)
+**Skip this step if:** `trustpilot_can_run` is false, TOPIC is a person, event, or abstract concept, or `EXCLUDE_SOURCES=trustpilot` is set.
 
 Store: `RESOLVED_TRUSTPILOT_DOMAIN = {domain or empty}`
 
@@ -424,7 +424,7 @@ Per-entity lookup types to resolve:
 2. **Project GitHub repo** - `owner/repo` format (e.g., `openai/openai-python`)
 3. **Founder/maintainer X handle** - the person or team behind the project
 4. **Relevant subreddits** - project-specific subreddits (e.g., `r/openclaw`) AND general-category subreddits (e.g., `r/LocalLLaMA`)
-5. **Trustpilot domain** (when the entity is a company/brand/service and you want review evidence) - the entity's Trustpilot review-page domain per Step 0.5d; peers carry it as `trustpilot_domain` in their `--competitors-plan` entry, the main topic via the outer `--trustpilot-domain` flag (either pin auto-activates Trustpilot for the run)
+5. **Trustpilot domain** (company/brand/service, and only when `trustpilot_can_run`) - the entity's Trustpilot review-page domain per Step 0.5d; peers carry it as `trustpilot_domain` in their `--competitors-plan` entry, the main topic via the outer `--trustpilot-domain` flag (either pin auto-activates Trustpilot for the run)
 
 Example batching for "OpenClaw vs Hermes vs Paperclip":
 
@@ -513,7 +513,7 @@ Only show lines for platforms where something was resolved. On the Reddit line, 
 
 **Rules for your plan:**
 - Emit 1 to 4 subqueries (more for multi-faceted topics, fewer for simple ones)
-- **CRITICAL: Your PRIMARY subquery MUST include every applicable source from `ACTIVE_SOURCES_LIST`, including installed lanes such as digg, arxiv, techmeme, bluesky, and linkedin.** Leave out only `grounding`, `corpus`, `perplexity` (engine-attached) and `amazon` / `meta_ads` (Step 0.5e / 0.5f). For a company or the person who leads it, name `jobs` (unlisted). Never invent an unavailable source. Preserve X whenever it is active; when it is unavailable, continue with the rest. Never omit active Reddit (highest-signal discussion) or active YouTube (unique transcripts + official content). Secondary subqueries can target specific platforms. Per-subquery `sources` on `--plan` is a contract at every depth: the engine searches only those sources and never expands a narrow list. Restrict a subquery only when you mean it.
+- **CRITICAL: Your PRIMARY subquery MUST include every applicable source from `ACTIVE_SOURCES_LIST`, including installed lanes such as digg, arxiv, techmeme, bluesky, and linkedin.** Leave out only `grounding`, `corpus`, `perplexity` (engine-attached) and `amazon` / `meta_ads` (the engine adds them when `--search` names them; Step 0.5e / 0.5f). For a company or the person who leads it, name `jobs` (unlisted). Never invent an unavailable source. Preserve X whenever it is active; when it is unavailable, continue with the rest. Never omit active Reddit (highest-signal discussion) or active YouTube (unique transcripts + official content). Secondary subqueries can target specific platforms. Per-subquery `sources` on `--plan` is a contract at every depth: the engine searches only those sources and never expands a narrow list. Restrict a subquery only when you mean it.
 - `search_query` should be concise and keyword-heavy - match how content is TITLED on platforms
 - `ranking_query` should read like a natural language question
 - **X disambiguation:** express your disambiguation intent in `ranking_query` (e.g., "What are people saying about Rome the city in Italy, not AS Roma or Rome Odunze?") — do not phrase-quote `search_query` for X or invent X operators; the engine handles X query compilation internally.
@@ -529,7 +529,7 @@ Only show lines for platforms where something was resolved. On the Reddit line, 
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include every active one in the primary subquery):** use the engine's `ACTIVE_SOURCES_LIST`. The normal candidates are reddit, x, youtube, tiktok, instagram, hackernews, and polymarket; X remains part of the normal set when active and is simply omitted when unavailable. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH), amazon (buyer reviews - only if `brightdata` is on PATH and logged in; see Step 0.5e), meta_ads (a brand's live Meta ad creatives - only if `SCRAPECREATORS_API_KEY` is set and the topic is a brand; see Step 0.5f)
+**Available sources (include every active one in the primary subquery):** use the engine's `ACTIVE_SOURCES_LIST`. The normal candidates are reddit, x, youtube, tiktok, instagram, hackernews, and polymarket; X remains part of the normal set when active and is simply omitted when unavailable. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH). `amazon` and `meta_ads` go in `--search`, not the plan (Step 0.5e / 0.5f)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`
@@ -623,7 +623,7 @@ Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 - `--ticker="{SYMBOL}:{Company}"` (from Step 0.5 Section B)
 - `--github-user={RESOLVED_GITHUB_USER}` (from Step 0.5b, person topics only)
 - `--github-repo={RESOLVED_GITHUB_REPOS}` (from Step 0.5c, product/project topics only)
-- `--trustpilot-domain={RESOLVED_TRUSTPILOT_DOMAIN}` (from Step 0.5d, company/brand topics; the flag also auto-activates Trustpilot)
+- `--trustpilot-domain={RESOLVED_TRUSTPILOT_DOMAIN}` (from Step 0.5d, only when `trustpilot_can_run`; the flag also activates Trustpilot)
 - Omit any flag where the value was not resolved (empty).
 
 **If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**

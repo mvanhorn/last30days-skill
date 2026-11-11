@@ -52,7 +52,7 @@ The Judge Agent must:
 
 ### Prediction Markets (Polymarket)
 
-**CRITICAL: When Polymarket returns relevant markets, prediction market odds are among the highest-signal data points in your research.** Real money on outcomes cuts through opinion.
+**CRITICAL: When Polymarket returns relevant markets, its odds are among your highest-signal data points.** Real money on outcomes cuts through opinion.
 
 1. **Prefer structural/long-term markets over near-term deadlines.** Championship odds > regular season title. Regime change > near-term strike deadline. IPO/major milestone > incremental update. Presidency > individual state primary.
 
@@ -133,7 +133,7 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **PULLED QUOTE (the named exception to COUNTS IN PROSE).** The report's best six quotes of a community comment, a post (X, TikTok, Instagram, YouTube, HN, LinkedIn) or the subject's own post each go on their own blockquote line directly under the paragraph they support: `> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`. Six in the whole report is a ceiling, not a target: each thread's or video's top comment first, then its #2, and the subject's standout posts, `funny` entries breaking ties; like counts do not rank a comment from one place against another; a blank line between. Another good quote may stay inside its paragraph in quotation marks, author linked (LAW 8), with no count: allowed, not required. Never use one quote both ways; never quote weak or off-topic comments. Copy the entry through its count (through the platform name when it has none) from `## Top Community Comments` or `## Posts by @handle`; no link here, the paragraph above keeps the source link. Translate one not in the report's language and append ` · translated from Portuguese`. Never pull a comment attributed `Comment`; none fits, no quote. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
 
-**ODDS LINE.** Polymarket odds for a market that names the topic and bears on a story go on its own blockquote line under that story's paragraph: `> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · 18% by Mar 31, 2027`. Copy the entry from `## Polymarket Markets` through its last price. At most three in the report, apart from the six quote lines. The paragraph says what the market is about and links it, and does not repeat the line's numbers. Other markets may be cited inline. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
+**ODDS LINE.** Polymarket odds for a market that names the topic and bears on a story go on its own blockquote line under that story's paragraph: `> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · 18% by Mar 31, 2027`. Copy the whole odds line from `## Polymarket Markets`, up to the ` — ` before its URL. At most three in the report, apart from the six quote lines. The paragraph says what the market is about and links it, and does not repeat the line's numbers. Other markets may be cited inline. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
 
 **NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, one per line with no blank lines between. Other hosts keep normal lists.
 

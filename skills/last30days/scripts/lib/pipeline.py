@@ -2110,6 +2110,9 @@ def diagnose(
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
         "brightdata_installed": brightdata_status["brightdata_installed"],
         "brightdata_authenticated": brightdata_status["brightdata_authenticated"],
+        # Fresh browser session or a cached company record: the host resolves
+        # a --trustpilot-domain only then. Local reads; never opens a browser.
+        "trustpilot_can_run": trustpilot.can_run_now(config)["can_run"],
         # safe=True (doctor/--diagnose/--preflight) must stay network-free:
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
@@ -2407,9 +2410,13 @@ def run(
             external_plan, topic, available, planner_requested_sources, depth,
             honor_plan_sources=True,
         )
-        # Quick runs keep the sanitizer's two-source budget.
-        if depth != "quick":
-            _ensure_unplanned_lanes_in_host_plan(plan, available)
+        # Quick runs keep the sanitizer's two-source budget, plus any paid
+        # lane this run asked for.
+        _ensure_unplanned_lanes_in_host_plan(
+            plan, available,
+            asked=_paid_lanes_asked_for(planner_requested_sources, config),
+            installed=depth != "quick",
+        )
         plan_source = "external"
     else:
         _check_research(config)
@@ -2557,11 +2564,12 @@ def run(
     # the LAW 7 degraded-run and Step 0.55 pre-research banners do not apply -
     # they would contradict the documented jobs-scoped flow. Suppress them.
     bundle.artifacts["hiring_signals_mode"] = hiring_signals_mode
-    # Record the resolved Amazon keyword whenever the lane is active, so the
+    # Record the resolved Amazon keyword whenever the lane is planned, so the
     # footer can name it on an empty result. A search that matched nothing
     # still spent a credit, and the fix is almost always the keyword -- a
-    # suppressed line means nobody ever learns it was wrong.
-    if "amazon" in (available or []):
+    # suppressed line means nobody ever learns it was wrong. A lane that is
+    # available but in no subquery never searched, so it names no keyword.
+    if any("amazon" in subquery.sources for subquery in plan.subqueries):
         bundle.artifacts["amazon_query"] = (
             str(config.get("_amazon_query") or "").strip() or topic
         )
@@ -4085,7 +4093,8 @@ def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
 # in (INCLUDE_SOURCES, --search, a targeting flag). A host plan that names none
 # of them in any subquery almost always means the host planner never knew to
 # list them, not that it chose to skip them, so they ride the primary subquery.
-# Paid lanes with their own host decision step (amazon, meta_ads) stay out;
+# Paid lanes with their own host decision step (amazon, meta_ads) stay out
+# unless this run asked for them (HOST_PLAN_PAID_LANES below);
 # EXCLUDE_SOURCES and --search already filter ``available``.
 HOST_PLAN_BACKFILL_SOURCES = (
     "digg",
@@ -4102,17 +4111,51 @@ HOST_PLAN_BACKFILL_SOURCES = (
 )
 
 
+# Paid lanes the host requests per run outside the plan (runbook Step 0.5e /
+# 0.5f): source -> (config key of its targeting flag, log label). They join a
+# host plan only when this run asked: the source is in --search, or its
+# targeting flag is set. INCLUDE_SOURCES alone makes the lane available but
+# leaves the per-topic decision with the host.
+HOST_PLAN_PAID_LANES = {
+    "amazon": ("_amazon_query", "Amazon"),
+    "meta_ads": ("_meta_ads_page", "Meta Ads"),
+}
+
+
+def _paid_lanes_asked_for(
+    requested_sources: list[str] | None,
+    config: dict[str, Any] | None,
+) -> list[str]:
+    requested = requested_sources or []
+    return [
+        source for source, (flag_key, _label) in HOST_PLAN_PAID_LANES.items()
+        if source in requested or str((config or {}).get(flag_key) or "").strip()
+    ]
+
+
 def _ensure_unplanned_lanes_in_host_plan(
     plan: schema.QueryPlan,
     available: list[str],
+    *,
+    asked: list[str] | tuple[str, ...] = (),
+    installed: bool = True,
 ) -> None:
     if not plan.subqueries:
         return
     planned = {source for subquery in plan.subqueries for source in subquery.sources}
+    candidates = (*(HOST_PLAN_BACKFILL_SOURCES if installed else ()), *asked)
     missing = [
-        source for source in HOST_PLAN_BACKFILL_SOURCES
+        source for source in candidates
         if source in available and source not in planned
     ]
+    for source, (_flag_key, label) in HOST_PLAN_PAID_LANES.items():
+        if source in available and source not in planned and source not in missing:
+            log.source_log(
+                label,
+                "available but not requested for this run; not run "
+                f"(add {source} to --search to run it).",
+                tty_only=False,
+            )
     if not missing:
         return
     plan.subqueries[0].sources.extend(missing)
@@ -4121,7 +4164,7 @@ def _ensure_unplanned_lanes_in_host_plan(
     plan.source_weights = planner._normalize_weights(plan.source_weights)
     log.source_log(
         "Planner",
-        "Added installed/opted-in sources absent from every --plan subquery to "
+        "Added installed/opted-in/requested sources absent from every --plan subquery to "
         f"{plan.subqueries[0].label}: {', '.join(missing)} "
         "(set EXCLUDE_SOURCES to skip them).",
         tty_only=False,
@@ -6762,7 +6805,7 @@ def _retrieve_stream_impl(
             artifact = dict(artifact) if artifact else {}
             artifact["_source_outcome"] = {
                 "state": schema.PARTIAL,
-                "detail": review_status,
+                "detail": amazon.outcome_detail(review_status),
                 "attempted": True,
             }
 
