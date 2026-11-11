@@ -103,11 +103,13 @@ def build(
             else ""
         )
         lines.append(
-            "• Every quoted comment or post is on its own line under its paragraph, "
-            "up to six per story (six is a ceiling, not a target; never pad), "
-            'never inside a paragraph: `> "quote" 🟠 u/author on r/sub · 1,315 upvotes`. '
-            "Use each thread's or video's top comment first, then its #2; like counts "
-            "do not rank a comment from one place against another."
+            "• The report's best six quotes each get their own line under their "
+            'paragraph: `> "quote" 🟠 u/author on r/sub · 1,315 upvotes` (six in the '
+            "whole report, the subject's own posts included; a ceiling, not a target). "
+            "Other good quotes may stay inside a paragraph, attributed and linked, with "
+            "no count; no quote is used both ways, and weak or off-topic comments are "
+            "not quoted. Use each thread's or video's top comment first, then its #2; "
+            "like counts do not rank a comment from one place against another."
             + source
         )
     if on_claude_code(environ):

@@ -3,8 +3,8 @@
 Prose carries a count only when its size is the finding. The pulled quote, a
 blockquote line under a story paragraph, is the named exception: it shows the
 comment's author and count as the engine printed them. Every quoted comment
-or post is such a line, up to six under a story paragraph, and none sits
-inside a paragraph.
+The report's best six quotes are such lines; other good quotes may stay
+inside a paragraph, attributed and linked, with no count.
 
 These pin the instruction text only. They catch the old "include the vote
 count" instruction coming back; they cannot catch a model that prints counts
@@ -72,26 +72,32 @@ def test_prose_rule_stays_beside_the_pulled_quote():
 def test_pulled_quote_is_the_named_exception_and_every_quote_is_one():
     rule = _pulled_quote_rule()
     assert rule.startswith(" (the named exception to COUNTS IN PROSE).**")
-    assert "Every quote of a community comment, a post" in rule
+    assert "The report's best six quotes of a community comment, a post" in rule
     assert "the subject's own post" in rule
-    assert "its own blockquote line directly under the paragraph it supports" in rule
+    assert "their own blockquote line directly under the paragraph they support" in rule
     assert '`> "Ofc shes literally him😭" 🎵 @haktimel2 on TikTok · 825,451 likes`' in rule
 
 
-def test_no_quoted_comment_or_post_sits_inside_a_paragraph():
+def test_other_good_quotes_may_stay_inline_without_a_quota_or_a_count():
     rule = _pulled_quote_rule()
-    assert "None goes inside a paragraph" in rule
-    assert "prose describes, attributes and links" in rule
-    assert "news article or official statement may stay inline" in rule
+    assert "Another good quote may stay inside its paragraph in quotation marks, author linked (LAW 8), with no count" in rule
+    assert "allowed, not required" in rule
+    assert "Never use one quote both ways" in rule
+    assert "never quote weak or off-topic comments" in rule
+    assert "None goes inside a paragraph" not in rule
+    text = reference_text("synthesis") + SKILL_MD.read_text(encoding="utf-8")
+    for gone in ("none inside a paragraph", "never inside a paragraph", "at least two", "at least 2"):
+        assert gone not in text.replace("at least two signals", "")
 
 
-def test_pulled_quotes_run_up_to_six_per_story_with_a_quality_bar():
+def test_pulled_quotes_run_up_to_six_in_the_whole_report_with_a_quality_bar():
     rule = _pulled_quote_rule()
     assert "top comment first, then its #2" in rule
     assert "like counts do not rank a comment from one place against another" in rule
     assert "highest-voted" not in rule
-    assert "six is a ceiling, not a target" in rule
-    assert "never pad with weak or off-topic ones" in rule
+    assert "Six in the whole report is a ceiling, not a target" in rule
+    assert "the subject's standout posts, `funny` entries breaking ties" in rule
+    assert "per story" not in rule and "each paragraph up to" not in rule
     assert "a blank line between" in rule
     for cap in ("at most one", "up to three", "up to five", "one per story"):
         assert cap not in rule
@@ -142,16 +148,16 @@ def test_pulled_quote_rule_adds_no_markdown_list():
 def test_fun_content_sends_translated_or_verbatim_quotes_to_quote_lines():
     text = reference_text("synthesis")
     fun = text.split("**FUN CONTENT (see LAW 9)", 1)[1].split("\n\n", 1)[0]
-    assert "VERBATIM or translated, on PULLED QUOTE lines" in fun
+    assert "quote the funniest/cleverest, VERBATIM or translated (PULLED QUOTE)" in fun
     assert "No separate section." in fun
     assert "eave" not in fun
 
 
 def test_root_law_puts_every_quoted_comment_on_a_quote_line():
     law9 = _law9()
-    assert "QUOTE THE COMMUNITY ON QUOTE LINES" in law9
-    assert "each quoted comment or post, verbatim or translated, goes on its own quote line" in law9
-    assert "never inside a paragraph" in law9
+    assert "QUOTE THE COMMUNITY;" in law9
+    assert "the report's best six quotes, verbatim or translated, each get a quote line" in law9
+    assert "others may be quoted inline, attributed" in law9
     assert "synthesis PULLED QUOTE" in law9
     assert "Do not create a separate Comments section." in law9
     assert "eave" not in law9
@@ -161,13 +167,13 @@ def test_root_law_quotes_the_subjects_own_posts_on_quote_lines():
     text = SKILL_MD.read_text(encoding="utf-8")
     law10 = text.split("**LAW 10 -", 1)[1].split("**LAW 11 -", 1)[0]
     assert "`## Posts by @handle`" in law10
-    assert "quote them on quote lines" in law10
+    assert "quote the standout ones" in law10
 
 
 def test_final_check_looks_for_quotes_left_inside_paragraphs():
     text = SKILL_MD.read_text(encoding="utf-8")
     checklist = text.split("## PRE-PRESENT SELF-CHECK", 1)[1].split("\n## ", 1)[0]
-    assert "Every quoted comment or post is on its own quote line, none inside a paragraph" in checklist
+    assert "At most six quote lines, the report's best; no quote both on a line and inline." in checklist
     assert "Weave" not in checklist
 
 

@@ -4353,7 +4353,7 @@ def _render_best_takes(
 
 # Compact output budgets for the three blocks a report's quote lines and
 # first-party paragraphs are written from. Each entry is one line. A report
-# runs up to six quote lines under each of its six to eight stories, so the
+# runs up to six quote lines in all, across its six to eight stories, so the
 # pool leaves that choice to the writer rather than making it.
 QUOTE_POOL_LIMIT = 40
 SUBJECT_POSTS_LIMIT = 8

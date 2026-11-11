@@ -482,8 +482,11 @@ def test_checklist_states_the_format_rules_as_facts(monkeypatch):
     assert '`> "quote" 🟠 u/author on r/sub · 1,315 upvotes`' in block
     assert "`## Top Community Comments`" in block
     assert "`## Posts by @kanyewest`" in block
-    assert "never inside a paragraph" in block
-    assert "up to six per story" in block
+    assert "The report's best six quotes each get their own line under their paragraph" in block
+    assert "six in the whole report" in block
+    assert "Other good quotes may stay inside a paragraph, attributed and linked" in block
+    assert "no quote is used both ways" in block
+    assert "per story" not in block and "never inside a paragraph" not in block
     assert "```text" in block and "fence included" in block
     assert "I'm now an expert on" in block
     assert "User and host instructions come first" in block
@@ -677,7 +680,7 @@ def test_checklist_says_copy_through_the_count_and_that_six_is_a_ceiling(monkeyp
     block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=False))
     assert "Copy the entry through its count (through the platform name when it has no count)" in block
     assert "up to its URL" not in block
-    assert "six is a ceiling, not a target; never pad" in block
+    assert "a ceiling, not a target" in block
 
 
 def test_checklist_names_the_marker_for_key_patterns_and_for_the_invitation(monkeypatch):
@@ -919,7 +922,7 @@ def test_checklist_and_rule_rank_by_position_not_likes(monkeypatch):
     block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=False))
     assert "each thread's or video's top comment first, then its #2" in block
     assert "like counts do not rank a comment from one place against another" in block
-    assert "six is a ceiling, not a target" in block
+    assert "a ceiling, not a target" in block
     assert "highest-voted" not in block
 
 
