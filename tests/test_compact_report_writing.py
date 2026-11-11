@@ -498,6 +498,9 @@ def test_checklist_mentions_lists_only_on_claude_code(monkeypatch):
         assert needle not in plain
     on_claude_code = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=True))
     assert "no markdown lists anywhere" in on_claude_code
+    # A note with bullets after the report breaks every link in the message.
+    assert "notes you add before or after it carry no bullets" in on_claude_code
+    assert "whenever you show the report in a later message" in on_claude_code
     assert "`1\\.`" in on_claude_code and "`•`" in on_claude_code
     assert "raw `name (url)` text" in on_claude_code
     assert len([line for line in on_claude_code.splitlines() if line.strip()]) <= 8

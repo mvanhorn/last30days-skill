@@ -116,7 +116,10 @@ def build(
         lines.append(
             "• `CLAUDECODE` is set: no markdown lists anywhere in the reply "
             "(KEY PATTERNS as `1\\.`, invitation lines as `•`). In a reply that holds a list, "
-            "Claude Code prints every link as raw `name (url)` text."
+            "Claude Code prints every link as raw `name (url)` text. This holds for the whole "
+            "message, not only the report: notes you add before or after it carry no bullets or "
+            "numbered lines either, and it holds again whenever you show the report in a later "
+            "message."
         )
     if not comparison:
         if _has_heading(rendered, _JOBS_DIGEST_HEADING):
