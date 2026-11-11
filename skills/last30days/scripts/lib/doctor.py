@@ -1991,6 +1991,7 @@ _FINGERPRINT_PIN_VARS = (
     env.X_BACKEND_PIN_VAR,
     env.REDDIT_BACKEND_PIN_VAR,
     env.YOUTUBE_BACKEND_PIN_VAR,
+    env.TIKTOK_BACKEND_PIN_VAR,
     env.X_HOST_VAR,
     env.X_HOST_LANE_VAR,
     # The Reddit session's consent and browser change the session row.
