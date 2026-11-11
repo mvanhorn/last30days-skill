@@ -27,6 +27,7 @@ _PAID_HOSTS = {
     "api.x.com": "x",
     "api.twitter.com": "x",
     "xquik.com": "xquik",
+    "api.scavio.dev": "scavio",
     "api.groq.com": "groq",
 }
 
