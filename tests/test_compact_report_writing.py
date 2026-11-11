@@ -656,10 +656,10 @@ def test_quote_pool_tail_needs_votes_but_a_shown_clusters_own_comments_do_not():
     candidate = _candidate(video)
 
     in_cluster = _entries(_section(render.render_compact(_report([candidate])), "## Top Community Comments"))
-    # Ranks one to three have no floor, rank four clears the tail floor, and
-    # the two-vote and zero-vote comments past them are left out.
+    # A tenth of the story's top comment (900) keeps 900, 400 and 90; the
+    # 30-like comment and the two-vote and zero-vote ones are left out.
     assert [re.search(r"@(voter\d)", line).group(1) for line in in_cluster] == [
-        "voter0", "voter1", "voter2", "voter3",
+        "voter0", "voter1", "voter2",
     ]
 
 
@@ -695,3 +695,185 @@ def test_quote_pool_keeps_hacker_news_comments_with_no_or_zero_points():
     assert '" 🟡 alice on Hacker News — ' in section
     assert '" 🟡 bob on Hacker News · 0 points — ' in section
 
+
+
+# --- round 2: recommendation runs, copy wording, quote text, story floor ------
+
+
+@pytest.mark.parametrize("topic", [
+    "best noise cancelling headphones", "Top AI coding agents", "what are the best CRMs for startups",
+    "what vector database should I use", "recommended standing desks",
+])
+def test_recommendation_run_checklist_leaves_out_story_quote_and_headline_lines(monkeypatch, topic):
+    report = _mixed_pool_report()
+    report.topic = topic
+    report.query_plan.raw_topic = topic
+    block = _checklist(_stdout(report, monkeypatch, claude_code=True))
+    assert '> "quote"' not in block
+    assert "bold headline phrase" not in block
+    assert "story" not in block
+    for kept in ("badge line", "no markdown lists anywhere", "fence included", "I'm now an expert on"):
+        assert kept in block
+
+
+@pytest.mark.parametrize(("topic", "intent"), [
+    ("Kanye West", "general"),
+    ("Sundar Pichai best moments", "opinion"),
+    # A name that opens "Top" or "Best", under a plan that says it is news.
+    ("Top Gun Maverick sequel news", "breaking_news"),
+    ("Best Buy earnings", "factual"),
+])
+def test_ordinary_topics_keep_the_story_quote_line(monkeypatch, topic, intent):
+    report = _mixed_pool_report()
+    report.topic = topic
+    report.query_plan.raw_topic = topic
+    report.query_plan.intent = intent
+    assert '> "quote"' in _checklist(_stdout(report, monkeypatch, claude_code=False))
+
+
+def test_checklist_says_copy_through_the_count_and_that_six_is_a_ceiling(monkeypatch):
+    block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=False))
+    assert "Copy the entry through its count (through the platform name when it has no count)" in block
+    assert "up to its URL" not in block
+    assert "six is a ceiling, not a target" in block
+    assert "only the strongest" in block
+
+
+def test_checklist_names_the_marker_for_key_patterns_and_for_the_invitation(monkeypatch):
+    block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=True))
+    assert "KEY PATTERNS as `1\\.`, invitation lines as `•`" in block
+
+
+def test_posts_entry_ends_its_copyable_part_at_the_count():
+    report = _report(_two_comment_candidates(), extra_items=[_own_post(1, 108107)])
+    (entry,) = _entries(_section(render.render_compact(report), "## Posts by @kanyewest"))
+    copyable, date, url = entry.split(" — ")
+    assert copyable.endswith("🔵 @kanyewest on X · 108,107 likes")
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
+    assert url.startswith("https://x.com/kanyewest/status/")
+
+
+def test_leading_reply_handles_are_stripped_from_post_text_only():
+    own = _own_post(1, 50, text="@yzyupdates @brazil_ye Bro This was a vibe, ask @north about it")
+    reply = _item("x", "fan2", title="@kanyewest @PopBase this is the best tour of the decade",
+                  url="https://x.com/fan/status/9", author="fan", engagement={"likes": 400})
+    mention_only = _own_post(2, 900, text="@yzyupdates @brazil_ye")
+    comment = _reddit_thread(3, [
+        {"author": "replier", "score": 300, "excerpt": "@grok is this true or is it made up"},
+    ])
+    report = _report(
+        [*_two_comment_candidates(), _candidate(reply), _candidate(comment)],
+        extra_items=[own, mention_only],
+    )
+    text = render.render_compact(report)
+    (post,) = _entries(_section(text, "## Posts by @kanyewest"))
+    assert post.startswith('- "Bro This was a vibe, ask @north about it" 🔵 @kanyewest on X · 50 likes')
+    pool = _section(text, "## Top Community Comments")
+    assert '- "this is the best tour of the decade" 🔵 @fan on X · 400 likes' in pool
+    # A comment on another platform keeps its text as written.
+    assert '- "@grok is this true or is it made up" 🟠 u/replier' in pool
+
+
+def test_quote_text_has_exactly_one_pair_of_outer_quotes():
+    candidates = _two_comment_candidates()
+    candidates[1].source_items[0].metadata["top_comments"][0]["excerpt"] = (
+        '"If you have 100 more kids..." 😂😂😂😂'
+    )
+    own = _own_post(1, 50, text='He said "no" and then "maybe" to the label')
+    text = render.render_compact(_report(candidates, extra_items=[own]))
+    assert "- \"'If you have 100 more kids...' 😂😂😂😂\" 🟠 u/CDC678" in _section(text, "## Top Community Comments")
+    assert "- \"He said 'no' and then 'maybe' to the label\" 🔵 @kanyewest" in _section(text, "## Posts by @kanyewest")
+    for line in _entries(_section(text, "## Top Community Comments")):
+        assert line.count('"') == 2, line
+
+
+def test_long_quote_is_cut_at_a_sentence_end_when_one_fits():
+    long = "The satellites are already up. " + "They image through cloud at night. " + "filler " * 60
+    candidates = _two_comment_candidates()
+    candidates[1].source_items[0].metadata["top_comments"][0]["excerpt"] = long
+    section = _section(render.render_compact(_report(candidates)), "## Top Community Comments")
+    assert '- "The satellites are already up. They image through cloud at night." 🟠 u/CDC678' in section
+
+
+def test_long_quote_with_no_sentence_end_is_cut_at_a_word_with_one_ellipsis():
+    long = " ".join(f"word{index}" for index in range(80))
+    candidates = _two_comment_candidates()
+    candidates[1].source_items[0].metadata["top_comments"][0]["excerpt"] = long
+    (line,) = [
+        line for line in _entries(_section(render.render_compact(_report(candidates)), "## Top Community Comments"))
+        if "word0" in line
+    ]
+    quote = line.split('" 🟠', 1)[0][3:]
+    assert len(quote) <= 240
+    assert quote.endswith("...") and not quote.endswith("....")
+    assert re.search(r"word\d+\.\.\.$", quote)
+    assert quote[:-3] == long[: len(quote) - 3]
+
+
+def test_quote_text_carries_no_raw_url():
+    candidates = _two_comment_candidates()
+    candidates[1].source_items[0].metadata["top_comments"][0]["excerpt"] = (
+        "ICEYE already announced this: https://www.iceye.com/newsroom/press-releases/iceye-and-nokia "
+        "and see www.example.com/page too. Worth a read."
+    )
+    (line,) = [
+        line for line in _entries(_section(render.render_compact(_report(candidates)), "## Top Community Comments"))
+        if "ICEYE" in line
+    ]
+    quote = line.split('" 🟠', 1)[0]
+    assert "http" not in quote and "www." not in quote and "iceye.com" not in quote
+    assert quote == '- "ICEYE already announced this: and see too. Worth a read.'
+
+
+def test_pool_keeps_only_comments_within_a_tenth_of_their_storys_top_comment():
+    thread = _reddit_thread(1, [
+        {"author": f"voter{index}", "score": score, "excerpt": f"Remark number {index} in one thread."}
+        for index, score in enumerate([805, 300, 81, 80, 42, 12])
+    ])
+    other = _reddit_thread(2, [
+        {"author": "small", "score": 12, "excerpt": "The best remark in a small thread."},
+        {"author": "smaller", "score": 2, "excerpt": "A second remark in a small thread."},
+        {"author": "tiny", "score": 1, "excerpt": "A third remark in that small thread."},
+    ])
+    section = _section(
+        render.render_compact(_report([_candidate(thread), _candidate(other)])), "## Top Community Comments",
+    )
+    kept = re.findall(r"u/(\w+) on", section)
+    # 10% of 805 keeps 805, 300 and 81; 80, 42 and 12 go. The small thread is
+    # judged against its own top comment: 12 and 2 stay, 1 goes.
+    assert sorted(kept) == sorted(["voter0", "voter1", "voter2", "small", "smaller"])
+
+
+def test_story_floor_applies_to_threads_outside_the_shown_clusters_too():
+    shown = [_candidate(_reddit_thread(index, [
+        {"author": f"shown{index}", "score": 500, "excerpt": f"Shown story remark number {index}."},
+    ])) for index in range(1, 3)]
+    hidden = _candidate(_reddit_thread(9, [
+        {"author": "top", "score": 4500, "excerpt": "The top remark in a thread not shown."},
+        {"author": "weak", "score": 56, "excerpt": "A weak remark in a thread not shown."},
+    ]))
+    clusters = [
+        schema.Cluster(cluster_id=f"cl-{index}", title=f"Story {index}",
+                       candidate_ids=[candidate.candidate_id], representative_ids=[candidate.candidate_id],
+                       sources=["reddit"], score=90 - index)
+        for index, candidate in enumerate([*shown, hidden], start=1)
+    ]
+    report = _report([*shown, hidden], clusters=clusters)
+    section = "\n".join(render._render_top_comments(report, clusters=clusters[:2]))
+    assert 'u/top on r/hiphopheads · 4,500 upvotes' in section and ' — re: "' in section
+    assert "u/weak" not in section
+
+
+def test_uncounted_comments_are_limited_to_three_a_story():
+    story = _item("hackernews", "42", title="A story", url="https://example.com/article", metadata={
+        "hn_url": "https://news.ycombinator.com/item?id=42",
+        "top_comments": [
+            {"author": f"hn{index}", "score": None, "excerpt": f"Hacker News remark number {index}."}
+            for index in range(6)
+        ],
+    })
+    section = _section(
+        render.render_compact(_report([*_two_comment_candidates(), _candidate(story)])),
+        "## Top Community Comments",
+    )
+    assert re.findall(r"🟡 (hn\d)", section) == ["hn0", "hn1", "hn2"]

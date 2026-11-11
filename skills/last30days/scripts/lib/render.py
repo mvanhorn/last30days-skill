@@ -4375,6 +4375,8 @@ _QUOTE_POOL_VOTE_COUNTING_SOURCES = frozenset(
     {"instagram", "tiktok", "youtube", "x", "reddit", "threads", "bluesky", "linkedin"}
 )
 _QUOTE_POOL_MIN_VOTES = 1
+_QUOTE_POOL_STORY_SHARE = 0.10
+_QUOTE_POOL_UNCOUNTED_PER_STORY = 3
 _QUOTE_POOL_POST_MIN_LIKES = 10
 _QUOTE_POOL_TAIL_MIN_VOTES = 5
 _QUOTE_POOL_FLOORLESS_RANKS = 3
@@ -4383,8 +4385,46 @@ _SUBJECT_POST_TEXT_LIMIT = 280
 
 
 def _one_line_quote(text: str, limit: int) -> str:
-    """Scraped quote text on one line, bounded and defanged."""
+    """Scraped text on one line, bounded and defanged."""
     return _format_untrusted_evidence(" ".join(str(text or "").split()), limit)
+
+
+_RAW_URL = re.compile(r"(?:https?://|www\.)\S+")
+_LEADING_REPLY_HANDLES = re.compile(r"^(?:@\w+[\s,:]*)+")
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?=\s)")
+# A cut at a sentence end must leave at least this much of the quote.
+_QUOTE_MIN_SENTENCE_CUT = 40
+
+
+def _quote_text(text: str, limit: int, *, strip_reply_handles: bool = False) -> str:
+    """Text as a quote line prints it, between one pair of outer quotes.
+
+    One line. Raw URLs are dropped, so a quote line never carries a link or
+    half of one. A reply's leading run of @mentions is dropped on request
+    (the rest stays verbatim). Straight double quotes inside become single
+    ones, so a comment that is itself a quotation does not double the outer
+    pair. Text over ``limit`` ends at the last sentence that fits, or failing
+    that at a word, with one ``...``.
+    """
+    flat = " ".join(_RAW_URL.sub(" ", str(text or "")).split())
+    if strip_reply_handles:
+        flat = _LEADING_REPLY_HANDLES.sub("", flat)
+    flat = flat.replace('"', "'")
+    if len(flat) > limit:
+        window = flat[: limit + 1]
+        ends = [
+            match.end()
+            for match in _SENTENCE_END.finditer(window)
+            if _QUOTE_MIN_SENTENCE_CUT <= match.end() <= limit
+        ]
+        if ends:
+            flat = window[: ends[-1]]
+        else:
+            head = flat[: limit - 3]
+            if not flat[limit - 3].isspace() and " " in head:
+                head = head[: head.rfind(" ")]
+            flat = head.rstrip(" .,;:!?") + "..."
+    return _format_untrusted_evidence(flat, len(flat) + 1)
 
 
 def _quote_attribution(
@@ -4434,9 +4474,10 @@ def _render_subject_posts(
         item
         for item in report.items_by_source.get("x") or []
         if (item.author or "").strip().lstrip("@").lower() == handle
-        and (item.body or item.title or "").strip()
         # A repost is someone else's words.
         and not (item.body or item.title or "").lstrip().startswith("RT @")
+        # A reply that is only the handles it answers says nothing.
+        and _quote_text(item.body or item.title, _SUBJECT_POST_TEXT_LIMIT, strip_reply_handles=True)
     ]
     if not posts:
         return []
@@ -4444,6 +4485,9 @@ def _render_subject_posts(
     lines = [f"## Posts by @{handle}", ""]
     for item in posts[:limit]:
         likes = _post_likes(item)
+        quote = _quote_text(
+            item.body or item.title, _SUBJECT_POST_TEXT_LIMIT, strip_reply_handles=True
+        )
         tail = "".join(
             f" — {part}"
             for part in (
@@ -4452,8 +4496,9 @@ def _render_subject_posts(
             )
             if part
         )
+        # The quote line's own part ends at the count; date and URL follow it.
         lines.append(
-            f'- "{_one_line_quote(item.body or item.title, _SUBJECT_POST_TEXT_LIMIT)}" '
+            f'- "{quote}" '
             f"{_quote_attribution(item, item.author, None if likes is None else int(likes), 'likes')}"
             f"{tail}"
         )
@@ -4607,7 +4652,13 @@ def _render_top_comments(
                 # candidate fused several.
                 url = _comment_link(item, tc, fallback=item.url or cand.url)
                 entries.append(
-                    (tc.get("author"), tc.get("score"), _vote_label_for(item.source), body, url)
+                    (
+                        tc.get("author"),
+                        tc.get("score"),
+                        _vote_label_for(item.source),
+                        _quote_text(body, _QUOTE_TEXT_LIMIT),
+                        url,
+                    )
                 )
             author_key = (item.author or "").strip().lstrip("@").lower()
             if (
@@ -4618,6 +4669,9 @@ def _render_top_comments(
                 likes = _post_likes(item)
                 text = (item.body or item.title or "").strip()
                 if (likes or 0) >= _QUOTE_POOL_POST_MIN_LIKES and not text.startswith("RT @"):
+                    text = _quote_text(
+                        text, _QUOTE_TEXT_LIMIT, strip_reply_handles=item.source == "x"
+                    )
                     entries.append((item.author, int(likes), "likes", text, item.url or cand.url))
                     post_rows.add(text[:60].lower())
             for author, score, vote_label, body, url in entries:
@@ -4636,13 +4690,41 @@ def _render_top_comments(
                 scored.append(
                     (strength, raw, cand, item, author, score, vote_label, body, url)
                 )
-    if len(scored) < 2:
-        return []
-
     def by_strength(row):
         # The normalized vote saturates at the platform's reference, so the raw
         # count orders the comments above it.
         return (-row[0], -row[1])
+
+    cluster_number: dict[str, int] = {}
+    for number, cluster in enumerate(clusters or [], start=1):
+        for candidate_id in cluster.candidate_ids:
+            cluster_number.setdefault(candidate_id, number)
+
+    # A floor relative to the story. Beside an 805-upvote comment, a 12-upvote
+    # one from the same thread is filler, however it would rank on a quiet
+    # thread. Within each shown cluster, and each thread outside them, an
+    # entry stays only at a tenth of the top count on its own platform there
+    # (counts are not compared across platforms). Entries whose source
+    # measures no count are held to the best three per story instead.
+    by_story: dict[tuple, list] = {}
+    for row in scored:
+        story = cluster_number.get(row[2].candidate_id) or row[2].candidate_id
+        by_story.setdefault((story, row[3].source), []).append(row)
+    scored = []
+    for rows in by_story.values():
+        rows.sort(key=by_strength)
+        counted = [
+            row for row in rows
+            if row[3].source != "hackernews" and row[5] is not None and row[5] != ""
+        ]
+        uncounted = [row for row in rows if not any(row is kept for kept in counted)]
+        top = max((row[1] for row in counted), default=0)
+        scored.extend(
+            row for row in counted if row[1] >= top * _QUOTE_POOL_STORY_SHARE
+        )
+        scored.extend(uncounted[:_QUOTE_POOL_UNCOUNTED_PER_STORY])
+    if len(scored) < 2:
+        return []
 
     # Rank-based cross-platform diversity: group by platform, rank each
     # platform's comments by within-platform vote strength, then interleave by
@@ -4677,10 +4759,6 @@ def _render_top_comments(
     # Each shown cluster keeps its own best entries before the fill, in the
     # order the clusters are shown, so a quiet story is not left without a quote
     # by a loud thread elsewhere.
-    cluster_number: dict[str, int] = {}
-    for number, cluster in enumerate(clusters or [], start=1):
-        for candidate_id in cluster.candidate_ids:
-            cluster_number.setdefault(candidate_id, number)
     kept: set[int] = set()
     for number in range(1, len(clusters or []) + 1):
         own = sorted(
@@ -4712,7 +4790,7 @@ def _render_top_comments(
         else:
             origin = ""
         lines.append(
-            f'- "{_one_line_quote(body, _QUOTE_TEXT_LIMIT)}" '
+            f'- "{body}" '
             f"{_quote_attribution(item, author, score, vote_label)}{url_part}{origin}"
         )
     return lines

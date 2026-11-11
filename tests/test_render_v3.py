@@ -669,19 +669,20 @@ class RenderTopCommentsTests(unittest.TestCase):
         comments = [
             {"score": 120, "excerpt": "legit fire tutorial", "author": "alice"},
             {"score": 60, "excerpt": "saved me hours", "author": "bob"},
-            {"score": 10, "excerpt": "below threshold", "author": "carol"},
+            {"score": 20, "excerpt": "below threshold", "author": "carol"},
         ]
         report = self._make_report_with_comments(source="youtube", top_comments=comments)
         text = render.render_compact(report)
         # YouTube authors render with @ prefix; "likes" label.
         self.assertIn("@alice (120 likes): legit fire tutorial", text)
         self.assertIn("@bob (60 likes): saved me hours", text)
-        # The per-candidate CARD still applies the 50-like threshold: carol (10)
+        # The per-candidate CARD still applies the 50-like threshold: carol (20)
         # does not appear on the card (colon-format line).
-        self.assertNotIn("@carol (10 likes):", text)
+        self.assertNotIn("@carol (20 likes):", text)
         # But the cross-platform Top Community Comments list surfaces her (U3:
-        # rank-based, no absolute floor -- a low-vote comment can be gold).
-        self.assertIn('"below threshold" 🔴 @carol on YouTube · 10 likes', text)
+        # rank-based, no absolute floor -- a low-vote comment can be gold), as
+        # she is within a tenth of the video's top comment.
+        self.assertIn('"below threshold" 🔴 @carol on YouTube · 20 likes', text)
 
     def test_reddit_comment_without_author_falls_back_to_legacy_label(self):
         """When author is missing or [deleted], render falls back to 'Comment (...)'."""

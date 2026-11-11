@@ -28,6 +28,29 @@ _JOBS_DIGEST_HEADING = "## Jobs Digest"
 _REGISTERS_WITHOUT_QUOTE_LINES = frozenset({"exec"})
 
 
+# The topics the research runbook classifies as QUERY_TYPE = RECOMMENDATIONS:
+# "best X", "top X", "what X should I use", "recommended X". The engine is
+# handed no query type, only the topic and the plan's intent, so the topic's
+# own words are the signal.
+_RECOMMENDATION_TOPIC = re.compile(
+    r"^\s*(?:what(?:'s| is| are)?\s+(?:the\s+)?)?(?:best|top|recommended)\b"
+    r"|\bshould i (?:use|buy|get|pick|choose)\b|\brecommendations?\b",
+    re.IGNORECASE,
+)
+# Plan intents under which a topic that opens "Top ..." or "Best ..." is a
+# name or a news story, not a request for picks.
+_NOT_RECOMMENDATION_INTENTS = frozenset(
+    {"breaking_news", "prediction", "comparison", "factual"}
+)
+
+
+def is_recommendation_run(intent: str | None, *topics: str | None) -> bool:
+    """Whether a run's topic asks for recommended picks."""
+    if (intent or "").strip().lower() in _NOT_RECOMMENDATION_INTENTS:
+        return False
+    return any(_RECOMMENDATION_TOPIC.search(topic or "") for topic in topics)
+
+
 def _has_heading(rendered: str, heading: str) -> bool:
     return f"\n{heading}\n" in rendered
 
@@ -42,14 +65,23 @@ def build(
     rendered: str,
     *,
     comparison: bool = False,
+    recommendation: bool = False,
     register: str = "default",
     environ: Mapping[str, Any] | None = None,
 ) -> str:
     """The checklist block for ``rendered`` compact output, or "" when the
-    caller asked for none (``LAST30DAYS_NO_REPORT_CHECKLIST``)."""
+    caller asked for none (``LAST30DAYS_NO_REPORT_CHECKLIST``).
+
+    Comparison, recommendation and ``exec`` reports have no story paragraphs
+    with quote lines under them (a recommendation puts quoted evidence on each
+    pick's ``Evidence:`` line), so they get neither of those two lines."""
     if env.report_checklist_disabled(environ):
         return ""
-    story_paragraphs = not comparison and register not in _REGISTERS_WITHOUT_QUOTE_LINES
+    story_paragraphs = (
+        not comparison
+        and not recommendation
+        and register not in _REGISTERS_WITHOUT_QUOTE_LINES
+    )
     lines = [
         "Format facts for a report written from this output. User and host instructions come first.",
         "• Line 1 is the badge line, copied as printed (`🌐 last30days · ...`), then one blank line.",
@@ -65,20 +97,21 @@ def build(
         if subject_posts:
             pools.append(f"`## Posts by {subject_posts.group(1)}`")
         source = (
-            f" Copy the entry up to its URL from {' or '.join(pools)}."
+            " Copy the entry through its count (through the platform name when it "
+            f"has no count) from {' or '.join(pools)}."
             if pools
             else ""
         )
         lines.append(
             "• Every quoted comment or post is on its own line under its paragraph, "
-            "up to six per story, never inside a paragraph: "
-            '`> "quote" 🟠 u/author on r/sub · 1,315 upvotes`.'
+            "up to six per story (six is a ceiling, not a target: only the strongest), "
+            'never inside a paragraph: `> "quote" 🟠 u/author on r/sub · 1,315 upvotes`.'
             + source
         )
     if on_claude_code(environ):
         lines.append(
             "• `CLAUDECODE` is set: no markdown lists anywhere in the reply "
-            "(write `1\\.` and `•` at line starts). In a reply that holds a list, "
+            "(KEY PATTERNS as `1\\.`, invitation lines as `•`). In a reply that holds a list, "
             "Claude Code prints every link as raw `name (url)` text."
         )
     if not comparison:

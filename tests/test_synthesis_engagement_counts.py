@@ -86,7 +86,8 @@ def test_no_quoted_comment_or_post_sits_inside_a_paragraph():
 
 def test_pulled_quotes_run_up_to_six_per_story_with_a_quality_bar():
     rule = _pulled_quote_rule()
-    assert "Give each paragraph up to six that are good" in rule
+    assert "Give each paragraph only the strongest" in rule
+    assert "six is a ceiling, not a target" in rule
     assert "never pad with weak or off-topic ones" in rule
     assert "a blank line between" in rule
     for cap in ("at most one", "up to three", "up to five", "one per story"):
@@ -106,9 +107,8 @@ def test_pulled_quote_names_the_engine_blocks_it_copies_from():
 
 def test_pulled_quote_copies_the_engine_attribution_and_carries_no_link():
     rule = _pulled_quote_rule()
-    assert "as the engine printed them" in rule
-    for part in ("dot", "author", "`on r/sub`", "count"):
-        assert part in rule
+    assert "Copy the entry through its count (through the platform name when it has none)" in rule
+    assert "up to its URL" not in rule
     assert "no link" in rule
     assert "](" not in rule
 
@@ -181,7 +181,7 @@ def test_runbook_describes_what_compact_output_really_holds():
     line = next(line for line in runbook.splitlines() if line.startswith("**Read the ENTIRE output.**"))
     for part in (
         "`## Posts by @handle`", "`## Polymarket Markets`", "`## Top Community Comments`",
-        "top ranked clusters", "closing format checklist",
+        "top ranked clusters", "format checklist",
     ):
         assert part in line, part
 

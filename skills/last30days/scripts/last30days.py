@@ -2794,7 +2794,7 @@ def _render_save_and_print(
         except Exception as exc:
             sys.stderr.write(f"[last30days] HTML publish failed: {exc}\n")
             sys.stderr.flush()
-    checklist = _report_checklist_for_stdout(args, rendered, entity_reports, audience.name)
+    checklist = _report_checklist_for_stdout(args, rendered, report, entity_reports, audience.name)
     if checklist:
         print(rendered + checklist, end="")
     else:
@@ -2805,6 +2805,7 @@ def _render_save_and_print(
 def _report_checklist_for_stdout(
     args: argparse.Namespace,
     rendered: str,
+    report: schema.Report,
     entity_reports: list[tuple[str, schema.Report]] | None,
     register: str,
 ) -> str:
@@ -2815,7 +2816,12 @@ def _report_checklist_for_stdout(
     if args.emit != "compact" or getattr(args, "hiring_signals", False):
         return ""
     return report_checklist.build(
-        rendered, comparison=bool(entity_reports), register=register,
+        rendered,
+        comparison=bool(entity_reports),
+        recommendation=report_checklist.is_recommendation_run(
+            report.query_plan.intent, report.topic, report.query_plan.raw_topic,
+        ),
+        register=register,
     )
 
 
