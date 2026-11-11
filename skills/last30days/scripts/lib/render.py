@@ -4558,10 +4558,17 @@ def _odds_label(text) -> str:
     return _one_line_quote(text, 60).replace("\u2013", "-").replace("\u2014", "-")
 
 
+# A market question is one sentence; this only bounds a malformed one. The
+# short limit is for outcome labels: a subject cut at 60 characters lost its
+# deadline or condition.
+_ODDS_SUBJECT_LIMIT = 200
+
+
 def _odds_subject(text: str) -> str:
     """A market's whole phrase as the line's subject."""
     phrase = _polymarket_phrase(_ODDS_PLACEHOLDER.sub(" ", text or ""))
-    return _odds_label(_safe_title(phrase.rstrip(" ?:.,")))
+    subject = _one_line_quote(_safe_title(phrase.rstrip(" ?:.,")), _ODDS_SUBJECT_LIMIT)
+    return subject.replace("\u2013", "-").replace("\u2014", "-")
 
 
 def _polymarket_odds(item: schema.SourceItem) -> dict | None:

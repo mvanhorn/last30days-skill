@@ -383,6 +383,19 @@ def test_single_market_odds_line_is_the_one_price():
     assert entry.endswith(" — https://polymarket.com/event/event — closes 2027-01-01")
 
 
+def test_long_market_question_keeps_its_ending_on_the_odds_line():
+    question = (
+        "Will the Nvidia board announce the result of its independent investigation "
+        "into Jensen Huang before the congressional briefing on November 18, 2026?"
+    )
+    event = _event("9", question, [_market(question, "", 0.31, 500)])
+    (entry,) = _odds_entries("Jensen Huang", event)
+    line = _odds_line(entry)
+    assert "congressional briefing on Nov 18" in line
+    assert line.endswith(": 31%")
+    assert "..." not in line
+
+
 def test_single_market_with_named_outcomes_lists_them():
     (entry,) = _odds_entries("Youzheng Huang", TABLE_TENNIS)
     assert _odds_line(entry) == (
