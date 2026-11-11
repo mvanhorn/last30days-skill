@@ -1,1 +1,0 @@
-Polymarket odds lines keep the movement note on their last outcome: the rule and the closing checklist now say to copy the whole odds line, up to the ` — ` before its URL, where they said "through the last price".

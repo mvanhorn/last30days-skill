@@ -9,6 +9,24 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.36.0] - 2026-11-11
+
+### Added
+
+- Two host flags for the jobs lane. `--company "Name:site"` (at most two, comma-separated) names the company behind a person or product topic, listed or not, with its own website, so a founder of a private company gets that company's board and digest (Palmer Luckey: `--company "Anduril:anduril.com"`); the site may be left out, and the engine then asks Wikidata for it. `--jobs-board <URL>` passes the company's job-board URL the host found by web search (Greenhouse, Ashby, Lever, Workable, SmartRecruiters, Workday); the engine reads that board first and gives a digest only when the board names the company or the official site links to it, otherwise the footer count alone with the reason on stderr, and a paged board that is not the company's is read one page only. A URL on an unsupported system is ignored with one stderr line.
+
+### Changed
+
+- Trustpilot is asked for only when it can answer. `--diagnose` reports `trustpilot_can_run` (a fresh `trustpilot-pp-cli` session, or a cached company record) and the host resolves `--trustpilot-domain` only then. With no fresh session the engine reads the CLI's cached record for the domain (`info <domain> --local`) and labels it with its cache age; a research run still never opens a browser.
+
+### Fixed
+
+- Amazon and Meta Ads run again on agent-hosted runs. Since 3.30.0 a host plan never ran either lane, because the host requests them through `--search` and not in the plan. The engine now adds `amazon` / `meta_ads` to the first subquery when the run asks for them (the source is in `--search`, or `--amazon-query` / `--meta-ads-page` is set), logs it on the `[Planner] Added ...` line, and says `available but not requested for this run; not run` when a lane is on only through `INCLUDE_SOURCES`. The Amazon footer no longer prints `no products matched` for a search that was never made.
+- Amazon keeps its products when the provider's review scraper does not answer. Products from the search still appear with their rating, rating count and price range, the footer adds `written reviews unavailable from the provider this run`, and Partial Coverage says the same. Review pulls now hold a run for at most 60 seconds (was 180) and are not fired a second time at the end of the run.
+- Polymarket odds lines keep the movement note on their last outcome: the rule and the closing checklist now say to copy the whole odds line, up to the ` — ` before its URL, where they said "through the last price".
+- The jobs lane no longer depends on the host naming `jobs` in its plan. On a host-planned run about a company (`--official-site`, a usable `--ticker` pair, `--company`, `--jobs-board`, or a topic the engine resolves to a company) the engine adds `jobs` to the primary subquery itself and logs `[Planner] Added jobs to primary: ...`; `EXCLUDE_SOURCES=jobs`, `--quick`, and a `--search` list without `jobs` still leave it out. The lane also finds more boards without help: it follows a careers page's link to its board page (`/careers/board`), and when the company's own slug has no board it tries the name the careers page states for its organization (`Anduril Industries` for `Anduril`), giving a digest only when that page is on the confirmed official site and the board states the same name.
+
+
 ## [3.35.0] - 2026-11-11
 
 ### Added
