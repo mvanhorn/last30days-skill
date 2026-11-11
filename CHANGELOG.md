@@ -9,6 +9,17 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.34.1] - 2026-11-11
+
+### Fixed
+
+- A topic with no job board no longer reports "Jobs unreachable" and "Some sources failed: jobs". A careers domain guessed from the topic's name that does not resolve, or refuses the connection, now counts as no board found; a hiring system's own API being down is still reported.
+- Jobs now finds a company's board when its careers page is a landing page that links to a job search on the same site (`nvidia.com/careers` to `jobs.nvidia.com`), so a person who leads such a company gets that company's roles ("Jensen Huang" returned 0 jobs). When Wikidata names no company for the topic and the topic has no board of its own, the one company the host passed with `--ticker` is searched instead; without an official site its board still gives a digest only when the board names that company.
+- Polymarket footer names are whole phrases and carry the price of the market they name: "Waymo operate in 12-15 cities on Dec 31, 2026 79%" where the footer printed "Waymo operate in 12-15 cities on 79%", and a bracket's price is no longer shown beside another bracket's question. A deadline ladder ("... by December 31, 2026", "... by March 31, 2027") shows its nearest deadline that has not passed instead of the furthest. A market is named in the footer only when it names the whole topic, so a table tennis match no longer appears under "Jensen Huang". In the saved file, the outcomes of a multi-outcome event keep their own labels ("12-15: 79% | 16-19: 12%") instead of repeating the subject ("Waymo: 79% | Waymo: 12%").
+- The footer's freshness note ("Recent evidence is thin: only N of M dated items are from the last 7 days") no longer counts job postings. A company board with thousands of older postings made every company run look stale; the note now measures only what people posted.
+- The saved raw file no longer lists every posting on a company's job board (one run's file was 2.4 MB, 2.3 MB of it postings). It now carries the Jobs Digest, the ranked postings (up to 40) and a count of the rest.
+
+
 ## [3.34.0] - 2026-11-11
 
 ### Added

@@ -1,1 +1,0 @@
-A topic with no job board no longer reports "Jobs unreachable" and "Some sources failed: jobs". A careers domain guessed from the topic's name that does not resolve, or refuses the connection, now counts as no board found; a hiring system's own API being down is still reported.
