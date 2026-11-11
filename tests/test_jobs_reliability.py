@@ -447,7 +447,11 @@ def test_footer_and_digest_name_the_company_whose_board_it_is():
     }
     report = _report("Elon Musk", board)
     assert render._jobs_board_footer_line(report) == (
-        "💼 Jobs: 1,234 open roles │ 56 new in the L30 │ board: SpaceX"
+        "💼 Jobs at SpaceX: 1,234 open roles │ 56 new in the L30"
+    )
+    nvidia = {**board, "board_of": "Nvidia", "open_roles": 2000, "open_roles_floor": True, "new_in_window": None}
+    assert render._jobs_board_footer_line(_report("Jensen Huang", nvidia)) == (
+        "💼 Jobs at Nvidia: 2,000+ open roles"
     )
     assert "- Board: SpaceX | greenhouse | 1,234 open roles" in "\n".join(render._render_jobs_digest(report))
     # The topic's own board keeps the line it always had.
