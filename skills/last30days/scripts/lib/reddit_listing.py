@@ -15,6 +15,7 @@ discovery source and to backfill scores onto posts discovered elsewhere.
 
 import html as _html
 import re
+import time
 import sys
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -243,8 +244,12 @@ def fetch_listings(
     query: str = "",
     sorts: Optional[List[str]] = None,
     timeframe: str = TIMEFRAME,
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch scored post cards across subreddits × sorts.
+
+    ``deadline`` is a ``time.monotonic()`` bound: feeds still running then are
+    left behind and the cards of the feeds that answered are returned.
 
     Returns deduped normalized posts (with real scores), unranked/unsliced —
     the caller merges these with other sources, ranks, and slices.
@@ -258,16 +263,23 @@ def fetch_listings(
     sorts = sorts or LISTING_SORTS.get(depth, LISTING_SORTS["default"])
     jobs = [(sub, sort) for sub in subreddits for sort in sorts]
     all_posts: List[Dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1) as executor:
+    executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1)
+    try:
         # submit_with_context, not executor.submit — see the note in
         # fetch_discovery_listings below (issue #899).
         futures = {http.submit_with_context(executor, _fetch_one, sub, sort, query, timeframe): (sub, sort)
                    for sub, sort in jobs}
         for future in futures:
+            wait = _result_timeout(len(jobs))
+            if deadline is not None:
+                wait = max(0.0, min(wait, deadline - time.monotonic()))
             try:
-                all_posts.extend(future.result(timeout=_result_timeout(len(jobs))))
+                all_posts.extend(future.result(timeout=wait))
             except (Exception, FuturesTimeoutError) as e:
-                _log(f"listing future failed: {e}")
+                _log(f"listing future failed: {e or 'still running at the deadline'}")
+    finally:
+        # Under a deadline a feed still queued or running is not waited for.
+        executor.shutdown(wait=deadline is None, cancel_futures=deadline is not None)
 
     seen: set = set()
     unique: List[Dict[str, Any]] = []

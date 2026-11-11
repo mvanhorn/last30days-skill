@@ -68,7 +68,21 @@ def _out_of_time(deadline: Optional[float]) -> bool:
     return deadline is not None and deadline - time.monotonic() < MIN_STAGE_SECONDS
 
 
-def _within(deadline: Optional[float], stage: str, default: Any, call, *args, **kwargs) -> Any:
+# A stage is told to finish this long before the lane stops waiting for it,
+# so it has time to assemble and hand back what it fetched. With one shared
+# deadline the stage reached it mid-request, and the wait gave up at the same
+# moment and put an empty result in place of the threads already fetched.
+STAGE_RETURN_MARGIN_SECONDS = 3.0
+
+
+def _stage_deadline(deadline: Optional[float], name: str = "deadline") -> Dict[str, float]:
+    """The keyword that gives a stage its own, earlier deadline; ``{}`` with none."""
+    if deadline is None:
+        return {}
+    return {name: deadline - STAGE_RETURN_MARGIN_SECONDS}
+
+
+def _within(wait_until: Optional[float], stage: str, default: Any, call, /, *args, **kwargs) -> Any:
     """Run one discovery call and stop waiting for it at the lane deadline.
 
     The search, listing and score calls wait for their own workers on their
@@ -78,13 +92,13 @@ def _within(deadline: Optional[float], stage: str, default: Any, call, *args, **
     deadline passes, and ``default`` stands in for its result. With no
     deadline the call runs inline, as before.
     """
-    if deadline is None:
+    if wait_until is None:
         return call(*args, **kwargs)
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         future = http.submit_with_context(executor, call, *args, **kwargs)
         try:
-            return future.result(timeout=max(0.0, deadline - time.monotonic()))
+            return future.result(timeout=max(0.0, wait_until - time.monotonic()))
         except concurrent.futures.TimeoutError:
             _log(f"{stage} still running at the lane deadline; returning without it")
             return default
@@ -139,6 +153,7 @@ def _scored_listings(
     posts = _within(
         deadline, "subreddit listing", [],
         reddit_listing.fetch_listings, subreddits, depth=depth, query=query, sorts=sorts,
+        **_stage_deadline(deadline),
     )
     arctic_posts: List[Dict[str, Any]] = []
 
@@ -155,7 +170,7 @@ def _scored_listings(
                 reddit_arctic.fetch_listings,
                 subreddits, depth=depth, query=query, sorts=sorts,
                 from_date=from_date, to_date=to_date,
-                **({"lane_deadline": deadline} if deadline is not None else {}),
+                **_stage_deadline(deadline, "lane_deadline"),
             )
         except Exception as exc:  # the fallback must never break the pipeline
             _log(f"arctic-shift listing supplement failed: {exc}")
@@ -207,6 +222,7 @@ def _discover(
             deadline, "site search", [],
             reddit_search.search,
             topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date,
+            **_stage_deadline(deadline),
         )
 
     # Targeted run: the caller chose these subreddits, so their listing cards
@@ -258,7 +274,10 @@ def _discover(
             if not (p.get("engagement", {}).get("score"))
             for pid in [reddit_listing._post_id(p["url"])] if pid]
     if need and not _out_of_time(deadline):
-        scores = _within(deadline, "score lookup", {}, reddit_arctic.fetch_scores, need)
+        scores = _within(
+            deadline, "score lookup", {}, reddit_arctic.fetch_scores, need,
+            **_stage_deadline(deadline),
+        )
         filled = 0
         for p in merged:
             if p.get("engagement", {}).get("score"):

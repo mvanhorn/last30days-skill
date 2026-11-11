@@ -23,6 +23,7 @@ import json
 import re
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
@@ -289,8 +290,12 @@ def search(
     subreddits: Optional[List[str]] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Discover Reddit posts for a query via the site search fragment.
+
+    ``deadline`` is a ``time.monotonic()`` bound: streams still running then
+    are left behind and the posts of the streams that answered are returned.
 
     Runs a paged global search plus one page of per-subreddit search for each
     targeted subreddit. Returns normalized, dated, scored posts, deduped by URL
@@ -321,7 +326,7 @@ def search(
                 break
             gate.wait(timeout=_result_timeout(len(subs) + global_pages, global_pages))
         try:
-            unique = _search_uncached(query, depth, subs, time_filter, global_pages)
+            unique = _search_uncached(query, depth, subs, time_filter, global_pages, deadline)
             # A clean empty page or a drifted one is asked for again by the
             # next caller; found posts and a refused endpoint are shared.
             if unique or (unique is not None and _blocked_reason):
@@ -344,6 +349,7 @@ def _search_uncached(
     subs: List[str],
     time_filter: str,
     global_pages: int,
+    deadline: Optional[float] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """One run of the search streams; None when it raised."""
     global _failed_reason
@@ -352,7 +358,8 @@ def _search_uncached(
         jobs = [(sub, SUB_PAGE_CAP) for sub in subs] + [(None, global_pages)]
         batch = sum(pages for _sub, pages in jobs)
         streams: List[List[Dict[str, Any]]] = []
-        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs))) as executor:
+        executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)))
+        try:
             # submit_with_context, not executor.submit: a plain submit starts the
             # worker with an empty context, dropping the pipeline's
             # capture_failures() sink so a 429/403 or a challenge page is
@@ -362,10 +369,19 @@ def _search_uncached(
                 for sub, pages in jobs
             ]
             for future, sub, pages in futures:
+                wait = _result_timeout(batch, pages)
+                if deadline is not None:
+                    wait = max(0.0, min(wait, deadline - time.monotonic()))
                 try:
-                    streams.append(future.result(timeout=_result_timeout(batch, pages)))
+                    streams.append(future.result(timeout=wait))
                 except (Exception, FuturesTimeoutError) as e:
-                    _log(f"{'r/' + sub if sub else 'global'} search future failed: {e}")
+                    _log(
+                        f"{'r/' + sub if sub else 'global'} search future failed: "
+                        f"{e or 'still running at the deadline'}"
+                    )
+        finally:
+            # Under a deadline a stream still queued or running is not waited for.
+            executor.shutdown(wait=deadline is None, cancel_futures=deadline is not None)
 
         # Round-robin across streams, each in its own relevance order, so the
         # depth cap keeps a share of every stream.

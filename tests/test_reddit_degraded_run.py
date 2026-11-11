@@ -663,3 +663,91 @@ class TestLaneDeadlineIsHard:
 
         assert time.monotonic() - started < 5
         assert [post["metadata"]["post_id"] for post in out] == ["s"]
+
+
+# --- A stage that hits the deadline returns what it fetched (PR #1408) ---
+
+
+class TestStagesReturnPartialResultsBeforeTheWait:
+    def test_archive_threads_fetched_before_the_deadline_are_kept(self):
+        # The archive answers one slice, then a later request runs into the
+        # deadline. Its partial result must come back before the lane stops
+        # waiting for it.
+        calls = [0]
+
+        def get(url, **kwargs):
+            calls[0] += 1
+            if calls[0] == 1:
+                return {"data": [_row("a1", "elonmusk")]}
+            time.sleep(max(0.0, kwargs["deadline_monotonic"] - time.monotonic()))
+            raise http.DeadlineExceeded()
+
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]), \
+             mock.patch.object(reddit_arctic.http, "get", side_effect=get), \
+             mock.patch.object(reddit_arctic, "PACE_SECONDS", 0):
+            posts = reddit_keyless._scored_listings(
+                ["elonmusk"], from_date="2026-10-12", to_date="2026-11-11",
+                deadline=time.monotonic() + 5,
+            )
+
+        assert [post["metadata"]["post_id"] for post in posts] == ["a1"]
+
+    def test_listing_keeps_the_feeds_that_answered(self):
+        release = threading.Event()
+
+        def fetch_one(sub, sort, query, timeframe):
+            if sort == "hot":
+                release.wait(10)
+                return []
+            return [_post("top1")]
+
+        try:
+            with mock.patch.object(reddit_keyless.reddit_listing, "_fetch_one", side_effect=fetch_one), \
+                 mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[]):
+                posts = reddit_keyless._scored_listings(
+                    ["elonmusk"], sorts=["top", "hot"], deadline=time.monotonic() + 5,
+                )
+        finally:
+            release.set()
+
+        assert [post["metadata"]["post_id"] for post in posts] == ["top1"]
+
+    def test_site_search_with_a_targeted_sub_returns_its_posts(self):
+        release = threading.Event()
+
+        def stream(query, time_filter, pages, subreddit=None):
+            if subreddit is None:
+                release.wait(10)
+                return []
+            return [_post("s1")]
+
+        try:
+            with mock.patch.object(reddit_search, "_search_stream", side_effect=stream):
+                posts = reddit_search.search(
+                    "Elon Musk", subreddits=["elonmusk"], deadline=time.monotonic() + 2,
+                )
+        finally:
+            release.set()
+
+        assert [post["metadata"]["post_id"] for post in posts] == ["s1"]
+
+    def test_score_lookup_keeps_the_batches_that_answered(self):
+        calls = [0]
+
+        def get(url, **kwargs):
+            calls[0] += 1
+            if calls[0] == 1:
+                return {"data": [{"id": "a", "score": 7, "num_comments": 2}]}
+            time.sleep(kwargs["timeout"])
+            raise http.DeadlineExceeded()
+
+        with mock.patch.object(reddit_arctic.http, "get", side_effect=get), \
+             mock.patch.object(reddit_arctic, "BATCH", 1), \
+             mock.patch.object(reddit_arctic, "PACE_SECONDS", 0):
+            scores = reddit_keyless._within(
+                time.monotonic() + 5, "score lookup", {},
+                reddit_arctic.fetch_scores, ["a", "b"],
+                **reddit_keyless._stage_deadline(time.monotonic() + 5),
+            )
+
+        assert scores == {"a": {"score": 7, "num_comments": 2}}

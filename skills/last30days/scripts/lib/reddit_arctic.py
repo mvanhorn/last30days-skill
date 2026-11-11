@@ -173,8 +173,13 @@ def _search_once(url: str, deadline: float, retry_422: bool = True) -> Any:
         gate.set()
 
 
-def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
+def fetch_scores(
+    post_ids: List[str], deadline: Optional[float] = None,
+) -> Dict[str, Dict[str, int]]:
     """Return ``{base36_post_id: {"score", "num_comments"}}`` for the given ids.
+
+    ``deadline`` is a ``time.monotonic()`` bound: no batch starts after it and
+    a running one is cut off at it, and the scores already found are returned.
 
     Batched, paced, in-run cached, and never raises. Ids that fail or are absent
     from the archive are simply missing from the result (caller degrades to no
@@ -194,11 +199,18 @@ def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
     for n, batch in enumerate(batches):
         if n:
             time.sleep(PACE_SECONDS)
+        bound: Dict[str, Any] = {"timeout": TIMEOUT}
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _log(f"lookup stopped at its deadline; {len(batch)} ids left unscored")
+                break
+            bound = {"timeout": min(TIMEOUT, remaining), "retries": 1, "deadline_monotonic": deadline}
         try:
             data = http.get(
                 f"{API}?ids={','.join(batch)}",
                 headers={"User-Agent": http.BROWSER_USER_AGENT},
-                timeout=TIMEOUT,
+                **bound,
             )
         except Exception as e:  # network error / non-200 — degrade, never raise
             _log(f"lookup failed ({e}); {len(batch)} ids left unscored")
@@ -472,6 +484,8 @@ def fetch_post_comments(
         _log(f"unexpected comments response for t3_{pid}: {str(data)[:80]}")
         return []
 
+    from .snippet import cut_quote
+
     comments: List[Dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -491,7 +505,7 @@ def fetch_post_comments(
             "score": score,
             "author": author,
             "body": body[:300],
-            "excerpt": body[:200],
+            "excerpt": cut_quote(body),
             "permalink": permalink,
             "date": _epoch_to_date(row.get("created_utc")),
             "url": f"https://reddit.com{permalink}" if permalink else "",
