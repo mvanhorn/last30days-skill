@@ -9,8 +9,10 @@ from lib import render, schema
 
 
 def _item(source, url, *, author="", comments=None, likes=None, snippet="",
-          highlights=None, container=None, score=None):
+          highlights=None, container=None, score=None, spoken=False):
     metadata = {}
+    if spoken:
+        metadata["spoken_caption"] = True
     if comments:
         metadata["top_comments"] = comments
     if highlights:
@@ -102,6 +104,7 @@ REEL = _item(
         "cutting, it's telling you about the new world order they're getting ready for."
     ),
     comments=[{"author": "@fan", "score": 0, "excerpt": "Sequoia"}],
+    spoken=True,
 )
 NEOLIBERAL = _item(
     "reddit",
@@ -184,3 +187,43 @@ def test_a_video_gives_its_top_comment_before_what_it_said():
     lines = [line for line in _lines(video, NEOLIBERAL) if line.startswith("- ")]
     video_labels = [line.rsplit("— ", 1)[1] for line in lines if "watch?v=both" in line]
     assert video_labels == ["top comment", "said"]
+
+
+def test_a_reel_without_a_transcript_says_nothing():
+    described = _item(
+        "instagram", "https://www.instagram.com/reel/written/", author="writer",
+        likes=500,
+        snippet="Sequoia Capital closed its London office and ended the scout program this month, link in bio.",
+    )
+    lines = _lines(described, NEOLIBERAL)
+    assert not any("link in bio" in line for line in lines)
+
+
+def test_one_long_spoken_sentence_stays_whole():
+    sentence = (
+        "Sequoia just raised $10 billion and in the same letter to announce it they "
+        "shut down their London office and their scout program and their accelerator "
+        "program because the most famous VC fund in the world Marie Kondoed itself "
+        "and the best venture firm is telling you about the new world order it sees"
+    )
+    assert 50 < len(sentence.split()) <= 70
+    reel = _item(
+        "tiktok", "https://www.tiktok.com/@x/video/1", author="x", likes=900,
+        snippet=sentence + ".", spoken=True,
+    )
+    assert render._content_quotes(reel, "Sequoia Capital") == [sentence + "."]
+
+
+def test_normalize_marks_only_transcripts_as_spoken():
+    from lib import normalize
+
+    base = {"video_id": "1", "url": "https://www.tiktok.com/@x/video/1", "text": "desc"}
+    written = normalize._normalize_shortform_video(
+        "tiktok", {**base, "caption_snippet": "desc"}, 0, "2026-10-12", "2026-11-11", "tk", "TikTok"
+    )
+    spoken = normalize._normalize_shortform_video(
+        "tiktok", {**base, "caption_snippet": "words said", "caption_is_transcript": True},
+        0, "2026-10-12", "2026-11-11", "tk", "TikTok",
+    )
+    assert written.metadata["spoken_caption"] is False
+    assert spoken.metadata["spoken_caption"] is True

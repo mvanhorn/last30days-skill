@@ -129,8 +129,8 @@ def extract_transcript_highlights(
     sentences = re.split(r'(?<=[.!?])\s+', transcript)
 
     # Fallback for punctuation-free transcripts (common with auto-captions):
-    # chunk into ~20-word segments so they pass the 8-50 word filter.
-    if len(sentences) <= 1 and len(transcript.split()) > 50:
+    # chunk into ~20-word segments so they pass the 8-to-max_words filter.
+    if len(sentences) <= 1 and len(transcript.split()) > max_words:
         words = transcript.split()
         sentences = [' '.join(words[i:i+20]) for i in range(0, len(words), 20)]
 

@@ -4821,10 +4821,13 @@ def _content_quotes(item: schema.SourceItem, topic: str) -> list[str]:
     highlights drawn from a reel's or TikTok's spoken caption."""
     if item.source == "youtube":
         lines = list(item.metadata.get("transcript_highlights") or [])
+    elif not item.metadata.get("spoken_caption"):
+        # The snippet is the written description when no transcript came back.
+        return []
     else:
         from . import youtube_yt
 
-        spoken = _clean_spoken(item.snippet or item.body or "")
+        spoken = _clean_spoken(item.snippet)
         lines = youtube_yt.extract_transcript_highlights(
             spoken, topic, max_words=_SHORTFORM_HIGHLIGHT_MAX_WORDS
         )
