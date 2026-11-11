@@ -1,1 +1,0 @@
-Report paragraphs keep their bold headline phrase when you have a general plain-style or no-bold preference, so reports stay scannable. The headline is dropped only when an instruction names the report or arrives with the request, the host or operator requires it, or the channel does not render markdown.

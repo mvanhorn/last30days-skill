@@ -1,1 +1,0 @@
-The Polymarket footer line names each market once and whole: a sub-market's name is no longer cut mid-word or repeated after its question, and markets that differ only in their deadline are told apart.

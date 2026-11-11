@@ -1,1 +1,0 @@
-A story in the report can now be followed by one pulled comment on its own quote line, with the platform, author, community and vote count, translated when the comment is in another language. The `## Top Community Comments` evidence lines name the platform dot and, for Reddit, the subreddit, and print counts with thousands separators.
