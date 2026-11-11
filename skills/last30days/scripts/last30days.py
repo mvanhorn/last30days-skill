@@ -816,12 +816,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--company",
-        metavar="NAME[,NAME]",
+        metavar="NAME[:SITE][,NAME[:SITE]]",
         help=(
-            "The company behind the topic, listed or not, as the hosting model found "
-            "it by web search: the company a person leads or founded (Palmer Luckey: "
-            "\"Anduril\"), or the maker of a product. At most two names; the jobs lane "
-            "reads the board of the first that has one."
+            "The company behind the topic, listed or not, with its own website, as "
+            "the hosting model found them by web search: the company a person leads "
+            "or founded (Palmer Luckey: \"Anduril:anduril.com\"), or the maker of a "
+            "product. At most two; the jobs lane reads the board of the first that "
+            "has one. The site may be left out (\"Anduril\")."
         ),
     )
     parser.add_argument(
@@ -1164,18 +1165,53 @@ def _resolved_company(entity: str, *, mock: bool, config: dict, host_ticker: boo
 MAX_HOST_COMPANIES = yahoo_finance.MAX_HOST_TICKERS
 
 
-def _host_company_names(raw: str | None) -> list[str]:
-    """The names of a ``--company`` value, separated by commas, in the order
-    given. Only the first ``MAX_HOST_COMPANIES`` are read."""
-    names = list(dict.fromkeys(
-        " ".join(entry.split())[:80] for entry in (raw or "").split(",") if entry.strip()
-    ))
-    if len(names) > MAX_HOST_COMPANIES:
+def _host_companies(raw: str | None) -> list[dict[str, str]]:
+    """The entries of a ``--company`` value, separated by commas, in the order
+    given: ``Name`` or ``Name:site``, the shape of ``--ticker``'s pairs.
+
+    The name is everything before the first colon, so it cannot hold one;
+    the site is a bare domain or a URL, normalized to its homepage the way
+    ``--official-site`` is. Each entry is ``name`` and ``site`` ('' when none
+    was passed). An entry with no name is ignored, and a site that is not a
+    domain is dropped while its name stands; each says so on stderr. Only
+    the first ``MAX_HOST_COMPANIES`` companies are read.
+    """
+    from lib import resolve as resolve_lib
+
+    companies: list[dict[str, str]] = []
+    for entry in (raw or "").split(","):
+        if not entry.strip():
+            continue
+        name, colon, site = entry.partition(":")
+        name = " ".join(name.split())[:80]
+        shown = " ".join(entry.split())[:120]
+        if not name:
+            sys.stderr.write(
+                f"[Resolve] --company ignoring {shown!r}: no company name before the colon\n"
+            )
+            continue
+        url = resolve_lib._official_site_url(site) if colon else ""
+        if site.strip() and not url:
+            sys.stderr.write(
+                f"[Resolve] --company {name}: {' '.join(site.split())[:80]!r} is not a "
+                "domain or URL; using the name without a site\n"
+            )
+        earlier = next((c for c in companies if c["name"] == name), None)
+        if earlier is not None:
+            earlier["site"] = earlier["site"] or url
+            continue
+        companies.append({"name": name, "site": url})
+    if len(companies) > MAX_HOST_COMPANIES:
         sys.stderr.write(
             f"[Resolve] --company takes {MAX_HOST_COMPANIES} names; ignoring "
-            f"{', '.join(names[MAX_HOST_COMPANIES:])}\n"
+            f"{', '.join(c['name'] for c in companies[MAX_HOST_COMPANIES:])}\n"
         )
-    return names[:MAX_HOST_COMPANIES]
+    return companies[:MAX_HOST_COMPANIES]
+
+
+def _host_company_names(raw: str | None) -> list[str]:
+    """The company names of a ``--company`` value, in the order given."""
+    return [company["name"] for company in _host_companies(raw)]
 
 
 def _company_signal(
@@ -1183,13 +1219,15 @@ def _company_signal(
     host_tickers: list[dict] | None,
     official_site: str,
     host_names: list[str],
+    jobs_board: str = "",
 ) -> str:
     """What makes this run about a company, or '' when nothing does.
 
     Any one is enough for the engine to add the jobs lane to a host plan that
     does not name it: the topic's official site, a company the host named
-    with ``--company``, a usable ``--ticker`` pair, or the company the topic
-    (or the person it names) resolved to.
+    with ``--company``, a usable ``--ticker`` pair, a ``--jobs-board`` URL
+    (the host found a board, so the lane must read it), or the company the
+    topic (or the person it names) resolved to.
     """
     if (official_site or "").strip():
         return "--official-site"
@@ -1197,9 +1235,44 @@ def _company_signal(
         return "--company"
     if any(not pair.get("reason") and pair.get("company") for pair in host_tickers or []):
         return "--ticker"
+    if (jobs_board or "").strip():
+        return "--jobs-board"
     if company.get("company"):
         return f"the company {company['company']}"
     return ""
+
+
+def _host_company_sites(
+    companies: list[dict[str, str]] | list[str], *, mock: bool, config: dict,
+) -> dict[str, str]:
+    """The confirmed official site of each ``--company`` company, by name.
+
+    The site the host passed with the name (``Name:site``) is used as it is:
+    the host's web search found it, as it finds ``--official-site``. A name
+    passed alone is asked of the company resolver (Wikidata, no key), which
+    answers only for the names it is certain about.
+
+    The jobs lane reads that site's careers page instead of guessing a
+    domain from the name, and only such a confirmed site can tie a board to
+    the company (it links the board, or the board states the name the site
+    states). A mock run and a run with the jobs lane excluded ask the
+    resolver nothing.
+    """
+    sites: dict[str, str] = {}
+    lookups = not (mock or "jobs" in env.exclude_sources(config))
+    for company in companies:
+        if isinstance(company, str):
+            company = {"name": company, "site": ""}
+        name, site = company["name"], company.get("site") or ""
+        if not site and lookups:
+            site = str(
+                company_resolve.resolve_company(name, listing=False).get("company_site") or ""
+            )
+            if site:
+                sys.stderr.write(f"[Resolve] --company {name}: official site {site}\n")
+        if site:
+            sites[name] = site
+    return sites
 
 
 def _company_for_jobs(
@@ -1208,6 +1281,7 @@ def _company_for_jobs(
     topic: str,
     official_site: str = "",
     host_names: list[str] | None = None,
+    host_sites: dict[str, str] | None = None,
 ) -> dict:
     """The company the jobs lane searches for the main topic.
 
@@ -1217,6 +1291,8 @@ def _company_for_jobs(
     - the topic's own official site, when the run knows one, is added as
       ``topic_site``, so the lane reads that site's careers page instead of
       guessing a domain from the topic's name;
+    - with no official site, the site the host passed for a ``--company``
+      entry that is the topic itself is the ``topic_site``;
     - the companies the host named that are not the topic itself are added
       as ``host_companies``: those of ``--company`` (``host_names``), then
       those of its usable ``--ticker`` pairs, each in the order given and a
@@ -1229,6 +1305,14 @@ def _company_for_jobs(
     found = dict(company)
     if official_site.strip():
         found["topic_site"] = official_site.strip()
+    else:
+        own = next(
+            (site for name, site in (host_sites or {}).items()
+             if site and yahoo_finance._same_company_name(topic, name)),
+            "",
+        )
+        if own:
+            found["topic_site"] = own
     names: list[str] = []
     named = list(host_names or []) + [
         pair.get("company") or "" for pair in host_tickers or [] if not pair.get("reason")
@@ -1241,6 +1325,10 @@ def _company_for_jobs(
         names.append(name)
     if names:
         found["host_companies"] = names
+        sites = {name: site for name, site in (host_sites or {}).items() if name in names}
+        if sites:
+            # The confirmed official site of a company the host named.
+            found["host_company_sites"] = sites
     return found if found != dict(company) else company
 
 
@@ -4513,15 +4601,21 @@ def _main(
         )
         # The jobs lane reads the company from here; each comparison peer
         # replaces it with its own.
-        host_names = _host_company_names(args.company)
+        host_companies = _host_companies(args.company)
+        host_names = [company["name"] for company in host_companies]
         config["_company"] = _company_for_jobs(
             main_company, host_tickers, topic,
             official_site=official_site, host_names=host_names,
+            host_sites=(
+                {} if main_company.get("company")
+                else _host_company_sites(host_companies, mock=args.mock, config=config)
+            ),
         )
         # What makes the run about a company: with any of it, a host plan
         # that does not name the jobs lane gets it on its primary subquery.
         config["_company_signal"] = _company_signal(
             main_company, host_tickers, official_site, host_names,
+            jobs_board=args.jobs_board or "",
         )
         if (args.jobs_board or "").strip():
             # The board URL the host found by web search; the jobs lane reads

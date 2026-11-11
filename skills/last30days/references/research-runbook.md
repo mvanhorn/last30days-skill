@@ -160,7 +160,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--no-x-handle="{reason}"` | Section A | X is active, the topic is entity-shaped, and no first-party X account was found |
 | `--x-related={h1,h2,...}` | Section A | X is in `ACTIVE_SOURCES_LIST` and the topic has associated entities (founders, commentators, spouse, collaborators, media handles) |
 | `--ticker="{SYMBOL}:{Company}"` | Section B | Topic is a listed company, a person who leads one, or a product or subsidiary of one |
-| `--company="{Name}"` | Section B | A person's company or a product's maker, listed or not |
+| `--company="{Name}:{site}"` | Section B | A person's company or a product's maker, listed or not |
 | `--jobs-board={URL}` | Section B | A search showed its job board |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
 | `--github-repo={owner/repo}` | Step 0.5c | Topic is a product / project / open-source tool |
@@ -232,7 +232,7 @@ Store: `RESOLVED_HANDLE = {handle or empty}`, `RESOLVED_RELATED = {comma-separat
 
 When the topic is a company, a person who leads one, or a product or subsidiary of a listed company, find the company's ticker in the pre-engine isolated web search dispatch and pass `--ticker="SYMBOL:Company"` (Waymo: `--ticker="GOOGL:Alphabet"`), folding the question into a planned search. Pass it only when sources agree the company is listed and trading: not a filed-but-unlisted ticker or one unconfirmed site. A person leading two gets both (`--ticker="TSLA:Tesla,SPCX:SpaceX"`). When unsure or not listed, pass nothing.
 
-For a person who leads or founded a company, or a product of one, listed or not, pass `--company="Name"` (Palmer Luckey: `--company="Anduril"`). When a planned search shows the company's job-board URL on Greenhouse, Ashby, Lever, Workable, SmartRecruiters or Workday, pass `--jobs-board={URL}`; when unsure, pass nothing.
+For a person who leads or founded a company, or a product of one, listed or not, pass `--company="Name:site"`, the site being the company's own homepage from the same search (Palmer Luckey: `--company="Anduril:anduril.com"`). When a planned search shows the company's job-board URL on Greenhouse, Ashby, Lever, Workable, SmartRecruiters or Workday, pass `--jobs-board={URL}`; when unsure, pass nothing.
 
 ### Step 0.5b: Resolve GitHub Username (if topic is a person) — MANDATORY FOR PERSON TOPICS
 
@@ -624,7 +624,7 @@ Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 - `--devto-tags={t1,t2}` (see flag table)
 - `--tiktok-creators={RESOLVED_TIKTOK_CREATORS}` (from Step 0.55)
 - `--ig-creators={RESOLVED_IG_CREATORS}` (from Step 0.55)
-- `--ticker="{SYMBOL}:{Company}"`, `--company="{Name}"`, `--jobs-board={URL}` (Section B)
+- `--ticker="{SYMBOL}:{Company}"`, `--company="{Name}:{site}"`, `--jobs-board={URL}` (Section B)
 - `--github-user={RESOLVED_GITHUB_USER}` (from Step 0.5b, person topics only)
 - `--github-repo={RESOLVED_GITHUB_REPOS}` (from Step 0.5c, product/project topics only)
 - `--trustpilot-domain={RESOLVED_TRUSTPILOT_DOMAIN}` (from Step 0.5d, company/brand topics; the flag also auto-activates Trustpilot)

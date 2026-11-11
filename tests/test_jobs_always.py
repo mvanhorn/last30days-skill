@@ -250,6 +250,8 @@ def _greenhouse_api(boards):
         for slug, payload in boards.items():
             if url == f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs":
                 return payload
+            if url == f"https://boards-api.greenhouse.io/v1/boards/{slug}":
+                return {"name": payload["jobs"][0]["company_name"]}
         raise http.HTTPError("HTTP 404: Not Found", status_code=404)
 
     return asked, get
@@ -265,7 +267,11 @@ def test_host_board_that_names_the_company_is_owned_and_gives_a_digest():
         items, artifact = jobs.search_board_url(
             ANDURIL_BOARD, ["Palmer Luckey", "Anduril"], WINDOW, {},
         )
-    assert asked == ["https://boards-api.greenhouse.io/v1/boards/andurilindustries/jobs"]
+    # The board's own record says whose it is before its job list is read.
+    assert asked == [
+        "https://boards-api.greenhouse.io/v1/boards/andurilindustries",
+        "https://boards-api.greenhouse.io/v1/boards/andurilindustries/jobs",
+    ]
     assert len(items) == 3
     assert artifact["tier"] == "ats"
     assert artifact["found_via"] == "host"
@@ -307,7 +313,7 @@ def test_host_board_whose_name_only_starts_like_the_company_is_not_owned():
 WORKDAY_URL = "https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers"
 
 
-def _workday_board(token, *, deadline):
+def _workday_board(token, *, deadline, **_kwargs):
     rows = [
         {
             "id": f"JR{index}", "title": f"Engineer {index}", "provider": "workday",
@@ -554,3 +560,354 @@ def test_company_and_jobs_board_are_part_of_what_a_cached_report_was_run_with():
     options = cli._cache_research_options(args)
     assert options["company"] == "Anduril"
     assert options["jobs_board"] == ANDURIL_BOARD
+
+
+# --- Review of PR #1410 ---
+
+# Finding 1: --jobs-board alone starts the lane.
+
+
+def test_jobs_board_alone_makes_the_run_about_a_company():
+    assert "--jobs-board" in cli._company_signal({}, None, "", [], jobs_board=ANDURIL_BOARD)
+    assert cli._company_signal({}, None, "", [], jobs_board="  ") == ""
+
+
+# Finding 2: only a confirmed official site's stated name makes a board owned.
+
+APEX_CAREERS = """
+<script type="application/ld+json">{"@type":"Organization","name":"Apex Tool Group"}</script>
+<h2>Open Roles</h2>
+"""
+
+
+def test_name_stated_on_a_guessed_domain_finds_a_board_but_does_not_make_it_owned():
+    # apex.com is a guess from the name "Apex" and belongs to another business.
+    asked, get = _greenhouse_api({"apextoolgroup": _greenhouse("apextoolgroup", "Apex Tool Group")})
+    pages = {"https://apex.com/careers": APEX_CAREERS}
+    with patch("lib.jobs.http.get_text", side_effect=lambda url, **_k: pages.get(url)), \
+            patch("lib.jobs.http.get", side_effect=get):
+        items, artifact = jobs.search_jobs("Apex", WINDOW, {}, web_backend="none")
+    assert asked[-1] == "https://boards-api.greenhouse.io/v1/boards/apextoolgroup/jobs"
+    assert len(items) == 3
+    assert artifact["open_roles"] == 3
+    assert artifact["found_via"] == "slug-guess"
+    assert artifact["owned"] is False
+    assert "digest" not in artifact
+
+
+def test_same_page_on_the_confirmed_official_site_makes_the_board_owned():
+    _asked, get = _greenhouse_api({"apextoolgroup": _greenhouse("apextoolgroup", "Apex Tool Group")})
+    pages = {"https://apex.com/careers": APEX_CAREERS}
+    with patch("lib.jobs.http.get_text", side_effect=lambda url, **_k: pages.get(url)), \
+            patch("lib.jobs.http.get", side_effect=get):
+        _items, artifact = jobs.search_jobs("Apex", WINDOW, {}, web_backend="none", site="apex.com")
+    assert artifact["found_via"] == "site-name"
+    assert artifact["owned"] is True
+
+
+def test_each_host_company_gets_the_official_site_the_resolver_returns():
+    def resolve(name, *, listing=True):
+        assert listing is False
+        if name == "Anduril":
+            return {"company": "Anduril Industries", "company_site": "https://www.anduril.com/"}
+        return {}
+
+    with patch.object(cli.company_resolve, "resolve_company", side_effect=resolve):
+        sites = cli._host_company_sites(["Anduril", "Nobody Inc"], mock=False, config={})
+        assert sites == {"Anduril": "https://www.anduril.com/"}
+        # No request on a mock run or with the jobs lane excluded.
+        assert cli._host_company_sites(["Anduril"], mock=True, config={}) == {}
+        assert cli._host_company_sites(["Anduril"], mock=False, config={"EXCLUDE_SOURCES": "jobs"}) == {}
+    assert cli._company_for_jobs(
+        {}, None, "Palmer Luckey", host_names=["Anduril"], host_sites=sites,
+    ) == {"host_companies": ["Anduril"], "host_company_sites": sites}
+
+
+def test_host_company_is_searched_from_its_resolved_official_site():
+    seen = {}
+
+    def search(name, *_args, **kwargs):
+        seen[name] = kwargs.get("site", "")
+        return [], {"tier": "web"}
+
+    _run_lane(
+        "Palmer Luckey",
+        {"host_companies": ["Anduril", "Saronic"],
+         "host_company_sites": {"Anduril": "https://www.anduril.com/"}},
+        search,
+    )
+    assert seen == {"Palmer Luckey": "", "Anduril": "https://www.anduril.com/", "Saronic": ""}
+
+
+# Finding 3: an unverified host board does not get the lane's whole budget.
+
+
+def _workday_pages(total):
+    posted = []
+
+    def post(url, *, json_data, **_kwargs):
+        posted.append(json_data["offset"])
+        return {"total": total, "jobPostings": [
+            {"title": f"Engineer {json_data['offset'] + index}",
+             "externalPath": f"/job/JR{json_data['offset'] + index}"}
+            for index in range(min(20, total - json_data["offset"]))
+        ]}
+
+    return posted, post
+
+
+def test_unowned_host_board_is_read_one_page_only(capsys):
+    posted, post = _workday_pages(2000)
+    with patch("lib.jobs.http.get_text", return_value=None), \
+            patch("lib.jobs.http.post", side_effect=post):
+        items, artifact = jobs.search_board_url(WORKDAY_URL, ["Zenith"], WINDOW, {})
+    assert posted == [0]
+    assert len(items) == 20
+    assert artifact["owned"] is False
+    assert artifact["open_roles_floor"] is True
+    assert "first page" in artifact["coverage_note"]
+    assert "no digest" in capsys.readouterr().err
+
+
+def test_owned_host_board_is_read_in_full():
+    posted, post = _workday_pages(60)
+    pages = {"https://www.zenith.example/careers": f'<h2>Open roles</h2><a href="{WORKDAY_URL}">Jobs</a>'}
+    with patch("lib.jobs.http.get_text", side_effect=lambda url, **_k: pages.get(url)), \
+            patch("lib.jobs.http.post", side_effect=post), \
+            patch.object(jobs, "fetch_workday_details", return_value=(0, 0)):
+        items, artifact = jobs.search_board_url(
+            WORKDAY_URL, ["Zenith"], WINDOW, {}, site="https://www.zenith.example",
+        )
+    assert sorted(posted) == [0, 20, 40]
+    assert len(items) == 60
+    assert artifact["owned"] is True
+
+
+def test_unowned_smartrecruiters_board_is_named_and_read_from_its_first_page():
+    asked = []
+
+    def get(url, *, params=None, **_kwargs):
+        asked.append(dict(params or {}))
+        return {"totalFound": 900, "content": [
+            {"id": str(index), "name": f"Cook {index}", "company": {"name": "Other Burgers"}}
+            for index in range(100)
+        ]}
+
+    with patch("lib.jobs.http.get_text", return_value=None), patch("lib.jobs.http.get", side_effect=get):
+        items, artifact = jobs.search_board_url(
+            "https://jobs.smartrecruiters.com/OtherBurgers", ["McDonalds"], WINDOW, {},
+        )
+    assert asked == [{"limit": "100"}]
+    assert len(items) == 100
+    assert artifact["owned"] is False and artifact["board_company"] == "Other Burgers"
+
+
+def test_host_board_gets_a_share_of_the_budget_not_all_of_it():
+    seen = {}
+
+    def host(*_args, **kwargs):
+        seen.update(kwargs)
+        return [], {}
+
+    with patch.object(jobs, "search_board_url", side_effect=host):
+        _run_lane(
+            "Palmer Luckey", {"host_companies": ["Anduril"]}, lambda *_a, **_k: ([], {"tier": "web"}),
+            config={"_jobs_board": ANDURIL_BOARD},
+        )
+    # The board, the topic and one host company: a third each.
+    assert 0 < seen["discovery_seconds"] <= jobs.JOBS_BUDGET_SECONDS / 3 + 0.5
+
+
+def test_owned_greenhouse_host_board_is_read_with_the_whole_budget_not_the_share():
+    # Anduril's job list is megabytes: read inside a 15 s share it timed out.
+    limits = []
+    budget = jobs.LaneBudget()
+
+    def get(url, *_args, **_kwargs):
+        limits.append((url.rsplit("/", 1)[-1], budget.step_deadline < budget.deadline))
+        if url.endswith("/jobs"):
+            return _greenhouse("andurilindustries", "Anduril Industries")
+        return {"name": "Anduril Industries"}
+
+    with patch("lib.jobs.http.get", side_effect=get):
+        _items, artifact = jobs.search_board_url(
+            ANDURIL_BOARD, ["Palmer Luckey", "Anduril"], WINDOW, {},
+            budget=budget, discovery_seconds=15,
+        )
+    assert artifact["owned"] is True
+    # The record is asked inside the share; the owned board's rows are not.
+    assert limits == [("andurilindustries", True), ("jobs", False)]
+
+
+def test_unowned_greenhouse_host_board_is_read_inside_its_share():
+    limits = []
+    budget = jobs.LaneBudget()
+
+    def get(url, *_args, **_kwargs):
+        limits.append(budget.step_deadline < budget.deadline)
+        if url.endswith("/jobs"):
+            return _greenhouse("andurilindustries", "Other Co")
+        return {"name": "Other Co"}
+
+    with patch("lib.jobs.http.get", side_effect=get):
+        _items, artifact = jobs.search_board_url(
+            ANDURIL_BOARD, ["Anduril"], WINDOW, {}, budget=budget, discovery_seconds=15,
+        )
+    assert artifact["owned"] is False
+    assert limits == [True, True]
+    # The share is lifted again for whatever the lane does next.
+    assert budget.step_deadline == budget.deadline
+
+
+def test_unowned_host_board_is_shown_under_the_name_it_states():
+    unowned = {"tier": "ats", "provider": "greenhouse", "company": "Palmer Luckey",
+               "board_company": "Anduril Industries", "owned": False, "open_roles": 9}
+    with patch.object(jobs, "search_board_url", return_value=([{"id": "1"}], dict(unowned))):
+        (_items, artifact), _names, _mock = _run_lane(
+            "Palmer Luckey", {}, lambda *_a, **_k: ([], {"tier": "web"}),
+            config={"_jobs_board": ANDURIL_BOARD},
+        )
+    assert artifact["board_of"] == "Anduril Industries"
+
+
+# --- --company "Name:site": the host passes the company's official site ---
+
+
+def test_company_entry_is_a_name_or_a_name_and_its_site():
+    assert cli._host_companies("Anduril") == [{"name": "Anduril", "site": ""}]
+    assert cli._host_companies("Anduril:anduril.com") == [
+        {"name": "Anduril", "site": "https://anduril.com/"},
+    ]
+    assert cli._host_companies(" Tesla : tesla.com , SpaceX:spacex.com ") == [
+        {"name": "Tesla", "site": "https://tesla.com/"},
+        {"name": "SpaceX", "site": "https://spacex.com/"},
+    ]
+    # A URL is a site too, normalized the way --official-site is.
+    assert cli._host_companies("Anduril:https://www.Anduril.com/careers?x=1") == [
+        {"name": "Anduril", "site": "https://www.anduril.com/"},
+    ]
+    assert cli._host_company_names("Tesla:tesla.com,SpaceX") == ["Tesla", "SpaceX"]
+    assert cli._host_companies("") == []
+
+
+def test_company_entry_that_cannot_be_read_is_ignored_with_a_line(capsys):
+    # No name before the colon: nothing says whose site it is.
+    assert cli._host_companies(":anduril.com,SpaceX") == [{"name": "SpaceX", "site": ""}]
+    err = capsys.readouterr().err
+    assert "[Resolve] --company" in err and "anduril.com" in err
+    # A site that is not a domain: the name stands, without a site.
+    assert cli._host_companies("Anduril:not a site") == [{"name": "Anduril", "site": ""}]
+    err = capsys.readouterr().err
+    assert "[Resolve] --company" in err and "not a site" in err
+    # A third entry is one too many.
+    assert [c["name"] for c in cli._host_companies("A:a.com,B:b.com,C:c.com")] == ["A", "B"]
+    assert "C" in capsys.readouterr().err
+
+
+def test_site_the_host_passed_is_used_without_asking_the_resolver():
+    def resolve(name, *, listing=True):
+        assert name == "SpaceX", "a company that came with its site is not looked up"
+        return {"company": "SpaceX", "company_site": "https://www.spacex.com/"}
+
+    companies = cli._host_companies("Tesla:tesla.com,SpaceX")
+    with patch.object(cli.company_resolve, "resolve_company", side_effect=resolve):
+        sites = cli._host_company_sites(companies, mock=False, config={})
+    assert sites == {"Tesla": "https://tesla.com/", "SpaceX": "https://www.spacex.com/"}
+    # The host's own site needs no lookup, so a mock run keeps it.
+    assert cli._host_company_sites(companies, mock=True, config={}) == {"Tesla": "https://tesla.com/"}
+
+
+def test_company_named_with_a_site_and_again_by_ticker_is_one_company_with_its_site():
+    pairs = yahoo_finance.parse_host_tickers("TSLA:Tesla Inc.,SPCX:SpaceX")
+    companies = cli._host_companies("Tesla:tesla.com,SpaceX:spacex.com")
+    sites = cli._host_company_sites(companies, mock=True, config={})
+    assert cli._company_for_jobs(
+        {}, pairs, "Elon Musk", host_names=[c["name"] for c in companies], host_sites=sites,
+    ) == {
+        "host_companies": ["Tesla", "SpaceX"],
+        "host_company_sites": {"Tesla": "https://tesla.com/", "SpaceX": "https://spacex.com/"},
+    }
+
+
+def test_site_passed_for_the_topic_itself_is_the_topics_site():
+    companies = cli._host_companies("Anduril:anduril.com")
+    sites = cli._host_company_sites(companies, mock=True, config={})
+    assert cli._company_for_jobs(
+        {}, None, "Anduril", host_names=["Anduril"], host_sites=sites,
+    ) == {"topic_site": "https://anduril.com/"}
+    # --official-site, when given, stays the topic's site.
+    assert cli._company_for_jobs(
+        {}, None, "Anduril", official_site="anduril.io", host_names=["Anduril"], host_sites=sites,
+    ) == {"topic_site": "anduril.io"}
+
+
+def _palmer_luckey_lane(company_flag):
+    """The real lane for "Palmer Luckey" with ``--company``: anduril.com's
+    careers page names no hiring system and states "Anduril Industries"."""
+    _asked, get = _greenhouse_api({"andurilindustries": _greenhouse("andurilindustries", "Anduril Industries")})
+    pages = {"https://anduril.com/careers": ANDURIL_CAREERS}
+    companies = cli._host_companies(company_flag)
+    with patch.object(cli.company_resolve, "resolve_company", return_value={}):
+        sites = cli._host_company_sites(companies, mock=False, config={})
+    company = cli._company_for_jobs(
+        {}, None, "Palmer Luckey", host_names=[c["name"] for c in companies], host_sites=sites,
+    )
+    subquery = schema.SubQuery(
+        label="primary", search_query="Palmer Luckey", ranking_query="Palmer Luckey", sources=["jobs"],
+    )
+    with patch("lib.jobs.http.get_text", side_effect=lambda url, **_k: pages.get(url)), \
+            patch("lib.jobs.http.get", side_effect=get):
+        return pipeline._retrieve_stream_impl(
+            topic="Palmer Luckey", subquery=subquery, source="jobs", config={"_company": company},
+            depth="default", date_range=WINDOW, runtime=None, mock=False,
+            web_backend="none", raw_topic="Palmer Luckey",
+        )
+
+
+def test_person_whose_company_came_with_its_site_gets_a_digest():
+    items, artifact = _palmer_luckey_lane("Anduril:anduril.com")
+    assert len(items) == 3
+    assert artifact["found_via"] == "site-name"
+    assert artifact["owned"] is True
+    assert artifact["digest"]["roles"]
+    assert artifact["board_of"] == "Anduril"
+
+
+def test_person_whose_company_came_with_no_site_gets_counts_only():
+    # Wikidata has no site for "Anduril", and the guessed anduril.com cannot vouch.
+    items, artifact = _palmer_luckey_lane("Anduril")
+    assert len(items) == 3
+    assert artifact["open_roles"] == 3
+    assert artifact["owned"] is False
+    assert "digest" not in artifact
+
+
+# careers.google.com on 2026-11-10 links a PDF under /jobs/; read as a page
+# it raised UnicodeDecodeError and the run printed "Jobs timeout".
+
+
+def test_file_linked_from_a_careers_page_is_not_read_as_a_jobs_page():
+    landing = (
+        '<h2>Join our team</h2>'
+        '<a href="https://careers.acme.com/jobs/dist/legal/KnowYourRights.pdf">Rights</a>'
+        '<a href="https://careers.acme.com/jobs/results/">Search jobs</a>'
+    )
+    assert jobs._jobs_links(landing, "https://www.acme.com/careers") == [
+        "https://careers.acme.com/jobs/results/",
+    ]
+
+
+def test_page_that_is_not_text_is_no_page_and_no_failure():
+    def get_text(url, **_kwargs):
+        if url.endswith("/careers"):
+            return '<h2>Join our team</h2><a href="/jobs/list">Jobs</a>'
+        raise UnicodeDecodeError("utf-8", b"\xe2", 0, 1, "invalid continuation byte")
+
+    with patch("lib.jobs.http.get_text", side_effect=get_text), \
+            patch("lib.jobs.http.get", side_effect=http.HTTPError("missing", status_code=404)), \
+            http.capture_failures() as failures:
+        items, artifact = jobs.search_jobs(
+            "Acme", WINDOW, {}, web_backend="none", site="https://www.acme.com",
+        )
+    assert items == [] and artifact["tier"] == "web"
+    assert failures == []

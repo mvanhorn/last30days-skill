@@ -565,24 +565,25 @@ The engine treats public jobs/careers postings as evidence of focus or priority 
 ### `--company` and `--jobs-board` flags
 
 ```
+--company "Anduril:anduril.com"
+--company "Tesla:tesla.com,SpaceX:spacex.com"
 --company "Anduril"
---company "Tesla,SpaceX"
 --jobs-board https://job-boards.greenhouse.io/andurilindustries
 ```
 
 Both feed the jobs lane, and both come from the hosting model's web search before the run.
 
-`--company` names the company behind a topic that is not itself the company: the company a person leads or founded (Palmer Luckey is `Anduril`), or the maker of a product. The company does not have to be listed, which is what separates it from `--ticker`. Names are separated by commas and only the first two are read. The jobs lane looks for the topic's own board first, then tries each name in the order given and uses the first that has a board. A company named by both `--company` and `--ticker` is tried once, `--company` names first. When Wikidata already resolved the topic to a company, that company is used and these names are not.
+`--company` names the company behind a topic that is not itself the company: the company a person leads or founded (Palmer Luckey is `Anduril`), or the maker of a product. The company does not have to be listed, which is what separates it from `--ticker`. Each entry is `Name:site` or `Name` alone, in the shape of `--ticker`'s pairs: the name is everything before the first colon, so it cannot contain a colon or a comma, and the site is the company's own homepage as a bare domain or a URL, normalized the way `--official-site` is. Entries are separated by commas and only the first two are read; the engine logs the rest as ignored. An entry with no name is ignored, and a site that is not a domain is dropped while its name is kept; stderr says so. The jobs lane looks for the topic's own board first, then tries each name in the order given and uses the first that has a board. A company named by both `--company` and `--ticker` is tried once, `--company` names first. When Wikidata already resolved the topic to a company, that company is used and these names are not. The site passed with a name is that company's confirmed official site, with the same standing as `--official-site`. A name passed alone is looked up in Wikidata for its site instead. With a confirmed site, the lane reads that site's careers page, and a board found under the name that site states for its organization (`Anduril Industries`) is the company's when the board states the same name. A board that site links is the company's too. With no confirmed site, the lane guesses `<name>.com`, `.ai` and `.io`; a guessed domain can be another business's, so a board found through it gives a digest only when the board states the company's own name, and the footer count otherwise. Pass the site with the name, or `--jobs-board`, to get the digest in that case.
 
 `--jobs-board` is the URL of the company's job board on a system the lane reads: Greenhouse (`boards.greenhouse.io/<slug>` or `job-boards.greenhouse.io/<slug>`), Ashby (`jobs.ashbyhq.com/<slug>`), Lever (`jobs.lever.co/<slug>`), Workable (`apply.workable.com/<slug>`), SmartRecruiters (`jobs.smartrecruiters.com/<Company>`) or Workday (`<tenant>.wdN.myworkdayjobs.com/<site>`). The engine takes the provider and slug from the URL and reads that board first. It never takes the board on the host's word. The board counts as the company's own, and gives a `## Jobs Digest`, only when one of these holds:
 
 1. The company name the board states is the topic's or a `--company` name, or that name with whole words after it (`Anduril Industries` for `Anduril`; `Metabase` is not `Meta`).
 2. The board states no name (Ashby, Lever, Workable, Workday) and its slug is that name.
-3. The official site's careers page, or the jobs page it links, links to the board.
+3. The careers page of the official site (`--official-site`, or the site of a `--company` entry), or the jobs page it links, links to the board.
 
-Any other board gives the footer count with no digest, a stderr line says why, and the lane goes on to look for the board itself. A URL on a host that is not one of those systems is ignored with one stderr line, and so is a board that cannot be read.
+Any other board gives the footer count with no digest, a stderr line says why, and the lane goes on to look for the board itself. Whose board it is is settled before the board is read in full: until then the read has one share of the lane's 45 s, and a Workday or SmartRecruiters board that is not the company's is read one page only (its count carries a `+`). A URL on a host that is not one of those systems is ignored with one stderr line, and so is a board that cannot be read.
 
-Either flag, `--official-site`, a usable `--ticker` pair, or a topic the engine resolves to a company marks the run as about a company. On such a run with a host `--plan` that names `jobs` in no subquery, the engine adds `jobs` to the primary subquery and logs `[Planner] Added jobs to primary: ...`. It does not do so on `--quick`, with a `--search` list that leaves `jobs` out, or with `EXCLUDE_SOURCES=jobs`. On a comparison run both flags apply to the main topic only.
+Either flag alone, `--official-site`, a usable `--ticker` pair, or a topic the engine resolves to a company marks the run as about a company. On such a run with a host `--plan` that names `jobs` in no subquery, the engine adds `jobs` to the primary subquery and logs `[Planner] Added jobs to primary: ...`. It does not do so on `--quick`, with a `--search` list that leaves `jobs` out, or with `EXCLUDE_SOURCES=jobs`. On a comparison run both flags apply to the main topic only.
 
 ### `--ticker` flag
 

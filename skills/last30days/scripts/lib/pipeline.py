@@ -3892,6 +3892,11 @@ def _search_jobs_lane(
     hosts = [] if company.get("company") else _host_companies(company)
     tries = 1 + len(hosts)
     site = str(company.get("company_site") or company.get("topic_site") or "")
+    # The official site the resolver returned for a company the host named.
+    host_sites = {
+        str(key): str(value)
+        for key, value in (company.get("host_company_sites") or {}).items() if value
+    }
 
     def named(found: dict) -> dict:
         # A board that is not the topic's own says whose it is.
@@ -3909,7 +3914,11 @@ def _search_jobs_lane(
         with http.tee_failures() as failures:
             host_items, host_artifact = jobs.search_board_url(
                 board_url, [name, *hosts], date_range, config,
-                site=site, explicit=bool(config.get("_hiring_signals_mode")), budget=budget,
+                site=site, sites=host_sites,
+                explicit=bool(config.get("_hiring_signals_mode")), budget=budget,
+                # Until the board is known to be the company's it has one
+                # share of the budget, like each company still to be tried.
+                discovery_seconds=budget.remaining() / (1 + tries),
             )
         if _is_jobs_board("jobs", host_artifact):
             if host_artifact.get("owned"):
@@ -3946,6 +3955,7 @@ def _search_jobs_lane(
             for index, host_company in enumerate(hosts):
                 host_items, host_artifact = search(
                     host_company, tries - 1 - index, web_backend="none",
+                    **({"site": host_sites[host_company]} if host_company in host_sites else {}),
                 )
                 if _is_jobs_board("jobs", host_artifact):
                     host_artifact["board_of"] = host_company
@@ -3958,6 +3968,10 @@ def _search_jobs_lane(
                         artifact = {**artifact, key: host_artifact[key]}
     if held and not _is_jobs_board("jobs", artifact):
         items, artifact = held[0], named(held[1])
+        # A board tied to no company here is shown under the name it states.
+        stated = str(artifact.get("board_company") or "")
+        if stated and not jobs._same_company(stated, topic):
+            artifact["board_of"] = stated
     if not items and not _is_jobs_board("jobs", artifact) and not (
         budget.stopped_at or budget.spent() or budget.unanswered
     ):
