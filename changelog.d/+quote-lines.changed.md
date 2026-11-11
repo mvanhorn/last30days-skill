@@ -1,1 +1,0 @@
-Reports now put their best six quoted comments or posts each on its own quote line under the paragraph it supports (`> "quote" 🟠 u/author on r/sub · 1,315 upvotes`), six in the whole report as a ceiling. Other good quotes may stay inside a paragraph, attributed and linked; no quote is used both ways. The earlier rule allowed one pulled quote per story.

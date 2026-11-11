@@ -1,1 +1,0 @@
-Reddit no longer ends a busy run as "reddit timed out after 180s" with zero threads. The lane now works to a deadline 20 seconds inside the source wait: a stage that no longer fits (archive supplement, site search, comment enrichment) is skipped and the threads already found are returned.
