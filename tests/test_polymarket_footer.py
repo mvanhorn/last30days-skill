@@ -4,7 +4,16 @@ The fixtures follow a saved run: a date-ladder event ("... by ...?") whose
 sub-markets are Yes/No markets that differ only in their deadline.
 """
 
+import pytest
+
 from lib import polymarket, render, schema
+
+
+@pytest.fixture(autouse=True)
+def _today(monkeypatch):
+    # The day of the saved run: every deadline below is still open.
+    monkeypatch.setattr(polymarket, "_today", lambda: "2026-11-10")
+
 
 RESIGNATION = "Jensen Huang announced resignation or removal by {}?"
 DIVORCE = "Jensen Huang divorce by {}?"
@@ -69,6 +78,7 @@ def _source_item(parsed):
         metadata={
             "question": parsed["question"],
             "outcome_prices": parsed["outcome_prices"],
+            "headline": parsed["headline"],
         },
     )
 
@@ -124,8 +134,10 @@ def test_sub_market_named_by_its_question_renders_once():
 
     lines = render._polymarket_top_markets([_source_item(parsed[0])])
 
+    # A deadline ladder is named by its nearest open deadline, not by the
+    # furthest one, which always prices highest.
     assert lines == [
-        "Jensen Huang announced resignation or removal by June 30, 2027 32%"
+        "Jensen Huang announced resignation or removal by Dec 31, 2026 14%"
     ]
 
 
@@ -137,8 +149,8 @@ def test_saved_run_footer_reads_cleanly():
     lines = render._polymarket_top_markets([_source_item(p) for p in parsed], limit=3)
 
     assert ", ".join(lines) == (
-        "Jensen Huang announced resignation or removal by June 30, 2027 32%, "
-        "Jensen Huang divorce by March 31, 2027 18%"
+        "Jensen Huang announced resignation or removal by Dec 31, 2026 14%, "
+        "Jensen Huang divorce by Dec 31, 2026 9.5%"
     )
 
 

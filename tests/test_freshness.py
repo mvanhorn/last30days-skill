@@ -1577,3 +1577,33 @@ def test_polymarket_refetch_matches_names_saved_with_the_old_forty_character_cut
     verdicts = freshness.verify_report(_report(item))
 
     assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+
+
+def test_polymarket_refetch_reads_a_repeated_subject_name_from_its_own_market(monkeypatch):
+    # A run saved while sibling brackets were all named by their subject holds
+    # "Waymo" three times. Each still reads its own bracket, now that the
+    # brackets carry their own labels.
+    item = _item(
+        "polymarket",
+        title="How many cities will Waymo operate in by December 31?",
+        url="https://polymarket.com/event/ladder",
+        metadata={
+            "event_id": "77",
+            "outcome_prices": [["Waymo", 0.79], ["Waymo", 0.12], ["Waymo", 0.046]],
+        },
+    )
+    event = _ladder_event(
+        [
+            ("Will Waymo operate in 12-15 cities on December 31 2026?", 0.79),
+            ("Will Waymo operate in 16-19 cities on December 31 2026?", 0.3),
+            ("Will Waymo operate in fewer than 12 cities on December 31 2026?", 0.046),
+        ]
+    )
+    for market, label in zip(event["markets"], ("12-15", "16-19", "<12")):
+        market["groupItemTitle"] = label
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "stale", "current"]
+    assert verdicts[1].current_value == 0.3
