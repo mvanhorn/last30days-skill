@@ -1,1 +1,0 @@
-The report's first line no longer ends its window on tomorrow's date. West of UTC in the evening it read "Oct 12 to Nov 11, 2026" on Nov 10; the window shown now ends on the reader's own date, while searches keep the UTC end date so no post from the last hours is lost.

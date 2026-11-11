@@ -1,1 +1,0 @@
-The `## Jobs Digest` now includes the roles the run itself ranked highest (its ranked job postings and the roles its Hiring Signals themes name). Up to 10 of the digest's 40 places go to them, listed first, and the rest stay with the rarest roles on the board, so the hiring section is no longer written without the run's strongest postings.

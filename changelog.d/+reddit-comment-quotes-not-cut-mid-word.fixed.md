@@ -1,1 +1,0 @@
-Reddit comment quotes are no longer stored cut mid-word at 200 characters ("...a progressive socialist. Th"). A comment is kept up to 400 characters and ends at a sentence when one falls near the limit, otherwise at a word; lines in the report keep their current display length.

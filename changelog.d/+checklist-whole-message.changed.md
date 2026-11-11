@@ -1,1 +1,0 @@
-The closing format checklist now says the no-lists rule on Claude Code covers the whole message, including notes added before or after the report and any later message that shows the report again. A bulleted note under a report made every link in it print as raw `name (url)` text.
