@@ -494,22 +494,25 @@ def search_trustpilot(
     return {"results": [data]}
 
 
-def _cache_label(info: Dict[str, Any]) -> Optional[str]:
-    """``cached 3 days ago`` for a cached record, or None when it is too old
-    to use. A record with no readable fetch time is used and says so."""
+def _cache_age(info: Dict[str, Any]) -> Optional[tuple[str, Optional[str]]]:
+    """``("cached 3 days ago", "YYYY-MM-DD")`` for a cached record: its age
+    label and the UTC date it was fetched. None when it is too old to use. A
+    record with no readable fetch time is used, says so, and has no date."""
     raw = info.get("fetchedAt") or info.get("updatedAt") or info.get("updated_at")
     try:
         fetched = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
-        return "cached, age unknown"
+        return "cached, age unknown", None
     if fetched.tzinfo is None:
         fetched = fetched.replace(tzinfo=timezone.utc)
+    fetched = fetched.astimezone(timezone.utc)
     days = max(0, (datetime.now(timezone.utc) - fetched).days)
     if days > CACHE_MAX_AGE_DAYS:
         return None
+    fetched_date = fetched.date().isoformat()
     if days == 0:
-        return "cached today"
-    return f"cached {days} day{'s' if days != 1 else ''} ago"
+        return "cached today", fetched_date
+    return f"cached {days} day{'s' if days != 1 else ''} ago", fetched_date
 
 
 def _cached_info(identifier: str) -> Optional[Dict[str, Any]]:
@@ -523,12 +526,13 @@ def _cached_info(identifier: str) -> Optional[Dict[str, Any]]:
     )
     if not isinstance(data, dict) or not data or "error" in data:
         return None
-    label = _cache_label(data)
-    if label is None:
+    age = _cache_age(data)
+    if age is None:
         _log(f"cached record for '{identifier}' is over {CACHE_MAX_AGE_DAYS} days old; not used")
         return None
+    label, fetched_date = age
     _log(f"no fresh session; using the cached record for '{identifier}' ({label})")
-    return {**data, "_cache_label": label}
+    return {**data, "_cache_label": label, "_cache_date": fetched_date}
 
 
 def can_run_now(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -633,7 +637,9 @@ def parse_trustpilot_response(
             "name": name,
             "trustScore": trust_score,
             "reviewCount": review_count,
-            "date": dates.get_date_range(1)[0],
+            # A live TrustScore is a fact about now. A cached record is dated
+            # by its fetch, and undated when the fetch time is unreadable.
+            "date": info.get("_cache_date") if cache_label else dates.get_date_range(1)[0],
             "engagement": engagement,
             "relevance": round(min(1.0, max(0.4, relevance)), 2),
             "why_relevant": why,

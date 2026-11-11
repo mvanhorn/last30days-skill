@@ -680,3 +680,43 @@ def test_runbook_resolves_the_domain_only_when_trustpilot_can_run():
     assert "only when `--diagnose` reports `trustpilot_can_run: true`" in step
     assert "never opens a browser" in step
     assert step.index("trustpilot_can_run") < step.index("WebSearch(")
+
+
+# ---- a cached record carries its fetch date, not yesterday ----
+
+def test_cached_record_is_dated_by_its_fetch_not_yesterday(monkeypatch):
+    fetched = _fetched(21)
+    _capture_cli(monkeypatch, {
+        "auth status": {"isFresh": False},
+        "info --local": {**INFO_OK, "fetchedAt": fetched},
+    })
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    item = trustpilot.parse_trustpilot_response(out)[0]
+    assert item["date"] == fetched[:10]
+    assert "cached 21 days ago" in item["title"]
+
+
+def test_cached_record_with_no_fetch_time_is_undated(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from lib import dates
+
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "info --local": INFO_OK})
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    raw = trustpilot.parse_trustpilot_response(out, query="Waymo")
+    assert raw[0]["date"] is None
+    # Undated, the item still reaches the report (like other undated items).
+    today = datetime.now(timezone.utc).date()
+    kept = pipeline._normalize_score_dedupe(
+        "trustpilot", raw, (today - timedelta(days=30)).isoformat(), today.isoformat(),
+        "balanced_recent", "Waymo",
+    )
+    assert len(kept) == 1 and kept[0].published_at is None
+    assert dates.get_date_range(1)[0] not in str(kept[0].published_at)
+
+
+def test_live_record_keeps_the_current_date(monkeypatch):
+    from lib import dates
+
+    _capture_cli(monkeypatch, {"info": INFO_OK})
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    assert trustpilot.parse_trustpilot_response(out)[0]["date"] == dates.get_date_range(1)[0]
