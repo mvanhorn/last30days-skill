@@ -110,7 +110,9 @@ def build(
             "Other good quotes may stay inside a paragraph, attributed and linked, with "
             "no count; no quote is used both ways, and weak or off-topic comments are "
             "not quoted. Use each thread's or video's top comment first, then its #2; "
-            "like counts do not rank a comment from one place against another."
+            "an entry ending `said` is a line said in the video itself and is a quote "
+            "like any comment; like counts do not rank a comment from one place "
+            "against another."
             + source
         )
         if _has_heading(rendered, _POLYMARKET_HEADING):
