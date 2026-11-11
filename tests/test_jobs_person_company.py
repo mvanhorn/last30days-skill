@@ -163,16 +163,14 @@ def test_wikidata_company_is_searched_alone():
     assert names == ["Nvidia"]
 
 
-def test_jobs_company_takes_the_one_host_ticker_name_only_when_wikidata_named_none():
+def test_jobs_company_takes_the_host_ticker_names_only_when_wikidata_named_none():
     one = yahoo_finance.parse_host_tickers("NVDA:Nvidia")
-    assert cli._company_for_jobs({}, one, "Jensen Huang") == {"host_company": "Nvidia"}
+    assert cli._company_for_jobs({}, one, "Jensen Huang") == {"host_companies": ["Nvidia"]}
     resolved = {"company": "Nvidia", "company_site": "https://www.nvidia.com/"}
     assert cli._company_for_jobs(resolved, one, "Jensen Huang") == resolved
     # The topic is the company: its own name is already what is searched.
     assert cli._company_for_jobs({}, one, "Nvidia") == {}
-    # Two companies, or an unusable pair, name no one company.
-    two = yahoo_finance.parse_host_tickers("TSLA:Tesla,SPCX:SpaceX")
-    assert cli._company_for_jobs({}, two, "Elon Musk") == {}
+    # An unusable pair names no company.
     assert cli._company_for_jobs({}, yahoo_finance.parse_host_tickers("NVDA"), "Jensen Huang") == {}
     assert cli._company_for_jobs({}, None, "Jensen Huang") == {}
 
@@ -267,12 +265,18 @@ def test_host_that_does_not_resolve_is_asked_for_one_page_only():
     assert not [url for url in asked if url.endswith("/jobs") and "kanyewest" in url]
 
 
-def test_careers_host_that_times_out_is_still_reported():
+def test_guessed_careers_host_that_times_out_is_no_board_found():
+    # "Sundar Pichai" on 2026-11-10: sundarpichai.com and sundarpichai.ai never
+    # answered, and the run printed "Jobs timeout: URL Error: timed out". A
+    # domain guessed from a name that does not answer is no site of the
+    # topic's, not an outage of the lane. See tests/test_jobs_reliability.py.
     def timed_out():
         raise urllib.error.URLError(TimeoutError("timed out"))
 
-    _result, failures = _search_capturing(_open_by_host(timed_out))
-    assert failures and all(f.outcome_state == http.health.TIMEOUT for f in failures)
+    (items, artifact), failures = _search_capturing(_open_by_host(timed_out))
+    assert items == []
+    assert failures == []
+    assert "_source_outcome" not in artifact
 
 
 def test_outage_of_a_known_hiring_system_is_still_an_error():

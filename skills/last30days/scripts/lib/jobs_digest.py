@@ -23,6 +23,10 @@ from . import hiring_signals
 BOILERPLATE_MIN_ROLES = 3
 # Roles in the digest, and role-unique characters kept for each.
 DIGEST_MAX_ROLES = 40
+# Of those, how many may go to roles the run itself ranked highest (its ranked
+# job postings and the roles its hiring themes name) when the rarity pick left
+# them out. The rest stay with the rarest roles.
+ENGINE_ROLE_SLOTS = 10
 DIGEST_ROLE_CHARS = 600
 # Ceiling for the whole rendered digest section: room for every role at its
 # full text plus about 300 characters of title, department, location and URL.
@@ -141,6 +145,62 @@ def select_roles(
         key=lambda index: (-score(roles[index]), _reverse(posted(roles[index])), index),
     )
     return [roles[index] for index in order[:limit]]
+
+
+def add_engine_roles(
+    digest: dict[str, Any],
+    items: list[dict[str, Any]],
+    urls: list[str],
+    *,
+    slots: int = ENGINE_ROLE_SLOTS,
+    limit: int = DIGEST_MAX_ROLES,
+) -> dict[str, Any]:
+    """Return ``digest`` with the roles the run ranked highest put first.
+
+    ``urls`` are posting URLs in the run's own order of importance and
+    ``items`` the board rows the digest was built from. A role the digest
+    already lists is marked ``engine`` where it stands. Up to ``slots`` of
+    the others are added at the front with their role-unique text, and the
+    rarity picks give up that many places from their end, so the digest never
+    holds more than ``limit`` roles. A URL that is not on the board is passed
+    over. An added role the board gave no text for is counted in ``note``.
+    """
+    entries = [dict(entry) for entry in digest.get("roles") or []]
+    listed = {
+        url: entry
+        for entry in entries
+        for url in (entry.get("url"), *(entry.get("urls") or [])) if url
+    }
+    by_url = {url: role for role in distinct_roles(items) for url in role["urls"]}
+    picked: list[dict[str, Any]] = []
+    for url in urls:
+        if url in listed:
+            listed[url]["engine"] = True
+            continue
+        role = by_url.get(url)
+        if role is None or any(role is chosen for chosen in picked):
+            continue
+        if len(picked) < slots:
+            picked.append(role)
+    added = build_digest(items, picked)["roles"] if picked else []
+    for entry in added:
+        entry["engine"] = True
+    kept = entries[: max(0, limit - len(added))]
+    out = {
+        **digest,
+        "roles": [*added, *kept],
+        "engine_roles": sum(1 for entry in [*added, *kept] if entry.get("engine")),
+    }
+    # A board that gives a role's text one call at a time (Workday) was asked
+    # only for the rarity picks, before anything was ranked.
+    bare = sum(1 for entry in added if not entry["text"])
+    if bare:
+        note = (
+            f"{bare} of the ranked roles listed first have no role text "
+            "(this board gives it one call per role, made before ranking)"
+        )
+        out["note"] = f"{digest['note']}; {note}" if digest.get("note") else note
+    return out
 
 
 def _reverse(date: str) -> tuple[int, ...]:

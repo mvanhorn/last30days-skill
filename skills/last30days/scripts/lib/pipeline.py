@@ -45,6 +45,7 @@ from . import (
     http,
     instagram,
     jobs,
+    jobs_digest,
     linkedin,
     library,
     library_index,
@@ -2679,6 +2680,10 @@ def run(
         if source in available and source != "corpus"
     )
     max_workers = _inner_max_workers(stream_count, internal_subrun=internal_subrun)
+    # One holder, shared by every copy of the config made below: the jobs
+    # lane's time budget for this topic (see ``_jobs_lane_budget``).
+    # It goes into a copy, so the caller's config is left as it was.
+    config = {**config, "_jobs_lane": {}}
     stream_config = dict(config)
     stream_config["_research_deadline"] = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
     with _abandoning_executor(max_workers=max_workers) as executor:
@@ -2919,6 +2924,7 @@ def run(
                 # The board's own counts and digest are read by name, and stay
                 # whatever happens to the board's items below.
                 bundle.artifacts["jobs"] = _jobs_board_artifact(artifact)
+                bundle.jobs_board_rows = list(raw_items)
                 artifact = {key: value for key, value in artifact.items() if key != "digest"}
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
@@ -3161,6 +3167,7 @@ def run(
             candidate.title,
         ),
     )
+    _add_ranked_roles_to_jobs_digest(bundle, ranked_candidates, hiring_summary)
     _check_research(config)
     rerank.score_fun(
         topic=topic,
@@ -3779,6 +3786,114 @@ def _merge_replayed_enrichment(
     return items
 
 
+def _jobs_lane_budget(config: dict[str, Any]) -> jobs.LaneBudget:
+    """The one time budget the jobs lane has for this topic's run.
+
+    ``run`` puts a holder in the config before it copies it for its passes,
+    so the first pass, a retry after a server error and the thin-results
+    retry all draw on the same budget. A comparison gives each entity an
+    equal share.
+    """
+    holder = config.get("_jobs_lane")
+    budget = holder.get("budget") if isinstance(holder, dict) else None
+    if budget is None:
+        budget = jobs.LaneBudget(
+            jobs.JOBS_BUDGET_SECONDS / max(1, _comparison_entity_count(config)),
+        )
+        if isinstance(holder, dict):
+            holder["budget"] = budget
+    return budget
+
+
+def _host_companies(company: dict[str, Any]) -> list[str]:
+    """The companies the host named with ``--ticker``, in the order given."""
+    names = [str(name) for name in company.get("host_companies") or [] if name]
+    single = str(company.get("host_company") or "")
+    if single and single not in names:
+        names.insert(0, single)
+    return names
+
+
+def _search_jobs_lane(
+    company: dict[str, Any],
+    topic: str,
+    *,
+    config: dict[str, Any],
+    depth: str,
+    date_range: tuple[str, str],
+    web_backend: str,
+) -> tuple[list[dict], dict]:
+    """Search the board of the company the topic resolved to.
+
+    A person's name searches the company they lead, starting from its
+    official site. When the lookup named no company and the topic has no
+    board of its own (a person, searched by name), each company the host
+    named with ``--ticker`` is tried in order and the first one with a board
+    is used. Those come with no official site, so a board gives a digest only
+    when it names that company itself. Every company tried draws on one
+    budget, and a board that is not the topic's own says whose it is under
+    ``board_of``.
+    """
+    budget = _jobs_lane_budget(config)
+    if budget.settled or budget.spent():
+        # This run's lane already has its answer, or no time left to look.
+        return [], {}
+    name = str(company.get("company") or topic)
+    hosts = [] if company.get("company") else _host_companies(company)
+    tries = 1 + len(hosts)
+
+    def search(target: str, left: int, **where: Any) -> tuple[list[dict], dict]:
+        return jobs.search_jobs(
+            target,
+            date_range,
+            config,
+            depth=depth,
+            explicit=bool(config.get("_hiring_signals_mode")),
+            entity_count=_comparison_entity_count(config),
+            budget=budget,
+            # Finding one company's board may use an equal share of what is
+            # left, so the next company still gets its turn.
+            discovery_seconds=budget.remaining() / left if left > 1 else None,
+            **where,
+        )
+
+    with http.tee_failures() as failures:
+        items, artifact = search(
+            name,
+            tries,
+            web_backend=web_backend,
+            site=str(company.get("company_site") or company.get("topic_site") or ""),
+        )
+        if _is_jobs_board("jobs", artifact):
+            if not jobs._same_company(name, topic):
+                artifact["board_of"] = name
+        else:
+            for index, host_company in enumerate(hosts):
+                host_items, host_artifact = search(
+                    host_company, tries - 1 - index, web_backend="none",
+                )
+                if _is_jobs_board("jobs", host_artifact):
+                    host_artifact["board_of"] = host_company
+                    items, artifact = host_items, host_artifact
+                    break
+                # The topic's own result stands, with the reason the budget
+                # ended the search when it did.
+                for key in ("_source_outcome", "_source_out_of_time"):
+                    if key in host_artifact and not items:
+                        artifact = {**artifact, key: host_artifact[key]}
+    if not items and not _is_jobs_board("jobs", artifact) and not (
+        budget.stopped_at or budget.spent()
+    ):
+        jobs.log_no_board([name, *hosts])
+    # Nothing failed and time was left: the answer will not change on a
+    # second pass. A failure or a spent budget leaves the retry its chance
+    # within what is left of the budget.
+    budget.settled = _is_jobs_board("jobs", artifact) or not (
+        failures or budget.stopped_at or budget.spent()
+    )
+    return items, artifact
+
+
 def _is_jobs_board(source: str, artifact: Any) -> bool:
     """Whether a jobs fetch read the company's board directly."""
     return source == "jobs" and isinstance(artifact, dict) and artifact.get("tier") == "ats"
@@ -3819,6 +3934,68 @@ def _rejected_job_keys(
         for item in candidate.source_items
         if item.source == "jobs"
     })
+
+
+def _engine_ranked_job_urls(
+    ranked: list[schema.Candidate],
+    hiring_summary: dict[str, Any] | None,
+) -> list[str]:
+    """Posting URLs of the roles the run itself put highest, best first.
+
+    Two lists, taken in turn: the job postings in ranking order, and the
+    roles the Hiring Signals block names (its strategic single roles, then
+    the evidence under each theme, as many of each as the block prints) when
+    the run has that block. Postings the ranking rejected are left out.
+    """
+    summary = hiring_summary if isinstance(hiring_summary, dict) else {}
+    rejected = set(summary.get("rejected_job_keys") or [])
+    ranked_urls = [
+        item.url
+        for candidate in ranked
+        for item in candidate.source_items
+        if item.source == "jobs" and item.url and fusion.candidate_key(item) not in rejected
+    ]
+    named: list[str] = []
+    if summary.get("include") or summary.get("mode") == "explicit":
+        named.extend(
+            str(role.get("url") or "") for role in (summary.get("strategic_candidates") or [])[:8]
+        )
+        for signal in (summary.get("signals") or [])[:4]:
+            named.extend(str(role.get("url") or "") for role in (signal.get("evidence") or [])[:3])
+    urls: list[str] = []
+    for index in range(max(len(ranked_urls), len(named))):
+        for source_urls in (ranked_urls, named):
+            if index < len(source_urls) and source_urls[index] and source_urls[index] not in urls:
+                urls.append(source_urls[index])
+    return urls
+
+
+def _add_ranked_roles_to_jobs_digest(
+    bundle: schema.RetrievalBundle,
+    ranked: list[schema.Candidate],
+    hiring_summary: dict[str, Any] | None,
+) -> None:
+    """Give the Jobs Digest the roles this run ranked highest.
+
+    The digest is chosen by rarity when the board is read, before anything is
+    ranked, and the report's hiring section is written from the digest alone.
+    Up to ``jobs_digest.ENGINE_ROLE_SLOTS`` of its places go to the ranked
+    roles it left out. The board's rows are dropped afterwards.
+    """
+    rows, bundle.jobs_board_rows = bundle.jobs_board_rows, []
+    board = bundle.artifacts.get("jobs")
+    digest = board.get("digest") if isinstance(board, dict) else None
+    if not rows or not isinstance(digest, dict) or not digest.get("roles"):
+        return
+    # Ranking sees normalized items; the digest holds the board's own URLs.
+    board_urls = {fusion._normalize_url(str(row.get("url") or "")): str(row["url"])
+                  for row in rows if row.get("url")}
+    urls = [
+        board_urls[key]
+        for key in (fusion._normalize_url(url) for url in _engine_ranked_job_urls(ranked, hiring_summary))
+        if key in board_urls
+    ]
+    board["digest"] = jobs_digest.add_engine_roles(digest, rows, list(dict.fromkeys(urls)))
 
 
 def _apply_hiring_signal_gate(
@@ -5044,7 +5221,7 @@ def _retry_thin_sources(
         if source == "jobs":
             return (
                 source, normalized, outcome_note, (detail_note, detail_state), out_of_time,
-                artifact if _is_jobs_board(source, artifact) else None,
+                (artifact, list(raw_items)) if _is_jobs_board(source, artifact) else None,
             )
         normalized = _apply_reddit_stream_keepers(
             source, normalized, settings["per_stream_limit"], topic
@@ -5104,7 +5281,8 @@ def _retry_thin_sources(
                 # A board read only on this retry still gives the footer its
                 # counts and the report its digest.
                 if jobs_board and "jobs" not in bundle.artifacts:
-                    bundle.artifacts["jobs"] = _jobs_board_artifact(jobs_board)
+                    bundle.artifacts["jobs"] = _jobs_board_artifact(jobs_board[0])
+                    bundle.jobs_board_rows = jobs_board[1]
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
                 state, attempted = _classify_source_failure(exc)
@@ -5794,35 +5972,14 @@ def _retrieve_stream_impl(
     if source == "jobs":
         # The company the topic resolved to, so a person's name searches the
         # board of the company they lead, starting from its official site.
-        company = config.get("_company") or {}
-
-        def search(name: str, **where: Any) -> tuple[list[dict], dict]:
-            return jobs.search_jobs(
-                name,
-                date_range,
-                config,
-                depth=depth,
-                explicit=bool(config.get("_hiring_signals_mode")),
-                entity_count=_comparison_entity_count(config),
-                **where,
-            )
-
-        items, artifact = search(
-            company.get("company") or raw_topic or topic or subquery.search_query,
+        return _search_jobs_lane(
+            config.get("_company") or {},
+            raw_topic or topic or subquery.search_query,
+            config=config,
+            depth=depth,
+            date_range=date_range,
             web_backend=web_backend,
-            site=str(company.get("company_site") or ""),
         )
-        # The lookup named no company, and the topic has no board of its own:
-        # a person, searched by name. The company the host named with
-        # ``--ticker`` is searched then, and used only when it has a board.
-        # It comes with no official site, so the board gives a digest only
-        # when it names that company itself.
-        host_company = str(company.get("host_company") or "")
-        if host_company and not company.get("company") and not _is_jobs_board("jobs", artifact):
-            host_items, host_artifact = search(host_company, web_backend="none")
-            if _is_jobs_board("jobs", host_artifact):
-                return host_items, host_artifact
-        return items, artifact
     if source == "reddit":
         # Use raw_topic so expand_reddit_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.

@@ -2424,6 +2424,11 @@ def _jobs_board_footer_line(report: schema.Report) -> str | None:
     new = board.get("new_in_window")
     if isinstance(new, int) and not isinstance(new, bool):
         line += f" │ {new:,} new in the L30"
+    # A board that is not the topic's own (the company a person leads) says
+    # whose roles these are.
+    of = " ".join(str(board.get("board_of") or "").split())
+    if of:
+        line += f" │ board: {_format_untrusted_evidence(of, 60)}"
     return line
 
 
@@ -2474,12 +2479,22 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
     if isinstance(new, int) and not isinstance(new, bool):
         header.append(f"{new:,} posted {report.range_from} to {report.range_to}")
     distinct = int(digest.get("distinct_roles") or len(entries))
+    ranked_first = 0
+    for entry in entries:
+        if not entry.get("engine"):
+            break
+        ranked_first += 1
+    chosen = (
+        f"the first {ranked_first:,} are the roles this run's own ranking and hiring "
+        "themes put highest, the rest are the rarest on this "
+        if ranked_first else "the rarest on this "
+    )
     out = [
         "## Jobs Digest",
         "",
         "- Board: " + " | ".join(header),
         (
-            f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, the rarest on this "
+            f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, {chosen}"
             "board by department, location and title wording. Each carries the text "
             "no other role on the board repeats."
         ),

@@ -1,0 +1,1 @@
+The jobs lane reads the careers page of the official site the run already knows (`--official-site`, or the one auto-resolve found) when Wikidata names no company for the topic, instead of guessing domains from the topic's name. A board found under a guessed slug that states another company's name is no longer counted as the topic's.
