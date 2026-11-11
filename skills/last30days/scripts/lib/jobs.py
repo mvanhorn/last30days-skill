@@ -87,6 +87,13 @@ _ATS_LINK_PATTERNS: list[tuple[str, str]] = [
     ),
 ]
 
+# The hosts a board URL may be on: only these are read as a board's address.
+_BOARD_DOMAINS = (
+    "greenhouse.io", "ashbyhq.com", "lever.co", "workable.com",
+    "smartrecruiters.com", "myworkdayjobs.com",
+)
+SUPPORTED_SYSTEMS = "Greenhouse, Ashby, Lever, Workable, SmartRecruiters and Workday"
+
 # Tokens that show up in ATS URLs but are never real board slugs.
 _SLUG_STOPWORDS = {"embed", "job_board", "v1", "v0", "api", "posting-api", "boards", "jobs", "job-boards", "www", "wday"}
 
@@ -333,7 +340,7 @@ def log_no_board(companies: list[str]) -> None:
     log.source_log(
         "Jobs",
         f"no supported job board found for {first}{also}; the lane reads "
-        "Greenhouse, Ashby, Lever, Workable, SmartRecruiters and Workday",
+        f"{SUPPORTED_SYSTEMS}",
         tty_only=False,
     )
 
@@ -357,6 +364,14 @@ def _search_jobs(
     provider, slug = (None, None)
     found_via = "slug-guess"
     probed: list[dict[str, Any]] | None = None
+    # What the careers page calls its organization, when that is a longer or
+    # shorter form of the company's name ("Anduril Industries" for "Anduril").
+    # A page a web search named is anyone's page and is not read for this.
+    page_via = _found_via(careers_url or "", company, site)
+    stated_names = [
+        name for name in _stated_names(careers_html or "")
+        if _leads_with(name, company) and not _same_company(name, company)
+    ] if page_via != "search" else []
     if careers_html:
         provider, slug = detect_ats(careers_html)
         if provider:
@@ -366,8 +381,17 @@ def _search_jobs(
     # Fallback discovery: cheap deterministic slug probe (only after careers-page
     # discovery fails - never the entry point).
     if not provider:
-        provider, slug, probe_attempts, probed = _probe_boards(company)
+        if stated_names:
+            provider, slug, probe_attempts, probed = _probe_boards(company, also=stated_names)
+        else:
+            provider, slug, probe_attempts, probed = _probe_boards(company)
         attempted.extend(probe_attempts)
+        if provider and page_via == "site" and slug not in _candidate_slugs(company):
+            # The slug is the confirmed official site's own name for the
+            # company. A domain guessed from the company's name can be
+            # another business's, so the name it states may find a board but
+            # never makes it the company's: that board stays a slug guess.
+            found_via = "site-name"
 
     # --- Tier 1: call the resolved ATS API. Trust it only if it has jobs. ---
     # Finding the board may have had a share of the budget; reading a found
@@ -376,81 +400,13 @@ def _search_jobs(
     # the companies still to be tried.
     share = budget.step_deadline
     if provider and slug:
-        budget.limit_discovery(None)
-        board: dict[str, Any] = {}
-        deadline = budget.deadline
-        try:
-            if probed is not None:
-                # The probe already read this board; it is not read twice.
-                items = probed
-            elif _out_of_time(f"reading the {provider} board {slug}"):
-                items = []
-            elif provider == ATS_PROVIDER_WORKDAY:
-                items, board = search_workday_board(slug, deadline=deadline)
-            elif provider == ATS_PROVIDER_SMARTRECRUITERS:
-                items, board = read_smartrecruiters_board(slug, deadline=deadline)
-            elif provider == ATS_PROVIDER_WORKABLE:
-                items, board = read_workable_board(slug)
-            else:
-                items = _fetch_ats(provider, slug)
-        except http.HTTPError as exc:
-            if exc.outcome_state == health.TIMEOUT:
-                _note_slow(f"the {provider} board {slug} did not answer")
-                # Its own request limit or the lane's: either way the board
-                # was found and not read, which is said by name.
-                budget.unanswered.append(f"the {provider} board {slug} did not answer")
-            items = []
-        if items:
-            artifact = _artifact("jobs", company, attempted, items, explicit,
-                                 tier="ats", provider=provider, slug=slug)
-            artifact.update(board)
-            # A board belongs to the company when its known official site
-            # links to it or the board names the company. A guessed slug or a
-            # guessed domain can be another company's, so such a board still
-            # counts roles but gives no digest unless it names the company.
-            stated = next(
-                (str(item["company_name"]) for item in items if item.get("company_name")), "",
-            )
-            owned = found_via == "site" or _same_company(stated, company)
-            artifact.update({
-                "found_via": found_via,
-                "board_company": stated,
-                "owned": owned,
-            })
-            if owned:
-                selected = jobs_digest.select_roles(items)
-                late = failed = 0
-                if provider == ATS_PROVIDER_WORKDAY:
-                    late, failed = fetch_workday_details(
-                        [role["item"] for role in selected], deadline=deadline,
-                    )
-                artifact["digest"] = jobs_digest.build_digest(items, selected)
-                notes = []
-                coverage = _coverage_note(items, board, provider, budget)
-                if coverage:
-                    notes.append(f"{coverage}, so the roles below are chosen from the rows read")
-                if late or failed:
-                    reasons = []
-                    if late:
-                        reasons.append(f"time budget spent before {late}")
-                    if failed:
-                        reasons.append(f"request failed or came back empty for {failed}")
-                    notes.append(
-                        f"role text fetched for {len(selected) - late - failed} of "
-                        f"{len(selected)} selected roles ({'; '.join(reasons)})"
-                    )
-                if notes:
-                    artifact["digest"]["note"] = "; ".join(notes)
-            # Counted last: Workday's true posted dates arrive with the detail
-            # calls above.
-            artifact.update(_board_counts(items, board, date_range))
-            coverage = _coverage_note(items, board, provider, budget)
-            if coverage:
-                artifact["coverage_note"] = coverage
-                log.source_log(
-                    "Jobs", f"{company}: {provider} board {slug}: {coverage}", tty_only=False,
-                )
-            return items, artifact
+        found = _read_board(
+            company, provider, slug, date_range,
+            attempted=attempted, explicit=explicit, budget=budget,
+            found_via=found_via, probed=probed, stated_names=stated_names,
+        )
+        if found is not None:
+            return found
 
     budget.step_deadline = share
 
@@ -480,6 +436,356 @@ def _search_jobs(
     return fallback_items, artifact
 
 
+def _read_board(
+    company: str,
+    provider: str,
+    slug: str,
+    date_range: tuple[str, str],
+    *,
+    attempted: list[str],
+    explicit: bool,
+    budget: LaneBudget,
+    found_via: str,
+    probed: list[dict[str, Any]] | None = None,
+    stated_names: list[str] | None = None,
+    owner: Callable[[str], tuple[str, str]] | None = None,
+    full: bool = True,
+    probed_board: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Read a found board and build its artifact, or None when it holds nothing.
+
+    A board belongs to the company when its known official site links to it
+    or the board names the company. A guessed slug or a guessed domain can be
+    another company's, so such a board still counts roles but gives no digest
+    unless it names the company. A board under a slug taken from the name the
+    company's confirmed official site states (``site-name``) is the company's
+    when the board states that same name.
+
+    ``owner`` decides instead for a board the host passed: given the name the
+    board states, it returns the company whose board it is (or '') and how
+    that is known. With ``full`` off (a host board not yet tied to the
+    company) the read stays inside the discovery share and a paged board
+    gives its first page only.
+    """
+    if full:
+        budget.limit_discovery(None)
+    board: dict[str, Any] = dict(probed_board or {})
+    deadline = budget.deadline if full else min(budget.deadline, budget.step_deadline)
+    # Passed only when set, so the plain call stays what it always was.
+    part: dict[str, Any] = {} if full else {"first_page_only": True}
+    try:
+        if probed is not None:
+            # The probe already read this board; it is not read twice.
+            items = probed
+        elif _out_of_time(f"reading the {provider} board {slug}"):
+            items = []
+        elif provider == ATS_PROVIDER_WORKDAY:
+            items, board = search_workday_board(slug, deadline=deadline, **part)
+        elif provider == ATS_PROVIDER_SMARTRECRUITERS:
+            items, board = read_smartrecruiters_board(slug, deadline=deadline, **part)
+        elif provider == ATS_PROVIDER_WORKABLE:
+            items, board = read_workable_board(slug)
+        else:
+            items = _fetch_ats(provider, slug)
+    except http.HTTPError as exc:
+        if exc.outcome_state == health.TIMEOUT:
+            _note_slow(f"the {provider} board {slug} did not answer")
+            # Its own request limit or the lane's: either way the board
+            # was found and not read, which is said by name.
+            budget.unanswered.append(f"the {provider} board {slug} did not answer")
+        items = []
+    if not items:
+        return None
+    stated = next(
+        (str(item["company_name"]) for item in items if item.get("company_name")), "",
+    )
+    if owner is not None:
+        owned_by, found_via = owner(stated)
+        owned = bool(owned_by)
+        company = owned_by or company
+    else:
+        owned = (
+            found_via == "site"
+            or _same_company(stated, company)
+            or (
+                found_via == "site-name"
+                and any(_same_company(stated, name) for name in stated_names or [])
+            )
+        )
+    artifact = _artifact("jobs", company, attempted, items, explicit,
+                         tier="ats", provider=provider, slug=slug)
+    artifact.update(board)
+    artifact.update({
+        "found_via": found_via,
+        "board_company": stated,
+        "owned": owned,
+    })
+    if owned:
+        selected = jobs_digest.select_roles(items)
+        late = failed = 0
+        if provider == ATS_PROVIDER_WORKDAY:
+            late, failed = fetch_workday_details(
+                [role["item"] for role in selected], deadline=deadline,
+            )
+        artifact["digest"] = jobs_digest.build_digest(items, selected)
+        notes = []
+        coverage = _coverage_note(items, board, provider, budget)
+        if coverage:
+            notes.append(f"{coverage}, so the roles below are chosen from the rows read")
+        if late or failed:
+            reasons = []
+            if late:
+                reasons.append(f"time budget spent before {late}")
+            if failed:
+                reasons.append(f"request failed or came back empty for {failed}")
+            notes.append(
+                f"role text fetched for {len(selected) - late - failed} of "
+                f"{len(selected)} selected roles ({'; '.join(reasons)})"
+            )
+        if notes:
+            artifact["digest"]["note"] = "; ".join(notes)
+    # Counted last: Workday's true posted dates arrive with the detail
+    # calls above.
+    artifact.update(_board_counts(items, board, date_range))
+    coverage = _coverage_note(items, board, provider, budget)
+    if coverage:
+        artifact["coverage_note"] = coverage
+        log.source_log(
+            "Jobs", f"{company}: {provider} board {slug}: {coverage}", tty_only=False,
+        )
+    return items, artifact
+
+
+def parse_board_url(url: str) -> tuple[str | None, str | None]:
+    """The provider and slug of a job-board URL, or ``(None, None)``.
+
+    Only a URL whose host is one of the supported systems' own is read, so a
+    system's name in the path or query of another site is not a board.
+    """
+    text = (url or "").strip()
+    try:
+        parsed = urlparse(text if "://" in text else f"https://{text}")
+    except ValueError:
+        return None, None
+    host = parsed.netloc.lower().removeprefix("www.")
+    if parsed.scheme not in ("http", "https") or not any(
+        _same_site(host, domain) for domain in _BOARD_DOMAINS
+    ):
+        return None, None
+    return detect_ats(host + parsed.path + (f"?{parsed.query}" if parsed.query else ""))
+
+
+def search_board_url(
+    url: str,
+    companies: list[str],
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+    *,
+    site: str = "",
+    sites: dict[str, str] | None = None,
+    explicit: bool = False,
+    budget: LaneBudget | None = None,
+    discovery_seconds: float | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read the board at a URL the host found by web search (``--jobs-board``).
+
+    ``companies`` are the names the board may belong to: the topic or the
+    company it resolved to, then the companies the host named. The board is
+    one of theirs when the name it states is that company's (or leads with
+    it as whole words: "Anduril Industries" for "Anduril"), when it states no
+    name and its slug is the company's name, or when the official ``site``
+    links to it (``site`` is the first company's; ``sites`` gives the
+    confirmed site of any other by name). Any other board gives its counts
+    and no digest, with a line on stderr saying why. A URL that is not on a
+    supported system, or a board that cannot be read, gives ``([], {})`` and
+    one line.
+
+    Whose board it is is settled before the board is read in full. Until
+    then the call stays inside ``discovery_seconds``, its share of the
+    budget, and a paged board (Workday, SmartRecruiters) that is not the
+    company's gives its first page only, so a large board passed by mistake
+    leaves the lane time to find the right one.
+    """
+    companies = [name.strip() for name in companies if name and name.strip()]
+    provider, slug = parse_board_url(url)
+    if not provider or not slug:
+        log.source_log(
+            "Jobs",
+            f"--jobs-board ignored: {_host(url) or url.strip()[:80] or 'the value'} is not a "
+            f"job board the lane reads ({SUPPORTED_SYSTEMS})",
+            tty_only=False,
+        )
+        return [], {}
+    if not companies:
+        return [], {}
+    budget = budget or LaneBudget()
+    budget.limit_discovery(discovery_seconds)
+    token = _BUDGET.set(budget)
+    known_sites = {companies[0]: site, **(sites or {})}
+
+    def owner(stated: str) -> tuple[str, str]:
+        # A board that states no name is known by its slug (Workday: its tenant).
+        own = stated or slug.split(".", 1)[0]
+        for name in companies:
+            if _same_company(own, name) or (stated and _leads_with(stated, name)):
+                return name, "host"
+        checked_site = False
+        for name in companies:
+            if not known_sites.get(name):
+                continue
+            checked_site = True
+            if _site_links_board(name, known_sites[name], provider, slug, date_range, config):
+                return name, "site"
+        named = f"names {stated!r}" if stated else "states no company name"
+        checked = (
+            "and the official site does not link it" if checked_site
+            else "and there is no official site to check it against"
+        )
+        log.source_log(
+            "Jobs",
+            f"--jobs-board: the {provider} board {slug} {named}, not "
+            f"{' or '.join(companies)}, {checked}; its roles are counted, with no digest",
+            tty_only=False,
+        )
+        return "", "host"
+
+    try:
+        # A board that is not there is the host's wrong URL, not an outage.
+        with http.expected_misses(400, 401, 403, 404):
+            # Whose board it is can be known before the board is read: most
+            # systems state no name, Greenhouse states it in the board's own
+            # record, and SmartRecruiters on every row of its first page.
+            settled: tuple[str, str] | None = None
+            first: list[dict[str, Any]] | None = None
+            _info: dict[str, Any] = {}
+            if provider == ATS_PROVIDER_GREENHOUSE:
+                stated = _greenhouse_board_name(slug)
+                # With no record to go by, the rows say whose it is.
+                settled = owner(stated) if stated else None
+            elif provider != ATS_PROVIDER_SMARTRECRUITERS:
+                settled = owner("")
+            else:
+                first, _info = read_smartrecruiters_board(
+                    slug, deadline=min(budget.deadline, budget.step_deadline),
+                    first_page_only=True,
+                )
+                settled = owner(next(
+                    (str(item["company_name"]) for item in first if item.get("company_name")), "",
+                )) if first else ("", "host")
+            # A board that is not the company's is not read past the page
+            # that showed whose it is.
+            unowned_page = first if settled is not None and not settled[0] else None
+            found = _read_board(
+                companies[0], provider, slug, date_range,
+                attempted=[f"host:{provider}:{slug}"], explicit=explicit, budget=budget,
+                found_via="host",
+                owner=(lambda _stated: settled) if settled is not None else owner,
+                # Only a board already known to be the company's leaves the
+                # share and is read with all the time the lane has left.
+                full=bool(settled and settled[0]),
+                probed=unowned_page, probed_board=_info if unowned_page else None,
+            )
+    except http.HTTPError:
+        found = None
+    finally:
+        _BUDGET.reset(token)
+        budget.limit_discovery(None)
+    if found is None:
+        log.source_log(
+            "Jobs",
+            f"--jobs-board: the {provider} board {slug} could not be read or lists no "
+            "roles; looking for the company's board without it",
+            tty_only=False,
+        )
+        return [], {}
+    return found
+
+
+def _greenhouse_board_name(slug: str) -> str:
+    """The company name a Greenhouse board's own record states, or '' when
+    the record could not be read. One small request, where the board's job
+    list can be megabytes."""
+    try:
+        data = http.get(
+            f"https://boards-api.greenhouse.io/v1/boards/{slug}",
+            retries=1, **_bounds(API_TIMEOUT_SECONDS),
+        )
+    except http.HTTPError:
+        return ""
+    return " ".join(str(data.get("name") or "").split()) if isinstance(data, dict) else ""
+
+
+def _site_links_board(
+    company: str,
+    site: str,
+    provider: str,
+    slug: str,
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+) -> bool:
+    """Whether the official site's careers page, or the jobs page it links
+    to, names this board."""
+    html, _url = _resolve_careers_page(company, date_range, config, backend="none", site=site)
+    return (provider, slug.lower()) in _boards_named(html or "")
+
+
+def _boards_named(html: str) -> set[tuple[str, str]]:
+    """Every (provider, lower-cased slug) a page names."""
+    named: set[tuple[str, str]] = set()
+    for provider, pattern in _ATS_LINK_PATTERNS:
+        for match in re.finditer(pattern, html):
+            slug = match.group(match.lastindex or 1).strip().strip("/.")
+            if not slug or slug.lower() in _SLUG_STOPWORDS:
+                continue
+            if provider == ATS_PROVIDER_WORKDAY:
+                slug = f"{match.group(1)}.{match.group(2)}/{slug}"
+            named.add((provider, slug.lower()))
+    return named
+
+
+_ORGANIZATION_TYPES = {"organization", "corporation", "localbusiness"}
+_SITE_NAME_RE = re.compile(
+    r"""<meta[^>]+property=["']og:site_name["'][^>]*content=["']([^"']{1,80})["']""", re.I,
+)
+_STATED_NAME_LIMIT = 3
+
+
+def _stated_names(html: str) -> list[str]:
+    """What a page calls the organization behind it: the names of the
+    Organization in its structured data, then its ``og:site_name``."""
+    names: list[str] = []
+
+    def add(value: Any) -> None:
+        for name in value if isinstance(value, list) else [value]:
+            text = " ".join(unescape(name).split()) if isinstance(name, str) else ""
+            if text and len(text) <= 80 and text not in names:
+                names.append(text)
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(node, list):
+            for child in node:
+                walk(child, depth + 1)
+        elif isinstance(node, dict):
+            kinds = node.get("@type")
+            kinds = kinds if isinstance(kinds, list) else [kinds]
+            if any(isinstance(kind, str) and kind.lower() in _ORGANIZATION_TYPES for kind in kinds):
+                for key in ("name", "legalName", "alternateName"):
+                    add(node.get(key))
+            for child in node.values():
+                if isinstance(child, (dict, list)):
+                    walk(child, depth + 1)
+
+    for block in _JSONLD_RE.findall(html or ""):
+        try:
+            walk(json.loads(block.strip()))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    add(_SITE_NAME_RE.findall(html or ""))
+    return names[:_STATED_NAME_LIMIT]
+
+
 # --------------------------------------------------------------------------- #
 # Careers-page discovery
 # --------------------------------------------------------------------------- #
@@ -496,6 +802,8 @@ def _coverage_note(
     )
     if provider == ATS_PROVIDER_WORKABLE:
         cause = "only the board's first page is read"
+    elif board.get("board_first_page_only"):
+        cause = "only the first page of a board not tied to the company is read"
     elif budget.spent():
         cause = f"the lane's {budget.seconds:g}s time budget ran out"
     else:
@@ -564,6 +872,14 @@ def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
     lane's budget.
     """
     host = _host(url)
+    try:
+        return _careers_fetch(url, host, guessed=guessed)
+    except UnicodeDecodeError:
+        # Not a text page (a file, or text in another encoding): no page.
+        return None, False
+
+
+def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, bool]:
     with http.expected_misses(403, 404):
         if guessed:
             # ``capture_failures`` keeps a guessed host's failures out of the
@@ -588,7 +904,9 @@ def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
 
 # How many pages linked from a careers page are read when looking for the board.
 _LINKED_PAGE_LIMIT = 2
-_JOBS_LINK_WORDS = re.compile(r"job|position|opening|vacanc|search", re.I)
+_JOBS_LINK_WORDS = re.compile(r"job|position|opening|vacanc|search|board|role", re.I)
+# A link to a file is not a jobs page (a PDF under /jobs/ is a legal notice).
+_FILE_LINK = re.compile(r"\.(?:pdf|docx?|xlsx?|pptx?|zip|png|jpe?g|gif|svg|webp|mp4|ics|xml|json|css|js)$", re.I)
 
 
 def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str]:
@@ -624,6 +942,8 @@ def _jobs_links(html: str, page_url: str) -> list[str]:
         parsed = urlparse(link)
         host = parsed.netloc.lower()
         if parsed.scheme not in ("http", "https") or not _same_site(host, page.netloc):
+            continue
+        if _FILE_LINK.search(parsed.path):
             continue
         if host != page.netloc.lower() and re.match(r"(jobs|careers?)\.", host):
             rank = 0
@@ -771,6 +1091,25 @@ def _names_overlap(stated: str, company: str) -> bool:
     return one in other or other in one
 
 
+def _name_words(name: str) -> list[str]:
+    text = re.sub(r"['\u2019.]", "", name.lower())
+    text = re.sub(r"\b(inc|llc|ltd|corp|corporation|company|co)\b", " ", text)
+    return re.sub(r"[^a-z0-9]+", " ", text).split()
+
+
+def _leads_with(stated: str, company: str) -> bool:
+    """Whether one name is the other with whole words added at its end
+    ("Anduril Industries" for "Anduril"; never "Metabase" for "Meta").
+
+    Looser than ``_same_company``, so it never makes a board found by a
+    guessed slug the company's: it is used where something besides the slug
+    points at the board (the host passed its URL, or the company's careers
+    page states the longer name)."""
+    one, other = _name_words(stated), _name_words(company)
+    short, long = sorted((one, other), key=len)
+    return bool(short) and long[:len(short)] == short
+
+
 def _board_counts(
     items: list[dict[str, Any]], board: dict[str, Any], date_range: tuple[str, str],
 ) -> dict[str, Any]:
@@ -822,8 +1161,14 @@ def _probe_ats(company: str) -> tuple[str | None, str | None, list[str]]:
     return provider, slug, attempts
 
 
+# Slugs tried beyond the company's own: those of the names its careers page states.
+_STATED_SLUG_LIMIT = 4
+
+
 def _probe_boards(
     company: str,
+    *,
+    also: list[str] | None = None,
 ) -> tuple[str | None, str | None, list[str], list[dict[str, Any]] | None]:
     """``_probe_ats`` plus the rows of the board it found, so the caller does
     not read that board a second time.
@@ -832,12 +1177,20 @@ def _probe_boards(
     someone else's board under the same slug, and is passed over. A probe the
     lane's budget cut off ends the probing; any other failure of a board's API
     is an outage and is raised, naming the provider and slug.
+
+    ``also`` are other names for the company (what its careers page calls
+    its organization); their slugs are tried after the company's own.
     """
     attempts: list[str] = []
+    slugs = _candidate_slugs(company)
+    more = [
+        slug for name in also or [] for slug in _candidate_slugs(name) if slug not in slugs
+    ]
+    slugs += list(dict.fromkeys(more))[:_STATED_SLUG_LIMIT]
     # Workable/SmartRecruiters are omitted here: their slugs rarely match the
     # company name, so blind probing is unreliable - they're reached only via
     # careers-page discovery, where the real slug is published.
-    for slug in _candidate_slugs(company):
+    for slug in slugs:
         for provider in (ATS_PROVIDER_GREENHOUSE, ATS_PROVIDER_ASHBY, ATS_PROVIDER_LEVER):
             if _out_of_time(f"the {provider} probe for the slug {slug}"):
                 return None, None, attempts, None
@@ -980,6 +1333,7 @@ def read_smartrecruiters_board(
     deadline: float | None = None,
     budget_seconds: float = WORKDAY_BUDGET_SECONDS,
     clock: Callable[[], float] | None = None,
+    first_page_only: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return a SmartRecruiters board's rows and what was read of the board.
 
@@ -987,6 +1341,8 @@ def read_smartrecruiters_board(
     has the same keys as ``search_workday_board``'s: ``board_capped`` when the
     board reports more rows than the ceiling, ``board_cut_short`` when the time
     budget ran out or a page failed. A failed first page returns no rows.
+    ``first_page_only`` reads that page alone, for a board not yet known to
+    be the company's.
     """
     info: dict[str, Any] = {"board_total": 0, "board_capped": False, "board_cut_short": False}
     url = f"https://api.smartrecruiters.com/v1/companies/{slug}/postings"
@@ -1009,6 +1365,15 @@ def read_smartrecruiters_board(
     total = max(_reported_total(first, "totalFound"), len(items))
     info["board_total"] = total
     info["board_capped"] = total > SMARTRECRUITERS_ROW_CEILING
+    if first_page_only:
+        # With no reported total, a full page may not be the whole board.
+        info.update(
+            board_cut_short=total > len(items) or (
+                "totalFound" not in first and len(items) >= SMARTRECRUITERS_PAGE_SIZE
+            ),
+            board_first_page_only=True,
+        )
+        return items, info
     rest = _workday_run(
         [
             page(offset)
@@ -1093,6 +1458,7 @@ def search_workday_board(
     deadline: float | None = None,
     budget_seconds: float = WORKDAY_BUDGET_SECONDS,
     clock: Callable[[], float] | None = None,
+    first_page_only: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return a Workday board's listing rows and what was read of the board.
 
@@ -1135,6 +1501,11 @@ def search_workday_board(
     info["board_total"] = total
     info["board_capped"] = total >= WORKDAY_ROW_CEILING
     wanted = min(total, WORKDAY_ROW_CEILING)
+    if first_page_only:
+        # For a board not yet known to be the company's.
+        items = parse_workday_response(first, token)
+        info.update(board_cut_short=total > len(items), board_first_page_only=True)
+        return items, info
     rest = _workday_run(
         [page(offset) for offset in range(WORKDAY_PAGE_SIZE, wanted, WORKDAY_PAGE_SIZE)],
         deadline,

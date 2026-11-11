@@ -2363,12 +2363,20 @@ def run(
         or (not requested_sources and auto_company_jobs)
     ) and "jobs" not in available:
         available.append("jobs")
+    # A host plan about a company gets the jobs lane whether or not the plan
+    # names it: the lane is free and bounded, and a host that forgets one
+    # word must not cost the run a working board. Quick runs keep the
+    # sanitizer's two-source budget, as for the installed lanes below.
+    company_signal = str(config.get("_company_signal") or "")
     if (
         host_plan
         and not requested_sources
         and "jobs" not in available
         and "jobs" not in excluded_sources
-        and _external_plan_names_source(external_plan, "jobs")
+        and (
+            _external_plan_names_source(external_plan, "jobs")
+            or (company_signal and depth != "quick")
+        )
     ):
         available.append("jobs")
     if hiring_signals_mode:
@@ -2417,6 +2425,8 @@ def run(
             asked=_paid_lanes_asked_for(planner_requested_sources, config),
             installed=depth != "quick",
         )
+        if depth != "quick" and not hiring_signals_mode:
+            _ensure_company_jobs_in_host_plan(plan, available, company_signal)
         plan_source = "external"
     else:
         _check_research(config)
@@ -3854,7 +3864,7 @@ def _jobs_lane_budget(config: dict[str, Any]) -> jobs.LaneBudget:
 
 
 def _host_companies(company: dict[str, Any]) -> list[str]:
-    """The companies the host named with ``--ticker``, in the order given."""
+    """The companies the host named (``--company``, then ``--ticker``), in order."""
     names = [str(name) for name in company.get("host_companies") or [] if name]
     single = str(company.get("host_company") or "")
     if single and single not in names:
@@ -3876,7 +3886,7 @@ def _search_jobs_lane(
     A person's name searches the company they lead, starting from its
     official site. When the lookup named no company and the topic has no
     board of its own (a person, searched by name), each company the host
-    named with ``--ticker`` is tried in order and the first one with a board
+    named with ``--company`` or ``--ticker`` is tried in order and the first one with a board
     is used. Those come with no official site, so a board gives a digest only
     when it names that company itself. Every company tried draws on one
     budget, and a board that is not the topic's own says whose it is under
@@ -3889,6 +3899,40 @@ def _search_jobs_lane(
     name = str(company.get("company") or topic)
     hosts = [] if company.get("company") else _host_companies(company)
     tries = 1 + len(hosts)
+    site = str(company.get("company_site") or company.get("topic_site") or "")
+    # The official site the resolver returned for a company the host named.
+    host_sites = {
+        str(key): str(value)
+        for key, value in (company.get("host_company_sites") or {}).items() if value
+    }
+
+    def named(found: dict) -> dict:
+        # A board that is not the topic's own says whose it is.
+        of = str(found.get("company") or name)
+        if not jobs._same_company(of, topic):
+            found["board_of"] = of
+        return found
+
+    # The board the host found by web search is read first. One that is the
+    # company's ends the lane; any other is kept only if the lane finds no
+    # board itself.
+    held: tuple[list[dict], dict] | None = None
+    board_url = str(config.get("_jobs_board") or "").strip()
+    if board_url:
+        with http.tee_failures() as failures:
+            host_items, host_artifact = jobs.search_board_url(
+                board_url, [name, *hosts], date_range, config,
+                site=site, sites=host_sites,
+                explicit=bool(config.get("_hiring_signals_mode")), budget=budget,
+                # Until the board is known to be the company's it has one
+                # share of the budget, like each company still to be tried.
+                discovery_seconds=budget.remaining() / (1 + tries),
+            )
+        if _is_jobs_board("jobs", host_artifact):
+            if host_artifact.get("owned"):
+                budget.settled = True
+                return host_items, named(host_artifact)
+            held = (host_items, host_artifact)
 
     def search(target: str, left: int, **where: Any) -> tuple[list[dict], dict]:
         return jobs.search_jobs(
@@ -3910,7 +3954,7 @@ def _search_jobs_lane(
             name,
             tries,
             web_backend=web_backend,
-            site=str(company.get("company_site") or company.get("topic_site") or ""),
+            site=site,
         )
         if _is_jobs_board("jobs", artifact):
             if not jobs._same_company(name, topic):
@@ -3919,6 +3963,7 @@ def _search_jobs_lane(
             for index, host_company in enumerate(hosts):
                 host_items, host_artifact = search(
                     host_company, tries - 1 - index, web_backend="none",
+                    **({"site": host_sites[host_company]} if host_company in host_sites else {}),
                 )
                 if _is_jobs_board("jobs", host_artifact):
                     host_artifact["board_of"] = host_company
@@ -3929,6 +3974,12 @@ def _search_jobs_lane(
                 for key in ("_source_outcome", "_source_out_of_time"):
                     if key in host_artifact and not items:
                         artifact = {**artifact, key: host_artifact[key]}
+    if held and not _is_jobs_board("jobs", artifact):
+        items, artifact = held[0], named(held[1])
+        # A board tied to no company here is shown under the name it states.
+        stated = str(artifact.get("board_company") or "")
+        if stated and not jobs._same_company(stated, topic):
+            artifact["board_of"] = stated
     if not items and not _is_jobs_board("jobs", artifact) and not (
         budget.stopped_at or budget.spent() or budget.unanswered
     ):
@@ -4167,6 +4218,37 @@ def _ensure_unplanned_lanes_in_host_plan(
         "Added installed/opted-in/requested sources absent from every --plan subquery to "
         f"{plan.subqueries[0].label}: {', '.join(missing)} "
         "(set EXCLUDE_SOURCES to skip them).",
+        tty_only=False,
+    )
+
+
+def _ensure_company_jobs_in_host_plan(
+    plan: schema.QueryPlan,
+    available: list[str],
+    company_signal: str,
+) -> None:
+    """Give the jobs lane the primary subquery of a host plan about a company.
+
+    ``company_signal`` says what makes the run about a company (the official
+    site, a host ticker or company, the company the topic resolved to); with
+    none the plan is left as it is, so a musician or a concept gets no jobs
+    lane. ``available`` already leaves jobs out under EXCLUDE_SOURCES or a
+    ``--search`` list without it.
+    """
+    if not company_signal or "jobs" not in available or not plan.subqueries:
+        return
+    if "drill-mode" in plan.notes:
+        return
+    if any("jobs" in subquery.sources for subquery in plan.subqueries):
+        return
+    plan.subqueries[0].sources.append("jobs")
+    plan.source_weights.setdefault("jobs", 1.0)
+    plan.source_weights = planner._normalize_weights(plan.source_weights)
+    log.source_log(
+        "Planner",
+        f"Added jobs to {plan.subqueries[0].label}: the run is about a company "
+        f"({company_signal}) and no --plan subquery names it "
+        "(set EXCLUDE_SOURCES=jobs to skip it).",
         tty_only=False,
     )
 
