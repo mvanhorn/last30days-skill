@@ -195,11 +195,18 @@ def _capture_cli(monkeypatch, responses):
     calls: list[list[str]] = []
     # A replayable session unless the test says otherwise: without one the
     # lane runs no fetch command at all.
-    responses = {"auth status": {"isFresh": True, "hasSession": True}, **responses}
+    # ... and no cached company record unless the test supplies one.
+    responses = {
+        "auth status": {"isFresh": True, "hasSession": True},
+        "info --local": {"error": "no cached info"},
+        **responses,
+    }
 
     def fake(cmd, timeout):
         calls.append(list(cmd))
         key = cmd[1] if cmd[1] != "auth" else f"auth {cmd[2]}"
+        if key == "info" and "--local" in cmd:
+            key = "info --local"
         resp = responses.get(key, {})
         if isinstance(resp, list):
             return dict(resp.pop(0)) if resp else {}
@@ -211,7 +218,12 @@ def _capture_cli(monkeypatch, responses):
 
 
 def _info_args(calls):
-    return [c for c in calls if c[1] == "info"]
+    """Live `info` calls: the ones that would harvest a session."""
+    return [c for c in calls if c[1] == "info" and "--local" not in c]
+
+
+def _local_info_args(calls):
+    return [c for c in calls if c[1] == "info" and "--local" in c]
 
 
 def _search_args(calls):
@@ -386,9 +398,11 @@ def test_stale_session_skips_the_lane_with_the_sign_in_command(monkeypatch):
 
     out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
 
-    # No fetch command ran: `info` and `search` harvest by themselves.
-    assert [c[1] for c in calls] == ["auth"]
-    assert [c[2] for c in calls] == ["status"]
+    # No fetch command ran: `info` and `search` harvest by themselves. The
+    # one `info --local` read of the CLI's cached record found nothing.
+    assert _info_args(calls) == [] and _search_args(calls) == []
+    assert [c[2] for c in calls if c[1] == "auth"] == ["status"]
+    assert _local_info_args(calls) == [["trustpilot-pp-cli", "info", "waymo.com", "--local", "--agent"]]
     assert out == {"results": [], "needs_session": True, "skipped": trustpilot.SESSION_NEEDED}
     assert "trustpilot-pp-cli auth login" in out["skipped"]
     assert "error" not in out
@@ -539,3 +553,170 @@ def test_definitive_no_match_is_cached(monkeypatch):
     assert trustpilot._search_domain("ChowNow") is None
     assert trustpilot._search_domain("ChowNow") is None
     assert len(_search_args(calls)) == 1
+
+
+# ---- cached company record: a free fallback when the session is stale ----
+
+def _fetched(days_ago):
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+
+
+def test_stale_session_uses_the_cached_record_and_labels_its_age(monkeypatch):
+    calls = _capture_cli(monkeypatch, {
+        "auth status": {"hasSession": False, "isFresh": False},
+        "info --local": {**INFO_OK, "fetchedAt": _fetched(3)},
+        "auth login": {"ok": True},
+    })
+
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+
+    # Nothing that can open a browser ran.
+    assert _info_args(calls) == [] and _search_args(calls) == []
+    assert [c[2] for c in calls if c[1] == "auth"] == ["status"]
+    assert "needs_session" not in out and "error" not in out
+    items = trustpilot.parse_trustpilot_response(out, query="Waymo")
+    assert len(items) == 1
+    assert items[0]["title"] == "ThriftBooks: TrustScore 4.5 (cached 3 days ago)"
+    assert "cached 3 days ago" in items[0]["why_relevant"]
+
+
+@pytest.mark.parametrize("days,label", [(0, "cached today"), (1, "cached 1 day ago")])
+def test_cache_age_labels(monkeypatch, days, label):
+    _capture_cli(monkeypatch, {
+        "auth status": {"isFresh": False},
+        "info --local": {**INFO_OK, "fetchedAt": _fetched(days)},
+    })
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    assert label in trustpilot.parse_trustpilot_response(out)[0]["title"]
+
+
+def test_cached_record_without_a_fetch_time_says_its_age_is_unknown(monkeypatch):
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "info --local": INFO_OK})
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    assert "(cached, age unknown)" in trustpilot.parse_trustpilot_response(out)[0]["title"]
+
+
+def test_cached_record_older_than_the_window_is_not_used(monkeypatch):
+    _capture_cli(monkeypatch, {
+        "auth status": {"isFresh": False},
+        "info --local": {**INFO_OK, "fetchedAt": _fetched(45)},
+    })
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    assert out == {"results": [], "needs_session": True, "skipped": trustpilot.SESSION_NEEDED}
+
+
+def test_stale_session_with_only_a_name_reads_no_cache(monkeypatch):
+    # Cached records are keyed by domain, and name -> domain needs a session.
+    calls = _capture_cli(monkeypatch, {
+        "auth status": {"isFresh": False}, "info --local": INFO_OK,
+    })
+    out = trustpilot.search_trustpilot("ThriftBooks", D1, D2)
+    assert out["needs_session"] is True
+    assert _local_info_args(calls) == []
+
+
+def test_fresh_session_fetches_live_and_carries_no_cache_label(monkeypatch):
+    calls = _capture_cli(monkeypatch, {"info": INFO_OK, "info --local": INFO_OK})
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    assert _local_info_args(calls) == []
+    assert "cached" not in trustpilot.parse_trustpilot_response(out)[0]["title"]
+
+
+# ---- can the lane run now? (--diagnose `trustpilot_can_run`) ----
+
+@pytest.mark.parametrize("status,cache,expected", [
+    ({"isFresh": True, "hasSession": True}, {"companies": 0}, True),
+    ({"isFresh": False}, {"companies": 2}, True),
+    ({"isFresh": False}, {"companies": 0}, False),
+    ({"isFresh": False}, {"error": "boom"}, False),
+])
+def test_can_run_now_needs_a_fresh_session_or_a_cached_company(monkeypatch, status, cache, expected):
+    calls = _capture_cli(monkeypatch, {
+        "auth status": status, "doctor-tp": cache, "auth login": {"ok": True},
+    })
+    assert trustpilot.can_run_now({})["can_run"] is expected
+    # Local reads only.
+    assert {c[1] for c in calls} <= {"auth", "doctor-tp"}
+    assert [c[2] for c in calls if c[1] == "auth"] == ["status"]
+
+
+def test_can_run_now_is_false_without_the_cli_or_with_the_opt_out(monkeypatch):
+    calls = _capture_cli(monkeypatch, {})
+    assert trustpilot.can_run_now({trustpilot.NO_BROWSER_ENV: "1"})["can_run"] is False
+    monkeypatch.setattr(trustpilot, "_is_available", lambda: False)
+    assert trustpilot.can_run_now({})["can_run"] is False
+    assert calls == []
+
+
+def test_diagnose_reports_whether_trustpilot_can_run(monkeypatch):
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "doctor-tp": {"companies": 0}})
+    assert pipeline.diagnose({}, None, safe=True)["trustpilot_can_run"] is False
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "doctor-tp": {"companies": 1}})
+    assert pipeline.diagnose({}, None, safe=True)["trustpilot_can_run"] is True
+
+
+def test_doctor_record_says_when_trustpilot_cannot_run_now(monkeypatch):
+    from lib import doctor, health
+
+    monkeypatch.setattr(
+        doctor, "_cli_gated_record",
+        lambda config, cli, purpose: doctor._record(status=health.OK, requires=cli),
+    )
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "doctor-tp": {"companies": 0}})
+    record = doctor._trustpilot_record({})
+    assert record["status"] == health.OK
+    assert "cannot run now" in record["note"] and "never opens a browser" in record["note"]
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "doctor-tp": {"companies": 3}})
+    assert "3 cached company records" in doctor._trustpilot_record({})["note"]
+
+
+def test_runbook_resolves_the_domain_only_when_trustpilot_can_run():
+    from tests.skill_contract import reference_text
+
+    runbook = reference_text("research-runbook")
+    step = runbook.split("### Step 0.5d", 1)[1].split("\n### ", 1)[0]
+    assert "only when `--diagnose` reports `trustpilot_can_run: true`" in step
+    assert "never opens a browser" in step
+    assert step.index("trustpilot_can_run") < step.index("WebSearch(")
+
+
+# ---- a cached record carries its fetch date, not yesterday ----
+
+def test_cached_record_is_dated_by_its_fetch_not_yesterday(monkeypatch):
+    fetched = _fetched(21)
+    _capture_cli(monkeypatch, {
+        "auth status": {"isFresh": False},
+        "info --local": {**INFO_OK, "fetchedAt": fetched},
+    })
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    item = trustpilot.parse_trustpilot_response(out)[0]
+    assert item["date"] == fetched[:10]
+    assert "cached 21 days ago" in item["title"]
+
+
+def test_cached_record_with_no_fetch_time_is_undated(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from lib import dates
+
+    _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "info --local": INFO_OK})
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    raw = trustpilot.parse_trustpilot_response(out, query="Waymo")
+    assert raw[0]["date"] is None
+    # Undated, the item still reaches the report (like other undated items).
+    today = datetime.now(timezone.utc).date()
+    kept = pipeline._normalize_score_dedupe(
+        "trustpilot", raw, (today - timedelta(days=30)).isoformat(), today.isoformat(),
+        "balanced_recent", "Waymo",
+    )
+    assert len(kept) == 1 and kept[0].published_at is None
+    assert dates.get_date_range(1)[0] not in str(kept[0].published_at)
+
+
+def test_live_record_keeps_the_current_date(monkeypatch):
+    from lib import dates
+
+    _capture_cli(monkeypatch, {"info": INFO_OK})
+    out = trustpilot.search_trustpilot("Waymo", D1, D2, explicit_domain="waymo.com")
+    assert trustpilot.parse_trustpilot_response(out)[0]["date"] == dates.get_date_range(1)[0]

@@ -159,6 +159,78 @@ def test_host_plan_backfill_skips_paid_decision_lanes():
     assert plan.subqueries[0].sources == ["reddit"]
 
 
+def test_host_plan_backfill_says_when_a_paid_lane_is_available_but_not_run(capsys):
+    plan = planner._sanitize_plan(
+        plan_with(["reddit"]), "test topic", ["reddit", "amazon", "meta_ads"], None, "default",
+        honor_plan_sources=True,
+    )
+    pipeline._ensure_unplanned_lanes_in_host_plan(plan, ["reddit", "amazon", "meta_ads"])
+    err = capsys.readouterr().err
+    assert "[Amazon] available but not requested for this run" in err
+    assert "[Meta Ads] available but not requested for this run" in err
+
+
+@pytest.mark.parametrize("lane", ["amazon", "meta_ads"])
+@pytest.mark.parametrize("depth", ["quick", "default"])
+def test_host_plan_gains_a_paid_lane_named_in_search(lane, depth, capsys):
+    # The runbook has the host request these through --search, not the plan.
+    report, fetched = _run_with_plan(
+        "test topic", plan_with(["hackernews"]),
+        requested_sources=["hackernews", lane], depth=depth,
+    )
+    assert report.query_plan.subqueries[0].sources == ["hackernews", lane]
+    assert lane in fetched
+    err = capsys.readouterr().err
+    assert f"[Planner] Added" in err and lane in err
+    assert "not requested for this run" not in err
+
+
+@pytest.mark.parametrize(
+    "lane,flag", [("amazon", "_amazon_query"), ("meta_ads", "_meta_ads_page")],
+)
+def test_host_plan_gains_a_paid_lane_whose_targeting_flag_is_set(lane, flag):
+    # INCLUDE_SOURCES makes the lane available; the flag is this run's request.
+    available = ["reddit", "amazon", "meta_ads"]
+    plan = planner._sanitize_plan(
+        plan_with(["reddit"]), "test topic", available, None, "default",
+        honor_plan_sources=True,
+    )
+    asked = pipeline._paid_lanes_asked_for(None, {flag: "value"})
+    assert asked == [lane]
+    pipeline._ensure_unplanned_lanes_in_host_plan(plan, available, asked=asked)
+    assert plan.subqueries[0].sources == ["reddit", lane]
+
+
+def test_paid_lane_only_in_include_sources_is_not_asked_for():
+    assert pipeline._paid_lanes_asked_for(
+        ["reddit"], {"INCLUDE_SOURCES": "amazon,meta_ads"},
+    ) == []
+    assert pipeline._paid_lanes_asked_for(None, {}) == []
+
+
+def test_host_plan_naming_a_paid_lane_is_left_alone(capsys):
+    report, _ = _run_with_plan(
+        "test topic", plan_with(["hackernews"], ["amazon"]),
+        requested_sources=["hackernews", "amazon"],
+    )
+    assert [sq.sources for sq in report.query_plan.subqueries] == [["hackernews"], ["amazon"]]
+    assert "[Planner] Added" not in capsys.readouterr().err
+
+
+def test_amazon_footer_is_silent_when_the_lane_was_available_but_never_ran():
+    # It used to print `no products matched "<keyword>"` for a search never made.
+    from lib import render
+
+    with patch.object(pipeline, "_paid_lanes_asked_for", return_value=[]):
+        report, fetched = _run_with_plan(
+            "test topic", plan_with(["hackernews"]),
+            requested_sources=["hackernews", "amazon"],
+        )
+    assert "amazon" not in fetched
+    assert "amazon_query" not in report.artifacts
+    assert render._amazon_footer_line(report) is None
+
+
 def test_exclude_sources_keeps_an_installed_lane_out_of_the_backfill():
     def which(name):
         return "/fake/bin/digg-pp-cli" if name == "digg-pp-cli" else None

@@ -54,7 +54,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, env, health, http, prescriptions, reddit_search, x_api
+from . import backends, brightdata, env, health, http, prescriptions, reddit_search, trustpilot, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -757,7 +757,27 @@ def _yahoo_finance_record(config):
 
 
 def _trustpilot_record(config):
-    return _cli_gated_record(config, "trustpilot-pp-cli", "trustpilot")
+    """Installed is not the same as able to run: the lane needs a browser
+    session that lasts four minutes, or a cached company record."""
+    record = _cli_gated_record(config, "trustpilot-pp-cli", "trustpilot")
+    if record["status"] != health.OK:
+        return record
+    state = trustpilot.can_run_now(config)
+    if state["session_fresh"]:
+        record["note"] = "browser session is fresh; can run now"
+    elif state["cached_companies"]:
+        count = state["cached_companies"]
+        record["note"] = (
+            f"no fresh browser session; {count} cached company "
+            f"record{'s' if count != 1 else ''} can be read"
+        )
+    else:
+        record["note"] = (
+            "cannot run now: no fresh browser session and no cached company record "
+            "(a research run never opens a browser; `trustpilot-pp-cli auth login` "
+            "gives a session for about 3 minutes)"
+        )
+    return record
 
 
 def _amazon_record(config):

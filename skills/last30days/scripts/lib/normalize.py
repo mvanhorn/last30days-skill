@@ -963,6 +963,9 @@ def _normalize_amazon(
             # swings with keyword phrasing, so filtering can blank the lane.
             "sponsored": bool(item.get("sponsored")),
             "top_comments": top_comments,
+            # The review lane already fired for this product set (search
+            # time), so finalize must not pull again.
+            "reviews_attempted": bool(item.get("reviews_attempted")),
             "product_rating": item.get("product_rating"),
             "product_rating_count": item.get("product_rating_count") or 0,
             "star_distribution": item.get("star_distribution") or {},

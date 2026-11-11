@@ -229,7 +229,9 @@ def test_odds_line_rule_sits_beside_the_pulled_quote_with_its_shape():
     assert "names the topic and bears on a story" in rule
     assert "its own blockquote line under that story's paragraph" in rule
     assert "`> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · 18% by Mar 31, 2027`" in rule
-    assert "from `## Polymarket Markets` through its last price" in rule
+    # The movement note after the last price is part of the line.
+    assert "Copy the whole odds line from `## Polymarket Markets`, up to the ` — ` before its URL." in rule
+    assert "last price" not in rule
 
 
 def test_odds_lines_are_capped_at_three_and_apart_from_the_six_quotes():

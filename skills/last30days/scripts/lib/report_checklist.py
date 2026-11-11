@@ -115,9 +115,10 @@ def build(
         )
         if _has_heading(rendered, _POLYMARKET_HEADING):
             lines.append(
-                "• Polymarket odds for a story go on their own line under it, copied from "
-                f"`{_POLYMARKET_HEADING}` through the last price (at most three in the "
-                "report); the paragraph links the market and does not repeat the numbers. "
+                "• Polymarket odds for a story go on their own line under it: copy the "
+                f"whole odds line from `{_POLYMARKET_HEADING}`, up to the ` — ` before its "
+                "URL (at most three in the report); the paragraph links the market and "
+                "does not repeat the numbers. "
                 "Shape: `> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · "
                 "18% by Mar 31, 2027`. They do not count toward the six quote lines."
             )

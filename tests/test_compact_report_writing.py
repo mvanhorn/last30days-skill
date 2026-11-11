@@ -1161,8 +1161,9 @@ def test_comment_that_only_quotes_its_parent_is_skipped_and_the_next_takes_its_p
 # --- odds lines: the checklist names them only when the block is printed -----
 
 ODDS_FACT = (
-    "Polymarket odds for a story go on their own line under it, copied from "
-    "`## Polymarket Markets` through the last price (at most three in the report); "
+    "Polymarket odds for a story go on their own line under it: copy the whole odds "
+    "line from `## Polymarket Markets`, up to the ` — ` before its URL (at most three "
+    "in the report); "
     "the paragraph links the market and does not repeat the numbers."
 )
 

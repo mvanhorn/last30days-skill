@@ -409,7 +409,7 @@ class TestEnrichmentLane:
         timed out (cli_timeout = max(5, timeout-10) = 1s), spending credits
         without returning reviews.
 
-        The fix: crumb budgets (below MIN_USEFUL_REVIEW_BUDGET=90) return 0,
+        The fix: crumb budgets (below MIN_USEFUL_REVIEW_BUDGET) return 0,
         skipping the lane entirely instead of firing doomed short pulls.
         """
         calls = []
@@ -452,7 +452,7 @@ class TestEnrichmentLane:
             amazon.fetch_reviews = original_fetch
 
         assert captured_timeout, "fetch_reviews was not called"
-        # elapsed=40 → remaining = 300-40-20 = 240 → clamped to LANE_DEADLINE=180
+        # elapsed=40 → remaining = 300-40-20 = 240 → clamped to LANE_DEADLINE
         assert captured_timeout[0] == amazon.LANE_DEADLINE
         assert status is None
 
@@ -837,8 +837,8 @@ class TestReviewFindingRegressions:
         # Mid-run (100s elapsed) still has 180s leftover (300-100-20=180), clamped to LANE_DEADLINE
         mid = amazon._remaining_lane_budget(100.0)
         assert mid == amazon.LANE_DEADLINE
-        # Below floor (300-200-20=80 < MIN_USEFUL_REVIEW_BUDGET=90) → 0
-        assert amazon._remaining_lane_budget(200.0) == 0
+        # Below floor (300-240-20=40 < MIN_USEFUL_REVIEW_BUDGET=45) → 0
+        assert amazon._remaining_lane_budget(240.0) == 0
         # Way past contract → 0
         assert amazon._remaining_lane_budget(295.0) == 0
 
@@ -849,17 +849,17 @@ class TestReviewFindingRegressions:
         causing Bright Data pulls to time out (cli_timeout = max(5, timeout-10)
         → 1s timeout). Now any budget below MIN_USEFUL_REVIEW_BUDGET returns 0.
         """
-        # elapsed=269 → remaining = 300-269-20 = 11 < MIN_USEFUL=90 → 0
+        # elapsed=269 → remaining = 300-269-20 = 11 < MIN_USEFUL=45 → 0
         assert amazon._remaining_lane_budget(269.0) == 0
-        # Just above floor: 300-190-20=90 == MIN_USEFUL → 90 (not 0)
-        assert amazon._remaining_lane_budget(190.0) == amazon.MIN_USEFUL_REVIEW_BUDGET
-        # Just below floor: 300-191-20=89 < MIN_USEFUL=90 → 0
-        assert amazon._remaining_lane_budget(191.0) == 0
+        # Just above floor: 300-235-20=45 == MIN_USEFUL → 45 (not 0)
+        assert amazon._remaining_lane_budget(235.0) == amazon.MIN_USEFUL_REVIEW_BUDGET
+        # Just below floor: 300-236-20=44 < MIN_USEFUL=45 → 0
+        assert amazon._remaining_lane_budget(236.0) == 0
 
     def test_lane_budget_constants_are_sane(self):
         """Guard against accidental constant drift breaking the logic."""
-        assert amazon.MIN_USEFUL_REVIEW_BUDGET == 90
-        assert amazon.LANE_DEADLINE == 180
+        assert amazon.MIN_USEFUL_REVIEW_BUDGET == 45
+        assert amazon.LANE_DEADLINE == 60
         assert amazon.MIN_USEFUL_REVIEW_BUDGET < amazon.LANE_DEADLINE
 
     def test_enrichment_refreshes_the_variant_level_rating_count(self):
@@ -936,3 +936,81 @@ class TestSavedArtifactCompleteness:
         )]})
         assert "120 score, 48 num_comments" in out
         assert "upvote_ratio" not in out
+
+
+class TestReviewsUnavailable:
+    """The provider's review scraper not answering must not cost the products."""
+
+    def _products(self, n=3):
+        return [
+            {"asin": f"B00000000{i}", "url": f"https://www.amazon.com/dp/B00000000{i}",
+             "name": f"Product {i}", "short_name": f"Product {i}", "brand": "Bentgo",
+             "rating": 4.4, "num_ratings": 900 - i, "price": 39.99 + i}
+            for i in range(n)
+        ]
+
+    def test_every_pull_failing_is_reported_and_keeps_the_products(self):
+        out, status = amazon.enrich_with_reviews(
+            self._products(), depth="default",
+            fetcher=lambda url: {"records": [], "error": "timed out after 50s"},
+        )
+        assert [p["asin"] for p in out] == [f"B00000000{i}" for i in range(3)]
+        assert all(p["rating"] == 4.4 and p["num_ratings"] and p["price"] for p in out)
+        assert status == "review pulls failed"
+
+    def test_outcome_detail_names_the_provider_for_failed_and_timed_out_lanes(self):
+        for status in ("review pulls failed", "review lane timed out"):
+            detail = amazon.outcome_detail(status)
+            assert detail.startswith(amazon.REVIEWS_UNAVAILABLE_NOTE)
+            assert status in detail
+        skipped = "review lane skipped (budget 0s)"
+        assert amazon.outcome_detail(skipped) == skipped
+
+    def test_review_lane_holds_the_run_for_about_a_minute_at_most(self):
+        assert amazon.LANE_DEADLINE == 60
+        assert amazon.REVIEW_TIMEOUT <= amazon.LANE_DEADLINE
+        assert amazon.MIN_USEFUL_REVIEW_BUDGET < amazon.LANE_DEADLINE
+
+    def test_a_lane_that_already_ran_is_not_pulled_again_at_finalize(self):
+        out, _ = amazon.enrich_with_reviews(
+            self._products(), depth="default",
+            fetcher=lambda url: {"records": [], "error": "timed out after 50s"},
+        )
+        assert all(p["reviews_attempted"] for p in out)
+        items = [_Item(p["asin"], reviews_attempted=True) for p in out]
+        calls = []
+        amazon.enrich_source_items(
+            items, depth="default",
+            fetcher=lambda url: calls.append(url) or {"records": []},
+        )
+        assert calls == []
+
+    def test_normalize_carries_the_attempt_flag(self):
+        from lib import normalize
+        product = dict(self._products(1)[0], reviews_attempted=True, date="2026-08-13")
+        item = normalize._normalize_amazon("amazon", product, 0, "2026-07-14", "2026-08-13")
+        assert item.metadata["reviews_attempted"] is True
+        assert item.metadata["price"] == 39.99
+
+    def _footer(self, detail):
+        from lib import render, schema
+        items = [_FooterItem("A"), _FooterItem("B")]
+        items[0].metadata.update(price=399.0, currency="USD")
+        items[1].metadata.update(price=1299.99, currency="USD")
+        report = _report(items)
+        object.__setattr__(report, "source_status", {"amazon": schema.SourceOutcome(
+            source="amazon", state=schema.PARTIAL, detail=detail, items_returned=2,
+        )})
+        return render._amazon_footer_line(report)
+
+    def test_footer_is_built_from_search_stats_with_a_reviews_note(self):
+        line = self._footer(amazon.outcome_detail("review lane timed out"))
+        assert line == (
+            "📦 Amazon: 2 products │ 4.4★ average │ 200 ratings │ $399 to $1,300 │ "
+            "written reviews unavailable from the provider this run"
+        )
+
+    def test_footer_has_no_reviews_note_when_the_lane_was_only_skipped(self):
+        line = self._footer("review lane skipped (budget 0s)")
+        assert "unavailable" not in line
+        assert line.startswith("📦 Amazon: 2 products │ 4.4★ average │ 200 ratings")
