@@ -815,6 +815,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--company",
+        metavar="NAME[,NAME]",
+        help=(
+            "The company behind the topic, listed or not, as the hosting model found "
+            "it by web search: the company a person leads or founded (Palmer Luckey: "
+            "\"Anduril\"), or the maker of a product. At most two names; the jobs lane "
+            "reads the board of the first that has one."
+        ),
+    )
+    parser.add_argument(
+        "--jobs-board",
+        dest="jobs_board",
+        metavar="URL",
+        help=(
+            "The company's job-board URL as the hosting model found it by web search "
+            "(e.g., https://job-boards.greenhouse.io/andurilindustries; Greenhouse, "
+            "Ashby, Lever, Workable, SmartRecruiters or Workday). The engine reads "
+            "that board and gives a digest only when the board names the company or "
+            "the official site links to it."
+        ),
+    )
+    parser.add_argument(
         "--official-site",
         metavar="DOMAIN",
         help=(
@@ -1138,11 +1160,54 @@ def _resolved_company(entity: str, *, mock: bool, config: dict, host_ticker: boo
     return company
 
 
+# ``--company`` takes as many names as ``--ticker`` takes pairs.
+MAX_HOST_COMPANIES = yahoo_finance.MAX_HOST_TICKERS
+
+
+def _host_company_names(raw: str | None) -> list[str]:
+    """The names of a ``--company`` value, separated by commas, in the order
+    given. Only the first ``MAX_HOST_COMPANIES`` are read."""
+    names = list(dict.fromkeys(
+        " ".join(entry.split())[:80] for entry in (raw or "").split(",") if entry.strip()
+    ))
+    if len(names) > MAX_HOST_COMPANIES:
+        sys.stderr.write(
+            f"[Resolve] --company takes {MAX_HOST_COMPANIES} names; ignoring "
+            f"{', '.join(names[MAX_HOST_COMPANIES:])}\n"
+        )
+    return names[:MAX_HOST_COMPANIES]
+
+
+def _company_signal(
+    company: dict,
+    host_tickers: list[dict] | None,
+    official_site: str,
+    host_names: list[str],
+) -> str:
+    """What makes this run about a company, or '' when nothing does.
+
+    Any one is enough for the engine to add the jobs lane to a host plan that
+    does not name it: the topic's official site, a company the host named
+    with ``--company``, a usable ``--ticker`` pair, or the company the topic
+    (or the person it names) resolved to.
+    """
+    if (official_site or "").strip():
+        return "--official-site"
+    if host_names:
+        return "--company"
+    if any(not pair.get("reason") and pair.get("company") for pair in host_tickers or []):
+        return "--ticker"
+    if company.get("company"):
+        return f"the company {company['company']}"
+    return ""
+
+
 def _company_for_jobs(
     company: dict,
     host_tickers: list[dict] | None,
     topic: str,
     official_site: str = "",
+    host_names: list[str] | None = None,
 ) -> dict:
     """The company the jobs lane searches for the main topic.
 
@@ -1152,10 +1217,12 @@ def _company_for_jobs(
     - the topic's own official site, when the run knows one, is added as
       ``topic_site``, so the lane reads that site's careers page instead of
       guessing a domain from the topic's name;
-    - the companies of the host's usable ``--ticker`` pairs that are not the
-      topic itself are added as ``host_companies``, in the order given: the
-      jobs lane tries each after the topic's own name finds no board, and
-      uses the first one that has a board.
+    - the companies the host named that are not the topic itself are added
+      as ``host_companies``: those of ``--company`` (``host_names``), then
+      those of its usable ``--ticker`` pairs, each in the order given and a
+      company named both ways once. The jobs lane tries each after the
+      topic's own name finds no board, and uses the first one that has a
+      board.
     """
     if company.get("company"):
         return company
@@ -1163,11 +1230,13 @@ def _company_for_jobs(
     if official_site.strip():
         found["topic_site"] = official_site.strip()
     names: list[str] = []
-    for pair in host_tickers or []:
-        name = pair.get("company") or ""
-        if pair.get("reason") or not name or name in names:
+    named = list(host_names or []) + [
+        pair.get("company") or "" for pair in host_tickers or [] if not pair.get("reason")
+    ]
+    for name in named:
+        if not name or yahoo_finance._same_company_name(topic, name):
             continue
-        if yahoo_finance._same_company_name(topic, name):
+        if any(yahoo_finance._same_company_name(earlier, name) for earlier in names):
             continue
         names.append(name)
     if names:
@@ -1555,6 +1624,7 @@ def _cache_research_options(
         "subreddits", "dedicated_subreddits", "devto_tags", "tiktok_hashtags",
         "tiktok_creators", "ig_creators", "max_results", "max_per_source",
         "max_source_fetches", "auto_resolve", "github_user", "github_repo", "ticker",
+        "company", "jobs_board",
         "trustpilot_domain", "amazon_query", "meta_ads_page", "telegram_sources",
         "competitors", "competitors_list", "polymarket_keywords", "corpus_all_time", "drill",
     )
@@ -4443,9 +4513,20 @@ def _main(
         )
         # The jobs lane reads the company from here; each comparison peer
         # replaces it with its own.
+        host_names = _host_company_names(args.company)
         config["_company"] = _company_for_jobs(
-            main_company, host_tickers, topic, official_site=official_site,
+            main_company, host_tickers, topic,
+            official_site=official_site, host_names=host_names,
         )
+        # What makes the run about a company: with any of it, a host plan
+        # that does not name the jobs lane gets it on its primary subquery.
+        config["_company_signal"] = _company_signal(
+            main_company, host_tickers, official_site, host_names,
+        )
+        if (args.jobs_board or "").strip():
+            # The board URL the host found by web search; the jobs lane reads
+            # it first and checks whose board it is.
+            config["_jobs_board"] = args.jobs_board.strip()
         if comp_enabled:
             config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget(
                 owner=topic,
@@ -4608,6 +4689,9 @@ def _main(
                 # Resolution belongs to each entity, not the shared command.
                 entity_config = dict(config)
                 entity_config.pop("_auto_resolve_context", None)
+                # The main topic's company flags are not a peer's.
+                entity_config.pop("_company_signal", None)
+                entity_config.pop("_jobs_board", None)
                 # The Amazon keyword is entity-SPECIFIC, unlike the depth caps
                 # this shallow copy exists to inherit. Leaving the main topic's
                 # keyword in place would search Weber SKUs for a Traeger peer,

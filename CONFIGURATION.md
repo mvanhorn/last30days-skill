@@ -195,7 +195,7 @@ The source table covers the engine's research sources and optional comment or tr
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
 | Perplexity Agent API / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` uses background Agent API with a direct key or synchronous Sonar through OpenRouter | no |
 | Caption-free transcription | `GROQ_API_KEY` (free tier, preferred) or `OPENAI_API_KEY` (paid backstop); requires `ffmpeg` | Whisper transcription for audio/video without captions (groundwork: module shipped, not yet auto-invoked by the engine) | Groq free tier is generous; needs ffmpeg installed |
-| Jobs / careers pages | none for public ATS/careers pages; a configured web backend can improve discovery and fallback | `--hiring-signals`, `--search jobs`, or a host research plan that includes `jobs`. Engine-planned company runs may add it automatically when no source list is supplied | public ATS/careers access is keyless; a configured web provider may charge for discovery or fallback |
+| Jobs / careers pages | none for public ATS/careers pages; a configured web backend can improve discovery and fallback | `--hiring-signals`, `--search jobs`, a host research plan that includes `jobs`, or any host-planned run about a company (`--official-site`, `--ticker`, `--company`, or a resolved company), where the engine adds `jobs` itself. Engine-planned company runs may add it automatically when no source list is supplied | public ATS/careers access is keyless; a configured web provider may charge for discovery or fallback |
 
 **Instagram recovery budget.** When the primary reels search returns no results or HTTP 404, Instagram can recover Google-indexed reels through ScrapeCreators. Each source fetch shares at most 1 Google page and 9 post-detail attempts at quick depth, 2 and 16 at default depth, or 3 and 27 at deep depth across its expanded queries. These calls spend credits; primary searches, transcripts, comments, and later source retries are outside those counts. Successful details are reused by reel shortcode within the fetch. The source's time budget also covers transcripts and comments: if it expires, completed reels remain available as partial coverage and no further requests start. A request already accepted by the provider can still be charged.
 
@@ -561,6 +561,28 @@ python3 skills/last30days/scripts/last30days.py "Listen Labs" --hiring-signals
 ```
 
 The engine treats public jobs/careers postings as evidence of focus or priority shifts, not exact roadmap predictions. Standard company runs may include Hiring Signals automatically when multiple current roles support the same interpretation; weak or unavailable hiring evidence is omitted.
+
+### `--company` and `--jobs-board` flags
+
+```
+--company "Anduril"
+--company "Tesla,SpaceX"
+--jobs-board https://job-boards.greenhouse.io/andurilindustries
+```
+
+Both feed the jobs lane, and both come from the hosting model's web search before the run.
+
+`--company` names the company behind a topic that is not itself the company: the company a person leads or founded (Palmer Luckey is `Anduril`), or the maker of a product. The company does not have to be listed, which is what separates it from `--ticker`. Names are separated by commas and only the first two are read. The jobs lane looks for the topic's own board first, then tries each name in the order given and uses the first that has a board. A company named by both `--company` and `--ticker` is tried once, `--company` names first. When Wikidata already resolved the topic to a company, that company is used and these names are not.
+
+`--jobs-board` is the URL of the company's job board on a system the lane reads: Greenhouse (`boards.greenhouse.io/<slug>` or `job-boards.greenhouse.io/<slug>`), Ashby (`jobs.ashbyhq.com/<slug>`), Lever (`jobs.lever.co/<slug>`), Workable (`apply.workable.com/<slug>`), SmartRecruiters (`jobs.smartrecruiters.com/<Company>`) or Workday (`<tenant>.wdN.myworkdayjobs.com/<site>`). The engine takes the provider and slug from the URL and reads that board first. It never takes the board on the host's word. The board counts as the company's own, and gives a `## Jobs Digest`, only when one of these holds:
+
+1. The company name the board states is the topic's or a `--company` name, or that name with whole words after it (`Anduril Industries` for `Anduril`; `Metabase` is not `Meta`).
+2. The board states no name (Ashby, Lever, Workable, Workday) and its slug is that name.
+3. The official site's careers page, or the jobs page it links, links to the board.
+
+Any other board gives the footer count with no digest, a stderr line says why, and the lane goes on to look for the board itself. A URL on a host that is not one of those systems is ignored with one stderr line, and so is a board that cannot be read.
+
+Either flag, `--official-site`, a usable `--ticker` pair, or a topic the engine resolves to a company marks the run as about a company. On such a run with a host `--plan` that names `jobs` in no subquery, the engine adds `jobs` to the primary subquery and logs `[Planner] Added jobs to primary: ...`. It does not do so on `--quick`, with a `--search` list that leaves `jobs` out, or with `EXCLUDE_SOURCES=jobs`. On a comparison run both flags apply to the main topic only.
 
 ### `--ticker` flag
 
