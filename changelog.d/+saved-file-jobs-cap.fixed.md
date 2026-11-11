@@ -1,0 +1,1 @@
+The saved raw file no longer lists every posting on a company's job board (one run's file was 2.4 MB, 2.3 MB of it postings). It now carries the Jobs Digest, the ranked postings (up to 40) and a count of the rest.

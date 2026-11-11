@@ -19,6 +19,7 @@ from . import (
     jobs_digest,
     library_index,
     meta_ads,
+    polymarket,
     registers,
     relevance,
     rerank,
@@ -1798,6 +1799,13 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
             lines.extend(single_row)
             lines.append("")
 
+    # The board's digest, as the compact output carries it: the saved file
+    # lists only the ranked postings below, so this is where the board is read.
+    jobs_digest_block, _digest_urls = _jobs_digest_block(evidence_report)
+    if jobs_digest_block:
+        lines.extend(jobs_digest_block)
+        lines.append("")
+
     # ALL clusters (no limit)
     lines.extend(_render_ranked_clusters(evidence_report, evidence_report.clusters))
 
@@ -1862,6 +1870,15 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
             continue
         lines.append(f"### {_source_label(source)} ({len(items)} items)")
         lines.append("")
+        unlisted = 0
+        if source == "jobs":
+            # A board can hold thousands of postings, each opening with the
+            # same company text. The file lists the ones that were ranked;
+            # the rest are counted, and the Jobs Digest holds the board's
+            # distinct roles.
+            listed = _ranked_job_items(evidence_report, items)
+            unlisted = len(items) - len(listed)
+            items = listed
         for item in items:
             # local_rank_score is 0..1; print it on the report's 0-100 scale
             # (":.0f" of the raw value rendered every item as score:0 or 1).
@@ -1952,6 +1969,17 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                 if end_date:
                     lines.append(f"  Closes: {end_date}")
             lines.append("")
+        if unlisted:
+            note = (
+                f"{unlisted:,} more job posting{'s' if unlisted != 1 else ''} on the board "
+                f"{'are' if unlisted != 1 else 'is'} not listed here: only ranked postings are."
+                if items
+                else f"No job posting was ranked, so none of the board's {unlisted:,} is listed here."
+            )
+            if jobs_digest_block:
+                note += " The Jobs Digest above holds the board's distinct roles."
+            lines.append(f"_{note}_")
+            lines.append("")
 
     corpus_section = _render_corpus_section(report)
     if corpus_section:
@@ -1967,6 +1995,25 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
     if save_path:
         _append_pass_through_footer(lines, _render_emoji_footer(evidence_report, save_path))
     return "\n".join(lines).strip() + "\n"
+
+
+# The most job postings the saved file lists one by one.
+FULL_DUMP_JOBS_LIMIT = 40
+
+
+def _ranked_job_items(
+    report: schema.Report, items: list[schema.SourceItem],
+) -> list[schema.SourceItem]:
+    """The job postings the saved file lists: those the ranking kept as
+    candidates, best first, up to ``FULL_DUMP_JOBS_LIMIT``."""
+    on_board = {fusion.candidate_key(item): item for item in items}
+    listed: dict[str, schema.SourceItem] = {}
+    for candidate in report.ranked_candidates:
+        for item in candidate.source_items:
+            key = fusion.candidate_key(item)
+            if item.source == "jobs" and key in on_board:
+                listed.setdefault(key, on_board[key])
+    return list(listed.values())[:FULL_DUMP_JOBS_LIMIT]
 
 
 def _format_item_engagement(item: schema.SourceItem) -> str:
@@ -2658,14 +2705,78 @@ def _polymarket_market_name(question: str, label: str) -> tuple[str, bool]:
     return f"{descriptor}: {label}", False
 
 
-def _polymarket_top_markets(
-    items: list[schema.SourceItem], limit: int = 3
-) -> list[str]:
-    """Build short summary strings for the top Polymarket markets by volume.
+_POLYMARKET_MONTHS = {
+    "january": "Jan", "february": "Feb", "march": "Mar", "april": "Apr",
+    "june": "Jun", "july": "Jul", "august": "Aug", "september": "Sep",
+    "october": "Oct", "november": "Nov", "december": "Dec",
+}
+_POLYMARKET_DATE = re.compile(
+    rf"\b({'|'.join(_POLYMARKET_MONTHS)})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?\b",
+    re.IGNORECASE,
+)
+# "market cap be between $2.0T and $2.25T" reads whole without the "be".
+_POLYMARKET_BE = re.compile(
+    r"\bbe\s+(?=(?:between|less than|more than|greater than|at least|at most|above|below|over|under)\b)",
+    re.IGNORECASE,
+)
 
-    Returns list like: ['UK visit 5.5%', 'Israel visit 8%', 'blocked from entering 36%']
-    Each market is named once: no market repeats and no two share a name.
+
+def _polymarket_phrase(question: str) -> str:
+    """A market's whole question as a footer name, with nothing cut off.
+
+    "Will Waymo operate in 12-15 cities on December 31 2026?" ->
+    "Waymo operate in 12-15 cities on Dec 31, 2026". Only the question
+    wrapping goes ("Will", "?", a leading article, the "be" before a
+    comparison) and a month name with a day is shortened; every bracket,
+    place and date stays, so the name says which market the price is for.
     """
+    text = " ".join((question or "").split()).rstrip("?").strip()
+    if text.lower().startswith("will "):
+        text = _POLYMARKET_BE.sub("", text[5:].strip(), count=1)
+    text = _POLYMARKET_DATE.sub(
+        lambda match: (
+            f"{_POLYMARKET_MONTHS[match.group(1).lower()]} {match.group(2)}"
+            + (f", {match.group(3)}" if match.group(3) else "")
+        ),
+        text,
+    )
+    return re.sub(r"^(?:a|an|the)\s+", "", text, flags=re.IGNORECASE)
+
+
+def _polymarket_headline(item: schema.SourceItem) -> tuple[str, float, str] | None:
+    """The question, price and outcome label the parser chose to stand for the
+    event, or None for an item saved before it chose one."""
+    headline = item.metadata.get("headline")
+    if not isinstance(headline, dict):
+        return None
+    question = str(headline.get("question") or "").strip()
+    price = headline.get("price")
+    if not question or isinstance(price, bool) or not isinstance(price, (int, float)):
+        return None
+    return question, float(price), " ".join(str(headline.get("label") or "").split())
+
+
+def _polymarket_top_markets(
+    items: list[schema.SourceItem], limit: int = 3, topic: str = "",
+) -> list[str]:
+    """Build summary strings for the top Polymarket markets by volume.
+
+    Returns list like: ['Waymo launch in Denver, CO by Dec 31, 2026 74%'].
+    Each market is named once, by its whole question, with the price of that
+    same market. With ``topic``, only a market that names the whole topic is
+    listed. An item saved by an older build carries no chosen market and is
+    named the older way: ['UK visit 5.5%', 'blocked from entering 36%'].
+    """
+    if topic:
+        items = [
+            item for item in items
+            if polymarket.names_whole_topic(
+                topic,
+                item.title,
+                str(item.metadata.get("question") or ""),
+                (_polymarket_headline(item) or ("",))[0],
+            )
+        ]
     # Sort by volume descending
     sorted_items = sorted(
         items,
@@ -2676,6 +2787,14 @@ def _polymarket_top_markets(
     # (name, pct, question, label when the name is not the bare descriptor)
     markets: list[tuple[str, str, str, str]] = []
     for item in sorted_items[:limit]:
+        headline = _polymarket_headline(item)
+        if headline:
+            question, price, label = headline
+            pct = f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%"
+            name = _polymarket_phrase(question)
+            if name:
+                markets.append((f"{name}: {label}" if label else name, pct, question, label))
+            continue
         outcome_prices = item.metadata.get("outcome_prices") or []
         if not outcome_prices:
             continue
@@ -3106,7 +3225,7 @@ def _build_source_footer_lines(
     # Polymarket (special: count + odds string from existing helper)
     polymarket_items = report.items_by_source.get("polymarket") or []
     if polymarket_items:
-        odds = _polymarket_top_markets(polymarket_items, limit=3)
+        odds = _polymarket_top_markets(polymarket_items, limit=3, topic=report.topic)
         odds_str = ", ".join(odds) if odds else ""
         count = len(polymarket_items)
         count_str = f"{count:,}" if count >= 1000 else str(count)
@@ -3666,7 +3785,7 @@ def _render_stats(report: schema.Report) -> list[str]:
             continue
         if source == "polymarket":
             # Polymarket gets a richer stats line with top market odds
-            market_summaries = _polymarket_top_markets(items)
+            market_summaries = _polymarket_top_markets(items, topic=report.topic)
             if market_summaries:
                 label = f"{len(items)} market{'s' if len(items) != 1 else ''}"
                 parts_str = f"{label} | " + " | ".join(market_summaries)
@@ -3694,9 +3813,12 @@ def _render_stats(report: schema.Report) -> list[str]:
 
 
 def _assess_data_freshness(report: schema.Report) -> str | None:
+    # Job postings are roles on a board, not dated evidence of what people
+    # said: a board can hold thousands, most posted long before the window.
     dated_items = [
         item
-        for items in report.items_by_source.values()
+        for source, items in report.items_by_source.items()
+        if source != "jobs"
         for item in items
         if item.published_at
     ]

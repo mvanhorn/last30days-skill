@@ -3145,14 +3145,9 @@ def run(
     if hiring_summary:
         # The diagnostic source dump retains pruned jobs; hiring aggregation
         # needs their rejection identities after they leave the ranked pool.
-        retained_ids = {candidate.candidate_id for candidate in ranked_public}
-        hiring_summary["rejected_job_keys"] = sorted({
-            fusion.candidate_key(item)
-            for candidate in public_candidates
-            if candidate.candidate_id not in retained_ids
-            for item in candidate.source_items
-            if item.source == "jobs"
-        })
+        hiring_summary["rejected_job_keys"] = _rejected_job_keys(
+            public_candidates, ranked_public, bundle.artifacts.get("jobs"), topic,
+        )
     # Private corpus already cleared a body-aware retrieval floor; do not apply
     # the public title/snippet visibility gate (filenames often omit the head
     # token even when the document body matched).
@@ -3794,6 +3789,36 @@ def _jobs_board_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     if env.jobs_digest_disabled():
         return {key: value for key, value in artifact.items() if key != "digest"}
     return artifact
+
+
+def _rejected_job_keys(
+    candidates: list[schema.Candidate],
+    ranked: list[schema.Candidate],
+    board: Any,
+    topic: str,
+) -> list[str]:
+    """The postings ranking dropped, which the hiring sections then leave out.
+
+    Ranking judges a posting against the topic's name. On the company's own
+    board that is a fair test of a stray posting when the topic is the
+    company, whose postings name it. When the topic is the person who leads
+    the company, no posting names the topic, so ranking drops every one it
+    looks at: that says nothing about the roles, and none is recorded.
+    """
+    if (
+        isinstance(board, dict)
+        and board.get("owned")
+        and not jobs._same_company(str(board.get("company") or ""), topic)
+    ):
+        return []
+    retained_ids = {candidate.candidate_id for candidate in ranked}
+    return sorted({
+        fusion.candidate_key(item)
+        for candidate in candidates
+        if candidate.candidate_id not in retained_ids
+        for item in candidate.source_items
+        if item.source == "jobs"
+    })
 
 
 def _apply_hiring_signal_gate(
@@ -5770,16 +5795,34 @@ def _retrieve_stream_impl(
         # The company the topic resolved to, so a person's name searches the
         # board of the company they lead, starting from its official site.
         company = config.get("_company") or {}
-        return jobs.search_jobs(
+
+        def search(name: str, **where: Any) -> tuple[list[dict], dict]:
+            return jobs.search_jobs(
+                name,
+                date_range,
+                config,
+                depth=depth,
+                explicit=bool(config.get("_hiring_signals_mode")),
+                entity_count=_comparison_entity_count(config),
+                **where,
+            )
+
+        items, artifact = search(
             company.get("company") or raw_topic or topic or subquery.search_query,
-            date_range,
-            config,
-            depth=depth,
             web_backend=web_backend,
-            explicit=bool(config.get("_hiring_signals_mode")),
             site=str(company.get("company_site") or ""),
-            entity_count=_comparison_entity_count(config),
         )
+        # The lookup named no company, and the topic has no board of its own:
+        # a person, searched by name. The company the host named with
+        # ``--ticker`` is searched then, and used only when it has a board.
+        # It comes with no official site, so the board gives a digest only
+        # when it names that company itself.
+        host_company = str(company.get("host_company") or "")
+        if host_company and not company.get("company") and not _is_jobs_board("jobs", artifact):
+            host_items, host_artifact = search(host_company, web_backend="none")
+            if _is_jobs_board("jobs", host_artifact):
+                return host_items, host_artifact
+        return items, artifact
     if source == "reddit":
         # Use raw_topic so expand_reddit_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.

@@ -157,6 +157,10 @@ _expected_miss_statuses: ContextVar[frozenset[int]] = ContextVar(
     "last30days_http_expected_miss_statuses",
     default=frozenset(),
 )
+_expected_no_host: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
+    "last30days_http_expected_no_host",
+    default=None,
+)
 
 _FIXTURE_FORMAT = "last30days-http-fixture/v1"
 _FIXTURE_SECRET_KEYS = frozenset(
@@ -476,6 +480,10 @@ def _fixture_replay(request_data: dict[str, Any]) -> Any:
             body=error.get("body"),
             outcome_state=error.get("outcome_state"),
         )
+        # Callers branch on this (a dead careers host is not asked for its
+        # second page), so a replay without it makes requests the live run
+        # never recorded.
+        recorded_error.no_host = bool(error.get("no_host"))
         _raise(recorded_error)
     return response.get("value")
 
@@ -514,6 +522,8 @@ def _fixture_record(
                     redactions=redactions,
                 )
             }
+            if error.no_host:
+                response["error"]["no_host"] = True
         state["exchanges"].append({"request": request_data, "response": response})
 
 
@@ -610,6 +620,9 @@ class HTTPError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+        # True when no host answered: the name did not resolve or the
+        # connection was refused. See ``expected_no_host``.
+        self.no_host = False
         self.outcome_state = outcome_state or classify_failure(
             status_code=status_code,
             message=message,
@@ -675,6 +688,30 @@ def expected_misses(*status_codes: int):
         _expected_miss_statuses.reset(token)
 
 
+@contextmanager
+def expected_no_host():
+    """Exclude "there is no such host" failures from captured run failures.
+
+    For a caller that tries a host it only guessed: a name that does not
+    resolve, or a connection the host refuses, means nothing is there, not
+    that a source is down. Yields the failures left out, so the caller can
+    stop asking that host. Timeouts and HTTP errors are still recorded.
+    """
+    dropped: list[HTTPError] = []
+    token = _expected_no_host.set(dropped)
+    try:
+        yield dropped
+    finally:
+        _expected_no_host.reset(token)
+
+
+def _is_no_host(error: BaseException) -> bool:
+    """A name that did not resolve or a refused connection, bare or wrapped
+    in a ``URLError``."""
+    reason = getattr(error, "reason", error)
+    return isinstance(reason, (socket.gaierror, ConnectionRefusedError))
+
+
 def submit_with_context(executor, func, /, *args, **kwargs) -> Future:
     """Submit a worker with the caller's failure-capture context."""
     context = copy_context()
@@ -683,6 +720,10 @@ def submit_with_context(executor, func, /, *args, **kwargs) -> Future:
 
 def _record_failure(error: HTTPError) -> None:
     if error.status_code in _expected_miss_statuses.get():
+        return
+    no_host = _expected_no_host.get()
+    if no_host is not None and error.no_host:
+        no_host.append(error)
         return
     sink = _failure_sink.get()
     if sink is not None:
@@ -1056,6 +1097,7 @@ def request(
                 f"URL Error: {e.reason}",
                 outcome_state=health.TIMEOUT if wrapped_timeout else health.UNREACHABLE,
             )
+            last_error.no_host = _is_no_host(e)
             if _is_dns_failure(e):
                 # DNS resolution failures are transient; expand the retry budget
                 # to MIN_DNS_RETRIES if the caller passed fewer, and use
@@ -1102,6 +1144,7 @@ def request(
                 f"Connection error: {type(e).__name__}: {e}",
                 outcome_state=state,
             )
+            last_error.no_host = _is_no_host(e)
             if attempt < retries - 1:
                 # Socket errors respect the caller's original retry budget.
                 if not sleep_before_retry(RETRY_DELAY * (attempt + 1)):

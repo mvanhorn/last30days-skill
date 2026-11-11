@@ -23,7 +23,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from . import dates, grounding, http, jobs_digest
 
@@ -218,15 +218,17 @@ def _resolve_careers_page(
     careers page when a backend is configured. Returns (html, url) or
     (None, None). Never raises.
     """
-    candidates: list[str] = []
+    # Only a host guessed from the company's name may turn out not to exist.
+    guessed = not (site and _host(site))
     for host in _site_hosts(company, site):
-        candidates.extend([f"https://{host}/careers", f"https://{host}/jobs"])
-
-    for url in candidates:
-        with http.expected_misses(403, 404):
-            html = http.get_text(url, accept="text/html", retries=1)
-        if html and _looks_like_careers_html(html):
-            return html, url
+        for path in ("/careers", "/jobs"):
+            url = f"https://{host}{path}"
+            html, no_host = _careers_text(url, guessed=guessed)
+            if no_host:
+                # Nothing answers at this host, so its other page is not tried.
+                break
+            if html and _looks_like_careers_html(html):
+                return _board_page(html, url, guessed=guessed)
 
     if backend != "none":
         careers_url = _search_for_careers_url(company, date_range, config, backend=backend)
@@ -236,6 +238,81 @@ def _resolve_careers_page(
                 return html, careers_url
 
     return None, None
+
+
+def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
+    """Fetch a careers page on the company's site or on a guessed domain.
+
+    Returns the page text, and whether no host answered. A 403 or 404 is a
+    page that is not there, never a run failure. On a ``guessed`` domain a
+    name that does not resolve or a refused connection means the company has
+    no such site: no board was found, so that is not recorded either. On the
+    known official site the same failure is an outage and is recorded like a
+    timeout or a server error.
+    """
+    with http.expected_misses(403, 404):
+        if guessed:
+            with http.expected_no_host() as no_host:
+                html = http.get_text(url, accept="text/html", retries=1)
+            return html, bool(no_host)
+        with http.tee_failures() as failures:
+            html = http.get_text(url, accept="text/html", retries=1)
+    return html, any(failure.no_host for failure in failures)
+
+
+# How many pages linked from a careers page are read when looking for the board.
+_LINKED_PAGE_LIMIT = 2
+_JOBS_LINK_WORDS = re.compile(r"job|position|opening|vacanc|search", re.I)
+
+
+def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str]:
+    """The page that names the company's board: the careers page, or a jobs
+    page of the same site that it links to.
+
+    A large company's careers page is often a landing page whose job search
+    lives one link away, on a host of its own (``jobs.nvidia.com``), and only
+    that page names the hiring system. Up to ``_LINKED_PAGE_LIMIT`` such links
+    are followed, and only within the careers page's own site, so a board found
+    this way is named by the same site that named the careers page.
+    """
+    if detect_ats(html)[0]:
+        return html, url
+    for link in _jobs_links(html, url)[:_LINKED_PAGE_LIMIT]:
+        linked, _no_host = _careers_text(link, guessed=guessed)
+        if linked and detect_ats(linked)[0]:
+            return linked, link
+    return html, url
+
+
+def _jobs_links(html: str, page_url: str) -> list[str]:
+    """Links on a careers page to a jobs page of the same site, best first:
+    a jobs or careers host of its own, then a path that reads like a job
+    search. A link to the page itself or to another page of the same kind
+    (a translation of it, "life at") is left out."""
+    page = urlparse(page_url)
+    ranked: list[tuple[int, str]] = []
+    for href in re.findall(r"""href\s*=\s*["']([^"'#\s]+)""", html, flags=re.I):
+        link = urljoin(page_url, unescape(href))
+        parsed = urlparse(link)
+        host = parsed.netloc.lower()
+        if parsed.scheme not in ("http", "https") or not _same_site(host, page.netloc):
+            continue
+        if host != page.netloc.lower() and re.match(r"(jobs|careers?)\.", host):
+            rank = 0
+        elif host == page.netloc.lower() and _JOBS_LINK_WORDS.search(parsed.path):
+            rank = 1
+        else:
+            continue
+        if all(link != seen for _rank, seen in ranked):
+            ranked.append((rank, link))
+    return [link for _rank, link in sorted(ranked, key=lambda entry: entry[0])]
+
+
+def _same_site(host: str, site_host: str) -> bool:
+    """Whether ``host`` is the site's own host or a subdomain of it."""
+    base = site_host.lower().removeprefix("www.")
+    host = host.lower().removeprefix("www.")
+    return bool(base) and (host == base or host.endswith("." + base))
 
 
 def _search_for_careers_url(
@@ -287,13 +364,16 @@ def _found_via(careers_url: str, company: str, site: str = "") -> str:
     """How the careers page naming the board was reached.
 
     ``site`` is the known official site, the only one that makes a board the
-    company's own. ``guess`` is a domain guessed from the company's name, which
-    another business can own, and ``search`` is a web search result.
+    company's own; a page on a subdomain of it (``jobs.nvidia.com`` for
+    ``www.nvidia.com``) is the same site. ``guess`` is a domain guessed from
+    the company's name, which another business can own, and ``search`` is a
+    web search result.
     """
     host = _host(careers_url)
-    if site and host and host == _host(site):
+    if site and host and _same_site(host, _host(site)):
         return "site"
-    return "guess" if host in _site_hosts(company) else "search"
+    guessed = any(_same_site(host, guess) for guess in _site_hosts(company))
+    return "guess" if guessed else "search"
 
 
 def _same_company(stated: str, company: str) -> bool:

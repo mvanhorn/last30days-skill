@@ -1,0 +1,1 @@
+The footer's freshness note ("Recent evidence is thin: only N of M dated items are from the last 7 days") no longer counts job postings. A company board with thousands of older postings made every company run look stale; the note now measures only what people posted.

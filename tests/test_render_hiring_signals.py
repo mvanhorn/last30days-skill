@@ -267,10 +267,11 @@ class JobsDigestRenderTests(unittest.TestCase):
         self.assertIn("Evidence: Run the Lagos warehouse.", text)
 
     def test_ranked_jobs_keep_their_snippets_where_no_digest_is_printed(self):
-        # The full dump prints no digest section, and a caller that asked for
-        # no digest (the MCP tool) gets a board without one.
+        # The full dump carries the digest beside every ranked posting's own
+        # snippet, and a caller that asked for no digest (the MCP tool) gets a
+        # board without one.
         full = render.render_full(self._ranked_report())
-        self.assertNotIn("## Jobs Digest", full)
+        self.assertIn("## Jobs Digest", full)
         self.assertIn("Evidence: Boilerplate opener.", full)
         self.assertIn("Evidence: Run the Lagos warehouse.", full)
 
