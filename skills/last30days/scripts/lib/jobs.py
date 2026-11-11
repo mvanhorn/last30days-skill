@@ -170,12 +170,26 @@ def _out_of_time(step: str) -> bool:
     return True
 
 
-def _bounds(timeout: float) -> dict[str, Any]:
-    """The per-request timeout, and the lane's deadline when it has a budget."""
+def _request_seconds(timeout: float, attempts: int = 1) -> float:
+    """The longest one call may take in all: each attempt's timeout and the
+    pause ``lib.http`` takes between attempts."""
+    return timeout * attempts + http.RETRY_DELAY * sum(range(1, attempts))
+
+
+def _bounds(timeout: float, attempts: int = 1) -> dict[str, Any]:
+    """The per-attempt timeout and the call's hard deadline.
+
+    ``timeout`` only reaches each socket operation, so a host that stalls in
+    DNS or sends a byte now and then could hold a request far longer. The
+    hard deadline is the earlier of the call's own limit and what is left of
+    the lane's budget, and ``lib.http`` stops waiting there whatever the
+    socket is doing. Without a budget the call's own limit is the deadline.
+    """
+    seconds = _request_seconds(timeout, attempts)
     budget = _BUDGET.get()
-    if budget is None:
-        return {"timeout": timeout}
-    return {"timeout": timeout, "deadline_monotonic": time.monotonic() + budget.remaining()}
+    if budget is not None:
+        seconds = min(seconds, budget.remaining())
+    return {"timeout": timeout, "deadline_monotonic": time.monotonic() + seconds}
 
 
 def _note_slow(what: str) -> None:
@@ -337,10 +351,13 @@ def _search_jobs(
         attempted.extend(probe_attempts)
 
     # --- Tier 1: call the resolved ATS API. Trust it only if it has jobs. ---
-    # Finding the board may have had a share of the budget; reading it has
-    # all that is left.
-    budget.limit_discovery(None)
+    # Finding the board may have had a share of the budget; reading a found
+    # board has all that is left. The share comes back when the board turns
+    # out to hold nothing, so the fallbacks below cannot spend the time of
+    # the companies still to be tried.
+    share = budget.step_deadline
     if provider and slug:
+        budget.limit_discovery(None)
         board: dict[str, Any] = {}
         deadline = budget.deadline
         try:
@@ -412,6 +429,8 @@ def _search_jobs(
                     "Jobs", f"{company}: {provider} board {slug}: {coverage}", tty_only=False,
                 )
             return items, artifact
+
+    budget.step_deadline = share
 
     # --- Tier 2: parse JSON-LD JobPosting off the careers page. ---
     if careers_html:
@@ -861,7 +880,8 @@ def search_greenhouse_board(board_token: str, *, retries: int = 2) -> list[dict[
     """Return jobs from Greenhouse's public Job Board API."""
     url = f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs"
     data = http.get(
-        url, params={"content": "true"}, retries=retries, **_bounds(API_TIMEOUT_SECONDS),
+        url, params={"content": "true"}, retries=retries,
+        **_bounds(API_TIMEOUT_SECONDS, retries),
     )
     jobs = data.get("jobs") if isinstance(data, dict) else []
     if not isinstance(jobs, list):
@@ -877,7 +897,7 @@ def search_ashby_board(slug: str, *, retries: int = 2) -> list[dict[str, Any]]:
         params={"includeCompensation": "true"},
         headers={"User-Agent": http.BROWSER_USER_AGENT},
         retries=retries,
-        **_bounds(API_TIMEOUT_SECONDS),
+        **_bounds(API_TIMEOUT_SECONDS, retries),
     )
     return parse_ashby_response(data, slug)
 
@@ -886,7 +906,7 @@ def search_lever_board(slug: str, *, retries: int = 2) -> list[dict[str, Any]]:
     """Return jobs from Lever's public postings API (returns a JSON list)."""
     url = f"https://api.lever.co/v0/postings/{slug}"
     data = http.get(
-        url, params={"mode": "json"}, retries=retries, **_bounds(API_TIMEOUT_SECONDS),
+        url, params={"mode": "json"}, retries=retries, **_bounds(API_TIMEOUT_SECONDS, retries),
     )
     return parse_lever_response(data, slug)
 
@@ -903,7 +923,7 @@ def read_workable_board(slug: str) -> tuple[list[dict[str, Any]], dict[str, Any]
     holds, ``board_cut_short`` says so; the keys are ``search_workday_board``'s.
     """
     url = f"https://apply.workable.com/api/v3/accounts/{slug}/jobs"
-    data = http.post(url, json_data={}, retries=2, **_bounds(API_TIMEOUT_SECONDS))
+    data = http.post(url, json_data={}, retries=2, **_bounds(API_TIMEOUT_SECONDS, 2))
     items = parse_workable_response(data, slug)
     total = max(_reported_total(data, "total"), len(items))
     return items, {
@@ -1023,7 +1043,9 @@ def _workday_run(
         if remaining <= 0:
             return _OUT_OF_TIME
         try:
-            return call(time.monotonic() + remaining)
+            # Each call makes up to two attempts; one page or detail that
+            # never finishes is cut off at its own limit, not the board's.
+            return call(time.monotonic() + min(remaining, _request_seconds(API_TIMEOUT_SECONDS, 2)))
         except http.HTTPError:
             return None
 

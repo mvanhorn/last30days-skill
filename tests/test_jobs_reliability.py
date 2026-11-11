@@ -617,9 +617,9 @@ def test_roles_the_run_ranked_take_up_to_ten_of_the_forty_digest_places():
     assert all(entry.get("engine") for entry in out["roles"][:10])
     assert out["roles"][0]["text"] == "Own the number 45 line."
     assert out["roles"][0]["posted"] == "2026-11-09"
-    # A ranked role the rarity pick already had stays where it was, marked.
-    assert out["roles"][13]["url"] == picked[3] and out["roles"][13]["engine"] is True
-    assert out["engine_roles"] == 11
+    # The ten places are spent: a role ranked after them is not reserved.
+    assert out["roles"][13]["url"] == picked[3] and not out["roles"][13].get("engine")
+    assert out["engine_roles"] == 10
     assert out["distinct_roles"] == digest["distinct_roles"]
     # The digest it was given is not changed.
     assert [entry["url"] for entry in digest["roles"]] == picked
@@ -821,3 +821,119 @@ def test_topic_and_host_companies_with_no_board_get_one_stderr_line(capsys):
     err = capsys.readouterr().err
     assert err.count("[Jobs]") == 1
     assert "[Jobs] no supported job board found for Sundar Pichai (also tried: Alphabet)" in err
+
+
+# --- Review findings on the first version of this change ---
+
+
+def test_web_fallback_for_a_company_with_no_board_stays_inside_its_discovery_share():
+    # A person topic with host companies: the topic's own search may use a
+    # share of the budget, and the web fallback is part of that search. With
+    # the whole budget it could leave the later companies no time.
+    clock = Clock()
+    budget = jobs.LaneBudget(45.0, clock=clock)
+    seen = {}
+
+    def web(company, *_args, **_kwargs):
+        seen["remaining"] = budget.remaining()
+        return [], {}
+
+    with patch("lib.jobs.http.get_text", return_value=None), \
+            patch("lib.jobs.http.get", side_effect=_not_found), \
+            patch.object(jobs, "search_jobs_web", side_effect=web):
+        jobs.search_jobs(
+            "Elon Musk", WINDOW, {}, web_backend="keyless", budget=budget, discovery_seconds=15.0,
+        )
+    assert seen["remaining"] <= 15.0
+    # The share ends with the call; the next company starts from the budget.
+    assert budget.remaining() == 45.0
+
+
+def test_found_board_is_read_with_the_whole_budget_not_the_discovery_share():
+    clock = Clock()
+    budget = jobs.LaneBudget(45.0, clock=clock)
+    seen = {}
+
+    def board(token, *, deadline):
+        seen["remaining"] = budget.remaining()
+        return [], {}
+
+    with patch("lib.jobs.http.get_text", return_value=CAREERS), \
+            patch.object(jobs, "search_workday_board", side_effect=board):
+        jobs.search_jobs(
+            "Acme", WINDOW, {}, web_backend="none", site="https://www.acme.com",
+            budget=budget, discovery_seconds=15.0,
+        )
+    assert seen["remaining"] == 45.0
+
+
+def test_top_ranked_role_at_the_end_of_the_rarity_picks_is_not_trimmed_away():
+    rows = _waymo_board()
+    digest = jobs_digest.build_digest(rows, jobs_digest.select_roles(rows))
+    picked = [entry["url"] for entry in digest["roles"]]
+    # The run's best role is the rarity pick in the last place; one
+    # lower-ranked role is added in front.
+    out = jobs_digest.add_engine_roles(digest, rows, [picked[39], rows[50]["url"]])
+    urls = [entry["url"] for entry in out["roles"]]
+    assert len(urls) == 40
+    assert picked[39] in urls and rows[50]["url"] in urls
+    assert picked[38] not in urls  # the rarest unranked role gave up its place
+    assert next(entry for entry in out["roles"] if entry["url"] == picked[39])["engine"] is True
+    assert out["engine_roles"] == 2
+
+
+def test_ranked_roles_beyond_the_reserved_places_are_not_reserved():
+    rows = _waymo_board()
+    digest = jobs_digest.build_digest(rows, jobs_digest.select_roles(rows))
+    picked = [entry["url"] for entry in digest["roles"]]
+    # Every pick is ranked, then a role off the list: the ten reserved places
+    # are the ten best ranked, all already listed, so nothing is added.
+    out = jobs_digest.add_engine_roles(digest, rows, [*picked, rows[50]["url"]])
+    assert [entry["url"] for entry in out["roles"]] == picked
+    assert out["engine_roles"] == jobs_digest.ENGINE_ROLE_SLOTS
+
+
+def test_hard_deadline_of_a_request_is_its_own_time_limit_not_the_lanes_remaining_time():
+    import time as real_time
+    seen = []
+
+    def page(url, **kwargs):
+        seen.append((kwargs["timeout"], kwargs["deadline_monotonic"] - real_time.monotonic()))
+        return None
+
+    def api(url, *_args, **kwargs):
+        seen.append((kwargs["timeout"] * kwargs["retries"] + 5, kwargs["deadline_monotonic"] - real_time.monotonic()))
+        raise http.HTTPError("HTTP 404: Not Found", status_code=404)
+
+    with patch("lib.jobs.http.get_text", side_effect=page), patch("lib.jobs.http.get", side_effect=api):
+        jobs.search_jobs("Kanye West", WINDOW, {}, web_backend="none")
+    assert len(seen) == 6 + 6
+    for limit, hard in seen:
+        # A host that stalls in DNS or trickles bytes is cut off here.
+        assert hard <= limit
+
+
+def test_hard_deadline_never_passes_the_lanes_remaining_time():
+    import time as real_time
+    clock = Clock()
+    budget = jobs.LaneBudget(45.0, clock=clock)
+    clock.advance(43.0)
+    token = jobs._BUDGET.set(budget)
+    try:
+        bounds = jobs._bounds(jobs.PAGE_TIMEOUT_SECONDS)
+    finally:
+        jobs._BUDGET.reset(token)
+    assert bounds["deadline_monotonic"] - real_time.monotonic() <= 2.0
+
+
+def test_listing_page_of_a_paged_board_has_its_own_hard_deadline():
+    import time as real_time
+    seen = []
+
+    def post(url, json_data, headers=None, **kwargs):
+        seen.append(kwargs["deadline_monotonic"] - real_time.monotonic())
+        return {"total": 1, "jobPostings": []}
+
+    with patch("lib.jobs.http.post", side_effect=post):
+        jobs.search_workday_board("acme.wd5/AcmeCareers")
+    assert seen and seen[0] <= jobs.API_TIMEOUT_SECONDS * 2 + 5
