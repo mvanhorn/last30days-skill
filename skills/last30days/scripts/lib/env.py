@@ -73,7 +73,7 @@ KEYCHAIN_KEYS = (
     "AUTH_TOKEN", "CT0", "BSKY_HANDLE", "BSKY_APP_PASSWORD",
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
-    "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
+    "SCAVIO_API_KEY", "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
     "X_BEARER_TOKEN", "DEEPLINE_API_KEY",
 )
 
@@ -716,6 +716,10 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Deepline: one key for the person-run lanes (LinkedIn profile and
         # posts, name-to-profile lookup). Called directly, never proxied.
         ('DEEPLINE_API_KEY', None),
+        # Scavio: opt-in alternative TikTok transport, used only when
+        # LAST30DAYS_TIKTOK_BACKEND=scavio. ScrapeCreators stays the default.
+        ('SCAVIO_API_KEY', None),
+        ('LAST30DAYS_TIKTOK_BACKEND', None),
         # Bright Data CLI. Optional: the CLI normally owns its own auth via
         # `brightdata login`, so this only matters for users who prefer an
         # explicit key in a `.env` file or the keychain. Registered here so
@@ -2060,7 +2064,7 @@ def is_tiktok_comments_available(config: dict[str, Any]) -> bool:
     Requires SCRAPECREATORS_API_KEY AND tiktok_comments in INCLUDE_SOURCES.
     Mirrors the youtube_comments opt-in pattern.
     """
-    if not config.get('SCRAPECREATORS_API_KEY'):
+    if not (config.get('SCRAPECREATORS_API_KEY') or get_tiktok_backend(config) == 'scavio'):
         return False
     include = _parse_include_sources(config)
     return 'tiktok_comments' in include
@@ -2218,19 +2222,46 @@ def is_shortform_oss_available(
 
 
 def is_tiktok_available(config: dict[str, Any]) -> bool:
-    """Check if TikTok source is available (ScrapeCreators or OSS fallback).
+    """Check if TikTok source is available (ScrapeCreators, Scavio when
+    pinned, or the OSS fallback).
 
-    Returns True if SCRAPECREATORS_API_KEY is set, or if yt-dlp plus a
-    web-discovery backend can serve the keyless fallback. APIFY_API_TOKEN is
-    not a TikTok search backend (legacy alias only; it was never wired to an
-    Apify actor).
+    Returns True if ``get_tiktok_backend`` picks a paid backend, or if yt-dlp
+    plus a web-discovery backend can serve the keyless fallback.
+    APIFY_API_TOKEN is not a TikTok credential: it was never wired to an Apify
+    actor, and sending it to ScrapeCreators only produced auth failures.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY') or is_shortform_oss_available(config))
+    return get_tiktok_backend(config) is not None or is_shortform_oss_available(config)
+
+
+def get_tiktok_backend(config: dict[str, Any]) -> str | None:
+    """Which service serves TikTok: 'scrapecreators', 'scavio', or None.
+
+    ScrapeCreators is the default. Scavio is
+    opt-in: it serves TikTok only when pinned with
+    LAST30DAYS_TIKTOK_BACKEND=scavio, never just because SCAVIO_API_KEY is set.
+    A pin to a backend whose key is missing returns None rather than silently
+    falling back.
+    """
+    pin = (config.get('LAST30DAYS_TIKTOK_BACKEND') or '').strip().lower()
+    has_sc = bool(config.get('SCRAPECREATORS_API_KEY'))
+    has_scavio = bool(config.get('SCAVIO_API_KEY'))
+    if pin == 'scavio':
+        return 'scavio' if has_scavio else None
+    if pin == 'scrapecreators':
+        return 'scrapecreators' if has_sc else None
+    return 'scrapecreators' if has_sc else None
 
 
 def get_tiktok_token(config: dict[str, Any]) -> str:
-    """ScrapeCreators key for TikTok. Empty means the OSS fallback may run."""
-    return config.get('SCRAPECREATORS_API_KEY') or ''
+    """Key for the backend ``get_tiktok_backend`` picks. Empty means no paid
+    backend serves TikTok, so only the OSS fallback may run; a pin never
+    sends the other service's key."""
+    backend = get_tiktok_backend(config)
+    if backend == 'scavio':
+        return config.get('SCAVIO_API_KEY') or ''
+    if backend == 'scrapecreators':
+        return config.get('SCRAPECREATORS_API_KEY') or ''
+    return ''
 
 
 def _parse_include_sources(config: dict[str, Any]) -> set[str]:
