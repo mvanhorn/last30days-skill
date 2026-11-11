@@ -112,11 +112,49 @@ def test_the_bar_carries_one_passing_one_failing_and_one_story_example():
     assert "67 open roles based in China" in bar
 
 
-def test_two_signal_floor_with_the_hiring_signals_exemption_and_the_cap():
-    floor = _rule("**The floor.**")
-    assert "Write the section only when at least two signals qualify." in floor
-    assert "A `--hiring-signals` run is exempt from this floor" in floor
-    assert "At most five signals" in floor
+def test_at_most_two_signals_and_one_is_enough():
+    count = _rule("**How many.**")
+    assert "At most two signals in the section" in count
+    assert "One qualifying signal is enough to write the section." in count
+    assert "With none, write nothing about jobs in the body" in count
+    assert "a cluster is one of the two" in count
+    # The old floor is gone from the whole reference.
+    text = reference_text("hiring-signals")
+    for old in ("at least two signals qualify", "two-signal floor", "At most five signals", "**The floor.**"):
+        assert old not in text, old
+    assert rule.MIN_SIGNALS == 1 and rule.MAX_SIGNALS == 2
+
+
+def test_a_cluster_of_three_or_more_postings_is_one_signal():
+    cluster = _rule("**Clusters.**")
+    assert "A cluster counts as one signal." in cluster
+    assert "Three or more postings in the digest that share one specific, concrete focus" in cluster
+    assert "a customer type, a place, a named program, or a function that is new for this company" in cluster
+    assert "even when no single posting would" in cluster
+    assert "out of character (test 1) or bears on a story in this report (test 4)" in cluster
+    assert "Two postings are not a cluster" in cluster
+    assert "General Accounts Federal and SLED team" in cluster
+    assert rule.MIN_CLUSTER_POSTINGS == 3
+
+
+def test_each_signal_says_what_is_hired_for_and_why_it_is_interesting():
+    paragraph = _rule("**Each signal paragraph**")
+    assert "two to three sentences" in paragraph
+    assert "**What the company is hiring for.**" in paragraph
+    assert "**Why it is interesting.**" in paragraph
+    assert "what it suggests and why that matters this month" in paragraph
+    assert "tied to a story in this report when one exists" in paragraph
+    assert '"which suggests", "that points to"' in paragraph
+    assert "never as an announced fact" in paragraph
+    assert "say how many postings there are and cite two of them" in paragraph
+    assert rule.CLUSTER_POSTINGS_CITED == 2 and rule.MAX_PARAGRAPH_SENTENCES == 3
+
+
+def test_section_length_is_a_lead_in_two_short_paragraphs_at_most_and_the_closing_line():
+    length = _rule("**Length.**")
+    assert "at most two signal paragraphs of two to three sentences each" in length
+    assert "Nothing more." in length
+    assert rule.max_section_paragraphs() == 4
 
 
 # --- the web check ------------------------------------------------------------------
@@ -154,9 +192,11 @@ def test_format_is_a_lead_in_then_one_list_free_paragraph_per_signal():
 
 def test_each_signal_is_quoted_named_and_linked_as_printed():
     fmt = _rule("**Format.**")
-    assert "quotes the posting's own words" in fmt
-    assert "names the role" in fmt
-    assert "exactly as the digest printed it" in fmt
+    assert fmt  # the lead-in rule is still there
+    paragraph = _rule("**Each signal paragraph**")
+    assert "quote the posting's own words" in paragraph
+    assert "name the role" in paragraph
+    assert "exactly as the digest printed it" in paragraph
 
 
 def test_section_closes_with_the_exact_disclaimer():
@@ -170,7 +210,13 @@ def test_format_example_is_list_free_and_ends_on_the_disclaimer():
     assert lines[-1] == CLOSING
     for line in lines:
         assert not re.match(r"\s*(?:[-*•]\s|\d+[.)\\]|#)", line), line
-    assert len(lines) >= 4, "example shows fewer than two signal paragraphs"
+    # Lead-in, a single-posting signal, a cluster signal, the closing line.
+    assert len(lines) == rule.max_section_paragraphs()
+    for paragraph in lines[1:-1]:
+        sentences = [part for part in re.split(r"(?<=[.!?])\s+(?=[{A-Z])", paragraph) if part]
+        assert 2 <= len(sentences) <= rule.MAX_PARAGRAPH_SENTENCES, paragraph
+        assert re.search(r"points to|suggests", paragraph), paragraph
+    assert lines[2].count("]({posting URL})") == rule.CLUSTER_POSTINGS_CITED
 
 
 def test_standout_may_be_a_key_pattern_and_the_footer_stays_the_engines():
@@ -189,8 +235,10 @@ def test_section_stays_out_of_comparison_recommendations_and_exec():
 # --- the labelled set ----------------------------------------------------------------
 
 
-def test_labelled_set_covers_the_four_boards():
-    assert set(BOARDS) == {"Anthropic", "Stripe", "SpaceX", "Nvidia"}
+def test_labelled_set_covers_the_four_boards_and_the_nvidia_cluster():
+    assert set(BOARDS) == {
+        "Anthropic", "Stripe", "SpaceX", "Nvidia", "Nvidia, public sector cluster",
+    }
 
 
 @pytest.mark.parametrize("company", sorted(BOARDS))
@@ -211,7 +259,10 @@ def test_labels_are_well_formed(company):
 def test_each_labelled_signal_gets_its_expected_outcome(company):
     for candidate in BOARDS[company]["candidates"]:
         expected = candidate["expected"] == "qualifies"
-        assert rule.qualifies(candidate["tests"]) is expected, candidate["role"]
+        assert bool(rule.qualifying([candidate])) is expected, candidate["role"]
+        if "cluster" in candidate:
+            assert len(candidate["cluster"]) >= rule.MIN_CLUSTER_POSTINGS, candidate["role"]
+            assert candidate["focus"], candidate["role"]
 
 
 @pytest.mark.parametrize("company", sorted(BOARDS))
@@ -240,10 +291,28 @@ def test_expected_signals_per_board():
     assert len(kept("Nvidia")) == 2
 
 
-def test_stripe_has_one_signal_so_only_a_hiring_signals_run_shows_it():
+def test_stripe_has_one_signal_and_one_is_enough():
     stripe = BOARDS["Stripe"]["candidates"]
-    assert rule.signals_shown(stripe) == 0
+    assert rule.signals_shown(stripe) == 1
     assert rule.signals_shown(stripe, hiring_signals_run=True) == 1
+
+
+def test_boards_with_more_qualifying_signals_show_two():
+    for company in ("Anthropic", "SpaceX"):
+        assert rule.signals_shown(BOARDS[company]["candidates"]) == 2
+
+
+def test_nvidia_public_sector_cluster_is_one_signal_and_the_section_is_written():
+    # A real "Jensen Huang" run got this digest and wrote no section: no
+    # single posting qualified, and one signal was below the old floor.
+    board = BOARDS["Nvidia, public sector cluster"]
+    cluster, alone, _other = board["candidates"]
+    assert len(cluster["cluster"]) == 4
+    assert rule.qualifying(board["candidates"]) == [cluster]
+    assert not rule.qualifies(alone["tests"])
+    assert rule.section_present(board["candidates"])
+    assert rule.signals_shown(board["candidates"]) == board["expected_signals"] == 1
+    assert "Congress" in board["report_story"]
 
 
 @pytest.mark.parametrize("company", sorted(BOARDS))
@@ -279,6 +348,11 @@ def test_rule_arithmetic_at_the_edges():
     assert rule.qualifies([4])
     assert rule.qualifies([2, 4])
     seven = [{"tests": [1, 2, 3], "public": False}] * 7
-    assert rule.signals_shown(seven) == rule.MAX_SIGNALS
+    assert rule.signals_shown(seven) == rule.MAX_SIGNALS == 2
+    assert rule.signals_shown([{"tests": [], "public": None}]) == 0
+    # Out of character alone: three postings sharing a focus qualify, two do not.
+    assert rule.qualifies([1], postings=3)
+    assert not rule.qualifies([1], postings=2)
+    assert not rule.qualifies([2], postings=5)
     assert rule.wording({"public": None}) == "check first"
     assert not rule.standout({"tests": [1, 2, 3], "public": None})

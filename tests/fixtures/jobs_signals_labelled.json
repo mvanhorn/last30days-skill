@@ -1,5 +1,5 @@
 {
-  "about": "Labelled candidate signals from four company job boards, for the Jobs Page Secret Signals rules in skills/last30days/references/hiring-signals.md. tests lists which of the four tests of the bar a candidate meets (1 out of character, 2 names something concrete, 3 large and hard to undo, 4 bears on a story in the report). public is true when the thing is already publicly announced, false when a web check found nothing, null when it was not checked while labelling. quote is the posting's own words, or null where the label rests on the role or a count. The labels are a person's judgment of saved boards; boards change, so compare a live run by signal, not by exact role.",
+  "about": "Labelled candidate signals from four company job boards (Nvidia twice, from two saved digests), for the Jobs Page Secret Signals rules in skills/last30days/references/hiring-signals.md. tests lists which of the four tests of the bar a candidate meets (1 out of character, 2 names something concrete, 3 large and hard to undo, 4 bears on a story in the report). public is true when the thing is already publicly announced, false when a web check found nothing, null when it was not checked while labelling. quote is the posting's own words, or null where the label rests on the role or a count. The labels are a person's judgment of saved boards; boards change, so compare a live run by signal, not by exact role. A candidate with a cluster list is three or more postings that share one concrete focus and count together as one signal; its paragraph cites two of them.",
   "boards": [
     {
       "company": "Anthropic",
@@ -46,7 +46,7 @@
     {
       "company": "Stripe",
       "report_story": null,
-      "expected_section": "absent",
+      "expected_section": "present",
       "candidates": [
         {
           "role": "Engineering Manager, Money as a Service (MaaS)",
@@ -141,6 +141,60 @@
           "role": "Senior Account Manager, SI Factory Segment Sales, Global Public Sector",
           "quote": "Enterprise SI Factory Segment Sales team",
           "tests": [2],
+          "public": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "company": "Nvidia, public sector cluster",
+      "report_story": "Congress is questioning Nvidia's China chip sales",
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "role": "Public sector and US government postings",
+          "focus": "selling to and serving government customers",
+          "quote": "General Accounts Federal and SLED team",
+          "cluster": [
+            {
+              "role": "Sales Manager, Public Sector Industries - General Accounts",
+              "quote": "General Accounts Federal and SLED team"
+            },
+            {
+              "role": "Manager, Government Accounting and Compliance",
+              "location": "Herndon, VA",
+              "quote": "supporting US government (USG) operations"
+            },
+            {
+              "role": "Senior Solution Architect, AI Infrastructure",
+              "location": "Washington, DC",
+              "quote": null,
+              "note": "Public Sector team."
+            },
+            {
+              "role": "Senior Enterprise Sales Account Manager - Public Sector and Defense",
+              "location": "Italy",
+              "quote": null
+            }
+          ],
+          "note": "No one of the four postings qualifies alone; together they bear on the report's story about Washington.",
+          "tests": [2, 4],
+          "public": null,
+          "expected": "qualifies"
+        },
+        {
+          "role": "Sales Manager, Public Sector Industries - General Accounts",
+          "quote": "General Accounts Federal and SLED team",
+          "note": "The same posting judged alone.",
+          "tests": [2],
+          "public": null,
+          "expected": "does not qualify"
+        },
+        {
+          "role": "Senior Software Engineer, NeMo Helix Core Platform",
+          "quote": null,
+          "tests": [],
           "public": null,
           "expected": "does not qualify"
         }
