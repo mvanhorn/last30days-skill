@@ -30,7 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import backends, doctor, env, grok_x, health, http, prescriptions, reddit_search, setup_wizard
+from lib import backends, digg, doctor, env, grok_x, health, http, prescriptions, reddit_search, setup_wizard
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -104,6 +104,9 @@ class _Hermetic:
         self._patches = [
             mock.patch("lib.health.probe_dependency", _probe_dep(probe_map, default_status)),
             mock.patch("lib.env.is_ytdlp_available", return_value=ytdlp_ok),
+            # Never read the real digg-pp-cli's help text. Tests of an older
+            # Digg CLI override this.
+            mock.patch("lib.digg.cli_searches_all_topics", return_value=True),
             mock.patch("lib.bird_x.is_bird_installed", return_value=False),
             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
             mock.patch("lib.bird_x.get_bird_status", return_value=dict(BIRD_STATUS_OFF)),
@@ -1608,6 +1611,44 @@ class CliHealth(unittest.TestCase):
         self.assertEqual(
             doctor.AUDIT_NOT_WORKING, report["sources"]["digg"]["audit_state"]
         )
+
+    def test_older_digg_cli_gets_the_upgrade_fix_and_stays_on(self):
+        with _Hermetic(probe_map={"digg-pp-cli": health.OK}), mock.patch(
+            "lib.digg.cli_searches_all_topics", return_value=False
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["digg"]
+        # An older CLI still answers, so Digg is not reported as failing.
+        self.assertEqual("ok", rec["tier"])
+        self.assertNotEqual(doctor.AUDIT_NOT_WORKING, rec["audit_state"])
+        self.assertIn("AI and tech", rec["note"])
+        install = "npx -y @mvanhorn/printing-press-library"
+        self.assertIn(install, rec["fix"])
+        self.assertIn("install digg --cli-only", rec["fix"])
+        digg_line = next(
+            line for line in doctor.render_text(report).splitlines()
+            if "digg [CLI: digg-pp-cli" in line
+        )
+        self.assertIn("AI and tech", digg_line)
+        self.assertIn("install digg --cli-only", digg_line)
+
+    def test_current_digg_cli_is_healthy_with_no_fix(self):
+        with _Hermetic(probe_map={"digg-pp-cli": health.OK}), mock.patch(
+            "lib.digg.cli_searches_all_topics", return_value=True
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["digg"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("", rec["fix"])
+        self.assertEqual("", rec["note"])
+
+    def test_digg_cli_that_is_not_installed_is_not_asked_for_its_help_text(self):
+        with _Hermetic(), mock.patch(
+            "lib.digg.cli_searches_all_topics",
+            side_effect=AssertionError("asked a missing CLI for its help text"),
+        ):
+            report = doctor.build_report({})
+        self.assertEqual("opt-in", report["sources"]["digg"]["status"])
 
     def test_gh_absent_github_still_working(self):
         report = _build({})  # gh missing by default in _Hermetic

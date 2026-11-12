@@ -16,7 +16,7 @@ which searches every Digg topic live and returns stories with a canonical
 
 digg-pp-cli 2026.10.x is still supported. Its ``search`` covers only the
 sections it is told to (default ``ai``) and rejects flags it does not
-know, so the call is chosen up front by ``_cli_searches_all_topics`` and
+know, so the call is chosen up front by ``cli_searches_all_topics`` and
 those installs keep the ``--topic ai,tech`` call. Their answers carry no
 ``url`` and take the older parsing path; see ``upgrade_note``.
 Optional enrichment: ``digg-pp-cli posts <clusterUrlId> --agent --by rank
@@ -153,7 +153,7 @@ def _published_date(published_at: Any) -> Optional[str]:
     return parsed.date().isoformat()
 
 
-def _cli_searches_all_topics() -> bool:
+def cli_searches_all_topics() -> bool:
     """True when the installed CLI's ``search`` covers every Digg topic.
 
     digg-pp-cli 2026.10.x defaults ``--topic`` to ``ai`` and rejects unknown
@@ -345,7 +345,7 @@ def search_digg(
         return {"results": []}
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
-    all_topics = _cli_searches_all_topics()
+    all_topics = cli_searches_all_topics()
     cmd = _build_search_args(topic, limit, all_topics=all_topics)
     scope = "all topics" if all_topics else f"sections={SECTIONS}"
     _log(f"search '{topic}' ({scope}, limit={limit}, since=30d)")
