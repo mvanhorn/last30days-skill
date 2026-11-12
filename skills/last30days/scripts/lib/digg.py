@@ -609,8 +609,9 @@ def _add_top_scored(
         _log(f"highest-scored search failed: {error}")
         response[_SCORE_PASS_ERROR_KEY] = str(error)
         return
-    merged = _merge_search_results(response.get("results") or [], scored.get("results") or [])
-    _log(f"found {len(merged) - len(response.get('results') or [])} more clusters by score")
+    relevant = response.get("results") or []
+    merged = _merge_search_results(relevant, scored.get("results") or [])
+    _log(f"found {len(merged) - len(relevant)} more clusters by score")
     response["results"] = merged
 
 
