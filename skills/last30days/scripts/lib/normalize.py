@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import Any
 from urllib.parse import urlparse
 
@@ -364,7 +365,9 @@ def _normalize_x(
     from_date: str,
     to_date: str,
 ) -> schema.SourceItem:
-    text = str(item.get("text") or "").strip()
+    # X returns post text HTML-escaped ("Tom &amp; Jerry"). Unescape it here so
+    # the title, the body, quotes copied from it and video titles read as written.
+    text = html.unescape(str(item.get("text") or "")).strip()
     mentioned = item.get("mentioned_handles") or []
     return _source_item(
         item_id=str(item.get("id") or f"X{index + 1}"),

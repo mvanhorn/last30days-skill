@@ -227,3 +227,47 @@ def test_normalize_marks_only_transcripts_as_spoken():
     )
     assert written.metadata["spoken_caption"] is False
     assert spoken.metadata["spoken_caption"] is True
+
+
+# Duplicate copies of one reel keep the transcript and its `spoken_caption`
+# mark together, in either merge order.
+def _reel(snippet, spoken):
+    return _item(
+        "instagram",
+        "https://www.instagram.com/reel/abc/",
+        author="vcbrags",
+        likes=1204,
+        snippet=snippet,
+        spoken=spoken,
+    )
+
+
+_TRANSCRIPT = "The most famous VC fund in the world Marie Kondoed itself last week."
+_DESCRIPTION = (
+    "Sequoia Capital news roundup. Follow for more venture capital stories every single "
+    "day of the week. #sequoia #vc #startups #funding #founders #investing"
+)
+
+
+def test_merge_keeps_a_later_transcript_over_a_longer_written_description():
+    from lib import fusion
+
+    merged = fusion.merge_source_items(_reel(_DESCRIPTION, False), _reel(_TRANSCRIPT, True))
+    assert merged.snippet == _TRANSCRIPT
+    assert merged.metadata["spoken_caption"] is True
+
+
+def test_merge_never_replaces_a_transcript_with_a_longer_written_description():
+    from lib import fusion
+
+    merged = fusion.merge_source_items(_reel(_TRANSCRIPT, True), _reel(_DESCRIPTION, False))
+    assert merged.snippet == _TRANSCRIPT
+    assert merged.metadata["spoken_caption"] is True
+
+
+def test_merge_still_keeps_the_longer_snippet_when_neither_copy_is_spoken():
+    from lib import fusion
+
+    merged = fusion.merge_source_items(_reel("Short.", False), _reel(_DESCRIPTION, False))
+    assert merged.snippet == _DESCRIPTION
+    assert not merged.metadata.get("spoken_caption")

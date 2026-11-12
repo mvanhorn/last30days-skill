@@ -100,7 +100,18 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
             existing.engagement[field_name] = value
     if len(incoming.body or "") > len(existing.body or ""):
         existing.body = incoming.body
-    if len(incoming.snippet or "") > len(existing.snippet or ""):
+    # A reel or TikTok fetched twice can come back once with its spoken
+    # transcript and once with only its written description. `spoken_caption`
+    # says which one the snippet is, so the two move together: the transcript
+    # wins whatever its length, and a longer written description never takes
+    # its place.
+    theirs_spoken = bool(incoming.metadata.get("spoken_caption"))
+    mine_spoken = bool(existing.metadata.get("spoken_caption"))
+    if theirs_spoken != mine_spoken:
+        if theirs_spoken and (incoming.snippet or "").strip():
+            existing.snippet = incoming.snippet
+            existing.metadata["spoken_caption"] = True
+    elif len(incoming.snippet or "") > len(existing.snippet or ""):
         existing.snippet = incoming.snippet
     return existing
 
