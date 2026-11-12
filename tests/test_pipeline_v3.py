@@ -3137,7 +3137,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
     def _cli(self, calls: list):
         import json as _json
 
-        def run(cmd, *, timeout, env=None, on_pid=None):
+        def run(cmd, *, timeout, **_bounds):
             calls.append(list(cmd))
             rows = []
             if cmd[2] == self.TOP_STORY:
@@ -3253,6 +3253,18 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
             self.assertEqual(deadline, call["deadline_monotonic"])
             self.assertIs(cancel, call["cancel"])
 
+    def test_story_source_calls_get_a_deadline_when_the_run_config_has_none(self):
+        # A hosted run keeps its retrieval deadline on a copy of the config,
+        # so this call sees none. It still must not start an open-ended fetch.
+        seen: list = []
+        before = time.monotonic()
+        self._fetch_sources({}, seen)
+        self.assertEqual(3, len(seen))
+        for call in seen:
+            self.assertIsNotNone(call["deadline_monotonic"])
+            self.assertLessEqual(call["deadline_monotonic"], time.monotonic() + 40)
+            self.assertGreaterEqual(call["deadline_monotonic"], before)
+
     def test_three_entity_comparison_fetches_one_story_per_run(self):
         seen: list = []
         self._fetch_sources({"_comparison_entity_count": 3}, seen)
@@ -3330,7 +3342,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self.assertEqual([], self._second_pass_calls(3))
 
     def test_run_completes_untagged_when_the_sources_fetch_times_out(self):
-        def timing_out(cmd, *, timeout, env=None, on_pid=None):
+        def timing_out(cmd, *, timeout, **_bounds):
             raise subproc.SubprocTimeout("posts timed out")
 
         report = self._run("default", timing_out)

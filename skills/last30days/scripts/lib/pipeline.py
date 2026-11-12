@@ -3178,7 +3178,10 @@ def run(
         first_party_handles=resolved_handles,
         primary_handle=x_handle,
     )
-    digg.tag_confirmed_candidates(candidates, digg_story_by_key)
+    digg.tag_confirmed_candidates(
+        candidates,
+        digg.surviving_stories(digg_story_by_key, items_by_source.get("digg", [])),
+    )
     private_candidates = [
         candidate
         for candidate in candidates
@@ -3912,11 +3915,12 @@ def _digg_story_sources(
         started = time.monotonic()
         fetched = digg.fetch_story_sources(
             stories, depth, stopped=lambda: _research_stopped(config),
-            deadline=config.get("_research_deadline"),
+            # The time this run's passes have left, or the run's own
+            # deadline when that comes first.
+            deadline=_research_deadline(config, seconds_left),
             cancel=config.get("_enrich_cancel"),
             entity_count=entity_count,
             budget=budget,
-            total_seconds=seconds_left,
         )
         spent.seconds += time.monotonic() - started
         http.fixture_source_record(request, fetched)

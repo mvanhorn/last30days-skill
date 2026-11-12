@@ -110,6 +110,10 @@ HELP_TIMEOUT = 10
 # no deadline.
 SOURCES_TOTAL_SECONDS = 40
 
+# Query length the all-topic search accepts, in characters.
+QUERY_MIN_CHARS = 3
+QUERY_MAX_CHARS = 120
+
 # Whether the installed CLI searches every topic. None until first checked;
 # the answer holds for the rest of the process.
 _all_topic_search: Optional[bool] = None
@@ -214,14 +218,37 @@ def cli_searches_all_topics() -> Optional[bool]:
         return _all_topic_search
 
 
+def _fit_query(query: str) -> str:
+    """Fit a query to the 3 to 120 characters the all-topic search accepts.
+
+    The newer CLI rejects anything outside that range with a usage error
+    before it searches. A shorter query ("AI", "Go") is repeated until it is
+    long enough, which searches for the same term. A longer one is cut at
+    the last word that fits.
+    """
+    query = " ".join(query.split())
+    if not query:
+        return query
+    while len(query) < QUERY_MIN_CHARS:
+        query = f"{query} {query}"
+    if len(query) > QUERY_MAX_CHARS:
+        cut = query[: QUERY_MAX_CHARS + 1]
+        query = (cut.rsplit(" ", 1)[0] if " " in cut else cut)[:QUERY_MAX_CHARS].rstrip()
+    return query
+
+
 def _build_search_args(query: str, limit: int, *, all_topics: bool) -> List[str]:
     """Build the search call.
 
     The all-topic call names no section and no sort order: the newer CLI
     defaults to every topic in relevance order, which is what the
-    position-based relevance hint in ``parse_digg_response`` expects.
+    position-based relevance hint in ``parse_digg_response`` expects. Its
+    query is fitted to the length that CLI accepts; the older CLI has no
+    such limit and gets the query as given.
     """
     sections = [] if all_topics else ["--topic", SECTIONS]
+    if all_topics:
+        query = _fit_query(query)
     return [
         CLI_BIN,
         "search",
@@ -860,7 +887,6 @@ def fetch_story_sources(
     cancel: Optional[threading.Event] = None,
     entity_count: int = 1,
     budget: Optional[int] = None,
-    total_seconds: Optional[float] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch the sources of the top stories by Digg Score, one story at a time.
 
@@ -873,8 +899,7 @@ def fetch_story_sources(
     ``deadline`` is the run's monotonic deadline and ``cancel`` its cancel
     signal: both reach every call, a call's timeout is capped at the time
     left, and the fetch ends when none is left or the signal is set. A run
-    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch,
-    or ``total_seconds`` when a later pass has only part of that left.
+    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch.
 
     Returns ``{story UUID: {"posts": [...], "source_urls": [...]}}``:
     ``posts`` holds the first ``POSTS_PER_CLUSTER`` quotable X posts and
@@ -885,11 +910,8 @@ def fetch_story_sources(
     budget = full_budget if budget is None else min(budget, full_budget)
     if budget <= 0:
         return {}
-    if total_seconds is None:
-        total_seconds = SOURCES_TOTAL_SECONDS
     fetch_deadline = (
-        deadline if deadline is not None
-        else time.monotonic() + min(total_seconds, SOURCES_TOTAL_SECONDS)
+        deadline if deadline is not None else time.monotonic() + SOURCES_TOTAL_SECONDS
     )
     scored: Dict[str, float] = {}
     for item in items:
@@ -970,6 +992,19 @@ def apply_story_sources(
             if current is None or story["engagement"] > current["engagement"]:
                 stories[key] = story
     return stories
+
+
+def surviving_stories(
+    stories: Dict[str, Dict[str, Any]], items: list,
+) -> Dict[str, Dict[str, Any]]:
+    """Drop map entries whose Digg story is no longer among ``items``.
+
+    The map is built at retrieval, before the run's subject and identity
+    filters reject items. A story they rejected must not come back as the
+    confirmation of an item that survived.
+    """
+    kept = {item.url for item in items if getattr(item, "source", None) == "digg"}
+    return {key: story for key, story in stories.items() if story.get("url") in kept}
 
 
 def tag_confirmed_candidates(candidates: list, stories: Dict[str, Dict[str, Any]]) -> int:
