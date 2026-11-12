@@ -229,11 +229,13 @@ def _fit_query(query: str) -> str:
     query = " ".join(query.split())
     if not query:
         return query
-    while len(query) < QUERY_MIN_CHARS:
-        query = f"{query} {query}"
     if len(query) > QUERY_MAX_CHARS:
         cut = query[: QUERY_MAX_CHARS + 1]
         query = (cut.rsplit(" ", 1)[0] if " " in cut else cut)[:QUERY_MAX_CHARS].rstrip()
+    # After the cut, so a short word left in front of one long token
+    # ("AI <long URL>" cut to "AI") is still made long enough.
+    while len(query) < QUERY_MIN_CHARS:
+        query = f"{query} {query}"
     return query
 
 
@@ -958,16 +960,17 @@ def fetch_story_sources(
 def apply_story_sources(
     items: list,
     fetched: Dict[str, Dict[str, Any]],
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, List[Dict[str, Any]]]:
     """Attach fetched quotes to their stories and map match keys to stories.
 
     Every copy of a fetched story gets the quotes, so whichever copy
     survives de-duplication still shows them. The returned map goes from
-    ``match_key`` of each source URL to the story's title, URL, Digg Score,
-    source count and 0-100 engagement score; a source shared by two stories
-    maps to the more engaged one.
+    ``match_key`` of each source URL to the stories that cite it, most
+    engaged first, each as its title, URL, Digg Score, source count and
+    0-100 engagement score. Every citing story is kept so that a later
+    filter (``surviving_stories``) can fall back to the next one.
     """
-    stories: Dict[str, Dict[str, Any]] = {}
+    stories: Dict[str, List[Dict[str, Any]]] = {}
     for item in items:
         if getattr(item, "source", None) != "digg":
             continue
@@ -988,32 +991,60 @@ def apply_story_sources(
             key = match_key(url)
             if key is None:
                 continue
-            current = stories.get(key)
-            if current is None or story["engagement"] > current["engagement"]:
-                stories[key] = story
+            citing = stories.setdefault(key, [])
+            if all(other["url"] != story["url"] for other in citing):
+                citing.append(story)
+    for citing in stories.values():
+        citing.sort(key=_story_engagement, reverse=True)
+    return stories
+
+
+def _story_engagement(story: Dict[str, Any]) -> float:
+    return story.get("engagement") or 0
+
+
+def merge_stories(
+    stories: Dict[str, List[Dict[str, Any]]], more: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Add a later pass's stories to ``stories`` in place, most engaged first."""
+    for key, citing in more.items():
+        merged = stories.setdefault(key, [])
+        merged.extend(
+            story for story in citing
+            if all(other["url"] != story["url"] for other in merged)
+        )
+        merged.sort(key=_story_engagement, reverse=True)
     return stories
 
 
 def surviving_stories(
-    stories: Dict[str, Dict[str, Any]], items: list,
-) -> Dict[str, Dict[str, Any]]:
-    """Drop map entries whose Digg story is no longer among ``items``.
+    stories: Dict[str, List[Dict[str, Any]]], items: list,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Keep only the stories that are still among ``items``.
 
     The map is built at retrieval, before the run's subject and identity
     filters reject items. A story they rejected must not come back as the
-    confirmation of an item that survived.
+    confirmation of an item that survived. A source that a rejected story
+    and a surviving one both cite keeps the surviving one.
     """
     kept = {item.url for item in items if getattr(item, "source", None) == "digg"}
-    return {key: story for key, story in stories.items() if story.get("url") in kept}
+    surviving: Dict[str, List[Dict[str, Any]]] = {}
+    for key, citing in stories.items():
+        still = [story for story in citing if story.get("url") in kept]
+        if still:
+            surviving[key] = still
+    return surviving
 
 
-def tag_confirmed_candidates(candidates: list, stories: Dict[str, Dict[str, Any]]) -> int:
+def tag_confirmed_candidates(
+    candidates: list, stories: Dict[str, List[Dict[str, Any]]],
+) -> int:
     """Mark each candidate that is a source of a fetched Digg story.
 
     A candidate matches when the URL of one of its non-Digg items has the
-    same ``match_key`` as a story source. The story is recorded under
-    ``metadata[CONFIRMED_BY_KEY]``, where ranking and rendering read it.
-    Returns how many candidates were marked.
+    same ``match_key`` as a story source. The most engaged of the matching
+    stories is recorded under ``metadata[CONFIRMED_BY_KEY]``, where ranking
+    and rendering read it. Returns how many candidates were marked.
     """
     if not stories:
         return 0
@@ -1024,8 +1055,11 @@ def tag_confirmed_candidates(candidates: list, stories: Dict[str, Dict[str, Any]
             if item.source == "digg":
                 continue
             key = match_key(item.url)
-            story = stories.get(key) if key else None
-            if story and (best is None or story["engagement"] > best["engagement"]):
+            # Each list is ordered most engaged first.
+            story = next(iter(stories.get(key) or []), None) if key else None
+            if story and (
+                best is None or _story_engagement(story) > _story_engagement(best)
+            ):
                 best = story
         if best is not None:
             candidate.metadata[CONFIRMED_BY_KEY] = dict(best)

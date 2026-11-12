@@ -3205,6 +3205,23 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         )
         self.assertEqual(["astro_ana"], [post["username"] for post in top_story.metadata["posts"]])
 
+    def test_story_the_subject_prune_could_remove_does_not_confirm(self):
+        # The prune runs after reranking, and the confirmation feeds the
+        # rerank score, so a story that is not certain to survive it is left
+        # out of the confirmations up front.
+        calls: list = []
+        escapes = rerank.escapes_entity_miss_prune
+        with patch.object(
+            rerank, "escapes_entity_miss_prune",
+            side_effect=lambda candidate, *, topic: (
+                candidate.source != "digg" and escapes(candidate, topic=topic)
+            ),
+        ):
+            report = self._run("default", self._cli(calls))
+
+        self.assertEqual(3, len(calls))
+        self.assertFalse([c for c in report.ranked_candidates if "digg_story" in c.metadata])
+
     def test_story_sources_are_fetched_before_supplemental_search(self):
         calls: list = []
         seen_at_supplemental: list[int] = []

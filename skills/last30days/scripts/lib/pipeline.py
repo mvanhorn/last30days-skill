@@ -3042,12 +3042,9 @@ def run(
     # Digg stories the retry found get their sources too, out of whatever
     # story budget and time the first pass left. Without this they carry no
     # quotes and cannot confirm other results.
-    for key, story in _digg_story_sources(
+    digg.merge_stories(digg_story_by_key, _digg_story_sources(
         bundle, topic=topic, depth=depth, config=config, spent=digg_sources_spent,
-    ).items():
-        current = digg_story_by_key.get(key)
-        if current is None or story["engagement"] > current["engagement"]:
-            digg_story_by_key[key] = story
+    ))
     for source, outcome in deferred_retryable_failures.items():
         if (
             source in bundle.errors_by_source
@@ -3178,9 +3175,23 @@ def run(
         first_party_handles=resolved_handles,
         primary_handle=x_handle,
     )
+    # Only a Digg story that is certain to stay in the report may confirm
+    # another result: one the filters above kept, and that the subject prune
+    # after reranking cannot remove. The confirmation feeds the rerank score,
+    # so it has to be settled here, before that prune runs.
+    digg_prunable = {
+        item.url
+        for candidate in candidates
+        if not rerank.escapes_entity_miss_prune(candidate, topic=topic)
+        for item in candidate.source_items
+        if item.source == "digg"
+    }
     digg.tag_confirmed_candidates(
         candidates,
-        digg.surviving_stories(digg_story_by_key, items_by_source.get("digg", [])),
+        digg.surviving_stories(digg_story_by_key, [
+            item for item in items_by_source.get("digg", [])
+            if item.url not in digg_prunable
+        ]),
     )
     private_candidates = [
         candidate
@@ -3868,7 +3879,7 @@ def _digg_story_sources(
     depth: str,
     config: dict[str, Any],
     spent: _DiggSourcesSpent | None = None,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, list[dict[str, Any]]]:
     """Fetch the top Digg stories' sources and attach their quotes.
 
     Returns the map from source match key to story that
