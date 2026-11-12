@@ -163,6 +163,13 @@ SEARCH_TIMEOUT = 30
 # The highest-scored call adds to a search that already has its most
 # relevant stories, so it gets less time before the run moves on without it.
 SCORE_SEARCH_TIMEOUT = 15
+# Seconds before the run's deadline by which the highest-scored call must be
+# over, leaving time to hand back the stories the first call found.
+SCORE_SEARCH_MARGIN = 5
+# How long a score call that overran gets to exit, once after the request to
+# stop and once more after the kill. Twice this must fit inside the margin,
+# or stopping a stuck call would itself run past the run's deadline.
+SCORE_SEARCH_CLEANUP_GRACE = 1.0
 POSTS_TIMEOUT = 10
 HELP_TIMEOUT = 10
 
@@ -448,6 +455,7 @@ def _invoke_cli(
     timeout: float,
     deadline: Optional[float] = None,
     cancel: Optional[threading.Event] = None,
+    cleanup_grace: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], str]:
     """Invoke digg-pp-cli and return the parsed envelope with its stderr.
 
@@ -455,6 +463,8 @@ def _invoke_cli(
     ``{"results": [], "error": "..."}`` on failure. Never raises; the
     pipeline relies on shape consistency. ``deadline`` (monotonic) and
     ``cancel`` end a running call early; both surface as a timeout error.
+    ``cleanup_grace`` shortens how long a call that overran is given to
+    exit, first after the request to stop and again after the kill.
     """
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}, ""
@@ -463,6 +473,8 @@ def _invoke_cli(
         bounds["deadline_monotonic"] = deadline
     if cancel is not None:
         bounds["cancel"] = cancel
+    if cleanup_grace is not None:
+        bounds["cleanup_grace"] = cleanup_grace
     try:
         result = subproc.run_with_timeout(cmd, timeout=timeout, **bounds)
     except subproc.SubprocTimeout as exc:
@@ -590,19 +602,29 @@ def _add_top_scored(
 ) -> None:
     """Merge the highest-scored stories for ``topic`` into ``response``.
 
-    A stopped run makes no call. A call that fails leaves the stories
-    already in ``response`` as they are and marks it for ``score_pass_note``.
+    A stopped run makes no call, and neither does one with under
+    ``SCORE_SEARCH_MARGIN`` seconds left. A call that fails leaves the
+    stories already in ``response`` as they are and marks it for
+    ``score_pass_note``.
     """
     if cancel is not None and cancel.is_set():
         return
-    if deadline is not None and time.monotonic() >= deadline:
-        return
+    timeout: float = SCORE_SEARCH_TIMEOUT
+    if deadline is not None:
+        # This call ends early enough for the stories already in hand to be
+        # returned before the run's deadline. A call that ran up to the
+        # deadline would have the whole search abandoned as timed out.
+        deadline = deadline - SCORE_SEARCH_MARGIN
+        timeout = min(timeout, deadline - time.monotonic())
+        if timeout <= 0:
+            return
     cmd = _build_search_args(
         topic, limit, all_topics=True, since_days=since_days, by_score=True
     )
     _log(f"search '{topic}' (all topics, by score, limit={limit}, since={since_days}d)")
     scored, stderr = _invoke_cli(
-        cmd, timeout=SCORE_SEARCH_TIMEOUT, deadline=deadline, cancel=cancel
+        cmd, timeout=timeout, deadline=deadline, cancel=cancel,
+        cleanup_grace=SCORE_SEARCH_CLEANUP_GRACE,
     )
     error = scored.get("error") or _empty_local_fallback_error(scored, stderr)
     if error:

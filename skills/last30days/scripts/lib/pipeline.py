@@ -3880,11 +3880,22 @@ def _finalize_items_by_source(
     for source, items in items_by_source_raw.items():
         _check_research(config or {})
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
+        if source == "digg":
+            # De-duplication keeps the earlier of two similar stories. Two
+            # searches can return the same event as a prominent story and as
+            # a smaller one, so prominent stories go first here and the copy
+            # kept is the one that carries the fetched quotes and can
+            # confirm other results.
+            prominent = digg.apply_bar(topic, items).prominent
+            leading = {id(item) for item in prominent}
+            items = prominent + [item for item in items if id(item) not in leading]
         # Same thread from two subquery streams: fold the enriched copy into
         # the first before the text-similarity dedupe, which would otherwise
         # keep whichever copy ranked higher and drop its comments.
         items = collapse_duplicate_urls(items)
         items = dedupe.dedupe_items(items)
+        if source == "digg":
+            items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
         enrichment_request = {
             "source": source,
             "phase": "post_ranking_enrichment",
