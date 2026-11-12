@@ -270,3 +270,32 @@ def test_phrase_matches_across_a_hyphen_or_extra_space():
 def test_descriptive_topic_keeps_stories_that_share_a_telling_word(topic, title, kept):
     story = _story(title, score=300, sources=40)
     assert _outcome(topic, story) == ("ordinary" if kept else "dropped")
+
+
+@pytest.mark.parametrize("topic, title, summary, outcome", [
+    ("Tesla earnings", "Tesla reports record Q3 profit", "Tesla posted earnings above estimates.", "ordinary"),
+    ("Nvidia stock", "Nvidia shares fall 5%", "The stock slid after the export ruling.", "ordinary"),
+    ("Tesla earnings", "Tesla recalls 200,000 cars", "A software fault is behind the recall.", "dropped"),
+    ("Tesla earnings", "Ford posts earnings beat", "Ford outsold Tesla in trucks.", "ordinary"),
+    ("Tesla earnings", "Rivian opens a new plant", "Tesla earnings are due next week.", "dropped"),
+])
+def test_two_word_topic_that_is_a_subject_and_an_aspect(topic, title, summary, outcome):
+    assert _outcome(topic, _story(title, summary, score=300, sources=40)) == outcome
+
+
+@pytest.mark.parametrize("topic, title, outcome", [
+    # A name that starts with a word stripped elsewhere keeps all its words.
+    ("Will Smith", "Will Smith announces a world tour", "prominent"),
+    ("Will Smith", "Smith College names a new president", "dropped"),
+    ("New York", "New York approves congestion pricing", "prominent"),
+    ("New York", "York Minster reopens after repairs", "dropped"),
+    # A trailing filler word is not part of the subject.
+    ("OpenAI news", "OpenAI ships a new model", "prominent"),
+])
+def test_filler_words_are_stripped_only_where_they_are_filler(topic, title, outcome):
+    assert _outcome(topic, _story(title, score=300, sources=40)) == outcome
+
+
+def test_topic_made_only_of_filler_words_judges_nothing():
+    story = _story("Netflix renews Haunted Hotel", score=300, sources=40)
+    assert _outcome("what is the latest", story) == "ordinary"

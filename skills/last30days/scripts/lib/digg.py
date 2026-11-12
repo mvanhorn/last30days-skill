@@ -1346,8 +1346,10 @@ def _title_points_at(words: List[str], title: str, text: str) -> bool:
     tour story that lists other artists, a roundup, a rival's launch.
 
     - One word ("OpenAI"): the title either names it or it does not.
-    - Two words, a name ("Sam Altman"): the title has one of them and the
-      summary gives the name in full ("Altman says ...").
+    - Two words, a name ("Sam Altman") or a subject and an aspect of it
+      ("Tesla earnings"): the title has one of them and the other appears
+      somewhere in the story ("Altman says ...", "Tesla reports record
+      profit" with earnings in the summary).
     - Longer, a description ("why is Nvidia stock down"): a story on the
       subject rarely repeats it, so one of its telling words in the title
       is enough.
@@ -1355,9 +1357,9 @@ def _title_points_at(words: List[str], title: str, text: str) -> bool:
     if len(words) < SUBJECT_NAME_MAX_WORDS:
         return False
     if len(words) == SUBJECT_NAME_MAX_WORDS:
-        return any(
-            _whole_phrase([word]).search(title) for word in words
-        ) and bool(_whole_phrase(words).search(text))
+        in_title = [bool(_whole_phrase([word]).search(title)) for word in words]
+        in_text = [bool(_whole_phrase([word]).search(text)) for word in words]
+        return any(in_title) and all(in_text)
     telling = [
         word for word in words
         if len(word) > 2 and word not in STOPWORDS and word not in LOW_SIGNAL_QUERY_TOKENS
