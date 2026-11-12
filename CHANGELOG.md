@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.38.0] - 2026-11-12
+
+### Changed
+
+- A research run now looks at far more Digg stories, both the most relevant and the highest-scored, and holds them to a bar. A story is kept only when its title carries the topic, so a story that mentions the topic in passing is dropped and a topic Digg does not cover shows no Digg results. The biggest on-topic stories lead Digg's results, and only those have their sources read (up to 8 at default depth, 12 at deep, four at a time) and can mark another result "Also in Digg story". Digg's footer totals rise on busy topics because bigger stories are kept. Quick depth still makes one small search, with the bar applied to it. Clusters from `digg-pp-cli` 2026.10.x are not judged and behave as before.
+
+
 ## [3.37.1] - 2026-11-12
 
 ### Fixed
