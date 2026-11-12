@@ -1891,3 +1891,307 @@ def test_comparison_run_fetches_its_share_of_the_story_budget(
     monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
     digg.fetch_story_sources(_five_stories(), depth, entity_count=entity_count)
     assert len(calls) == expected_calls
+
+
+# === Research search: most relevant stories plus the highest-scored ones ===
+
+_RELEVANCE_ARGS = ["digg-pp-cli", "search", "exoplanet", "--since", "30d", "--agent", "--limit"]
+
+
+def _research_cli(relevance, score, calls: list, seen: list | None = None, help_text=_NEW_SEARCH_HELP):
+    """A CLI answering the relevance call and the ``--sort score`` call apart.
+
+    An answer is an envelope, or a callable that raises or returns a result.
+    """
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        calls.append(list(cmd))
+        if "--help" in cmd:
+            return subproc.SubprocResult(returncode=0, stdout=help_text, stderr="")
+        if seen is not None:
+            seen.append(kwargs)
+        answer = score if "--sort" in cmd else relevance
+        return answer() if callable(answer) else _stdout_for(answer)
+
+    return fake_run
+
+
+def _research_search(monkeypatch, fake_run, depth="default", from_date="2026-10-12", **kwargs):
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    return digg.search_digg(
+        "exoplanet", from_date, "2026-11-11", depth=depth, include_top_scored=True, **kwargs
+    )
+
+
+def _score_call_times_out():
+    raise subproc.SubprocTimeout("search timed out after 30s")
+
+
+@pytest.mark.parametrize("depth,size", [("default", "50"), ("deep", "100")])
+def test_research_search_asks_for_the_most_relevant_and_the_highest_scored(monkeypatch, depth, size):
+    calls: list = []
+    answer = _live_envelope(_story())
+    out = _research_search(monkeypatch, _research_cli(answer, answer, calls), depth=depth)
+    assert _search_calls(calls) == [
+        [*_RELEVANCE_ARGS, size],
+        [*_RELEVANCE_ARGS, size, "--sort", "score"],
+    ]
+    assert len(out["results"]) == 1
+    assert "error" not in out
+    assert digg.score_pass_note(out) is None
+
+
+def test_quick_research_search_is_one_call_of_8_with_no_sort(monkeypatch):
+    calls: list = []
+    answer = _live_envelope(_story())
+    _research_search(monkeypatch, _research_cli(answer, answer, calls), depth="quick", from_date="2026-11-04")
+    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "8"]]
+
+
+def test_research_search_on_the_older_cli_is_the_one_ai_and_tech_call(monkeypatch):
+    calls: list = []
+    out = _research_search(
+        monkeypatch,
+        _research_cli(_CLI_2026_10_1_ANSWER, _CLI_2026_10_1_ANSWER, calls, help_text=_OLD_SEARCH_HELP),
+        from_date="2026-11-04",
+    )
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20"]
+    ]
+    assert digg.upgrade_note(out) == digg.UPGRADE_NOTE
+
+
+@pytest.mark.parametrize("help_failure", [_help_times_out, _help_exits_non_zero])
+def test_research_search_after_a_failed_help_probe_is_the_one_ai_and_tech_call(monkeypatch, help_failure):
+    calls: list = []
+    _research_search(
+        monkeypatch, _cli_with_failing_help(help_failure, _live_envelope(_story()), calls)
+    )
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20"]
+    ]
+
+
+def test_story_in_both_calls_appears_once_and_score_only_stories_follow_by_score(monkeypatch):
+    relevance = _live_envelope(
+        _story(short_id="rel00001", diggScore=12),
+        _story(short_id="both0001", diggScore=500),
+    )
+    score = _live_envelope(
+        _story(short_id="both0001", diggScore=500),
+        _story(short_id="big90bbb", diggScore=90),
+        _story(short_id="big300aa", diggScore=300),
+        _story(short_id="big90aaa", diggScore=90),
+    )
+    out = _research_search(monkeypatch, _research_cli(relevance, score, []))
+    assert [story["clusterUrlId"] for story in out["results"]] == [
+        "rel00001", "both0001", "big300aa", "big90aaa", "big90bbb",
+    ]
+
+
+def test_stories_without_a_uuid_are_matched_by_their_short_id(monkeypatch):
+    def bare(short_id: str, score: int) -> dict:
+        story = _story(short_id=short_id, diggScore=score)
+        del story["clusterId"]
+        return story
+
+    out = _research_search(
+        monkeypatch,
+        _research_cli(
+            _live_envelope(bare("same0001", 40)),
+            _live_envelope(bare("same0001", 40), bare("other001", 70)),
+            [],
+        ),
+    )
+    assert [story["clusterUrlId"] for story in out["results"]] == ["same0001", "other001"]
+
+
+def test_failed_score_call_keeps_the_relevance_stories_and_says_so(monkeypatch):
+    out = _research_search(
+        monkeypatch,
+        _research_cli(_live_envelope(_story(short_id="rel00001")), _score_call_times_out, []),
+    )
+    assert [story["clusterUrlId"] for story in out["results"]] == ["rel00001"]
+    assert "error" not in out
+    note = digg.score_pass_note(out)
+    assert "highest-scored" in note
+    assert "timed out" in note
+    assert len(note) <= 140
+
+
+def test_score_pass_note_is_absent_for_a_plain_answer():
+    assert digg.score_pass_note({"results": []}) is None
+    assert digg.score_pass_note(None) is None
+
+
+def test_failed_score_call_is_a_detail_on_an_ok_digg_outcome(monkeypatch):
+    from lib import health, pipeline, schema
+
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _research_cli(_live_envelope(_story(short_id="rel00001")), _score_call_times_out, []),
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="exoplanet score pass",
+        ranking_query="exoplanet",
+        sources=["digg"],
+    )
+    items, artifact = pipeline._retrieve_stream_impl(
+        topic="exoplanet",
+        subquery=subquery,
+        source="digg",
+        config={},
+        depth="default",
+        date_range=("2026-10-12", "2026-11-11"),
+        runtime=None,
+        mock=False,
+    )
+    assert [item["id"] for item in items] == ["rel00001"]
+    assert "_source_outcome" not in artifact
+    assert "highest-scored" in artifact["_source_outcome_detail"]
+
+    bundle = schema.RetrievalBundle()
+    bundle.record_detail("digg", artifact["_source_outcome_detail"])
+    bundle.add_items("primary", "digg", [object()])
+    assert bundle.source_status["digg"].state == health.OK
+    assert "highest-scored" in bundle.source_status["digg"].detail
+
+
+def test_failed_relevance_call_is_an_error_and_makes_no_score_call(monkeypatch):
+    calls: list = []
+
+    def relevance_fails():
+        return subproc.SubprocResult(returncode=2, stdout="", stderr="boom")
+
+    out = _research_search(
+        monkeypatch, _research_cli(relevance_fails, _live_envelope(_story()), calls)
+    )
+    assert out == {"results": [], "error": "boom"}
+    assert len(_search_calls(calls)) == 1
+    assert "--sort" not in _search_calls(calls)[0]
+
+
+@pytest.mark.parametrize(
+    "from_date,since",
+    [("2026-11-04", "8d"), ("2026-11-11", "1d"), ("2026-10-14", "29d"), ("2026-10-13", "30d"), ("2026-09-12", "30d")],
+)
+def test_research_search_sends_a_shorter_lookback_on_both_calls(monkeypatch, from_date, since):
+    calls: list = []
+    answer = _live_envelope(_story())
+    _research_search(monkeypatch, _research_cli(answer, answer, calls), from_date=from_date)
+    searches = _search_calls(calls)
+    assert len(searches) == 2
+    assert [cmd[cmd.index("--since") + 1] for cmd in searches] == [since, since]
+
+
+def test_cancelled_run_makes_no_score_call(monkeypatch):
+    import threading
+
+    calls: list = []
+    cancel = threading.Event()
+    cancel.set()
+    answer = _live_envelope(_story())
+    out = _research_search(monkeypatch, _research_cli(answer, answer, calls), cancel=cancel)
+    assert len(_search_calls(calls)) == 1
+    assert "--sort" not in _search_calls(calls)[0]
+    assert len(out["results"]) == 1
+    assert digg.score_pass_note(out) is None
+
+
+def test_run_past_its_deadline_makes_no_score_call(monkeypatch):
+    calls: list = []
+    clock = _Clock()
+    monkeypatch.setattr(digg, "time", clock)
+    answer = _live_envelope(_story())
+    _research_search(
+        monkeypatch, _research_cli(answer, answer, calls), deadline=clock.now - 1
+    )
+    assert len(_search_calls(calls)) == 1
+    assert "--sort" not in _search_calls(calls)[0]
+
+
+def test_research_search_hands_the_deadline_and_cancel_signal_to_both_calls(monkeypatch):
+    import threading
+
+    seen: list = []
+    clock = _Clock()
+    monkeypatch.setattr(digg, "time", clock)
+    cancel = threading.Event()
+    deadline = clock.now + 60
+    answer = _live_envelope(_story())
+    _research_search(
+        monkeypatch, _research_cli(answer, answer, [], seen), deadline=deadline, cancel=cancel
+    )
+    assert seen == [
+        {"deadline_monotonic": deadline, "cancel": cancel},
+        {"deadline_monotonic": deadline, "cancel": cancel},
+    ]
+
+
+def test_pipeline_research_stream_makes_both_calls_with_the_runs_bounds(monkeypatch):
+    import threading
+
+    from lib import pipeline, schema
+
+    import time
+
+    calls: list = []
+    seen: list = []
+    cancel = threading.Event()
+    deadline = time.monotonic() + 60
+    answer = _live_envelope(_story())
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _research_cli(answer, answer, calls, seen))
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="exoplanet bounds",
+        ranking_query="exoplanet",
+        sources=["digg"],
+    )
+    items, artifact = pipeline._retrieve_stream_impl(
+        topic="exoplanet",
+        subquery=subquery,
+        source="digg",
+        config={"_research_deadline": deadline, "_enrich_cancel": cancel},
+        depth="default",
+        date_range=("2026-11-04", "2026-11-11"),
+        runtime=None,
+        mock=False,
+    )
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet bounds", "--since", "8d", "--agent", "--limit", "50"],
+        ["digg-pp-cli", "search", "exoplanet bounds", "--since", "8d", "--agent", "--limit", "50",
+         "--sort", "score"],
+    ]
+    assert seen == [
+        {"deadline_monotonic": deadline, "cancel": cancel},
+        {"deadline_monotonic": deadline, "cancel": cancel},
+    ]
+    assert len(items) == 1
+    assert artifact == {}
+
+
+def test_discovery_digg_search_stays_one_call_of_20(monkeypatch):
+    from lib import pipeline
+
+    calls: list = []
+    answer = _live_envelope(_story(title="Exoplanet water found by Webb"))
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _research_cli(answer, answer, calls))
+    plan = MagicMock()
+    plan.domain = "exoplanet"
+    pipeline._fetch_discovery_source(
+        "digg", plan, from_date="2026-11-04", to_date="2026-11-11",
+        depth="default", mock=False, config={},
+    )
+    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "20"]]

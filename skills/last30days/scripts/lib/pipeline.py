@@ -6917,7 +6917,12 @@ def _retrieve_stream_impl(
         # subquery's search, so share the identical CLI call within a run.
         result = fetch_memo.fetch_once(
             ("digg", subquery.search_query, from_date, to_date, depth),
-            lambda: digg.search_digg(subquery.search_query, from_date, to_date, depth=depth),
+            lambda: digg.search_digg(
+                subquery.search_query, from_date, to_date, depth=depth,
+                include_top_scored=True,
+                deadline=config.get("_research_deadline"),
+                cancel=config.get("_enrich_cancel"),
+            ),
             timeout=_memo_wait_seconds(config),
             cacheable=_clean_search_result,
         )
@@ -6930,6 +6935,11 @@ def _retrieve_stream_impl(
         upgrade = digg.upgrade_note(result)
         if upgrade:
             return items, _outcome_artifact(health.PARTIAL, upgrade)
+        score_pass = digg.score_pass_note(result)
+        if score_pass:
+            # The most relevant stories arrived, so Digg stays OK and the
+            # lost highest-scored half is a note on its outcome.
+            return items, {"_source_outcome_detail": score_pass}
         return items, _result_outcome_artifact(source, result)
     if source == "arxiv":
         result = arxiv.search_arxiv(subquery.search_query, from_date, to_date, depth=depth)

@@ -12,7 +12,10 @@ the missing-binary case as a defensive fallback.
 
 Primary path: ``digg-pp-cli search <topic> --since 30d --agent --limit N``,
 which searches every Digg topic live and returns stories with a canonical
-``url``, a ``diggScore`` and a ``publishedAt`` date.
+``url``, a ``diggScore`` and a ``publishedAt`` date. A research run at
+default or deep depth follows it with the same call sorted by Digg Score
+and merges the two answers, so the biggest stories are in hand even when
+Digg ranks them far down for relevance.
 
 digg-pp-cli 2026.10.x is still supported. Its ``search`` covers only the
 sections it is told to (default ``ai``) and rejects flags it does not
@@ -74,6 +77,24 @@ DEPTH_CONFIG = {
     "default": 20,
     "deep": 50,
 }
+
+# Stories asked for by each of a research search's two calls, the most
+# relevant and the highest-scored. Quick depth is absent: it keeps the one
+# DEPTH_CONFIG-sized call.
+RESEARCH_SEARCH_SIZES = {
+    "default": 50,
+    "deep": 100,
+}
+
+# Longest lookback a search asks Digg for, in days.
+SEARCH_WINDOW_DAYS = 30
+
+# Key set on a search answer whose highest-scored call failed, holding why.
+_SCORE_PASS_ERROR_KEY = "score_pass_error"
+
+# Room left for the failure reason in the outcome note, which render cuts at
+# 140 characters.
+_SCORE_PASS_REASON_MAX = 60
 
 # How many stories, highest Digg Score first, get their sources fetched, per
 # depth. Quick mode fetches none to keep latency low (stories already carry
@@ -239,12 +260,21 @@ def _fit_query(query: str) -> str:
     return query
 
 
-def _build_search_args(query: str, limit: int, *, all_topics: bool) -> List[str]:
+def _build_search_args(
+    query: str,
+    limit: int,
+    *,
+    all_topics: bool,
+    since_days: int = SEARCH_WINDOW_DAYS,
+    by_score: bool = False,
+) -> List[str]:
     """Build the search call.
 
-    The all-topic call names no section and no sort order: the newer CLI
-    defaults to every topic in relevance order, which is what the
-    position-based relevance hint in ``parse_digg_response`` expects. Its
+    The all-topic call names no section, and no sort order unless
+    ``by_score`` asks for the highest Digg Scores first: the newer CLI
+    defaults to every topic in relevance order. Ranking does not depend on
+    that order, since the position-based hint ``parse_digg_response`` sets is
+    replaced by a locally computed relevance before anything reads it. The
     query is fitted to the length that CLI accepts; the older CLI has no
     such limit and gets the query as given.
     """
@@ -257,11 +287,52 @@ def _build_search_args(query: str, limit: int, *, all_topics: bool) -> List[str]
         query,
         *sections,
         "--since",
-        "30d",
+        f"{since_days}d",
         "--agent",
         "--limit",
         str(limit),
+        *(["--sort", "score"] if by_score else []),
     ]
+
+
+def _lookback_days(from_date: str) -> int:
+    """Days Digg is asked for so its answer covers ``from_date`` through today.
+
+    ``--since Nd`` counts back from now and ``from_date`` is a calendar day,
+    so one extra day is asked for to include the whole first day. Between 1
+    and the usual 30.
+    """
+    try:
+        start = datetime.strptime(from_date, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return SEARCH_WINDOW_DAYS
+    return max(1, min(SEARCH_WINDOW_DAYS, (_today().date() - start).days + 1))
+
+
+def _story_key(story: Dict[str, Any]) -> str:
+    """A story's UUID, or its short id when the answer carries no UUID."""
+    return str(story.get(STORY_ID_KEY) or story.get("clusterUrlId") or "")
+
+
+def _merge_search_results(relevance: List[Any], by_score: List[Any]) -> List[Any]:
+    """Relevance-call stories in their order, then the stories only the score
+    call found, highest Digg Score first and by id among equals."""
+    seen = {_story_key(story) for story in relevance if isinstance(story, dict)}
+    extra: Dict[str, Dict[str, Any]] = {}
+    for story in by_score:
+        if not isinstance(story, dict):
+            continue
+        key = _story_key(story)
+        if key and key not in seen:
+            extra.setdefault(key, story)
+
+    def order(key: str) -> Tuple[float, str]:
+        score = extra[key].get("diggScore")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            score = 0
+        return (-score, key)
+
+    return [*relevance, *(extra[key] for key in sorted(extra, key=order))]
 
 
 def _build_posts_args(cluster_url_id: str, posts_per: int) -> List[str]:
@@ -404,21 +475,36 @@ def search_digg(
     from_date: str,
     to_date: str,
     depth: str = "default",
+    *,
+    include_top_scored: bool = False,
+    deadline: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     """Search Digg clusters via digg-pp-cli.
 
     Args:
         topic: search query.
-        from_date: YYYY-MM-DD start (advisory; --since 30d is the actual filter).
-        to_date: YYYY-MM-DD end (advisory; same).
+        from_date: YYYY-MM-DD start. Advisory for a single-call search, where
+            --since 30d is the actual filter; a two-call search asks Digg
+            for the days since it when that is under 30.
+        to_date: YYYY-MM-DD end (advisory).
         depth: 'quick' | 'default' | 'deep'.
+        include_top_scored: set by a research run. At default and deep depth
+            on a CLI that searches every topic, the search becomes two calls
+            of ``RESEARCH_SEARCH_SIZES`` stories each, the most relevant and
+            the highest-scored, merged with each story once. Anywhere else
+            it stays the single call.
+        deadline: the run's monotonic deadline, handed to every call.
+        cancel: the run's cancel signal, handed to every call.
 
     Returns:
         Dict with ``results`` list. On failure, ``results`` is empty and an
         ``error`` key carries a one-line description. An answer from the
         ai,tech call of digg-pp-cli 2026.10.x is marked for ``upgrade_note``.
         When the CLI's help could not be read the ai,tech call is still
-        made, but its answer is not marked.
+        made, but its answer is not marked. When only the highest-scored
+        call fails, the most relevant stories are returned without an
+        ``error`` and the answer is marked for ``score_pass_note``.
     """
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     if not topic or not topic.strip():
@@ -427,10 +513,17 @@ def search_digg(
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     capability = cli_searches_all_topics()
     all_topics = capability is True
-    cmd = _build_search_args(topic, limit, all_topics=all_topics)
+    two_calls = include_top_scored and all_topics and depth != "quick"
+    since_days = SEARCH_WINDOW_DAYS
+    if two_calls:
+        limit = RESEARCH_SEARCH_SIZES.get(depth, RESEARCH_SEARCH_SIZES["default"])
+        since_days = _lookback_days(from_date)
+    cmd = _build_search_args(topic, limit, all_topics=all_topics, since_days=since_days)
     scope = "all topics" if all_topics else f"sections={SECTIONS}"
-    _log(f"search '{topic}' ({scope}, limit={limit}, since=30d)")
-    response, stderr = _invoke_cli(cmd, timeout=SEARCH_TIMEOUT)
+    _log(f"search '{topic}' ({scope}, limit={limit}, since={since_days}d)")
+    response, stderr = _invoke_cli(
+        cmd, timeout=SEARCH_TIMEOUT, deadline=deadline, cancel=cancel
+    )
     fallback_error = _empty_local_fallback_error(response, stderr)
     if fallback_error:
         _log(fallback_error)
@@ -440,7 +533,46 @@ def search_digg(
     if capability is False and not response.get("error"):
         response[_LEGACY_ANSWER_KEY] = True
         _log(UPGRADE_NOTE)
+    if two_calls and not response.get("error"):
+        _add_top_scored(
+            response, topic, limit, since_days, deadline=deadline, cancel=cancel
+        )
     return response
+
+
+def _add_top_scored(
+    response: Dict[str, Any],
+    topic: str,
+    limit: int,
+    since_days: int,
+    *,
+    deadline: Optional[float],
+    cancel: Optional[threading.Event],
+) -> None:
+    """Merge the highest-scored stories for ``topic`` into ``response``.
+
+    A stopped run makes no call. A call that fails leaves the stories
+    already in ``response`` as they are and marks it for ``score_pass_note``.
+    """
+    if cancel is not None and cancel.is_set():
+        return
+    if deadline is not None and time.monotonic() >= deadline:
+        return
+    cmd = _build_search_args(
+        topic, limit, all_topics=True, since_days=since_days, by_score=True
+    )
+    _log(f"search '{topic}' (all topics, by score, limit={limit}, since={since_days}d)")
+    scored, stderr = _invoke_cli(
+        cmd, timeout=SEARCH_TIMEOUT, deadline=deadline, cancel=cancel
+    )
+    error = scored.get("error") or _empty_local_fallback_error(scored, stderr)
+    if error:
+        _log(f"highest-scored search failed: {error}")
+        response[_SCORE_PASS_ERROR_KEY] = str(error)
+        return
+    merged = _merge_search_results(response.get("results") or [], scored.get("results") or [])
+    _log(f"found {len(merged) - len(response.get('results') or [])} more clusters by score")
+    response["results"] = merged
 
 
 def top_stories(depth: str = "default") -> Dict[str, Any]:
@@ -485,6 +617,18 @@ def upgrade_note(response: Dict[str, Any]) -> Optional[str]:
     if not isinstance(response, dict) or response.get(_LEGACY_ANSWER_KEY) is not True:
         return None
     return UPGRADE_NOTE
+
+
+def score_pass_note(response: Any) -> Optional[str]:
+    """Describe a search whose highest-scored call failed, else None.
+
+    The stories Digg ranks most relevant were still returned, so this is a
+    note on a working source, not a failure of it.
+    """
+    if not isinstance(response, dict) or not response.get(_SCORE_PASS_ERROR_KEY):
+        return None
+    reason = " ".join(str(response[_SCORE_PASS_ERROR_KEY]).split())[:_SCORE_PASS_REASON_MAX]
+    return f"highest-scored story search failed, biggest stories may be missing: {reason}"
 
 
 def is_upgrade_note(detail: Optional[str]) -> bool:
