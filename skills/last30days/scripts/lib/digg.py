@@ -30,7 +30,8 @@ stories of every topic by Digg Score (``top_stories``). It has no topic to
 search for, and it is skipped on digg-pp-cli 2026.10.x.
 
 Story sources: ``digg-pp-cli posts <story UUID> --agent --limit 40`` for the
-top stories by Digg Score in default/deep depth (``fetch_story_sources``).
+prominent stories (``apply_bar``) with the highest Digg Scores in
+default/deep depth (``fetch_story_sources``).
 The first X posts of each answer become the story's inline quotes, and every
 source URL is turned into a match key so an item from another source that is
 one of the story's sources can be marked as confirmed by it
@@ -46,6 +47,7 @@ import re
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
@@ -101,9 +103,12 @@ _SCORE_PASS_REASON_MAX = 60
 # a TLDR).
 ENRICH_CONFIG = {
     "quick": 0,
-    "default": 3,
-    "deep": 5,
+    "default": 8,
+    "deep": 12,
 }
+
+# How many of those ``posts`` calls run at once.
+SOURCES_CONCURRENCY = 4
 
 # X posts pulled per enriched cluster. Matches the 5-comment cap used by
 # Reddit/HN/YouTube/TikTok/GitHub enrichment.
@@ -1044,7 +1049,7 @@ def _digg_score(item: Any) -> Optional[float]:
 def story_budget(depth: str, entity_count: int = 1) -> int:
     """How many stories one run fetches sources for.
 
-    None at quick depth, 3 at default and 5 at deep. A comparison runs the
+    None at quick depth, 8 at default and 12 at deep. A comparison runs the
     pipeline once per entity, so each of its runs takes that budget divided
     by the entity count, rounded up, and keeps at least one story.
     """
@@ -1064,23 +1069,26 @@ def fetch_story_sources(
     entity_count: int = 1,
     budget: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    """Fetch the sources of the top stories by Digg Score, one story at a time.
+    """Fetch the sources of the top stories by Digg Score, a few at a time.
 
     Covers ``story_budget`` stories, so a run makes at most that many
-    ``posts`` calls; ``budget`` lowers that for a later pass that spends
-    what an earlier one left. Only stories from the all-topic search
-    qualify: they carry the UUID the call takes and a Digg Score.
+    ``posts`` calls, ``SOURCES_CONCURRENCY`` of them at once; ``budget``
+    lowers that for a later pass that spends what an earlier one left. Only
+    stories from the all-topic search qualify: they carry the UUID the call
+    takes and a Digg Score. The caller decides which of them to offer.
 
-    ``stopped`` is asked before each call and ends the fetch when true.
-    ``deadline`` is the run's monotonic deadline and ``cancel`` its cancel
-    signal: both reach every call, a call's timeout is capped at the time
-    left, and the fetch ends when none is left or the signal is set. A run
-    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch.
+    ``stopped`` is asked before each call, and a call it answers true for
+    is not made. ``deadline`` is the run's monotonic deadline and ``cancel``
+    its cancel signal: both reach every call, a call's timeout is capped at
+    the time left, and no call starts once none is left or the signal is
+    set. A run without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the
+    whole fetch. Every call has ended by the time this returns.
 
-    Returns ``{story UUID: {"posts": [...], "source_urls": [...]}}``:
-    ``posts`` holds the first ``POSTS_PER_CLUSTER`` quotable X posts and
-    ``source_urls`` every source's web URL. A story whose call fails or
-    returns nothing usable is left out. Never raises.
+    Returns ``{story UUID: {"posts": [...], "source_urls": [...]}}`` in
+    order of Digg Score, highest first, then story UUID, whatever order the
+    calls finished in: ``posts`` holds the first ``POSTS_PER_CLUSTER``
+    quotable X posts and ``source_urls`` every source's web URL. A story
+    whose call fails or returns nothing usable is left out. Never raises.
     """
     full_budget = story_budget(depth, entity_count)
     budget = full_budget if budget is None else min(budget, full_budget)
@@ -1097,15 +1105,18 @@ def fetch_story_sources(
         score = _digg_score(item)
         if cluster_id and score is not None:
             scored[str(cluster_id)] = max(score, scored.get(str(cluster_id), score))
-    fetched: Dict[str, Dict[str, Any]] = {}
-    for cluster_id in sorted(scored, key=lambda key: -scored[key])[:budget]:
+    chosen = sorted(scored, key=lambda key: (-scored[key], key))[:budget]
+    if not chosen:
+        return {}
+
+    def fetch_one(cluster_id: str) -> Optional[Dict[str, Any]]:
         if stopped is not None and stopped():
-            break
+            return None
         if cancel is not None and cancel.is_set():
-            break
+            return None
         remaining = fetch_deadline - time.monotonic()
         if remaining <= 0:
-            break
+            return None
         response = _run_cli(
             _build_sources_args(cluster_id),
             timeout=min(POSTS_TIMEOUT, remaining),
@@ -1124,8 +1135,21 @@ def fetch_story_sources(
                 post = _parse_post(row)
                 if post is not None:
                     posts.append(post)
-        if source_urls:
-            fetched[cluster_id] = {"posts": posts, "source_urls": source_urls}
+        if not source_urls:
+            return None
+        return {"posts": posts, "source_urls": source_urls}
+
+    # Leaving the block waits for the workers. That wait is bounded: a call
+    # under way ends at its timeout, the deadline or the cancel signal, and
+    # a call not yet started checks all three first.
+    with ThreadPoolExecutor(
+        max_workers=min(SOURCES_CONCURRENCY, len(chosen)),
+        thread_name_prefix="digg-sources",
+    ) as pool:
+        entries = list(pool.map(fetch_one, chosen))
+    fetched = {
+        cluster_id: entry for cluster_id, entry in zip(chosen, entries) if entry is not None
+    }
     if fetched:
         _log(f"fetched sources for {len(fetched)} stories")
     return fetched
@@ -1139,8 +1163,8 @@ def apply_story_sources(
 
     Every copy of a fetched story gets the quotes, so whichever copy
     survives de-duplication still shows them. The returned map goes from
-    ``match_key`` of each source URL to the stories that cite it, most
-    engaged first, each as its title, URL, Digg Score, source count and
+    ``match_key`` of each source URL to the stories that cite it, highest
+    Digg Score first, each as its title, URL, Digg Score, source count and
     0-100 engagement score. Every citing story is kept so that a later
     filter (``surviving_stories``) can fall back to the next one.
     """
@@ -1169,25 +1193,30 @@ def apply_story_sources(
             if all(other["url"] != story["url"] for other in citing):
                 citing.append(story)
     for citing in stories.values():
-        citing.sort(key=_story_engagement, reverse=True)
+        citing.sort(key=_story_order)
     return stories
 
 
-def _story_engagement(story: Dict[str, Any]) -> float:
-    return story.get("engagement") or 0
+def _story_order(story: Dict[str, Any]) -> Tuple[float, str]:
+    """Sort key putting the story with the highest Digg Score first.
+
+    The 0-100 engagement score reads 100 for every large story, so it cannot
+    tell a 1286-score story from a 226-score one. Equal scores go by URL.
+    """
+    return (-(story.get("digg_score") or 0), str(story.get("url") or ""))
 
 
 def merge_stories(
     stories: Dict[str, List[Dict[str, Any]]], more: Dict[str, List[Dict[str, Any]]],
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Add a later pass's stories to ``stories`` in place, most engaged first."""
+    """Add a later pass's stories to ``stories`` in place, highest Digg Score first."""
     for key, citing in more.items():
         merged = stories.setdefault(key, [])
         merged.extend(
             story for story in citing
             if all(other["url"] != story["url"] for other in merged)
         )
-        merged.sort(key=_story_engagement, reverse=True)
+        merged.sort(key=_story_order)
     return stories
 
 
@@ -1216,8 +1245,8 @@ def tag_confirmed_candidates(
     """Mark each candidate that is a source of a fetched Digg story.
 
     A candidate matches when the URL of one of its non-Digg items has the
-    same ``match_key`` as a story source. The most engaged of the matching
-    stories is recorded under ``metadata[CONFIRMED_BY_KEY]``, where ranking
+    same ``match_key`` as a story source. The matching story with the
+    highest Digg Score is recorded under ``metadata[CONFIRMED_BY_KEY]``, where ranking
     and rendering read it. Returns how many candidates were marked.
     """
     if not stories:
@@ -1229,11 +1258,9 @@ def tag_confirmed_candidates(
             if item.source == "digg":
                 continue
             key = match_key(item.url)
-            # Each list is ordered most engaged first.
+            # Each list is ordered highest Digg Score first.
             story = next(iter(stories.get(key) or []), None) if key else None
-            if story and (
-                best is None or _story_engagement(story) > _story_engagement(best)
-            ):
+            if story and (best is None or _story_order(story) < _story_order(best)):
                 best = story
         if best is not None:
             candidate.metadata[CONFIRMED_BY_KEY] = dict(best)

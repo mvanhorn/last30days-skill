@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import threading
 from datetime import datetime, timezone
@@ -3045,36 +3046,56 @@ if __name__ == "__main__":
 _DIGG_ARTICLE = "https://example-observatory.org/news/webb-water"
 
 
-def _digg_story_rows(count: int = 5) -> list[dict]:
+_DIGG_STORY_SCORES = [150, 1286, 239, 473, 180, 610, 95, 820, 330, 77, 560, 205, 444, 68, 915]
+
+
+def _digg_story_rows(count: int = 5, ordinary: int = 0) -> list[dict]:
+    """``count`` stories that name the topic in their title and are big enough
+    to be prominent, then ``ordinary`` bigger ones that name it only in their
+    summary."""
     from lib import digg
 
-    scores = [150, 1286, 239, 473, 180][:count]
     subjects = [
         "orbit measured", "water vapor found", "funding approved",
         "mirror alignment finished", "naming contest opened",
     ]
-    return digg.parse_digg_response(
+    rows = [
         {
-            "results": [
-                {
-                    "clusterId": f"11111111-2222-3333-4444-00000000000{n}",
-                    "clusterUrlId": f"story{n}",
-                    "url": f"https://digg.com/science/story{n}",
-                    "topic": "science",
-                    "title": f"Webb telescope exoplanet {subject}",
-                    "tldr": f"Astronomers report on the exoplanet's {subject}.",
-                    "diggScore": score,
-                    "sourceCount": 37,
-                    "postCount": 37,
-                    "uniqueAuthors": 29,
-                    "publishedAt": "2026-11-08T15:02:00Z",
-                    "firstPostAge": "3d",
-                }
-                for n, (score, subject) in enumerate(zip(scores, subjects), start=1)
-            ]
-        },
-        query="webb telescope exoplanet",
-        from_date="2026-10-12",
+            "clusterId": f"11111111-2222-3333-4444-{n:012d}",
+            "clusterUrlId": f"story{n}",
+            "url": f"https://digg.com/science/story{n}",
+            "topic": "science",
+            "title": f"Webb telescope exoplanet {subject}",
+            "tldr": f"Astronomers report on the exoplanet's {subject}.",
+            "diggScore": score,
+            "sourceCount": 37,
+            "postCount": 37,
+            "uniqueAuthors": 29,
+            "publishedAt": "2026-11-08T15:02:00Z",
+            "firstPostAge": "3d",
+        }
+        for n, score in enumerate(_DIGG_STORY_SCORES[:count], start=1)
+        for subject in [subjects[n - 1] if n <= len(subjects) else f"finding {n} published"]
+    ]
+    rows += [
+        {
+            "clusterId": f"99999999-2222-3333-4444-{n:012d}",
+            "clusterUrlId": f"survey{n}",
+            "url": f"https://digg.com/science/survey{n}",
+            "topic": "science",
+            "title": f"Astronomers publish sky survey part {n}",
+            "tldr": "The survey lists a new exoplanet.",
+            "diggScore": 2000 + n,
+            "sourceCount": 37,
+            "postCount": 37,
+            "uniqueAuthors": 29,
+            "publishedAt": "2026-11-08T15:02:00Z",
+            "firstPostAge": "3d",
+        }
+        for n in range(1, ordinary + 1)
+    ]
+    return digg.parse_digg_response(
+        {"results": rows}, query="webb telescope exoplanet", from_date="2026-10-12",
     )
 
 
@@ -3099,12 +3120,14 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
     # Hacker News item links to.
     TOP_STORY = "11111111-2222-3333-4444-000000000002"
 
-    def _run(self, depth: str, cli, *, supplemental=None, digg_only_on_retry=False):
+    def _run(
+        self, depth: str, cli, *, supplemental=None, digg_only_on_retry=False, digg_rows=None,
+    ):
         def fake_retrieve(**kwargs):
             if kwargs["source"] == "digg":
                 if digg_only_on_retry and kwargs["subquery"].label != "retry":
                     return [], {}
-                return _digg_story_rows(), {}
+                return (digg_rows if digg_rows is not None else _digg_story_rows()), {}
             if kwargs["source"] == "hackernews":
                 return [
                     _hn_row(
@@ -3179,12 +3202,11 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
             key: value for key, value in hn["HN1"].metadata.items() if key != "digg_story"
         })
         self.assertGreater(hn["HN1"].final_score, rerank._final_score(unmarked))
-        self.assertEqual(3, len(calls))
-        self.assertLessEqual(len(calls), 6)
+        self.assertEqual(5, len(calls))
         for call in calls:
             self.assertEqual(["digg-pp-cli", "posts"], call[:2])
             self.assertEqual(["--agent", "--limit", "40"], call[3:])
-        self.assertEqual(self.TOP_STORY, calls[0][2])
+        self.assertIn(self.TOP_STORY, [call[2] for call in calls])
         top_story = next(
             item for item in report.items_by_source["digg"] if item.item_id == "story2"
         )
@@ -3194,8 +3216,8 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         calls: list = []
         report = self._run("default", self._cli(calls), digg_only_on_retry=True)
 
-        self.assertEqual(3, len(calls))
-        self.assertEqual(self.TOP_STORY, calls[0][2])
+        self.assertEqual(5, len(calls))
+        self.assertIn(self.TOP_STORY, [call[2] for call in calls])
         self.assertEqual(
             "https://digg.com/science/story2",
             self._hn(report)["HN1"].metadata["digg_story"]["url"],
@@ -3219,7 +3241,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         ):
             report = self._run("default", self._cli(calls))
 
-        self.assertEqual(3, len(calls))
+        self.assertEqual(5, len(calls))
         self.assertFalse([c for c in report.ranked_candidates if "digg_story" in c.metadata])
 
     def test_story_sources_are_fetched_before_supplemental_search(self):
@@ -3229,8 +3251,8 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
             "default", self._cli(calls),
             supplemental=lambda **_kwargs: seen_at_supplemental.append(len(calls)),
         )
-        self.assertEqual([3], seen_at_supplemental)
-        self.assertEqual(3, len(calls))
+        self.assertEqual([5], seen_at_supplemental)
+        self.assertEqual(5, len(calls))
 
     def test_quick_run_fetches_no_story_sources(self):
         calls: list = []
@@ -3239,32 +3261,93 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self.assertTrue(report.items_by_source["digg"])
         self.assertFalse([c for c in report.ranked_candidates if "digg_story" in c.metadata])
 
-    def _story_bundle(self):
+    def test_ordinary_story_citing_a_result_does_not_confirm_it(self):
+        # The biggest story names the topic only in its summary. It lists the
+        # article a Hacker News item links to, and no other story does.
+        import json as _json
+
+        calls: list = []
+        article = {
+            "kind": "webpage", "body": "", "xUrl": _DIGG_ARTICLE,
+            "title": "Webb finds water", "author": {"display_name": "Example Observatory"},
+        }
+
+        def cli(cmd, *, timeout, **_bounds):
+            calls.append(cmd[2])
+            rows = [article] if cmd[2].startswith("99999999") else []
+            return subproc.SubprocResult(
+                returncode=0, stdout=_json.dumps({"meta": {}, "results": rows}), stderr="",
+            )
+
+        report = self._run("default", cli, digg_rows=_digg_story_rows(ordinary=1))
+
+        self.assertIn("survey1", [item.item_id for item in report.items_by_source["digg"]])
+        self.assertEqual(5, len(calls))
+        self.assertFalse([call for call in calls if call.startswith("99999999")])
+        self.assertFalse([c for c in report.ranked_candidates if "digg_story" in c.metadata])
+
+    def _story_bundle(self, count: int = 5, ordinary: int = 0):
         from lib import normalize
 
         stories = normalize.normalize_source_items(
-            "digg", _digg_story_rows(), "2026-10-12", "2026-11-11",
+            "digg", _digg_story_rows(count, ordinary), "2026-10-12", "2026-11-11",
         )
         return schema.RetrievalBundle(items_by_source={"digg": stories})
 
-    def _fetch_sources(self, config, seen: list):
+    def _fetch_sources(self, config, seen: list, *, bundle=None, depth: str = "default"):
         def run(cmd, *, timeout, **kwargs):
-            seen.append({"timeout": timeout, **kwargs})
+            seen.append({"story": cmd[2], "timeout": timeout, **kwargs})
             return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
 
         with patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"), \
                 patch("lib.digg.subproc.run_with_timeout", side_effect=run):
-            pipeline._digg_story_sources(
-                self._story_bundle(), topic="webb telescope exoplanet",
-                depth="default", config=config,
+            return pipeline._digg_story_sources(
+                bundle if bundle is not None else self._story_bundle(),
+                topic="webb telescope exoplanet", depth=depth, config=config,
             )
+
+    @staticmethod
+    def _top_scored(bundle, count: int) -> set[str]:
+        """UUIDs of the ``count`` highest-scored stories that name the topic
+        in their title."""
+        prominent = [
+            item for item in bundle.items_by_source["digg"]
+            if item.title.startswith("Webb telescope exoplanet")
+        ]
+        prominent.sort(key=lambda item: -item.engagement["digg_score"])
+        return {item.metadata["clusterId"] for item in prominent[:count]}
+
+    def test_default_run_reads_the_eight_highest_scored_prominent_stories(self):
+        seen: list = []
+        bundle = self._story_bundle(10, ordinary=5)
+        self._fetch_sources({}, seen, bundle=bundle)
+        self.assertEqual(8, len(seen))
+        self.assertEqual(self._top_scored(bundle, 8), {call["story"] for call in seen})
+
+    def test_run_with_two_prominent_stories_reads_two(self):
+        seen: list = []
+        self._fetch_sources({}, seen, bundle=self._story_bundle(2, ordinary=5))
+        self.assertEqual(2, len(seen))
+
+    def test_run_with_no_prominent_story_reads_and_confirms_nothing(self):
+        seen: list = []
+        stories = self._fetch_sources({}, seen, bundle=self._story_bundle(0, ordinary=5))
+        self.assertEqual([], seen)
+        self.assertEqual({}, stories)
+
+    def test_deep_run_reads_twelve_prominent_stories(self):
+        seen: list = []
+        bundle = self._story_bundle(15)
+        self._fetch_sources({}, seen, bundle=bundle, depth="deep")
+        self.assertEqual(12, len(seen))
+        self.assertEqual(self._top_scored(bundle, 12), {call["story"] for call in seen})
 
     def test_story_source_calls_carry_the_run_deadline_and_cancel_signal(self):
         seen: list = []
         cancel = threading.Event()
         deadline = time.monotonic() + 2
         self._fetch_sources({"_research_deadline": deadline, "_enrich_cancel": cancel}, seen)
-        self.assertEqual(3, len(seen))
+        self.assertEqual(5, len(seen))
         for call in seen:
             self.assertLessEqual(call["timeout"], 2)
             self.assertEqual(deadline, call["deadline_monotonic"])
@@ -3276,51 +3359,51 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         seen: list = []
         before = time.monotonic()
         self._fetch_sources({}, seen)
-        self.assertEqual(3, len(seen))
+        self.assertEqual(5, len(seen))
         for call in seen:
             self.assertIsNotNone(call["deadline_monotonic"])
             self.assertLessEqual(call["deadline_monotonic"], time.monotonic() + 40)
             self.assertGreaterEqual(call["deadline_monotonic"], before)
 
-    def test_three_entity_comparison_fetches_one_story_per_run(self):
+    def test_three_entity_comparison_reads_three_stories_per_run(self):
         seen: list = []
         self._fetch_sources({"_comparison_entity_count": 3}, seen)
-        self.assertEqual(1, len(seen))
-
-    def test_single_topic_run_fetches_three_stories(self):
-        seen: list = []
-        self._fetch_sources({}, seen)
         self.assertEqual(3, len(seen))
 
     def _second_pass_calls(
-        self, first_count: int, *, depth: str = "default", call_seconds: float = 0,
-        timeouts_out: list | None = None,
+        self, first_count: int, *, total: int = 5, first_ordinary: int = 0,
+        depth: str = "default", call_seconds: float = 0, timeouts_out: list | None = None,
     ) -> list:
-        """Posts calls a pass after the retry makes, given how many stories
-        the first pass saw; the rest arrive from the retry. Each call takes
-        ``call_seconds`` on a fake clock."""
+        """Story UUIDs a pass after the retry reads, given how many prominent
+        stories (and ordinary ones) the first pass held; the rest of ``total``
+        arrive from the retry. Each call takes ``call_seconds`` on a fake
+        clock, one call at a time so the seconds add up."""
         calls: list = []
         timeouts: list = []
-
-        def run(cmd, *, timeout, **kwargs):
-            calls.append(cmd)
-            return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
-
-        bundle = self._story_bundle()
+        bundle = self._story_bundle(total, first_ordinary)
         stories = bundle.items_by_source["digg"]
-        bundle.items_by_source["digg"] = stories[:first_count]
+        bundle.items_by_source["digg"] = stories[:first_count] + stories[total:]
         spent = pipeline._DiggSourcesSpent()
         clock = [1000.0]
 
         def slow_run(cmd, *, timeout, **kwargs):
+            calls.append(cmd[2])
             timeouts.append(timeout)
             clock[0] += call_seconds
-            return run(cmd, timeout=timeout, **kwargs)
+            return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
 
-        with patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"), \
-                patch("lib.digg.subproc.run_with_timeout", side_effect=slow_run), \
-                patch("lib.digg.time.monotonic", side_effect=lambda: clock[0]), \
-                patch.object(pipeline.time, "monotonic", side_effect=lambda: clock[0]):
+        patches = [
+            patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"),
+            patch("lib.digg.subproc.run_with_timeout", side_effect=slow_run),
+        ]
+        if call_seconds:
+            patches += [
+                patch("lib.digg.SOURCES_CONCURRENCY", 1),
+                patch("lib.digg.time.monotonic", side_effect=lambda: clock[0]),
+            ]
+        with contextlib.ExitStack() as stack:
+            for active in patches:
+                stack.enter_context(active)
             pipeline._digg_story_sources(
                 bundle, topic="webb telescope exoplanet", depth=depth, config={}, spent=spent,
             )
@@ -3329,7 +3412,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
             pipeline._digg_story_sources(
                 bundle, topic="webb telescope exoplanet", depth=depth, config={}, spent=spent,
             )
-        self.assertEqual(min(first_count, 3), first_calls)
+        self.assertEqual(first_count, first_calls)
         if timeouts_out is not None:
             timeouts_out.extend(timeouts[first_calls:])
         return calls[first_calls:]
@@ -3345,18 +3428,24 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self.assertEqual([], self._second_pass_calls(2, depth="deep", call_seconds=20))
 
     def test_stories_found_only_by_the_retry_get_their_sources_fetched(self):
-        self.assertEqual(3, len(self._second_pass_calls(0)))
+        self.assertEqual(5, len(self._second_pass_calls(0)))
 
     def test_retry_pass_spends_only_the_budget_the_first_pass_left(self):
-        first_ids = {
-            item.metadata["clusterId"] for item in self._story_bundle().items_by_source["digg"][:2]
-        }
-        calls = self._second_pass_calls(2)
-        self.assertEqual(1, len(calls))
-        self.assertFalse(first_ids & set(calls[0]))
+        # Five of the eight were offered to the first pass.
+        bundle = self._story_bundle(11)
+        stories = bundle.items_by_source["digg"]
+        bundle.items_by_source["digg"] = stories[5:]
+        calls = self._second_pass_calls(5, total=11)
+        self.assertEqual(3, len(calls))
+        self.assertEqual(self._top_scored(bundle, 3), set(calls))
+
+    def test_ordinary_stories_of_the_first_pass_use_none_of_the_budget(self):
+        calls = self._second_pass_calls(2, total=12, first_ordinary=5)
+        self.assertEqual(6, len(calls))
+        self.assertFalse([call for call in calls if call.startswith("99999999")])
 
     def test_retry_pass_fetches_nothing_once_the_budget_is_spent(self):
-        self.assertEqual([], self._second_pass_calls(3))
+        self.assertEqual([], self._second_pass_calls(8, total=11))
 
     def test_run_completes_untagged_when_the_sources_fetch_times_out(self):
         def timing_out(cmd, *, timeout, **_bounds):

@@ -2993,7 +2993,7 @@ def run(
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
-    # Sources of the top Digg stories, fetched once per run and before the
+    # Sources of the prominent Digg stories, fetched once per run and before the
     # supplemental searches add their own calls. The quotes land on the
     # stories now; the match keys mark confirmed candidates after fusion.
     _check_research(config)
@@ -3941,7 +3941,10 @@ def _finalize_items_by_source(
 
 @dataclass
 class _DiggSourcesSpent:
-    """What a run's story-source passes have used of their shared allowance."""
+    """What a run's story-source passes have used of their shared allowance.
+
+    ``story_ids`` are the stories offered to the fetch, not every story seen.
+    """
 
     story_ids: set[str] = field(default_factory=set)
     seconds: float = 0.0
@@ -3955,20 +3958,24 @@ def _digg_story_sources(
     config: dict[str, Any],
     spent: _DiggSourcesSpent | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Fetch the top Digg stories' sources and attach their quotes.
+    """Fetch the prominent Digg stories' sources and attach their quotes.
 
     Returns the map from source match key to story that
-    ``digg.tag_confirmed_candidates`` reads after fusion. The fetch is
-    bounded by the run's deadline and cancel signal, and a comparison's runs
-    share one story budget between them. Empty at quick depth, when the run
-    holds no all-topic Digg story, and when every fetch fails. Recorded and
-    replayed as its own fixture exchange so the eval harness stays offline.
+    ``digg.tag_confirmed_candidates`` reads after fusion. Only the stories
+    the Digg bar finds prominent for ``topic`` are offered to the fetch, so
+    no other story has its sources read or confirms another result. The
+    fetch is bounded by the run's deadline and cancel signal, and a
+    comparison's runs share one story budget between them. Empty at quick
+    depth, when the run holds no prominent Digg story, and when every fetch
+    fails. Recorded and replayed as its own fixture exchange so the eval
+    harness stays offline.
 
-    ``spent`` holds the story ids and the seconds earlier calls in this run
-    already used, and is updated in place. A call after the first considers
-    only stories that arrived since, and gets only the story budget and the
-    time those earlier calls left, so the run's total stays within one
-    budget and one ``digg.SOURCES_TOTAL_SECONDS``.
+    ``spent`` holds the ids of the stories earlier calls in this run offered
+    to the fetch and the seconds they used, and is updated in place. A call
+    after the first offers only prominent stories that arrived since, and
+    gets only the story budget and the time those earlier calls left, so the
+    run's total stays within one budget and one
+    ``digg.SOURCES_TOTAL_SECONDS``.
     """
     spent = spent if spent is not None else _DiggSourcesSpent()
     seen = spent.story_ids
@@ -3978,10 +3985,10 @@ def _digg_story_sources(
         len(seen), digg.story_budget(depth, entity_count),
     )
     seconds_left = digg.SOURCES_TOTAL_SECONDS - spent.seconds
+    # Asked again here because the bar writes nothing on the items.
     stories = [
-        item for item in bundle.items_by_source.get("digg", [])
-        if item.metadata.get(digg.STORY_ID_KEY)
-        and str(item.metadata[digg.STORY_ID_KEY]) not in seen
+        item for item in digg.apply_bar(topic, bundle.items_by_source.get("digg", [])).prominent
+        if str(item.metadata[digg.STORY_ID_KEY]) not in seen
     ]
     seen.update(str(item.metadata[digg.STORY_ID_KEY]) for item in stories)
     if not stories or budget <= 0 or seconds_left <= 0:
