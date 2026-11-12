@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.38.1] - 2026-11-12
+
+### Fixed
+
+- A slow second Digg search near the end of a run no longer costs the stories the first search found: the highest-scored call now ends five seconds before the run's deadline, and is skipped when that little time is left. When two searches return the same event as a prominent story and as a smaller one, the prominent story is the copy kept, so its quotes and its "Also in Digg story" confirmations are not lost.
+
+
 ## [3.38.0] - 2026-11-12
 
 ### Changed
