@@ -2385,3 +2385,35 @@ def test_discovery_digg_search_stays_one_call_of_20(monkeypatch):
         depth="default", mock=False, config={},
     )
     assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "20"]]
+
+
+def test_score_call_ends_before_the_run_deadline_so_the_relevance_stories_are_kept(monkeypatch):
+    # The relevance call has answered. The score call must be over with time
+    # to spare, or the run abandons the whole search as timed out.
+    score_calls: list = []
+    answer = _live_envelope(_story())
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        if "--help" in cmd:
+            return subproc.SubprocResult(returncode=0, stdout=_NEW_SEARCH_HELP, stderr="")
+        if "--sort" in cmd:
+            score_calls.append({"timeout": timeout, **kwargs})
+        return _stdout_for(answer)
+
+    deadline = digg.time.monotonic() + 12
+    _research_search(monkeypatch, fake_run, deadline=deadline)
+    [score_call] = score_calls
+    assert 0 < score_call["timeout"] <= 12 - digg.SCORE_SEARCH_MARGIN
+    assert score_call["deadline_monotonic"] == deadline - digg.SCORE_SEARCH_MARGIN
+
+
+def test_score_call_is_skipped_when_too_little_time_is_left(monkeypatch):
+    calls: list = []
+    answer = _live_envelope(_story())
+    out = _research_search(
+        monkeypatch, _research_cli(answer, answer, calls),
+        deadline=digg.time.monotonic() + digg.SCORE_SEARCH_MARGIN - 1,
+    )
+    assert len(_search_calls(calls)) == 1
+    assert len(out["results"]) == 1
+    assert digg.score_pass_note(out) is None

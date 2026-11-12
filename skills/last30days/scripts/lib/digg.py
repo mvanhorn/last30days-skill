@@ -163,6 +163,9 @@ SEARCH_TIMEOUT = 30
 # The highest-scored call adds to a search that already has its most
 # relevant stories, so it gets less time before the run moves on without it.
 SCORE_SEARCH_TIMEOUT = 15
+# Seconds before the run's deadline by which the highest-scored call must be
+# over, leaving time to hand back the stories the first call found.
+SCORE_SEARCH_MARGIN = 5
 POSTS_TIMEOUT = 10
 HELP_TIMEOUT = 10
 
@@ -590,20 +593,27 @@ def _add_top_scored(
 ) -> None:
     """Merge the highest-scored stories for ``topic`` into ``response``.
 
-    A stopped run makes no call. A call that fails leaves the stories
-    already in ``response`` as they are and marks it for ``score_pass_note``.
+    A stopped run makes no call, and neither does one with under
+    ``SCORE_SEARCH_MARGIN`` seconds left. A call that fails leaves the
+    stories already in ``response`` as they are and marks it for
+    ``score_pass_note``.
     """
     if cancel is not None and cancel.is_set():
         return
-    if deadline is not None and time.monotonic() >= deadline:
-        return
+    timeout: float = SCORE_SEARCH_TIMEOUT
+    if deadline is not None:
+        # This call ends early enough for the stories already in hand to be
+        # returned before the run's deadline. A call that ran up to the
+        # deadline would have the whole search abandoned as timed out.
+        deadline = deadline - SCORE_SEARCH_MARGIN
+        timeout = min(timeout, deadline - time.monotonic())
+        if timeout <= 0:
+            return
     cmd = _build_search_args(
         topic, limit, all_topics=True, since_days=since_days, by_score=True
     )
     _log(f"search '{topic}' (all topics, by score, limit={limit}, since={since_days}d)")
-    scored, stderr = _invoke_cli(
-        cmd, timeout=SCORE_SEARCH_TIMEOUT, deadline=deadline, cancel=cancel
-    )
+    scored, stderr = _invoke_cli(cmd, timeout=timeout, deadline=deadline, cancel=cancel)
     error = scored.get("error") or _empty_local_fallback_error(scored, stderr)
     if error:
         _log(f"highest-scored search failed: {error}")

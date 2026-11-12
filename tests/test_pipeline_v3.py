@@ -3640,6 +3640,33 @@ class DiggBarRunTests(unittest.TestCase):
         self.assertEqual(["story2"], [item.item_id for item in self._stream(bundle)])
         self.assertIn("1 of 2 stories dropped", report.source_status["digg"].detail)
 
+    def test_prominent_story_is_the_copy_kept_when_two_searches_return_the_same_event(self):
+        # Each search has one telling of the event, so no single stream
+        # de-duplicates them. The merged Digg items are de-duplicated again,
+        # ranked by local score, where the small copy can come first.
+        summary = (
+            "OpenAI says its newest model release drew record developer signups "
+            "in the first week, according to figures the company shared."
+        )
+        small = _digg_bar_rows([
+            ("OpenAI newest model release draws record developer signups in first week", summary, 30, 3),
+        ])
+        big = _digg_bar_rows([
+            ("unused", "unused", 1, 1),
+            ("OpenAI newest model release draws record developer signups in the first week", summary, 900, 60),
+        ])[1:]
+        from lib import normalize
+
+        items = [
+            *normalize.normalize_source_items("digg", small, "2026-10-12", "2026-11-11"),
+            *normalize.normalize_source_items("digg", big, "2026-10-12", "2026-11-11"),
+        ]
+        items[0].local_rank_score, items[1].local_rank_score = 0.9, 0.4
+
+        finalized = pipeline._finalize_items_by_source({"digg": items}, topic="OpenAI")
+
+        self.assertEqual(["story2"], [item.item_id for item in finalized["digg"]])
+
     def test_quick_run_drops_stories_that_never_name_the_topic(self):
         rows = _digg_bar_rows([
             (f"Report on {_bar_words(n)}", f"Details about {_bar_words(n + 3)}.", 300, 37)
