@@ -1,20 +1,24 @@
 """Digg source for last30days.
 
 Shells out to ``digg-pp-cli`` (read-only, no auth required) to surface
-clustered stories from Digg's AI and Tech sections. Each cluster carries
-a published TLDR, a section rank, and a list of X posts that can be
-fetched as inline quotes.
+clustered stories from Digg. Each cluster carries a published TLDR,
+Digg's own engagement numbers, and a list of X posts that can be fetched
+as inline quotes.
 
 Activation gate: this source is only available when ``digg-pp-cli`` is
 on PATH. ``pipeline.available_sources`` checks ``shutil.which`` before
 including ``digg`` in the source list. The functions below also detect
 the missing-binary case as a defensive fallback.
 
-Primary path: ``digg-pp-cli search <topic> --topic ai,tech --since 30d
---agent --limit N``. The CLI searches a local copy of each section's feed
-that ``digg-pp-cli sync`` builds. When a section has no recent sync it
-searches only the newest live pages and sets ``meta.stale``; see
-``stale_note``.
+Primary path: ``digg-pp-cli search <topic> --since 30d --agent --limit N``,
+which searches every Digg topic live and returns stories with a canonical
+``url``, a ``diggScore`` and a ``publishedAt`` date.
+
+digg-pp-cli 2026.10.x is still supported. Its ``search`` covers only the
+sections it is told to (default ``ai``) and rejects flags it does not
+know, so the call is chosen up front by ``_cli_searches_all_topics`` and
+those installs keep the ``--topic ai,tech`` call. Their answers carry no
+``url`` and take the older parsing path; see ``upgrade_note``.
 Optional enrichment: ``digg-pp-cli posts <clusterUrlId> --agent --by rank
 --limit M`` for the top K clusters in default/deep depth, attaching the
 top-ranked X posts to each cluster's ``posts`` field.
@@ -25,6 +29,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -35,22 +40,25 @@ from .relevance import token_overlap_relevance
 
 CLI_BIN = "digg-pp-cli"
 
-# Digg sections searched. Digg also covers world-business, sports, science,
-# gaming and entertainment; last30days keeps its Digg lane on AI and tech.
+# Sections searched on digg-pp-cli 2026.10.x, whose search defaults to ai
+# alone. Newer CLIs search every topic when no section is named.
 SECTIONS = "ai,tech"
 
-# Outcome note for a search answered from a stale local copy. Kept under the
-# 140-character outcome note limit in render.
-STALE_NOTE = (
-    "no recent local sync, so only the newest stories were searched; "
-    f"run `{CLI_BIN} sync --topics {SECTIONS}` for full coverage"
+# Outcome note for a search answered by digg-pp-cli 2026.10.x. Kept under
+# the 140-character outcome note limit in render.
+UPGRADE_NOTE = (
+    f"this {CLI_BIN} searches only Digg's AI and tech sections; "
+    "upgrade it to search every Digg topic with engagement scores"
 )
+
+# Key set on a search answer that came from the ai,tech call.
+_LEGACY_ANSWER_KEY = "legacy_cli"
 
 # Per-depth knobs.
 DEPTH_CONFIG = {
     "quick": 8,
     "default": 20,
-    "deep": 40,
+    "deep": 50,
 }
 
 # How many top-ranked clusters get post enrichment, per depth. Quick mode
@@ -65,10 +73,17 @@ ENRICH_CONFIG = {
 # Reddit/HN/YouTube/TikTok/GitHub enrichment.
 POSTS_PER_CLUSTER = 5
 
-# A stale section makes the CLI fetch up to 8 live feed pages per section
-# before answering (about 8s for ai,tech), well inside this budget.
+# On digg-pp-cli 2026.10.x a stale section makes the CLI fetch up to 8 live
+# feed pages per section before answering (about 8s for ai,tech), well
+# inside this budget.
 SEARCH_TIMEOUT = 30
 POSTS_TIMEOUT = 15
+HELP_TIMEOUT = 10
+
+# Whether the installed CLI searches every topic. None until first checked;
+# the answer holds for the rest of the process.
+_all_topic_search: Optional[bool] = None
+_all_topic_search_lock = threading.Lock()
 
 
 def _log(msg: str) -> None:
@@ -125,13 +140,60 @@ def _parse_first_post_age(age: Optional[str], today: Optional[datetime] = None) 
     return point.date().isoformat()
 
 
-def _build_search_args(query: str, limit: int) -> List[str]:
+def _published_date(published_at: Any) -> Optional[str]:
+    """Convert a ``publishedAt`` timestamp into a UTC YYYY-MM-DD string."""
+    if not isinstance(published_at, str) or not published_at.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(published_at.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.date().isoformat()
+
+
+def _cli_searches_all_topics() -> bool:
+    """True when the installed CLI's ``search`` covers every Digg topic.
+
+    digg-pp-cli 2026.10.x defaults ``--topic`` to ``ai`` and rejects unknown
+    flags, so the call has to be chosen before it is made. The all-topic
+    search shipped together with ``--sort``, so its presence in
+    ``search --help`` identifies the newer CLI. The help text is read once
+    per process; a help call that fails is not an answer and is retried on
+    the next search.
+    """
+    global _all_topic_search
+    with _all_topic_search_lock:
+        if _all_topic_search is not None:
+            return _all_topic_search
+        try:
+            result = subproc.run_with_timeout(
+                [CLI_BIN, "search", "--help"], timeout=HELP_TIMEOUT
+            )
+        except (subproc.SubprocTimeout, OSError) as exc:
+            _log(f"search --help failed: {exc}")
+            return False
+        if result.returncode != 0:
+            _log(f"search --help exit {result.returncode}")
+            return False
+        _all_topic_search = "--sort" in (result.stdout or "")
+        return _all_topic_search
+
+
+def _build_search_args(query: str, limit: int, *, all_topics: bool) -> List[str]:
+    """Build the search call.
+
+    The all-topic call names no section and no sort order: the newer CLI
+    defaults to every topic in relevance order, which is what the
+    position-based relevance hint in ``parse_digg_response`` expects.
+    """
+    sections = [] if all_topics else ["--topic", SECTIONS]
     return [
         CLI_BIN,
         "search",
         query,
-        "--topic",
-        SECTIONS,
+        *sections,
         "--since",
         "30d",
         "--agent",
@@ -265,7 +327,7 @@ def search_digg(
     to_date: str,
     depth: str = "default",
 ) -> Dict[str, Any]:
-    """Search Digg AI and Tech clusters via digg-pp-cli.
+    """Search Digg clusters via digg-pp-cli.
 
     Args:
         topic: search query.
@@ -275,13 +337,18 @@ def search_digg(
 
     Returns:
         Dict with ``results`` list. On failure, ``results`` is empty and an
-        ``error`` key carries a one-line description.
+        ``error`` key carries a one-line description. An answer from the
+        ai,tech call of digg-pp-cli 2026.10.x is marked for ``upgrade_note``.
     """
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     if not topic or not topic.strip():
         return {"results": []}
-    cmd = _build_search_args(topic, limit)
-    _log(f"search '{topic}' (sections={SECTIONS}, limit={limit}, since=30d)")
+    if not _is_available():
+        return {"results": [], "error": f"{CLI_BIN} not on PATH"}
+    all_topics = _cli_searches_all_topics()
+    cmd = _build_search_args(topic, limit, all_topics=all_topics)
+    scope = "all topics" if all_topics else f"sections={SECTIONS}"
+    _log(f"search '{topic}' ({scope}, limit={limit}, since=30d)")
     response, stderr = _invoke_cli(cmd, timeout=SEARCH_TIMEOUT)
     fallback_error = _empty_local_fallback_error(response, stderr)
     if fallback_error:
@@ -289,28 +356,27 @@ def search_digg(
         return {"results": [], "error": fallback_error}
     n = len(response.get("results") or [])
     _log(f"found {n} clusters")
-    note = stale_note(response)
-    if note:
-        _log(note)
+    if not all_topics and not response.get("error"):
+        response[_LEGACY_ANSWER_KEY] = True
+        _log(UPGRADE_NOTE)
     return response
 
 
-def stale_note(response: Dict[str, Any]) -> Optional[str]:
-    """Describe a search answered from a stale local copy, else None.
+def upgrade_note(response: Dict[str, Any]) -> Optional[str]:
+    """Describe a search answered by digg-pp-cli 2026.10.x, else None.
 
-    ``digg-pp-cli`` sets ``meta.stale`` when a searched section has no
-    completed sync in the last 6 hours. It then searches only the newest
-    live feed pages, so older stories in the 30-day window can be missing.
+    That CLI searches only the AI and tech sections, from a local feed copy
+    that can be stale, and reports no engagement score. Upgrading fixes all
+    three, so this one note stands in for the older stale-copy note.
     """
-    meta = response.get("meta") if isinstance(response, dict) else None
-    if not isinstance(meta, dict) or meta.get("stale") is not True:
+    if not isinstance(response, dict) or response.get(_LEGACY_ANSWER_KEY) is not True:
         return None
-    return STALE_NOTE
+    return UPGRADE_NOTE
 
 
-def is_stale_note(detail: Optional[str]) -> bool:
-    """True when an outcome detail carries the stale-copy note."""
-    return bool(detail) and STALE_NOTE in detail
+def is_upgrade_note(detail: Optional[str]) -> bool:
+    """True when an outcome detail carries the upgrade note."""
+    return bool(detail) and UPGRADE_NOTE in detail
 
 
 def _build_url(cluster_url_id: str) -> str:
@@ -333,15 +399,88 @@ def _rank_score(rank: Optional[int]) -> float:
     return float(51 - r)
 
 
+def _position_relevance(position: int, query: str, text: str, rank_boost: float = 0.0) -> float:
+    """Relevance hint from result position, query overlap and a rank boost."""
+    rank_decay = max(0.3, 1.0 - (position * 0.02))
+    content_score = token_overlap_relevance(query, text.strip()) if query else 0.5
+    return round(min(1.0, 0.55 * rank_decay + 0.35 * content_score + rank_boost), 2)
+
+
+def _count(value: Any) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _parse_story(
+    story: Dict[str, Any],
+    position: int,
+    query: str,
+    from_date: str,
+) -> Optional[Dict[str, Any]]:
+    """Parse one result of the all-topic search, which carries its own URL.
+
+    Returns None for a story published before ``from_date`` or whose URL is
+    not a web link.
+    """
+    cluster_url_id = str(story["clusterUrlId"])
+    url = str(story.get("url") or "").strip()
+    if not _is_safe_http_url(url):
+        # The URL is rendered into a link in the report, so a non-web
+        # scheme from upstream is dropped the same way an unsafe xUrl is.
+        _log(f"dropped story with unsafe url scheme: {url!r}")
+        return None
+    date_str = _published_date(story.get("publishedAt"))
+    if date_str is not None and date_str < from_date:
+        return None
+
+    title = str(story.get("title") or "").strip()
+    tldr = str(story.get("tldr") or "").strip()
+    source_count = story.get("sourceCount")
+    if source_count is None:
+        source_count = story.get("postCount")
+    post_count = _count(source_count)
+    unique_authors = _count(story.get("uniqueAuthors"))
+    engagement: Dict[str, Any] = {
+        "postCount": post_count,
+        "uniqueAuthors": unique_authors,
+    }
+    digg_score = story.get("diggScore")
+    if isinstance(digg_score, (int, float)) and not isinstance(digg_score, bool):
+        engagement["digg_score"] = digg_score
+
+    return {
+        "id": cluster_url_id,
+        "cluster_id": str(story.get("clusterId") or ""),
+        "topic": str(story.get("topic") or ""),
+        "title": title or f"Digg cluster {position + 1}",
+        "url": url,
+        "tldr": tldr,
+        "author": "",
+        "date": date_str,
+        "engagement": engagement,
+        "first_post_age": story.get("firstPostAge"),
+        "posts": [],
+        "relevance": _position_relevance(position, query, f"{title} {tldr}"),
+        "why_relevant": f"Digg cluster ({post_count} posts, {unique_authors} authors)",
+    }
+
+
 def parse_digg_response(
     response: Dict[str, Any],
     query: str = "",
+    from_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Parse a digg search envelope into normalized item dicts.
+
+    A result carrying ``url`` comes from the all-topic search: its link,
+    date and engagement are read from the story itself. Any other result
+    is a digg-pp-cli 2026.10.x cluster and keeps the older path, with a
+    ``di.gg/ai`` link and a date derived from ``firstPostAge``.
 
     Args:
         response: payload from ``search_digg``.
         query: original search query, used for token-overlap relevance.
+        from_date: YYYY-MM-DD start of the research window. Stories with a
+            ``publishedAt`` before it are dropped. Defaults to 30 days ago.
 
     Returns:
         List of dicts ready for ``normalize._normalize_digg``.
@@ -349,6 +488,7 @@ def parse_digg_response(
     raw = response.get("results") if isinstance(response, dict) else None
     if not isinstance(raw, list):
         return []
+    window_start = from_date or (_today() - timedelta(days=30)).date().isoformat()
 
     items: List[Dict[str, Any]] = []
     for i, cluster in enumerate(raw):
@@ -356,6 +496,11 @@ def parse_digg_response(
             continue
         cluster_url_id = cluster.get("clusterUrlId")
         if not cluster_url_id:
+            continue
+        if cluster.get("url"):
+            story = _parse_story(cluster, i, query, window_start)
+            if story is not None:
+                items.append(story)
             continue
 
         title = str(cluster.get("title") or "").strip()
@@ -369,13 +514,8 @@ def parse_digg_response(
             # firstPostAge present but outside 30d -> drop; last30days contract.
             continue
 
-        rank_decay = max(0.3, 1.0 - (i * 0.02))
-        if query:
-            content_score = token_overlap_relevance(query, f"{title} {tldr}".strip())
-        else:
-            content_score = 0.5
         rank_boost = min(0.2, _rank_score(rank) / 250.0)
-        relevance = min(1.0, 0.55 * rank_decay + 0.35 * content_score + rank_boost)
+        relevance = _position_relevance(i, query, f"{title} {tldr}", rank_boost)
 
         items.append(
             {
@@ -393,7 +533,7 @@ def parse_digg_response(
                 },
                 "first_post_age": first_post_age,
                 "posts": [],
-                "relevance": round(relevance, 2),
+                "relevance": relevance,
                 "why_relevant": (
                     f"Digg cluster (rank {rank}, {post_count} posts, {unique_authors} authors)"
                     if rank is not None

@@ -686,8 +686,8 @@ def _fetch_discovery_source(
         return items, "; ".join(errors) or None
     if source == "digg":
         result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
-        items = digg.parse_digg_response(result, query=plan.domain)
-        # Digg's AI and Tech sections are a broad listing, so keep only domain-bearing
+        items = digg.parse_digg_response(result, query=plan.domain, from_date=from_date)
+        # Digg is a broad listing, so keep only domain-bearing
         # clusters when scoped; global trending keeps the whole feed.
         if keyword_gate:
             items = [
@@ -4679,9 +4679,9 @@ def _finalize_source_status(
         elif state == health.OK and not count:
             state = outcome.lane_failure_state or schema.NO_RESULTS
         elif state == schema.PARTIAL and not count:
-            if source == "digg" and digg.is_stale_note(detail):
-                # A stale Digg copy that matched nothing is an empty answer
-                # with a coverage note, not a failed search.
+            if source == "digg" and digg.is_upgrade_note(detail):
+                # An older Digg CLI that matched nothing is an empty answer
+                # with an upgrade note, not a failed search.
                 state = schema.NO_RESULTS
             else:
                 state = http.classify_failure(message=detail or "")
@@ -6806,13 +6806,15 @@ def _retrieve_stream_impl(
             timeout=_memo_wait_seconds(config),
             cacheable=_clean_search_result,
         )
-        items = digg.parse_digg_response(result, query=subquery.search_query)
+        items = digg.parse_digg_response(
+            result, query=subquery.search_query, from_date=from_date,
+        )
         # Enrichment with attached X posts is deferred to
         # _finalize_items_by_source so it runs on the items that actually
         # survive dedupe rather than on top-K of the raw fanout.
-        stale = digg.stale_note(result)
-        if stale:
-            return items, _outcome_artifact(health.PARTIAL, stale)
+        upgrade = digg.upgrade_note(result)
+        if upgrade:
+            return items, _outcome_artifact(health.PARTIAL, upgrade)
         return items, _result_outcome_artifact(source, result)
     if source == "arxiv":
         result = arxiv.search_arxiv(subquery.search_query, from_date, to_date, depth=depth)
