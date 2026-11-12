@@ -443,9 +443,11 @@ def _parse_story(
         "postCount": post_count,
         "uniqueAuthors": unique_authors,
     }
+    counts = f"{post_count} posts, {unique_authors} authors"
     digg_score = story.get("diggScore")
     if isinstance(digg_score, (int, float)) and not isinstance(digg_score, bool):
         engagement["digg_score"] = digg_score
+        counts = f"Digg Score {digg_score:g}, {counts}"
 
     return {
         "id": cluster_url_id,
@@ -460,7 +462,7 @@ def _parse_story(
         "first_post_age": story.get("firstPostAge"),
         "posts": [],
         "relevance": _position_relevance(position, query, f"{title} {tldr}"),
-        "why_relevant": f"Digg cluster ({post_count} posts, {unique_authors} authors)",
+        "why_relevant": f"Digg cluster ({counts})",
     }
 
 

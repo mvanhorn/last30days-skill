@@ -369,8 +369,14 @@ def test_engagement_reference_units_per_source():
     # A busy issue sits mid-scale; a repo snapshot's lifetime stars are not engagement.
     assert 40 <= score("github", {"reactions": 50, "comments": 80}) <= 55
     assert score("github", {"stars": 2000, "comments": 50}) is None
-    # A rank-1 Digg cluster with 15 posts is strong but not saturated.
-    assert 60 <= score("digg", {"postCount": 15, "uniqueAuthors": 10, "rank_score": 50}) <= 75
+    # A Digg cluster from a CLI that reports no Digg Score is scored on its
+    # two counts alone: 15 posts from 10 authors is strong but not saturated,
+    # and its leaderboard rank adds nothing.
+    counts_only = score("digg", {"postCount": 15, "uniqueAuthors": 10})
+    assert 50 <= counts_only <= 65
+    assert score(
+        "digg", {"postCount": 15, "uniqueAuthors": 10, "rank": 1, "rank_score": 50.0}
+    ) == counts_only
     # No audience signal: no engagement score at all.
     assert score("jobs", {"open_roles": 1}) is None
     assert score("meta_ads", {"variants": 7}) is None
@@ -487,3 +493,36 @@ def test_655_view_tiktok_scores_well_below_9676_upvote_reddit_thread():
     tiktok = _score("tiktok", {"views": 655, "likes": 17})
     reddit = _score("reddit", {"score": 9676, "num_comments": 455, "upvote_ratio": 0.95})
     assert reddit - tiktok >= 60
+
+
+# --- Digg engagement follows Digg Score, source count and author count -------
+
+def _digg_score(engagement):
+    return signals.engagement_score(_item("d", "digg", "t", TO, engagement))
+
+
+def test_digg_story_with_a_top_score_saturates_and_a_small_one_does_not():
+    # The largest story of a 30-day sample, and one from its lower half.
+    big = _digg_score({"postCount": 120, "uniqueAuthors": 90, "digg_score": 1286})
+    small = _digg_score({"postCount": 5, "uniqueAuthors": 4, "digg_score": 30})
+    assert big >= 98
+    assert 40 <= small <= 65
+    # The tenth of 99 sampled stories (the top-decile boundary) sits near the top.
+    assert 88 <= _digg_score({"postCount": 27, "uniqueAuthors": 22, "digg_score": 150}) <= 100
+
+
+def test_digg_stories_with_equal_counts_rank_by_digg_score():
+    counts = {"postCount": 20, "uniqueAuthors": 15}
+    quiet = _item("quiet", "digg", "SQLite 4 ships", TO, {**counts, "digg_score": 40})
+    loud = _item("loud", "digg", "SQLite 4 ships", TO, {**counts, "digg_score": 400})
+
+    assert signals.engagement_score(loud) > signals.engagement_score(quiet)
+    ranked = signals.annotate_stream(
+        [quiet, loud], "SQLite 4", "balanced_recent", reference_date=TO, max_days=30
+    )
+    assert [item.item_id for item in ranked] == ["loud", "quiet"]
+
+
+def test_digg_cluster_without_a_score_still_scores_from_its_counts():
+    assert _digg_score({"postCount": 3, "uniqueAuthors": 2}) > 0
+    assert _digg_score({"postCount": 100, "uniqueAuthors": 100}) >= 98

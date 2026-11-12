@@ -3977,7 +3977,9 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
         ("comments", "cmt"),
     ],
     "perplexity": [("citations", "cite")],
-    "digg": [("postCount", "posts"), ("uniqueAuthors", "auth")],
+    # The Digg Score is shown on each story and never summed (see
+    # _aggregate_engagement); postCount holds the story's source count.
+    "digg": [("digg_score", " Digg Score"), ("postCount", "posts"), ("uniqueAuthors", "auth")],
     "trustpilot": [("reviews", "reviews")],
     "amazon": [("ratings", "ratings")],
     "meta_ads": [("variants", "variants")],
@@ -4023,8 +4025,14 @@ def _aggregate_engagement(source: str, items: list[schema.SourceItem]) -> str | 
     fields = ENGAGEMENT_DISPLAY.get(source)
     if not fields:
         return None
+    # A score or rank says something about one item and is not additive.
+    # Reddit's "score" is its upvote count, which the agent export also
+    # treats as that source's headline counter.
+    headline_fields = schema._HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE.get(source, ())
     totals: list[tuple[float | int | None, str]] = []
     for field, label in fields:
+        if not schema._is_counter_field(field) and field not in headline_fields:
+            continue
         total = 0
         found = False
         for item in items:

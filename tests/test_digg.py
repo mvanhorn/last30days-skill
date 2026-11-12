@@ -964,6 +964,11 @@ def test_story_keeps_its_own_url_score_counts_and_publish_date():
     assert item["engagement"] == {"postCount": 37, "uniqueAuthors": 29, "digg_score": 412}
 
 
+def test_story_reason_names_its_score_and_counts():
+    items = digg.parse_digg_response(_live_envelope(_story()), from_date="2026-10-12")
+    assert items[0]["why_relevant"] == "Digg cluster (Digg Score 412, 37 posts, 29 authors)"
+
+
 def test_story_post_count_is_the_source_count():
     items = digg.parse_digg_response(
         _live_envelope(_story(sourceCount=52, postCount=37)), from_date="2026-10-12"

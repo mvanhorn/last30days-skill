@@ -183,7 +183,8 @@ def top_comment_vote_signal(candidate: schema.Candidate) -> float:
 # Per-source engagement weights: list of (field_name, weight) tuples.
 # Reddit, YouTube, and TikTok use custom functions because they include
 # a dedicated 10% top-comment-score slot (see _reddit_engagement,
-# _youtube_engagement, _tiktok_engagement).
+# _youtube_engagement, _tiktok_engagement). Digg uses these weights only when
+# the story carries a Digg Score (see _digg_engagement).
 ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "x":            [("likes", 0.55), ("reposts", 0.25), ("replies", 0.15), ("quotes", 0.05)],
     "instagram":    [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
@@ -192,7 +193,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "bluesky":      [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
-    "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
+    "digg":         [("digg_score", 0.50), ("postCount", 0.30), ("uniqueAuthors", 0.20)],
     "trustpilot":   [("reviews", 1.0)],
     "amazon":       [("ratings", 1.0)],
     # Meta publishes reach and spend only for political and issue ads, so a
@@ -208,6 +209,17 @@ def _weighted_engagement(item: schema.SourceItem, weights: list[tuple[str, float
     if not any(v for v, _ in values):
         return None
     return sum(v * w for v, w in values)
+
+
+# Digg stories from a CLI that reports no Digg Score: the two counts carry the
+# whole signal, in the same 3:2 proportion they have beside a score.
+_DIGG_COUNT_WEIGHTS: list[tuple[str, float]] = [("postCount", 0.60), ("uniqueAuthors", 0.40)]
+
+
+def _digg_engagement(item: schema.SourceItem) -> float | None:
+    if log1p_safe(item.engagement.get("digg_score")) > 0:
+        return _weighted_engagement(item, ENGAGEMENT_WEIGHTS["digg"])
+    return _weighted_engagement(item, _DIGG_COUNT_WEIGHTS)
 
 
 def _reddit_engagement(item: schema.SourceItem) -> float | None:
@@ -274,6 +286,8 @@ def engagement_raw(item: schema.SourceItem) -> float | None:
         return _tiktok_engagement(item)
     if item.source == "instagram":
         return _instagram_engagement(item)
+    if item.source == "digg":
+        return _digg_engagement(item)
     weights = ENGAGEMENT_WEIGHTS.get(item.source)
     if weights:
         return _weighted_engagement(item, weights)
@@ -305,9 +319,18 @@ _ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
     # (log1p 16) and $1.2M liquidity (log1p 14), weighted 0.6/0.4 as in
     # ENGAGEMENT_WEIGHTS: 0.6*16 + 0.4*14 = 15.2.
     "polymarket": 15.2,
-    # A rank-1 cluster (rank_score 50) with ~100 posts from ~100 authors:
-    # 0.4*log1p(100) + 0.3*log1p(100) + 0.3*log1p(50) = 4.4.
-    "digg":        4.4,
+    # Digg Score, source count (stored as postCount) and unique authors.
+    # Calibrated on a 30-day search for "OpenAI" (99 stories, 2026-11-11):
+    # Digg Scores ran 1286, 473, 239, 227, 226, 218, 180, 169, 163, 150 across
+    # the top decile, ~38 at the median and 5 at the bottom; the two largest
+    # stories had 121-127 sources, the rest of the top decile 22-59. The
+    # reference is the middle of that decile (score 226, 44 sources, 30
+    # authors): 0.5*log1p(226) + 0.3*log1p(44) + 0.2*log1p(30) = 4.5. The
+    # decile then scores 92-100 (its tenth story, 150/27/22, scores 92), the
+    # median story ~61 and the smallest (5/2/2) 32. A story with no score,
+    # weighted on counts alone, saturates at ~100 sources from ~100 authors
+    # (log1p(100) = 4.6).
+    "digg":        4.5,
     # Lifetime totals for a whole company or product, not one post: big
     # consumer brands and best-sellers carry ~100k, so ~300 lands near 50.
     "trustpilot": 11.5,  # ~log1p(100000) reviews

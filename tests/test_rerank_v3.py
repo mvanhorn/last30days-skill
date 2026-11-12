@@ -1010,3 +1010,15 @@ class TestOutOfWindowDemotion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiggDiscoveryEngagementTests(unittest.TestCase):
+    def test_discovery_total_counts_posts_and_authors_not_the_digg_score(self):
+        item = schema.SourceItem(
+            item_id="digg-1", source="digg", title="t", body="b",
+            url="https://digg.com/technology/k3v9xq2m", published_at="2026-11-08",
+            snippet="s",
+            engagement={"postCount": 127, "uniqueAuthors": 96, "digg_score": 1286},
+        )
+
+        self.assertEqual(rerank.discovery_engagement_total(item), 223)
