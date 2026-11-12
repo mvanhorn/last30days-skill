@@ -820,6 +820,12 @@ def _tiktok_record(config):
     if env.get_tiktok_backend(config) == "scavio":
         return _record(status=health.OK, requires="SCAVIO_API_KEY",
                        detail="SCAVIO_API_KEY present (tiktok)")
+    pin = (config.get(env.TIKTOK_BACKEND_PIN_VAR) or "").strip().lower()
+    if pin == "scavio":
+        # Pinned without its key: research keeps TikTok off, so say why
+        # instead of reporting a ScrapeCreators key that will not be used.
+        return _record(status="unconfigured", requires="SCAVIO_API_KEY",
+                       fix=f"set SCAVIO_API_KEY, or unset {env.TIKTOK_BACKEND_PIN_VAR}")
     return _sc_gated_record(config, "tiktok")
 
 
