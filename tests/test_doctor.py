@@ -1642,6 +1642,16 @@ class CliHealth(unittest.TestCase):
         self.assertEqual("", rec["fix"])
         self.assertEqual("", rec["note"])
 
+    def test_digg_cli_whose_help_could_not_be_read_gets_no_upgrade_fix(self):
+        with _Hermetic(probe_map={"digg-pp-cli": health.OK}), mock.patch(
+            "lib.digg.cli_searches_all_topics", return_value=None
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["digg"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("", rec["fix"])
+        self.assertEqual("", rec["note"])
+
     def test_digg_cli_that_is_not_installed_is_not_asked_for_its_help_text(self):
         with _Hermetic(), mock.patch(
             "lib.digg.cli_searches_all_topics",

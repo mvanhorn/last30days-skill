@@ -707,7 +707,8 @@ def _digg_record(config):
     probe = health.probe_dependency("digg-pp-cli")
     requires = "digg-pp-cli on the agent-subprocess PATH"
     if probe.ok:
-        if digg.cli_searches_all_topics():
+        if digg.cli_searches_all_topics() is not False:
+            # Current, or its help could not be read: nothing known to fix.
             return _record(status=health.OK, detail=probe.detail, requires=requires)
         # An older CLI still answers, on AI and tech only, so the source
         # stays ok and carries the upgrade as its fix.

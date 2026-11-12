@@ -1623,3 +1623,184 @@ def test_top_rows_without_a_title_yield_no_items():
     del untitled["title"]
     blank = _top_row(2, title="  ")
     assert digg.parse_top_response(_top_envelope(untitled, blank, {}), from_date="2026-10-12") == []
+
+
+# === A failed help probe is not an older CLI ===
+
+
+def _cli_with_failing_help(help_failure, answer: dict, calls: list):
+    """A CLI whose ``search --help`` fails while every other call answers."""
+
+    def fake_run(cmd, *, timeout, **_kwargs):
+        calls.append(list(cmd))
+        if "--help" in cmd:
+            return help_failure()
+        return _stdout_for(answer)
+
+    return fake_run
+
+
+def _help_times_out():
+    raise subproc.SubprocTimeout("search --help timed out")
+
+
+def _help_exits_non_zero():
+    return subproc.SubprocResult(returncode=1, stdout="", stderr="config unreadable")
+
+
+@pytest.mark.parametrize("help_failure", [_help_times_out, _help_exits_non_zero])
+def test_failed_help_probe_keeps_the_items_without_the_upgrade_note(monkeypatch, help_failure):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _cli_with_failing_help(help_failure, _live_envelope(_story()), calls),
+    )
+    out = digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
+    items = digg.parse_digg_response(out, query="exoplanet", from_date="2026-10-12")
+    assert [item["url"] for item in items] == ["https://digg.com/science/k3v9xq2m"]
+    assert "error" not in out
+    assert digg.upgrade_note(out) is None
+    # The call both CLIs accept.
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20"]
+    ]
+
+    digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
+    assert len([cmd for cmd in calls if "--help" in cmd]) == 2
+
+
+@pytest.mark.parametrize("help_failure", [_help_times_out, _help_exits_non_zero])
+def test_top_stories_after_a_failed_help_probe_are_empty_without_an_error(monkeypatch, help_failure):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _cli_with_failing_help(help_failure, _top_envelope(_top_row(1)), calls),
+    )
+    assert digg.top_stories() == {"results": []}
+    assert _top_calls(calls) == []
+
+
+# === Missing binary ===
+
+
+def test_search_and_top_stories_name_the_missing_binary(monkeypatch):
+    def never_run(*_a, **_kw):
+        raise AssertionError("ran a CLI that is not on PATH")
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: None)
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", never_run)
+    search = digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
+    top = digg.top_stories()
+    assert search == {"results": [], "error": "digg-pp-cli not on PATH"}
+    assert top == {"results": [], "error": "digg-pp-cli not on PATH"}
+
+
+# === Stories without a usable publish date ===
+
+
+@pytest.mark.parametrize("published_at", [None, "", "last Tuesday"])
+def test_story_without_a_readable_publish_date_is_kept_undated(published_at):
+    story = _story(published_at=published_at)
+    if published_at is None:
+        del story["publishedAt"]
+    [item] = digg.parse_digg_response(_live_envelope(story), from_date="2026-10-12")
+    assert item["url"] == "https://digg.com/science/k3v9xq2m"
+    assert item["date"] is None
+
+
+# === Story sources: run deadline, cancel signal and comparison share ===
+
+
+class _Clock:
+    """A monotonic clock that only moves when a fake CLI call spends time."""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _slow_sources_cli(clock: _Clock, seen: list):
+    """A ``posts`` call that hangs for its whole timeout, then times out."""
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        seen.append({"timeout": timeout, **kwargs})
+        clock.now += timeout
+        raise subproc.SubprocTimeout("posts timed out")
+
+    return fake_run
+
+
+def test_sources_fetch_caps_a_call_at_the_time_left_and_stops_at_the_deadline(monkeypatch):
+    clock, seen = _Clock(), []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg, "time", clock)
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen))
+    deadline = clock.now + 2
+    assert digg.fetch_story_sources(_five_stories(), "deep", deadline=deadline) == {}
+    assert len(seen) == 1
+    assert 0 < seen[0]["timeout"] <= 2
+    assert seen[0]["deadline_monotonic"] == deadline
+
+
+def test_sources_fetch_makes_no_call_once_the_run_is_cancelled(monkeypatch):
+    import threading
+
+    calls: list = []
+    cancel = threading.Event()
+    cancel.set()
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    assert digg.fetch_story_sources(_five_stories(), "deep", cancel=cancel) == {}
+    assert calls == []
+
+
+def test_sources_fetch_hands_the_cancel_signal_to_each_call(monkeypatch):
+    import threading
+
+    seen: list = []
+    cancel = threading.Event()
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        seen.append(kwargs.get("cancel"))
+        return _stdout_for(_sources_answer())
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    digg.fetch_story_sources(_five_stories(), "default", cancel=cancel)
+    assert seen == [cancel, cancel, cancel]
+
+
+def test_sources_fetch_without_a_run_deadline_spends_at_most_40_seconds(monkeypatch):
+    clock, seen = _Clock(), []
+    started = clock.now
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg, "time", clock)
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen))
+    digg.fetch_story_sources(_five_stories(), "deep")
+    assert [call["timeout"] for call in seen] == [15, 15, 10]
+    assert clock.now - started <= 40
+
+
+@pytest.mark.parametrize("depth, entity_count, expected_calls", [
+    ("default", 1, 3),
+    ("deep", 1, 5),
+    ("default", 3, 1),
+    ("deep", 3, 2),
+    ("default", 9, 1),
+    ("quick", 3, 0),
+])
+def test_comparison_run_fetches_its_share_of_the_story_budget(
+    monkeypatch, depth, entity_count, expected_calls,
+):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    digg.fetch_story_sources(_five_stories(), depth, entity_count=entity_count)
+    assert len(calls) == expected_calls

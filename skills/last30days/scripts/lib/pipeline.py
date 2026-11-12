@@ -3848,8 +3848,9 @@ def _digg_story_sources(
     """Fetch the top Digg stories' sources and attach their quotes.
 
     Returns the map from source match key to story that
-    ``digg.tag_confirmed_candidates`` reads after fusion. Empty at quick
-    depth, when the run holds no all-topic Digg story, and when every fetch
+    ``digg.tag_confirmed_candidates`` reads after fusion. The fetch is
+    bounded by the run's deadline and cancel signal, and a comparison's runs
+    share one story budget between them. Empty at quick depth, when the run holds no all-topic Digg story, and when every fetch
     fails. Recorded and replayed as its own fixture exchange so the eval
     harness stays offline.
     """
@@ -3857,15 +3858,23 @@ def _digg_story_sources(
         item for item in bundle.items_by_source.get("digg", [])
         if item.metadata.get(digg.STORY_ID_KEY)
     ]
-    if not stories or not digg.ENRICH_CONFIG.get(depth, digg.ENRICH_CONFIG["default"]):
+    entity_count = _comparison_entity_count(config)
+    if not stories or not digg.story_budget(depth, entity_count):
         return {}
     request = {"source": "digg", "phase": "story_sources", "topic": topic, "depth": depth}
+    if entity_count > 1:
+        # A comparison run fetches fewer stories, so it never replays a
+        # single-topic recording; those keep their original keys.
+        request["comparison_entity_count"] = entity_count
     matched, replayed = http.fixture_source_replay(request)
     if matched:
         fetched = replayed if isinstance(replayed, dict) else {}
     else:
         fetched = digg.fetch_story_sources(
             stories, depth, stopped=lambda: _research_stopped(config),
+            deadline=config.get("_research_deadline"),
+            cancel=config.get("_enrich_cancel"),
+            entity_count=entity_count,
         )
         http.fixture_source_record(request, fetched)
     return digg.apply_story_sources(stories, fetched)

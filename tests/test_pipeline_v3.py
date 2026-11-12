@@ -3205,6 +3205,47 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self.assertTrue(report.items_by_source["digg"])
         self.assertFalse([c for c in report.ranked_candidates if "digg_story" in c.metadata])
 
+    def _story_bundle(self):
+        from lib import normalize
+
+        stories = normalize.normalize_source_items(
+            "digg", _digg_story_rows(), "2026-10-12", "2026-11-11",
+        )
+        return schema.RetrievalBundle(items_by_source={"digg": stories})
+
+    def _fetch_sources(self, config, seen: list):
+        def run(cmd, *, timeout, **kwargs):
+            seen.append({"timeout": timeout, **kwargs})
+            return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
+
+        with patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"), \
+                patch("lib.digg.subproc.run_with_timeout", side_effect=run):
+            pipeline._digg_story_sources(
+                self._story_bundle(), topic="webb telescope exoplanet",
+                depth="default", config=config,
+            )
+
+    def test_story_source_calls_carry_the_run_deadline_and_cancel_signal(self):
+        seen: list = []
+        cancel = threading.Event()
+        deadline = time.monotonic() + 2
+        self._fetch_sources({"_research_deadline": deadline, "_enrich_cancel": cancel}, seen)
+        self.assertEqual(3, len(seen))
+        for call in seen:
+            self.assertLessEqual(call["timeout"], 2)
+            self.assertEqual(deadline, call["deadline_monotonic"])
+            self.assertIs(cancel, call["cancel"])
+
+    def test_three_entity_comparison_fetches_one_story_per_run(self):
+        seen: list = []
+        self._fetch_sources({"_comparison_entity_count": 3}, seen)
+        self.assertEqual(1, len(seen))
+
+    def test_single_topic_run_fetches_three_stories(self):
+        seen: list = []
+        self._fetch_sources({}, seen)
+        self.assertEqual(3, len(seen))
+
     def test_run_completes_untagged_when_the_sources_fetch_times_out(self):
         def timing_out(cmd, *, timeout, env=None, on_pid=None):
             raise subproc.SubprocTimeout("posts timed out")

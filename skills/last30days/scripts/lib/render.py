@@ -4032,10 +4032,9 @@ def _aggregate_engagement(source: str, items: list[schema.SourceItem]) -> str | 
     # A score or rank says something about one item and is not additive.
     # Reddit's "score" is its upvote count, which the agent export also
     # treats as that source's headline counter.
-    headline_fields = schema._HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE.get(source, ())
     totals: list[tuple[float | int | None, str]] = []
     for field, label in fields:
-        if not schema._is_counter_field(field) and field not in headline_fields:
+        if not schema.is_summable_engagement_field(source, field):
             continue
         total = 0
         found = False

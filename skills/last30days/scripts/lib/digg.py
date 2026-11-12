@@ -18,7 +18,9 @@ digg-pp-cli 2026.10.x is still supported. Its ``search`` covers only the
 sections it is told to (default ``ai``) and rejects flags it does not
 know, so the call is chosen up front by ``cli_searches_all_topics`` and
 those installs keep the ``--topic ai,tech`` call. Their answers carry no
-``url`` and take the older parsing path; see ``upgrade_note``.
+``url`` and take the older parsing path; see ``upgrade_note``. When the
+help text cannot be read the same call is made, since both CLIs accept it,
+but the answer is not treated as an older CLI's.
 
 Global trending: ``digg-pp-cli top --agent --limit N`` lists the current top
 stories of every topic by Digg Score (``top_stories``). It has no topic to
@@ -40,6 +42,7 @@ import json
 import re
 import shutil
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -102,6 +105,10 @@ STORY_ID_KEY = "clusterId"
 SEARCH_TIMEOUT = 30
 POSTS_TIMEOUT = 15
 HELP_TIMEOUT = 10
+
+# Longest the story-sources fetch may take in total when the run itself has
+# no deadline.
+SOURCES_TOTAL_SECONDS = 40
 
 # Whether the installed CLI searches every topic. None until first checked;
 # the answer holds for the rest of the process.
@@ -176,8 +183,11 @@ def _published_date(published_at: Any) -> Optional[str]:
     return parsed.date().isoformat()
 
 
-def cli_searches_all_topics() -> bool:
-    """True when the installed CLI's ``search`` covers every Digg topic.
+def cli_searches_all_topics() -> Optional[bool]:
+    """Whether the installed CLI's ``search`` covers every Digg topic.
+
+    True for the newer CLI, False for digg-pp-cli 2026.10.x, and None when
+    the help text could not be read, which says nothing about the version.
 
     digg-pp-cli 2026.10.x defaults ``--topic`` to ``ai`` and rejects unknown
     flags, so the call has to be chosen before it is made. The all-topic
@@ -196,10 +206,10 @@ def cli_searches_all_topics() -> bool:
             )
         except (subproc.SubprocTimeout, OSError) as exc:
             _log(f"search --help failed: {exc}")
-            return False
+            return None
         if result.returncode != 0:
             _log(f"search --help exit {result.returncode}")
-            return False
+            return None
         _all_topic_search = "--sort" in (result.stdout or "")
         return _all_topic_search
 
@@ -294,17 +304,28 @@ def _empty_local_fallback_error(data: Dict[str, Any], stderr: str = "") -> Optio
     return f"live-search-unavailable: {detail}"
 
 
-def _invoke_cli(cmd: List[str], timeout: int) -> Tuple[Dict[str, Any], str]:
+def _invoke_cli(
+    cmd: List[str],
+    timeout: float,
+    deadline: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
+) -> Tuple[Dict[str, Any], str]:
     """Invoke digg-pp-cli and return the parsed envelope with its stderr.
 
     The envelope is ``{"results": [...]}`` on success and
     ``{"results": [], "error": "..."}`` on failure. Never raises; the
-    pipeline relies on shape consistency.
+    pipeline relies on shape consistency. ``deadline`` (monotonic) and
+    ``cancel`` end a running call early; both surface as a timeout error.
     """
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}, ""
+    bounds: Dict[str, Any] = {}
+    if deadline is not None:
+        bounds["deadline_monotonic"] = deadline
+    if cancel is not None:
+        bounds["cancel"] = cancel
     try:
-        result = subproc.run_with_timeout(cmd, timeout=timeout)
+        result = subproc.run_with_timeout(cmd, timeout=timeout, **bounds)
     except subproc.SubprocTimeout as exc:
         _log(f"Timeout: {exc}")
         return {"results": [], "error": str(exc)}, ""
@@ -339,9 +360,14 @@ def _invoke_cli(cmd: List[str], timeout: int) -> Tuple[Dict[str, Any], str]:
     return data, stderr
 
 
-def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
+def _run_cli(
+    cmd: List[str],
+    timeout: float,
+    deadline: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
+) -> Dict[str, Any]:
     """Invoke digg-pp-cli and return only the parsed envelope."""
-    return _invoke_cli(cmd, timeout)[0]
+    return _invoke_cli(cmd, timeout, deadline=deadline, cancel=cancel)[0]
 
 
 def search_digg(
@@ -362,13 +388,16 @@ def search_digg(
         Dict with ``results`` list. On failure, ``results`` is empty and an
         ``error`` key carries a one-line description. An answer from the
         ai,tech call of digg-pp-cli 2026.10.x is marked for ``upgrade_note``.
+        When the CLI's help could not be read the ai,tech call is still
+        made, but its answer is not marked.
     """
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     if not topic or not topic.strip():
         return {"results": []}
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
-    all_topics = cli_searches_all_topics()
+    capability = cli_searches_all_topics()
+    all_topics = capability is True
     cmd = _build_search_args(topic, limit, all_topics=all_topics)
     scope = "all topics" if all_topics else f"sections={SECTIONS}"
     _log(f"search '{topic}' ({scope}, limit={limit}, since=30d)")
@@ -379,7 +408,7 @@ def search_digg(
         return {"results": [], "error": fallback_error}
     n = len(response.get("results") or [])
     _log(f"found {n} clusters")
-    if not all_topics and not response.get("error"):
+    if capability is False and not response.get("error"):
         response[_LEGACY_ANSWER_KEY] = True
         _log(UPGRADE_NOTE)
     return response
@@ -392,7 +421,8 @@ def top_stories(depth: str = "default") -> Dict[str, Any]:
     merges them by descending Digg Score, over the CLI's default 24-hour
     range. digg-pp-cli 2026.10.x answers ``top`` from a local store that
     last30days never fills, with rows that carry no titles, so it is not
-    called there and the answer is empty.
+    called there and the answer is empty. The same holds when the CLI's
+    help could not be read, since the version is then unknown.
 
     Returns:
         Dict with ``results`` list. On failure, ``results`` is empty and an
@@ -401,8 +431,14 @@ def top_stories(depth: str = "default") -> Dict[str, Any]:
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
-    if not cli_searches_all_topics():
-        _log(f"top stories skipped: this {CLI_BIN} has no live all-topic top")
+    capability = cli_searches_all_topics()
+    if capability is not True:
+        reason = (
+            f"this {CLI_BIN} has no live all-topic top"
+            if capability is False
+            else f"could not read {CLI_BIN} search --help"
+        )
+        _log(f"top stories skipped: {reason}")
         return {"results": []}
     _log(f"top stories (all topics, limit={limit})")
     response = _run_cli([CLI_BIN, "top", "--agent", "--limit", str(limit)], timeout=SEARCH_TIMEOUT)
@@ -802,26 +838,51 @@ def _digg_score(item: Any) -> Optional[float]:
     return None
 
 
+def story_budget(depth: str, entity_count: int = 1) -> int:
+    """How many stories one run fetches sources for.
+
+    None at quick depth, 3 at default and 5 at deep. A comparison runs the
+    pipeline once per entity, so each of its runs takes that budget divided
+    by the entity count, rounded up, and keeps at least one story.
+    """
+    total = ENRICH_CONFIG.get(depth, ENRICH_CONFIG["default"])
+    if total <= 0 or entity_count <= 1:
+        return total
+    return max(1, -(-total // entity_count))
+
+
 def fetch_story_sources(
     items: list,
     depth: str = "default",
     stopped: Any = None,
+    *,
+    deadline: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
+    entity_count: int = 1,
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch the sources of the top stories by Digg Score, one story at a time.
 
-    Covers no story at quick depth, 3 at default and 5 at deep, so a run
-    makes at most that many ``posts`` calls. Only stories from the all-topic
-    search qualify: they carry the UUID the call takes and a Digg Score.
+    Covers ``story_budget`` stories, so a run makes at most that many
+    ``posts`` calls. Only stories from the all-topic search qualify: they
+    carry the UUID the call takes and a Digg Score.
+
     ``stopped`` is asked before each call and ends the fetch when true.
+    ``deadline`` is the run's monotonic deadline and ``cancel`` its cancel
+    signal: both reach every call, a call's timeout is capped at the time
+    left, and the fetch ends when none is left or the signal is set. A run
+    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch.
 
     Returns ``{story UUID: {"posts": [...], "source_urls": [...]}}``:
     ``posts`` holds the first ``POSTS_PER_CLUSTER`` quotable X posts and
     ``source_urls`` every source's web URL. A story whose call fails or
     returns nothing usable is left out. Never raises.
     """
-    budget = ENRICH_CONFIG.get(depth, ENRICH_CONFIG["default"])
+    budget = story_budget(depth, entity_count)
     if budget <= 0:
         return {}
+    fetch_deadline = (
+        deadline if deadline is not None else time.monotonic() + SOURCES_TOTAL_SECONDS
+    )
     scored: Dict[str, float] = {}
     for item in items:
         if getattr(item, "source", None) != "digg":
@@ -834,7 +895,17 @@ def fetch_story_sources(
     for cluster_id in sorted(scored, key=lambda key: -scored[key])[:budget]:
         if stopped is not None and stopped():
             break
-        response = _run_cli(_build_sources_args(cluster_id), timeout=POSTS_TIMEOUT)
+        if cancel is not None and cancel.is_set():
+            break
+        remaining = fetch_deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        response = _run_cli(
+            _build_sources_args(cluster_id),
+            timeout=min(POSTS_TIMEOUT, remaining),
+            deadline=deadline,
+            cancel=cancel,
+        )
         posts: List[Dict[str, Any]] = []
         source_urls: List[str] = []
         for row in response.get("results") or []:
