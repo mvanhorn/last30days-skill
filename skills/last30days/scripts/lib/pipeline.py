@@ -2970,6 +2970,12 @@ def run(
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
+    # Sources of the top Digg stories, fetched once per run and before the
+    # supplemental searches add their own calls. The quotes land on the
+    # stories now; the match keys mark confirmed candidates after fusion.
+    _check_research(config)
+    digg_story_by_key = _digg_story_sources(bundle, topic=topic, depth=depth, config=config)
+
     # Phase 2: supplemental entity-based searches
     _check_research(config)
     supplemental_handles: list[str] = []
@@ -3154,6 +3160,7 @@ def run(
         first_party_handles=resolved_handles,
         primary_handle=x_handle,
     )
+    digg.tag_confirmed_candidates(candidates, digg_story_by_key)
     private_candidates = [
         candidate
         for candidate in candidates
@@ -3772,11 +3779,13 @@ def _finalize_items_by_source(
             keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
             if keywords:
                 items = polymarket.filter_items_against_keywords(items, keywords)
-        if source == "digg" and items:
-            # Pull top-ranked X posts only for the survivors that will appear
-            # in the brief. Spending the enrichment budget here (rather than
-            # at retrieval time) keeps the inline 'via Digg' quotes
-            # paired with the clusters dedupe actually kept.
+        if source == "digg" and any(not item.metadata.get("clusterId") for item in items):
+            # Clusters from digg-pp-cli 2026.10.x only; all-topic stories got
+            # their quotes from _digg_story_sources. Pull top-ranked X posts
+            # only for the survivors that will appear in the brief. Spending
+            # the enrichment budget here (rather than at retrieval time)
+            # keeps the inline 'via Digg' quotes paired with the clusters
+            # dedupe actually kept.
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
@@ -3821,6 +3830,39 @@ def _finalize_items_by_source(
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         finalized[source] = items
     return finalized
+
+
+def _digg_story_sources(
+    bundle: schema.RetrievalBundle,
+    *,
+    topic: str,
+    depth: str,
+    config: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Fetch the top Digg stories' sources and attach their quotes.
+
+    Returns the map from source match key to story that
+    ``digg.tag_confirmed_candidates`` reads after fusion. Empty at quick
+    depth, when the run holds no all-topic Digg story, and when every fetch
+    fails. Recorded and replayed as its own fixture exchange so the eval
+    harness stays offline.
+    """
+    stories = [
+        item for item in bundle.items_by_source.get("digg", [])
+        if item.metadata.get("clusterId")
+    ]
+    if not stories or not digg.ENRICH_CONFIG.get(depth, digg.ENRICH_CONFIG["default"]):
+        return {}
+    request = {"source": "digg", "phase": "story_sources", "topic": topic, "depth": depth}
+    matched, replayed = http.fixture_source_replay(request)
+    if matched:
+        fetched = replayed if isinstance(replayed, dict) else {}
+    else:
+        fetched = digg.fetch_story_sources(
+            stories, depth, stopped=lambda: _research_stopped(config),
+        )
+        http.fixture_source_record(request, fetched)
+    return digg.apply_story_sources(stories, fetched)
 
 
 def _merge_replayed_enrichment(

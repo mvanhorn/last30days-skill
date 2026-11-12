@@ -1148,3 +1148,376 @@ def test_new_cli_stories_reach_the_pipeline_without_a_partial_note(monkeypatch):
     assert [item["id"] for item in items] == ["recent01"]
     assert items[0]["url"] == "https://digg.com/science/recent01"
     assert "_source_outcome" not in artifact
+
+
+# === Story sources and confirmation of matching items ===
+
+
+def _source_row(
+    kind: str = "x",
+    url: str = "https://x.com/astro_ana/status/1986000000000000001",
+    username: str = "astro_ana",
+    body: str = "Water vapor on a rocky world. Big if it holds up.",
+):
+    author = {"display_name": username.title() if username else "Example Newsroom"}
+    if kind == "x":
+        author["username"] = username
+    return {
+        "kind": kind,
+        "body": body,
+        "xUrl": url,
+        "title": "" if kind == "x" else "Webb finds water on a rocky exoplanet",
+        "posted_at": "2026-11-08T14:00:00Z",
+        "post_x_id": url.rsplit("/", 1)[-1] if kind == "x" else "",
+        "author": author,
+    }
+
+
+def _sources_answer(*rows: dict) -> dict:
+    return {"meta": {"topic": "science"}, "results": list(rows)}
+
+
+def _story_item(short_id: str = "k3v9xq2m", digg_score: float = 412, engagement_score=80, **story):
+    from lib import normalize
+
+    [parsed] = digg.parse_digg_response(
+        _live_envelope(_story(short_id=short_id, diggScore=digg_score, **story)),
+        query="exoplanet",
+        from_date="2026-10-12",
+    )
+    [item] = normalize.normalize_source_items("digg", [parsed], "2026-10-12", "2026-11-11")
+    item.engagement_score = engagement_score
+    return item
+
+
+def _other_item(source: str, url: str, **metadata):
+    from lib import schema
+
+    return schema.SourceItem(
+        item_id=f"{source}-1", source=source, title="A post", body="A post", url=url,
+        published_at="2026-11-09", metadata=dict(metadata),
+    )
+
+
+def _candidate_for(*items):
+    from lib import schema
+
+    first = items[0]
+    return schema.Candidate(
+        candidate_id=first.url, item_id=first.item_id, source=first.source,
+        title=first.title, url=first.url, snippet="", subquery_labels=["primary"],
+        native_ranks={f"primary:{first.source}": 1}, local_relevance=0.6, freshness=70,
+        engagement=30, source_quality=0.7, rrf_score=0.02, source_items=list(items),
+    )
+
+
+def _sources_cli(answers: dict, calls: list):
+    """A CLI whose ``posts <uuid>`` answers come from ``answers`` by UUID."""
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        calls.append(list(cmd))
+        return _stdout_for(answers.get(cmd[2], _sources_answer()))
+
+    return fake_run
+
+
+def _confirm(story, rows, *others, depth: str = "default", monkeypatch):
+    """Fetch ``story``'s sources from a fake CLI and tag ``others``."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _sources_cli({story.metadata["clusterId"]: _sources_answer(*rows)}, []),
+    )
+    fetched = digg.fetch_story_sources([story], depth)
+    stories = digg.apply_story_sources([story], fetched)
+    candidates = [_candidate_for(item) for item in others]
+    digg.tag_confirmed_candidates(candidates, stories)
+    return candidates
+
+
+@pytest.mark.parametrize("item_url", [
+    "https://twitter.com/astro_ana/status/1986000000000000001",
+    "https://x.com/Astro_Ana/status/1986000000000000001",
+    "https://x.com/astro_ana/status/1986000000000000001?s=20&t=abcDEF",
+    "https://x.com/i/status/1986000000000000001",
+])
+def test_x_item_with_a_story_sources_status_id_is_tagged(monkeypatch, item_url):
+    story = _story_item()
+    [candidate] = _confirm(
+        story, [_source_row()], _other_item("x", item_url), monkeypatch=monkeypatch,
+    )
+    assert candidate.metadata["digg_story"] == {
+        "title": "Webb telescope spots water on a rocky exoplanet",
+        "url": "https://digg.com/science/k3v9xq2m",
+        "digg_score": 412,
+        "source_count": 37,
+        "engagement": 80,
+    }
+
+
+def test_x_item_with_another_status_id_is_not_tagged(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(), [_source_row()],
+        _other_item("x", "https://x.com/astro_ana/status/1986000000000000002"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_hacker_news_item_linking_a_story_source_article_is_tagged(monkeypatch):
+    article = "https://www.example-observatory.org/news/webb-water/?utm_source=digg"
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url=article, username="")],
+        _other_item(
+            "hackernews", "https://example-observatory.org/news/webb-water",
+            hn_url="https://news.ycombinator.com/item?id=45900001",
+        ),
+        monkeypatch=monkeypatch,
+    )
+    assert candidate.metadata["digg_story"]["url"] == "https://digg.com/science/k3v9xq2m"
+
+
+def test_reddit_text_post_about_the_same_event_is_not_tagged(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url="https://example-observatory.org/news/webb-water", username="")],
+        _other_item("reddit", "https://www.reddit.com/r/space/comments/1abcde/webb_finds_water/"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_item_sharing_only_a_domain_with_a_source_is_not_tagged(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url="https://example-observatory.org/news/webb-water", username="")],
+        _other_item("hackernews", "https://example-observatory.org/news/another-story"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_the_digg_story_itself_is_not_tagged(monkeypatch):
+    story = _story_item()
+    [candidate] = _confirm(
+        story, [_source_row(kind="webpage", url=story.url, username="")], story,
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_story_with_40_sources_tags_the_30th_and_keeps_5_quotes(monkeypatch):
+    rows = [
+        _source_row(
+            url=f"https://x.com/voice{n}/status/19860000000000001{n:02d}",
+            username=f"voice{n}", body=f"Take number {n}.",
+        )
+        for n in range(1, 41)
+    ]
+    story = _story_item()
+    [candidate] = _confirm(
+        story, rows, _other_item("x", "https://x.com/voice30/status/1986000000000000130"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" in candidate.metadata
+    assert [post["username"] for post in story.metadata["posts"]] == [
+        "voice1", "voice2", "voice3", "voice4", "voice5",
+    ]
+
+
+def test_item_in_two_stories_is_tagged_with_the_more_engaged_one(monkeypatch):
+    shared = _source_row()
+    small = _story_item(short_id="small001", digg_score=40, engagement_score=35, title="Small story")
+    big = _story_item(short_id="big00001", digg_score=900, engagement_score=95, title="Big story")
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({
+            small.metadata["clusterId"]: _sources_answer(shared),
+            big.metadata["clusterId"]: _sources_answer(shared),
+        }, []),
+    )
+    stories = digg.apply_story_sources(
+        [small, big], digg.fetch_story_sources([small, big], "default"),
+    )
+    candidate = _candidate_for(_other_item("x", shared["xUrl"]))
+    digg.tag_confirmed_candidates([candidate], stories)
+    assert candidate.metadata["digg_story"]["title"] == "Big story"
+
+
+def _five_stories():
+    scores = {"s1": 150, "s2": 1286, "s3": 239, "s4": 473, "s5": 180}
+    return [_story_item(short_id=short_id, digg_score=score) for short_id, score in scores.items()]
+
+
+def test_default_depth_fetches_the_3_top_scored_stories_one_at_a_time(monkeypatch):
+    calls: list = []
+    running = {"now": 0, "most": 0}
+    inner = _sources_cli({}, calls)
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        running["now"] += 1
+        running["most"] = max(running["most"], running["now"])
+        try:
+            assert timeout <= 15
+            return inner(cmd, timeout=timeout)
+        finally:
+            running["now"] -= 1
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    stories = _five_stories()
+    digg.fetch_story_sources(stories, "default")
+    uuid = {item.item_id: item.metadata["clusterId"] for item in stories}
+    assert calls == [
+        ["digg-pp-cli", "posts", uuid[short_id], "--agent", "--limit", "40"]
+        for short_id in ("s2", "s4", "s3")
+    ]
+    assert len(calls) <= 6
+    assert running["most"] == 1
+
+
+def test_deep_depth_fetches_5_stories_and_quick_fetches_none(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    assert digg.fetch_story_sources(_five_stories(), "quick") == {}
+    assert calls == []
+    digg.fetch_story_sources(_five_stories(), "deep")
+    assert len(calls) == 5
+
+
+def test_story_found_by_two_searches_is_fetched_once_and_both_copies_get_quotes(monkeypatch):
+    calls: list = []
+    first, second = _story_item(), _story_item()
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({first.metadata["clusterId"]: _sources_answer(_source_row())}, calls),
+    )
+    fetched = digg.fetch_story_sources([first, second], "default")
+    digg.apply_story_sources([first, second], fetched)
+    assert len(calls) == 1
+    assert first.metadata["posts"][0]["username"] == "astro_ana"
+    assert second.metadata["posts"][0]["username"] == "astro_ana"
+
+
+def test_sources_fetch_stops_when_the_run_is_out_of_time(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    digg.fetch_story_sources(_five_stories(), "default", stopped=lambda: len(calls) >= 1)
+    assert len(calls) == 1
+
+
+def test_sources_fetch_timing_out_tags_nothing_and_leaves_the_story_intact(monkeypatch):
+    def fake_run(*_a, **_kw):
+        raise subproc.SubprocTimeout("posts timed out")
+
+    story = _story_item()
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    fetched = digg.fetch_story_sources([story], "default")
+    stories = digg.apply_story_sources([story], fetched)
+    candidate = _candidate_for(_other_item("x", _source_row()["xUrl"]))
+    digg.tag_confirmed_candidates([candidate], stories)
+    assert fetched == {} and stories == {}
+    assert "digg_story" not in candidate.metadata
+    assert story.metadata["posts"] == []
+    assert story.url == "https://digg.com/science/k3v9xq2m"
+
+
+def test_source_with_a_non_web_url_confirms_nothing(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url="javascript:alert(1)", username="")],
+        _other_item("hackernews", "javascript:alert(1)"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_old_cli_clusters_get_no_sources_fetch(monkeypatch):
+    from lib import normalize
+
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    parsed = digg.parse_digg_response({"results": [_cluster()]}, query="sample")
+    items = normalize.normalize_source_items("digg", parsed, "2026-01-01", "2026-12-31")
+    assert digg.fetch_story_sources(items, "default") == {}
+    assert calls == []
+
+
+def test_ranked_post_enrichment_leaves_all_topic_stories_alone(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    digg.enrich_source_items([_story_item()], top_k=3)
+    assert calls == []
+
+
+def test_tag_and_quotes_survive_fusion_of_two_streams(monkeypatch):
+    from lib import fusion, schema
+
+    source = _source_row()
+    stories_a, stories_b = _story_item(), _story_item()
+    post_a = _other_item("x", "https://x.com/astro_ana/status/1986000000000000001")
+    post_b = _other_item("x", "https://x.com/astro_ana/status/1986000000000000001")
+    for item in (stories_a, stories_b, post_a, post_b):
+        item.local_relevance, item.freshness, item.source_quality = 0.7, 80, 0.7
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({stories_a.metadata["clusterId"]: _sources_answer(source)}, []),
+    )
+    digg_items = [stories_a, stories_b]
+    confirmed = digg.apply_story_sources(digg_items, digg.fetch_story_sources(digg_items, "default"))
+    plan = schema.QueryPlan(
+        intent="breaking_news", freshness_mode="balanced_recent", cluster_mode="story",
+        raw_topic="exoplanet",
+        subqueries=[
+            schema.SubQuery(label=label, search_query="exoplanet", ranking_query="exoplanet", sources=["digg", "x"])
+            for label in ("primary", "second")
+        ],
+        source_weights={"digg": 1.0, "x": 1.0},
+    )
+    candidates = fusion.weighted_rrf(
+        {
+            ("primary", "digg"): [stories_a], ("primary", "x"): [post_a],
+            ("second", "digg"): [stories_b], ("second", "x"): [post_b],
+        },
+        plan, pool_limit=10,
+    )
+    digg.tag_confirmed_candidates(candidates, confirmed)
+    by_source = {candidate.source: candidate for candidate in candidates}
+    assert len(candidates) == 2
+    assert by_source["x"].subquery_labels == ["primary", "second"]
+    assert by_source["x"].metadata["digg_story"]["url"] == stories_a.url
+    assert "digg_story" not in by_source["digg"].metadata
+    assert schema.candidate_primary_item(by_source["digg"]).metadata["posts"][0]["username"] == "astro_ana"
+
+
+def test_confirmed_item_names_its_digg_story_in_the_report(monkeypatch):
+    from lib import render
+
+    [candidate] = _confirm(
+        _story_item(), [_source_row()],
+        _other_item("x", "https://x.com/astro_ana/status/1986000000000000001"),
+        monkeypatch=monkeypatch,
+    )
+    lines = render._render_candidate(candidate, "1.")
+    assert (
+        "   - Also in Digg story: "
+        "[Webb telescope spots water on a rocky exoplanet](https://digg.com/science/k3v9xq2m)"
+        " (Digg Score 412, 37 sources)"
+    ) in lines
+
+
+def test_unconfirmed_item_names_no_digg_story():
+    from lib import render
+
+    candidate = _candidate_for(_other_item("x", "https://x.com/astro_ana/status/1986000000000000001"))
+    assert not [line for line in render._render_candidate(candidate, "1.") if "Digg story" in line]

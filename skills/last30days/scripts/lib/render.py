@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from . import (
     amazon,
     dates,
+    digg,
     fusion,
     health,
     hiring_signals,
@@ -2586,6 +2587,9 @@ def _render_candidate(
     corroboration = _format_corroboration(candidate)
     if corroboration:
         lines.append(f"   - {corroboration}")
+    digg_story = _format_digg_confirmation(candidate)
+    if digg_story:
+        lines.append(f"   - {digg_story}")
     explanation = _format_explanation(candidate)
     if explanation:
         lines.append(f"   - Why: {explanation}")
@@ -4115,6 +4119,23 @@ def _format_corroboration(candidate: schema.Candidate) -> str | None:
     if not corroborating:
         return None
     return f"Also on: {', '.join(corroborating)}"
+
+
+def _format_digg_confirmation(candidate: schema.Candidate) -> str | None:
+    """Name the Digg story this item is one of the sources of, if any."""
+    story = (candidate.metadata or {}).get(digg.CONFIRMED_BY_KEY)
+    if not isinstance(story, dict) or not story.get("url"):
+        return None
+    title = _safe_title(str(story.get("title") or "")) or "Digg story"
+    line = f"Also in Digg story: {_markdown_url_link(str(story['url']), label=title)}"
+    counts = []
+    score = story.get("digg_score")
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        counts.append(f"Digg Score {score:g}")
+    sources = story.get("source_count")
+    if isinstance(sources, int) and not isinstance(sources, bool) and sources > 0:
+        counts.append(f"{sources} sources")
+    return f"{line} ({', '.join(counts)})" if counts else line
 
 
 def _format_explanation(candidate: schema.Candidate) -> str | None:

@@ -1022,3 +1022,78 @@ class DiggDiscoveryEngagementTests(unittest.TestCase):
         )
 
         self.assertEqual(rerank.discovery_engagement_total(item), 223)
+
+
+def _confirmed(candidate: schema.Candidate, engagement: float) -> schema.Candidate:
+    candidate.metadata["digg_story"] = {
+        "title": "Webb telescope spots water on a rocky exoplanet",
+        "url": "https://digg.com/science/k3v9xq2m",
+        "digg_score": 412,
+        "source_count": 37,
+        "engagement": engagement,
+    }
+    return candidate
+
+
+class DiggConfirmationBonusTests(unittest.TestCase):
+    """An item that is a source of a Digg story ranks higher, by a bounded amount."""
+
+    def test_confirmed_item_scores_higher_than_an_identical_unconfirmed_one(self):
+        plain = rerank._final_score(make_candidate(60.0))
+        confirmed = rerank._final_score(_confirmed(make_candidate(60.0), 70))
+        self.assertGreater(confirmed, plain)
+
+    def test_bonus_grows_with_story_engagement_and_stops_at_the_cap(self):
+        plain = rerank._final_score(make_candidate(60.0))
+        at_20 = rerank._final_score(_confirmed(make_candidate(60.0), 20)) - plain
+        at_100 = rerank._final_score(_confirmed(make_candidate(60.0), 100)) - plain
+        beyond = rerank._final_score(_confirmed(make_candidate(60.0), 400)) - plain
+        self.assertGreater(at_20, 0)
+        self.assertGreater(at_100, at_20)
+        self.assertAlmostEqual(at_100, 8.0)
+        self.assertAlmostEqual(beyond, 8.0)
+
+    def test_story_without_engagement_adds_nothing(self):
+        plain = rerank._final_score(make_candidate(60.0))
+        self.assertEqual(plain, rerank._final_score(_confirmed(make_candidate(60.0), 0)))
+        self.assertEqual(plain, rerank._final_score(_confirmed(make_candidate(60.0), None)))
+
+    def test_confirmed_entity_miss_stays_below_an_on_entity_unconfirmed_item(self):
+        on_entity = make_candidate(60.0)
+        off_entity = _confirmed(make_candidate(60.0), 100)
+        off_entity.explanation = "fallback: entity-miss"
+        unconfirmed_miss = make_candidate(60.0)
+        unconfirmed_miss.explanation = "fallback: entity-miss"
+        self.assertLess(rerank._final_score(off_entity), rerank._final_score(on_entity))
+        # The full entity-miss penalty still lands on the confirmed item.
+        self.assertAlmostEqual(
+            rerank._final_score(off_entity) - rerank._final_score(unconfirmed_miss), 8.0,
+        )
+        self.assertAlmostEqual(
+            rerank._final_score(_confirmed(make_candidate(60.0), 100))
+            - rerank._final_score(off_entity),
+            rerank.ENTITY_MISS_FINAL_PENALTY,
+        )
+
+    def test_confirmed_item_a_judge_called_irrelevant_stays_below_an_unconfirmed_one(self):
+        judged = _confirmed(make_candidate(10.0), 100)
+        rerank._set_rerank_provenance(judged, rerank.RERANK_PROVENANCE_LLM)
+        relevant = make_candidate(20.0)
+        rerank._set_rerank_provenance(relevant, rerank.RERANK_PROVENANCE_LLM)
+        self.assertLess(rerank._final_score(judged), rerank._final_score(relevant))
+        self.assertLess(rerank._final_score(judged), 20.0)
+        self.assertEqual("https://digg.com/science/k3v9xq2m", judged.metadata["digg_story"]["url"])
+
+    def test_confirmed_out_of_window_item_stays_below_an_in_window_unconfirmed_one(self):
+        def dated(published_at: str) -> schema.Candidate:
+            candidate = make_candidate(60.0)
+            candidate.source_items = [schema.SourceItem(
+                item_id="i1", source="reddit", title="Title", body="b",
+                url="https://example.com", published_at=published_at, date_confidence="high",
+            )]
+            candidate.metadata.update(range_from="2026-10-12", range_to="2026-11-11")
+            return candidate
+
+        stale = _confirmed(dated("2026-03-01"), 100)
+        fresh = dated("2026-11-01")
+        self.assertLess(rerank._final_score(stale), rerank._final_score(fresh))

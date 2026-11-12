@@ -1,0 +1,470 @@
+{
+  "format": "last30days-http-fixture/v1",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/search?query=openai&tags=story&numericFilters=created_at_i%3E1781049600%2Ccreated_at_i%3C1783728000&hitsPerPage=60",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "hits": [
+            {
+              "objectID": "digg-confirmation-hn-1",
+              "title": "OpenAI publishes Lean formalizations for claimed proofs",
+              "url": "https://www.news.example.test/digg-confirmation/openai-lean-proofs/?utm_source=hn",
+              "author": "fixture_author_1",
+              "points": 180,
+              "num_comments": 64,
+              "created_at_i": 1782518400,
+              "created_at": "2026-06-27T00:00:00Z"
+            },
+            {
+              "objectID": "digg-confirmation-hn-2",
+              "title": "OpenAI proofs: what a Lean formalization does and does not show",
+              "url": "https://news.example.test/digg-confirmation/openai-lean-explainer",
+              "author": "fixture_author_2",
+              "points": 180,
+              "num_comments": 64,
+              "created_at_i": 1782518400,
+              "created_at": "2026-06-27T00:00:00Z"
+            },
+            {
+              "objectID": "digg-confirmation-hn-3",
+              "title": "OpenAI computer use model benchmarks",
+              "url": "https://benchmarks.example.test/digg-confirmation/openai-terra",
+              "author": "fixture_author_3",
+              "points": 75,
+              "num_comments": 22,
+              "created_at_i": 1782604800,
+              "created_at": "2026-06-28T00:00:00Z"
+            }
+          ],
+          "page": 0,
+          "nbHits": 3
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/items/digg-confirmation-hn-1",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "children": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hacker-news.firebaseio.com/v0/item/digg-confirmation-hn-1.json",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "by": "fixture_author_1",
+          "id": "digg-confirmation-hn-1",
+          "kids": [],
+          "type": "story"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/items/digg-confirmation-hn-2",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "children": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hacker-news.firebaseio.com/v0/item/digg-confirmation-hn-2.json",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "by": "fixture_author_2",
+          "id": "digg-confirmation-hn-2",
+          "kids": [],
+          "type": "story"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/items/digg-confirmation-hn-3",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "children": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hacker-news.firebaseio.com/v0/item/digg-confirmation-hn-3.json",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "by": "fixture_author_3",
+          "id": "digg-confirmation-hn-3",
+          "kids": [],
+          "type": "story"
+        }
+      }
+    }
+  ],
+  "source_exchanges": [
+    {
+      "request": {
+        "source": "digg",
+        "topic": "OpenAI news?",
+        "search_query": "openai",
+        "date_range": [
+          "2026-06-10",
+          "2026-07-10"
+        ],
+        "depth": "default"
+      },
+      "value": [
+        [
+          {
+            "id": "ljvbajl5",
+            "cluster_id": "6043f14d-1717-4b75-8fb2-3a596fe44df5",
+            "topic": "ai",
+            "title": "OpenAI announces claimed AI proofs in math, computer science and physics",
+            "url": "https://digg.com/ai/ljvbajl5",
+            "tldr": "OpenAI says its models produced a proof of local smoothing, a refutation of the Exponential Time Hypothesis, and existence proofs for quantum field theories, with Lean formalizations for the math claims.",
+            "author": "",
+            "date": "2026-06-26",
+            "engagement": {
+              "postCount": 127,
+              "uniqueAuthors": 96,
+              "digg_score": 1286
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.9,
+            "why_relevant": "Digg cluster (Digg Score 1286, 127 posts, 96 authors)"
+          },
+          {
+            "id": "1i79b1xh",
+            "cluster_id": "6032cfe8-8969-4f4a-838a-3ad19320f5c1",
+            "topic": "ai",
+            "title": "OpenAI's AI Models Help Researchers Discover Critical PHP Vulnerabilities in \"Patch the Planet\" Initiative",
+            "url": "https://digg.com/ai/1i79b1xh",
+            "tldr": "OpenAI says a researcher identified a critical PHP flaw using its models and that PHP maintainers led the fixes after two months of coordination.",
+            "author": "",
+            "date": "2026-06-21",
+            "engagement": {
+              "postCount": 121,
+              "uniqueAuthors": 102,
+              "digg_score": 473
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.89,
+            "why_relevant": "Digg cluster (Digg Score 473, 121 posts, 102 authors)"
+          },
+          {
+            "id": "x7hzsqzf",
+            "cluster_id": "2c90283c-21fa-47be-abaa-d93cf0609de9",
+            "topic": "ai",
+            "title": "OpenAI red-team agents reportedly exchanged synthetic secrets through processor-cache timing",
+            "url": "https://digg.com/ai/x7hzsqzf",
+            "tldr": "OpenAI reported that red-team agents passed synthetic secrets to each other over a hardware side channel during a controlled test.",
+            "author": "",
+            "date": "2026-06-23",
+            "engagement": {
+              "postCount": 29,
+              "uniqueAuthors": 23,
+              "digg_score": 239
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.88,
+            "why_relevant": "Digg cluster (Digg Score 239, 29 posts, 23 authors)"
+          },
+          {
+            "id": "en0dbdyl",
+            "cluster_id": "7d1c1b7e-3f0a-4c58-9a51-0c2f4de1a001",
+            "topic": "tech",
+            "title": "OpenAI Releases GPT-6.1 Terra: Cheaper, Faster Computer Use Model",
+            "url": "https://digg.com/tech/en0dbdyl",
+            "tldr": "OpenAI released a cheaper and faster model aimed at computer use tasks.",
+            "author": "",
+            "date": "2026-06-26",
+            "engagement": {
+              "postCount": 44,
+              "uniqueAuthors": 30,
+              "digg_score": 226
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.87,
+            "why_relevant": "Digg cluster (Digg Score 226, 44 posts, 30 authors)"
+          },
+          {
+            "id": "wo3n9meb",
+            "cluster_id": "7d1c1b7e-3f0a-4c58-9a51-0c2f4de1a002",
+            "topic": "tech",
+            "title": "OpenAI plans a small test combining ChatGPT's Chat and Work tabs",
+            "url": "https://digg.com/tech/wo3n9meb",
+            "tldr": "OpenAI plans to test a combined Chat and Work view with a small group of ChatGPT users.",
+            "author": "",
+            "date": "2026-07-02",
+            "engagement": {
+              "postCount": 22,
+              "uniqueAuthors": 21,
+              "digg_score": 180
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.86,
+            "why_relevant": "Digg cluster (Digg Score 180, 22 posts, 21 authors)"
+          },
+          {
+            "id": "mtdi1c95",
+            "cluster_id": "09e617d6-5f43-4efa-98c8-39b3d9a1279d",
+            "topic": "ai",
+            "title": "Compaction Smuggling is claimed to bypass OpenAI mitigations and steal reasoning traces",
+            "url": "https://digg.com/ai/mtdi1c95",
+            "tldr": "A post claims a technique called Compaction Smuggling could steal reasoning traces from OpenAI models; another says OpenAI has patched it.",
+            "author": "",
+            "date": "2026-06-26",
+            "engagement": {
+              "postCount": 3,
+              "uniqueAuthors": 3,
+              "digg_score": 38
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.84,
+            "why_relevant": "Digg cluster (Digg Score 38, 3 posts, 3 authors)"
+          }
+        ],
+        {}
+      ]
+    },
+    {
+      "request": {
+        "source": "x",
+        "topic": "OpenAI news?",
+        "search_query": "openai",
+        "date_range": [
+          "2026-06-10",
+          "2026-07-10"
+        ],
+        "depth": "default"
+      },
+      "value": [
+        [
+          {
+            "id": "X1",
+            "text": "OpenAI says the ETH refutation is formalized in Lean. Independent review is being organized.",
+            "author_handle": "fixture_mathematician",
+            "url": "https://x.com/i/status/1940000000000000101",
+            "date": "2026-06-26",
+            "engagement": {
+              "likes": 240,
+              "reposts": 60,
+              "replies": 31
+            }
+          },
+          {
+            "id": "X2",
+            "text": "OpenAI says its proofs are formalized in Lean. Has anyone outside checked the review plan?",
+            "author_handle": "fixture_onlooker",
+            "url": "https://x.com/fixture_onlooker/status/1940000000000000901",
+            "date": "2026-06-26",
+            "engagement": {
+              "likes": 240,
+              "reposts": 60,
+              "replies": 31
+            }
+          },
+          {
+            "id": "X3",
+            "text": "OpenAI and the PHP maintainers: patch your PHP installs. The maintainers led the fixes.",
+            "author_handle": "fixture_phpdev",
+            "url": "https://x.com/Fixture_PHPDev/status/1940000000000000202?s=20",
+            "date": "2026-06-21",
+            "engagement": {
+              "likes": 90,
+              "reposts": 20,
+              "replies": 8
+            }
+          },
+          {
+            "id": "X4",
+            "text": "OpenAI pricing thread: what the new computer use model costs per task.",
+            "author_handle": "fixture_pricing",
+            "url": "https://x.com/fixture_pricing/status/1940000000000000902",
+            "date": "2026-06-27",
+            "engagement": {
+              "likes": 90,
+              "reposts": 20,
+              "replies": 8
+            }
+          }
+        ],
+        {}
+      ]
+    },
+    {
+      "request": {
+        "source": "digg",
+        "phase": "story_sources",
+        "topic": "OpenAI news?",
+        "depth": "default"
+      },
+      "value": {
+        "6043f14d-1717-4b75-8fb2-3a596fe44df5": {
+          "posts": [
+            {
+              "username": "Fixture_Mathematician",
+              "display_name": "Fixture Mathematician",
+              "category": "",
+              "rank": null,
+              "body": "OpenAI says the ETH refutation is formalized in Lean. Independent review is being organized.",
+              "post_type": "tweet",
+              "x_url": "https://twitter.com/Fixture_Mathematician/status/1940000000000000101",
+              "posted_at": "2026-06-26T22:00:00Z"
+            },
+            {
+              "username": "fixture_theorist",
+              "display_name": "Fixture Theorist",
+              "category": "",
+              "rank": null,
+              "body": "A Lean proof is checkable. That is the part that matters here.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_theorist/status/1940000000000000102",
+              "posted_at": "2026-06-26T22:00:00Z"
+            },
+            {
+              "username": "fixture_complexity",
+              "display_name": "Fixture Complexity",
+              "category": "",
+              "rank": null,
+              "body": "If the ETH claim holds, a lot of conditional lower bounds need a second look.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_complexity/status/1940000000000000103",
+              "posted_at": "2026-06-26T22:00:00Z"
+            },
+            {
+              "username": "fixture_physicist",
+              "display_name": "Fixture Physicist",
+              "category": "",
+              "rank": null,
+              "body": "The physics materials are deferred, so judge the math claims first.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_physicist/status/1940000000000000104",
+              "posted_at": "2026-06-26T22:00:00Z"
+            },
+            {
+              "username": "fixture_reporter",
+              "display_name": "Fixture Reporter",
+              "category": "",
+              "rank": null,
+              "body": "Three outside researchers were asked to organize an open examination.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_reporter/status/1940000000000000105",
+              "posted_at": "2026-06-26T22:00:00Z"
+            }
+          ],
+          "source_urls": [
+            "https://twitter.com/Fixture_Mathematician/status/1940000000000000101",
+            "https://news.example.test/digg-confirmation/openai-lean-proofs",
+            "https://x.com/fixture_theorist/status/1940000000000000102",
+            "https://x.com/fixture_complexity/status/1940000000000000103",
+            "https://x.com/fixture_physicist/status/1940000000000000104",
+            "https://x.com/fixture_reporter/status/1940000000000000105",
+            "https://x.com/fixture_skeptic/status/1940000000000000106",
+            "https://x.com/fixture_builder/status/1940000000000000107"
+          ]
+        },
+        "6032cfe8-8969-4f4a-838a-3ad19320f5c1": {
+          "posts": [
+            {
+              "username": "fixture_secresearcher",
+              "display_name": "Fixture Secresearcher",
+              "category": "",
+              "rank": null,
+              "body": "Two months of coordinated disclosure with the PHP maintainers before this went public.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_secresearcher/status/1940000000000000201",
+              "posted_at": "2026-06-26T22:00:00Z"
+            },
+            {
+              "username": "fixture_phpdev",
+              "display_name": "Fixture Phpdev",
+              "category": "",
+              "rank": null,
+              "body": "Patch your PHP installs. The maintainers led the fixes.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_phpdev/status/1940000000000000202",
+              "posted_at": "2026-06-26T22:00:00Z"
+            },
+            {
+              "username": "fixture_cloudsec",
+              "display_name": "Fixture Cloudsec",
+              "category": "",
+              "rank": null,
+              "body": "Both vulnerabilities were reported independently by a second team.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_cloudsec/status/1940000000000000203",
+              "posted_at": "2026-06-26T22:00:00Z"
+            }
+          ],
+          "source_urls": [
+            "https://x.com/fixture_secresearcher/status/1940000000000000201",
+            "https://x.com/fixture_phpdev/status/1940000000000000202",
+            "https://x.com/fixture_cloudsec/status/1940000000000000203"
+          ]
+        },
+        "2c90283c-21fa-47be-abaa-d93cf0609de9": {
+          "posts": [
+            {
+              "username": "fixture_hwsec",
+              "display_name": "Fixture Hwsec",
+              "category": "",
+              "rank": null,
+              "body": "Cache timing as an agent-to-agent channel, in a controlled test.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_hwsec/status/1940000000000000301",
+              "posted_at": "2026-06-26T22:00:00Z"
+            },
+            {
+              "username": "fixture_evals",
+              "display_name": "Fixture Evals",
+              "category": "",
+              "rank": null,
+              "body": "Synthetic secrets only, but the side channel is real.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_evals/status/1940000000000000302",
+              "posted_at": "2026-06-26T22:00:00Z"
+            }
+          ],
+          "source_urls": [
+            "https://x.com/fixture_hwsec/status/1940000000000000301",
+            "https://x.com/fixture_evals/status/1940000000000000302"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -19,9 +19,15 @@ sections it is told to (default ``ai``) and rejects flags it does not
 know, so the call is chosen up front by ``cli_searches_all_topics`` and
 those installs keep the ``--topic ai,tech`` call. Their answers carry no
 ``url`` and take the older parsing path; see ``upgrade_note``.
-Optional enrichment: ``digg-pp-cli posts <clusterUrlId> --agent --by rank
---limit M`` for the top K clusters in default/deep depth, attaching the
-top-ranked X posts to each cluster's ``posts`` field.
+
+Story sources: ``digg-pp-cli posts <story UUID> --agent --limit 40`` for the
+top stories by Digg Score in default/deep depth (``fetch_story_sources``).
+The first X posts of each answer become the story's inline quotes, and every
+source URL is turned into a match key so an item from another source that is
+one of the story's sources can be marked as confirmed by it
+(``tag_confirmed_candidates``). Clusters from digg-pp-cli 2026.10.x have no
+UUID and keep ``posts <clusterUrlId> --agent --by rank --limit M`` for quotes
+alone.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from . import log, subproc
+from .fusion import _normalize_url
 from .relevance import token_overlap_relevance
 
 
@@ -61,8 +68,9 @@ DEPTH_CONFIG = {
     "deep": 50,
 }
 
-# How many top-ranked clusters get post enrichment, per depth. Quick mode
-# skips enrichment to keep latency low (clusters already carry a TLDR).
+# How many stories, highest Digg Score first, get their sources fetched, per
+# depth. Quick mode fetches none to keep latency low (stories already carry
+# a TLDR).
 ENRICH_CONFIG = {
     "quick": 0,
     "default": 3,
@@ -72,6 +80,13 @@ ENRICH_CONFIG = {
 # X posts pulled per enriched cluster. Matches the 5-comment cap used by
 # Reddit/HN/YouTube/TikTok/GitHub enrichment.
 POSTS_PER_CLUSTER = 5
+
+# Sources asked for per story. All of them can confirm another item; the
+# first POSTS_PER_CLUSTER quotable ones are shown under the story.
+SOURCES_PER_STORY = 40
+
+# Candidate.metadata key naming the Digg story an item is a source of.
+CONFIRMED_BY_KEY = "digg_story"
 
 # On digg-pp-cli 2026.10.x a stale section makes the CLI fetch up to 8 live
 # feed pages per section before answering (about 8s for ai,tech), well
@@ -660,8 +675,8 @@ def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_
 
     Reads ``metadata['clusterUrlId']`` and writes ``metadata['posts']`` in
     place. Skips items that already carry a non-empty ``metadata['posts']``,
-    items whose engagement ``postCount`` is 0, and items whose source is not
-    'digg'. Designed to run from `_finalize_items_by_source` so enrichment
+    items whose engagement ``postCount`` is 0, items whose source is not
+    'digg', and stories from the all-topic search. Designed to run from `_finalize_items_by_source` so enrichment
     is spent on the items the brief actually shows.
     """
     if top_k <= 0 or posts_per <= 0:
@@ -673,6 +688,10 @@ def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_
         if getattr(item, "source", None) != "digg":
             continue
         metadata = getattr(item, "metadata", None) or {}
+        if metadata.get("clusterId"):
+            # A story from the all-topic search: fetch_story_sources owns its
+            # sources, under that fetch's own per-run budget.
+            continue
         if metadata.get("posts"):
             continue
         engagement = getattr(item, "engagement", None) or {}
@@ -688,3 +707,159 @@ def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_
     if enriched:
         _log(f"post-dedupe enriched {enriched} clusters with X posts")
     return items
+
+
+_X_HOSTS = ("x.com", "twitter.com")
+_X_STATUS_PATH = re.compile(r"/status(?:es)?/(\d+)")
+
+
+def match_key(url: Any) -> Optional[str]:
+    """Key under which a story source and another item count as the same thing.
+
+    An X post keys on its numeric status id, so ``twitter.com`` and ``x.com``,
+    handle case, share parameters and the ``x.com/i/status/<id>`` form all
+    agree. Every other web URL keys on fusion's normalized URL. Matching is
+    exact: a wrong confirmation is worse than a missed one.
+    """
+    if not isinstance(url, str) or not _is_safe_http_url(url.strip()):
+        return None
+    url = url.strip()
+    host = urlparse(url).netloc.lower()
+    for prefix in ("www.", "mobile.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    if host in _X_HOSTS:
+        status = _X_STATUS_PATH.search(urlparse(url).path)
+        if status:
+            return f"x-status:{status.group(1)}"
+    return _normalize_url(url)
+
+
+def _build_sources_args(cluster_id: str) -> List[str]:
+    return [CLI_BIN, "posts", cluster_id, "--agent", "--limit", str(SOURCES_PER_STORY)]
+
+
+def _digg_score(item: Any) -> Optional[float]:
+    score = (getattr(item, "engagement", None) or {}).get("digg_score")
+    if isinstance(score, (int, float)) and not isinstance(score, bool):
+        return float(score)
+    return None
+
+
+def fetch_story_sources(
+    items: list,
+    depth: str = "default",
+    stopped: Any = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Fetch the sources of the top stories by Digg Score, one story at a time.
+
+    Covers no story at quick depth, 3 at default and 5 at deep, so a run
+    makes at most that many ``posts`` calls. Only stories from the all-topic
+    search qualify: they carry the UUID the call takes and a Digg Score.
+    ``stopped`` is asked before each call and ends the fetch when true.
+
+    Returns ``{story UUID: {"posts": [...], "source_urls": [...]}}``:
+    ``posts`` holds the first ``POSTS_PER_CLUSTER`` quotable X posts and
+    ``source_urls`` every source's web URL. A story whose call fails or
+    returns nothing usable is left out. Never raises.
+    """
+    budget = ENRICH_CONFIG.get(depth, ENRICH_CONFIG["default"])
+    if budget <= 0:
+        return {}
+    scored: Dict[str, float] = {}
+    for item in items:
+        if getattr(item, "source", None) != "digg":
+            continue
+        cluster_id = (getattr(item, "metadata", None) or {}).get("clusterId")
+        score = _digg_score(item)
+        if cluster_id and score is not None:
+            scored[str(cluster_id)] = max(score, scored.get(str(cluster_id), score))
+    fetched: Dict[str, Dict[str, Any]] = {}
+    for cluster_id in sorted(scored, key=lambda key: -scored[key])[:budget]:
+        if stopped is not None and stopped():
+            break
+        response = _run_cli(_build_sources_args(cluster_id), timeout=POSTS_TIMEOUT)
+        posts: List[Dict[str, Any]] = []
+        source_urls: List[str] = []
+        for row in response.get("results") or []:
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get("xUrl") or "").strip()
+            if _is_safe_http_url(url):
+                source_urls.append(url)
+            if len(posts) < POSTS_PER_CLUSTER:
+                post = _parse_post(row)
+                if post is not None:
+                    posts.append(post)
+        if source_urls:
+            fetched[cluster_id] = {"posts": posts, "source_urls": source_urls}
+    if fetched:
+        _log(f"fetched sources for {len(fetched)} stories")
+    return fetched
+
+
+def apply_story_sources(
+    items: list,
+    fetched: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Attach fetched quotes to their stories and map match keys to stories.
+
+    Every copy of a fetched story gets the quotes, so whichever copy
+    survives de-duplication still shows them. The returned map goes from
+    ``match_key`` of each source URL to the story's title, URL, Digg Score,
+    source count and 0-100 engagement score; a source shared by two stories
+    maps to the more engaged one.
+    """
+    stories: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        if getattr(item, "source", None) != "digg":
+            continue
+        entry = fetched.get((item.metadata or {}).get("clusterId"))
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("posts"):
+            item.metadata["posts"] = entry["posts"]
+        engagement = item.engagement or {}
+        story = {
+            "title": item.title,
+            "url": item.url,
+            "digg_score": engagement.get("digg_score"),
+            "source_count": engagement.get("postCount"),
+            "engagement": item.engagement_score or 0,
+        }
+        for url in entry.get("source_urls") or []:
+            key = match_key(url)
+            if key is None:
+                continue
+            current = stories.get(key)
+            if current is None or story["engagement"] > current["engagement"]:
+                stories[key] = story
+    return stories
+
+
+def tag_confirmed_candidates(candidates: list, stories: Dict[str, Dict[str, Any]]) -> int:
+    """Mark each candidate that is a source of a fetched Digg story.
+
+    A candidate matches when the URL of one of its non-Digg items has the
+    same ``match_key`` as a story source. The story is recorded under
+    ``metadata[CONFIRMED_BY_KEY]``, where ranking and rendering read it.
+    Returns how many candidates were marked.
+    """
+    if not stories:
+        return 0
+    tagged = 0
+    for candidate in candidates:
+        best: Optional[Dict[str, Any]] = None
+        for item in candidate.source_items:
+            if item.source == "digg":
+                continue
+            key = match_key(item.url)
+            story = stories.get(key) if key else None
+            if story and (best is None or story["engagement"] > best["engagement"]):
+                best = story
+        if best is not None:
+            candidate.metadata[CONFIRMED_BY_KEY] = dict(best)
+            tagged += 1
+    if tagged:
+        _log(f"{tagged} items confirmed by a Digg story")
+    return tagged
