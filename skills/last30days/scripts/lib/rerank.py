@@ -1056,24 +1056,29 @@ def prune_fallback_entity_misses(
     if not topic:
         return candidates
 
-    kept: list[schema.Candidate] = []
-    for candidate in candidates:
-        if candidate.explanation != _FALLBACK_ENTITY_MISS_EXPLANATION:
-            kept.append(candidate)
-            continue
-        if _is_corpus_candidate(candidate):
-            kept.append(candidate)
-            continue
-        if candidate.local_relevance >= FALLBACK_ENTITY_MISS_CONFIDENCE_ESCAPE:
-            kept.append(candidate)
-            continue
-        primary_text = f"{candidate.title or ''} {candidate.snippet or ''}"
-        if (
-            relevance.token_overlap_relevance(topic, primary_text)
-            >= FALLBACK_ENTITY_MISS_TOPIC_ESCAPE
-        ):
-            kept.append(candidate)
-    return kept
+    return [
+        candidate for candidate in candidates
+        if candidate.explanation != _FALLBACK_ENTITY_MISS_EXPLANATION
+        or escapes_entity_miss_prune(candidate, topic=topic)
+    ]
+
+
+def escapes_entity_miss_prune(candidate: schema.Candidate, *, topic: str) -> bool:
+    """True when ``prune_fallback_entity_misses`` keeps this candidate however
+    the rerank marks it.
+
+    None of the escapes depends on a rerank score, so this can be asked
+    before reranking to learn which candidates are certain to stay visible.
+    """
+    if not topic or _is_corpus_candidate(candidate):
+        return True
+    if candidate.local_relevance >= FALLBACK_ENTITY_MISS_CONFIDENCE_ESCAPE:
+        return True
+    primary_text = f"{candidate.title or ''} {candidate.snippet or ''}"
+    return (
+        relevance.token_overlap_relevance(topic, primary_text)
+        >= FALLBACK_ENTITY_MISS_TOPIC_ESCAPE
+    )
 
 
 #: Secondary entity-miss penalty applied directly to final_score (not just

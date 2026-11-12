@@ -110,6 +110,10 @@ HELP_TIMEOUT = 10
 # no deadline.
 SOURCES_TOTAL_SECONDS = 40
 
+# Query length the all-topic search accepts, in characters.
+QUERY_MIN_CHARS = 3
+QUERY_MAX_CHARS = 120
+
 # Whether the installed CLI searches every topic. None until first checked;
 # the answer holds for the rest of the process.
 _all_topic_search: Optional[bool] = None
@@ -214,14 +218,39 @@ def cli_searches_all_topics() -> Optional[bool]:
         return _all_topic_search
 
 
+def _fit_query(query: str) -> str:
+    """Fit a query to the 3 to 120 characters the all-topic search accepts.
+
+    The newer CLI rejects anything outside that range with a usage error
+    before it searches. A shorter query ("AI", "Go") is repeated until it is
+    long enough, which searches for the same term. A longer one is cut at
+    the last word that fits.
+    """
+    query = " ".join(query.split())
+    if not query:
+        return query
+    if len(query) > QUERY_MAX_CHARS:
+        cut = query[: QUERY_MAX_CHARS + 1]
+        query = (cut.rsplit(" ", 1)[0] if " " in cut else cut)[:QUERY_MAX_CHARS].rstrip()
+    # After the cut, so a short word left in front of one long token
+    # ("AI <long URL>" cut to "AI") is still made long enough.
+    while len(query) < QUERY_MIN_CHARS:
+        query = f"{query} {query}"
+    return query
+
+
 def _build_search_args(query: str, limit: int, *, all_topics: bool) -> List[str]:
     """Build the search call.
 
     The all-topic call names no section and no sort order: the newer CLI
     defaults to every topic in relevance order, which is what the
-    position-based relevance hint in ``parse_digg_response`` expects.
+    position-based relevance hint in ``parse_digg_response`` expects. Its
+    query is fitted to the length that CLI accepts; the older CLI has no
+    such limit and gets the query as given.
     """
     sections = [] if all_topics else ["--topic", SECTIONS]
+    if all_topics:
+        query = _fit_query(query)
     return [
         CLI_BIN,
         "search",
@@ -860,7 +889,6 @@ def fetch_story_sources(
     cancel: Optional[threading.Event] = None,
     entity_count: int = 1,
     budget: Optional[int] = None,
-    total_seconds: Optional[float] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch the sources of the top stories by Digg Score, one story at a time.
 
@@ -873,8 +901,7 @@ def fetch_story_sources(
     ``deadline`` is the run's monotonic deadline and ``cancel`` its cancel
     signal: both reach every call, a call's timeout is capped at the time
     left, and the fetch ends when none is left or the signal is set. A run
-    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch,
-    or ``total_seconds`` when a later pass has only part of that left.
+    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch.
 
     Returns ``{story UUID: {"posts": [...], "source_urls": [...]}}``:
     ``posts`` holds the first ``POSTS_PER_CLUSTER`` quotable X posts and
@@ -885,11 +912,8 @@ def fetch_story_sources(
     budget = full_budget if budget is None else min(budget, full_budget)
     if budget <= 0:
         return {}
-    if total_seconds is None:
-        total_seconds = SOURCES_TOTAL_SECONDS
     fetch_deadline = (
-        deadline if deadline is not None
-        else time.monotonic() + min(total_seconds, SOURCES_TOTAL_SECONDS)
+        deadline if deadline is not None else time.monotonic() + SOURCES_TOTAL_SECONDS
     )
     scored: Dict[str, float] = {}
     for item in items:
@@ -936,16 +960,17 @@ def fetch_story_sources(
 def apply_story_sources(
     items: list,
     fetched: Dict[str, Dict[str, Any]],
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, List[Dict[str, Any]]]:
     """Attach fetched quotes to their stories and map match keys to stories.
 
     Every copy of a fetched story gets the quotes, so whichever copy
     survives de-duplication still shows them. The returned map goes from
-    ``match_key`` of each source URL to the story's title, URL, Digg Score,
-    source count and 0-100 engagement score; a source shared by two stories
-    maps to the more engaged one.
+    ``match_key`` of each source URL to the stories that cite it, most
+    engaged first, each as its title, URL, Digg Score, source count and
+    0-100 engagement score. Every citing story is kept so that a later
+    filter (``surviving_stories``) can fall back to the next one.
     """
-    stories: Dict[str, Dict[str, Any]] = {}
+    stories: Dict[str, List[Dict[str, Any]]] = {}
     for item in items:
         if getattr(item, "source", None) != "digg":
             continue
@@ -966,19 +991,60 @@ def apply_story_sources(
             key = match_key(url)
             if key is None:
                 continue
-            current = stories.get(key)
-            if current is None or story["engagement"] > current["engagement"]:
-                stories[key] = story
+            citing = stories.setdefault(key, [])
+            if all(other["url"] != story["url"] for other in citing):
+                citing.append(story)
+    for citing in stories.values():
+        citing.sort(key=_story_engagement, reverse=True)
     return stories
 
 
-def tag_confirmed_candidates(candidates: list, stories: Dict[str, Dict[str, Any]]) -> int:
+def _story_engagement(story: Dict[str, Any]) -> float:
+    return story.get("engagement") or 0
+
+
+def merge_stories(
+    stories: Dict[str, List[Dict[str, Any]]], more: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Add a later pass's stories to ``stories`` in place, most engaged first."""
+    for key, citing in more.items():
+        merged = stories.setdefault(key, [])
+        merged.extend(
+            story for story in citing
+            if all(other["url"] != story["url"] for other in merged)
+        )
+        merged.sort(key=_story_engagement, reverse=True)
+    return stories
+
+
+def surviving_stories(
+    stories: Dict[str, List[Dict[str, Any]]], items: list,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Keep only the stories that are still among ``items``.
+
+    The map is built at retrieval, before the run's subject and identity
+    filters reject items. A story they rejected must not come back as the
+    confirmation of an item that survived. A source that a rejected story
+    and a surviving one both cite keeps the surviving one.
+    """
+    kept = {item.url for item in items if getattr(item, "source", None) == "digg"}
+    surviving: Dict[str, List[Dict[str, Any]]] = {}
+    for key, citing in stories.items():
+        still = [story for story in citing if story.get("url") in kept]
+        if still:
+            surviving[key] = still
+    return surviving
+
+
+def tag_confirmed_candidates(
+    candidates: list, stories: Dict[str, List[Dict[str, Any]]],
+) -> int:
     """Mark each candidate that is a source of a fetched Digg story.
 
     A candidate matches when the URL of one of its non-Digg items has the
-    same ``match_key`` as a story source. The story is recorded under
-    ``metadata[CONFIRMED_BY_KEY]``, where ranking and rendering read it.
-    Returns how many candidates were marked.
+    same ``match_key`` as a story source. The most engaged of the matching
+    stories is recorded under ``metadata[CONFIRMED_BY_KEY]``, where ranking
+    and rendering read it. Returns how many candidates were marked.
     """
     if not stories:
         return 0
@@ -989,8 +1055,11 @@ def tag_confirmed_candidates(candidates: list, stories: Dict[str, Dict[str, Any]
             if item.source == "digg":
                 continue
             key = match_key(item.url)
-            story = stories.get(key) if key else None
-            if story and (best is None or story["engagement"] > best["engagement"]):
+            # Each list is ordered most engaged first.
+            story = next(iter(stories.get(key) or []), None) if key else None
+            if story and (
+                best is None or _story_engagement(story) > _story_engagement(best)
+            ):
                 best = story
         if best is not None:
             candidate.metadata[CONFIRMED_BY_KEY] = dict(best)

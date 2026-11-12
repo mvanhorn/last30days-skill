@@ -3137,7 +3137,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
     def _cli(self, calls: list):
         import json as _json
 
-        def run(cmd, *, timeout, env=None, on_pid=None):
+        def run(cmd, *, timeout, **_bounds):
             calls.append(list(cmd))
             rows = []
             if cmd[2] == self.TOP_STORY:
@@ -3205,6 +3205,23 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         )
         self.assertEqual(["astro_ana"], [post["username"] for post in top_story.metadata["posts"]])
 
+    def test_story_the_subject_prune_could_remove_does_not_confirm(self):
+        # The prune runs after reranking, and the confirmation feeds the
+        # rerank score, so a story that is not certain to survive it is left
+        # out of the confirmations up front.
+        calls: list = []
+        escapes = rerank.escapes_entity_miss_prune
+        with patch.object(
+            rerank, "escapes_entity_miss_prune",
+            side_effect=lambda candidate, *, topic: (
+                candidate.source != "digg" and escapes(candidate, topic=topic)
+            ),
+        ):
+            report = self._run("default", self._cli(calls))
+
+        self.assertEqual(3, len(calls))
+        self.assertFalse([c for c in report.ranked_candidates if "digg_story" in c.metadata])
+
     def test_story_sources_are_fetched_before_supplemental_search(self):
         calls: list = []
         seen_at_supplemental: list[int] = []
@@ -3252,6 +3269,18 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
             self.assertLessEqual(call["timeout"], 2)
             self.assertEqual(deadline, call["deadline_monotonic"])
             self.assertIs(cancel, call["cancel"])
+
+    def test_story_source_calls_get_a_deadline_when_the_run_config_has_none(self):
+        # A hosted run keeps its retrieval deadline on a copy of the config,
+        # so this call sees none. It still must not start an open-ended fetch.
+        seen: list = []
+        before = time.monotonic()
+        self._fetch_sources({}, seen)
+        self.assertEqual(3, len(seen))
+        for call in seen:
+            self.assertIsNotNone(call["deadline_monotonic"])
+            self.assertLessEqual(call["deadline_monotonic"], time.monotonic() + 40)
+            self.assertGreaterEqual(call["deadline_monotonic"], before)
 
     def test_three_entity_comparison_fetches_one_story_per_run(self):
         seen: list = []
@@ -3330,7 +3359,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self.assertEqual([], self._second_pass_calls(3))
 
     def test_run_completes_untagged_when_the_sources_fetch_times_out(self):
-        def timing_out(cmd, *, timeout, env=None, on_pid=None):
+        def timing_out(cmd, *, timeout, **_bounds):
             raise subproc.SubprocTimeout("posts timed out")
 
         report = self._run("default", timing_out)

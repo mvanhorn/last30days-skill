@@ -1347,6 +1347,93 @@ def test_item_in_two_stories_is_tagged_with_the_more_engaged_one(monkeypatch):
     assert candidate.metadata["digg_story"]["title"] == "Big story"
 
 
+def test_story_rejected_after_retrieval_no_longer_confirms_other_items(monkeypatch):
+    shared = _source_row()
+    kept = _story_item(short_id="kept0001", digg_score=40, engagement_score=35, title="Kept story")
+    rejected = _story_item(
+        short_id="reject01", digg_score=900, engagement_score=95, title="Rejected story",
+    )
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({
+            kept.metadata["clusterId"]: _sources_answer(_source_row(
+                url="https://x.com/other/status/1986000000000000777",
+            )),
+            rejected.metadata["clusterId"]: _sources_answer(shared),
+        }, []),
+    )
+    stories = digg.apply_story_sources(
+        [kept, rejected], digg.fetch_story_sources([kept, rejected], "default"),
+    )
+    surviving = digg.surviving_stories(stories, [kept, _other_item("x", shared["xUrl"])])
+
+    assert [[story["title"] for story in citing] for citing in surviving.values()] == [
+        ["Kept story"],
+    ]
+    candidate = _candidate_for(_other_item("x", shared["xUrl"]))
+    assert digg.tag_confirmed_candidates([candidate], surviving) == 0
+    assert "digg_story" not in candidate.metadata
+
+
+def test_shared_source_falls_back_to_the_surviving_story_when_the_top_one_is_rejected(
+    monkeypatch,
+):
+    shared = _source_row()
+    small = _story_item(short_id="small001", digg_score=40, engagement_score=35, title="Small story")
+    big = _story_item(short_id="big00001", digg_score=900, engagement_score=95, title="Big story")
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({
+            small.metadata["clusterId"]: _sources_answer(shared),
+            big.metadata["clusterId"]: _sources_answer(shared),
+        }, []),
+    )
+    stories = digg.apply_story_sources(
+        [small, big], digg.fetch_story_sources([small, big], "default"),
+    )
+    candidate = _candidate_for(_other_item("x", shared["xUrl"]))
+
+    digg.tag_confirmed_candidates([candidate], digg.surviving_stories(stories, [small]))
+
+    assert candidate.metadata["digg_story"]["title"] == "Small story"
+
+
+def test_merged_passes_keep_every_citing_story_most_engaged_first():
+    first = {"k": [{"url": "u1", "engagement": 40}]}
+    digg.merge_stories(first, {
+        "k": [{"url": "u2", "engagement": 90}, {"url": "u1", "engagement": 40}],
+        "other": [{"url": "u3", "engagement": 10}],
+    })
+    assert [story["url"] for story in first["k"]] == ["u2", "u1"]
+    assert [story["url"] for story in first["other"]] == ["u3"]
+
+
+@pytest.mark.parametrize("topic, sent", [
+    ("AI", "AI AI"),
+    ("Go", "Go Go"),
+    ("X", "X X"),
+    ("  AI  ", "AI AI"),
+    ("C++", "C++"),
+    ("a" * 120, "a" * 120),
+    ("a" * 121, "a" * 120),
+    ("word " * 30, ("word " * 24).strip()),
+    ("x" * 118 + " yz", "x" * 118),
+    ("AI " + "u" * 130, "AI AI"),
+    ("A " + "u" * 130, "A A"),
+])
+def test_all_topic_query_is_fitted_to_the_length_the_cli_accepts(topic, sent):
+    args = digg._build_search_args(topic, 10, all_topics=True)
+    assert args[2] == sent
+    assert digg.QUERY_MIN_CHARS <= len(args[2]) <= digg.QUERY_MAX_CHARS
+
+
+def test_older_cli_query_is_sent_as_given():
+    assert digg._build_search_args("AI", 10, all_topics=False)[2] == "AI"
+    assert digg._build_search_args("a" * 200, 10, all_topics=False)[2] == "a" * 200
+
+
 def _five_stories():
     scores = {"s1": 150, "s2": 1286, "s3": 239, "s4": 473, "s5": 180}
     return [_story_item(short_id=short_id, digg_score=score) for short_id, score in scores.items()]
