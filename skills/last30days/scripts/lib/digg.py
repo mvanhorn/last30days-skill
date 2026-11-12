@@ -47,12 +47,12 @@ import shutil
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 from . import log, subproc
 from .fusion import _normalize_url
-from .relevance import token_overlap_relevance
+from .relevance import LOW_SIGNAL_QUERY_TOKENS, STOPWORDS, token_overlap_relevance
 
 
 CLI_BIN = "digg-pp-cli"
@@ -119,6 +119,36 @@ CONFIRMED_BY_KEY = "digg_story"
 # Item metadata key holding a story's UUID. Only stories from the all-topic
 # search carry it, so its presence is what tells them from older-CLI clusters.
 STORY_ID_KEY = "clusterId"
+
+# A story is prominent when its title names the run topic and it is at least
+# this big: Digg Score and number of sources.
+PROMINENT_MIN_SCORE = 40
+PROMINENT_MIN_SOURCES = 5
+
+# A topic subject of up to this many words is treated as a name, which a
+# story must carry in full; a longer one is a description.
+SUBJECT_NAME_MAX_WORDS = 2
+
+# Words dropped from the front of a topic to reach its subject. The first set
+# goes wherever it leads; the second only once a word before it was dropped,
+# so "what happened to Twitter" loses three words while "Will Smith" and
+# "New York" lose none.
+_TOPIC_LEAD_WORDS = frozenset({
+    "what", "what's", "whats", "who", "who's", "whos", "why", "when", "where",
+    "how", "which", "the", "a", "an", "latest", "recent",
+})
+_TOPIC_FOLLOW_WORDS = frozenset({
+    "is", "are", "was", "were", "do", "does", "did", "has", "have", "had",
+    "can", "could", "should", "would", "will",
+    "to", "of", "in", "on", "for", "with", "about", "at", "from", "by", "up",
+    "happened", "happening", "going", "new", "news",
+})
+# Words dropped from the end of a topic ("OpenAI news").
+_TOPIC_TAIL_WORDS = frozenset({
+    "news", "latest", "update", "updates", "today", "lately", "recently", "now",
+})
+_TOPIC_SIDE_SPLIT = re.compile(r"\s+(?:vs\.?|versus)\s+", re.IGNORECASE)
+_TOPIC_WORD_EDGE = "?!.,:;\"'()"
 
 # On digg-pp-cli 2026.10.x a stale section makes the CLI fetch up to 8 live
 # feed pages per section before answering (about 8s for ai,tech), well
@@ -1211,3 +1241,132 @@ def tag_confirmed_candidates(
     if tagged:
         _log(f"{tagged} items confirmed by a Digg story")
     return tagged
+
+
+class BarResult(NamedTuple):
+    """Where the Digg bar put each story of one list.
+
+    ``prominent`` is ordered by Digg Score, highest first, then story UUID.
+    ``ordinary``, ``dropped`` and ``legacy`` keep the order they came in.
+    """
+
+    prominent: list
+    ordinary: list
+    dropped: list
+    legacy: list
+
+
+def _topic_subjects(topic: str) -> List[List[str]]:
+    """The subjects a topic asks about, each as its lowercase words.
+
+    A comparison ("X vs Y") has one subject per side. Returns an empty list
+    when only question and filler words are left.
+    """
+    subjects: List[List[str]] = []
+    for side in _TOPIC_SIDE_SPLIT.split(topic or ""):
+        words = [word.strip(_TOPIC_WORD_EDGE) for word in side.lower().split()]
+        words = [word for word in words if word]
+        start = 0
+        while start < len(words) and (
+            words[start] in _TOPIC_LEAD_WORDS
+            or (start > 0 and words[start] in _TOPIC_FOLLOW_WORDS)
+        ):
+            start += 1
+        words = words[start:]
+        while words and words[-1] in _TOPIC_TAIL_WORDS:
+            words.pop()
+        if words and words not in subjects:
+            subjects.append(words)
+    return subjects
+
+
+def _whole_phrase(words: List[str]) -> "re.Pattern[str]":
+    """Matches the words in order as whole tokens, any case.
+
+    Spaces and hyphens inside the phrase match any run of either. The edges
+    use lookarounds, not ``\\b``, so "C++" works and "AI" does not match
+    inside "Maine".
+    """
+    parts = [
+        re.escape(part)
+        for word in words
+        for part in re.split(r"-+", word)
+        if part
+    ] or [re.escape(word) for word in words]
+    return re.compile(r"(?<!\w)" + r"[\s\-]+".join(parts) + r"(?!\w)", re.IGNORECASE)
+
+
+def _names_subject(words: List[str], text: str) -> bool:
+    """True when ``text`` is about the subject, short of naming it whole.
+
+    A subject of one or two words is a name ("OpenAI", "Sam Altman"), and
+    every word of it must appear. A longer one is a description ("best noise
+    cancelling headphones", "why is Nvidia stock down"), which a story on the
+    subject rarely repeats in full, so one of its telling words is enough.
+    That still removes the stories that share nothing with the topic.
+    """
+    if len(words) <= SUBJECT_NAME_MAX_WORDS:
+        return all(_whole_phrase([word]).search(text) for word in words)
+    telling = [
+        word for word in words
+        if len(word) > 2 and word not in STOPWORDS and word not in LOW_SIGNAL_QUERY_TOKENS
+    ] or words
+    return any(_whole_phrase([word]).search(text) for word in telling)
+
+
+def _is_big(item: Any) -> bool:
+    score = _digg_score(item)
+    sources = (getattr(item, "engagement", None) or {}).get("postCount")
+    return (
+        score is not None
+        and score >= PROMINENT_MIN_SCORE
+        and isinstance(sources, (int, float))
+        and sources >= PROMINENT_MIN_SOURCES
+    )
+
+
+def apply_bar(topic: str, items: list) -> BarResult:
+    """Sort Digg stories into prominent, ordinary and dropped for a run topic.
+
+    A story whose title names the topic's subject is prominent when it has a
+    Digg Score of at least ``PROMINENT_MIN_SCORE`` and at least
+    ``PROMINENT_MIN_SOURCES`` sources, and ordinary otherwise. A story that
+    names the subject only in its summary, or is about it by the looser test
+    in ``_names_subject``, is ordinary. Any other story is dropped. Names
+    are matched as whole words, any case.
+
+    A topic with no subject left once its question and filler words are gone
+    makes every story ordinary. Clusters from digg-pp-cli 2026.10.x, which
+    have no story UUID, come back under ``legacy`` and are not judged.
+
+    The verdict depends only on the topic and the story's own text and
+    numbers, and nothing is written to the items, so asking again later with
+    the same topic gives the same answer.
+    """
+    subjects = _topic_subjects(topic)
+    phrases = [_whole_phrase(words) for words in subjects]
+    result = BarResult([], [], [], [])
+    for item in items:
+        if not (getattr(item, "metadata", None) or {}).get(STORY_ID_KEY):
+            result.legacy.append(item)
+            continue
+        if not subjects:
+            result.ordinary.append(item)
+            continue
+        title = str(getattr(item, "title", "") or "")
+        if any(phrase.search(title) for phrase in phrases):
+            (result.prominent if _is_big(item) else result.ordinary).append(item)
+            continue
+        # The body is the title and the summary, so a subject named whole
+        # in the summary passes this test too.
+        text = "\n".join(
+            str(getattr(item, name, "") or "") for name in ("title", "body", "snippet")
+        )
+        if any(_names_subject(words, text) for words in subjects):
+            result.ordinary.append(item)
+        else:
+            result.dropped.append(item)
+    result.prominent.sort(
+        key=lambda item: (-(_digg_score(item) or 0.0), str(item.metadata[STORY_ID_KEY]))
+    )
+    return result

@@ -52,6 +52,10 @@ The small, depth-dependent budget of Reddit posts whose comments get fetched in 
 
 A Reddit thread that clears the relevance floor, passes Entity grounding, and ranks in the top three of its stream by upvotes plus comments. Keepers survive per-stream truncation regardless of their local rank score, and the fused candidate pool reserves a few slots (2 / 3 / 4 by depth) for the same class of thread, so the month's most-discussed on-topic threads reach the ranked output even when their title overlap with the query is weak. When the Primary entity's head token is generic ("ai", "new"), the floor rises so viral off-topic threads cannot claim the slots.
 
+### Prominent Digg story
+
+A Digg story whose title names the run topic as a whole word or phrase and that has a Digg Score of at least 40 and at least 5 sources. A story that names the topic only in its summary, or names it in the title but is smaller, is an ordinary story; a story that names the topic nowhere is dropped from the run. The verdict is worked out from the topic and the story's own text and numbers each time it is needed and is never stored on the item. Clusters from digg-pp-cli 2026.10.x carry no story UUID and are not judged.
+
 ## Discovery
 
 ### Discovery
