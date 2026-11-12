@@ -685,8 +685,14 @@ def _fetch_discovery_source(
         errors = result.get("errors") or []
         return items, "; ".join(errors) or None
     if source == "digg":
-        result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
-        items = digg.parse_digg_response(result, query=plan.domain, from_date=from_date)
+        if plan.domain.strip():
+            result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
+            items = digg.parse_digg_response(result, query=plan.domain, from_date=from_date)
+        else:
+            # Global trending has nothing to search for: Digg's own top
+            # stories across every topic are its "what is hot" listing.
+            result = digg.top_stories(depth=depth)
+            items = digg.parse_top_response(result, from_date=from_date)
         # Digg is a broad listing, so keep only domain-bearing
         # clusters when scoped; global trending keeps the whole feed.
         if keyword_gate:

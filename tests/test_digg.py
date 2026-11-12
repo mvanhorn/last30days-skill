@@ -1521,3 +1521,105 @@ def test_unconfirmed_item_names_no_digg_story():
 
     candidate = _candidate_for(_other_item("x", "https://x.com/astro_ana/status/1986000000000000001"))
     assert not [line for line in render._render_candidate(candidate, "1.") if "Digg story" in line]
+
+
+# === Top stories for global trending ===
+
+# What digg-pp-cli 2026.10.1 printed for `top --agent --limit 20` against an
+# empty local store, captured 2026-11-11: plain text, exit 0.
+_CLI_2026_10_1_TOP_STDOUT = "no clusters in the local store. Run `digg-pp-cli sync` first.\n"
+
+
+def _top_row(index: int = 1, topic: str = "science", **overrides) -> dict:
+    short_id = f"top{index:05d}"
+    row = {
+        "rank": index,
+        "clusterId": f"11111111-2222-3333-4444-{short_id:0>12}",
+        "clusterUrlId": short_id,
+        "url": f"https://digg.com/{topic}/{short_id}",
+        "topic": topic,
+        "title": f"Top story number {index}",
+        "description": "Longer description of the story.",
+        "diggScore": 900 - index,
+        "postCount": 40 + index,
+        "uniqueAuthors": 20 + index,
+        "publishedAt": "2026-11-11T08:30:00Z",
+    }
+    row.update(overrides)
+    return row
+
+
+def _top_envelope(*rows: dict) -> dict:
+    return {
+        "meta": {"count": len(rows), "source": "live", "view": "top", "range": "24h"},
+        "results": list(rows),
+    }
+
+
+def _top_calls(calls: list) -> list:
+    return [cmd for cmd in calls if "--help" not in cmd]
+
+
+def test_top_stories_reads_every_topic_from_the_new_cli(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _fake_cli(_NEW_SEARCH_HELP, _top_envelope(_top_row(1), _top_row(2)), calls),
+    )
+    out = digg.top_stories()
+    assert _top_calls(calls) == [["digg-pp-cli", "top", "--agent", "--limit", "20"]]
+    assert len(out["results"]) == 2
+    assert "error" not in out
+
+
+def test_deep_top_stories_asks_for_50(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout", _fake_cli(_NEW_SEARCH_HELP, _top_envelope(), calls)
+    )
+    digg.top_stories(depth="deep")
+    assert _top_calls(calls) == [["digg-pp-cli", "top", "--agent", "--limit", "50"]]
+
+
+def test_top_stories_from_cli_2026_10_1_are_empty_without_an_error(monkeypatch):
+    calls: list = []
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        calls.append(list(cmd))
+        if "--help" in cmd:
+            return subproc.SubprocResult(returncode=0, stdout=_OLD_SEARCH_HELP, stderr="")
+        return subproc.SubprocResult(returncode=0, stdout=_CLI_2026_10_1_TOP_STDOUT, stderr="")
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    out = digg.top_stories()
+    assert out == {"results": []}
+    assert digg.parse_top_response(out, from_date="2026-10-12") == []
+    assert _top_calls(calls) == []
+
+
+def test_top_rows_parse_like_search_stories():
+    rows = [_top_row(i, topic="sports" if i % 2 else "science") for i in range(1, 21)]
+    items = digg.parse_top_response(_top_envelope(*rows), from_date="2026-10-12")
+    assert len(items) == 20
+    first = items[0]
+    assert first["id"] == "top00001"
+    assert first["cluster_id"] == "11111111-2222-3333-4444-0000top00001"
+    assert first["topic"] == "sports"
+    assert first["url"] == "https://digg.com/sports/top00001"
+    assert first["title"] == "Top story number 1"
+    assert first["date"] == "2026-11-11"
+    assert first["engagement"] == {"postCount": 41, "uniqueAuthors": 21, "digg_score": 899}
+    for item in items:
+        assert set(item["engagement"]) == {"postCount", "uniqueAuthors", "digg_score"}
+        assert item["date"] == "2026-11-11"
+
+
+def test_top_rows_without_a_title_yield_no_items():
+    untitled = _top_row(1)
+    del untitled["title"]
+    blank = _top_row(2, title="  ")
+    assert digg.parse_top_response(_top_envelope(untitled, blank, {}), from_date="2026-10-12") == []

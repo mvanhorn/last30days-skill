@@ -20,6 +20,10 @@ know, so the call is chosen up front by ``cli_searches_all_topics`` and
 those installs keep the ``--topic ai,tech`` call. Their answers carry no
 ``url`` and take the older parsing path; see ``upgrade_note``.
 
+Global trending: ``digg-pp-cli top --agent --limit N`` lists the current top
+stories of every topic by Digg Score (``top_stories``). It has no topic to
+search for, and it is skipped on digg-pp-cli 2026.10.x.
+
 Story sources: ``digg-pp-cli posts <story UUID> --agent --limit 40`` for the
 top stories by Digg Score in default/deep depth (``fetch_story_sources``).
 The first X posts of each answer become the story's inline quotes, and every
@@ -377,6 +381,31 @@ def search_digg(
     return response
 
 
+def top_stories(depth: str = "default") -> Dict[str, Any]:
+    """Read Digg's current top stories across every topic via digg-pp-cli.
+
+    ``digg-pp-cli top --agent --limit N`` reads all Digg topics live and
+    merges them by descending Digg Score, over the CLI's default 24-hour
+    range. digg-pp-cli 2026.10.x answers ``top`` from a local store that
+    last30days never fills, with rows that carry no titles, so it is not
+    called there and the answer is empty.
+
+    Returns:
+        Dict with ``results`` list. On failure, ``results`` is empty and an
+        ``error`` key carries a one-line description.
+    """
+    limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    if not _is_available():
+        return {"results": [], "error": f"{CLI_BIN} not on PATH"}
+    if not cli_searches_all_topics():
+        _log(f"top stories skipped: this {CLI_BIN} has no live all-topic top")
+        return {"results": []}
+    _log(f"top stories (all topics, limit={limit})")
+    response = _run_cli([CLI_BIN, "top", "--agent", "--limit", str(limit)], timeout=SEARCH_TIMEOUT)
+    _log(f"found {len(response.get('results') or [])} top stories")
+    return response
+
+
 def upgrade_note(response: Dict[str, Any]) -> Optional[str]:
     """Describe a search answered by digg-pp-cli 2026.10.x, else None.
 
@@ -560,6 +589,28 @@ def parse_digg_response(
         )
 
     return items
+
+
+def parse_top_response(
+    response: Dict[str, Any],
+    from_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Parse a ``top_stories`` envelope into normalized item dicts.
+
+    Top rows have the fields of an all-topic search story, so they take the
+    same path and come out with the same link, date and engagement keys. A
+    row without a title or a ``url`` is not a story a reader can act on and
+    is dropped.
+    """
+    raw = response.get("results") if isinstance(response, dict) else None
+    if not isinstance(raw, list):
+        return []
+    stories = [
+        row
+        for row in raw
+        if isinstance(row, dict) and row.get("url") and str(row.get("title") or "").strip()
+    ]
+    return parse_digg_response({"results": stories}, from_date=from_date)
 
 
 def _is_safe_http_url(url: str) -> bool:
