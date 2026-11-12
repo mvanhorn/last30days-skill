@@ -1400,14 +1400,52 @@ def test_shared_source_falls_back_to_the_surviving_story_when_the_top_one_is_rej
     assert candidate.metadata["digg_story"]["title"] == "Small story"
 
 
-def test_merged_passes_keep_every_citing_story_most_engaged_first():
-    first = {"k": [{"url": "u1", "engagement": 40}]}
+def test_merged_passes_keep_every_citing_story_highest_digg_score_first():
+    first = {"k": [{"url": "u1", "digg_score": 226, "engagement": 100}]}
     digg.merge_stories(first, {
-        "k": [{"url": "u2", "engagement": 90}, {"url": "u1", "engagement": 40}],
+        "k": [
+            {"url": "u2", "digg_score": 1286, "engagement": 100},
+            {"url": "u1", "digg_score": 226, "engagement": 100},
+            {"url": "u0", "digg_score": 226, "engagement": 100},
+        ],
         "other": [{"url": "u3", "engagement": 10}],
     })
-    assert [story["url"] for story in first["k"]] == ["u2", "u1"]
+    assert [story["url"] for story in first["k"]] == ["u2", "u0", "u1"]
     assert [story["url"] for story in first["other"]] == ["u3"]
+
+
+def test_shared_source_names_the_story_with_the_higher_digg_score(monkeypatch):
+    # Both stories read 100 on the 0 to 100 engagement scale.
+    shared = _source_row()
+    lower = _story_item(short_id="lower001", digg_score=226, engagement_score=100, title="226 story")
+    higher = _story_item(short_id="higher01", digg_score=1286, engagement_score=100, title="1286 story")
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({
+            lower.metadata["clusterId"]: _sources_answer(shared),
+            higher.metadata["clusterId"]: _sources_answer(shared),
+        }, []),
+    )
+    stories = digg.apply_story_sources(
+        [lower, higher], digg.fetch_story_sources([lower, higher], "default"),
+    )
+    candidate = _candidate_for(_other_item("x", shared["xUrl"]))
+    digg.tag_confirmed_candidates([candidate], stories)
+    assert candidate.metadata["digg_story"]["title"] == "1286 story"
+
+
+def test_item_citing_two_sources_names_the_story_with_the_higher_digg_score():
+    lower = {"title": "226 story", "url": "u1", "digg_score": 226, "engagement": 100}
+    higher = {"title": "1286 story", "url": "u2", "digg_score": 1286, "engagement": 100}
+    first = _other_item("x", "https://x.com/a/status/1986000000000000001")
+    second = _other_item("hackernews", "https://example.org/news/water")
+    candidate = _candidate_for(first, second)
+    digg.tag_confirmed_candidates([candidate], {
+        digg.match_key(first.url): [lower],
+        digg.match_key(second.url): [higher],
+    })
+    assert candidate.metadata["digg_story"]["title"] == "1286 story"
 
 
 @pytest.mark.parametrize("topic, sent", [
@@ -1439,41 +1477,102 @@ def _five_stories():
     return [_story_item(short_id=short_id, digg_score=score) for short_id, score in scores.items()]
 
 
-def test_default_depth_fetches_the_3_top_scored_stories_one_at_a_time(monkeypatch):
+def _stories(count: int) -> list:
+    """``count`` stories s01, s02, ... with distinct scores in no special order."""
+    return [
+        _story_item(short_id=f"s{n:02d}", digg_score=100 + (n * 37) % 101)
+        for n in range(1, count + 1)
+    ]
+
+
+def _by_score(stories: list) -> list:
+    """Story UUIDs, highest Digg Score first, then by UUID."""
+    return [
+        item.metadata["clusterId"]
+        for item in sorted(
+            stories,
+            key=lambda item: (-item.engagement["digg_score"], item.metadata["clusterId"]),
+        )
+    ]
+
+
+def test_default_depth_fetches_the_8_top_scored_stories_four_at_a_time(monkeypatch):
+    import threading
+
     calls: list = []
+    lock = threading.Lock()
     running = {"now": 0, "most": 0}
+    four_running = threading.Event()
     inner = _sources_cli({}, calls)
 
     def fake_run(cmd, *, timeout, env=None, on_pid=None):
-        running["now"] += 1
-        running["most"] = max(running["most"], running["now"])
+        with lock:
+            running["now"] += 1
+            running["most"] = max(running["most"], running["now"])
+            fourth = running["now"] == 4 and not four_running.is_set()
         try:
             assert timeout <= 15
+            if fourth:
+                # Leave room for a fifth call to show up before any ends.
+                threading.Event().wait(0.05)
+                four_running.set()
+            four_running.wait(0.5)
             return inner(cmd, timeout=timeout)
         finally:
-            running["now"] -= 1
+            with lock:
+                running["now"] -= 1
 
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
-    stories = _five_stories()
+    stories = _stories(10)
     digg.fetch_story_sources(stories, "default")
-    uuid = {item.item_id: item.metadata["clusterId"] for item in stories}
-    assert calls == [
-        ["digg-pp-cli", "posts", uuid[short_id], "--agent", "--limit", "40"]
-        for short_id in ("s2", "s4", "s3")
+    assert sorted(calls) == sorted(
+        ["digg-pp-cli", "posts", uuid, "--agent", "--limit", "40"]
+        for uuid in _by_score(stories)[:8]
+    )
+    assert running["most"] == 4
+
+
+def test_fetched_sources_come_back_by_score_then_id_whatever_finishes_first(monkeypatch):
+    import threading
+
+    stories = [
+        _story_item(short_id="tie-b", digg_score=300),
+        _story_item(short_id="low", digg_score=120),
+        _story_item(short_id="top", digg_score=900),
+        _story_item(short_id="tie-a", digg_score=300),
     ]
-    assert len(calls) <= 6
-    assert running["most"] == 1
+    order = _by_score(stories)
+    lock = threading.Lock()
+    finished: list = []
+    others_done = threading.Event()
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        # The top story's call ends last, the lowest one's first.
+        if cmd[2] == order[0]:
+            others_done.wait(1)
+        with lock:
+            finished.append(cmd[2])
+            if len(finished) == len(order) - 1:
+                others_done.set()
+        return _stdout_for(_sources_answer(_source_row()))
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    fetched = digg.fetch_story_sources(stories, "default")
+    assert finished[-1] == order[0]
+    assert list(fetched) == order
+    assert [uuid[-5:] for uuid in order] == ["00top", "tie-a", "tie-b", "00low"]
 
 
-def test_deep_depth_fetches_5_stories_and_quick_fetches_none(monkeypatch):
+def test_deep_depth_fetches_12_stories_and_quick_fetches_none(monkeypatch):
     calls: list = []
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
-    assert digg.fetch_story_sources(_five_stories(), "quick") == {}
+    assert digg.fetch_story_sources(_stories(15), "quick") == {}
     assert calls == []
-    digg.fetch_story_sources(_five_stories(), "deep")
-    assert len(calls) == 5
+    digg.fetch_story_sources(_stories(15), "deep")
+    assert len(calls) == 12
 
 
 def test_story_found_by_two_searches_is_fetched_once_and_both_copies_get_quotes(monkeypatch):
@@ -1492,11 +1591,22 @@ def test_story_found_by_two_searches_is_fetched_once_and_both_copies_get_quotes(
 
 
 def test_sources_fetch_stops_when_the_run_is_out_of_time(monkeypatch):
+    import threading
+
     calls: list = []
+    out_of_time = threading.Event()
+    # The first four calls meet, and the run is out of time before any ends.
+    four_running = threading.Barrier(4, action=out_of_time.set, timeout=1)
+    inner = _sources_cli({}, calls)
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        four_running.wait()
+        return inner(cmd, timeout=timeout)
+
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
-    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
-    digg.fetch_story_sources(_five_stories(), "default", stopped=lambda: len(calls) >= 1)
-    assert len(calls) == 1
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    digg.fetch_story_sources(_stories(10), "default", stopped=out_of_time.is_set)
+    assert len(calls) == 4
 
 
 def test_sources_fetch_timing_out_tags_nothing_and_leaves_the_story_intact(monkeypatch):
@@ -1813,19 +1923,28 @@ class _Clock:
         return self.now
 
 
-def _slow_sources_cli(clock: _Clock, seen: list):
-    """A ``posts`` call that hangs for its whole timeout, then times out."""
+def _one_call_at_a_time(monkeypatch):
+    """The fake clock only adds up when calls do not overlap."""
+    monkeypatch.setattr(digg, "SOURCES_CONCURRENCY", 1)
+
+
+def _slow_sources_cli(clock: _Clock, seen: list, *, times_out: bool = True):
+    """A ``posts`` call that takes its whole timeout, then times out or
+    answers with no sources."""
 
     def fake_run(cmd, *, timeout, **kwargs):
         seen.append({"timeout": timeout, **kwargs})
         clock.now += timeout
-        raise subproc.SubprocTimeout("posts timed out")
+        if times_out:
+            raise subproc.SubprocTimeout("posts timed out")
+        return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
 
     return fake_run
 
 
 def test_sources_fetch_caps_a_call_at_the_time_left_and_stops_at_the_deadline(monkeypatch):
     clock, seen = _Clock(), []
+    _one_call_at_a_time(monkeypatch)
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(digg, "time", clock)
     monkeypatch.setattr(digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen))
@@ -1848,6 +1967,58 @@ def test_sources_fetch_makes_no_call_once_the_run_is_cancelled(monkeypatch):
     assert calls == []
 
 
+def test_cancel_during_the_fetch_stops_the_calls_not_yet_started(monkeypatch):
+    import threading
+
+    calls: list = []
+    cancel = threading.Event()
+    # The first four calls meet, and the run is cancelled before any ends.
+    four_running = threading.Barrier(4, action=cancel.set, timeout=1)
+    inner = _sources_cli({}, calls)
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        four_running.wait()
+        return inner(cmd, timeout=timeout)
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    stories = _stories(10)
+    digg.fetch_story_sources(stories, "default", cancel=cancel)
+    assert len(calls) == 4
+    assert {call[2] for call in calls} == set(_by_score(stories)[:4])
+
+
+def test_deadline_two_seconds_away_caps_every_call_and_leaves_no_worker_running(monkeypatch):
+    import threading
+    import time
+
+    lock = threading.Lock()
+    seen: list = []
+    running = {"now": 0}
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        with lock:
+            running["now"] += 1
+            seen.append({"timeout": timeout, **kwargs})
+        try:
+            return _stdout_for(_sources_answer())
+        finally:
+            with lock:
+                running["now"] -= 1
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    threads_before = set(threading.enumerate())
+    deadline = time.monotonic() + 2
+    digg.fetch_story_sources(_stories(10), "default", deadline=deadline)
+    assert len(seen) == 8
+    for call in seen:
+        assert 0 < call["timeout"] <= 2
+        assert call["deadline_monotonic"] == deadline
+    assert running["now"] == 0
+    assert [t for t in threading.enumerate() if t not in threads_before and t.is_alive()] == []
+
+
 def test_sources_fetch_hands_the_cancel_signal_to_each_call(monkeypatch):
     import threading
 
@@ -1861,25 +2032,44 @@ def test_sources_fetch_hands_the_cancel_signal_to_each_call(monkeypatch):
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
     digg.fetch_story_sources(_five_stories(), "default", cancel=cancel)
-    assert seen == [cancel, cancel, cancel]
+    assert seen == [cancel] * 5
 
 
 def test_sources_fetch_without_a_run_deadline_spends_at_most_40_seconds(monkeypatch):
     clock, seen = _Clock(), []
+    _one_call_at_a_time(monkeypatch)
     started = clock.now
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(digg, "time", clock)
-    monkeypatch.setattr(digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen))
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen, times_out=False),
+    )
     digg.fetch_story_sources(_five_stories(), "deep")
-    assert [call["timeout"] for call in seen] == [15, 15, 10]
+    assert [call["timeout"] for call in seen] == [10, 10, 10, 10]
     assert clock.now - started <= 40
 
 
+def test_sources_fetch_stops_starting_calls_once_one_fails(monkeypatch):
+    # Digg stalls hit every call alike, so the rest are not left to wait
+    # out their own timeouts.
+    calls: list = []
+
+    def timing_out(cmd, *, timeout, **_bounds):
+        calls.append(cmd)
+        raise subproc.SubprocTimeout("posts timed out")
+
+    _one_call_at_a_time(monkeypatch)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", timing_out)
+    assert digg.fetch_story_sources(_five_stories(), "deep") == {}
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("depth, entity_count, expected_calls", [
-    ("default", 1, 3),
-    ("deep", 1, 5),
-    ("default", 3, 1),
-    ("deep", 3, 2),
+    ("default", 1, 8),
+    ("deep", 1, 12),
+    ("default", 3, 3),
+    ("deep", 3, 4),
     ("default", 9, 1),
     ("quick", 3, 0),
 ])
@@ -1889,5 +2079,309 @@ def test_comparison_run_fetches_its_share_of_the_story_budget(
     calls: list = []
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
-    digg.fetch_story_sources(_five_stories(), depth, entity_count=entity_count)
+    digg.fetch_story_sources(_stories(15), depth, entity_count=entity_count)
     assert len(calls) == expected_calls
+
+
+# === Research search: most relevant stories plus the highest-scored ones ===
+
+_RELEVANCE_ARGS = ["digg-pp-cli", "search", "exoplanet", "--since", "30d", "--agent", "--limit"]
+
+
+def _research_cli(relevance, score, calls: list, seen: list | None = None, help_text=_NEW_SEARCH_HELP):
+    """A CLI answering the relevance call and the ``--sort score`` call apart.
+
+    An answer is an envelope, or a callable that raises or returns a result.
+    """
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        calls.append(list(cmd))
+        if "--help" in cmd:
+            return subproc.SubprocResult(returncode=0, stdout=help_text, stderr="")
+        if seen is not None:
+            seen.append(kwargs)
+        answer = score if "--sort" in cmd else relevance
+        return answer() if callable(answer) else _stdout_for(answer)
+
+    return fake_run
+
+
+def _research_search(monkeypatch, fake_run, depth="default", from_date="2026-10-12", **kwargs):
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    return digg.search_digg(
+        "exoplanet", from_date, "2026-11-11", depth=depth, include_top_scored=True, **kwargs
+    )
+
+
+def _score_call_times_out():
+    raise subproc.SubprocTimeout("search timed out after 30s")
+
+
+@pytest.mark.parametrize("depth,size", [("default", "50"), ("deep", "100")])
+def test_research_search_asks_for_the_most_relevant_and_the_highest_scored(monkeypatch, depth, size):
+    calls: list = []
+    answer = _live_envelope(_story())
+    out = _research_search(monkeypatch, _research_cli(answer, answer, calls), depth=depth)
+    assert _search_calls(calls) == [
+        [*_RELEVANCE_ARGS, size],
+        [*_RELEVANCE_ARGS, size, "--sort", "score"],
+    ]
+    assert len(out["results"]) == 1
+    assert "error" not in out
+    assert digg.score_pass_note(out) is None
+
+
+def test_quick_research_search_is_one_call_of_8_with_no_sort(monkeypatch):
+    calls: list = []
+    answer = _live_envelope(_story())
+    _research_search(monkeypatch, _research_cli(answer, answer, calls), depth="quick", from_date="2026-11-04")
+    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "8"]]
+
+
+def test_research_search_on_the_older_cli_is_the_one_ai_and_tech_call(monkeypatch):
+    calls: list = []
+    out = _research_search(
+        monkeypatch,
+        _research_cli(_CLI_2026_10_1_ANSWER, _CLI_2026_10_1_ANSWER, calls, help_text=_OLD_SEARCH_HELP),
+        from_date="2026-11-04",
+    )
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20"]
+    ]
+    assert digg.upgrade_note(out) == digg.UPGRADE_NOTE
+
+
+@pytest.mark.parametrize("help_failure", [_help_times_out, _help_exits_non_zero])
+def test_research_search_after_a_failed_help_probe_is_the_one_ai_and_tech_call(monkeypatch, help_failure):
+    calls: list = []
+    _research_search(
+        monkeypatch, _cli_with_failing_help(help_failure, _live_envelope(_story()), calls)
+    )
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20"]
+    ]
+
+
+def test_story_in_both_calls_appears_once_and_score_only_stories_follow_by_score(monkeypatch):
+    relevance = _live_envelope(
+        _story(short_id="rel00001", diggScore=12),
+        _story(short_id="both0001", diggScore=500),
+    )
+    score = _live_envelope(
+        _story(short_id="both0001", diggScore=500),
+        _story(short_id="big90bbb", diggScore=90),
+        _story(short_id="big300aa", diggScore=300),
+        _story(short_id="big90aaa", diggScore=90),
+    )
+    out = _research_search(monkeypatch, _research_cli(relevance, score, []))
+    assert [story["clusterUrlId"] for story in out["results"]] == [
+        "rel00001", "both0001", "big300aa", "big90aaa", "big90bbb",
+    ]
+
+
+def test_stories_without_a_uuid_are_matched_by_their_short_id(monkeypatch):
+    def bare(short_id: str, score: int) -> dict:
+        story = _story(short_id=short_id, diggScore=score)
+        del story["clusterId"]
+        return story
+
+    out = _research_search(
+        monkeypatch,
+        _research_cli(
+            _live_envelope(bare("same0001", 40)),
+            _live_envelope(bare("same0001", 40), bare("other001", 70)),
+            [],
+        ),
+    )
+    assert [story["clusterUrlId"] for story in out["results"]] == ["same0001", "other001"]
+
+
+def test_failed_score_call_keeps_the_relevance_stories_and_says_so(monkeypatch):
+    out = _research_search(
+        monkeypatch,
+        _research_cli(_live_envelope(_story(short_id="rel00001")), _score_call_times_out, []),
+    )
+    assert [story["clusterUrlId"] for story in out["results"]] == ["rel00001"]
+    assert "error" not in out
+    note = digg.score_pass_note(out)
+    assert "highest-scored" in note
+    assert "timed out" in note
+    assert len(note) <= 140
+
+
+def test_score_pass_note_is_absent_for_a_plain_answer():
+    assert digg.score_pass_note({"results": []}) is None
+    assert digg.score_pass_note(None) is None
+
+
+def test_failed_score_call_is_a_detail_on_an_ok_digg_outcome(monkeypatch):
+    from lib import health, pipeline, schema
+
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _research_cli(_live_envelope(_story(short_id="rel00001")), _score_call_times_out, []),
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="exoplanet score pass",
+        ranking_query="exoplanet",
+        sources=["digg"],
+    )
+    items, artifact = pipeline._retrieve_stream_impl(
+        topic="exoplanet",
+        subquery=subquery,
+        source="digg",
+        config={},
+        depth="default",
+        date_range=("2026-10-12", "2026-11-11"),
+        runtime=None,
+        mock=False,
+    )
+    assert [item["id"] for item in items] == ["rel00001"]
+    assert "_source_outcome" not in artifact
+    assert "highest-scored" in artifact["_source_outcome_detail"]
+
+    bundle = schema.RetrievalBundle()
+    bundle.record_detail("digg", artifact["_source_outcome_detail"])
+    bundle.add_items("primary", "digg", [object()])
+    assert bundle.source_status["digg"].state == health.OK
+    assert "highest-scored" in bundle.source_status["digg"].detail
+
+
+def test_failed_relevance_call_is_an_error_and_makes_no_score_call(monkeypatch):
+    calls: list = []
+
+    def relevance_fails():
+        return subproc.SubprocResult(returncode=2, stdout="", stderr="boom")
+
+    out = _research_search(
+        monkeypatch, _research_cli(relevance_fails, _live_envelope(_story()), calls)
+    )
+    assert out == {"results": [], "error": "boom"}
+    assert len(_search_calls(calls)) == 1
+    assert "--sort" not in _search_calls(calls)[0]
+
+
+@pytest.mark.parametrize(
+    "from_date,since",
+    [("2026-11-04", "8d"), ("2026-11-11", "1d"), ("2026-10-14", "29d"), ("2026-10-13", "30d"), ("2026-09-12", "30d")],
+)
+def test_research_search_sends_a_shorter_lookback_on_both_calls(monkeypatch, from_date, since):
+    calls: list = []
+    answer = _live_envelope(_story())
+    _research_search(monkeypatch, _research_cli(answer, answer, calls), from_date=from_date)
+    searches = _search_calls(calls)
+    assert len(searches) == 2
+    assert [cmd[cmd.index("--since") + 1] for cmd in searches] == [since, since]
+
+
+def test_cancelled_run_makes_no_score_call(monkeypatch):
+    import threading
+
+    calls: list = []
+    cancel = threading.Event()
+    cancel.set()
+    answer = _live_envelope(_story())
+    out = _research_search(monkeypatch, _research_cli(answer, answer, calls), cancel=cancel)
+    assert len(_search_calls(calls)) == 1
+    assert "--sort" not in _search_calls(calls)[0]
+    assert len(out["results"]) == 1
+    assert digg.score_pass_note(out) is None
+
+
+def test_run_past_its_deadline_makes_no_score_call(monkeypatch):
+    calls: list = []
+    clock = _Clock()
+    monkeypatch.setattr(digg, "time", clock)
+    answer = _live_envelope(_story())
+    _research_search(
+        monkeypatch, _research_cli(answer, answer, calls), deadline=clock.now - 1
+    )
+    assert len(_search_calls(calls)) == 1
+    assert "--sort" not in _search_calls(calls)[0]
+
+
+def test_research_search_hands_the_deadline_and_cancel_signal_to_both_calls(monkeypatch):
+    import threading
+
+    seen: list = []
+    clock = _Clock()
+    monkeypatch.setattr(digg, "time", clock)
+    cancel = threading.Event()
+    deadline = clock.now + 60
+    answer = _live_envelope(_story())
+    _research_search(
+        monkeypatch, _research_cli(answer, answer, [], seen), deadline=deadline, cancel=cancel
+    )
+    assert seen == [
+        {"deadline_monotonic": deadline, "cancel": cancel},
+        {"deadline_monotonic": deadline, "cancel": cancel},
+    ]
+
+
+def test_pipeline_research_stream_makes_both_calls_with_the_runs_bounds(monkeypatch):
+    import threading
+
+    from lib import pipeline, schema
+
+    import time
+
+    calls: list = []
+    seen: list = []
+    cancel = threading.Event()
+    deadline = time.monotonic() + 60
+    answer = _live_envelope(_story())
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _research_cli(answer, answer, calls, seen))
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="exoplanet bounds",
+        ranking_query="exoplanet",
+        sources=["digg"],
+    )
+    items, artifact = pipeline._retrieve_stream_impl(
+        topic="exoplanet",
+        subquery=subquery,
+        source="digg",
+        config={"_research_deadline": deadline, "_enrich_cancel": cancel},
+        depth="default",
+        date_range=("2026-11-04", "2026-11-11"),
+        runtime=None,
+        mock=False,
+    )
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet bounds", "--since", "8d", "--agent", "--limit", "50"],
+        ["digg-pp-cli", "search", "exoplanet bounds", "--since", "8d", "--agent", "--limit", "50",
+         "--sort", "score"],
+    ]
+    assert seen == [
+        {"deadline_monotonic": deadline, "cancel": cancel},
+        {"deadline_monotonic": deadline, "cancel": cancel},
+    ]
+    assert len(items) == 1
+    assert artifact == {}
+
+
+def test_discovery_digg_search_stays_one_call_of_20(monkeypatch):
+    from lib import pipeline
+
+    calls: list = []
+    answer = _live_envelope(_story(title="Exoplanet water found by Webb"))
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _research_cli(answer, answer, calls))
+    plan = MagicMock()
+    plan.domain = "exoplanet"
+    pipeline._fetch_discovery_source(
+        "digg", plan, from_date="2026-11-04", to_date="2026-11-11",
+        depth="default", mock=False, config={},
+    )
+    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "20"]]

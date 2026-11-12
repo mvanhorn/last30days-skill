@@ -277,3 +277,49 @@ def test_digg_story_sources_confirm_matching_x_and_hacker_news_items():
         item for item in report.items_by_source["digg"] if item.item_id == "ljvbajl5"
     )
     assert len(proofs_story.metadata["posts"]) == 5
+
+
+def test_digg_bar_drops_off_topic_and_leads_with_biggest_on_topic_story():
+    [fixture] = [f for f in harness.load_fixtures() if f.name == "digg-confirmation"]
+    report = harness.evaluate_fixture(fixture).report
+    digg_ids = {item.item_id for item in report.items_by_source["digg"]}
+    by_url = {candidate.url: candidate for candidate in report.ranked_candidates}
+
+    # A 652-score sports story that never mentions OpenAI.
+    assert "q4rk8tzn" not in digg_ids
+    assert "https://digg.com/sports/q4rk8tzn" not in by_url
+
+    # The report's Digg items are re-sorted at the end of the run, so the
+    # order Digg's stream went into ranking is read from each story's rank
+    # in that stream. The story recorded last is also the oldest, so local
+    # ranking alone would put it last. It has the highest Digg Score of the
+    # stories whose title names OpenAI, and the other big ones follow by score.
+    stream = sorted(
+        (candidate for candidate in report.ranked_candidates if candidate.source == "digg"),
+        key=lambda candidate: candidate.native_ranks["primary:digg"],
+    )
+    assert [candidate.item_id for candidate in stream[:6]] == [
+        "b9ds3fua",  # 1502
+        "ljvbajl5",  # 1286
+        "1i79b1xh",  # 473
+        "x7hzsqzf",  # 239
+        "en0dbdyl",  # 226
+        "wo3n9meb",  # 180
+    ]
+    assert stream[0].native_ranks["primary:digg"] == 1
+    # Kept, but behind them: it names OpenAI in the title with a Digg Score
+    # of 38 and 3 sources.
+    assert [candidate.item_id for candidate in stream[6:]] == ["mtdi1c95"]
+
+    # A 310-score story that names OpenAI only in its summary. A summary-only
+    # mention is dropped, however big the story is.
+    assert "h2vy6wpc" not in digg_ids
+    assert "https://digg.com/ai/h2vy6wpc" not in by_url
+    # Its recorded sources include a Hacker News link and an X post that are
+    # in this report. Its sources are not read, so those two results carry
+    # no Digg story.
+    for url in (
+        "https://benchmarks.example.test/digg-confirmation/openai-terra",
+        "https://x.com/fixture_pricing/status/1940000000000000902",
+    ):
+        assert by_url[url].metadata.get("digg_story") is None, url
