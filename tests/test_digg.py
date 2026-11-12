@@ -1,4 +1,4 @@
-"""Tests for digg.py - Digg AI 1000 source via digg-pp-cli."""
+"""Tests for digg.py - Digg source via digg-pp-cli."""
 
 from __future__ import annotations
 
@@ -649,10 +649,9 @@ def test_search_digg_fresh_local_empty_is_no_matches(monkeypatch):
     out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
     assert out["results"] == []
     assert "error" not in out
-    assert digg.stale_note(out) is None
 
 
-def test_search_digg_stale_result_keeps_items_and_notes_sync(monkeypatch):
+def test_search_digg_stale_result_keeps_items_and_notes_upgrade(monkeypatch):
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(
         digg.subproc,
@@ -663,18 +662,11 @@ def test_search_digg_stale_result_keeps_items_and_notes_sync(monkeypatch):
     )
     out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
     assert len(out["results"]) == 1
-    note = digg.stale_note(out)
-    assert note is not None
-    assert "digg-pp-cli sync --topics ai,tech" in note
+    assert digg.upgrade_note(out) == digg.UPGRADE_NOTE
+    assert "sync --topics" not in digg.UPGRADE_NOTE
 
 
-def test_stale_note_ignores_old_envelopes():
-    assert digg.stale_note({"results": []}) is None
-    assert digg.stale_note({"meta": {"source": "local"}, "results": []}) is None
-    assert digg.stale_note({"meta": {"stale": "true"}, "results": []}) is None
-
-
-def test_stale_search_marks_digg_partial_in_pipeline(monkeypatch):
+def test_old_cli_search_marks_digg_partial_in_pipeline(monkeypatch):
     from lib import health, pipeline, schema
 
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
@@ -704,11 +696,12 @@ def test_stale_search_marks_digg_partial_in_pipeline(monkeypatch):
     assert len(items) == 1
     outcome = artifact["_source_outcome"]
     assert outcome["state"] == health.PARTIAL
-    assert "sync --topics ai,tech" in outcome["detail"]
+    assert "upgrade" in outcome["detail"]
+    assert "AI and tech" in outcome["detail"]
 
 
-def test_stale_partial_with_no_items_finalizes_as_no_results():
-    """A stale search that matched nothing keeps its sync note and is not an error."""
+def test_old_cli_partial_with_no_items_finalizes_as_no_results():
+    """An old CLI search that matched nothing keeps its upgrade note and is not an error."""
     from lib import health, pipeline, schema
 
     outcomes = {
@@ -717,7 +710,7 @@ def test_stale_partial_with_no_items_finalizes_as_no_results():
             state=health.PARTIAL,
             items_returned=0,
             attempted=True,
-            detail=digg.STALE_NOTE,
+            detail=digg.UPGRADE_NOTE,
         ),
         "reddit": schema.SourceOutcome(
             source="reddit",
@@ -729,5 +722,1085 @@ def test_stale_partial_with_no_items_finalizes_as_no_results():
     }
     final = pipeline._finalize_source_status(outcomes, {})
     assert final["digg"].state == schema.NO_RESULTS
-    assert final["digg"].detail == digg.STALE_NOTE
+    assert final["digg"].detail == digg.UPGRADE_NOTE
     assert final["reddit"].state != schema.NO_RESULTS
+
+
+# === digg-pp-cli 2026.10.1 search answer, captured from the real binary ===
+
+_CLI_2026_10_1_ANSWER = {
+    "meta": {
+        "count": 3,
+        "query": "openai",
+        "since": "30d",
+        "source": "live",
+        "stale": True,
+        "topics": ["ai", "tech"],
+    },
+    "results": [
+        {
+            "clusterId": "6043f14d-1717-4b75-8fb2-3a596fe44df5",
+            "clusterUrlId": "ljvbajl5",
+            "firstPostAge": "16d",
+            "postCount": 127,
+            "rank": 7,
+            "title": "OpenAI announces claimed AI proofs in math, computer science and physics",
+            "tldr": "OpenAI says its claimed refutation of the Exponential Time Hypothesis was formalized in Lean and made public.",
+            "uniqueAuthors": 96,
+        },
+        {
+            "clusterId": "4e6ae3f7-6a4a-47c3-803c-0bbd1f6c992b",
+            "clusterUrlId": "g7fcfxf4",
+            "firstPostAge": "29d",
+            "postCount": 147,
+            "rank": 8,
+            "title": "Hidden recording device found in OpenAI office; employee fired and charged",
+            "tldr": "OpenAI says its models helped identify the employee who planted the device; the FBI made an arrest.",
+            "uniqueAuthors": 101,
+        },
+        {
+            "clusterId": "2c90283c-21fa-47be-abaa-d93cf0609de9",
+            "clusterUrlId": "x7hzsqzf",
+            "firstPostAge": "19d",
+            "postCount": 29,
+            "rank": 70,
+            "title": "OpenAI red-team agents reportedly exchanged synthetic secrets through processor-cache timing",
+            "tldr": "OpenAI reported hardware side channels; AndrewCurran_ quoted its account of agents passing synthetic secrets between virtual machines.",
+            "uniqueAuthors": 23,
+        },
+    ],
+}
+
+_CAPTURE_DAY = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
+
+
+def test_cli_2026_10_1_answer_parses_to_the_same_items(monkeypatch):
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    items = digg.parse_digg_response(_CLI_2026_10_1_ANSWER, query="openai")
+    assert items == [
+        {
+            "id": "ljvbajl5",
+            "title": "OpenAI announces claimed AI proofs in math, computer science and physics",
+            "url": "https://di.gg/ai/ljvbajl5",
+            "tldr": "OpenAI says its claimed refutation of the Exponential Time Hypothesis was formalized in Lean and made public.",
+            "author": "",
+            "date": "2026-10-26",
+            "engagement": {"postCount": 127, "uniqueAuthors": 96, "rank": 7, "rank_score": 44.0},
+            "first_post_age": "16d",
+            "posts": [],
+            "relevance": 1.0,
+            "why_relevant": "Digg cluster (rank 7, 127 posts, 96 authors)",
+        },
+        {
+            "id": "g7fcfxf4",
+            "title": "Hidden recording device found in OpenAI office; employee fired and charged",
+            "url": "https://di.gg/ai/g7fcfxf4",
+            "tldr": "OpenAI says its models helped identify the employee who planted the device; the FBI made an arrest.",
+            "author": "",
+            "date": "2026-10-13",
+            "engagement": {"postCount": 147, "uniqueAuthors": 101, "rank": 8, "rank_score": 43.0},
+            "first_post_age": "29d",
+            "posts": [],
+            "relevance": 1.0,
+            "why_relevant": "Digg cluster (rank 8, 147 posts, 101 authors)",
+        },
+        {
+            "id": "x7hzsqzf",
+            "title": "OpenAI red-team agents reportedly exchanged synthetic secrets through processor-cache timing",
+            "url": "https://di.gg/ai/x7hzsqzf",
+            "tldr": "OpenAI reported hardware side channels; AndrewCurran_ quoted its account of agents passing synthetic secrets between virtual machines.",
+            "author": "",
+            "date": "2026-10-23",
+            "engagement": {"postCount": 29, "uniqueAuthors": 23, "rank": 70, "rank_score": 0.0},
+            "first_post_age": "19d",
+            "posts": [],
+            "relevance": 0.88,
+            "why_relevant": "Digg cluster (rank 70, 29 posts, 23 authors)",
+        },
+    ]
+
+
+def test_cli_2026_10_1_answer_normalizes_to_the_same_source_item(monkeypatch):
+    from lib import normalize
+
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    item = digg.parse_digg_response(_CLI_2026_10_1_ANSWER, query="openai")[0]
+    source_item = normalize._normalize_digg("digg", item, 0, "2026-10-12", "2026-11-11")
+    assert source_item.item_id == "ljvbajl5"
+    assert source_item.url == "https://di.gg/ai/ljvbajl5"
+    assert source_item.published_at == "2026-10-26"
+    assert source_item.engagement == {
+        "postCount": 127,
+        "uniqueAuthors": 96,
+        "rank": 7,
+        "rank_score": 44.0,
+    }
+    assert source_item.metadata == {
+        "clusterUrlId": "ljvbajl5",
+        "tldr": "OpenAI says its claimed refutation of the Exponential Time Hypothesis was formalized in Lean and made public.",
+        "rank": 7,
+        "uniqueAuthors": 96,
+        "postCount": 127,
+        "firstPostAge": "16d",
+        "posts": [],
+    }
+
+
+def _search_calls(calls: list) -> list:
+    return [cmd for cmd in calls if "--help" not in cmd]
+
+
+def test_old_cli_gets_the_ai_and_tech_call_unchanged(monkeypatch):
+    calls: list = []
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        calls.append(list(cmd))
+        return _stdout_for(_CLI_2026_10_1_ANSWER)
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    digg.search_digg("openai", "2026-10-12", "2026-11-11")
+    assert _search_calls(calls) == [
+        [
+            "digg-pp-cli",
+            "search",
+            "openai",
+            "--topic",
+            "ai,tech",
+            "--since",
+            "30d",
+            "--agent",
+            "--limit",
+            "20",
+        ]
+    ]
+
+
+# === All-topic search (digg-pp-cli releases whose search lists --sort) ===
+
+_NEW_SEARCH_HELP = (
+    "Search Digg stories.\n\nFlags:\n"
+    "      --limit int       Max number of results\n"
+    "      --since string    Window start\n"
+    "      --sort string     relevance, score or newest (default relevance)\n"
+    "      --topic strings   Topics to search (default every topic)\n"
+    "      --until string    Window end\n"
+)
+_OLD_SEARCH_HELP = (
+    "Search Digg stories by title and summary.\n\nFlags:\n"
+    "      --limit int       Max number of results (default 20)\n"
+    "      --since string    Filter to stories that started within this window.\n"
+    "      --topic strings   Comma-separated Digg sections to search (default [ai])\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def _forget_cli_capability(monkeypatch):
+    """Each test starts as a fresh run that has not yet read the CLI's help."""
+    monkeypatch.setattr(digg, "_all_topic_search", None)
+
+
+def _story(
+    short_id: str = "k3v9xq2m",
+    topic: str = "science",
+    title: str = "Webb telescope spots water on a rocky exoplanet",
+    published_at: str = "2026-11-08T15:02:00Z",
+    **overrides,
+):
+    story = {
+        "clusterId": f"11111111-2222-3333-4444-{short_id:0>12}",
+        "clusterUrlId": short_id,
+        "url": f"https://digg.com/{topic}/{short_id}",
+        "topic": topic,
+        "title": title,
+        "description": "Longer description of the story.",
+        "tldr": "Astronomers report water vapor in the planet's atmosphere.",
+        "diggScore": 412,
+        "sourceCount": 37,
+        "postCount": 37,
+        "uniqueAuthors": 29,
+        "publishedAt": published_at,
+        "firstSourceAt": "2026-11-08T13:48:00Z",
+        "firstPostAge": "3d",
+    }
+    story.update(overrides)
+    return story
+
+
+def _live_envelope(*stories: dict) -> dict:
+    return {
+        "meta": {
+            "count": len(stories),
+            "query": "exoplanet",
+            "source": "live",
+            "stale": False,
+            "totalMatches": len(stories),
+            "window": {"since": "2026-10-12", "until": "2026-11-11"},
+            "sort": "relevance",
+        },
+        "results": list(stories),
+    }
+
+
+def _fake_cli(help_text: str, answer: dict, calls: list):
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        calls.append(list(cmd))
+        if "--help" in cmd:
+            return subproc.SubprocResult(returncode=0, stdout=help_text, stderr="")
+        return _stdout_for(answer)
+
+    return fake_run
+
+
+def test_story_keeps_its_own_url_score_counts_and_publish_date():
+    items = digg.parse_digg_response(
+        _live_envelope(_story()), query="exoplanet", from_date="2026-10-12"
+    )
+    assert len(items) == 1
+    item = items[0]
+    assert item["id"] == "k3v9xq2m"
+    assert item["url"] == "https://digg.com/science/k3v9xq2m"
+    assert item["date"] == "2026-11-08"
+    assert item["engagement"] == {"postCount": 37, "uniqueAuthors": 29, "digg_score": 412}
+
+
+def test_story_reason_names_its_score_and_counts():
+    items = digg.parse_digg_response(_live_envelope(_story()), from_date="2026-10-12")
+    assert items[0]["why_relevant"] == "Digg cluster (Digg Score 412, 37 posts, 29 authors)"
+
+
+def test_story_post_count_is_the_source_count():
+    items = digg.parse_digg_response(
+        _live_envelope(_story(sourceCount=52, postCount=37)), from_date="2026-10-12"
+    )
+    assert items[0]["engagement"]["postCount"] == 52
+
+
+def test_sports_story_links_to_the_sports_section():
+    items = digg.parse_digg_response(
+        _live_envelope(_story(short_id="w8n2jd4c", topic="sports", title="Cup final goes to penalties")),
+        from_date="2026-10-12",
+    )
+    assert items[0]["url"] == "https://digg.com/sports/w8n2jd4c"
+    assert "/ai/" not in items[0]["url"]
+
+
+def test_story_without_a_score_keeps_counts_and_has_no_score():
+    story = _story()
+    del story["diggScore"]
+    del story["firstSourceAt"]
+    items = digg.parse_digg_response(_live_envelope(story), from_date="2026-10-12")
+    assert items[0]["engagement"] == {"postCount": 37, "uniqueAuthors": 29}
+
+
+def test_story_published_40_days_ago_is_dropped_from_a_30_day_run(monkeypatch):
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    envelope = _live_envelope(
+        _story(short_id="recent01", published_at="2026-11-08T15:02:00Z"),
+        _story(short_id="old00001", published_at="2026-10-02T09:00:00Z", firstPostAge="5w"),
+    )
+    with_window = digg.parse_digg_response(envelope, from_date="2026-10-12")
+    assert [i["id"] for i in with_window] == ["recent01"]
+    default_window = digg.parse_digg_response(envelope)
+    assert [i["id"] for i in default_window] == ["recent01"]
+
+
+def test_story_with_a_non_web_url_is_dropped():
+    envelope = _live_envelope(
+        _story(short_id="bad00001", url="javascript:alert(1)"),
+        _story(short_id="good0001"),
+    )
+    items = digg.parse_digg_response(envelope, from_date="2026-10-12")
+    assert [i["id"] for i in items] == ["good0001"]
+
+
+def test_story_metadata_carries_uuid_topic_and_canonical_url():
+    from lib import normalize
+
+    item = digg.parse_digg_response(
+        _live_envelope(_story()), query="exoplanet", from_date="2026-10-12"
+    )[0]
+    source_item = normalize._normalize_digg("digg", item, 0, "2026-10-12", "2026-11-11")
+    assert source_item.url == "https://digg.com/science/k3v9xq2m"
+    assert source_item.published_at == "2026-11-08"
+    assert source_item.engagement == {"postCount": 37, "uniqueAuthors": 29, "digg_score": 412}
+    assert source_item.metadata["clusterId"] == "11111111-2222-3333-4444-0000k3v9xq2m"
+    assert source_item.metadata["clusterUrlId"] == "k3v9xq2m"
+    assert source_item.metadata["topic"] == "science"
+    assert source_item.metadata["url"] == "https://digg.com/science/k3v9xq2m"
+
+
+def test_new_cli_search_names_no_topic_and_no_sort(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _fake_cli(_NEW_SEARCH_HELP, _live_envelope(_story()), calls),
+    )
+    out = digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet", "--since", "30d", "--agent", "--limit", "20"]
+    ]
+    assert len(out["results"]) == 1
+    assert digg.upgrade_note(out) is None
+
+
+def test_deep_search_asks_for_50_stories(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _fake_cli(_NEW_SEARCH_HELP, _live_envelope(), calls),
+    )
+    digg.search_digg("exoplanet", "2026-10-12", "2026-11-11", depth="deep")
+    search = _search_calls(calls)[0]
+    assert search[search.index("--limit") + 1] == "50"
+
+
+def test_search_help_is_read_once_per_run(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _fake_cli(_OLD_SEARCH_HELP, _CLI_2026_10_1_ANSWER, calls),
+    )
+    digg.search_digg("openai", "2026-10-12", "2026-11-11")
+    digg.search_digg("anthropic", "2026-10-12", "2026-11-11")
+    help_calls = [cmd for cmd in calls if "--help" in cmd]
+    assert help_calls == [["digg-pp-cli", "search", "--help"]]
+    assert [cmd[2] for cmd in _search_calls(calls)] == ["openai", "anthropic"]
+    assert all("--topic" in cmd for cmd in _search_calls(calls))
+
+
+def test_old_cli_answer_yields_the_same_items_plus_the_upgrade_note(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _fake_cli(_OLD_SEARCH_HELP, _CLI_2026_10_1_ANSWER, calls),
+    )
+    out = digg.search_digg("openai", "2026-10-12", "2026-11-11")
+    items = digg.parse_digg_response(out, query="openai", from_date="2026-10-12")
+    assert items == digg.parse_digg_response(_CLI_2026_10_1_ANSWER, query="openai")
+    assert [i["url"] for i in items] == [
+        "https://di.gg/ai/ljvbajl5",
+        "https://di.gg/ai/g7fcfxf4",
+        "https://di.gg/ai/x7hzsqzf",
+    ]
+    note = digg.upgrade_note(out)
+    assert note is not None
+    assert "upgrade" in note
+    assert len(note) < 140
+
+
+def test_upgrade_note_absent_for_failed_and_unmarked_answers(monkeypatch):
+    assert digg.upgrade_note({"results": []}) is None
+    assert digg.upgrade_note(_CLI_2026_10_1_ANSWER) is None
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: subproc.SubprocResult(returncode=2, stdout="", stderr="boom"),
+    )
+    out = digg.search_digg("openai", "2026-10-12", "2026-11-11")
+    assert out["error"] == "boom"
+    assert digg.upgrade_note(out) is None
+
+
+def test_new_cli_stories_reach_the_pipeline_without_a_partial_note(monkeypatch):
+    from lib import pipeline, schema
+
+    monkeypatch.setattr(digg, "_today", lambda: _CAPTURE_DAY)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _fake_cli(
+            _NEW_SEARCH_HELP,
+            _live_envelope(
+                _story(short_id="recent01"),
+                _story(short_id="old00001", published_at="2026-10-02T09:00:00Z"),
+            ),
+            [],
+        ),
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="exoplanet",
+        ranking_query="exoplanet",
+        sources=["digg"],
+    )
+    items, artifact = pipeline._retrieve_stream_impl(
+        topic="exoplanet",
+        subquery=subquery,
+        source="digg",
+        config={},
+        depth="default",
+        date_range=("2026-10-12", "2026-11-11"),
+        runtime=None,
+        mock=False,
+    )
+    assert [item["id"] for item in items] == ["recent01"]
+    assert items[0]["url"] == "https://digg.com/science/recent01"
+    assert "_source_outcome" not in artifact
+
+
+# === Story sources and confirmation of matching items ===
+
+
+def _source_row(
+    kind: str = "x",
+    url: str = "https://x.com/astro_ana/status/1986000000000000001",
+    username: str = "astro_ana",
+    body: str = "Water vapor on a rocky world. Big if it holds up.",
+):
+    author = {"display_name": username.title() if username else "Example Newsroom"}
+    if kind == "x":
+        author["username"] = username
+    return {
+        "kind": kind,
+        "body": body,
+        "xUrl": url,
+        "title": "" if kind == "x" else "Webb finds water on a rocky exoplanet",
+        "posted_at": "2026-11-08T14:00:00Z",
+        "post_x_id": url.rsplit("/", 1)[-1] if kind == "x" else "",
+        "author": author,
+    }
+
+
+def _sources_answer(*rows: dict) -> dict:
+    return {"meta": {"topic": "science"}, "results": list(rows)}
+
+
+def _story_item(short_id: str = "k3v9xq2m", digg_score: float = 412, engagement_score=80, **story):
+    from lib import normalize
+
+    [parsed] = digg.parse_digg_response(
+        _live_envelope(_story(short_id=short_id, diggScore=digg_score, **story)),
+        query="exoplanet",
+        from_date="2026-10-12",
+    )
+    [item] = normalize.normalize_source_items("digg", [parsed], "2026-10-12", "2026-11-11")
+    item.engagement_score = engagement_score
+    return item
+
+
+def _other_item(source: str, url: str, **metadata):
+    from lib import schema
+
+    return schema.SourceItem(
+        item_id=f"{source}-1", source=source, title="A post", body="A post", url=url,
+        published_at="2026-11-09", metadata=dict(metadata),
+    )
+
+
+def _candidate_for(*items):
+    from lib import schema
+
+    first = items[0]
+    return schema.Candidate(
+        candidate_id=first.url, item_id=first.item_id, source=first.source,
+        title=first.title, url=first.url, snippet="", subquery_labels=["primary"],
+        native_ranks={f"primary:{first.source}": 1}, local_relevance=0.6, freshness=70,
+        engagement=30, source_quality=0.7, rrf_score=0.02, source_items=list(items),
+    )
+
+
+def _sources_cli(answers: dict, calls: list):
+    """A CLI whose ``posts <uuid>`` answers come from ``answers`` by UUID."""
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        calls.append(list(cmd))
+        return _stdout_for(answers.get(cmd[2], _sources_answer()))
+
+    return fake_run
+
+
+def _confirm(story, rows, *others, depth: str = "default", monkeypatch):
+    """Fetch ``story``'s sources from a fake CLI and tag ``others``."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _sources_cli({story.metadata["clusterId"]: _sources_answer(*rows)}, []),
+    )
+    fetched = digg.fetch_story_sources([story], depth)
+    stories = digg.apply_story_sources([story], fetched)
+    candidates = [_candidate_for(item) for item in others]
+    digg.tag_confirmed_candidates(candidates, stories)
+    return candidates
+
+
+@pytest.mark.parametrize("item_url", [
+    "https://twitter.com/astro_ana/status/1986000000000000001",
+    "https://x.com/Astro_Ana/status/1986000000000000001",
+    "https://x.com/astro_ana/status/1986000000000000001?s=20&t=abcDEF",
+    "https://x.com/i/status/1986000000000000001",
+])
+def test_x_item_with_a_story_sources_status_id_is_tagged(monkeypatch, item_url):
+    story = _story_item()
+    [candidate] = _confirm(
+        story, [_source_row()], _other_item("x", item_url), monkeypatch=monkeypatch,
+    )
+    assert candidate.metadata["digg_story"] == {
+        "title": "Webb telescope spots water on a rocky exoplanet",
+        "url": "https://digg.com/science/k3v9xq2m",
+        "digg_score": 412,
+        "source_count": 37,
+        "engagement": 80,
+    }
+
+
+def test_x_item_with_another_status_id_is_not_tagged(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(), [_source_row()],
+        _other_item("x", "https://x.com/astro_ana/status/1986000000000000002"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_hacker_news_item_linking_a_story_source_article_is_tagged(monkeypatch):
+    article = "https://www.example-observatory.org/news/webb-water/?utm_source=digg"
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url=article, username="")],
+        _other_item(
+            "hackernews", "https://example-observatory.org/news/webb-water",
+            hn_url="https://news.ycombinator.com/item?id=45900001",
+        ),
+        monkeypatch=monkeypatch,
+    )
+    assert candidate.metadata["digg_story"]["url"] == "https://digg.com/science/k3v9xq2m"
+
+
+def test_reddit_text_post_about_the_same_event_is_not_tagged(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url="https://example-observatory.org/news/webb-water", username="")],
+        _other_item("reddit", "https://www.reddit.com/r/space/comments/1abcde/webb_finds_water/"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_item_sharing_only_a_domain_with_a_source_is_not_tagged(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url="https://example-observatory.org/news/webb-water", username="")],
+        _other_item("hackernews", "https://example-observatory.org/news/another-story"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_the_digg_story_itself_is_not_tagged(monkeypatch):
+    story = _story_item()
+    [candidate] = _confirm(
+        story, [_source_row(kind="webpage", url=story.url, username="")], story,
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_story_with_40_sources_tags_the_30th_and_keeps_5_quotes(monkeypatch):
+    rows = [
+        _source_row(
+            url=f"https://x.com/voice{n}/status/19860000000000001{n:02d}",
+            username=f"voice{n}", body=f"Take number {n}.",
+        )
+        for n in range(1, 41)
+    ]
+    story = _story_item()
+    [candidate] = _confirm(
+        story, rows, _other_item("x", "https://x.com/voice30/status/1986000000000000130"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" in candidate.metadata
+    assert [post["username"] for post in story.metadata["posts"]] == [
+        "voice1", "voice2", "voice3", "voice4", "voice5",
+    ]
+
+
+def test_item_in_two_stories_is_tagged_with_the_more_engaged_one(monkeypatch):
+    shared = _source_row()
+    small = _story_item(short_id="small001", digg_score=40, engagement_score=35, title="Small story")
+    big = _story_item(short_id="big00001", digg_score=900, engagement_score=95, title="Big story")
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({
+            small.metadata["clusterId"]: _sources_answer(shared),
+            big.metadata["clusterId"]: _sources_answer(shared),
+        }, []),
+    )
+    stories = digg.apply_story_sources(
+        [small, big], digg.fetch_story_sources([small, big], "default"),
+    )
+    candidate = _candidate_for(_other_item("x", shared["xUrl"]))
+    digg.tag_confirmed_candidates([candidate], stories)
+    assert candidate.metadata["digg_story"]["title"] == "Big story"
+
+
+def _five_stories():
+    scores = {"s1": 150, "s2": 1286, "s3": 239, "s4": 473, "s5": 180}
+    return [_story_item(short_id=short_id, digg_score=score) for short_id, score in scores.items()]
+
+
+def test_default_depth_fetches_the_3_top_scored_stories_one_at_a_time(monkeypatch):
+    calls: list = []
+    running = {"now": 0, "most": 0}
+    inner = _sources_cli({}, calls)
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        running["now"] += 1
+        running["most"] = max(running["most"], running["now"])
+        try:
+            assert timeout <= 15
+            return inner(cmd, timeout=timeout)
+        finally:
+            running["now"] -= 1
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    stories = _five_stories()
+    digg.fetch_story_sources(stories, "default")
+    uuid = {item.item_id: item.metadata["clusterId"] for item in stories}
+    assert calls == [
+        ["digg-pp-cli", "posts", uuid[short_id], "--agent", "--limit", "40"]
+        for short_id in ("s2", "s4", "s3")
+    ]
+    assert len(calls) <= 6
+    assert running["most"] == 1
+
+
+def test_deep_depth_fetches_5_stories_and_quick_fetches_none(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    assert digg.fetch_story_sources(_five_stories(), "quick") == {}
+    assert calls == []
+    digg.fetch_story_sources(_five_stories(), "deep")
+    assert len(calls) == 5
+
+
+def test_story_found_by_two_searches_is_fetched_once_and_both_copies_get_quotes(monkeypatch):
+    calls: list = []
+    first, second = _story_item(), _story_item()
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({first.metadata["clusterId"]: _sources_answer(_source_row())}, calls),
+    )
+    fetched = digg.fetch_story_sources([first, second], "default")
+    digg.apply_story_sources([first, second], fetched)
+    assert len(calls) == 1
+    assert first.metadata["posts"][0]["username"] == "astro_ana"
+    assert second.metadata["posts"][0]["username"] == "astro_ana"
+
+
+def test_sources_fetch_stops_when_the_run_is_out_of_time(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    digg.fetch_story_sources(_five_stories(), "default", stopped=lambda: len(calls) >= 1)
+    assert len(calls) == 1
+
+
+def test_sources_fetch_timing_out_tags_nothing_and_leaves_the_story_intact(monkeypatch):
+    def fake_run(*_a, **_kw):
+        raise subproc.SubprocTimeout("posts timed out")
+
+    story = _story_item()
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    fetched = digg.fetch_story_sources([story], "default")
+    stories = digg.apply_story_sources([story], fetched)
+    candidate = _candidate_for(_other_item("x", _source_row()["xUrl"]))
+    digg.tag_confirmed_candidates([candidate], stories)
+    assert fetched == {} and stories == {}
+    assert "digg_story" not in candidate.metadata
+    assert story.metadata["posts"] == []
+    assert story.url == "https://digg.com/science/k3v9xq2m"
+
+
+def test_source_with_a_non_web_url_confirms_nothing(monkeypatch):
+    [candidate] = _confirm(
+        _story_item(),
+        [_source_row(kind="webpage", url="javascript:alert(1)", username="")],
+        _other_item("hackernews", "javascript:alert(1)"),
+        monkeypatch=monkeypatch,
+    )
+    assert "digg_story" not in candidate.metadata
+
+
+def test_old_cli_clusters_get_no_sources_fetch(monkeypatch):
+    from lib import normalize
+
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    parsed = digg.parse_digg_response({"results": [_cluster()]}, query="sample")
+    items = normalize.normalize_source_items("digg", parsed, "2026-01-01", "2026-12-31")
+    assert digg.fetch_story_sources(items, "default") == {}
+    assert calls == []
+
+
+def test_ranked_post_enrichment_leaves_all_topic_stories_alone(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    digg.enrich_source_items([_story_item()], top_k=3)
+    assert calls == []
+
+
+def test_tag_and_quotes_survive_fusion_of_two_streams(monkeypatch):
+    from lib import fusion, schema
+
+    source = _source_row()
+    stories_a, stories_b = _story_item(), _story_item()
+    post_a = _other_item("x", "https://x.com/astro_ana/status/1986000000000000001")
+    post_b = _other_item("x", "https://x.com/astro_ana/status/1986000000000000001")
+    for item in (stories_a, stories_b, post_a, post_b):
+        item.local_relevance, item.freshness, item.source_quality = 0.7, 80, 0.7
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout",
+        _sources_cli({stories_a.metadata["clusterId"]: _sources_answer(source)}, []),
+    )
+    digg_items = [stories_a, stories_b]
+    confirmed = digg.apply_story_sources(digg_items, digg.fetch_story_sources(digg_items, "default"))
+    plan = schema.QueryPlan(
+        intent="breaking_news", freshness_mode="balanced_recent", cluster_mode="story",
+        raw_topic="exoplanet",
+        subqueries=[
+            schema.SubQuery(label=label, search_query="exoplanet", ranking_query="exoplanet", sources=["digg", "x"])
+            for label in ("primary", "second")
+        ],
+        source_weights={"digg": 1.0, "x": 1.0},
+    )
+    candidates = fusion.weighted_rrf(
+        {
+            ("primary", "digg"): [stories_a], ("primary", "x"): [post_a],
+            ("second", "digg"): [stories_b], ("second", "x"): [post_b],
+        },
+        plan, pool_limit=10,
+    )
+    digg.tag_confirmed_candidates(candidates, confirmed)
+    by_source = {candidate.source: candidate for candidate in candidates}
+    assert len(candidates) == 2
+    assert by_source["x"].subquery_labels == ["primary", "second"]
+    assert by_source["x"].metadata["digg_story"]["url"] == stories_a.url
+    assert "digg_story" not in by_source["digg"].metadata
+    assert schema.candidate_primary_item(by_source["digg"]).metadata["posts"][0]["username"] == "astro_ana"
+
+
+def test_confirmed_item_names_its_digg_story_in_the_report(monkeypatch):
+    from lib import render
+
+    [candidate] = _confirm(
+        _story_item(), [_source_row()],
+        _other_item("x", "https://x.com/astro_ana/status/1986000000000000001"),
+        monkeypatch=monkeypatch,
+    )
+    lines = render._render_candidate(candidate, "1.")
+    assert (
+        "   - Also in Digg story: "
+        "[Webb telescope spots water on a rocky exoplanet](https://digg.com/science/k3v9xq2m)"
+        " (Digg Score 412, 37 sources)"
+    ) in lines
+
+
+def test_unconfirmed_item_names_no_digg_story():
+    from lib import render
+
+    candidate = _candidate_for(_other_item("x", "https://x.com/astro_ana/status/1986000000000000001"))
+    assert not [line for line in render._render_candidate(candidate, "1.") if "Digg story" in line]
+
+
+# === Top stories for global trending ===
+
+# What digg-pp-cli 2026.10.1 printed for `top --agent --limit 20` against an
+# empty local store, captured 2026-11-11: plain text, exit 0.
+_CLI_2026_10_1_TOP_STDOUT = "no clusters in the local store. Run `digg-pp-cli sync` first.\n"
+
+
+def _top_row(index: int = 1, topic: str = "science", **overrides) -> dict:
+    short_id = f"top{index:05d}"
+    row = {
+        "rank": index,
+        "clusterId": f"11111111-2222-3333-4444-{short_id:0>12}",
+        "clusterUrlId": short_id,
+        "url": f"https://digg.com/{topic}/{short_id}",
+        "topic": topic,
+        "title": f"Top story number {index}",
+        "description": "Longer description of the story.",
+        "diggScore": 900 - index,
+        "postCount": 40 + index,
+        "uniqueAuthors": 20 + index,
+        "publishedAt": "2026-11-11T08:30:00Z",
+    }
+    row.update(overrides)
+    return row
+
+
+def _top_envelope(*rows: dict) -> dict:
+    return {
+        "meta": {"count": len(rows), "source": "live", "view": "top", "range": "24h"},
+        "results": list(rows),
+    }
+
+
+def _top_calls(calls: list) -> list:
+    return [cmd for cmd in calls if "--help" not in cmd]
+
+
+def test_top_stories_reads_every_topic_from_the_new_cli(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _fake_cli(_NEW_SEARCH_HELP, _top_envelope(_top_row(1), _top_row(2)), calls),
+    )
+    out = digg.top_stories()
+    assert _top_calls(calls) == [["digg-pp-cli", "top", "--agent", "--limit", "20"]]
+    assert len(out["results"]) == 2
+    assert "error" not in out
+
+
+def test_deep_top_stories_asks_for_50(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout", _fake_cli(_NEW_SEARCH_HELP, _top_envelope(), calls)
+    )
+    digg.top_stories(depth="deep")
+    assert _top_calls(calls) == [["digg-pp-cli", "top", "--agent", "--limit", "50"]]
+
+
+def test_top_stories_from_cli_2026_10_1_are_empty_without_an_error(monkeypatch):
+    calls: list = []
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        calls.append(list(cmd))
+        if "--help" in cmd:
+            return subproc.SubprocResult(returncode=0, stdout=_OLD_SEARCH_HELP, stderr="")
+        return subproc.SubprocResult(returncode=0, stdout=_CLI_2026_10_1_TOP_STDOUT, stderr="")
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    out = digg.top_stories()
+    assert out == {"results": []}
+    assert digg.parse_top_response(out, from_date="2026-10-12") == []
+    assert _top_calls(calls) == []
+
+
+def test_top_rows_parse_like_search_stories():
+    rows = [_top_row(i, topic="sports" if i % 2 else "science") for i in range(1, 21)]
+    items = digg.parse_top_response(_top_envelope(*rows), from_date="2026-10-12")
+    assert len(items) == 20
+    first = items[0]
+    assert first["id"] == "top00001"
+    assert first["cluster_id"] == "11111111-2222-3333-4444-0000top00001"
+    assert first["topic"] == "sports"
+    assert first["url"] == "https://digg.com/sports/top00001"
+    assert first["title"] == "Top story number 1"
+    assert first["date"] == "2026-11-11"
+    assert first["engagement"] == {"postCount": 41, "uniqueAuthors": 21, "digg_score": 899}
+    for item in items:
+        assert set(item["engagement"]) == {"postCount", "uniqueAuthors", "digg_score"}
+        assert item["date"] == "2026-11-11"
+
+
+def test_top_rows_without_a_title_yield_no_items():
+    untitled = _top_row(1)
+    del untitled["title"]
+    blank = _top_row(2, title="  ")
+    assert digg.parse_top_response(_top_envelope(untitled, blank, {}), from_date="2026-10-12") == []
+
+
+# === A failed help probe is not an older CLI ===
+
+
+def _cli_with_failing_help(help_failure, answer: dict, calls: list):
+    """A CLI whose ``search --help`` fails while every other call answers."""
+
+    def fake_run(cmd, *, timeout, **_kwargs):
+        calls.append(list(cmd))
+        if "--help" in cmd:
+            return help_failure()
+        return _stdout_for(answer)
+
+    return fake_run
+
+
+def _help_times_out():
+    raise subproc.SubprocTimeout("search --help timed out")
+
+
+def _help_exits_non_zero():
+    return subproc.SubprocResult(returncode=1, stdout="", stderr="config unreadable")
+
+
+@pytest.mark.parametrize("help_failure", [_help_times_out, _help_exits_non_zero])
+def test_failed_help_probe_keeps_the_items_without_the_upgrade_note(monkeypatch, help_failure):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _cli_with_failing_help(help_failure, _live_envelope(_story()), calls),
+    )
+    out = digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
+    items = digg.parse_digg_response(out, query="exoplanet", from_date="2026-10-12")
+    assert [item["url"] for item in items] == ["https://digg.com/science/k3v9xq2m"]
+    assert "error" not in out
+    assert digg.upgrade_note(out) is None
+    # The call both CLIs accept.
+    assert _search_calls(calls) == [
+        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20"]
+    ]
+
+    digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
+    assert len([cmd for cmd in calls if "--help" in cmd]) == 2
+
+
+@pytest.mark.parametrize("help_failure", [_help_times_out, _help_exits_non_zero])
+def test_top_stories_after_a_failed_help_probe_are_empty_without_an_error(monkeypatch, help_failure):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        _cli_with_failing_help(help_failure, _top_envelope(_top_row(1)), calls),
+    )
+    assert digg.top_stories() == {"results": []}
+    assert _top_calls(calls) == []
+
+
+# === Missing binary ===
+
+
+def test_search_and_top_stories_name_the_missing_binary(monkeypatch):
+    def never_run(*_a, **_kw):
+        raise AssertionError("ran a CLI that is not on PATH")
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: None)
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", never_run)
+    search = digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
+    top = digg.top_stories()
+    assert search == {"results": [], "error": "digg-pp-cli not on PATH"}
+    assert top == {"results": [], "error": "digg-pp-cli not on PATH"}
+
+
+# === Stories without a usable publish date ===
+
+
+@pytest.mark.parametrize("published_at", [None, "", "last Tuesday"])
+def test_story_without_a_readable_publish_date_is_kept_undated(published_at):
+    story = _story(published_at=published_at)
+    if published_at is None:
+        del story["publishedAt"]
+    [item] = digg.parse_digg_response(_live_envelope(story), from_date="2026-10-12")
+    assert item["url"] == "https://digg.com/science/k3v9xq2m"
+    assert item["date"] is None
+
+
+# === Story sources: run deadline, cancel signal and comparison share ===
+
+
+class _Clock:
+    """A monotonic clock that only moves when a fake CLI call spends time."""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _slow_sources_cli(clock: _Clock, seen: list):
+    """A ``posts`` call that hangs for its whole timeout, then times out."""
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        seen.append({"timeout": timeout, **kwargs})
+        clock.now += timeout
+        raise subproc.SubprocTimeout("posts timed out")
+
+    return fake_run
+
+
+def test_sources_fetch_caps_a_call_at_the_time_left_and_stops_at_the_deadline(monkeypatch):
+    clock, seen = _Clock(), []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg, "time", clock)
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen))
+    deadline = clock.now + 2
+    assert digg.fetch_story_sources(_five_stories(), "deep", deadline=deadline) == {}
+    assert len(seen) == 1
+    assert 0 < seen[0]["timeout"] <= 2
+    assert seen[0]["deadline_monotonic"] == deadline
+
+
+def test_sources_fetch_makes_no_call_once_the_run_is_cancelled(monkeypatch):
+    import threading
+
+    calls: list = []
+    cancel = threading.Event()
+    cancel.set()
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    assert digg.fetch_story_sources(_five_stories(), "deep", cancel=cancel) == {}
+    assert calls == []
+
+
+def test_sources_fetch_hands_the_cancel_signal_to_each_call(monkeypatch):
+    import threading
+
+    seen: list = []
+    cancel = threading.Event()
+
+    def fake_run(cmd, *, timeout, **kwargs):
+        seen.append(kwargs.get("cancel"))
+        return _stdout_for(_sources_answer())
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    digg.fetch_story_sources(_five_stories(), "default", cancel=cancel)
+    assert seen == [cancel, cancel, cancel]
+
+
+def test_sources_fetch_without_a_run_deadline_spends_at_most_40_seconds(monkeypatch):
+    clock, seen = _Clock(), []
+    started = clock.now
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg, "time", clock)
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen))
+    digg.fetch_story_sources(_five_stories(), "deep")
+    assert [call["timeout"] for call in seen] == [15, 15, 10]
+    assert clock.now - started <= 40
+
+
+@pytest.mark.parametrize("depth, entity_count, expected_calls", [
+    ("default", 1, 3),
+    ("deep", 1, 5),
+    ("default", 3, 1),
+    ("deep", 3, 2),
+    ("default", 9, 1),
+    ("quick", 3, 0),
+])
+def test_comparison_run_fetches_its_share_of_the_story_budget(
+    monkeypatch, depth, entity_count, expected_calls,
+):
+    calls: list = []
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", _sources_cli({}, calls))
+    digg.fetch_story_sources(_five_stories(), depth, entity_count=entity_count)
+    assert len(calls) == expected_calls

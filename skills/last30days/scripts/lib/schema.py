@@ -820,6 +820,16 @@ _HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE = {
 }
 
 
+def is_summable_engagement_field(source: str, field: str) -> bool:
+    """True when ``field`` may be added up across a source's items.
+
+    Counters are additive; a score or rank says something about one item
+    and is not, except where it is the source's headline counter (Reddit's
+    ``score`` is its upvote count).
+    """
+    return _is_counter_field(field) or field in _HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE.get(source, ())
+
+
 def _is_counter_field(field: str) -> bool:
     normalized = field.lower()
     return not (

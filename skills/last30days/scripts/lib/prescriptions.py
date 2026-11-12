@@ -260,6 +260,20 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="first-run-onboarding",
     ),
     _entry(
+        "digg", "pp_cli_outdated",
+        cause=(
+            "digg-pp-cli is an older release: it searches only Digg's AI and "
+            "tech sections and reports no engagement scores"
+        ),
+        fix_nl=(
+            "re-run the Printing Press install to upgrade the Digg CLI so it "
+            "searches every Digg topic with engagement scores; Digg keeps "
+            "working on AI and tech until then"
+        ),
+        fix_cli=_DIGG_PP_INSTALL_CLI,
+        anchor="first-run-onboarding",
+    ),
+    _entry(
         "digg", "pp_cli_off_path",
         cause=(
             "digg-pp-cli is installed but its directory is not on the "

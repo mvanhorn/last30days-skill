@@ -685,9 +685,15 @@ def _fetch_discovery_source(
         errors = result.get("errors") or []
         return items, "; ".join(errors) or None
     if source == "digg":
-        result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
-        items = digg.parse_digg_response(result, query=plan.domain)
-        # Digg's AI and Tech sections are a broad listing, so keep only domain-bearing
+        if plan.domain.strip():
+            result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
+            items = digg.parse_digg_response(result, query=plan.domain, from_date=from_date)
+        else:
+            # Global trending has nothing to search for: Digg's own top
+            # stories across every topic are its "what is hot" listing.
+            result = digg.top_stories(depth=depth)
+            items = digg.parse_top_response(result, from_date=from_date)
+        # Digg is a broad listing, so keep only domain-bearing
         # clusters when scoped; global trending keeps the whole feed.
         if keyword_gate:
             items = [
@@ -2970,6 +2976,15 @@ def run(
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
+    # Sources of the top Digg stories, fetched once per run and before the
+    # supplemental searches add their own calls. The quotes land on the
+    # stories now; the match keys mark confirmed candidates after fusion.
+    _check_research(config)
+    digg_sources_spent = _DiggSourcesSpent()
+    digg_story_by_key = _digg_story_sources(
+        bundle, topic=topic, depth=depth, config=config, spent=digg_sources_spent,
+    )
+
     # Phase 2: supplemental entity-based searches
     _check_research(config)
     supplemental_handles: list[str] = []
@@ -3024,6 +3039,15 @@ def run(
         run_started=run_started,
         out_of_time_sources=out_of_time_sources,
     )
+    # Digg stories the retry found get their sources too, out of whatever
+    # story budget and time the first pass left. Without this they carry no
+    # quotes and cannot confirm other results.
+    for key, story in _digg_story_sources(
+        bundle, topic=topic, depth=depth, config=config, spent=digg_sources_spent,
+    ).items():
+        current = digg_story_by_key.get(key)
+        if current is None or story["engagement"] > current["engagement"]:
+            digg_story_by_key[key] = story
     for source, outcome in deferred_retryable_failures.items():
         if (
             source in bundle.errors_by_source
@@ -3154,6 +3178,7 @@ def run(
         first_party_handles=resolved_handles,
         primary_handle=x_handle,
     )
+    digg.tag_confirmed_candidates(candidates, digg_story_by_key)
     private_candidates = [
         candidate
         for candidate in candidates
@@ -3772,11 +3797,13 @@ def _finalize_items_by_source(
             keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
             if keywords:
                 items = polymarket.filter_items_against_keywords(items, keywords)
-        if source == "digg" and items:
-            # Pull top-ranked X posts only for the survivors that will appear
-            # in the brief. Spending the enrichment budget here (rather than
-            # at retrieval time) keeps the inline 'via Digg' quotes
-            # paired with the clusters dedupe actually kept.
+        if source == "digg" and any(not item.metadata.get(digg.STORY_ID_KEY) for item in items):
+            # Clusters from digg-pp-cli 2026.10.x only; all-topic stories got
+            # their quotes from _digg_story_sources. Pull top-ranked X posts
+            # only for the survivors that will appear in the brief. Spending
+            # the enrichment budget here (rather than at retrieval time)
+            # keeps the inline 'via Digg' quotes paired with the clusters
+            # dedupe actually kept.
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
@@ -3821,6 +3848,79 @@ def _finalize_items_by_source(
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         finalized[source] = items
     return finalized
+
+
+@dataclass
+class _DiggSourcesSpent:
+    """What a run's story-source passes have used of their shared allowance."""
+
+    story_ids: set[str] = field(default_factory=set)
+    seconds: float = 0.0
+
+
+def _digg_story_sources(
+    bundle: schema.RetrievalBundle,
+    *,
+    topic: str,
+    depth: str,
+    config: dict[str, Any],
+    spent: _DiggSourcesSpent | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Fetch the top Digg stories' sources and attach their quotes.
+
+    Returns the map from source match key to story that
+    ``digg.tag_confirmed_candidates`` reads after fusion. The fetch is
+    bounded by the run's deadline and cancel signal, and a comparison's runs
+    share one story budget between them. Empty at quick depth, when the run
+    holds no all-topic Digg story, and when every fetch fails. Recorded and
+    replayed as its own fixture exchange so the eval harness stays offline.
+
+    ``spent`` holds the story ids and the seconds earlier calls in this run
+    already used, and is updated in place. A call after the first considers
+    only stories that arrived since, and gets only the story budget and the
+    time those earlier calls left, so the run's total stays within one
+    budget and one ``digg.SOURCES_TOTAL_SECONDS``.
+    """
+    spent = spent if spent is not None else _DiggSourcesSpent()
+    seen = spent.story_ids
+    later_pass = bool(seen)
+    entity_count = _comparison_entity_count(config)
+    budget = digg.story_budget(depth, entity_count) - min(
+        len(seen), digg.story_budget(depth, entity_count),
+    )
+    seconds_left = digg.SOURCES_TOTAL_SECONDS - spent.seconds
+    stories = [
+        item for item in bundle.items_by_source.get("digg", [])
+        if item.metadata.get(digg.STORY_ID_KEY)
+        and str(item.metadata[digg.STORY_ID_KEY]) not in seen
+    ]
+    seen.update(str(item.metadata[digg.STORY_ID_KEY]) for item in stories)
+    if not stories or budget <= 0 or seconds_left <= 0:
+        return {}
+    request = {"source": "digg", "phase": "story_sources", "topic": topic, "depth": depth}
+    if later_pass:
+        # Its own exchange, so it never replays the first pass's recording.
+        request["pass"] = "retry"
+    if entity_count > 1:
+        # A comparison run fetches fewer stories, so it never replays a
+        # single-topic recording; those keep their original keys.
+        request["comparison_entity_count"] = entity_count
+    matched, replayed = http.fixture_source_replay(request)
+    if matched:
+        fetched = replayed if isinstance(replayed, dict) else {}
+    else:
+        started = time.monotonic()
+        fetched = digg.fetch_story_sources(
+            stories, depth, stopped=lambda: _research_stopped(config),
+            deadline=config.get("_research_deadline"),
+            cancel=config.get("_enrich_cancel"),
+            entity_count=entity_count,
+            budget=budget,
+            total_seconds=seconds_left,
+        )
+        spent.seconds += time.monotonic() - started
+        http.fixture_source_record(request, fetched)
+    return digg.apply_story_sources(stories, fetched)
 
 
 def _merge_replayed_enrichment(
@@ -4679,9 +4779,9 @@ def _finalize_source_status(
         elif state == health.OK and not count:
             state = outcome.lane_failure_state or schema.NO_RESULTS
         elif state == schema.PARTIAL and not count:
-            if source == "digg" and digg.is_stale_note(detail):
-                # A stale Digg copy that matched nothing is an empty answer
-                # with a coverage note, not a failed search.
+            if source == "digg" and digg.is_upgrade_note(detail):
+                # An older Digg CLI that matched nothing is an empty answer
+                # with an upgrade note, not a failed search.
                 state = schema.NO_RESULTS
             else:
                 state = http.classify_failure(message=detail or "")
@@ -6806,13 +6906,15 @@ def _retrieve_stream_impl(
             timeout=_memo_wait_seconds(config),
             cacheable=_clean_search_result,
         )
-        items = digg.parse_digg_response(result, query=subquery.search_query)
+        items = digg.parse_digg_response(
+            result, query=subquery.search_query, from_date=from_date,
+        )
         # Enrichment with attached X posts is deferred to
         # _finalize_items_by_source so it runs on the items that actually
         # survive dedupe rather than on top-K of the raw fanout.
-        stale = digg.stale_note(result)
-        if stale:
-            return items, _outcome_artifact(health.PARTIAL, stale)
+        upgrade = digg.upgrade_note(result)
+        if upgrade:
+            return items, _outcome_artifact(health.PARTIAL, upgrade)
         return items, _result_outcome_artifact(source, result)
     if source == "arxiv":
         result = arxiv.search_arxiv(subquery.search_query, from_date, to_date, depth=depth)

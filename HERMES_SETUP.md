@@ -58,7 +58,7 @@ On first run, the skill will guide you through setup:
 1. **Auto setup** (~30 seconds)
    - Scans browser cookies for X/Twitter
    - Checks/installs yt-dlp for YouTube
-   - Best-effort install of `digg-pp-cli` for Digg AI-news clusters (via `@mvanhorn/printing-press-library`; binary lands in `$HOME/.local/bin` — ensure your Hermes gateway PATH includes it, or Digg stays off even after install)
+   - Best-effort install of `digg-pp-cli` for Digg story clusters (via `@mvanhorn/printing-press-library`; binary lands in `$HOME/.local/bin` — ensure your Hermes gateway PATH includes it, or Digg stays off even after install)
    - Configures free sources (Reddit, HN, Polymarket)
 
 2. **Optional: ScrapeCreators**
@@ -77,7 +77,7 @@ On first run, the skill will guide you through setup:
 - **Hacker News** - Tech discussions via Algolia
 - **Polymarket** - Prediction markets
 - **YouTube** - Search and transcripts (requires yt-dlp)
-- **Digg** - AI-news story clusters (requires `digg-pp-cli` on the agent PATH; auto-installed to `$HOME/.local/bin` during setup when `npx` is available)
+- **Digg** - story clusters from every Digg topic, ranked by Digg Score (requires `digg-pp-cli` on the agent PATH; auto-installed to `$HOME/.local/bin` during setup when `npx` is available)
 
 ### Requires API Key
 - **X/Twitter** - xAI API key or browser cookies

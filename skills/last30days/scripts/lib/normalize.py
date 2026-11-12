@@ -654,12 +654,14 @@ def _normalize_digg(
     from_date: str,
     to_date: str,
 ) -> schema.SourceItem:
-    """Normalizer for Digg AI 1000 clusters.
+    """Normalizer for Digg clusters.
 
     Each cluster is one item. The TLDR carries the most useful body for
     rerank and synthesis. Top-ranked X posts attached at search time are
     passed through under metadata['posts'] so render can emit them as
-    inline 'via Digg' quotes.
+    inline 'via Digg' quotes. A story from the all-topic search also
+    carries its UUID, topic and canonical URL in metadata; the UUID is
+    what story-scoped CLI commands take.
     """
     title = str(item.get("title") or "").strip()
     tldr = str(item.get("tldr") or "").strip()
@@ -668,6 +670,19 @@ def _normalize_digg(
     if not isinstance(posts, list):
         posts = []
     cluster_url_id = str(item.get("id") or f"DG{index + 1}")
+    metadata = {
+        "clusterUrlId": cluster_url_id,
+        "tldr": tldr,
+        "rank": (item.get("engagement") or {}).get("rank"),
+        "uniqueAuthors": (item.get("engagement") or {}).get("uniqueAuthors"),
+        "postCount": (item.get("engagement") or {}).get("postCount"),
+        "firstPostAge": item.get("first_post_age"),
+        "posts": posts,
+    }
+    if item.get("cluster_id"):
+        metadata["clusterId"] = item["cluster_id"]
+        metadata["topic"] = item.get("topic") or ""
+        metadata["url"] = item.get("url")
     return _source_item(
         item_id=cluster_url_id,
         source=source,
@@ -682,15 +697,7 @@ def _normalize_digg(
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=tldr[:400],
-        metadata={
-            "clusterUrlId": cluster_url_id,
-            "tldr": tldr,
-            "rank": (item.get("engagement") or {}).get("rank"),
-            "uniqueAuthors": (item.get("engagement") or {}).get("uniqueAuthors"),
-            "postCount": (item.get("engagement") or {}).get("postCount"),
-            "firstPostAge": item.get("first_post_age"),
-            "posts": posts,
-        },
+        metadata=metadata,
     )
 
 

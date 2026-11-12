@@ -241,3 +241,39 @@ def test_hn_comment_replay_follows_firebase_kids_order(tmp_path):
         "posted_first",
         "posted_second",
     ]
+
+
+def test_digg_story_sources_confirm_matching_x_and_hacker_news_items():
+    [fixture] = [f for f in harness.load_fixtures() if f.name == "digg-confirmation"]
+    report = harness.evaluate_fixture(fixture).report
+    by_url = {candidate.url: candidate for candidate in report.ranked_candidates}
+
+    def story_of(url):
+        return (by_url[url].metadata.get("digg_story") or {}).get("url")
+
+    # Sources of a fetched story, in URL forms that differ from Digg's.
+    assert story_of("https://x.com/i/status/1940000000000000101") == "https://digg.com/ai/ljvbajl5"
+    assert story_of(
+        "https://x.com/Fixture_PHPDev/status/1940000000000000202?s=20"
+    ) == "https://digg.com/ai/1i79b1xh"
+    assert story_of(
+        "https://www.news.example.test/digg-confirmation/openai-lean-proofs/?utm_source=hn"
+    ) == "https://digg.com/ai/ljvbajl5"
+    # Same author topic, same site, or same subject, but not a story source.
+    for url in (
+        "https://x.com/fixture_onlooker/status/1940000000000000901",
+        "https://x.com/fixture_pricing/status/1940000000000000902",
+        "https://news.example.test/digg-confirmation/openai-lean-explainer",
+        "https://benchmarks.example.test/digg-confirmation/openai-terra",
+    ):
+        assert story_of(url) is None, url
+    # Each confirmed post outranks its unconfirmed twin, which has the same
+    # engagement and date.
+    assert (
+        by_url["https://x.com/i/status/1940000000000000101"].final_score
+        > by_url["https://x.com/fixture_onlooker/status/1940000000000000901"].final_score
+    )
+    proofs_story = next(
+        item for item in report.items_by_source["digg"] if item.item_id == "ljvbajl5"
+    )
+    assert len(proofs_story.metadata["posts"]) == 5

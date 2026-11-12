@@ -54,7 +54,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, env, health, http, prescriptions, reddit_search, trustpilot, x_api
+from . import backends, brightdata, digg, env, health, http, prescriptions, reddit_search, trustpilot, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -707,7 +707,16 @@ def _digg_record(config):
     probe = health.probe_dependency("digg-pp-cli")
     requires = "digg-pp-cli on the agent-subprocess PATH"
     if probe.ok:
-        return _record(status=health.OK, detail=probe.detail, requires=requires)
+        if digg.cli_searches_all_topics() is not False:
+            # Current, or its help could not be read: nothing known to fix.
+            return _record(status=health.OK, detail=probe.detail, requires=requires)
+        # An older CLI still answers, on AI and tech only, so the source
+        # stays ok and carries the upgrade as its fix.
+        outdated = prescriptions.get("digg", "pp_cli_outdated")
+        return _record(
+            status=health.OK, fix=_fix_text(outdated), note=outdated.cause,
+            detail=probe.detail, requires=requires,
+        )
     entry = prescriptions.for_dependency_probe(probe)
     fix = _fix_text(entry) if entry else probe.prescription
     if probe.status == health.MISSING and not probe.off_path:

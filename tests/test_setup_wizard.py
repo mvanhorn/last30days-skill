@@ -944,12 +944,14 @@ class TestGetSetupStatusText:
                    "digg_action": "installed", "env_written": False}
         text = setup_wizard.get_setup_status_text(results)
         assert "Installed Digg CLI" in text
+        assert "AI" not in text
 
     def test_status_text_digg_already_installed(self):
         results = {"cookies_found": {}, "ytdlp_action": "already_installed",
                    "digg_action": "already_installed", "env_written": False}
         text = setup_wizard.get_setup_status_text(results)
         assert "Digg CLI already installed" in text
+        assert "AI" not in text
 
     def test_status_text_digg_install_failed(self):
         results = {"cookies_found": {}, "ytdlp_action": "already_installed",

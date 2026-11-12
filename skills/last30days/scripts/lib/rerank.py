@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterable
 from datetime import datetime
 
-from . import entity_extract, http, providers, relevance, schema, signals
+from . import digg, entity_extract, http, providers, relevance, schema, signals
 
 
 # Penalty applied when a candidate does not mention the primary entity
@@ -1106,6 +1106,27 @@ OUT_OF_WINDOW_FINAL_MULTIPLIER = 0.35
 ENGAGEMENT_FINAL_WEIGHT = 0.15
 
 
+#: Most a candidate gains in _final_score for being a source of a Digg story
+#: (digg.CONFIRMED_BY_KEY in its metadata), reached when the story's own
+#: engagement score is 100 and scaled down linearly below that. Eight points
+#: is what the whole freshness range is worth and about half of engagement's
+#: 15, so confirmation reorders items of similar relevance without carrying a
+#: weak match past a strong one. It is added before the penalties below, and
+#: is under half of ENTITY_MISS_FINAL_PENALTY, so a confirmed item that
+#: misses the entity still lands below an unconfirmed one that names it.
+DIGG_CONFIRMATION_MAX_BONUS = 8.0
+
+
+def _digg_confirmation_bonus(candidate: schema.Candidate) -> float:
+    story = (candidate.metadata or {}).get(digg.CONFIRMED_BY_KEY)
+    if not isinstance(story, dict):
+        return 0.0
+    engagement = story.get("engagement")
+    if isinstance(engagement, bool) or not isinstance(engagement, (int, float)):
+        return 0.0
+    return DIGG_CONFIRMATION_MAX_BONUS * max(0.0, min(float(engagement), 100.0)) / 100.0
+
+
 #: Candidate.metadata key recording which path produced rerank_score. Set by
 #: _apply_fallback_scores and _apply_llm_scores; the explanation text is not
 #: provenance (an LLM reason may start with any word).
@@ -1140,6 +1161,7 @@ def _final_score(candidate: schema.Candidate) -> float:
         + 0.10 * candidate.freshness
         + 0.05 * (candidate.source_quality * 100.0)
         + ENGAGEMENT_FINAL_WEIGHT * max(0.0, min(engagement_val, 100.0))
+        + _digg_confirmation_bonus(candidate)
     )
     # The cliff demotes items a judge explicitly called irrelevant. A fallback
     # score below 20 only means weak lexical overlap, which the 0.60 weight

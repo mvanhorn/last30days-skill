@@ -824,9 +824,9 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
 
     digg_action = results.get("digg_action", "")
     if digg_action == "installed":
-        lines.append("  - Installed Digg CLI (free AI-news clusters source now active)")
+        lines.append("  - Installed Digg CLI (free Digg story source now active)")
     elif digg_action == "already_installed":
-        lines.append("  - Digg CLI already installed (AI-news clusters active)")
+        lines.append("  - Digg CLI already installed (Digg stories active)")
     elif digg_action == "installed_off_path":
         digg_path = results.get("digg_path", "")
         if digg_path:
