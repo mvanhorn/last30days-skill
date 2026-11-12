@@ -2320,9 +2320,11 @@ def test_research_search_hands_the_deadline_and_cancel_signal_to_both_calls(monk
     _research_search(
         monkeypatch, _research_cli(answer, answer, [], seen), deadline=deadline, cancel=cancel
     )
+    # The score call's deadline is earlier, so its answer can be handed
+    # back before the run's own deadline.
     assert seen == [
         {"deadline_monotonic": deadline, "cancel": cancel},
-        {"deadline_monotonic": deadline, "cancel": cancel},
+        {"deadline_monotonic": deadline - digg.SCORE_SEARCH_MARGIN, "cancel": cancel},
     ]
 
 
@@ -2362,9 +2364,11 @@ def test_pipeline_research_stream_makes_both_calls_with_the_runs_bounds(monkeypa
         ["digg-pp-cli", "search", "exoplanet bounds", "--since", "8d", "--agent", "--limit", "50",
          "--sort", "score"],
     ]
+    # The score call's deadline is earlier, so its answer can be handed
+    # back before the run's own deadline.
     assert seen == [
         {"deadline_monotonic": deadline, "cancel": cancel},
-        {"deadline_monotonic": deadline, "cancel": cancel},
+        {"deadline_monotonic": deadline - digg.SCORE_SEARCH_MARGIN, "cancel": cancel},
     ]
     assert len(items) == 1
     assert artifact == {}
