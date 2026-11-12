@@ -96,10 +96,14 @@ _DISCOVERY_GENERIC_DOMAIN_TERMS = {
     "ai", "artificial", "intelligence", "tech", "technology", "trending", "trend",
 }
 
+# ``digg_stream_limit`` is how many Digg stories one search keeps once the
+# Digg bar has sorted them. It is higher than ``per_stream_limit`` because a
+# Digg search now returns the highest-scored stories as well as the most
+# relevant ones.
 DEPTH_SETTINGS = {
-    "quick": {"per_stream_limit": 6, "pool_limit": 15, "rerank_limit": 12},
-    "default": {"per_stream_limit": 12, "pool_limit": 40, "rerank_limit": 40},
-    "deep": {"per_stream_limit": 20, "pool_limit": 60, "rerank_limit": 60},
+    "quick": {"per_stream_limit": 6, "digg_stream_limit": 6, "pool_limit": 15, "rerank_limit": 12},
+    "default": {"per_stream_limit": 12, "digg_stream_limit": 20, "pool_limit": 40, "rerank_limit": 40},
+    "deep": {"per_stream_limit": 20, "digg_stream_limit": 30, "pool_limit": 60, "rerank_limit": 60},
 }
 
 SEARCH_ALIAS = {
@@ -278,7 +282,7 @@ def _resolve_depth_settings(depth: str, config: dict[str, Any]) -> dict[str, int
     Returns a copy so the module-level DEPTH_SETTINGS is never mutated. Overrides
     are set directly (not max()) so callers can also lower a cap. `--max-results`
     raises the final ranked pool (pool_limit/rerank_limit); `--max-per-source`
-    raises the per-stream truncation applied before pooling. The per-source fetch
+    raises the per-stream truncation applied before pooling, Digg's included. The per-source fetch
     cap (`--max-source-fetches`) is applied separately at the fetch site.
     """
     settings = dict(DEPTH_SETTINGS[depth])
@@ -287,6 +291,7 @@ def _resolve_depth_settings(depth: str, config: dict[str, Any]) -> dict[str, int
     max_per_source = config.get("_max_per_source")
     if max_per_source is not None:
         settings["per_stream_limit"] = int(max_per_source)
+        settings["digg_stream_limit"] = int(max_per_source)
     max_results = config.get("_max_results")
     if max_results is not None:
         settings["pool_limit"] = int(max_results)
@@ -2518,6 +2523,10 @@ def run(
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
     deferred_retryable_failures: dict[str, dict[str, Any]] = {}
     out_of_time_sources: set[str] = set()
+    # Searches an enablement plan runs for the capability alone. Their Digg
+    # stories are not expected to name the run topic.
+    capability_searches = fusion.capability_labels(plan)
+    digg_bar_dropped = False
     if envelope is not None:
         # The footer names the X provenance (render._render_stats).
         bundle.artifacts["x_provenance"] = envelope.provenance
@@ -2944,7 +2953,15 @@ def run(
             # A host-fetched envelope serves every topic row to the first X
             # stream, so that one stream carries what the backend's X streams
             # together would have (per_stream_limit x the X fetch cap).
-            if source != "jobs":
+            if source == "digg":
+                normalized, bar_note = _apply_digg_bar(
+                    normalized, settings, topic, subquery.label,
+                    judged=subquery.label not in capability_searches,
+                )
+                if bar_note:
+                    digg_bar_dropped = True
+                    bundle.record_detail(source, bar_note)
+            elif source != "jobs":
                 stream_limit = settings["per_stream_limit"]
                 host_fetched_x = source == "x" and config.get("_x_envelope") is not None
                 if host_fetched_x:
@@ -3012,6 +3029,10 @@ def run(
         _github_skip_retry.add("github")
     if jobs_past_window:
         _github_skip_retry.add("jobs")
+    if digg_bar_dropped and not bundle.items_by_source.get("digg"):
+        # Digg returned stories and none named the topic. It has shown it
+        # does not cover this topic, so a second search would only repeat that.
+        _github_skip_retry.add("digg")
     pre_retry_counts = {
         source: len(bundle.items_by_source.get(source, []))
         for source in deferred_retryable_failures
@@ -3622,6 +3643,37 @@ def _apply_reddit_stream_keepers(
     return kept[:limit]
 
 
+def _apply_digg_bar(
+    items: list[schema.SourceItem],
+    settings: Mapping[str, Any],
+    topic: str,
+    label: str,
+    *,
+    judged: bool = True,
+) -> tuple[list[schema.SourceItem], str | None]:
+    """Cut one Digg search to the stories the Digg bar keeps, in its order.
+
+    Prominent stories lead by Digg Score, ordinary ones follow in the order
+    they ranked, and the stories that do not name the topic are removed. The
+    second value is a note saying how many were removed, or None.
+
+    ``judged=False`` is for a search that is deliberately not about the run
+    topic: its stories keep their order and none is removed. Clusters from
+    digg-pp-cli 2026.10.x are never judged and keep the shared limit.
+    """
+    result = digg.apply_bar(topic if judged else "", items)
+    stories = (result.prominent + result.ordinary)[: settings["digg_stream_limit"]]
+    note = None
+    if result.dropped:
+        note = (
+            f"{len(result.dropped)} of {len(items) - len(result.legacy)} stories dropped "
+            f"for not naming the topic ({label} search)"
+        )
+        digg._log(note)
+    if not result.legacy:
+        return stories, note
+    return stories + result.legacy[: settings["per_stream_limit"]], note
+
 
 def _creator_first_party_by_source(
     tiktok_creators: Iterable[str] | None,
@@ -3741,12 +3793,35 @@ def _normalize_score_dedupe(
             # case where the handle never appears in the topic at all
             # ("Peter Steinberger" -> @steipete).
             floor_handles |= _batch_subject_handles(raw_items)
-        pre_prune_count = len(normalized)
-        normalized = signals.prune_low_relevance(
-            normalized,
-            first_party_handles=floor_handles,
-            first_party_by_source=first_party_by_source,
-        )
+        # A Digg story with a UUID is judged by the Digg bar at the stream
+        # cut, not by this floor: the floor scores against the planner's
+        # ranking query, whose filler words push a story that names the topic
+        # in its title under it. Clusters from digg-pp-cli 2026.10.x have no
+        # UUID and stay under the floor.
+        bar_judged = [
+            item for item in normalized
+            if source == "digg" and item.metadata.get(digg.STORY_ID_KEY)
+        ]
+        if bar_judged:
+            exempt = {id(item) for item in bar_judged}
+            floor_judged = [item for item in normalized if id(item) not in exempt]
+            kept = exempt | {
+                id(item)
+                for item in signals.prune_low_relevance(
+                    floor_judged,
+                    first_party_handles=floor_handles,
+                    first_party_by_source=first_party_by_source,
+                )
+            }
+            pre_prune_count = len(normalized)
+            normalized = [item for item in normalized if id(item) in kept]
+        else:
+            pre_prune_count = len(normalized)
+            normalized = signals.prune_low_relevance(
+                normalized,
+                first_party_handles=floor_handles,
+                first_party_by_source=first_party_by_source,
+            )
         _log_prune_drop(source, pre_prune_count, len(normalized))
     normalized = dedupe.dedupe_items(normalized)
     for item in normalized:
@@ -5572,9 +5647,16 @@ def _retry_thin_sources(
                 source, normalized, outcome_note, (detail_note, detail_state), out_of_time,
                 (artifact, list(raw_items)) if _is_jobs_board(source, artifact) else None,
             )
-        normalized = _apply_reddit_stream_keepers(
-            source, normalized, settings["per_stream_limit"], topic
-        )
+        if source == "digg":
+            normalized, bar_note = _apply_digg_bar(
+                normalized, settings, topic, retry_subquery.label,
+            )
+            if bar_note:
+                detail_note = f"{detail_note}; {bar_note}" if detail_note else bar_note
+        else:
+            normalized = _apply_reddit_stream_keepers(
+                source, normalized, settings["per_stream_limit"], topic
+            )
         if isinstance(artifact, dict) and artifact.get("_source_outcome_deferred"):
             outcome_note = outcome_note or artifact["_source_outcome_deferred"]
         if not normalized and isinstance(artifact, dict):

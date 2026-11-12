@@ -3400,3 +3400,284 @@ class DiggQuoteEnrichmentByCliShapeTests(unittest.TestCase):
 
     def test_all_topic_story_gets_no_call_after_deduplication(self):
         self.assertEqual([], self._finalize(_digg_story_rows(count=2)))
+
+
+_BAR_WORDS = (
+    "harbor lantern orchard glacier violin tractor pepper canyon meadow saddle "
+    "furnace pelican compass marble thistle walnut anchor bonnet cobalt dynamo "
+    "ember falcon garnet hammock iguana jasmine kettle lagoon mitten nutmeg"
+).split()
+
+
+def _bar_words(n: int) -> str:
+    """Three words that differ enough between stories to survive de-duplication."""
+    return " ".join(_BAR_WORDS[(n + step) % len(_BAR_WORDS)] for step in (0, 11, 17))
+
+
+def _digg_bar_rows(specs: list[tuple[str, str, int, int]]) -> list[dict]:
+    """Parsed all-topic stories from (title, summary, Digg Score, source count)."""
+    from lib import digg
+
+    return digg.parse_digg_response(
+        {
+            "results": [
+                {
+                    "clusterId": f"11111111-2222-3333-4444-{n:012d}",
+                    "clusterUrlId": f"story{n}",
+                    "url": f"https://digg.com/tech/story{n}",
+                    "topic": "tech",
+                    "title": title,
+                    "tldr": summary,
+                    "diggScore": score,
+                    "sourceCount": sources,
+                    "postCount": sources,
+                    "uniqueAuthors": 9,
+                    "publishedAt": "2026-11-08T15:02:00Z",
+                    "firstPostAge": "3d",
+                }
+                for n, (title, summary, score, sources) in enumerate(specs, start=1)
+            ]
+        },
+        query="fixture",
+        from_date="2026-10-12",
+    )
+
+
+def _digg_legacy_rows(titles: list[str]) -> list[dict]:
+    """Clusters in the shape digg-pp-cli 2026.10.x returns: no story UUID."""
+    return [
+        {
+            "id": f"legacy{n}", "title": title, "url": f"https://di.gg/ai/legacy{n}",
+            "tldr": f"Notes on {_bar_words(n + 5)}.", "date": "2026-11-08",
+            "engagement": {"postCount": 5, "uniqueAuthors": 3, "rank": n, "rank_score": 51.0 - n},
+            "posts": [], "relevance": 0.6, "why_relevant": "fixture",
+        }
+        for n, title in enumerate(titles, start=1)
+    ]
+
+
+def _digg_score_of(item) -> float:
+    return item.engagement["digg_score"]
+
+
+class DepthSettingsDiggLimitTests(unittest.TestCase):
+    def test_digg_keeps_more_stories_per_search_than_the_shared_limit(self):
+        self.assertEqual(20, pipeline._resolve_depth_settings("default", {})["digg_stream_limit"])
+        self.assertEqual(30, pipeline._resolve_depth_settings("deep", {})["digg_stream_limit"])
+        quick = pipeline._resolve_depth_settings("quick", {})
+        self.assertEqual(quick["per_stream_limit"], quick["digg_stream_limit"])
+
+    def test_max_per_source_overrides_the_digg_limit_with_the_shared_one(self):
+        settings = pipeline._resolve_depth_settings("deep", {"_max_per_source": 5})
+        self.assertEqual(5, settings["digg_stream_limit"])
+        self.assertEqual(5, settings["per_stream_limit"])
+        self.assertEqual(30, pipeline.DEPTH_SETTINGS["deep"]["digg_stream_limit"])
+
+
+class DiggBarRunTests(unittest.TestCase):
+    """What a run keeps of each Digg search, and in which order."""
+
+    def _run(self, topic: str, digg_rows, *, depth: str = "default", config=None):
+        """Run with Digg only. ``digg_rows(subquery)`` is what each search returns.
+
+        Returns the report, the retrieval bundle and the labels of the Digg
+        searches made, in order.
+        """
+        searches: list[str] = []
+        bundles: list[schema.RetrievalBundle] = []
+
+        def fake_retrieve(**kwargs):
+            if kwargs["source"] != "digg":
+                return [], {}
+            searches.append(kwargs["subquery"].label)
+            return digg_rows(kwargs["subquery"]), {}
+
+        def cli(cmd, *, timeout, **_bounds):
+            return subproc.SubprocResult(
+                returncode=0, stdout='{"meta": {}, "results": []}', stderr="",
+            )
+
+        patches = [
+            patch.object(pipeline, "_retrieve_stream", side_effect=fake_retrieve),
+            patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"),
+            patch("lib.digg.subproc.run_with_timeout", side_effect=cli),
+            patch.object(
+                pipeline, "_run_supplemental_searches",
+                side_effect=lambda **kwargs: bundles.append(kwargs["bundle"]),
+            ),
+        ]
+        for active in patches:
+            active.start()
+            self.addCleanup(active.stop)
+        report = pipeline.run(
+            topic=topic, config=dict(config or {}), depth=depth, mock=True,
+            requested_sources=["digg"], web_backend="none", as_of_date="2026-11-11",
+        )
+        return report, bundles[0], searches
+
+    @staticmethod
+    def _stream(bundle, label: str = "primary"):
+        return bundle.items_by_source_and_query.get((label, "digg"), [])
+
+    def test_stories_that_never_name_the_topic_leave_no_results_and_no_second_search(self):
+        rows = _digg_bar_rows([
+            (f"Report on {_bar_words(n)}", f"Details about {_bar_words(n + 3)}.", 300, 37)
+            for n in range(20)
+        ])
+        report, _bundle, searches = self._run("Ghostty", lambda _subquery: rows)
+
+        self.assertEqual([], report.items_by_source.get("digg", []))
+        outcome = report.source_status["digg"]
+        self.assertEqual(schema.NO_RESULTS, outcome.state)
+        self.assertIn("20 of 20 stories dropped", outcome.detail)
+        self.assertNotIn("digg", report.errors_by_source)
+        self.assertEqual(["primary"], searches)
+
+    def test_quick_run_drops_stories_that_never_name_the_topic(self):
+        rows = _digg_bar_rows([
+            (f"Report on {_bar_words(n)}", f"Details about {_bar_words(n + 3)}.", 300, 37)
+            for n in range(8)
+        ])
+        report, _bundle, _searches = self._run("Ghostty", lambda _subquery: rows, depth="quick")
+
+        self.assertEqual([], report.items_by_source.get("digg", []))
+        self.assertEqual(schema.NO_RESULTS, report.source_status["digg"].state)
+        self.assertIn("8 of 8 stories dropped", report.source_status["digg"].detail)
+
+    def test_highest_scored_story_arriving_last_leads_and_survives_the_limit(self):
+        rows = _digg_bar_rows(
+            [
+                (f"OpenAI {_bar_words(n)}", f"Details about {_bar_words(n + 3)}.", 41 + n, 37)
+                for n in range(29)
+            ]
+            + [("OpenAI Releases GPT-6.1 Terra", "The model ships to everyone.", 226, 37)]
+        )
+        _report, bundle, _searches = self._run("OpenAI", lambda _subquery: rows)
+
+        stream = self._stream(bundle)
+        self.assertEqual("OpenAI Releases GPT-6.1 Terra", stream[0].title)
+        self.assertEqual([226] + list(range(69, 50, -1)), [_digg_score_of(item) for item in stream])
+
+    def test_prominent_stories_lead_and_ordinary_ones_keep_their_order(self):
+        rows = _digg_bar_rows([
+            ("Kevin Weil launches Warp Sciences", "The former OpenAI executive starts a lab.", 92, 37),
+            ("OpenAI opens a harbor office", "Staff move in next month.", 50, 10),
+            ("OpenAI: the most relevant recent evidence from the last 30 days", "A digest.", 39, 37),
+            ("OpenAI signs an orchard deal", "The largest of the year.", 300, 37),
+            ("Maine fishing season opens", "Anglers head out.", 652, 37),
+            ("Glacier survey finishes early", "The team thanked OpenAI for compute.", 500, 37),
+        ])
+        report, bundle, _searches = self._run("OpenAI", lambda _subquery: rows)
+
+        stream = self._stream(bundle)
+        self.assertEqual(["story4", "story2"], [item.item_id for item in stream[:2]])
+        ordinary = stream[2:]
+        self.assertEqual({"story1", "story3", "story6"}, {item.item_id for item in ordinary})
+        self.assertEqual(
+            sorted(ordinary, key=lambda item: item.local_rank_score or 0.0, reverse=True),
+            ordinary,
+        )
+        self.assertNotEqual(
+            sorted(ordinary, key=_digg_score_of, reverse=True), ordinary,
+            "ordinary stories must not be ordered by Digg Score",
+        )
+        self.assertIn("1 of 6 stories dropped", report.source_status["digg"].detail)
+        self.assertEqual(health.OK, report.source_status["digg"].state)
+
+    def test_empty_search_is_still_retried_with_the_core_subject(self):
+        _report, _bundle, searches = self._run("OpenAI", lambda _subquery: [])
+        self.assertEqual(["primary", "retry"], searches)
+
+    def test_retry_search_goes_through_the_bar_too(self):
+        rows = _digg_bar_rows([
+            ("Kevin Weil launches Warp Sciences", "The former OpenAI executive starts a lab.", 92, 37),
+            ("Maine fishing season opens", "Anglers head out.", 652, 37),
+            ("OpenAI signs an orchard deal", "The largest of the year.", 300, 37),
+        ])
+        report, bundle, searches = self._run(
+            "OpenAI", lambda subquery: rows if subquery.label == "retry" else [],
+        )
+
+        self.assertEqual(["primary", "retry"], searches)
+        self.assertEqual(
+            ["story3", "story1"], [item.item_id for item in bundle.items_by_source["digg"]],
+        )
+        self.assertIn("1 of 3 stories dropped", report.source_status["digg"].detail)
+
+    def test_max_per_source_caps_digg_stories(self):
+        rows = _digg_bar_rows([
+            (f"OpenAI {_bar_words(n)}", f"Details about {_bar_words(n + 3)}.", 41 + n, 37)
+            for n in range(10)
+        ])
+        _report, bundle, _searches = self._run(
+            "OpenAI", lambda _subquery: rows, config={"_max_per_source": 5},
+        )
+        self.assertEqual([50, 49, 48, 47, 46], [_digg_score_of(item) for item in self._stream(bundle)])
+
+    def test_capability_search_keeps_its_stories_in_the_order_they_ranked(self):
+        # The capability searches of an enablement plan leave the named tool
+        # out on purpose, so their stories are not held to naming the topic.
+        rows = _digg_bar_rows(
+            [("Grok bot gains computer control tools", "A guide to the MCP servers.", 50, 10)]
+            + [
+                (f"MCP server for {_bar_words(n)}", f"Agents get {_bar_words(n + 3)}.", 20, 3)
+                for n in range(12)
+            ]
+            + [("Grok expands", "A funding round.", 900, 37)]
+        )
+        report, bundle, _searches = self._run(
+            "best Grok AI bot to control my computer",
+            lambda subquery: rows if subquery.label == "capability-1" else [],
+        )
+
+        stream = self._stream(bundle, "capability-1")
+        self.assertEqual(14, len(stream))
+        self.assertEqual(
+            sorted(stream, key=lambda item: item.local_rank_score or 0.0, reverse=True), stream,
+        )
+        self.assertNotEqual("Grok expands", stream[0].title)
+        self.assertNotIn("dropped", report.source_status["digg"].detail or "")
+
+    def test_old_cli_clusters_keep_the_shared_limit_and_are_not_judged(self):
+        rows = _digg_legacy_rows([f"Report on {_bar_words(n)}" for n in range(15)])
+        report, bundle, _searches = self._run("Ghostty", lambda _subquery: rows)
+
+        self.assertEqual(
+            pipeline.DEPTH_SETTINGS["default"]["per_stream_limit"], len(self._stream(bundle)),
+        )
+        self.assertNotIn("dropped", report.source_status["digg"].detail or "")
+
+
+class DiggRelevanceFloorTests(unittest.TestCase):
+    """Which Digg items the shared relevance floor still judges."""
+
+    RANKING_QUERY = (
+        "Which noise cancelling headphones compare best on battery comfort and price, "
+        "and what did OpenAI announce?"
+    )
+
+    def _kept(self, rows: list[dict]) -> list[str]:
+        return [
+            item.item_id
+            for item in pipeline._normalize_score_dedupe(
+                "digg", rows, "2026-10-12", "2026-11-11",
+                freshness_mode="balanced_recent", ranking_query=self.RANKING_QUERY,
+            )
+        ]
+
+    def test_story_naming_the_topic_is_kept_below_the_shared_floor(self):
+        rows = _digg_bar_rows(
+            [("Noise cancelling headphones compared on battery, comfort and price", "A review.", 50, 10)]
+            + [(f"Report on {_bar_words(n)}", f"Details about {_bar_words(n + 3)}.", 5, 2) for n in range(40)]
+            + [("OpenAI device teased", "A short clip.", 226, 37)]
+        )
+        self.assertIn("story42", self._kept(rows))
+
+    def test_old_cli_cluster_below_the_shared_floor_is_still_pruned(self):
+        rows = _digg_legacy_rows(
+            ["Noise cancelling headphones compared on battery, comfort and price"]
+            + [f"Report on {_bar_words(n)}" for n in range(3)]
+        )
+        for row in rows[1:]:
+            row["relevance"] = 0.05
+        self.assertEqual(["legacy1"], self._kept(rows))
