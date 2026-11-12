@@ -860,6 +860,7 @@ def fetch_story_sources(
     cancel: Optional[threading.Event] = None,
     entity_count: int = 1,
     budget: Optional[int] = None,
+    total_seconds: Optional[float] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch the sources of the top stories by Digg Score, one story at a time.
 
@@ -872,7 +873,8 @@ def fetch_story_sources(
     ``deadline`` is the run's monotonic deadline and ``cancel`` its cancel
     signal: both reach every call, a call's timeout is capped at the time
     left, and the fetch ends when none is left or the signal is set. A run
-    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch.
+    without a deadline gets ``SOURCES_TOTAL_SECONDS`` for the whole fetch,
+    or ``total_seconds`` when a later pass has only part of that left.
 
     Returns ``{story UUID: {"posts": [...], "source_urls": [...]}}``:
     ``posts`` holds the first ``POSTS_PER_CLUSTER`` quotable X posts and
@@ -883,8 +885,11 @@ def fetch_story_sources(
     budget = full_budget if budget is None else min(budget, full_budget)
     if budget <= 0:
         return {}
+    if total_seconds is None:
+        total_seconds = SOURCES_TOTAL_SECONDS
     fetch_deadline = (
-        deadline if deadline is not None else time.monotonic() + SOURCES_TOTAL_SECONDS
+        deadline if deadline is not None
+        else time.monotonic() + min(total_seconds, SOURCES_TOTAL_SECONDS)
     )
     scored: Dict[str, float] = {}
     for item in items:

@@ -2980,9 +2980,9 @@ def run(
     # supplemental searches add their own calls. The quotes land on the
     # stories now; the match keys mark confirmed candidates after fusion.
     _check_research(config)
-    digg_stories_seen: set[str] = set()
+    digg_sources_spent = _DiggSourcesSpent()
     digg_story_by_key = _digg_story_sources(
-        bundle, topic=topic, depth=depth, config=config, seen=digg_stories_seen,
+        bundle, topic=topic, depth=depth, config=config, spent=digg_sources_spent,
     )
 
     # Phase 2: supplemental entity-based searches
@@ -3040,10 +3040,10 @@ def run(
         out_of_time_sources=out_of_time_sources,
     )
     # Digg stories the retry found get their sources too, out of whatever
-    # story budget the first pass left. Without this they carry no quotes
-    # and cannot confirm other results.
+    # story budget and time the first pass left. Without this they carry no
+    # quotes and cannot confirm other results.
     for key, story in _digg_story_sources(
-        bundle, topic=topic, depth=depth, config=config, seen=digg_stories_seen,
+        bundle, topic=topic, depth=depth, config=config, spent=digg_sources_spent,
     ).items():
         current = digg_story_by_key.get(key)
         if current is None or story["engagement"] > current["engagement"]:
@@ -3850,13 +3850,21 @@ def _finalize_items_by_source(
     return finalized
 
 
+@dataclass
+class _DiggSourcesSpent:
+    """What a run's story-source passes have used of their shared allowance."""
+
+    story_ids: set[str] = field(default_factory=set)
+    seconds: float = 0.0
+
+
 def _digg_story_sources(
     bundle: schema.RetrievalBundle,
     *,
     topic: str,
     depth: str,
     config: dict[str, Any],
-    seen: set[str] | None = None,
+    spent: _DiggSourcesSpent | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Fetch the top Digg stories' sources and attach their quotes.
 
@@ -3867,24 +3875,27 @@ def _digg_story_sources(
     holds no all-topic Digg story, and when every fetch fails. Recorded and
     replayed as its own fixture exchange so the eval harness stays offline.
 
-    ``seen`` holds the story ids earlier calls in this run already covered
-    and is updated in place. A call given a non-empty ``seen`` considers
-    only stories that arrived since, and spends only the story budget those
-    earlier calls left, so the run's total stays within one budget.
+    ``spent`` holds the story ids and the seconds earlier calls in this run
+    already used, and is updated in place. A call after the first considers
+    only stories that arrived since, and gets only the story budget and the
+    time those earlier calls left, so the run's total stays within one
+    budget and one ``digg.SOURCES_TOTAL_SECONDS``.
     """
-    seen = seen if seen is not None else set()
+    spent = spent if spent is not None else _DiggSourcesSpent()
+    seen = spent.story_ids
     later_pass = bool(seen)
     entity_count = _comparison_entity_count(config)
     budget = digg.story_budget(depth, entity_count) - min(
         len(seen), digg.story_budget(depth, entity_count),
     )
+    seconds_left = digg.SOURCES_TOTAL_SECONDS - spent.seconds
     stories = [
         item for item in bundle.items_by_source.get("digg", [])
         if item.metadata.get(digg.STORY_ID_KEY)
         and str(item.metadata[digg.STORY_ID_KEY]) not in seen
     ]
     seen.update(str(item.metadata[digg.STORY_ID_KEY]) for item in stories)
-    if not stories or budget <= 0:
+    if not stories or budget <= 0 or seconds_left <= 0:
         return {}
     request = {"source": "digg", "phase": "story_sources", "topic": topic, "depth": depth}
     if later_pass:
@@ -3898,13 +3909,16 @@ def _digg_story_sources(
     if matched:
         fetched = replayed if isinstance(replayed, dict) else {}
     else:
+        started = time.monotonic()
         fetched = digg.fetch_story_sources(
             stories, depth, stopped=lambda: _research_stopped(config),
             deadline=config.get("_research_deadline"),
             cancel=config.get("_enrich_cancel"),
             entity_count=entity_count,
             budget=budget,
+            total_seconds=seconds_left,
         )
+        spent.seconds += time.monotonic() - started
         http.fixture_source_record(request, fetched)
     return digg.apply_story_sources(stories, fetched)
 

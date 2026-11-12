@@ -3263,10 +3263,15 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self._fetch_sources({}, seen)
         self.assertEqual(3, len(seen))
 
-    def _second_pass_calls(self, first_count: int) -> list:
+    def _second_pass_calls(
+        self, first_count: int, *, depth: str = "default", call_seconds: float = 0,
+        timeouts_out: list | None = None,
+    ) -> list:
         """Posts calls a pass after the retry makes, given how many stories
-        the first pass saw; the rest arrive from the retry."""
+        the first pass saw; the rest arrive from the retry. Each call takes
+        ``call_seconds`` on a fake clock."""
         calls: list = []
+        timeouts: list = []
 
         def run(cmd, *, timeout, **kwargs):
             calls.append(cmd)
@@ -3275,19 +3280,40 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         bundle = self._story_bundle()
         stories = bundle.items_by_source["digg"]
         bundle.items_by_source["digg"] = stories[:first_count]
-        seen: set = set()
+        spent = pipeline._DiggSourcesSpent()
+        clock = [1000.0]
+
+        def slow_run(cmd, *, timeout, **kwargs):
+            timeouts.append(timeout)
+            clock[0] += call_seconds
+            return run(cmd, timeout=timeout, **kwargs)
+
         with patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"), \
-                patch("lib.digg.subproc.run_with_timeout", side_effect=run):
+                patch("lib.digg.subproc.run_with_timeout", side_effect=slow_run), \
+                patch("lib.digg.time.monotonic", side_effect=lambda: clock[0]), \
+                patch.object(pipeline.time, "monotonic", side_effect=lambda: clock[0]):
             pipeline._digg_story_sources(
-                bundle, topic="webb telescope exoplanet", depth="default", config={}, seen=seen,
+                bundle, topic="webb telescope exoplanet", depth=depth, config={}, spent=spent,
             )
             first_calls = len(calls)
             bundle.items_by_source["digg"] = stories
             pipeline._digg_story_sources(
-                bundle, topic="webb telescope exoplanet", depth="default", config={}, seen=seen,
+                bundle, topic="webb telescope exoplanet", depth=depth, config={}, spent=spent,
             )
         self.assertEqual(min(first_count, 3), first_calls)
+        if timeouts_out is not None:
+            timeouts_out.extend(timeouts[first_calls:])
         return calls[first_calls:]
+
+    def test_retry_pass_gets_only_the_time_the_first_pass_left(self):
+        # Two first-pass calls of 15s each leave 10s of the 40s allowance.
+        timeouts: list = []
+        calls = self._second_pass_calls(2, depth="deep", call_seconds=15, timeouts_out=timeouts)
+        self.assertEqual(1, len(calls))
+        self.assertLessEqual(timeouts[0], 10)
+
+    def test_retry_pass_fetches_nothing_once_the_time_is_spent(self):
+        self.assertEqual([], self._second_pass_calls(2, depth="deep", call_seconds=20))
 
     def test_stories_found_only_by_the_retry_get_their_sources_fetched(self):
         self.assertEqual(3, len(self._second_pass_calls(0)))
