@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 import math
 import queue
 import re
@@ -2937,6 +2937,7 @@ def run(
                 )
             if isinstance(artifact, dict):
                 artifact.pop("_x_backup_not_rate_limited", None)
+            bar_notes: list[str] = []
             normalized = _normalize_score_dedupe(
                 source, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
@@ -2946,6 +2947,10 @@ def run(
                 # X defers its relevance floor until resolved_handles exists.
                 # Everything else prunes here as before.
                 defer_relevance_prune=(source == "x"),
+                before_dedupe=_digg_bar_before_dedupe(
+                    settings, topic, subquery.label, bar_notes,
+                    judged=subquery.label not in capability_searches,
+                ) if source == "digg" else None,
             )
             # Jobs is exempt from per_stream_limit: a careers board is a complete
             # snapshot of open roles, and truncating it to the default 12 drops
@@ -2954,11 +2959,13 @@ def run(
             # stream, so that one stream carries what the backend's X streams
             # together would have (per_stream_limit x the X fetch cap).
             if source == "digg":
-                normalized, bar_note = _apply_digg_bar(
+                # The bar already ran before de-duplication; this pass only
+                # applies the limits to what is left.
+                normalized, _ = _apply_digg_bar(
                     normalized, settings, topic, subquery.label,
                     judged=subquery.label not in capability_searches,
                 )
-                if bar_note:
+                for bar_note in bar_notes:
                     digg_bar_dropped = True
                     bundle.record_detail(source, bar_note)
             elif source != "jobs":
@@ -3650,6 +3657,7 @@ def _apply_digg_bar(
     label: str,
     *,
     judged: bool = True,
+    capped: bool = True,
 ) -> tuple[list[schema.SourceItem], str | None]:
     """Cut one Digg search to the stories the Digg bar keeps, in its order.
 
@@ -3660,9 +3668,15 @@ def _apply_digg_bar(
     ``judged=False`` is for a search that is deliberately not about the run
     topic: its stories keep their order and none is removed. Clusters from
     digg-pp-cli 2026.10.x are never judged and keep the shared limit.
+
+    ``capped=False`` applies the bar without the limits. It is the pass made
+    before near-duplicates are removed, so that a prominent story is the
+    copy kept and a story the bar drops cannot displace one it keeps.
     """
     result = digg.apply_bar(topic if judged else "", items)
-    stories = (result.prominent + result.ordinary)[: settings["digg_stream_limit"]]
+    stories = result.prominent + result.ordinary
+    if capped:
+        stories = stories[: settings["digg_stream_limit"]]
     note = None
     if result.dropped:
         note = (
@@ -3670,9 +3684,24 @@ def _apply_digg_bar(
             f"for not naming the topic ({label} search)"
         )
         digg._log(note)
-    if not result.legacy:
-        return stories, note
-    return stories + result.legacy[: settings["per_stream_limit"]], note
+    legacy = result.legacy[: settings["per_stream_limit"]] if capped else result.legacy
+    return stories + legacy, note
+
+
+def _digg_bar_before_dedupe(
+    settings: Mapping[str, Any], topic: str, label: str, notes: list[str], *, judged: bool = True,
+) -> Callable[[list[schema.SourceItem]], list[schema.SourceItem]]:
+    """The Digg bar as the ``before_dedupe`` step of ``_normalize_score_dedupe``.
+
+    Any note about dropped stories is appended to ``notes``.
+    """
+    def apply(items: list[schema.SourceItem]) -> list[schema.SourceItem]:
+        kept, note = _apply_digg_bar(items, settings, topic, label, judged=judged, capped=False)
+        if note:
+            notes.append(note)
+        return kept
+
+    return apply
 
 
 def _creator_first_party_by_source(
@@ -3750,8 +3779,15 @@ def _normalize_score_dedupe(
     first_party_handles: Iterable[str] | None = None,
     first_party_by_source: Mapping[str, Iterable[str]] | None = None,
     defer_relevance_prune: bool = False,
+    before_dedupe: Callable[[list[schema.SourceItem]], list[schema.SourceItem]] | None = None,
 ) -> list[schema.SourceItem]:
     """Normalize, annotate, prune, dedupe, and extract snippets for a batch of raw items.
+
+    ``before_dedupe`` filters and reorders the batch just before
+    near-duplicates are removed. De-duplication keeps the earlier of two
+    similar items, so a source that drops items by its own rule has to do it
+    first: otherwise an item it would drop can displace a similar one it
+    would keep.
 
     ``defer_relevance_prune`` skips the relevance floor here so the caller can
     apply it once the run has resolved who the topic's subject is. Pruning X
@@ -3823,6 +3859,8 @@ def _normalize_score_dedupe(
                 first_party_by_source=first_party_by_source,
             )
         _log_prune_drop(source, pre_prune_count, len(normalized))
+    if before_dedupe is not None:
+        normalized = before_dedupe(normalized)
     normalized = dedupe.dedupe_items(normalized)
     for item in normalized:
         item.snippet = snippet.extract_best_snippet(item, prepared_query)
@@ -5633,6 +5671,7 @@ def _retry_thin_sources(
         detail_note = artifact.get("_source_outcome_detail") if isinstance(artifact, dict) else None
         detail_state = artifact.get("_source_outcome_detail_state") if isinstance(artifact, dict) else None
         out_of_time = isinstance(artifact, dict) and bool(artifact.get("_source_out_of_time"))
+        bar_notes: list[str] = []
         normalized = _normalize_score_dedupe(
             source,
             raw_items,
@@ -5648,6 +5687,9 @@ def _retry_thin_sources(
             # later resolved-handle floor cannot recover a post that never
             # entered the bundle.
             defer_relevance_prune=(source == "x"),
+            before_dedupe=_digg_bar_before_dedupe(
+                settings, topic, retry_subquery.label, bar_notes,
+            ) if source == "digg" else None,
         )
         if source == "jobs":
             return (
@@ -5655,10 +5697,10 @@ def _retry_thin_sources(
                 (artifact, list(raw_items)) if _is_jobs_board(source, artifact) else None,
             )
         if source == "digg":
-            normalized, bar_note = _apply_digg_bar(
+            normalized, _ = _apply_digg_bar(
                 normalized, settings, topic, retry_subquery.label,
             )
-            if bar_note:
+            for bar_note in bar_notes:
                 detail_note = f"{detail_note}; {bar_note}" if detail_note else bar_note
         else:
             normalized = _apply_reddit_stream_keepers(

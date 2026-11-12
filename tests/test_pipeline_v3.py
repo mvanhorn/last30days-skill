@@ -3623,6 +3623,23 @@ class DiggBarRunTests(unittest.TestCase):
         self.assertNotIn("digg", report.errors_by_source)
         self.assertEqual(["primary"], searches)
 
+    def test_story_the_bar_drops_does_not_displace_its_near_duplicate(self):
+        # The same event told twice. The copy that names the topic only in
+        # its summary comes first, and de-duplication keeps the earlier of
+        # two similar stories, so the bar has to run before it.
+        summary = (
+            "OpenAI says its newest model release drew record developer signups "
+            "in the first week, according to figures the company shared."
+        )
+        rows = _digg_bar_rows([
+            ("Newest model release draws record developer signups in first week", summary, 300, 37),
+            ("OpenAI newest model release draws record developer signups in first week", summary, 250, 30),
+        ])
+        report, bundle, _searches = self._run("OpenAI", lambda _subquery: rows)
+
+        self.assertEqual(["story2"], [item.item_id for item in self._stream(bundle)])
+        self.assertIn("1 of 2 stories dropped", report.source_status["digg"].detail)
+
     def test_quick_run_drops_stories_that_never_name_the_topic(self):
         rows = _digg_bar_rows([
             (f"Report on {_bar_words(n)}", f"Details about {_bar_words(n + 3)}.", 300, 37)
