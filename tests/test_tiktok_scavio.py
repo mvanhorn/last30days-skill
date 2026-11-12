@@ -187,6 +187,13 @@ class TestDoctor(unittest.TestCase):
         record = doctor._tiktok_record({"SCRAPECREATORS_API_KEY": "sc", "SCAVIO_API_KEY": "sv"})
         self.assertIn("SCRAPECREATORS_API_KEY", record["requires"])
 
+    def test_doctor_names_the_scavio_key_when_the_pin_lacks_it(self):
+        from lib import doctor
+        record = doctor._tiktok_record({"SCRAPECREATORS_API_KEY": "sc", "LAST30DAYS_TIKTOK_BACKEND": "scavio"})
+        self.assertEqual(record["status"], "unconfigured")
+        self.assertEqual(record["requires"], "SCAVIO_API_KEY")
+        self.assertIn("SCAVIO_API_KEY", record["fix"])
+
     def test_switching_the_tiktok_pin_invalidates_the_doctor_cache(self):
         from lib import doctor
         keys = {"SCRAPECREATORS_API_KEY": "sc", "SCAVIO_API_KEY": "sv"}
