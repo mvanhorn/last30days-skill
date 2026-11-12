@@ -3099,9 +3099,11 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
     # Hacker News item links to.
     TOP_STORY = "11111111-2222-3333-4444-000000000002"
 
-    def _run(self, depth: str, cli, *, supplemental=None):
+    def _run(self, depth: str, cli, *, supplemental=None, digg_only_on_retry=False):
         def fake_retrieve(**kwargs):
             if kwargs["source"] == "digg":
+                if digg_only_on_retry and kwargs["subquery"].label != "retry":
+                    return [], {}
                 return _digg_story_rows(), {}
             if kwargs["source"] == "hackernews":
                 return [
@@ -3188,6 +3190,21 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         )
         self.assertEqual(["astro_ana"], [post["username"] for post in top_story.metadata["posts"]])
 
+    def test_stories_found_only_by_the_retry_search_mark_the_matching_item(self):
+        calls: list = []
+        report = self._run("default", self._cli(calls), digg_only_on_retry=True)
+
+        self.assertEqual(3, len(calls))
+        self.assertEqual(self.TOP_STORY, calls[0][2])
+        self.assertEqual(
+            "https://digg.com/science/story2",
+            self._hn(report)["HN1"].metadata["digg_story"]["url"],
+        )
+        top_story = next(
+            item for item in report.items_by_source["digg"] if item.item_id == "story2"
+        )
+        self.assertEqual(["astro_ana"], [post["username"] for post in top_story.metadata["posts"]])
+
     def test_story_sources_are_fetched_before_supplemental_search(self):
         calls: list = []
         seen_at_supplemental: list[int] = []
@@ -3245,6 +3262,46 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         seen: list = []
         self._fetch_sources({}, seen)
         self.assertEqual(3, len(seen))
+
+    def _second_pass_calls(self, first_count: int) -> list:
+        """Posts calls a pass after the retry makes, given how many stories
+        the first pass saw; the rest arrive from the retry."""
+        calls: list = []
+
+        def run(cmd, *, timeout, **kwargs):
+            calls.append(cmd)
+            return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
+
+        bundle = self._story_bundle()
+        stories = bundle.items_by_source["digg"]
+        bundle.items_by_source["digg"] = stories[:first_count]
+        seen: set = set()
+        with patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"), \
+                patch("lib.digg.subproc.run_with_timeout", side_effect=run):
+            pipeline._digg_story_sources(
+                bundle, topic="webb telescope exoplanet", depth="default", config={}, seen=seen,
+            )
+            first_calls = len(calls)
+            bundle.items_by_source["digg"] = stories
+            pipeline._digg_story_sources(
+                bundle, topic="webb telescope exoplanet", depth="default", config={}, seen=seen,
+            )
+        self.assertEqual(min(first_count, 3), first_calls)
+        return calls[first_calls:]
+
+    def test_stories_found_only_by_the_retry_get_their_sources_fetched(self):
+        self.assertEqual(3, len(self._second_pass_calls(0)))
+
+    def test_retry_pass_spends_only_the_budget_the_first_pass_left(self):
+        first_ids = {
+            item.metadata["clusterId"] for item in self._story_bundle().items_by_source["digg"][:2]
+        }
+        calls = self._second_pass_calls(2)
+        self.assertEqual(1, len(calls))
+        self.assertFalse(first_ids & set(calls[0]))
+
+    def test_retry_pass_fetches_nothing_once_the_budget_is_spent(self):
+        self.assertEqual([], self._second_pass_calls(3))
 
     def test_run_completes_untagged_when_the_sources_fetch_times_out(self):
         def timing_out(cmd, *, timeout, env=None, on_pid=None):

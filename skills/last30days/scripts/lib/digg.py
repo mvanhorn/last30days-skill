@@ -859,12 +859,14 @@ def fetch_story_sources(
     deadline: Optional[float] = None,
     cancel: Optional[threading.Event] = None,
     entity_count: int = 1,
+    budget: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch the sources of the top stories by Digg Score, one story at a time.
 
     Covers ``story_budget`` stories, so a run makes at most that many
-    ``posts`` calls. Only stories from the all-topic search qualify: they
-    carry the UUID the call takes and a Digg Score.
+    ``posts`` calls; ``budget`` lowers that for a later pass that spends
+    what an earlier one left. Only stories from the all-topic search
+    qualify: they carry the UUID the call takes and a Digg Score.
 
     ``stopped`` is asked before each call and ends the fetch when true.
     ``deadline`` is the run's monotonic deadline and ``cancel`` its cancel
@@ -877,7 +879,8 @@ def fetch_story_sources(
     ``source_urls`` every source's web URL. A story whose call fails or
     returns nothing usable is left out. Never raises.
     """
-    budget = story_budget(depth, entity_count)
+    full_budget = story_budget(depth, entity_count)
+    budget = full_budget if budget is None else min(budget, full_budget)
     if budget <= 0:
         return {}
     fetch_deadline = (
