@@ -92,6 +92,10 @@ SOURCES_PER_STORY = 40
 # Candidate.metadata key naming the Digg story an item is a source of.
 CONFIRMED_BY_KEY = "digg_story"
 
+# Item metadata key holding a story's UUID. Only stories from the all-topic
+# search carry it, so its presence is what tells them from older-CLI clusters.
+STORY_ID_KEY = "clusterId"
+
 # On digg-pp-cli 2026.10.x a stale section makes the CLI fetch up to 8 live
 # feed pages per section before answering (about 8s for ai,tech), well
 # inside this budget.
@@ -727,8 +731,9 @@ def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_
     Reads ``metadata['clusterUrlId']`` and writes ``metadata['posts']`` in
     place. Skips items that already carry a non-empty ``metadata['posts']``,
     items whose engagement ``postCount`` is 0, items whose source is not
-    'digg', and stories from the all-topic search. Designed to run from `_finalize_items_by_source` so enrichment
-    is spent on the items the brief actually shows.
+    'digg', and stories from the all-topic search. Designed to run from
+    `_finalize_items_by_source` so enrichment is spent on the items the brief
+    actually shows.
     """
     if top_k <= 0 or posts_per <= 0:
         return items
@@ -739,7 +744,7 @@ def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_
         if getattr(item, "source", None) != "digg":
             continue
         metadata = getattr(item, "metadata", None) or {}
-        if metadata.get("clusterId"):
+        if metadata.get(STORY_ID_KEY):
             # A story from the all-topic search: fetch_story_sources owns its
             # sources, under that fetch's own per-run budget.
             continue
@@ -821,7 +826,7 @@ def fetch_story_sources(
     for item in items:
         if getattr(item, "source", None) != "digg":
             continue
-        cluster_id = (getattr(item, "metadata", None) or {}).get("clusterId")
+        cluster_id = (getattr(item, "metadata", None) or {}).get(STORY_ID_KEY)
         score = _digg_score(item)
         if cluster_id and score is not None:
             scored[str(cluster_id)] = max(score, scored.get(str(cluster_id), score))
@@ -865,7 +870,7 @@ def apply_story_sources(
     for item in items:
         if getattr(item, "source", None) != "digg":
             continue
-        entry = fetched.get((item.metadata or {}).get("clusterId"))
+        entry = fetched.get((item.metadata or {}).get(STORY_ID_KEY))
         if not isinstance(entry, dict):
             continue
         if entry.get("posts"):

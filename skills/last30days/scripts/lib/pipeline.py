@@ -3785,7 +3785,7 @@ def _finalize_items_by_source(
             keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
             if keywords:
                 items = polymarket.filter_items_against_keywords(items, keywords)
-        if source == "digg" and any(not item.metadata.get("clusterId") for item in items):
+        if source == "digg" and any(not item.metadata.get(digg.STORY_ID_KEY) for item in items):
             # Clusters from digg-pp-cli 2026.10.x only; all-topic stories got
             # their quotes from _digg_story_sources. Pull top-ranked X posts
             # only for the survivors that will appear in the brief. Spending
@@ -3855,7 +3855,7 @@ def _digg_story_sources(
     """
     stories = [
         item for item in bundle.items_by_source.get("digg", [])
-        if item.metadata.get("clusterId")
+        if item.metadata.get(digg.STORY_ID_KEY)
     ]
     if not stories or not digg.ENRICH_CONFIG.get(depth, digg.ENRICH_CONFIG["default"]):
         return {}
