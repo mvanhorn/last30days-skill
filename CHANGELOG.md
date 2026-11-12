@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.37.0] - 2026-11-12
+
+### Added
+
+- Digg is now searched across every Digg topic (AI, tech, world and business, sports, science, gaming, entertainment) instead of AI and tech only. Digg stories rank by their Digg Score, which is shown on each item, and results from other sources that are sources of a Digg story are marked as confirmed by Digg and rank higher. Global trending (`--discover` with no domain) now includes Digg's current top stories. This needs a current `digg-pp-cli`: an older one keeps working on AI and tech, and the brief and `doctor` say how to upgrade.
+
+
 ## [3.36.1] - 2026-11-11
 
 ### Fixed
