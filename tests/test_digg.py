@@ -943,7 +943,7 @@ def _live_envelope(*stories: dict) -> dict:
 
 
 def _fake_cli(help_text: str, answer: dict, calls: list):
-    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+    def fake_run(cmd, *, timeout, **_bounds):
         calls.append(list(cmd))
         if "--help" in cmd:
             return subproc.SubprocResult(returncode=0, stdout=help_text, stderr="")
@@ -2324,7 +2324,10 @@ def test_research_search_hands_the_deadline_and_cancel_signal_to_both_calls(monk
     # back before the run's own deadline.
     assert seen == [
         {"deadline_monotonic": deadline, "cancel": cancel},
-        {"deadline_monotonic": deadline - digg.SCORE_SEARCH_MARGIN, "cancel": cancel},
+        {
+            "deadline_monotonic": deadline - digg.SCORE_SEARCH_MARGIN, "cancel": cancel,
+            "cleanup_grace": digg.SCORE_SEARCH_CLEANUP_GRACE,
+        },
     ]
 
 
@@ -2368,7 +2371,10 @@ def test_pipeline_research_stream_makes_both_calls_with_the_runs_bounds(monkeypa
     # back before the run's own deadline.
     assert seen == [
         {"deadline_monotonic": deadline, "cancel": cancel},
-        {"deadline_monotonic": deadline - digg.SCORE_SEARCH_MARGIN, "cancel": cancel},
+        {
+            "deadline_monotonic": deadline - digg.SCORE_SEARCH_MARGIN, "cancel": cancel,
+            "cleanup_grace": digg.SCORE_SEARCH_CLEANUP_GRACE,
+        },
     ]
     assert len(items) == 1
     assert artifact == {}
@@ -2409,6 +2415,9 @@ def test_score_call_ends_before_the_run_deadline_so_the_relevance_stories_are_ke
     [score_call] = score_calls
     assert 0 < score_call["timeout"] <= 12 - digg.SCORE_SEARCH_MARGIN
     assert score_call["deadline_monotonic"] == deadline - digg.SCORE_SEARCH_MARGIN
+    # Stopping a stuck call takes up to two grace periods, which have to fit
+    # in the margin too.
+    assert 2 * score_call["cleanup_grace"] < digg.SCORE_SEARCH_MARGIN
 
 
 def test_score_call_is_skipped_when_too_little_time_is_left(monkeypatch):
