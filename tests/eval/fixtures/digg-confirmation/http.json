@@ -255,6 +255,63 @@
             "posts": [],
             "relevance": 0.84,
             "why_relevant": "Digg cluster (Digg Score 38, 3 posts, 3 authors)"
+          },
+          {
+            "id": "q4rk8tzn",
+            "cluster_id": "5b8e2f40-9c1d-4e7a-b3a6-0f1e2d3c4b01",
+            "topic": "sports",
+            "title": "Harbor City Otters win the Coastal League final in extra innings",
+            "url": "https://digg.com/sports/q4rk8tzn",
+            "tldr": "The Otters scored twice in the eleventh inning to take the fictional Coastal League title, their first in nineteen seasons.",
+            "author": "",
+            "date": "2026-06-29",
+            "engagement": {
+              "postCount": 88,
+              "uniqueAuthors": 71,
+              "digg_score": 652
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.83,
+            "why_relevant": "Digg cluster (Digg Score 652, 88 posts, 71 authors)"
+          },
+          {
+            "id": "h2vy6wpc",
+            "cluster_id": "5b8e2f40-9c1d-4e7a-b3a6-0f1e2d3c4b02",
+            "topic": "ai",
+            "title": "Independent lab publishes computer use benchmark results for GPT-6.1 Terra",
+            "url": "https://digg.com/ai/h2vy6wpc",
+            "tldr": "A fictional independent lab compared the new OpenAI model with two rivals on computer use tasks and published its per-task costs.",
+            "author": "",
+            "date": "2026-06-28",
+            "engagement": {
+              "postCount": 41,
+              "uniqueAuthors": 33,
+              "digg_score": 310
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.82,
+            "why_relevant": "Digg cluster (Digg Score 310, 41 posts, 33 authors)"
+          },
+          {
+            "id": "b9ds3fua",
+            "cluster_id": "5b8e2f40-9c1d-4e7a-b3a6-0f1e2d3c4b03",
+            "topic": "tech",
+            "title": "OpenAI signs a multiyear compute agreement with Northwind Cloud",
+            "url": "https://digg.com/tech/b9ds3fua",
+            "tldr": "OpenAI and the fictional provider Northwind Cloud announced a multiyear agreement for training and inference capacity.",
+            "author": "",
+            "date": "2026-06-14",
+            "engagement": {
+              "postCount": 140,
+              "uniqueAuthors": 112,
+              "digg_score": 1502
+            },
+            "first_post_age": null,
+            "posts": [],
+            "relevance": 0.81,
+            "why_relevant": "Digg cluster (Digg Score 1502, 140 posts, 112 authors)"
           }
         ],
         {}
@@ -462,6 +519,35 @@
           "source_urls": [
             "https://x.com/fixture_hwsec/status/1940000000000000301",
             "https://x.com/fixture_evals/status/1940000000000000302"
+          ]
+        },
+        "5b8e2f40-9c1d-4e7a-b3a6-0f1e2d3c4b02": {
+          "posts": [
+            {
+              "username": "fixture_benchlab",
+              "display_name": "Fixture Benchlab",
+              "category": "",
+              "rank": null,
+              "body": "Our computer use results for the new model are up, with the task list and the raw logs.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_benchlab/status/1940000000000000401",
+              "posted_at": "2026-06-28T15:00:00Z"
+            },
+            {
+              "username": "fixture_pricing",
+              "display_name": "Fixture Pricing",
+              "category": "",
+              "rank": null,
+              "body": "OpenAI pricing thread: what the new computer use model costs per task.",
+              "post_type": "tweet",
+              "x_url": "https://x.com/fixture_pricing/status/1940000000000000902",
+              "posted_at": "2026-06-27T18:00:00Z"
+            }
+          ],
+          "source_urls": [
+            "https://x.com/fixture_benchlab/status/1940000000000000401",
+            "https://x.com/fixture_pricing/status/1940000000000000902",
+            "https://benchmarks.example.test/digg-confirmation/openai-terra"
           ]
         }
       }
