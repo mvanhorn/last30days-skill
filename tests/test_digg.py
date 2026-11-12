@@ -1928,13 +1928,16 @@ def _one_call_at_a_time(monkeypatch):
     monkeypatch.setattr(digg, "SOURCES_CONCURRENCY", 1)
 
 
-def _slow_sources_cli(clock: _Clock, seen: list):
-    """A ``posts`` call that hangs for its whole timeout, then times out."""
+def _slow_sources_cli(clock: _Clock, seen: list, *, times_out: bool = True):
+    """A ``posts`` call that takes its whole timeout, then times out or
+    answers with no sources."""
 
     def fake_run(cmd, *, timeout, **kwargs):
         seen.append({"timeout": timeout, **kwargs})
         clock.now += timeout
-        raise subproc.SubprocTimeout("posts timed out")
+        if times_out:
+            raise subproc.SubprocTimeout("posts timed out")
+        return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
 
     return fake_run
 
@@ -2038,10 +2041,28 @@ def test_sources_fetch_without_a_run_deadline_spends_at_most_40_seconds(monkeypa
     started = clock.now
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(digg, "time", clock)
-    monkeypatch.setattr(digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen))
+    monkeypatch.setattr(
+        digg.subproc, "run_with_timeout", _slow_sources_cli(clock, seen, times_out=False),
+    )
     digg.fetch_story_sources(_five_stories(), "deep")
-    assert [call["timeout"] for call in seen] == [15, 15, 10]
+    assert [call["timeout"] for call in seen] == [10, 10, 10, 10]
     assert clock.now - started <= 40
+
+
+def test_sources_fetch_stops_starting_calls_once_one_fails(monkeypatch):
+    # Digg stalls hit every call alike, so the rest are not left to wait
+    # out their own timeouts.
+    calls: list = []
+
+    def timing_out(cmd, *, timeout, **_bounds):
+        calls.append(cmd)
+        raise subproc.SubprocTimeout("posts timed out")
+
+    _one_call_at_a_time(monkeypatch)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", timing_out)
+    assert digg.fetch_story_sources(_five_stories(), "deep") == {}
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("depth, entity_count, expected_calls", [

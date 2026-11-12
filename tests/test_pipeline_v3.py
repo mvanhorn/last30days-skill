@@ -3051,8 +3051,8 @@ _DIGG_STORY_SCORES = [150, 1286, 239, 473, 180, 610, 95, 820, 330, 77, 560, 205,
 
 def _digg_story_rows(count: int = 5, ordinary: int = 0) -> list[dict]:
     """``count`` stories that name the topic in their title and are big enough
-    to be prominent, then ``ordinary`` bigger ones that name it only in their
-    summary."""
+    to be prominent, then ``ordinary`` ones that name it in their title too
+    and have a higher Digg Score, with too few sources to be prominent."""
     from lib import digg
 
     subjects = [
@@ -3083,12 +3083,12 @@ def _digg_story_rows(count: int = 5, ordinary: int = 0) -> list[dict]:
             "clusterUrlId": f"survey{n}",
             "url": f"https://digg.com/science/survey{n}",
             "topic": "science",
-            "title": f"Astronomers publish sky survey part {n}",
+            "title": f"Sky survey part {n} covers Webb telescope exoplanet",
             "tldr": "The survey lists a new exoplanet.",
             "diggScore": 2000 + n,
-            "sourceCount": 37,
-            "postCount": 37,
-            "uniqueAuthors": 29,
+            "sourceCount": 3,
+            "postCount": 3,
+            "uniqueAuthors": 3,
             "publishedAt": "2026-11-08T15:02:00Z",
             "firstPostAge": "3d",
         }
@@ -3262,8 +3262,9 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self.assertFalse([c for c in report.ranked_candidates if "digg_story" in c.metadata])
 
     def test_ordinary_story_citing_a_result_does_not_confirm_it(self):
-        # The biggest story names the topic only in its summary. It lists the
-        # article a Hacker News item links to, and no other story does.
+        # The highest-scored story names the topic in its title and has too
+        # few sources to be prominent. It lists the article a Hacker News item
+        # links to, and no other story does.
         import json as _json
 
         calls: list = []
@@ -3649,12 +3650,16 @@ class DiggBarRunTests(unittest.TestCase):
 
     def test_prominent_stories_lead_and_ordinary_ones_keep_their_order(self):
         rows = _digg_bar_rows([
-            ("Kevin Weil launches Warp Sciences", "The former OpenAI executive starts a lab.", 92, 37),
+            # Ordinary: the title names OpenAI, with too few sources.
+            ("OpenAI hires a lab director", "The former executive starts next month.", 92, 3),
             ("OpenAI opens a harbor office", "Staff move in next month.", 50, 10),
+            # Ordinary: the title names OpenAI, with too low a Digg Score.
             ("OpenAI: the most relevant recent evidence from the last 30 days", "A digest.", 39, 37),
             ("OpenAI signs an orchard deal", "The largest of the year.", 300, 37),
             ("Maine fishing season opens", "Anglers head out.", 652, 37),
-            ("Glacier survey finishes early", "The team thanked OpenAI for compute.", 500, 37),
+            ("Glacier survey finishes early on OpenAI compute", "The team thanked its sponsor.", 500, 4),
+            # Dropped: big, and names OpenAI only in its summary.
+            ("Kevin Weil launches Warp Sciences", "The former OpenAI executive starts a lab.", 700, 37),
         ])
         report, bundle, _searches = self._run("OpenAI", lambda _subquery: rows)
 
@@ -3670,7 +3675,7 @@ class DiggBarRunTests(unittest.TestCase):
             sorted(ordinary, key=_digg_score_of, reverse=True), ordinary,
             "ordinary stories must not be ordered by Digg Score",
         )
-        self.assertIn("1 of 6 stories dropped", report.source_status["digg"].detail)
+        self.assertIn("2 of 7 stories dropped", report.source_status["digg"].detail)
         self.assertEqual(health.OK, report.source_status["digg"].state)
 
     def test_empty_search_is_still_retried_with_the_core_subject(self):
@@ -3681,6 +3686,7 @@ class DiggBarRunTests(unittest.TestCase):
         rows = _digg_bar_rows([
             ("Kevin Weil launches Warp Sciences", "The former OpenAI executive starts a lab.", 92, 37),
             ("Maine fishing season opens", "Anglers head out.", 652, 37),
+            ("OpenAI hires a lab director", "The former executive starts next month.", 900, 3),
             ("OpenAI signs an orchard deal", "The largest of the year.", 300, 37),
         ])
         report, bundle, searches = self._run(
@@ -3689,9 +3695,9 @@ class DiggBarRunTests(unittest.TestCase):
 
         self.assertEqual(["primary", "retry"], searches)
         self.assertEqual(
-            ["story3", "story1"], [item.item_id for item in bundle.items_by_source["digg"]],
+            ["story4", "story3"], [item.item_id for item in bundle.items_by_source["digg"]],
         )
-        self.assertIn("1 of 3 stories dropped", report.source_status["digg"].detail)
+        self.assertIn("2 of 4 stories dropped", report.source_status["digg"].detail)
 
     def test_max_per_source_caps_digg_stories(self):
         rows = _digg_bar_rows([

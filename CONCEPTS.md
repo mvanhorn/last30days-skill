@@ -54,7 +54,7 @@ A Reddit thread that clears the relevance floor, passes Entity grounding, and ra
 
 ### Prominent Digg story
 
-A Digg story whose title names the run topic as a whole word or phrase and that has a Digg Score of at least 40 and at least 5 sources. A story that names the topic only in its summary, or names it in the title but is smaller, is an ordinary story; a story that names the topic nowhere is dropped from the run. The verdict is worked out from the topic and the story's own text and numbers each time it is needed and is never stored on the item. Clusters from digg-pp-cli 2026.10.x carry no story UUID and are not judged.
+A Digg story whose title names the run topic as a whole word or phrase and that has a Digg Score of at least 40 and at least 5 sources. A story that names the topic in its title but is smaller, or whose title carries part of the topic (one word of a two-word name, or a telling word of a longer description), is an ordinary story. Every other story is dropped from the run, including one that names the topic only in its summary. The verdict is worked out from the topic and the story's own text and numbers each time it is needed and is never stored on the item. Clusters from digg-pp-cli 2026.10.x carry no story UUID and are not judged.
 
 ## Discovery
 

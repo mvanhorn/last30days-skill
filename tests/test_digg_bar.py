@@ -72,14 +72,36 @@ def test_story_at_exactly_the_thresholds_is_prominent():
     assert _outcome("OpenAI", story) == "prominent"
 
 
-def test_big_story_naming_the_topic_only_in_its_summary_is_ordinary():
+def test_big_story_naming_the_topic_only_in_its_summary_is_dropped():
     story = _story(
         "Kevin Weil launches Warp Sciences",
         "The former OpenAI product chief is starting a science company.",
         score=92,
         sources=20,
     )
-    assert _outcome("OpenAI", story) == "ordinary"
+    assert _outcome("OpenAI", story) == "dropped"
+
+
+@pytest.mark.parametrize("title, summary, outcome", [
+    (
+        "The Weeknd's 'After Hours Til Dawn' sets male solo touring record",
+        "The tour trails only Taylor Swift and Coldplay on the all-time list.",
+        "dropped",
+    ),
+    (
+        "Swift's Eras Tour film returns to theaters",
+        "Taylor Swift is bringing the concert film back for one weekend.",
+        "ordinary",
+    ),
+    (
+        "Taylor Swift becomes Nashville Songwriters Hall of Fame inductee",
+        "She is the youngest writer the hall has inducted.",
+        "prominent",
+    ),
+])
+def test_story_must_carry_the_person_in_its_title_to_be_kept(title, summary, outcome):
+    story = _story(title, summary, score=300, sources=40)
+    assert _outcome("Taylor Swift", story) == outcome
 
 
 def test_big_story_that_never_names_the_person_is_dropped():
@@ -112,8 +134,12 @@ def test_topic_inside_a_longer_word_does_not_name_it():
     assert _outcome("Meta", named) == "prominent"
 
 
-def test_two_word_topic_is_matched_as_a_phrase_then_by_its_words():
+def test_two_word_topic_needs_one_word_in_the_title_and_the_phrase_in_the_text():
     in_title = _story("World Series Game 5 preview")
+    one_word_in_title = _story(
+        "Brewers take Series lead",
+        "Milwaukee is one win from its first World Series title.",
+    )
     in_summary = _story(
         "Brewers sweep Dodgers in NLCS upset",
         "Milwaukee reaches the World Series for the first time since 1982.",
@@ -122,9 +148,22 @@ def test_two_word_topic_is_matched_as_a_phrase_then_by_its_words():
         "Brewers sweep Dodgers in NLCS upset",
         "The baseball world is stunned. Milwaukee won the series in four games.",
     )
+    # A title word with no full phrase anywhere is not enough.
+    word_without_phrase = _story(
+        "Brewers take Series lead",
+        "Milwaukee is one win from the pennant.",
+    )
     assert _outcome("World Series", in_title) == "prominent"
-    assert _outcome("World Series", in_summary) == "ordinary"
-    assert _outcome("World Series", apart) == "ordinary"
+    assert _outcome("World Series", one_word_in_title) == "ordinary"
+    assert _outcome("World Series", in_summary) == "dropped"
+    assert _outcome("World Series", apart) == "dropped"
+    assert _outcome("World Series", word_without_phrase) == "dropped"
+
+    surname = _story(
+        "Altman says the next model is close",
+        "Sam Altman told staff the release is weeks away.",
+    )
+    assert _outcome("Sam Altman", surname) == "ordinary"
 
 
 def test_name_hidden_inside_another_word_is_dropped():

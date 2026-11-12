@@ -159,7 +159,11 @@ _TOPIC_WORD_EDGE = "?!.,:;\"'()"
 # feed pages per section before answering (about 8s for ai,tech), well
 # inside this budget.
 SEARCH_TIMEOUT = 30
-POSTS_TIMEOUT = 15
+
+# The highest-scored call adds to a search that already has its most
+# relevant stories, so it gets less time before the run moves on without it.
+SCORE_SEARCH_TIMEOUT = 15
+POSTS_TIMEOUT = 10
 HELP_TIMEOUT = 10
 
 # Longest the story-sources fetch may take in total when the run itself has
@@ -598,7 +602,7 @@ def _add_top_scored(
     )
     _log(f"search '{topic}' (all topics, by score, limit={limit}, since={since_days}d)")
     scored, stderr = _invoke_cli(
-        cmd, timeout=SEARCH_TIMEOUT, deadline=deadline, cancel=cancel
+        cmd, timeout=SCORE_SEARCH_TIMEOUT, deadline=deadline, cancel=cancel
     )
     error = scored.get("error") or _empty_local_fallback_error(scored, stderr)
     if error:
@@ -1109,7 +1113,14 @@ def fetch_story_sources(
     if not chosen:
         return {}
 
+    # Set by the first call that fails. Digg stalls now and then, and a
+    # stall hits every call alike, so the calls not yet started are skipped
+    # instead of each waiting out its own timeout.
+    failing = threading.Event()
+
     def fetch_one(cluster_id: str) -> Optional[Dict[str, Any]]:
+        if failing.is_set():
+            return None
         if stopped is not None and stopped():
             return None
         if cancel is not None and cancel.is_set():
@@ -1123,6 +1134,9 @@ def fetch_story_sources(
             deadline=deadline,
             cancel=cancel,
         )
+        if response.get("error"):
+            failing.set()
+            return None
         posts: List[Dict[str, Any]] = []
         source_urls: List[str] = []
         for row in response.get("results") or []:
@@ -1323,22 +1337,31 @@ def _whole_phrase(words: List[str]) -> "re.Pattern[str]":
     return re.compile(r"(?<!\w)" + r"[\s\-]+".join(parts) + r"(?!\w)", re.IGNORECASE)
 
 
-def _names_subject(words: List[str], text: str) -> bool:
-    """True when ``text`` is about the subject, short of naming it whole.
+def _title_points_at(words: List[str], title: str, text: str) -> bool:
+    """True when a title that does not name the subject whole is still about it.
 
-    A subject of one or two words is a name ("OpenAI", "Sam Altman"), and
-    every word of it must appear. A longer one is a description ("best noise
-    cancelling headphones", "why is Nvidia stock down"), which a story on the
-    subject rarely repeats in full, so one of its telling words is enough.
-    That still removes the stories that share nothing with the topic.
+    The title has to carry part of the subject. A story that names the
+    subject only in its summary mentions it and is about something else: a
+    tour story that lists other artists, a roundup, a rival's launch.
+
+    - One word ("OpenAI"): the title either names it or it does not.
+    - Two words, a name ("Sam Altman"): the title has one of them and the
+      summary gives the name in full ("Altman says ...").
+    - Longer, a description ("why is Nvidia stock down"): a story on the
+      subject rarely repeats it, so one of its telling words in the title
+      is enough.
     """
-    if len(words) <= SUBJECT_NAME_MAX_WORDS:
-        return all(_whole_phrase([word]).search(text) for word in words)
+    if len(words) < SUBJECT_NAME_MAX_WORDS:
+        return False
+    if len(words) == SUBJECT_NAME_MAX_WORDS:
+        return any(
+            _whole_phrase([word]).search(title) for word in words
+        ) and bool(_whole_phrase(words).search(text))
     telling = [
         word for word in words
         if len(word) > 2 and word not in STOPWORDS and word not in LOW_SIGNAL_QUERY_TOKENS
     ] or words
-    return any(_whole_phrase([word]).search(text) for word in telling)
+    return any(_whole_phrase([word]).search(title) for word in telling)
 
 
 def _is_big(item: Any) -> bool:
@@ -1357,10 +1380,11 @@ def apply_bar(topic: str, items: list) -> BarResult:
 
     A story whose title names the topic's subject is prominent when it has a
     Digg Score of at least ``PROMINENT_MIN_SCORE`` and at least
-    ``PROMINENT_MIN_SOURCES`` sources, and ordinary otherwise. A story that
-    names the subject only in its summary, or is about it by the looser test
-    in ``_names_subject``, is ordinary. Any other story is dropped. Names
-    are matched as whole words, any case.
+    ``PROMINENT_MIN_SOURCES`` sources, and ordinary otherwise. A story whose
+    title carries only part of the subject, by the test in
+    ``_title_points_at``, is ordinary. Any other story is dropped, including
+    one that names the subject only in its summary. Names are matched as
+    whole words, any case.
 
     A topic with no subject left once its question and filler words are gone
     makes every story ordinary. Clusters from digg-pp-cli 2026.10.x, which
@@ -1384,12 +1408,10 @@ def apply_bar(topic: str, items: list) -> BarResult:
         if any(phrase.search(title) for phrase in phrases):
             (result.prominent if _is_big(item) else result.ordinary).append(item)
             continue
-        # The body is the title and the summary, so a subject named whole
-        # in the summary passes this test too.
         text = "\n".join(
             str(getattr(item, name, "") or "") for name in ("title", "body", "snippet")
         )
-        if any(_names_subject(words, text) for words in subjects):
+        if any(_title_points_at(words, title, text) for words in subjects):
             result.ordinary.append(item)
         else:
             result.dropped.append(item)
