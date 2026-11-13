@@ -1,0 +1,248 @@
+{
+  "about": "Labelled candidate filings for the Patent Secret Signals rules in skills/last30days/references/patent-signals.md. These are constructed cases, one per rule, not saved digests: the filings are invented to show a rule and say nothing about any real company's filings. Per candidate: kind is 'first publication' unless stated ('continuation', 'divisional', 'grant published earlier' and 'design' are counted by the digest and never signals). titles_only is true for an entry the digest lists by title, with no abstract or first claim. concrete is true when the first claim and abstract name a device, material, user or use a reader can picture. paths lists which paths of the bar the candidate meets (1 out of character, 2 a recognisable product the company has not shipped or announced, 3 bears on a story in the report). shipped_match is true when the web check found a shipped or announced product that matches, false when it found none, null when it was not checked while labelling; covered is the same for coverage of the filing. name_matched is true for an entry the digest marks name-matched; entity_known is then true when the filing entity is known to belong to the company, false when known not to, null when not known. location_contradicts is true when the applicant location plainly contradicts the company. A candidate with a cluster list is several filings that share one specific focus; members that share one priority date and one filed_as name are one invention family. jobs_signals is how many signal paragraphs the same report's Jobs Page Secret Signals section has.",
+  "companies": [
+    {
+      "case": "Chip maker",
+      "report_story": null,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Wearable patch for reading blood glucose through the skin",
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies"
+        },
+        {
+          "title": "Method for scheduling read and write operations in a memory controller",
+          "note": "In character, and nothing a reader can picture.",
+          "concrete": false,
+          "paths": [],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        },
+        {
+          "title": "Wearable patch for reading blood glucose through the skin (continuation)",
+          "note": "The same invention continuing an older application: counted by the digest, never a signal.",
+          "kind": "continuation",
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        },
+        {
+          "title": "Graphics card shroud",
+          "kind": "design",
+          "concrete": true,
+          "paths": [],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "case": "Phone maker, nothing shipped",
+      "report_story": null,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Handset with a display that folds twice into a tablet",
+          "note": "In character for a phone maker; qualifies as a recognisable product it has not shipped or announced.",
+          "concrete": true,
+          "paths": [2],
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies"
+        }
+      ]
+    },
+    {
+      "case": "Phone maker, shipped match on the web",
+      "report_story": null,
+      "expected_section": "absent",
+      "expected_signals": 0,
+      "candidates": [
+        {
+          "title": "Handset with a display that folds twice into a tablet",
+          "note": "The same filing; the web check found the company already sells such a handset.",
+          "concrete": true,
+          "paths": [2],
+          "shipped_match": true,
+          "covered": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "case": "Car maker, titles only",
+      "report_story": "Regulators are investigating crashes involving the car maker's driver-assistance system",
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Detecting driver inattention while a driver-assistance system is engaged",
+          "titles_only": true,
+          "concrete": false,
+          "paths": [3],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "qualifies"
+        },
+        {
+          "title": "Robotic arm for folding laundry",
+          "note": "Out of character by its title, but a titles-only entry qualifies only by the story path.",
+          "titles_only": true,
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "case": "Search company, family and cluster",
+      "report_story": null,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Three filings on a contact lens display, one family",
+          "focus": "a display built into a contact lens",
+          "note": "One priority date and one name: one invention family, counted once, so not a cluster.",
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": null,
+          "covered": null,
+          "cluster": [
+            {"title": "Contact lens with embedded display", "priority": "2024-03-04", "filed_as": "Search Co LLC"},
+            {"title": "Powering a contact lens display", "priority": "2024-03-04", "filed_as": "Search Co LLC"},
+            {"title": "Antenna for a contact lens display", "priority": "2024-03-04", "filed_as": "Search Co LLC"}
+          ],
+          "expected": "does not qualify"
+        },
+        {
+          "title": "Three filings on hearing aids, three families",
+          "focus": "hearing aids",
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": false,
+          "covered": false,
+          "cluster": [
+            {"title": "Hearing aid that isolates one speaker's voice", "priority": "2024-02-12", "filed_as": "Search Co LLC"},
+            {"title": "Fitting a hearing aid from a phone hearing test", "priority": "2024-05-20", "filed_as": "Search Co LLC"},
+            {"title": "Hearing aid charging case", "priority": "2024-08-01", "filed_as": "Search Co LLC"}
+          ],
+          "expected": "qualifies"
+        },
+        {
+          "title": "Two filings on electric bicycles",
+          "focus": "electric bicycles",
+          "note": "Two are not a cluster.",
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": null,
+          "covered": null,
+          "cluster": [
+            {"title": "Electric bicycle drive unit", "priority": "2024-01-09", "filed_as": "Search Co LLC"},
+            {"title": "Electric bicycle battery lock", "priority": "2024-06-17", "filed_as": "Search Co LLC"}
+          ],
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "case": "Microsoft, name-matched entity known",
+      "report_story": null,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Glove that gives the wearer a sense of touch in a virtual scene",
+          "filed_as": "Microsoft Technology Licensing, LLC",
+          "name_matched": true,
+          "entity_known": true,
+          "concrete": true,
+          "paths": [2],
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies"
+        }
+      ]
+    },
+    {
+      "case": "Block, name-matched entity not the company's",
+      "report_story": null,
+      "expected_section": "absent",
+      "expected_signals": 0,
+      "candidates": [
+        {
+          "title": "Cradle for moving an MRI magnet",
+          "filed_as": "Block Imaging, Inc.",
+          "note": "A different company whose name starts with the same word.",
+          "name_matched": true,
+          "entity_known": false,
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        },
+        {
+          "title": "Card reader that charges from the phone it is attached to",
+          "filed_as": "Block Payments Holdings Ltd",
+          "note": "The labeller does not know whose entity this is, so it is left out.",
+          "name_matched": true,
+          "entity_known": null,
+          "concrete": true,
+          "paths": [2],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        },
+        {
+          "title": "Concrete block with interlocking faces",
+          "filed_as": "Block",
+          "note": "Applicant location plainly contradicts the company.",
+          "location_contradicts": true,
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "case": "Report that also has two jobs signals",
+      "report_story": null,
+      "jobs_signals": 2,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Wearable patch for reading blood glucose through the skin",
+          "concrete": true,
+          "paths": [1],
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies"
+        },
+        {
+          "title": "Earbud that measures body temperature",
+          "concrete": true,
+          "paths": [1, 2],
+          "shipped_match": false,
+          "covered": true,
+          "expected": "qualifies"
+        }
+      ]
+    }
+  ]
+}

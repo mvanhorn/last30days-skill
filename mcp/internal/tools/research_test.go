@@ -279,7 +279,8 @@ func TestFormatRunErrorHandlesNilResult(t *testing.T) {
 func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
 	got := researchExtraEnv()
 	want := []string{
-		"LAST30DAYS_ALLOW_ENGINE_PLAN=1", "LAST30DAYS_NO_JOBS_DIGEST=1", "LAST30DAYS_NO_REPORT_CHECKLIST=1",
+		"LAST30DAYS_ALLOW_ENGINE_PLAN=1", "LAST30DAYS_NO_JOBS_DIGEST=1",
+		"LAST30DAYS_NO_PATENT_DIGEST=1", "LAST30DAYS_NO_REPORT_CHECKLIST=1",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("researchExtraEnv() = %#v, want %#v", got, want)

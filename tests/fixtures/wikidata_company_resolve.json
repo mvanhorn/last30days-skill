@@ -207,6 +207,36 @@
     }
    ],
    "success": 1
+  },
+  "Microsoft": {
+   "search": [
+    {
+     "id": "Q2283",
+     "label": "Microsoft",
+     "description": "American multinational technology corporation",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "Microsoft"
+     }
+    }
+   ],
+   "success": 1
+  },
+  "IBM": {
+   "search": [
+    {
+     "id": "Q37156",
+     "label": "IBM",
+     "description": "American multinational technology company",
+     "match": {
+      "type": "label",
+      "language": "en",
+      "text": "IBM"
+     }
+    }
+   ],
+   "success": 1
   }
  },
  "entities": {
@@ -1449,6 +1479,91 @@
       "type": "statement",
       "rank": "normal"
      }
+    ],
+    "P1448": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1448",
+       "datavalue": {
+        "value": {
+         "text": "Stripe, LLC",
+         "language": "en"
+        },
+        "type": "monolingualtext"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1448",
+       "datavalue": {
+        "value": {
+         "text": "Stripe, Inc.",
+         "language": "en"
+        },
+        "type": "monolingualtext"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2026-01-02T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P355": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 140989087,
+         "id": "Q140989087"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 140989022,
+         "id": "Q140989022"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
     ]
    }
   },
@@ -1751,6 +1866,23 @@
        "datavalue": {
         "value": "https://www.anthropic.com/",
         "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P1448": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1448",
+       "datavalue": {
+        "value": {
+         "text": "Anthropic, PBC",
+         "language": "en"
+        },
+        "type": "monolingualtext"
        }
       },
       "type": "statement",
@@ -2284,6 +2416,267 @@
        "datavalue": {
         "value": "https://abc.xyz/",
         "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P1448": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1448",
+       "datavalue": {
+        "value": {
+         "text": "Alphabet Inc.",
+         "language": "en"
+        },
+        "type": "monolingualtext"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P355": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 95,
+         "id": "Q95"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 133928,
+         "id": "Q133928"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 2591662,
+         "id": "Q2591662"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 14932155,
+         "id": "Q14932155"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 2119882,
+         "id": "Q2119882"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 166561,
+         "id": "Q166561"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 26912024,
+         "id": "Q26912024"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 13463146,
+         "id": "Q13463146"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 55513046,
+         "id": "Q55513046"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7114879,
+         "id": "Q7114879"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5455414,
+         "id": "Q5455414"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "deprecated"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 15330,
+         "id": "Q15330"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 100292504,
+         "id": "Q100292504"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 100292691,
+         "id": "Q100292691"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P1830": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 100292691,
+         "id": "Q100292691"
+        },
+        "type": "wikibase-entityid"
        }
       },
       "type": "statement",
@@ -3714,6 +4107,2038 @@
       "rank": "normal"
      }
     ]
+   }
+  },
+  "Q2283": {
+   "type": "item",
+   "id": "Q2283",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Microsoft"
+    },
+    "en": {
+     "language": "en",
+     "value": "Microsoft"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "Microsoft Corporation"
+     },
+     {
+      "language": "mul",
+      "value": "Microsoft Corp."
+     },
+     {
+      "language": "mul",
+      "value": "Micro-Soft"
+     },
+     {
+      "language": "mul",
+      "value": "MS"
+     },
+     {
+      "language": "mul",
+      "value": "MSFT"
+     }
+    ],
+    "en": [
+     {
+      "language": "en",
+      "value": "microsoft.com"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1058914,
+         "id": "Q1058914"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 18388277,
+         "id": "Q18388277"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 891723,
+         "id": "Q891723"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 82059,
+         "id": "Q82059"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "MSFT",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 496672,
+         "id": "Q496672"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "4338",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 181162,
+         "id": "Q181162"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2014-02-04T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7426870,
+         "id": "Q7426870"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5284,
+         "id": "Q5284"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2000-01-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 10,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.microsoft.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.microsoft.com/en-gb",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.microsoft.com/de-de/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.microsoft.com/ja-jp/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://microsoft.cz/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P1448": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1448",
+       "datavalue": {
+        "value": {
+         "text": "Microsoft Corporation",
+         "language": "en"
+        },
+        "type": "monolingualtext"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P355": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 73801,
+         "id": "Q73801"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 2277744,
+         "id": "Q2277744"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6840080,
+         "id": "Q6840080"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6840142,
+         "id": "Q6840142"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 765389,
+         "id": "Q765389"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 16538568,
+         "id": "Q16538568"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6840192,
+         "id": "Q6840192"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 642707,
+         "id": "Q642707"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 308913,
+         "id": "Q308913"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1688786,
+         "id": "Q1688786"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7246643,
+         "id": "Q7246643"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5215986,
+         "id": "Q5215986"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P1830": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 958338,
+         "id": "Q958338"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 978096,
+         "id": "Q978096"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1062711,
+         "id": "Q1062711"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1065154,
+         "id": "Q1065154"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q37156": {
+   "type": "item",
+   "id": "Q37156",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "IBM"
+    },
+    "en": {
+     "language": "en",
+     "value": "IBM"
+    }
+   },
+   "aliases": {
+    "mul": [
+     {
+      "language": "mul",
+      "value": "International Business Machines"
+     },
+     {
+      "language": "mul",
+      "value": "I.B.M."
+     },
+     {
+      "language": "mul",
+      "value": "IBM Corporation"
+     },
+     {
+      "language": "mul",
+      "value": "International Business Machines Corporation"
+     },
+     {
+      "language": "mul",
+      "value": "Big Blue"
+     }
+    ],
+    "en": [
+     {
+      "language": "en",
+      "value": "International Business Machines Corporation (Armonk, NY)"
+     },
+     {
+      "language": "en",
+      "value": "IBM Corp."
+     },
+     {
+      "language": "en",
+      "value": "18M"
+     },
+     {
+      "language": "en",
+      "value": "ibm.com"
+     }
+    ]
+   },
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1058914,
+         "id": "Q1058914"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4830453,
+         "id": "Q4830453"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 6881511,
+         "id": "Q6881511"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 18388277,
+         "id": "Q18388277"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 891723,
+         "id": "Q891723"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 23670565,
+         "id": "Q23670565"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 161726,
+         "id": "Q161726"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P31",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 43229,
+         "id": "Q43229"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P414": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 13677,
+         "id": "Q13677"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "IBM",
+          "type": "string"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P414",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 217475,
+         "id": "Q217475"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P249": [
+        {
+         "snaktype": "value",
+         "property": "P249",
+         "datavalue": {
+          "value": "6680",
+          "type": "string"
+         }
+        }
+       ],
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2005-05-06T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 11,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     }
+    ],
+    "P169": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 49971,
+         "id": "Q49971"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2020-04-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 10,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 782805,
+         "id": "Q782805"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2011-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1363852,
+         "id": "Q1363852"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+2002-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1700049,
+         "id": "Q1700049"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1993-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1701260,
+         "id": "Q1701260"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1985-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1443067,
+         "id": "Q1443067"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1981-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7668816,
+         "id": "Q7668816"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1973-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 46000,
+         "id": "Q46000"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1971-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 435716,
+         "id": "Q435716"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal",
+      "qualifiers": {
+       "P582": [
+        {
+         "snaktype": "value",
+         "property": "P582",
+         "datavalue": {
+          "value": {
+           "time": "+1956-00-00T00:00:00Z",
+           "timezone": 0,
+           "before": 0,
+           "after": 0,
+           "precision": 9,
+           "calendarmodel": "http://www.wikidata.org/entity/Q1985727"
+          },
+          "type": "time"
+         }
+        }
+       ]
+      }
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P169",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 84053114,
+         "id": "Q84053114"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     }
+    ],
+    "P856": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.ibm.com/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "preferred"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.ibm.com/uk-en",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.ibm.com/us-en/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P856",
+       "datavalue": {
+        "value": "https://www.ibm.com/de-de/",
+        "type": "string"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P1448": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1448",
+       "datavalue": {
+        "value": {
+         "text": "International Business Machines Corporation",
+         "language": "en"
+        },
+        "type": "monolingualtext"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P355": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 7553838,
+         "id": "Q7553838"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5968851,
+         "id": "Q5968851"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 890447,
+         "id": "Q890447"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 909169,
+         "id": "Q909169"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1493633,
+         "id": "Q1493633"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 16323757,
+         "id": "Q16323757"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 28974610,
+         "id": "Q28974610"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 28974613,
+         "id": "Q28974613"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 29906663,
+         "id": "Q29906663"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 30338814,
+         "id": "Q30338814"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 30338816,
+         "id": "Q30338816"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P355",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1653092,
+         "id": "Q1653092"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P1830": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 476208,
+         "id": "Q476208"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 689176,
+         "id": "Q689176"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 909169,
+         "id": "Q909169"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P1830",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1093541,
+         "id": "Q1093541"
+        },
+        "type": "wikibase-entityid"
+       }
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q133928": {
+   "type": "item",
+   "id": "Q133928",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "X Development"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "X Development"
+    }
+   }
+  },
+  "Q2591662": {
+   "type": "item",
+   "id": "Q2591662",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "GV"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "GV"
+    }
+   }
+  },
+  "Q14932155": {
+   "type": "item",
+   "id": "Q14932155",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Calico"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Calico"
+    }
+   }
+  },
+  "Q2119882": {
+   "type": "item",
+   "id": "Q2119882",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Google Nest"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Google Nest"
+    }
+   }
+  },
+  "Q166561": {
+   "type": "item",
+   "id": "Q166561",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Google Fiber"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Google Fiber"
+    }
+   }
+  },
+  "Q26912024": {
+   "type": "item",
+   "id": "Q26912024",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Google Ireland Holdings Unlimited Company"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Google Ireland Holdings Unlimited Company"
+    }
+   }
+  },
+  "Q13463146": {
+   "type": "item",
+   "id": "Q13463146",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Loon"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Loon"
+    }
+   }
+  },
+  "Q73801": {
+   "type": "item",
+   "id": "Q73801",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Xbox Game Studios"
+    },
+    "en": {
+     "language": "en",
+     "value": "Xbox Game Studios"
+    }
+   }
+  },
+  "Q2277744": {
+   "type": "item",
+   "id": "Q2277744",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Avanade"
+    }
+   }
+  },
+  "Q6840080": {
+   "type": "item",
+   "id": "Q6840080",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Microsoft Algeria"
+    }
+   }
+  },
+  "Q6840142": {
+   "type": "item",
+   "id": "Q6840142",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Microsoft India R & D"
+    }
+   }
+  },
+  "Q765389": {
+   "type": "item",
+   "id": "Q765389",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Lionhead Studios"
+    }
+   }
+  },
+  "Q16538568": {
+   "type": "item",
+   "id": "Q16538568",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Microsoft Mobile"
+    }
+   }
+  },
+  "Q6840192": {
+   "type": "item",
+   "id": "Q6840192",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Microsoft Production Studios"
+    }
+   }
+  },
+  "Q642707": {
+   "type": "item",
+   "id": "Q642707",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Rare Ltd."
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Rare Ltd."
+    }
+   }
+  },
+  "Q7553838": {
+   "type": "item",
+   "id": "Q7553838",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "SoftLayer"
+    }
+   }
+  },
+  "Q5968851": {
+   "type": "item",
+   "id": "Q5968851",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM India Private Limited"
+    }
+   }
+  },
+  "Q890447": {
+   "type": "item",
+   "id": "Q890447",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Internet Security Systems"
+    }
+   }
+  },
+  "Q909169": {
+   "type": "item",
+   "id": "Q909169",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Lotus Software"
+    }
+   }
+  },
+  "Q1493633": {
+   "type": "item",
+   "id": "Q1493633",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Rational Software"
+    }
+   }
+  },
+  "Q16323757": {
+   "type": "item",
+   "id": "Q16323757",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM Denmark"
+    }
+   }
+  },
+  "Q28974610": {
+   "type": "item",
+   "id": "Q28974610",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM France"
+    }
+   }
+  },
+  "Q28974613": {
+   "type": "item",
+   "id": "Q28974613",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Companhia IBM Portuguesa"
+    }
+   }
+  },
+  "Q140989087": {
+   "type": "item",
+   "id": "Q140989087",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "TaxJar"
+    }
+   }
+  },
+  "Q140989022": {
+   "type": "item",
+   "id": "Q140989022",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Lemon Squeezy"
+    }
+   }
+  },
+  "Q13677": {
+   "type": "item",
+   "id": "Q13677",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "New York Stock Exchange"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "New York Stock Exchange"
+    }
+   }
+  },
+  "Q55513046": {
+   "type": "item",
+   "id": "Q55513046",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Wing"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Wing"
+    }
+   }
+  },
+  "Q7114879": {
+   "type": "item",
+   "id": "Q7114879",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Owlchemy Labs"
+    }
+   }
+  },
+  "Q15330": {
+   "type": "item",
+   "id": "Q15330",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Waymo"
+    }
+   }
+  },
+  "Q100292504": {
+   "type": "item",
+   "id": "Q100292504",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Waymo Holding"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Waymo Holding"
+    }
+   }
+  },
+  "Q100292691": {
+   "type": "item",
+   "id": "Q100292691",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "XXVI Holdings"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "XXVI Holdings"
+    }
+   }
+  },
+  "Q308913": {
+   "type": "item",
+   "id": "Q308913",
+   "labels": {
+    "mul": {
+     "language": "mul",
+     "value": "Ensemble Studios"
+    }
+   }
+  },
+  "Q1688786": {
+   "type": "item",
+   "id": "Q1688786",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Microsoft Store"
+    }
+   }
+  },
+  "Q7246643": {
+   "type": "item",
+   "id": "Q7246643",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "ProClarity"
+    }
+   }
+  },
+  "Q5215986": {
+   "type": "item",
+   "id": "Q5215986",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Danger, Inc."
+    }
+   }
+  },
+  "Q958338": {
+   "type": "item",
+   "id": "Q958338",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Microsoft TechNet"
+    }
+   }
+  },
+  "Q978096": {
+   "type": "item",
+   "id": "Q978096",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "BigPark"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "BigPark"
+    }
+   }
+  },
+  "Q1062711": {
+   "type": "item",
+   "id": "Q1062711",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Games for Windows"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "Games for Windows"
+    }
+   }
+  },
+  "Q1065154": {
+   "type": "item",
+   "id": "Q1065154",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Microsoft Academic Search"
+    }
+   }
+  },
+  "Q29906663": {
+   "type": "item",
+   "id": "Q29906663",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM Nederland"
+    }
+   }
+  },
+  "Q30338814": {
+   "type": "item",
+   "id": "Q30338814",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM Germany"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "IBM Deutschland"
+    }
+   }
+  },
+  "Q30338816": {
+   "type": "item",
+   "id": "Q30338816",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM Egypt Business Support Services"
+    }
+   }
+  },
+  "Q1653092": {
+   "type": "item",
+   "id": "Q1653092",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM Canada"
+    },
+    "mul": {
+     "language": "mul",
+     "value": "IBM Canada"
+    }
+   }
+  },
+  "Q476208": {
+   "type": "item",
+   "id": "Q476208",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM Thomas J. Watson Research Center"
+    }
+   }
+  },
+  "Q689176": {
+   "type": "item",
+   "id": "Q689176",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "Telelogic"
+    }
+   }
+  },
+  "Q1093541": {
+   "type": "item",
+   "id": "Q1093541",
+   "labels": {
+    "en": {
+     "language": "en",
+     "value": "IBM Cloud Video"
+    }
    }
   }
  },

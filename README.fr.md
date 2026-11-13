@@ -95,6 +95,7 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 | **Amazon** | Notes, prix et avis clients sur les produits. Sur activation ; nécessite une CLI `brightdata` authentifiée et utilise vos crédits Bright Data. |
 | **DripStack** | Newsletters financières et analyses via une API publique, sans clé. Activation avec `--search dripstack` ou `INCLUDE_SOURCES=dripstack`. |
 | **Offres d'emploi / carrières** | Offres d'emploi publiques comme indices des priorités d'une entreprise. Sélection avec `--hiring-signals`, `--search jobs` ou le plan de recherche. |
+| **Brevets** | Les nouveaux dépôts de brevets américains d'une entreprise, comme indice de ce qu'elle construit avant de le lancer. Gratuit, sans clé d'API. Apparaît quand votre sujet est une entreprise. |
 | **Corpus local** | Vos fichiers Markdown et texte locaux, ainsi que les PDF si `pdftotext` est dans le PATH. Activation avec `--corpus` ou `LAST30DAYS_CORPUS_DIRS`. |
 | **Web** | La couverture éditoriale, les comparatifs de blogs. Un signal parmi d'autres, pas le seul. |
 
@@ -109,6 +110,8 @@ La synthèse classe selon ce avec quoi de vraies personnes ont vraiment interagi
 **Avant une réunion.** `/last30days Peter Steinberger` — a rejoint l'équipe Codex d'OpenAI, conteste l'interdiction des agents tiers décrétée par Anthropic, 23 PR mergées avec un taux de merge de 85 % sur GitHub, construit LobsterOS pour piloter des agents entre appareils. r/ClaudeCode : « Depuis la sortie d'OpenClaw, tout le monde savait que si vous passiez par autre chose que l'API, vous finiriez par être banni » (227 upvotes). Ça, ce n'est pas sur LinkedIn.
 
 **Pour lire les signaux de recrutement.** `/last30days Listen Labs --hiring-signals` — les offres d'emploi et les pages carrières actuelles deviennent des preuves citées de changements de priorités : recrutements en sécurité entreprise, customer success, infrastructure ou expansion produit. Le rapport dit ce que le recrutement semble signaler, pas ce que la roadmap va livrer.
+
+**Pour voir ce qu'une entreprise dépose.** `/last30days Nvidia` inclut désormais comme preuve les nouveaux dépôts de brevets américains de l'entreprise dans votre fenêtre, de sorte qu'un produit ou une direction que l'entreprise n'a pas encore annoncé peut apparaître dans le rapport.
 
 **Pour repérer un sujet avant son pic.** Demandez `/last30days what's exploding in AI agents?` et la skill bascule en mode découverte : le moteur balaie les listings de catégories Reddit, la une et les meilleures histoires de Hacker News, les articles de Digg, et X si vous êtes authentifié ; votre agent évalue les candidats (noms, filtrage du bruit, intérêt réel) et rédige des angles pour un podcast ou un article X ; vous obtenez ensuite 5 à 10 sujets classés par vélocité. Chaque résultat comprend des chiffres multi-sources, une étiquette de momentum et une commande `/last30days "<topic>"` prête à lancer.
 
@@ -267,7 +270,7 @@ Ces plateformes n'ont aucune relation entre elles. X ignore ce que pense Reddit.
 
 | Sources | Ce qu'il vous faut | Coût |
 |---------|---------------|------|
-| Reddit (avec les commentaires) + HN + Polymarket + GitHub + StockTwits | Rien | Gratuit |
+| Reddit (avec les commentaires) + HN + Polymarket + GitHub + StockTwits + dépôts de brevets d'entreprises | Rien | Gratuit |
 | arXiv + Techmeme + Yahoo Finance | Des CLI gratuites, installées automatiquement à la configuration initiale | Gratuit |
 | X / Twitter | Définissez `X_BEARER_TOKEN` pour l'API X officielle (posts récents, environ la dernière semaine, sauf si votre projet développeur X dispose de l'accès aux archives complètes ; en secours sur Grok Bot après les outils X intégrés du bot, en opt-in ailleurs avec `LAST30DAYS_X_BACKEND=xapi`), ou connectez-vous à x.com dans n'importe quel navigateur, ou définissez `XQUIK_API_KEY` / `XAI_API_KEY` | Les crédits de l'API X proviennent de votre projet développeur X ; les cookies de navigateur sont gratuits ; les autres clés dépendent du fournisseur |
 | YouTube | `brew install yt-dlp` | Gratuit |

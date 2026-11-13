@@ -50,7 +50,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, reddit_arctic, reddit_search, registers, render, report_checklist, schema, subproc, ui, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_search, registers, render, report_checklist, schema, subproc, ui, x_envelope, yahoo_finance
 from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -1125,12 +1125,21 @@ COMPETITORS_DEFAULT = competitors_mod.COMPETITORS_DEFAULT
 
 # The lanes that use the resolved company. With every one of them in
 # EXCLUDE_SOURCES nothing reads the answer, so the topic is not sent.
-_COMPANY_LANES = frozenset({yahoo_finance.SOURCE, "jobs"})
+_COMPANY_LANES = frozenset({yahoo_finance.SOURCE, "jobs", patents.SOURCE})
 
 
-def _resolved_company(entity: str, *, mock: bool, config: dict, host_ticker: bool = False) -> dict:
+def _resolved_company(
+    entity: str, *, mock: bool, config: dict, host_ticker: bool = False,
+    patent_lane: bool = False,
+) -> dict:
     """Company fields for one entity's ``resolved`` artifact. Mock runs, and
     runs that exclude every lane the company feeds, make no request.
+
+    ``patent_lane`` says this run would search the entity's patent filings.
+    Only the main topic of some runs is (see ``_patent_lane_wanted``); for
+    every other entity the patent lane reads nothing, so it does not count
+    among the lanes that must be excluded, and the company's other names,
+    which only that lane reads, are not asked for.
 
     When the Wikidata lookup failed (not when it answered with nothing),
     Yahoo's symbol search is asked for the topic instead, and
@@ -1139,11 +1148,14 @@ def _resolved_company(entity: str, *, mock: bool, config: dict, host_ticker: boo
     With ``host_ticker`` the host passed ``--ticker``, which is then the only
     ticker source: Wikidata is asked for the company and its site but not for
     a listing, and a failed lookup is not followed by Yahoo's symbol search."""
-    if mock or _COMPANY_LANES <= env.exclude_sources(config):
+    lanes = _COMPANY_LANES if patent_lane else _COMPANY_LANES - {patents.SOURCE}
+    if mock or lanes <= env.exclude_sources(config):
         return {}
     if host_ticker:
-        return dict(company_resolve.resolve_company(entity, listing=False))
-    company = company_resolve.resolve_company(entity)
+        return dict(
+            company_resolve.resolve_company(entity, listing=False, names=patent_lane)
+        )
+    company = company_resolve.resolve_company(entity, names=patent_lane)
     if isinstance(company, company_resolve.FailedLookup):
         backup = yahoo_finance.backup_company(entity, config)
         if backup is None:
@@ -1159,6 +1171,30 @@ def _resolved_company(entity: str, *, mock: bool, config: dict, host_ticker: boo
     if company.get("ticker") or company.get("ticker_candidates"):
         company["ticker_source"] = company.get("company_source") or "wikidata"
     return company
+
+
+def _patent_lane_wanted(
+    *, comparison: bool, mock: bool, hiring_signals: bool, depth: str, config: dict,
+) -> bool:
+    """Whether this run searches the main topic's patent filings, given a
+    company. Never for a comparison (no entity of one gets a digest), a mock
+    run, a ``--hiring-signals`` run, quick depth, or with the lane excluded
+    (``EXCLUDE_SOURCES`` or ``LAST30DAYS_NO_PATENT_DIGEST``)."""
+    if comparison or mock or hiring_signals or depth == "quick":
+        return False
+    return not patents.is_excluded(config)
+
+
+def _company_for_patents(company: dict, host_names: list[str]) -> dict:
+    """The company whose patent filings the run searches, or {} for none.
+
+    The company the resolver named, with the other names it knows. When it
+    named none, the first company the host passed with ``--company``, under
+    that name alone. A ``--ticker`` name and ``--official-site`` are not
+    used: neither says the topic is that company."""
+    if company.get("company"):
+        return dict(company)
+    return {"company": host_names[0]} if host_names else {}
 
 
 # ``--company`` takes as many names as ``--ticker`` takes pairs.
@@ -4596,13 +4632,27 @@ def _main(
             yahoo_finance.parse_host_tickers(args.ticker)
             if (args.ticker or "").strip() and not args.mock else None
         )
+        patent_lane_wanted = _patent_lane_wanted(
+            comparison=comp_enabled, mock=args.mock, hiring_signals=args.hiring_signals,
+            depth=depth, config=config,
+        )
         main_company = _resolved_company(
             topic, mock=args.mock, config=config, host_ticker=host_tickers is not None,
+            patent_lane=patent_lane_wanted,
         )
         # The jobs lane reads the company from here; each comparison peer
         # replaces it with its own.
         host_companies = _host_companies(args.company)
         host_names = [company["name"] for company in host_companies]
+        # The company's patent filings over the run's own window, fetched
+        # beside the pipeline and collected when it returns.
+        patent_lane = None
+        if patent_lane_wanted:
+            patent_lane = patents.start(
+                _company_for_patents(main_company, host_names),
+                *dates.get_date_range(args.lookback_days, as_of_date=args.as_of_date),
+                config,
+            )
         config["_company"] = _company_for_jobs(
             main_company, host_tickers, topic,
             official_site=official_site, host_names=host_names,
@@ -4678,6 +4728,7 @@ def _main(
                     if comp_enabled else x_posts_envelope
                 ),
             )
+            patents.collect(patent_lane, r)
             r.artifacts["resolved"] = {
                 "entity": topic,
                 "x_handle": (args.x_handle or "").lstrip("@"),

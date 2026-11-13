@@ -36,6 +36,12 @@ const allowEnginePlanEnv = "LAST30DAYS_ALLOW_ENGINE_PLAN=1"
 // evidence snippet, which it otherwise drops for the roles the digest lists.
 const noJobsDigestEnv = "LAST30DAYS_NO_JOBS_DIGEST=1"
 
+// noPatentDigestEnv has the engine skip the patent lane: no USPTO search is
+// made and no "## Patent Digest" section is printed. How to weigh that digest
+// is told in a skill reference an MCP client never sees. The variable stops
+// the fetch itself, so there is no section for this server to filter out.
+const noPatentDigestEnv = "LAST30DAYS_NO_PATENT_DIGEST=1"
+
 // noReportChecklistEnv has the engine end compact output at its canonical
 // boundary. Otherwise it prints, after the boundary, a checklist of the
 // skill's report format, which an MCP client is not asked to follow: the tool
@@ -185,7 +191,7 @@ func researchRunArgs(topic, emit, saveDir string) []string {
 }
 
 func researchExtraEnv() []string {
-	return []string{allowEnginePlanEnv, noJobsDigestEnv, noReportChecklistEnv}
+	return []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
 }
 
 func browserCookiesAllowed() bool {

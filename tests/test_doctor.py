@@ -1513,6 +1513,21 @@ class CliHealth(unittest.TestCase):
         self.assertIn("yahoo_finance [CLI: yahoo-finance-pp-cli ✓]", text)
         self.assertIn("yahoo-finance-pp-cli — yahoo_finance", text)
 
+    def test_patents_listed_as_a_keyless_company_lane(self):
+        report = _build({})
+        rec = report["sources"]["patents"]
+        self.assertEqual("opt-in", rec["status"])
+        self.assertEqual(
+            "none (public USPTO search); activates for company topics", rec["requires"]
+        )
+        for expected in ("not companies", "no filings in the window", "sign-in"):
+            self.assertIn(expected, rec["note"])
+        self.assertIsNone(rec.get("cli"))
+        self.assertEqual(set(doctor.SOURCE_ORDER), set(report["sources"]))
+        self.assertLess(
+            doctor.SOURCE_ORDER.index("jobs"), doctor.SOURCE_ORDER.index("patents")
+        )
+
     def test_yahoo_finance_quiet_on_a_non_company_topic_is_not_broken(self):
         # The lane only runs for a topic that resolves to a listed company, so
         # a fresh run that recorded nothing for it is the normal case.

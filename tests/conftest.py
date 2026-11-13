@@ -145,6 +145,28 @@ def _no_company_lookup_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_patent_search_network(monkeypatch):
+    """The patent lane needs no key either, so a company run would reach USPTO.
+    Default its HTTP seam to a session whose searches find nothing; the lane's
+    own tests replace the seam."""
+    from types import SimpleNamespace
+
+    from lib import http, patents
+
+    def post(url, *_args, **_kwargs):
+        if url.endswith("/session"):
+            return {"userCase": {"caseId": 1}}, {"x-access-token": "test-token"}
+        return {"numFound": 0, "patents": []}
+
+    monkeypatch.setattr(
+        patents, "http", SimpleNamespace(
+            post=post, get=post, HTTPError=http.HTTPError,
+            classify_failure=http.classify_failure,
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_grok_cli():
     """Default the grok CLI to absent so no test resolves it from the developer's
     own machine. grok is a new X-chain backend whose availability is a plain

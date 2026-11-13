@@ -1,0 +1,13 @@
+{
+ "_note": "Shape of the anonymous session response, 2026-11-13. The token arrives in the x-access-token response header.",
+ "status": 200,
+ "headers": {
+  "x-access-token": "REDACTED-TOKEN"
+ },
+ "body": {
+  "userCase": {
+   "caseId": 260289115
+  },
+  "sessionTimeOutTime": 1800
+ }
+}

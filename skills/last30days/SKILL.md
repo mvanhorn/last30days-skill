@@ -80,11 +80,11 @@ This is the slash-command skill, not a generic search prompt. Run the installed 
 
 ## Bootstrap and file reads
 
-Bind `SKILL_DIR` to the absolute directory containing the **root SKILL.md actually loaded by the host**. Never bind it to `references/`, the current directory, or a different installation discovered through a path search. `SKILL.md` and `scripts/` are siblings. Retain `SKILL_DIR` across shell calls; when calls do not share variables, begin each command that uses it with a quoted assignment of that same absolute path.
+Bind `SKILL_DIR` to the absolute directory containing the **root SKILL.md actually loaded by the host**. Never bind it to `references/`, the current directory, or a different installation discovered through a path search. `SKILL.md` and `scripts/` are siblings. Retain `SKILL_DIR` across shell calls; when calls do not share variables, begin each command that uses it with a quoted assignment of that absolute path.
 
-Before any engine command, read the runtime reference below in full. Run its stale-clone self-check first. If the loaded root is in `/.claude/plugins/marketplaces/` and the check names a newer cached root, stop, read that replacement root in full, rebind `SKILL_DIR`, and restart dispatch. Other valid install locations do not trigger a redirect.
+Before any engine command, read the runtime reference below in full. Run its stale-clone self-check first. If the loaded root is in `/.claude/plugins/marketplaces/` and the check names a newer cached root, stop, read that replacement root in full, rebind `SKILL_DIR`, and restart dispatch. Other valid install locations do not redirect.
 
-Resolve Python 3.12+ as the runtime reference specifies before running **any** engine command, including library/feed/queue commands. The preflight prints a shell-quoted `LAST30DAYS_PYTHON=...` assignment for the validated interpreter. Retain that exact line; when shell calls do not share variables, begin every later Python engine or helper call with it, as well as the `SKILL_DIR` assignment. Do not use a different interpreter or a fallback. On a version-gate failure, display the installation guidance and stop; do not substitute web-only research.
+Resolve Python 3.12+ as the runtime reference specifies before running **any** engine command, including library/feed/queue commands. The preflight prints a shell-quoted `LAST30DAYS_PYTHON=...` assignment for the validated interpreter. Retain that exact line; when shell calls do not share variables, begin every later Python engine or helper call with it and the `SKILL_DIR` assignment. Do not use a different interpreter or a fallback. On a version-gate failure, display the installation guidance and stop; do not substitute web-only research.
 
 Read this root in full. Read only references whose conditions apply, using the host's Read or equivalent local file capability. Read each selected reference in full before its phase. Do not recursively read every reference or stop after its first headings. If the reading tool truncates output, continue bounded reads until the entire selected reference is loaded before acting. If a required reference is missing or unreadable, stop before the affected command/output and report the exact path; do not improvise its procedure.
 
@@ -103,7 +103,7 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Before synthesizing ordinary or comparison research | Read [references/synthesis.md](references/synthesis.md) in full. | Synthesize grounded evidence (comparison bodies use the comparison template), then apply the root output laws and final checks. |
 | Explicit comparison intent | Read [references/comparison.md](references/comparison.md) in full. | Use comparison execution and its output exceptions before writing the comparison body. |
 | `--competitors` mode | Read [references/competitors.md](references/competitors.md) and [references/comparison.md](references/comparison.md) in full. | Use comparison execution and synthesis; preserve per-entity targeting. |
-| Hiring intent or an engine `## Hiring Signals` or `## Jobs Digest` block | Read [references/hiring-signals.md](references/hiring-signals.md) in full. | Apply the jobs lane and its scoped planning exception; in standard runs, apply its section rules. |
+| Hiring intent or an engine `## Hiring Signals`, `## Jobs Digest` or `## Patent Digest` block | Read [references/hiring-signals.md](references/hiring-signals.md) and [references/patent-signals.md](references/patent-signals.md) in full. | Apply the jobs lane and its scoped planning exception; in standard runs, apply each file's section rules. |
 | `--agent` mode or explicit machine-readable JSON | Read [references/agent-mode.md](references/agent-mode.md) in full. | Apply structured output without treating absent consent as permission. |
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
 | Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers during Step 0.55 before planning. |
@@ -117,7 +117,7 @@ Preserve the user's original request while handling setup. Classify library/feed
 
 For library search/feed/queue, run the selected offline procedure and relay its result. Never fall through to fresh research because the library is empty, SQLite lacks FTS5, or a queue name is unknown. An unknown queue-cover name requires listing exact queued names.
 
-For a follow-up, use existing findings unless the user requests a different topic or an explicit drill/freshness action. Do not run setup again merely to answer a follow-up.
+For a follow-up, use existing findings unless the user requests a different topic or an explicit drill/freshness action. Do not rerun setup to answer a follow-up.
 
 For fresh research or discovery, resolve whether the agent session has a usable web-search tool, including a deferred or connector-provided tool. If the host requires loading, selecting, or enabling that tool, do so through the host's mechanism before use. Use the available capability rather than requiring one particular tool name or schema.
 - When host web search is available, use it for applicable pre-research and supplements. Export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine.
@@ -125,13 +125,13 @@ For fresh research or discovery, resolve whether the agent session has a usable 
 
 **GROK BOT HOST RULE (every invocation, including `SETUP_COMPLETE=true`).** On an actual Grok Bot host, export `LAST30DAYS_HOST=grok-bot` in every engine shell. Do not infer this host from `CURSOR_AGENT` alone; Cursor also sets it. Load the Grok Bot X lane reference through the gate above and fetch X yourself first: the built-in X tools (namespace `x`), else the "X for Grok Bot" plugin. Export `LAST30DAYS_X_HOST_LANE=1` with its `--x-posts` envelope only when posts came back. Never read a browser session on a Grok Bot. Never place post text unquoted in a shell command; write envelopes only with a single-quoted heredoc delimiter or tool file output. First-run Grok Bot uses the Grok Bot Prose Flow; Cursor uses the Non-Modal Prose Flow.
 
-**FIRST-RUN GATE — after resolving host web search, before topic research:**
+**FIRST-RUN GATE - after resolving host web search, before topic research:**
 
 ```bash
 grep -q "SETUP_COMPLETE=true" ~/.config/last30days/.env 2>/dev/null && echo "1" || echo "FIRST_RUN_DETECTED"
 ```
 
-This emits exactly one token: `1` or `FIRST_RUN_DETECTED`. The grep sees only the global marker; it does not inspect process env, project config, Keychain, pass, or host auth.
+This emits one token: `1` or `FIRST_RUN_DETECTED`. The grep sees only the global marker; it does not inspect process env, project config, Keychain, pass, or host auth.
 
 - `1`: setup is complete; continue to the original requested route.
 - `FIRST_RUN_DETECTED`: read the setup-wizard reference through its root gate immediately. That section decides first-run from **every credential source**. A missing `.env` alone is not a first run. If setup is unnecessary, continue silently. If it is required, complete the applicable flow before topic research, subject to its Research Continuation Override.
@@ -145,15 +145,15 @@ After the gate:
 - Topic supplied: load the topic runbook. Run Step 0.45 query quality before resolution, then all applicable Steps 0.5/0.55/0.75 before execution. Do not ask about an unspecified target tool before research.
 - No topic supplied: ask one short topic question and wait; do not research or WebSearch.
 
-Use the engine's `--diagnose` `available_sources` for source announcements, never credential-file guesses. Before research relying on login-backed sources, consult `doctor --cached --json` as the runbook specifies. A health-check request uses the runbook's doctor procedure rather than pretending to conduct a topic report.
+Use the engine's `--diagnose` `available_sources` for source announcements, never credential-file guesses. Before research relying on login-backed sources, consult `doctor --cached --json` as the runbook specifies. A health-check request uses the runbook's doctor procedure, not a topic report.
 
-**Save-directory resolution:** Query trusted engine configuration with `--resolve-save-dir`; never source a `.env` file. A one-off user directory belongs on that resolver command. Resolve once per research/discovery run and carry the exact value, including an empty string, into every later command and every discovery leg. Restore the captured value in later shell calls rather than resolving again. An absent setting defaults to `~/Documents/Last30Days`; explicitly empty disables saves and the saved appendix.
+**Save-directory resolution:** Query trusted engine configuration with `--resolve-save-dir`; never source a `.env` file. A one-off user directory belongs on that resolver command. Resolve once per research/discovery run and carry the exact value, including an empty string, into every later command and every discovery leg. Restore it in later shell calls rather than resolving again. An absent setting defaults to `~/Documents/Last30Days`; explicitly empty disables saves and the saved appendix.
 
 Historical `## From your library` findings may inform synthesis as dated context. Never label them fresh evidence from the current window. `LAST30DAYS_LIBRARY_CONTEXT=off` disables this passive lookup.
 
 ## Output contract
 
-Apply these presentation defaults only where compatible with governing host/tool requirements and user instructions. User formatting preferences, including host memory, take precedence. The paragraph headline phrase is report structure, not a formatting default: a general style preference alone does not remove it. Only an instruction naming this report or arriving with the request, a host or operator requirement, or a channel that does not render markdown does. The laws resolve conflicts within this skill. LAWs 1, 3, 5, 6, 7, and 8 apply to every query type; LAWs 2 and 4 have explicit comparison exceptions. Selected mode contracts also retain scoped exceptions: discovery relays its brief; hiring uses its scoped title; agent mode omits the invitation/wait and uses its report structure. Explicit machine-readable JSON uses `--emit=json` and verbatim engine stdout, with no prose badge, synthesis, footer, or invitation added.
+Apply these presentation defaults only where compatible with governing host/tool requirements and user instructions. User formatting preferences, including host memory, take precedence. The paragraph headline phrase is report structure, not a formatting default: a general style preference alone does not remove it. Only an instruction naming this report or arriving with the request, a host or operator requirement, or a channel that does not render markdown does. The laws resolve conflicts within this skill. LAWs 1, 3, 5, 6, 7, and 8 apply to every query type; LAWs 2 and 4 have explicit comparison exceptions. Selected modes keep scoped exceptions: discovery relays its brief; hiring uses its scoped title; agent mode omits the invitation/wait and uses its report structure. Explicit machine-readable JSON uses `--emit=json` and verbatim engine stdout, with no prose badge, synthesis, footer, or invitation added.
 
 **BADGE (MANDATORY, FIRST LINE OF OUTPUT):** Copy the engine's first line (`🌐 last30days · ...`) verbatim as line 1. Put no other text on that line. Follow with one blank line.
 
@@ -173,13 +173,13 @@ GENERAL / NEWS / PROMPTING / RECOMMENDATIONS use `What I learned:` on line 3 and
 
 **GENERAL nothing-solid floor.** When ranked clusters say `Nothing solid this window`, every visible cluster failed the positive, non-entity-miss relevance floor. Treat that community evidence as absent. Do not infer findings from its stats, quote its comments, or satisfy LAW 9 from rejected candidates. Use only supported web supplements and say plainly that recent community evidence was insufficient. If those supplements are also insufficient, give an honest short no-finding answer; retain an emitted footer and the invitation.
 
-**Per-run source outcomes (doctor-aligned):** Read `## Partial Coverage` and `Report.source_status`. `no-results` means clean completion with zero matches. `partial`, `rate-limited`, `auth-failed`, `unreachable`, `timeout`, `schema-drift`, `skipped-unconfigured`, and `error` do not establish that a source was quiet. Never say “nothing on X/Reddit/YouTube” for those states; qualify partial coverage and use only returned evidence. The footer has counts, not outcomes. Do not invent repair prescriptions or add outcome text to it. Plain doctor predicts configuration health; `source_status` reports this run, and `doctor --postmortem` reads those actual outcomes from the last-run cache.
+**Per-run source outcomes (doctor-aligned):** Read `## Partial Coverage` and `Report.source_status`. `no-results` means clean completion with zero matches. `partial`, `rate-limited`, `auth-failed`, `unreachable`, `timeout`, `schema-drift`, `skipped-unconfigured`, and `error` do not establish that a source was quiet. Never say "nothing on X/Reddit/YouTube" for those states; qualify partial coverage and use only returned evidence. The footer has counts, not outcomes. Do not invent repair prescriptions or add outcome text to it. Plain doctor predicts configuration health; `source_status` reports this run, and `doctor --postmortem` reads those outcomes from the last-run cache.
 
-**LAW 7 - YOU ARE THE PLANNER. `--plan` IS MANDATORY ON NAMED-ENTITY TOPICS.** The hosting reasoning model generates the JSON query plan without an external provider key. Internal planning/fallback is a headless/cron path. Named entities include proper nouns, products, people, projects, and topics benefiting from handle resolution. Before the research command, verify it contains `--plan -` with the quoted JSON heredoc from Research Execution; otherwise stop and generate the plan through Step 0.75. Do not interpret “provider” in an engine message as a requirement for credentials to write your own plan. The explicit no-host-WebSearch and jobs-only exceptions remain scoped to their runbook/mode procedures.
+**LAW 7 - YOU ARE THE PLANNER. `--plan` IS MANDATORY ON NAMED-ENTITY TOPICS.** The hosting reasoning model generates the JSON query plan without an external provider key. Internal planning/fallback is a headless/cron path. Named entities include proper nouns, products, people, projects, and topics benefiting from handle resolution. Before the research command, verify it contains `--plan -` with the quoted JSON heredoc from Research Execution; otherwise stop and generate the plan through Step 0.75. "Provider" in an engine message does not mean you need credentials to write your own plan. The explicit no-host-WebSearch and jobs-only exceptions remain scoped to their runbook/mode procedures.
 
 Agent research without `--plan` exits 2 before live probes unless exempt.
 
-Pass plans on stdin using `--plan -` and a quoted heredoc delimiter that does not occur as a line in the JSON. This requires no temporary file or cleanup trap. Run the heredoc directly in the shell tool. Never wrap the invocation in `bash -lc '...'` or `zsh -lc '...'`; apostrophes in search/ranking strings must remain data.
+Pass plans on stdin using `--plan -` and a quoted heredoc delimiter that does not occur as a line in the JSON, with no temporary file or cleanup trap. Run the heredoc directly in the shell tool. Never wrap the invocation in `bash -lc '...'` or `zsh -lc '...'`; apostrophes in search/ranking strings must remain data.
 
 **LAW 8 - CITE READABLY FOR THE CURRENT HOST.** Governing host/tool requirements and user instructions determine required links before renderer preferences. Detection is deterministic: `CLAUDECODE` or `CURSOR_AGENT` set means hidden-link default; both unset means visible-URL default. This renderer split is separate from onboarding; Cursor remains non-modal.
 - Hidden-link default: inline-link each cited handle, subreddit, comment author, publication, channel/creator, repository, or market at first mention, using a verbatim URL from its evidence.
@@ -210,13 +210,13 @@ Check governing formatting/citation instructions first. Skip a conflicting prese
 8. On host-WebSearch paths, verify `--emit=compact --plan -` with a quoted JSON heredoc and every applicable resolved handle/subreddit/hashtag/creator flag. If protocol was skipped, return to resolution/planning and run it; do not hide the engine's pre-research warning.
 9. For person topics, resolve at least `--x-handle`, `--github-user`, and `--subreddits`, typically `--x-related`, unless resolution explicitly established no account. A lone X handle is insufficient.
 
-If one regeneration still cannot satisfy a data-backed check, display the best supported result and name the unsatisfied check. Never fabricate missing evidence.
+If one regeneration cannot satisfy a data-backed check, display the best supported result and name the unsatisfied check. Never fabricate missing evidence.
 
 ## HTML and follow-up handoff
 
 HTML/export intent includes `--emit=html`, `--emit:html`, `--html`, or a natural-language request for an HTML brief, shareable document, or file for sharing. These are skill intent signals, not the full Python CLI contract. If triggered, read the HTML reference through the root gate before finishing. Otherwise skip that read and save flow.
 
-Follow the HTML reference exactly: local file first, absolute path, open locally when supported and implied, and its concise handoff for an HTML deliverable. Never re-research merely to render cached findings. Never upload/publish without an explicit hosted-sharing request and disclosure that the link may be public/indexed unless protected. Never add debug/data-quality warnings to a shareable artifact or improvise a save path.
+Follow the HTML reference exactly: local file first, absolute path, open locally when supported and implied, and its concise handoff for an HTML deliverable. Never re-research to render cached findings. Never upload/publish without an explicit hosted-sharing request and disclosure that the link may be public/indexed unless protected. Never add debug/data-quality warnings to a shareable artifact or improvise a save path.
 
 After the response and required citations, stop and wait unless governing instructions require continuation. Resume any deferred same-run onboarding first. Do not continue research after the invitation. Claim a saved artifact only when the engine emitted a path; an empty save directory disables saving and its pointer.
 
@@ -230,15 +230,15 @@ After the response and required citations, stop and wait unless governing instru
 - Sends search queries to Algolia HN Search (`hn.algolia.com`) for Hacker News stories and comments (free, no auth)
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
 - Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction markets (free, no auth)
-- Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name
+- Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name; company runs send USPTO patent search (`ppubs.uspto.gov`, no key) the company name
 - Runs `yt-dlp` locally for YouTube search and transcripts (no API key, public data)
 - Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG).
 - Optionally sends search queries to Brave Search, Parallel AI, Perplexity (`api.perplexity.ai`), or OpenRouter APIs for web search / synthesis
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
 - Stores research findings in local SQLite database (watchlist mode only)
 - Saves research briefings as .md files to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`)
-- Generates a local `index.html`, Atom `feed.xml`, and rendered brief pages from saved research when the user asks for the library feed
-- Publishes the library, feed, and referenced briefs to `ht-ml.app` only after explicit opt-in; hosted pages are public by default unless the user chooses password protection
+- Generates a local `index.html`, Atom `feed.xml`, and rendered brief pages from saved research on a library feed request
+- Publishes the library, feed, and referenced briefs to `ht-ml.app` only after explicit opt-in; hosted pages are public unless the user chooses password protection
 - Provides `--preflight` as an opt-in permission inspector (config source, planned writes, available sources); it does not read browser-cookie values, write files, or run live research. Do not run it as a required first-run step.
 
 **What this skill does NOT do:**

@@ -1332,7 +1332,7 @@ def test_engine_run_uses_the_host_ticker_and_not_the_wikidata_one(monkeypatch, t
     # Wikidata still names the company, and is asked for no listing.
     assert resolved["company"] == "MainBrand Inc."
     assert resolved["company_site"] == "https://mainbrand.example/"
-    observed.company_resolver.assert_called_once_with("MainBrand", listing=False)
+    observed.company_resolver.assert_called_once_with("MainBrand", listing=False, names=True)
     assert fake.charted() == ["NVDA", "^GSPC"]
 
 
@@ -1362,7 +1362,7 @@ def test_engine_run_with_every_host_ticker_rejected_prints_nothing_and_falls_bac
         "pair": "STRS:Stripe",
         "reason": "Yahoo lists no stock for 'Stripe'; STRS is Stratus Properties Inc.",
     }]
-    observed.company_resolver.assert_called_once_with("MainBrand", listing=False)
+    observed.company_resolver.assert_called_once_with("MainBrand", listing=False, names=True)
     # No symbol search for the topic: the Yahoo backup is not a fallback here.
     assert [cmd[3] for cmd in fake.calls if cmd[1] == "autocomplete"] == ["Stripe"]
     assert fake.charted() == ["STRS"]
@@ -1377,7 +1377,7 @@ def test_engine_run_without_the_flag_resolves_as_before(monkeypatch, tmp_path):
         expected_topics=frozenset({"MainBrand"}), companies=_LISTED,
     )
 
-    observed.company_resolver.assert_called_once_with("MainBrand")
+    observed.company_resolver.assert_called_once_with("MainBrand", names=True)
     resolved = observed.reports["MainBrand"].artifacts["resolved"]
     assert (resolved["ticker"], resolved["ticker_source"]) == ("MAIN", "wikidata")
     assert "tickers" not in resolved and "ticker_rejected" not in resolved
@@ -1387,7 +1387,7 @@ def test_engine_run_without_the_flag_resolves_as_before(monkeypatch, tmp_path):
 def test_engine_run_with_an_empty_ticker_flag_resolves_as_before(monkeypatch, tmp_path):
     observed, _fake = _host_run(monkeypatch, tmp_path, " ", charts=_JUNE_CHARTS, companies=_LISTED)
 
-    observed.company_resolver.assert_called_once_with("MainBrand")
+    observed.company_resolver.assert_called_once_with("MainBrand", names=True)
     assert observed.reports["MainBrand"].artifacts["yahoo_finance"]["symbol"] == "MAIN"
 
 
