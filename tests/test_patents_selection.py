@@ -21,8 +21,8 @@ ARTIFACT_KEYS = {
 }
 COUNT_KEYS = {
     "applications", "grants", "name_matched_applications", "name_matched_grants",
-    "first_publications", "continuing", "previously_published_grants", "designs",
-    "other_kinds", "floor",
+    "first_publications", "name_matched_first_publications", "continuing",
+    "previously_published_grants", "designs", "other_kinds", "floor",
 }
 ENTRY_KEYS = [
     "guid", "number", "title", "url", "kind", "kind_code", "published", "filed",
@@ -359,11 +359,80 @@ def test_microsoft_filings_are_name_matched_and_still_make_a_digest(monkeypatch)
     counts = artifact["counts"]
     assert (counts["applications"], counts["grants"]) == (0, 0)
     assert (counts["name_matched_applications"], counts["name_matched_grants"]) == (25, 25)
+    # The 25 applications: 18 first publications and 7 continuing. The 25
+    # grants are all B2. None is under a confirmed name, so none is the company's.
+    assert counts["name_matched_first_publications"] == 18
+    assert counts["first_publications"] == 0
+    assert (counts["continuing"], counts["previously_published_grants"]) == (0, 0)
     assert artifact["status"] == "digest"
     assert len(artifact["entries"]) == 12
     for item in artifact["entries"] + artifact["index"]:
         assert item["group_kind"] == "name-matched"
         assert item["filed_as"] == "Microsoft Technology Licensing, LLC"
+
+
+BLOCK_IMAGING = "Block Imaging, Inc."
+
+
+def test_name_matched_filings_stay_out_of_the_company_s_counts(monkeypatch):
+    applications = [
+        make_row("US-20260410001-A1", "2026-11-06", name="Block, Inc."),
+        *[make_row(f"US-2026041001{n}-A1", "2026-11-05", name=BLOCK_IMAGING) for n in range(5)],
+        make_row("US-20260410020-A1", "2026-11-04", name=BLOCK_IMAGING, **CONTINUING),
+        make_row("US-20260410021-A9", "2026-11-04", name=BLOCK_IMAGING, kind="A9"),
+    ]
+    grants = [
+        make_row("US-12790021-B2", "2026-11-03", name=BLOCK_IMAGING, kind="B2"),
+        make_row("US-D1150002-S", "2026-11-03", name=BLOCK_IMAGING, kind="S"),
+    ]
+    FakeUSPTO(lists={"US-PGPUB": applications, "USPAT": grants}).install(monkeypatch)
+
+    artifact = run({"company": "Block"})["artifact"]
+
+    assert artifact["groups"] == [
+        {"name": "Block, Inc.", "kind": "confirmed", "applications": 1, "grants": 0},
+        {"name": BLOCK_IMAGING, "kind": "name-matched", "applications": 7, "grants": 2},
+    ]
+    assert artifact["counts"] == {
+        "applications": 1, "grants": 0,
+        "name_matched_applications": 7, "name_matched_grants": 2,
+        "first_publications": 1, "name_matched_first_publications": 5,
+        "continuing": 0, "previously_published_grants": 0, "designs": 0, "other_kinds": 0,
+        "floor": False,
+    }
+    # The entries still hold the name-matched filings, labelled.
+    assert [entry["group_kind"] for entry in artifact["entries"]] == [
+        "confirmed", *["name-matched"] * 5,
+    ]
+
+
+def test_a_demoted_candidate_leaves_the_first_publications_of_its_own_group_kind(monkeypatch):
+    applications = [
+        make_row("US-20260420001-A1", "2026-11-06", name="Block, Inc."),
+        make_row("US-20260420002-A1", "2026-11-06", name="Block, Inc."),
+        make_row("US-20260420011-A1", "2026-11-05", name=BLOCK_IMAGING),
+        make_row("US-20260420012-A1", "2026-11-05", name=BLOCK_IMAGING),
+    ]
+    grants = [make_row("US-12790031-B1", "2026-11-04", name=BLOCK_IMAGING, kind="B1")]
+    continuing = {"abstractHtml": "x", "continuityData": ["parent US continuation 1 20200101"]}
+    demoted = ["US-20260420002-A1", "US-20260420012-A1", "US-12790031-B1"]
+    FakeUSPTO(
+        lists={"US-PGPUB": applications, "USPAT": grants},
+        details={guid: continuing for guid in demoted},
+    ).install(monkeypatch)
+
+    artifact = run({"company": "Block"})["artifact"]
+
+    assert [entry["guid"] for entry in artifact["entries"]] == [
+        "US-20260420001-A1", "US-20260420011-A1",
+    ]
+    counts = artifact["counts"]
+    # Confirmed: two candidates, one found to be a continuation.
+    assert (counts["first_publications"], counts["continuing"]) == (1, 1)
+    # Name-matched: three candidates, two demoted, and neither joins a count
+    # of the company's own filings.
+    assert counts["name_matched_first_publications"] == 1
+    assert counts["previously_published_grants"] == 0
 
 
 def test_alphabet_is_searched_and_confirmed_under_its_other_names(monkeypatch):
@@ -472,6 +541,8 @@ def test_a_row_sits_in_the_best_group_among_its_names(monkeypatch):
     assert artifact["other_names"] == []
     assert artifact["counts"]["applications"] == 2
     assert artifact["counts"]["name_matched_applications"] == 2
+    assert artifact["counts"]["first_publications"] == 2
+    assert artifact["counts"]["name_matched_first_publications"] == 2
     assert [(entry["filed_as"], entry["group_kind"]) for entry in artifact["entries"]] == [
         ("Apple Inc.", "confirmed"),
         ("Apple Retail Holdings LLC", "name-matched"),

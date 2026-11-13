@@ -1138,7 +1138,8 @@ def _resolved_company(
     ``patent_lane`` says this run would search the entity's patent filings.
     Only the main topic of some runs is (see ``_patent_lane_wanted``); for
     every other entity the patent lane reads nothing, so it does not count
-    among the lanes that must be excluded.
+    among the lanes that must be excluded, and the company's other names,
+    which only that lane reads, are not asked for.
 
     When the Wikidata lookup failed (not when it answered with nothing),
     Yahoo's symbol search is asked for the topic instead, and
@@ -1151,8 +1152,10 @@ def _resolved_company(
     if mock or lanes <= env.exclude_sources(config):
         return {}
     if host_ticker:
-        return dict(company_resolve.resolve_company(entity, listing=False))
-    company = company_resolve.resolve_company(entity)
+        return dict(
+            company_resolve.resolve_company(entity, listing=False, names=patent_lane)
+        )
+    company = company_resolve.resolve_company(entity, names=patent_lane)
     if isinstance(company, company_resolve.FailedLookup):
         backup = yahoo_finance.backup_company(entity, config)
         if backup is None:

@@ -9,7 +9,8 @@ worse than none, so every step that is not certain returns nothing:
   There is no hop from a product to its maker or from a subsidiary to its
   parent.
 - The one hop is downward, from a company that is already certain to the names
-  its own Wikidata record lists. A holding company files little under its own
+  its own Wikidata record lists, and it is made only for a caller that asks
+  for them (``names=True``). A holding company files little under its own
   name, so a caller searching filings needs these, and it treats each one as a
   name that certainly belongs to the company. So only names that could be a
   legal filing name and that say something new are returned, compared by the
@@ -41,8 +42,9 @@ worse than none, so every step that is not certain returns nothing:
 Any error, timeout or unexpected response returns nothing and logs once. That
 nothing is a ``FailedLookup``, so a caller can tell "Wikidata did not answer"
 from "Wikidata answered and nothing is certain". The one exception is the
-one request for the subsidiaries' labels: the company is certain before it
-is made, so its failure logs once and costs only the subsidiary names.
+one request for the subsidiaries' labels, made only when the names are asked
+for: the company is certain before it is made, so its failure logs once and
+costs only the subsidiary names.
 """
 
 from __future__ import annotations
@@ -136,26 +138,31 @@ def _comparison_side_company_like(side: str) -> bool:
     return bool(token[:1].isupper() or lower in _KNOWN_SINGLE_WORD_COMPANIES)
 
 
-def resolve_company(topic: str, *, listing: bool = True) -> dict[str, Any]:
+def resolve_company(
+    topic: str, *, listing: bool = True, names: bool = False,
+) -> dict[str, Any]:
     """Return what is certain about the company a topic names.
 
     Keys, each present only when resolved: ``company``, ``company_site``,
     ``ticker``, ``exchange``, ``ticker_candidates`` (the current listings'
     symbols, only when the company is certain and its ticker is not),
-    ``company_names`` (other names that certainly belong to the company: its
-    official names and aliases that could be a legal filing name, then its
-    subsidiaries, at most ``MAX_COMPANY_NAMES`` distinct strings and never
-    ``company`` itself), and
+    ``company_names`` (only with ``names``; other names that certainly belong
+    to the company: its official names and aliases that could be a legal
+    filing name, then its subsidiaries, at most ``MAX_COMPANY_NAMES`` distinct
+    strings and never ``company`` itself), and
     ``company_via_person`` (True) when the topic is the person who leads the
     company. An empty dict means nothing is certain; it is a ``FailedLookup``
     when the lookup itself failed. No request is made for a topic that is not
     company-shaped. With ``listing`` off the company's stock listing is not
     read, so there is no ``ticker``, ``exchange`` or ``ticker_candidates``.
+    Without ``names`` the company's other names are not read: there is no
+    ``company_names`` and no request for the subsidiaries' labels. Only a
+    caller that searches filings under those names needs them.
     """
     if not company_topic_likely(topic):
         return {}
     try:
-        return _resolve(" ".join(topic.split()), listing)
+        return _resolve(" ".join(topic.split()), listing, names)
     except Exception as exc:
         log.source_log(
             "Company",
@@ -165,7 +172,7 @@ def resolve_company(topic: str, *, listing: bool = True) -> dict[str, Any]:
         return FailedLookup()
 
 
-def _resolve(topic: str, listing: bool = True) -> dict[str, Any]:
+def _resolve(topic: str, listing: bool = True, names: bool = False) -> dict[str, Any]:
     hits = _api({
         "action": "wbsearchentities", "search": topic, "language": "en",
         "uselang": "en", "type": "item", "limit": 1,
@@ -180,10 +187,10 @@ def _resolve(topic: str, listing: bool = True) -> dict[str, Any]:
         company = _company_led_by(top_id)
         if company is None:
             return {}
-        return {**_company_fields(company, listing), "company_via_person": True}
+        return {**_company_fields(company, listing, names), "company_via_person": True}
     if not _is_business(entity):
         return {}
-    return _company_fields(entity, listing)
+    return _company_fields(entity, listing, names)
 
 
 def _api(params: dict[str, Any]) -> dict[str, Any]:
@@ -282,7 +289,9 @@ def _company_led_by(person_id: str) -> dict[str, Any] | None:
     return led[0]
 
 
-def _company_fields(entity: dict[str, Any], listing: bool = True) -> dict[str, Any]:
+def _company_fields(
+    entity: dict[str, Any], listing: bool = True, names: bool = False,
+) -> dict[str, Any]:
     labels = entity["labels"]
     fields: dict[str, Any] = {"company": (labels.get("en") or labels["mul"])["value"]}
     sites = _preferred_or_all(_statements(entity, _OFFICIAL_WEBSITE))
@@ -290,9 +299,10 @@ def _company_fields(entity: dict[str, Any], listing: bool = True) -> dict[str, A
         fields["company_site"] = _value(sites[0])
     if listing:
         fields.update(_primary_listing(entity))
-    names = _company_names(entity, fields["company"])
     if names:
-        fields["company_names"] = names
+        other_names = _company_names(entity, fields["company"])
+        if other_names:
+            fields["company_names"] = other_names
     return fields
 
 

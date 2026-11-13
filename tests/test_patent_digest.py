@@ -20,7 +20,10 @@ NVIDIA = {
     "counts": {
         "applications": 160, "grants": 86,
         "name_matched_applications": 0, "name_matched_grants": 1,
-        "first_publications": 98, "continuing": 73, "previously_published_grants": 75,
+        # The name-matched grant is a first publication (it is in the index),
+        # so 97 of the 98 the run found sit under the confirmed name.
+        "first_publications": 97, "name_matched_first_publications": 1,
+        "continuing": 73, "previously_published_grants": 75,
         "designs": 1, "other_kinds": 0, "floor": False,
     },
     "entries": [
@@ -98,7 +101,9 @@ def microsoft():
         "counts": {
             "applications": 0, "grants": 1,
             "name_matched_applications": 212, "name_matched_grants": 140,
-            "first_publications": 3, "continuing": 0, "previously_published_grants": 0,
+            # One entry below is filed under the confirmed name, two are not.
+            "first_publications": 1, "name_matched_first_publications": 2,
+            "continuing": 0, "previously_published_grants": 0,
             "designs": 0, "other_kinds": 0, "floor": False,
         },
         "entries": [
@@ -110,6 +115,47 @@ def microsoft():
         "partial": None,
         "status": "digest",
     }
+
+
+def block():
+    """One application under the company's own name and five under a
+    stranger's that extends it."""
+    imaging = "Block Imaging, Inc."
+    return {
+        "company": "Block",
+        "company_via_person": False,
+        "window": {"from": "2026-10-14", "to": "2026-11-13"},
+        "groups": [
+            {"name": "Block, Inc.", "kind": "confirmed", "applications": 1, "grants": 0},
+            {"name": imaging, "kind": "name-matched", "applications": 5, "grants": 0},
+        ],
+        "other_names": [],
+        "counts": {
+            "applications": 1, "grants": 0,
+            "name_matched_applications": 5, "name_matched_grants": 0,
+            "first_publications": 1, "name_matched_first_publications": 5,
+            "continuing": 0, "previously_published_grants": 0,
+            "designs": 0, "other_kinds": 0, "floor": False,
+        },
+        "entries": [
+            _entry(3001, filed_as="Block, Inc."),
+            *[_entry(3002 + n, filed_as=imaging, group_kind="name-matched") for n in range(5)],
+        ],
+        "index": [],
+        "partial": None,
+        "status": "digest",
+    }
+
+
+def microsoft_licensing_only():
+    """Microsoft with every filing under the licensing subsidiary's name."""
+    artifact = microsoft()
+    artifact["groups"] = artifact["groups"][1:]
+    artifact["counts"].update(grants=0, first_publications=0)
+    artifact["entries"] = [
+        entry for entry in artifact["entries"] if entry["group_kind"] == "name-matched"
+    ]
+    return artifact
 
 
 def _link(url, title):
@@ -160,7 +206,7 @@ def test_filings_line_names_company_window_confirmed_counts_and_names():
 
 def test_first_publications_line_counts_what_is_not_listed_and_omits_zeros():
     first = _line(lines(NVIDIA), "- First US publications:")
-    assert first.startswith("- First US publications: 98")
+    assert first.startswith("- First US publications: 97 (")
     assert "73 continuing applications (continuations, divisionals)" in first
     assert "75 grants of applications published earlier" in first
     assert "1 design patent" in first
@@ -227,6 +273,43 @@ def test_name_matched_line_lists_the_group_and_filings_counts_exclude_it():
     assert "not verified as belonging to it" in matched
 
 
+def test_first_publications_under_name_matched_names_are_counted_apart():
+    out = lines(block())
+    filings = _line(out, "- Filings:")
+    assert "1 application published | 0 patents granted | filed as Block, Inc." in filings
+    assert _line(out, "- First US publications:").startswith("- First US publications: 1 (")
+    assert _line(out, "- Name-matched:").endswith(
+        "Block Imaging, Inc. (5 applications, 0 grants); 5 first US publications among them"
+    )
+    # The name-matched filings are still listed, labelled.
+    listed = [line for line in out if line.startswith("- [Filing")]
+    assert [("name-matched" in line) for line in listed] == [False] + [True] * 5
+
+
+def test_one_name_matched_first_publication_is_singular():
+    assert _line(lines(NVIDIA), "- Name-matched:").endswith(
+        "NVIDIA Corparation (0 applications, 1 grant); 1 first US publication among them"
+    )
+
+
+def test_name_matched_line_says_nothing_of_first_publications_when_it_has_none():
+    artifact = block()
+    artifact["counts"]["name_matched_first_publications"] = 0
+    assert _line(lines(artifact), "- Name-matched:").endswith(
+        "Block Imaging, Inc. (5 applications, 0 grants)"
+    )
+
+
+def test_with_nothing_confirmed_the_first_publications_are_on_the_name_matched_line():
+    out = lines(microsoft_licensing_only())
+    assert "no filing under a confirmed name" in _line(out, "- Filings:")
+    assert _line(out, "- First US publications:").startswith("- First US publications: 0 (")
+    assert _line(out, "- Name-matched:").endswith(
+        "Microsoft Technology Licensing, LLC (212 applications, 140 grants); "
+        "2 first US publications among them"
+    )
+
+
 def test_no_name_matched_line_without_such_a_group():
     artifact = copy.deepcopy(NVIDIA)
     artifact["groups"] = artifact["groups"][:1]
@@ -245,8 +328,10 @@ def test_floor_puts_a_plus_on_the_counts():
     out = lines(artifact)
     filings = _line(out, "- Filings:")
     assert "0+ applications published" in filings and "1+ patents granted" in filings
-    assert "(212+ applications, 140+ grants)" in _line(out, "- Name-matched:")
-    assert _line(out, "- First US publications:").startswith("- First US publications: 3+")
+    assert _line(out, "- Name-matched:").endswith(
+        "(212+ applications, 140+ grants); 2+ first US publications among them"
+    )
+    assert _line(out, "- First US publications:").startswith("- First US publications: 1+ (")
 
 
 def test_person_topic_names_the_company_the_person_leads():

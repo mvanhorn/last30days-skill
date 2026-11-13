@@ -4,7 +4,7 @@ import copy
 
 from lib import jobs_digest, render, report_checklist, schema
 
-from tests.test_patent_digest import NVIDIA, microsoft
+from tests.test_patent_digest import NVIDIA, block, microsoft, microsoft_licensing_only
 
 WINDOW = ("2026-10-14", "2026-11-13")
 
@@ -178,7 +178,7 @@ def test_counts_only_prints_the_footer_line_and_no_block():
     rendered = render.render_compact(_report(_counts_only()))
     assert "Patent Digest" not in rendered
     assert _footer_line(rendered) == (
-        "├─ 📜 Patents: 160 applications published │ 86 granted │ 98 first US publications"
+        "├─ 📜 Patents: 160 applications published │ 86 granted │ 97 first US publications"
     )
     assert "`## Patent Digest` block" not in render.render_full(_report(_counts_only()))
     checklist = _checklist(rendered)
@@ -208,7 +208,7 @@ def test_checklist_states_both_digests_on_one_line_and_holds_no_list():
 
 
 def test_footer_line_shows_for_a_digest_in_compact_and_saved_output():
-    line = "📜 Patents: 160 applications published │ 86 granted │ 98 first US publications"
+    line = "📜 Patents: 160 applications published │ 86 granted │ 97 first US publications"
     assert render._patents_footer_line(_report(NVIDIA)) == line
     assert line in render.render_compact(_report(NVIDIA))
     assert line in render.render_full(_report(NVIDIA), save_path="/tmp/raw.md")
@@ -229,9 +229,9 @@ def test_floor_puts_a_plus_on_block_and_footer_counts():
     artifact["counts"]["floor"] = True
     rendered = render.render_compact(_report(artifact))
     assert "160+ applications published | 86+ patents granted" in rendered
-    assert "- First US publications: 98+" in rendered
+    assert "- First US publications: 97+" in rendered
     assert _footer_line(rendered).endswith(
-        "📜 Patents: 160+ applications published │ 86+ granted │ 98+ first US publications"
+        "📜 Patents: 160+ applications published │ 86+ granted │ 97+ first US publications"
     )
 
 
@@ -244,14 +244,21 @@ def test_person_topic_names_the_company_in_block_and_footer():
 
 
 def test_footer_says_when_the_counts_are_under_name_matched_names():
-    artifact = microsoft()
-    artifact["groups"][0]["grants"] = 0
-    artifact["groups"] = artifact["groups"][1:]
-    artifact["counts"].update(grants=0)
+    artifact = microsoft_licensing_only()
     assert render._patents_footer_line(_report(artifact, topic="Microsoft")) == (
         "📜 Patents: 212 applications published │ 140 granted under name-matched names "
-        "│ 3 first US publications"
+        "│ 2 first US publications"
     )
+
+
+def test_footer_first_publications_leave_out_name_matched_filings():
+    report = _report(block(), topic="Block")
+    line = "📜 Patents: 1 application published │ 0 granted │ 1 first US publication"
+    assert render._patents_footer_line(report) == line
+    rendered = render.render_compact(report)
+    assert _footer_line(rendered).endswith(line)
+    assert "- First US publications: 1 (" in rendered
+    assert "; 5 first US publications among them" in rendered
 
 
 def test_footer_company_name_cannot_forge_a_footer_row():

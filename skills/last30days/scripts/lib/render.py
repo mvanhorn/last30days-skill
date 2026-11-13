@@ -2585,10 +2585,10 @@ def _patents_footer_line(report: schema.Report) -> str | None:
     """Build the 📜 Patents footer line from the counts in the ``patents``
     artifact, whether or not the run read any filing's text.
 
-    Applications published and patents granted under the company's confirmed
-    names, then first US publications; a ``+`` on each when the search stopped
-    short of its full count. When nothing sits under a confirmed name the
-    counts are those of the name-matched names, and the line says so. Filings
+    Applications published, patents granted and first US publications, all
+    under the company's confirmed names; a ``+`` on each when the search
+    stopped short of its full count. When nothing sits under a confirmed name
+    all three are those of the name-matched names, and the line says so. Filings
     of the company a person leads name it: ``📜 Patents at Tesla: ...``. None
     when the run has no artifact.
     """
@@ -2601,17 +2601,19 @@ def _patents_footer_line(report: schema.Report) -> str | None:
     count, quantity = patent_digest.count, patent_digest.quantity
     floor = bool(counts.get("floor"))
     applications, grants = count(counts.get("applications")), count(counts.get("grants"))
+    first = count(counts.get("first_publications"))
     under = ""
     if not applications and not grants and patent_digest.groups(artifact, patent_digest.NAME_MATCHED):
         applications = count(counts.get("name_matched_applications"))
         grants = count(counts.get("name_matched_grants"))
+        first = count(counts.get("name_matched_first_publications"))
         under = " under name-matched names"
     company = _footer_safe(artifact.get("company") or "", 60)
     label = f"Patents at {company}" if artifact.get("company_via_person") and company else "Patents"
     return " │ ".join([
         f"📜 {label}: {quantity(applications, 'application', floor=floor)} published",
         f"{grants:,}{'+' if floor else ''} granted{under}",
-        quantity(count(counts.get("first_publications")), "first US publication", floor=floor),
+        quantity(first, "first US publication", floor=floor),
     ])
 
 

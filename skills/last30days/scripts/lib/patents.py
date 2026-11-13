@@ -19,6 +19,14 @@ document reads, all inside one wall-clock budget.
   (one with no earlier publication), that does not continue an older
   application. Continuations, grants of applications already published,
   designs and other kinds are counted, never shown.
+- What is counted: ``counts`` holds the company's own filings, those in
+  confirmed groups: ``applications``, ``grants``, ``first_publications``,
+  ``continuing``, ``previously_published_grants``, ``designs`` and
+  ``other_kinds``. Filings in name-matched groups may be a stranger's, so
+  they are counted apart and only as ``name_matched_applications``,
+  ``name_matched_grants`` and ``name_matched_first_publications``. Entries
+  and the index still hold name-matched first publications, each labelled
+  by its ``group_kind``.
 - Which get text: half the slots go to filings in the CPC subclasses the
   company filed in least over the year before, half to the newest.
 
@@ -83,6 +91,7 @@ FIRST_CLAIM_CHARS = 700
 MAX_CPC_CODES = 5
 
 _FIRST = "first_publications"
+_NAME_MATCHED_FIRST = "name_matched_first_publications"
 _CONTINUING = "continuing"
 _PUBLISHED_BEFORE = "previously_published_grants"
 _DESIGNS = "designs"
@@ -237,7 +246,8 @@ def _summary(artifact: dict[str, Any]) -> str:
     more = f" and {len(groups) - 3} more" if len(groups) > 3 else ""
     return (
         f"{artifact.get('company')}: {applications} applications, {grants} grants, "
-        f"{counts.get(_FIRST, 0)} first publications; filed under {names}{more}"
+        f"{counts.get(_FIRST, 0) + counts.get(_NAME_MATCHED_FIRST, 0)} first publications; "
+        f"filed under {names}{more}"
     )
 
 
@@ -260,12 +270,19 @@ def _fetch(company: dict, date_from: str, date_to: str, budget: _Budget) -> dict
     if not groups:
         return {"state": "none", "other_names": other_names}
 
+    # The company's own counts are of confirmed groups. Of a name-matched
+    # group, which may be a stranger's, only the first publications are
+    # counted, under their own key.
     counts: Counter[str] = Counter()
     candidates = []
     for group in groups:
+        confirmed = group["kind"] == CONFIRMED
         for database, row in group["rows"]:
             bucket = _bucket(database, row)
-            counts[bucket] += 1
+            if confirmed:
+                counts[bucket] += 1
+            elif bucket == _FIRST:
+                counts[_NAME_MATCHED_FIRST] += 1
             if bucket == _FIRST:
                 candidates.append(_candidate(database, row, group))
 
@@ -275,8 +292,11 @@ def _fetch(company: dict, date_from: str, date_to: str, budget: _Budget) -> dict
     ordered = _order(candidates, frequencies)
     entries, demoted, rest = _read_details(session, ordered, budget)
     for candidate in demoted:
-        counts[_FIRST] -= 1
-        counts[_CONTINUING if candidate["kind"] == "application" else _PUBLISHED_BEFORE] += 1
+        if candidate["group_kind"] == CONFIRMED:
+            counts[_FIRST] -= 1
+            counts[_CONTINUING if candidate["kind"] == "application" else _PUBLISHED_BEFORE] += 1
+        else:
+            counts[_NAME_MATCHED_FIRST] -= 1
     missing = min(DETAIL_SLOTS - len(entries), len(rest))
     index = [_index_item(candidate) for candidate in rest[:MAX_INDEX]]
 
@@ -306,6 +326,7 @@ def _fetch(company: dict, date_from: str, date_to: str, budget: _Budget) -> dict
             "name_matched_applications": total(NAME_MATCHED, APPLICATIONS),
             "name_matched_grants": total(NAME_MATCHED, GRANTS),
             _FIRST: counts[_FIRST],
+            _NAME_MATCHED_FIRST: counts[_NAME_MATCHED_FIRST],
             _CONTINUING: counts[_CONTINUING],
             _PUBLISHED_BEFORE: counts[_PUBLISHED_BEFORE],
             _DESIGNS: counts[_DESIGNS],

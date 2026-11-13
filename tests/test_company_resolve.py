@@ -62,14 +62,12 @@ class FakeWikidata:
         raise AssertionError(f"unexpected Wikidata request: {params}")
 
 
-def _resolve(monkeypatch, topic: str, **fake_kwargs) -> tuple[dict, FakeWikidata]:
+def _resolve(
+    monkeypatch, topic: str, *, names: bool = False, **fake_kwargs,
+) -> tuple[dict, FakeWikidata]:
     fake = FakeWikidata(**fake_kwargs)
     monkeypatch.setattr(company_resolve.http, "get", fake)
-    return company_resolve.resolve_company(topic), fake
-
-
-def _without_names(result: dict) -> dict:
-    return {key: value for key, value in result.items() if key != "company_names"}
+    return company_resolve.resolve_company(topic, names=names), fake
 
 
 def _label_requests(fake: FakeWikidata) -> list[list[str]]:
@@ -252,9 +250,7 @@ CASES = [
 def test_fixture_table(monkeypatch, topic, entities, expected):
     result, fake = _resolve(monkeypatch, topic, entities=entities)
 
-    # The names are covered by their own tests below; every other key is
-    # exactly what it was before the names were added.
-    result.pop("company_names", None)
+    # Names are not asked for here; they are covered by their own tests below.
     assert result == expected
     assert 1 <= len(fake.calls) <= 5
     for call in fake.calls:
@@ -336,7 +332,7 @@ def _subsidiary_label_requests(fake: FakeWikidata) -> list[list[str]]:
 
 @pytest.mark.parametrize("topic,names", COMPANY_NAMES.items(), ids=list(COMPANY_NAMES))
 def test_company_names_are_filing_names_then_subsidiaries(monkeypatch, topic, names):
-    result, fake = _resolve(monkeypatch, topic)
+    result, fake = _resolve(monkeypatch, topic, names=True)
 
     assert result["company_names"] == names
     assert result["company"] not in names
@@ -357,7 +353,7 @@ def result_id(topic: str) -> str:
 
 @pytest.mark.parametrize("topic", list(REJECTED_NAMES))
 def test_no_name_is_a_short_token_a_domain_or_the_company_again(monkeypatch, topic):
-    result, _fake = _resolve(monkeypatch, topic)
+    result, _fake = _resolve(monkeypatch, topic, names=True)
     names = result["company_names"]
 
     assert not set(REJECTED_NAMES[topic]) & set(names)
@@ -371,24 +367,37 @@ def test_no_name_is_a_short_token_a_domain_or_the_company_again(monkeypatch, top
 
 
 def test_alphabet_names_include_google_and_waymo(monkeypatch):
-    result, _fake = _resolve(monkeypatch, "Alphabet")
+    result, _fake = _resolve(monkeypatch, "Alphabet", names=True)
 
     assert {"Google", "Waymo"} <= set(result["company_names"])
     assert len(_current_subsidiary_ids(ALPHABET)) == 13
 
 
-def test_ibm_keeps_every_key_it_had_beside_its_names(monkeypatch):
-    result, _fake = _resolve(monkeypatch, "IBM")
+def test_names_are_not_read_unless_asked_for(monkeypatch):
+    result, fake = _resolve(monkeypatch, "Alphabet")
 
-    assert _without_names(result) == {
+    assert result == {
+        "company": "Alphabet Inc.", "company_site": "https://abc.xyz/",
+        "ticker_candidates": ["GOOG", "GOOGL"],
+    }
+    assert "company_names" not in result
+    assert _label_requests(fake) == []
+    assert len(fake.calls) == 2
+
+
+def test_ibm_keeps_every_key_it_had_beside_its_names(monkeypatch):
+    result, _fake = _resolve(monkeypatch, "IBM", names=True)
+
+    assert result == {
         "company": "IBM", "company_site": "https://www.ibm.com/",
         "ticker": "IBM", "exchange": "New York Stock Exchange",
+        "company_names": COMPANY_NAMES["IBM"],
     }
 
 
 def test_a_company_whose_names_add_nothing_has_no_names_key(monkeypatch):
     """Anthropic lists "Anthropic, PBC" and "Anthropic PBC" and no subsidiary."""
-    result, fake = _resolve(monkeypatch, "Anthropic")
+    result, fake = _resolve(monkeypatch, "Anthropic", names=True)
 
     assert result == {"company": "Anthropic", "company_site": "https://www.anthropic.com/"}
     assert _label_requests(fake) == []
@@ -405,7 +414,9 @@ def test_at_most_three_own_names_are_kept(monkeypatch):
             )
         ] + entity["aliases"]["en"]
 
-    result, _fake = _resolve(monkeypatch, "IBM", entities=_edited("Q37156", more_aliases))
+    result, _fake = _resolve(
+        monkeypatch, "IBM", names=True, entities=_edited("Q37156", more_aliases),
+    )
 
     # The official name and two aliases fill the three places; the two further
     # aliases that carry a designator are cut and the subsidiaries are untouched.
@@ -420,7 +431,7 @@ def test_a_nickname_without_a_legal_designator_is_not_an_own_name(monkeypatch):
     recorded = FIXTURE["entities"]["Q37156"]["aliases"]["mul"]
     assert "Big Blue" in {alias["value"] for alias in recorded}
 
-    result, _fake = _resolve(monkeypatch, "IBM")
+    result, _fake = _resolve(monkeypatch, "IBM", names=True)
 
     names = result["company_names"]
     assert "Big Blue" not in names
@@ -431,7 +442,7 @@ def test_at_most_twelve_subsidiary_names_are_kept(monkeypatch):
     """With a label that passes in GV's place Alphabet has thirteen."""
     longer_label = {"Q2591662": {"id": "Q2591662", "labels": {"en": {"language": "en", "value": "Example Ventures"}}}}
 
-    result, _fake = _resolve(monkeypatch, "Alphabet", entities=longer_label)
+    result, _fake = _resolve(monkeypatch, "Alphabet", names=True, entities=longer_label)
 
     expected = ALPHABET_SUBSIDIARY_NAMES[:2] + ["Example Ventures"] + ALPHABET_SUBSIDIARY_NAMES[2:]
     assert result["company_names"] == ALPHABET_OWN_NAMES + expected[:12]
@@ -450,7 +461,9 @@ def test_the_label_request_never_asks_for_more_than_fifty_ids(monkeypatch):
             entity["claims"]["P355"].append(statement)
 
     monkeypatch.setattr(company_resolve.log, "source_log", mock.Mock())
-    result, fake = _resolve(monkeypatch, "Alphabet", entities=_edited(ALPHABET, sixty_more))
+    result, fake = _resolve(
+        monkeypatch, "Alphabet", names=True, entities=_edited(ALPHABET, sixty_more),
+    )
 
     (asked,) = _subsidiary_label_requests(fake)
     assert len(asked) == 50
@@ -464,7 +477,9 @@ def test_a_subsidiary_that_ended_or_is_deprecated_is_not_a_name(monkeypatch):
         assert google["mainsnak"]["datavalue"]["value"]["id"] == GOOGLE
         google["qualifiers"] = {"P582": [{"snaktype": "value", "property": "P582"}]}
 
-    result, fake = _resolve(monkeypatch, "Alphabet", entities=_edited(ALPHABET, end_google))
+    result, fake = _resolve(
+        monkeypatch, "Alphabet", names=True, entities=_edited(ALPHABET, end_google),
+    )
 
     assert result["company_names"] == ALPHABET_OWN_NAMES + ALPHABET_SUBSIDIARY_NAMES[1:]
     # Fitbit is recorded as a deprecated subsidiary statement.
@@ -487,7 +502,7 @@ def test_a_failed_label_request_keeps_the_company_without_subsidiaries(monkeypat
     monkeypatch.setattr(company_resolve.log, "source_log", logged)
     monkeypatch.setattr(company_resolve.http, "get", flaky)
 
-    result = company_resolve.resolve_company("Alphabet")
+    result = company_resolve.resolve_company("Alphabet", names=True)
 
     assert not isinstance(result, company_resolve.FailedLookup)
     assert result == {
@@ -501,7 +516,10 @@ def test_a_failed_label_request_keeps_the_company_without_subsidiaries(monkeypat
 def test_a_subsidiary_wikidata_no_longer_has_costs_only_the_subsidiaries(monkeypatch):
     monkeypatch.setattr(company_resolve.log, "source_log", mock.Mock())
 
-    result, _fake = _resolve(monkeypatch, "Alphabet", entities={"Q133928": {"id": "Q133928", "missing": ""}})
+    result, _fake = _resolve(
+        monkeypatch, "Alphabet", names=True,
+        entities={"Q133928": {"id": "Q133928", "missing": ""}},
+    )
 
     assert not isinstance(result, company_resolve.FailedLookup)
     # Alphabet has no own name with a designator, so nothing is left to return.
@@ -509,7 +527,7 @@ def test_a_subsidiary_wikidata_no_longer_has_costs_only_the_subsidiaries(monkeyp
 
 
 def test_a_person_carries_the_names_of_the_company_they_lead(monkeypatch):
-    result, _fake = _resolve(monkeypatch, "Patrick Collison")
+    result, _fake = _resolve(monkeypatch, "Patrick Collison", names=True)
 
     assert result == {
         "company": "Stripe", "company_site": "https://stripe.com/",
@@ -522,7 +540,7 @@ def test_names_are_read_when_the_listing_is_not(monkeypatch):
     fake = FakeWikidata()
     monkeypatch.setattr(company_resolve.http, "get", fake)
 
-    result = company_resolve.resolve_company("IBM", listing=False)
+    result = company_resolve.resolve_company("IBM", listing=False, names=True)
 
     assert "ticker" not in result
     assert result["company_names"] == COMPANY_NAMES["IBM"]
@@ -636,7 +654,7 @@ def test_each_entity_of_a_comparison_resolves_on_its_own(monkeypatch):
     }
 
     assert results["Nvidia"]["ticker"] == "NVDA"
-    assert _without_names(results["Stripe"]) == {
+    assert results["Stripe"] == {
         "company": "Stripe", "company_site": "https://stripe.com/",
     }
     assert results["Rust"] == {}

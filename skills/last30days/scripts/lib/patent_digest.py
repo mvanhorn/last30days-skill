@@ -90,6 +90,7 @@ def digest_lines(
     head = [HEADING, "", _filings_line(artifact, counts, floor, inline)]
     matched = groups(artifact, NAME_MATCHED)
     if matched:
+        matched_first = count(counts.get("name_matched_first_publications"))
         head.append(
             "- Name-matched: names that extend the company's name and are not verified as "
             "belonging to it: "
@@ -98,6 +99,11 @@ def digest_lines(
                 f"{quantity(count(group.get('applications')), 'application', floor=floor)}, "
                 f"{quantity(count(group.get('grants')), 'grant', floor=floor)})"
                 for group in matched
+            )
+            + (
+                f"; {quantity(matched_first, 'first US publication', floor=floor)} among them"
+                if matched_first
+                else ""
             )
         )
     head.append(_first_publications_line(counts, floor))
@@ -167,6 +173,8 @@ def _filings_line(artifact: dict, counts: dict, floor: bool, inline: Callable[..
 
 
 def _first_publications_line(counts: dict, floor: bool) -> str:
+    """The company's own first publications, and what else was counted under
+    its confirmed names. Name-matched filings are on their own line."""
     line = (
         f"- First US publications: {count(counts.get('first_publications')):,}"
         f"{'+' if floor else ''} (an application, or a grant with no earlier publication, "

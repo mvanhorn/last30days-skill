@@ -18,6 +18,8 @@ import pytest
 import last30days as cli
 from lib import hosted, patents, pipeline, resolve, schema
 
+from tests.test_company_resolve import FakeWikidata, _subsidiary_label_requests
+
 COMPANY = {
     "company": "MainBrand Inc.",
     "company_site": "https://mainbrand.example/",
@@ -34,7 +36,8 @@ ARTIFACT = {
     "other_names": [],
     "counts": {
         "applications": 4, "grants": 2, "name_matched_applications": 1,
-        "name_matched_grants": 0, "first_publications": 3, "continuing": 2,
+        "name_matched_grants": 0, "first_publications": 2,
+        "name_matched_first_publications": 1, "continuing": 2,
         "previously_published_grants": 2, "designs": 0, "other_kinds": 0, "floor": False,
     },
     "entries": [],
@@ -96,8 +99,10 @@ def _real_window_report(real_run):
 
 def _run(
     monkeypatch, tmp_path, *, topic="MainBrand", args=(), config=None, companies=None,
-    lane=None, competitors_list=None, real_window=False,
+    lane=None, competitors_list=None, real_window=False, wikidata=None,
 ):
+    """Run the command line. ``wikidata`` swaps the company stand-in for the
+    real resolver answering from that recorded Wikidata."""
     lane = lane or FakeLane()
     reports: dict[str, schema.Report] = {}
     build = _real_window_report(pipeline.run) if real_window else _stub_report
@@ -107,9 +112,13 @@ def _run(
         return reports[kwargs["topic"]]
 
     companies = {"MainBrand": COMPANY} if companies is None else companies
-    company_resolver = mock.Mock(
-        side_effect=lambda name, **_kwargs: copy.deepcopy(companies.get(name, {}))
-    )
+    if wikidata is None:
+        company_resolver = mock.Mock(
+            side_effect=lambda name, **_kwargs: copy.deepcopy(companies.get(name, {}))
+        )
+    else:
+        company_resolver = mock.Mock(wraps=cli.company_resolve.resolve_company)
+        monkeypatch.setattr(cli.company_resolve.http, "get", wikidata)
     monkeypatch.setattr(patents, "fetch_patent_data", lane)
     monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {} if config is None else config)
     monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path / "config")
@@ -184,6 +193,54 @@ def test_runs_that_never_ask_for_patents(monkeypatch, tmp_path, kwargs, env_vars
     for report in observed.reports.values():
         assert "patents" not in report.artifacts
         assert "patents" not in report.source_status
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "env_vars"),
+    [
+        ({"competitors_list": "Stripe,IBM"}, {}),
+        ({"args": ["--hiring-signals"]}, {}),
+        ({"args": ["--quick"]}, {}),
+        ({}, {"LAST30DAYS_NO_PATENT_DIGEST": "1"}),
+    ],
+    ids=["comparison", "hiring-signals", "quick", "no-patent-digest-env"],
+)
+def test_runs_that_never_ask_for_patents_never_read_the_company_names(
+    monkeypatch, tmp_path, kwargs, env_vars,
+):
+    for name, value in env_vars.items():
+        monkeypatch.setenv(name, value)
+    wikidata = FakeWikidata()
+
+    observed = _run(monkeypatch, tmp_path, topic="Alphabet", wikidata=wikidata, **kwargs)
+
+    # Alphabet, Stripe and IBM each list subsidiaries; none is asked for.
+    assert wikidata.calls
+    assert _subsidiary_label_requests(wikidata) == []
+    asked = observed.company_resolver.call_args_list
+    assert asked
+    assert [call.kwargs.get("names", False) for call in asked] == [False] * len(asked)
+    for report in observed.reports.values():
+        assert report.artifacts["resolved"]["company"]
+        assert "company_names" not in report.artifacts["resolved"]
+    assert observed.lane.calls == []
+
+
+def test_a_company_run_reads_the_company_names_for_the_patent_lane(monkeypatch, tmp_path):
+    wikidata = FakeWikidata()
+
+    observed = _run(monkeypatch, tmp_path, topic="Alphabet", wikidata=wikidata)
+
+    observed.company_resolver.assert_called_once_with("Alphabet", names=True)
+    assert len(_subsidiary_label_requests(wikidata)) == 1
+    (call,) = observed.lane.calls
+    assert {"Google", "Waymo"} <= set(call["company"]["company_names"])
+
+
+def test_a_company_run_with_a_host_ticker_reads_the_company_names_too(monkeypatch, tmp_path):
+    observed = _run(monkeypatch, tmp_path, args=["--ticker", "MAIN:MainBrand"])
+
+    observed.company_resolver.assert_called_once_with("MainBrand", listing=False, names=True)
 
 
 def test_hosted_run_never_asks_for_patents(monkeypatch):
@@ -352,7 +409,7 @@ def test_company_lookup_is_skipped_only_with_every_company_lane_excluded(monkeyp
     assert "company" not in every.report.artifacts["resolved"]
 
     two = _run(monkeypatch, tmp_path, config={"EXCLUDE_SOURCES": "jobs, yahoo_finance"})
-    two.company_resolver.assert_called_once_with("MainBrand")
+    two.company_resolver.assert_called_once_with("MainBrand", names=True)
     assert [call["company"] for call in two.lane.calls] == [COMPANY]
     assert two.report.artifacts["patents"] == ARTIFACT
 
