@@ -8,6 +8,29 @@ worse than none, so every step that is not certain returns nothing:
   the current chief executive of exactly one organization, itself a business.
   There is no hop from a product to its maker or from a subsidiary to its
   parent.
+- The one hop is downward, from a company that is already certain to the names
+  its own Wikidata record lists. A holding company files little under its own
+  name, so a caller searching filings needs these, and it treats each one as a
+  name that certainly belongs to the company. So only names that could be a
+  legal filing name and that say something new are returned, compared by the
+  key filings are matched by (case, punctuation and trailing legal designators
+  removed):
+
+  - Own names, at most ``MAX_OWN_NAMES``: the English official names, current
+    ones first, then the English and all-language label and aliases. One is
+    kept when its key has at least two words, it ends in a legal designator
+    (a nickname such as "Big Blue" does not), it is not a domain, it carries
+    no parenthetical, and its key is not the company's own or one already
+    kept. "Microsoft Corp." adds nothing to "Microsoft"; "MS" and
+    "microsoft.com" could be anyone.
+  - Subsidiary names, at most ``MAX_SUBSIDIARY_NAMES``: the labels of the
+    current subsidiaries, then of what the company owns, in the record's
+    order. One is kept when its key has at least three characters, is not
+    already kept, and does not extend the company's own name ("Microsoft
+    Algeria" is already reachable from "Microsoft").
+
+  The names are not checked to be companies, and a long list of subsidiaries
+  is not returned whole.
 - The ticker is certain when the company has exactly one primary listing:
   the one listing marked preferred, or the only listing when none is marked.
   A listing with an end time is ignored. Two share classes or two exchanges
@@ -17,7 +40,9 @@ worse than none, so every step that is not certain returns nothing:
 
 Any error, timeout or unexpected response returns nothing and logs once. That
 nothing is a ``FailedLookup``, so a caller can tell "Wikidata did not answer"
-from "Wikidata answered and nothing is certain".
+from "Wikidata answered and nothing is certain". The one exception is the
+one request for the subsidiaries' labels: the company is certain before it
+is made, so its failure logs once and costs only the subsidiary names.
 """
 
 from __future__ import annotations
@@ -26,6 +51,7 @@ import re
 from typing import Any
 
 from . import http, log
+from .company_names import name_key
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 TIMEOUT_SECONDS = 5
@@ -37,6 +63,17 @@ _TICKER_SYMBOL = "P249"
 _CHIEF_EXECUTIVE = "P169"
 _OFFICIAL_WEBSITE = "P856"
 _END_TIME = "P582"
+_OFFICIAL_NAME = "P1448"
+_SUBSIDIARY = "P355"
+_OWNER_OF = "P1830"
+
+MAX_OWN_NAMES = 3
+MAX_SUBSIDIARY_NAMES = 12
+MAX_COMPANY_NAMES = MAX_OWN_NAMES + MAX_SUBSIDIARY_NAMES
+# Labels are asked for more subsidiaries than are kept, so one that is
+# filtered out does not cost a later one its place. One request takes 50 ids.
+_MAX_LABEL_IDS = 50
+_DOMAIN = re.compile(r"(?:[\w-]+\.)+[a-z]{2,}", re.IGNORECASE)
 
 _HUMAN = "Q5"
 # business, enterprise, company, public company, corporation. "organization"
@@ -104,7 +141,11 @@ def resolve_company(topic: str, *, listing: bool = True) -> dict[str, Any]:
 
     Keys, each present only when resolved: ``company``, ``company_site``,
     ``ticker``, ``exchange``, ``ticker_candidates`` (the current listings'
-    symbols, only when the company is certain and its ticker is not), and
+    symbols, only when the company is certain and its ticker is not),
+    ``company_names`` (other names that certainly belong to the company: its
+    official names and aliases that could be a legal filing name, then its
+    subsidiaries, at most ``MAX_COMPANY_NAMES`` distinct strings and never
+    ``company`` itself), and
     ``company_via_person`` (True) when the topic is the person who leads the
     company. An empty dict means nothing is certain; it is a ``FailedLookup``
     when the lookup itself failed. No request is made for a topic that is not
@@ -249,7 +290,100 @@ def _company_fields(entity: dict[str, Any], listing: bool = True) -> dict[str, A
         fields["company_site"] = _value(sites[0])
     if listing:
         fields.update(_primary_listing(entity))
+    names = _company_names(entity, fields["company"])
+    if names:
+        fields["company_names"] = names
     return fields
+
+
+def _own_names(entity: dict[str, Any]) -> list[str]:
+    """Official names in English, current ones first, then the English and
+    all-language label and aliases."""
+    official = [
+        statement
+        for statement in _statements(entity, _OFFICIAL_NAME)
+        if _value(statement)["language"].split("-")[0] in ("en", "mul")
+    ]
+    official.sort(key=_ended)
+    names = [_value(statement)["text"] for statement in official]
+    labels, aliases = entity.get("labels", {}), entity.get("aliases", {})
+    names.extend(labels[language]["value"] for language in ("en", "mul") if language in labels)
+    names.extend(
+        alias["value"] for language in ("en", "mul") for alias in aliases.get(language, [])
+    )
+    return names
+
+
+def _subsidiary_ids(entity: dict[str, Any]) -> list[str]:
+    """Current subsidiaries, then what the company owns, in the record's order."""
+    ids = [
+        _value(statement)["id"]
+        for prop in (_SUBSIDIARY, _OWNER_OF)
+        for statement in _statements(entity, prop)
+        if not _ended(statement)
+    ]
+    return list(dict.fromkeys(ids))
+
+
+def _subsidiary_names(entity: dict[str, Any]) -> list[str]:
+    """Labels of the subsidiaries the company lists, from one request. A
+    failure here is logged and gives none: the company is already certain."""
+    ids = _subsidiary_ids(entity)[:_MAX_LABEL_IDS]
+    if not ids:
+        return []
+    try:
+        found = _entities(ids, "labels")
+        labels = [found[entity_id].get("labels", {}) for entity_id in ids]
+        return [
+            (label.get("en") or label["mul"])["value"]
+            for label in labels
+            if "en" in label or "mul" in label
+        ]
+    except Exception as exc:
+        log.source_log(
+            "Company",
+            f"Wikidata subsidiary names failed for {entity.get('id')}: "
+            f"{type(exc).__name__}: {exc}",
+            tty_only=False,
+        )
+        return []
+
+
+def _carries_designator(name: str, key: str) -> bool:
+    """True when the name ends in a legal designator ("... Corporation"), which
+    a nickname ("Big Blue") never does: the key is the name without one."""
+    plain = " ".join(re.sub(r"[^\w\s]", " ", name).casefold().split())
+    return plain != key
+
+
+def _company_names(entity: dict[str, Any], company: str) -> list[str]:
+    """Own names that could be a legal filing name, then subsidiary names,
+    each new under the key filings are matched by."""
+    company_key = name_key(company)
+    seen = {company_key}
+    own: list[str] = []
+    for name in _own_names(entity):
+        name = " ".join(name.split())
+        key = name_key(name)
+        if len(own) == MAX_OWN_NAMES:
+            break
+        if key in seen or " " not in key or "(" in name or _DOMAIN.fullmatch(name):
+            continue
+        if not _carries_designator(name, key):
+            continue
+        seen.add(key)
+        own.append(name)
+    subsidiaries: list[str] = []
+    for name in _subsidiary_names(entity):
+        name = " ".join(name.split())
+        key = name_key(name)
+        if len(subsidiaries) == MAX_SUBSIDIARY_NAMES:
+            break
+        if key in seen or len(key) < 3 or key.startswith(company_key + " "):
+            continue
+        seen.add(key)
+        subsidiaries.append(name)
+    return own + subsidiaries
 
 
 def _listing_tickers(statement: dict[str, Any]) -> list[str]:
