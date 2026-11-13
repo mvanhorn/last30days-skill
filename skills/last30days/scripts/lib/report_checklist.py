@@ -24,6 +24,7 @@ HEADING = "## Before you write the report"
 _QUOTE_POOL_HEADING = "## Top Community Comments"
 _SUBJECT_POSTS_HEADING = re.compile(r"^## Posts by (@\S+)$", re.MULTILINE)
 _JOBS_DIGEST_HEADING = "## Jobs Digest"
+_PATENT_DIGEST_HEADING = "## Patent Digest"
 _POLYMARKET_HEADING = "## Polymarket Markets"
 # Registers and shapes whose template has no story paragraphs or quote lines.
 _REGISTERS_WITHOUT_QUOTE_LINES = frozenset({"exec"})
@@ -134,16 +135,28 @@ def build(
             "message."
         )
     if not comparison:
+        # One line for both digests: the checklist stays a few lines long.
         if _has_heading(rendered, _JOBS_DIGEST_HEADING):
-            lines.append(
-                f"• This output has a `{_JOBS_DIGEST_HEADING}` block: `hiring-signals.md` "
+            jobs = (
+                f"This output has a `{_JOBS_DIGEST_HEADING}` block: `hiring-signals.md` "
                 "decides whether a Jobs Page Secret Signals section is written."
             )
         else:
-            lines.append(
-                f"• This output has no `{_JOBS_DIGEST_HEADING}` block, so the report has "
+            jobs = (
+                f"This output has no `{_JOBS_DIGEST_HEADING}` block, so the report has "
                 "no Jobs Page Secret Signals section."
             )
+        if _has_heading(rendered, _PATENT_DIGEST_HEADING):
+            patents = (
+                f"This output has a `{_PATENT_DIGEST_HEADING}` block: `patent-signals.md` "
+                "decides whether a Patent Secret Signals section is written."
+            )
+        else:
+            patents = (
+                f"This output has no `{_PATENT_DIGEST_HEADING}` block, so the report has "
+                "no Patent Secret Signals section."
+            )
+        lines.append(f"• {jobs} {patents}")
     lines.append(
         "• The fenced footer (```text ... ```) is copied whole, fence included, "
         "after the body and before the invitation."
