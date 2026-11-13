@@ -51,8 +51,10 @@ The first version kept a story as ordinary when only its summary named the topic
 
 Two narrower allowances survived live checking, both in `_title_points_at`:
 
-- A two-word name passes when the title has one of its words and the full name appears somewhere in the story text. "Tesla earnings" keeps a story titled "Tesla beats on revenue" whose summary says "earnings".
-- A topic of three or more words is treated as a description, and a telling word in the title is enough.
+- A two-word subject passes when the title has one of its words and both words appear somewhere in the title and summary together. They do not have to appear as a phrase. "Tesla earnings" keeps a story titled "Tesla beats on revenue" whose summary says "earnings".
+- A subject of three or more words is treated as a description, and a telling word in the title is enough.
+
+The word count is taken after `_topic_subjects` removes question and filler words from the topic, not from the topic as typed. "latest Tesla earnings" is judged as the two-word subject "Tesla earnings".
 
 ### 3. Run the bar before near-duplicates are removed
 
