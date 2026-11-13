@@ -503,6 +503,10 @@ def _x_record(config):
     # auto-chain backend in ERROR/DEGRADED/BROKEN/TIMEOUT. Same rule as the
     # grok normalizer: only upgrade when no auto backend is configured-but-broken.
     auto_chain_names = set(env.x_auto_chain(config))
+    all_auto_missing = all(
+        b.get("status") == health.MISSING
+        for b in record.get("backends", []) if b.get("name") in auto_chain_names
+    )
     pending_bird = policy.cookie_discovery and env.x_pending_browser_auth(
         config, local_only=True
     )
@@ -524,13 +528,8 @@ def _x_record(config):
         record["note"] = f"{record['note']}; {observation}" if record["note"] else observation
         return record
     if (pending_bird or denied_browsers) and record["status"] in ("unconfigured", health.ERROR):
-        backends_list = record.get("backends", [])
-        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
         # Only apply pending-bird upgrade if ALL auto-chain backends are MISSING.
         # If any auto backend is configured but broken, keep that error.
-        all_auto_missing = all(
-            b.get("status") == health.MISSING for b in auto_backends
-        )
         if all_auto_missing:
             if denied_browsers:
                 record["status"] = health.ERROR
@@ -551,6 +550,28 @@ def _x_record(config):
                     "- add XAI_API_KEY for a verified, cookie-free path)"
                 )
             record["fix"] = ""
+            return record
+    # PATH presence explains an unconfigured sidecar; it does not authorize it.
+    # Refusals, backend pins and configured failures retain their own diagnosis.
+    if (
+        not policy.official_only
+        and not record.get("pinned")
+        and all_auto_missing
+        and record["status"] in ("unconfigured", health.ERROR)
+        and not env.cookie_access_denied(config)
+        and str(config.get("AGENTCOOKIE") or env.read_secret_env("AGENTCOOKIE") or "").strip().lower() != "off"
+    ):
+        from . import agentcookie
+
+        if (
+            agentcookie.is_disabled(config)
+            and env.x_extras_enabled(config)
+            and shutil.which(agentcookie.AGENTCOOKIE_BIN)
+        ):
+            record["status"] = "opt-in"
+            record["tier"] = TIER_OFF
+            record["note"] = "agentcookie is on PATH; sidecar cookie access is not enabled"
+            record["fix"] = "set AGENTCOOKIE=on to allow sidecar X cookie reads"
             return record
     #
     # Grok is opt-in only: a leftover ~/.grok/auth.json must never steal the X
@@ -580,12 +601,8 @@ def _x_record(config):
         and not pending_bird
     ):
         backends_list = record.get("backends", [])
-        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
         # Only normalize if ALL auto-chain backends are MISSING (not configured).
         # If any auto backend is ERROR/DEGRADED/BROKEN/TIMEOUT, keep that error.
-        all_auto_missing = all(
-            b.get("status") == health.MISSING for b in auto_backends
-        )
         if not all_auto_missing:
             # An auto-chain backend is configured but broken — do NOT normalize.
             # Keep the original error and its repair guidance.
@@ -1799,6 +1816,7 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
         "x_cookie_access_denied": str(config.get("LAST30DAYS_X_COOKIE_ACCESS_DENIED") or ""),
         "browser_consent": str(config.get("BROWSER_CONSENT") or ""),
         "from_browser": str(config.get("FROM_BROWSER") or ""),
+        "agentcookie": str(config.get("AGENTCOOKIE") or env.read_secret_env("AGENTCOOKIE") or ""),
     }
     canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

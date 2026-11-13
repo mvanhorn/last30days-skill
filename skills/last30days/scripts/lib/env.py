@@ -1752,10 +1752,11 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     "available pending browser auth" state without reading a single cookie — it
     keys only on the resolved browser list (``cookie_extraction_browsers``
     derives it from ``FROM_BROWSER`` alone, no secrets) OR — on extra hosts
-    only (``x_extras_enabled``) — the agentcookie sidecar being on PATH (a plain
-    ``which`` lookup), bird being installed, and X having a cookie-domain
-    mapping. A plain MacBook must NOT predict bird from an agentcookie binary on
-    PATH (R18), so the sidecar leg is gated behind ``x_extras_enabled``.
+    only (``x_extras_enabled``) — the agentcookie sidecar having explicit consent
+    and being on PATH (a plain ``which`` lookup), bird being installed, and X
+    having a cookie-domain mapping. A plain MacBook must NOT predict bird from
+    an agentcookie binary on PATH (R18), so the sidecar leg is gated behind
+    ``x_extras_enabled``.
     Side-effect free, so the safe-inspection contract of diagnose/preflight is
     preserved.
 
@@ -1787,10 +1788,11 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     # The agentcookie sidecar is a run-time cookie source ONLY on extra hosts
     # (Linux / Mac mini / Darwin sink / AGENTCOOKIE=on). Gating this keeps a
     # plain MacBook from predicting bird off a stray agentcookie binary (R18).
-    if x_extras_enabled(config):
-        from . import agentcookie
-        if agentcookie.is_available(config):
-            return True
+    # Admission precedes host classification so a refused sidecar never reads
+    # its role file or probes the hardware model merely to predict availability.
+    from . import agentcookie
+    if agentcookie.is_available(config) and x_extras_enabled(config):
+        return True
     return False
 
 

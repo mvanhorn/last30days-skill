@@ -243,7 +243,7 @@ After the response and required citations, stop and wait unless governing instru
 
 **What this skill does NOT do:**
 - Does not post, like, or modify content on any platform
-- Does not access browser cookies unless explicitly configured or consented (`FROM_BROWSER`, manual X cookies, or setup with `--allow-browser-cookies`); `--preflight` and `--diagnose` do not read browser-cookie values
+- Cookie reads require explicit consent. The sidecar requires `AGENTCOOKIE=on` or affirmative `BROWSER_CONSENT`. `--preflight` and `--diagnose` do not read browser-cookie values
 - Does not use Codex ChatGPT auth as an OpenAI provider credential
 - Does not share API keys between providers, except the TikTok legacy fallback: when `SCRAPECREATORS_API_KEY` is unset, `APIFY_API_TOKEN` is sent to ScrapeCreators (`get_tiktok_token` in `scripts/lib/env.py`)
 - Does not log, cache, or write API keys to output files

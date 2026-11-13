@@ -87,7 +87,7 @@ def _isolated_config(tmp_path_factory, monkeypatch):
     ``backends._xurl_finding`` calls ``stored_auth_status()`` directly, so a
     stubbed ``has_stored_auth`` still reads a developer's real store. Tests
     that need a populated store write one under the redirected home."""
-    from lib import env
+    from lib import agentcookie, env
 
     home = tmp_path_factory.mktemp("home")
     config_dir = _isolate_environment(monkeypatch, home)
@@ -95,6 +95,11 @@ def _isolated_config(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(env, "_config_override", str(config_dir))
     monkeypatch.setattr(env, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(env, "CONFIG_FILE", config_dir / ".env")
+    # The sidecar role path is captured at import; keep every test on its own
+    # synthetic home even when admission starts consulting that role file.
+    monkeypatch.setattr(
+        agentcookie, "_DEFAULT_CONFIG_PATH", home / ".config" / "agentcookie" / "config.json"
+    )
 
 
 @pytest.fixture(autouse=True)
