@@ -1,1 +1,0 @@
-X post text is unescaped, so titles, quotes and video titles show `&` and `'` instead of `&amp;` and `&#39;`. A reel or TikTok that arrives twice keeps its spoken transcript and `spoken_caption` mark together when the copies merge, so a longer written description no longer replaces the transcript.
