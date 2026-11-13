@@ -8,6 +8,7 @@ the real postmortem renderer over a mocked socket, so the whole chain --
 capture sink -> source outcome -> postmortem bucket -- stays honest.
 """
 
+import io
 import urllib.error
 from unittest import mock
 
@@ -87,6 +88,32 @@ def test_reddit_block_is_not_reported_as_clean_no_results():
     assert report.source_status["reddit"].state != schema.NO_RESULTS
 
 
+NETWORK_BLOCK_PAGE = (
+    b"<html><body><p>You've been blocked by network security.</p>"
+    b"<p>If you think you've been blocked by mistake, file a ticket below.</p>"
+    b"</body></html>"
+)
+
+
+def _network_block(*_args, **_kwargs):
+    raise urllib.error.HTTPError(
+        "https://www.reddit.com/svc/shreddit/search/", 403, "Blocked", {},
+        io.BytesIO(NETWORK_BLOCK_PAGE),
+    )
+
+
+def test_reddit_network_block_is_unreachable_not_auth_failed():
+    # Keyless site search sends no credentials, so a 403 block page from the
+    # edge is a host block: re-authenticating cannot fix it.
+    report = _run_reddit_against(_network_block)
+
+    assert report.source_status["reddit"].state == schema.UNREACHABLE
+
+
+def test_plain_403_without_block_page_stays_auth_failed():
+    assert http.classify_failure(status_code=403, message="HTTP 403: Forbidden") == schema.AUTH_FAILED
+
+
 def test_postmortem_does_not_claim_success_after_a_reddit_block():
     report = _run_reddit_against(
         urllib.error.HTTPError(
@@ -115,7 +142,7 @@ def test_items_delivered_with_swallowed_lane_403_are_not_branded():
     lane_error = http.HTTPError(
         "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
         status_code=403,
-        body=b"Blocked",
+        body="Blocked",
     )
     subquery = schema.SubQuery(
         label="primary",
@@ -156,7 +183,7 @@ def test_swallowed_lane_403_still_brands_when_no_items_returned():
     lane_error = http.HTTPError(
         "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
         status_code=403,
-        body=b"Blocked",
+        body="Blocked",
     )
     subquery = schema.SubQuery(
         label="primary",
@@ -193,7 +220,7 @@ def test_items_delivered_with_swallowed_lane_failure_carry_detail():
     lane_error = http.HTTPError(
         "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
         status_code=429,
-        body=b"Too Many Requests",
+        body="Too Many Requests",
     )
     subquery = schema.SubQuery(
         label="primary",
@@ -255,7 +282,7 @@ def test_postmortem_shows_lane_detail_on_succeeded_source():
 
 def test_swallowed_429s_flag_the_source_as_rate_limited_for_thin_retry():
     lane_error = http.HTTPError(
-        "https://www.reddit.com/svc/shreddit/search/", status_code=429, body=b"Too Many Requests"
+        "https://www.reddit.com/svc/shreddit/search/", status_code=429, body="Too Many Requests"
     )
     subquery = schema.SubQuery(
         label="primary", search_query="matcha", ranking_query="matcha", sources=["reddit"],
