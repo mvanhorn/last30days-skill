@@ -49,7 +49,7 @@ SOURCE = "patents"
 
 BASE_URL = "https://ppubs.uspto.gov"
 PDF_URL = "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/"
-# The site serves its own web app; these are the headers that app sends.
+# A browser-style agent, sent with the Referer and Origin the site's own web app uses.
 USER_AGENT = "Mozilla/5.0 (research-cli)"
 
 APPLICATIONS = "US-PGPUB"

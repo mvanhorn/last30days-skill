@@ -15,11 +15,11 @@ from collections.abc import Callable
 from typing import Any
 
 from . import patents
+from .company_names import CONFIRMED, NAME_MATCHED
 
 HEADING = "## Patent Digest"
-# Ceiling for the whole block. Twelve entries at the lane's text caps come to
-# about 18,000 characters, so every entry fits and the title list is what is
-# shortened: a live Nvidia run printed 32 of its 40 titles.
+# Ceiling for the whole block. Entries are added before titles, so when the
+# block is cut it is the title list that is shortened.
 DIGEST_MAX_CHARS = 24_000
 # Room kept for the note line, written after it is known what was cut.
 _NOTE_RESERVE = 400
@@ -27,8 +27,6 @@ _NAME_CHARS = 120
 _TITLE_CHARS = 300
 _FIELD_CHARS = 60
 
-CONFIRMED = "confirmed"
-NAME_MATCHED = "name-matched"
 
 
 def count(value: Any) -> int:
