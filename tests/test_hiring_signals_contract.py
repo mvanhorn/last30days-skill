@@ -14,9 +14,10 @@ from pathlib import Path
 import pytest
 
 from tests import jobs_signals_rule as rule
-from tests.skill_contract import ROUTES, reference_text, routing_table
+from tests.skill_contract import ROUTES, reference_text, root_text, routing_table
 
-CONDITION = "Hiring intent or an engine ## Hiring Signals or ## Jobs Digest block"
+CONDITION = "Hiring intent or an engine ## Hiring Signals, ## Jobs Digest or ## Patent Digest block"
+ROUTED = ("hiring-signals", "patent-signals")
 SECTION_HEADING = "## Jobs Page Secret Signals (default company runs)\n"
 CLOSING = "These are open postings, not hires or announcements."
 LABELLED = json.loads(
@@ -42,8 +43,16 @@ def _rule(marker):
 
 
 def test_a_jobs_digest_in_the_engine_output_routes_the_reference():
-    assert ROUTES[CONDITION] == ("hiring-signals",)
-    assert routing_table()[CONDITION] == ("hiring-signals",)
+    # One row routes the jobs reference and the patent reference together.
+    assert ROUTES[CONDITION] == ROUTED
+    assert routing_table()[CONDITION] == ROUTED
+    row = next(line for line in root_text().splitlines() if "`## Jobs Digest`" in line)
+    assert row.startswith(
+        "| Hiring intent or an engine `## Hiring Signals`, `## Jobs Digest` or `## Patent Digest` block "
+        "| Read [references/hiring-signals.md](references/hiring-signals.md) and "
+        "[references/patent-signals.md](references/patent-signals.md) in full. |"
+    )
+    assert "Apply the jobs lane and its scoped planning exception" in row
     opening = reference_text("hiring-signals").split("\n## ", 1)[0]
     assert "`## Jobs Digest`" in opening
     assert "`--hiring-signals`" in opening
@@ -54,10 +63,13 @@ def test_synthesis_names_the_section_its_place_and_its_rules():
     marker = "**Jobs Page Secret Signals.**"
     assert synthesis.count(marker) == 1
     gate = synthesis.split(marker, 1)[1].split("\n\n", 1)[0]
-    assert "`## Jobs Digest`" in gate
-    assert "`hiring-signals.md`" in gate
-    assert "after the last story paragraph" in gate
-    assert "before `KEY PATTERNS from the research:`" in gate
+    assert gate.strip() == (
+        "When the engine output has a `## Jobs Digest` section, `hiring-signals.md` decides "
+        "whether this section is written after the last story paragraph and before "
+        "`KEY PATTERNS from the research:`. A `## Patent Digest` section means "
+        "`patent-signals.md` decides whether a Patent Secret Signals section follows it. "
+        "Most runs omit both."
+    )
     # It sits with the other body rules, ahead of the footer steps.
     assert synthesis.index("**Pitch-vs-pulse beat") < synthesis.index(marker)
     assert synthesis.index(marker) < synthesis.index("**THEN - Quality Nudge")

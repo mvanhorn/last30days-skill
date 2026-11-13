@@ -101,9 +101,6 @@ ELI5 Mode: Explain it to me like I'm 5 years old.
 Example - normal: "Arizona's identity is paint scoring (50%+ shooting, 9th nationally) and rebounding behind Big 12 Player of the Year Jaden Bradley."
 Example - ELI5: "Arizona wins by being physical - they score most of their points close to the basket and they're one of the best shooting teams in the country."
 
-Same data. Same sources. Just clearer.
-
-
 ### For all QUERY_TYPEs
 
 Identify from the ACTUAL RESEARCH OUTPUT:
@@ -123,7 +120,6 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 ---
 
 **FIRST - What I learned (based on QUERY_TYPE):**
-
 
 **Recommendation body:** use the root-gated `recommendations.md` template for recommendation intent.
 
@@ -169,8 +165,7 @@ users are saying/feeling, then add web context only if needed.
 
 **MANDATORY - bold headline per narrative paragraph.** Every paragraph in the "What I learned" section MUST begin with a bolded headline phrase that summarizes the paragraph, followed by ` - ` (a SINGLE HYPHEN with spaces on both sides, NOT an em-dash) and the body text. Pattern: `**Headline phrase** - body text describing what people are saying...`. Without the bold headline, the output is unscannable slop. The headline is report structure: a general style preference alone does not remove it; the root output contract names the cases that do.
 
-
-Apply root LAWs 2–4 to the following normal-query template. Comparison uses its separate template.
+Apply root LAWs 2-4 to the following normal-query template. Comparison uses its separate template.
 
 ```
 {the engine's first line, copied verbatim}
@@ -199,11 +194,11 @@ Headlines should be specific and newsy ("BULLY dropped and it's dominating", "Eu
 
 **Pitch-vs-pulse beat (company / product / service topics).** If you captured `RESOLVED_POSITIONING` in Step 0.55 AND the month's evidence directly bears on it, work in ONE bold-lead-in paragraph saying how. Three cases qualify: the pulse SUPPORTS a specific claim (e.g. `**"Zero-config" is holding up** - this month's top deploy thread is devs praising the no-setup flow`), CUTS AGAINST one (e.g. `**Stripe's fraud-fighting pitch took a direct hit** - the loudest thread this month, on Hacker News, argues it is friendly to "friendly fraud"`), or the conversation is squarely ABOUT the pitched ground. Always anchor to the real top item, named by where it ran, and keep claims windowed - "this month's conversation" - never trend verbs like "losing the narrative" that one 30-day window cannot support. If the month's conversation is orthogonal to the pitch - on-entity but about something the pitch doesn't speak to - write NOTHING about the pitch; a manufactured connection is worse than silence. Match altitude: test SPECIFIC claims ("zero-config", "fastest", an uptime number) against specific threads; never grade a broad tagline against an individual thread. Keep it a bold-lead-in paragraph, not a `##` section (LAW 4). Skip silently for people (always - the beat can cover MrBeast the company, never Jimmy Donaldson the person), events, abstract concepts, and ownerless topics (Bitcoin), and whenever positioning was not actually fetched this run - never supply a pitch from memory.
 
-**Jobs Page Secret Signals.** When the engine output has a `## Jobs Digest` section, `hiring-signals.md` decides whether this section is written after the last story paragraph and before `KEY PATTERNS from the research:`. Most runs omit it.
+**Jobs Page Secret Signals.** When the engine output has a `## Jobs Digest` section, `hiring-signals.md` decides whether this section is written after the last story paragraph and before `KEY PATTERNS from the research:`. A `## Patent Digest` section means `patent-signals.md` decides whether a Patent Secret Signals section follows it. Most runs omit both.
 
 **THEN - Quality Nudge (if present in the output):**
 
-If the research output contains a `**🔍 Research Coverage:**` block, render it verbatim right before the stats block. This tells the user which core sources are missing and how to unlock them. If it is absent (100% coverage), render no nudge.
+If the research output contains a `**🔍 Research Coverage:**` block, render it verbatim right before the stats block. If it is absent (100% coverage), render no nudge.
 
 **Optional X omission:** If X was unavailable because no X authentication was configured, finish the useful findings first. The engine emits one short, non-blocking note: `Optional source omitted: X/Twitter was not enabled; research continued with the available sources.` Render that note once if present. Do not repeat it. Do not open a modal, ask another question, recommend a login, or provide cookie/API setup instructions unless the user explicitly asks to enable X. On a Grok Bot host the engine's own X hint (connect X inside Grok Bot, a bearer token, or a credit top-up) is the only guidance; relay it once, unchanged, and the note does not fire at all when the X connector lane served the run.
 

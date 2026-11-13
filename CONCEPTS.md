@@ -56,6 +56,14 @@ A Reddit thread that clears the relevance floor, passes Entity grounding, and ra
 
 A Digg story whose title names the run topic as a whole word or phrase and that has a Digg Score of at least 40 and at least 5 sources. A story that names the topic in its title but is smaller, or whose title carries part of the topic (one word of a two-word name, or a telling word of a longer description), is an ordinary story. Every other story is dropped from the run, including one that names the topic only in its summary. The verdict is worked out from the topic and the story's own text and numbers each time it is needed and is never stored on the item. Clusters from digg-pp-cli 2026.10.x carry no story UUID and are not judged.
 
+### Patent Digest
+
+The bounded evidence block (`## Patent Digest`) the Engine prints on a company run from USPTO Patent Public Search: how many of the company's US applications were published and patents granted in the window, the names they were filed under, a few First US publications with their abstract and first claim, and more by title. Filings under a name that only extends the company's name are marked name-matched and not verified as the company's. The digest is evidence only: the Engine decides nothing about what a filing means, and the hosting model, following `references/patent-signals.md`, decides whether the report carries a Patent Secret Signals section. No digest means no section.
+
+### First US publication
+
+A published application, or a grant with no earlier publication, that does not continue an older application: the first time the USPTO published that invention. Only these are listed in a Patent Digest; continuations, divisionals, grants of applications published earlier, and design patents are counted and never shown. It does not mean the first time anyone published the invention (it may have published abroad earlier) or that the work is recent: a filing is written well before it publishes.
+
 ## Discovery
 
 ### Discovery

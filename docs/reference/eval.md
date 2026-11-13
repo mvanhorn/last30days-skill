@@ -102,3 +102,17 @@ That proves the arithmetic and the labels' consistency. It does not prove a mode
 5. Check the form: bold lead-in with the board's counts, one paragraph per signal with a quote and the posting link, no list, and the closing sentence about open postings.
 
 The Nvidia label that rests on a report story applies only when that month's report carries that story.
+
+## Patent Secret Signals labelled set
+
+The same split applies to the Patent Secret Signals section, which the host model writes from the `## Patent Digest` evidence following `skills/last30days/references/patent-signals.md`.
+
+`tests/fixtures/patent_signals_labelled.json` holds constructed cases, one per rule, not saved digests: each candidate filing with whether it is a first US publication, whether it names something concrete, which paths of the bar it meets, what the web check found, and whether it should qualify. `tests/test_patent_signals_contract.py` checks in CI that the written rules say what the labels assume, and that the labels agree with the decision rule restated in `tests/patent_signals_rule.py` (concrete and out of character or unshipped, or bearing on a story; a shipped match removes the unshipped path; continuations and the like never qualify; a titles-only entry qualifies only by the story path; three invention families sharing one focus count as one cluster signal; a name-matched filing needs an entity known to be the company's; at most two signals, and at most three paragraphs with the jobs section; no section without web search).
+
+That proves the arithmetic and the labels' consistency. It does not prove a model picks those filings or judges the bar the same way. For that, check by hand on a host with web search, using an installed copy of the skill:
+
+1. Run `/last30days <Company>` for a large filer (a company with hundreds of US filings a month) and for a company with no filings.
+2. Check presence. The company with no filings prints no `## Patent Digest`, and its report has no Patent Secret Signals section. For the large filer, a section appears only when a filing clears the bar, and never has more than two signal paragraphs (one when the report also has two jobs signals).
+3. Check hedging. Each signal says what the filing describes with hedged verbs (describes, would, could), never that the company is building or will ship it, and is not worded as new or unreported when the web check found coverage or a matching product.
+4. Check both dates. Each signal paragraph links the filing as the digest printed it, says application or grant, and gives the publication date and the filing date. A name-matched filing names the entity that filed it.
+5. Check the form: bold lead-in with the digest's counts, one paragraph per signal, no list, after the jobs section when there is one, and the closing sentence "These are patent filings, not products: each was written well before it published, and most never ship."
