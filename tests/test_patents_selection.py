@@ -66,7 +66,7 @@ def test_apple_artifact_has_the_agreed_shape(monkeypatch):
     assert artifact["partial"] is None
     assert artifact["status"] == "digest"
     assert len(artifact["entries"]) == 12
-    assert len(artifact["index"]) == 40
+    assert len(artifact["index"]) == 30
     for entry in artifact["entries"]:
         assert list(entry) == ENTRY_KEYS
     for item in artifact["index"]:

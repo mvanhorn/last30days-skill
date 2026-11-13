@@ -1511,6 +1511,17 @@ def jobs_digest_disabled(environ: Any = None) -> bool:
     return _truthy(source.get(NO_JOBS_DIGEST_VAR))
 
 
+# The same kind of caller asks for a run that does not search a company's
+# patent filings at all: the fetch is skipped, not just its section.
+NO_PATENT_DIGEST_VAR = 'LAST30DAYS_NO_PATENT_DIGEST'
+
+
+def patent_digest_disabled(environ: Any = None) -> bool:
+    """True when ``LAST30DAYS_NO_PATENT_DIGEST`` asks for a run with no patent digest."""
+    source = os.environ if environ is None else environ
+    return _truthy(source.get(NO_PATENT_DIGEST_VAR))
+
+
 # The same kind of caller asks for compact stdout that ends at the canonical
 # boundary, with no report-format checklist after it.
 NO_REPORT_CHECKLIST_VAR = 'LAST30DAYS_NO_REPORT_CHECKLIST'

@@ -47,6 +47,9 @@ DOC_ONLY_KEYS = {
     # process environment only, so a .env line cannot drop the Jobs Digest
     # from every run.
     "LAST30DAYS_NO_JOBS_DIGEST",
+    # Same wrapper, same reason: a .env line cannot turn the patent lane off
+    # for every run.
+    "LAST30DAYS_NO_PATENT_DIGEST",
     # Same wrapper, same reason: a .env line cannot drop the report checklist.
     "LAST30DAYS_NO_REPORT_CHECKLIST",
 }

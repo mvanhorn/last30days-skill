@@ -26,20 +26,23 @@ USPTO has said the site will require sign-in. A refused anonymous session is
 its own outcome, told by status and by the missing token, never by words in
 the body: the working response already carries the notice.
 
-``fetch_patent_data`` never raises.
+``fetch_patent_data`` never raises. A run calls it through ``start`` and
+``collect``: the fetch runs on a daemon thread beside the run's other sources,
+so it adds no time to a run that outlasts it.
 """
 
 from __future__ import annotations
 
 import html
 import re
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
-from . import http, log
+from . import env, http, log, schema
 from .company_names import CONFIRMED, NAME_MATCHED, classify_applicant, name_key
 
 SOURCE = "patents"
@@ -54,6 +57,9 @@ GRANTS = "USPAT"
 # database -> (search field, the row field holding the filed-under names)
 _NAME_FIELDS = {APPLICATIONS: ("aanm", "applicantName"), GRANTS: ("asnm", "assigneeName")}
 
+# Everything one run spends on the lane, measured from ``start``.
+LANE_BUDGET_SECONDS = 30.0
+COLLECT_GRACE_SECONDS = 2.0
 REQUEST_TIMEOUT_SECONDS = 8.0
 REQUEST_ATTEMPTS = 2
 # lib.http gives up on the 429 that brings its count to this number, so one
@@ -67,7 +73,7 @@ MAX_GROUPS = 8
 MAX_OTHER_NAMES = 5
 DETAIL_SLOTS = 12
 MAX_REFILL_FETCHES = 6
-MAX_INDEX = 40
+MAX_INDEX = 30
 MIN_BASELINE_ROWS = 20
 # An application filed more than 13 months after the earliest application it
 # is related to continues it. A provisional is at most 12 months older.
@@ -148,6 +154,91 @@ def fetch_patent_data(
         detail = str(exc) if known else f"{type(exc).__name__}: {exc}"
         _log(f"no patent data: {detail}")
         return {"state": "error", "detail": detail}
+
+
+def is_excluded(config: dict[str, Any] | None) -> bool:
+    """True when ``EXCLUDE_SOURCES`` names this source, or the caller's
+    environment asks for a run with no patent digest."""
+    return SOURCE in env.exclude_sources(config or {}) or env.patent_digest_disabled()
+
+
+def start(
+    company: dict | None, date_from: str, date_to: str, config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Begin fetching the company's filings beside the run; ``collect`` takes
+    the handle. None, and no request, with no company name or with the source
+    excluded.
+
+    The thread is a daemon: a fetch that outlives its budget is left behind
+    and cannot hold the process open."""
+    if not (company or {}).get("company") or is_excluded(config):
+        return None
+    budget = LANE_BUDGET_SECONDS
+    handle: dict[str, Any] = {
+        "company": str(company["company"]),
+        # A little past the fetch's own budget, so a fetch that ran out of time
+        # reports that itself rather than racing the collector.
+        "deadline": time.monotonic() + budget + COLLECT_GRACE_SECONDS,
+        "outcome": None,
+    }
+
+    def work() -> None:
+        handle["outcome"] = fetch_patent_data(
+            dict(company), date_from, date_to, config, budget_seconds=budget,
+        )
+
+    handle["thread"] = threading.Thread(target=work, name="patents-lane", daemon=True)
+    handle["thread"].start()
+    return handle
+
+
+def collect(handle: dict[str, Any] | None, report: schema.Report) -> None:
+    """Record what the fetch begun by ``start`` found on the report.
+
+    Waits only for what is left of the lane's budget. The ``patents`` artifact
+    on success; a degraded source outcome on a failed fetch; nothing for a
+    company with no filings, for USPTO requiring sign-in (nothing a user can
+    fix), or for a fetch still running when the budget ends."""
+    if handle is None:
+        return
+    handle["thread"].join(max(0.0, handle["deadline"] - time.monotonic()))
+    outcome = handle["outcome"]
+    company = handle["company"]
+    if outcome is None:
+        _log(f"{company}: still searching after {LANE_BUDGET_SECONDS:g}s; patents skipped")
+        return
+    if "artifact" in outcome:
+        report.artifacts[SOURCE] = outcome["artifact"]
+        _log(_summary(outcome["artifact"]))
+        return
+    state = outcome.get("state")
+    if state == "error":
+        detail = str(outcome.get("detail") or "patent search failed")
+        report.source_status[SOURCE] = schema.SourceOutcome(
+            source=SOURCE,
+            state=http.classify_failure(message=detail),
+            detail=detail,
+            fix_hint="doctor",
+        )
+    elif state == "signin":
+        _log(f"{company}: USPTO Patent Public Search now requires sign-in; patents skipped")
+    elif state == "none":
+        others = [str(name) for name in outcome.get("other_names") or []][:3]
+        seen = f"; other names seen: {', '.join(others)}" if others else ""
+        _log(f"{company}: no filings under the company's name in the window{seen}")
+
+
+def _summary(artifact: dict[str, Any]) -> str:
+    counts = artifact.get("counts") or {}
+    applications = counts.get("applications", 0) + counts.get("name_matched_applications", 0)
+    grants = counts.get("grants", 0) + counts.get("name_matched_grants", 0)
+    groups = artifact.get("groups") or []
+    names = ", ".join(f"{group['name']} ({group['kind']})" for group in groups[:3])
+    more = f" and {len(groups) - 3} more" if len(groups) > 3 else ""
+    return (
+        f"{artifact.get('company')}: {applications} applications, {grants} grants, "
+        f"{counts.get(_FIRST, 0)} first publications; filed under {names}{more}"
+    )
 
 
 def _fetch(company: dict, date_from: str, date_to: str, budget: _Budget) -> dict:

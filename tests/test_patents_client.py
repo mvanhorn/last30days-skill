@@ -412,7 +412,7 @@ def test_a_429_on_the_fifth_detail_stops_fetching_and_keeps_the_counts(monkeypat
     assert [guid_of(item["url"]) for item in artifact["index"][:8]] == [
         guid.split("-")[1] for guid in clean.detail_guids()[4:12]
     ]
-    assert len(artifact["index"]) == 40
+    assert len(artifact["index"]) == patents.MAX_INDEX
     assert artifact["counts"] == whole["counts"]
     assert artifact["groups"] == whole["groups"]
     assert artifact["status"] == "digest"

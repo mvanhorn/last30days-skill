@@ -159,7 +159,10 @@ def _no_patent_search_network(monkeypatch):
         return {"numFound": 0, "patents": []}
 
     monkeypatch.setattr(
-        patents, "http", SimpleNamespace(post=post, get=post, HTTPError=http.HTTPError),
+        patents, "http", SimpleNamespace(
+            post=post, get=post, HTTPError=http.HTTPError,
+            classify_failure=http.classify_failure,
+        ),
     )
 
 
