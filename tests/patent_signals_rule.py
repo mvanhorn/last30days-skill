@@ -49,12 +49,16 @@ def families(candidate: dict[str, Any]) -> int:
     """Invention families a candidate stands for: a cluster's distinct ones, else one.
 
     Filings that share one earliest priority date and one filed-as name are
-    one family.
+    one family. A titles-only member prints neither date, so it cannot be
+    shown to be a separate family and is not counted.
     """
     members = candidate.get("cluster")
     if members is None:
         return 1
-    return len({(m["priority"], m["filed_as"]) for m in members if usable(m)})
+    return len({
+        (m["priority"], m["filed_as"])
+        for m in members if usable(m) and not m.get("titles_only")
+    })
 
 
 def paths_met(candidate: dict[str, Any]) -> set[int]:

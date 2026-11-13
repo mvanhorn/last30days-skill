@@ -569,6 +569,26 @@ def test_at_most_eight_groups_confirmed_first_then_largest(monkeypatch):
     assert artifact["counts"]["name_matched_applications"] == sum(range(4, 11))
 
 
+def test_every_confirmed_name_is_counted_however_many_there_are(monkeypatch):
+    units = [f"Orchard Unit {n}" for n in range(1, 10)]
+    rows = [make_row("US-20260381000-A1", "2026-11-05")]
+    rows += [
+        make_row(f"US-2026038110{n}-A1", "2026-11-05", name=f"{unit} LLC")
+        for n, unit in enumerate(units)
+    ]
+    rows.append(make_row("US-20260381200-A1", "2026-11-05", name="Apple Retail Holdings LLC"))
+    FakeUSPTO(lists={"US-PGPUB": rows}).install(monkeypatch)
+
+    artifact = run({"company": "Apple Inc.", "company_names": units})["artifact"]
+
+    confirmed = [group for group in artifact["groups"] if group["kind"] == "confirmed"]
+    assert len(confirmed) == 10
+    assert artifact["counts"]["applications"] == 10
+    assert artifact["counts"]["first_publications"] == 10
+    # With the confirmed names past the cap, no name-matched name is kept.
+    assert [group["name"] for group in artifact["groups"] if group["kind"] != "confirmed"] == []
+
+
 # --- which candidates get text ----------------------------------------------
 
 

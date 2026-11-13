@@ -474,8 +474,11 @@ def _baseline(
     classify: Callable[[str], str | None],
     budget: _Budget,
 ) -> Counter[str] | None:
-    """How many of the company's applications named each CPC subclass in the
-    twelve months before the window, or None when that cannot be said."""
+    """How many of the company's recent applications named each CPC subclass,
+    or None when that cannot be said. The sample is one page: the newest
+    ``PAGE_SIZE`` applications of the twelve months before the window, which
+    for a large filer covers only the latest months of that year. It says what
+    the company has been filing lately, not what it filed all year."""
     try:
         start = day_from.replace(year=day_from.year - 1)
     except ValueError:  # 29 February
@@ -570,8 +573,9 @@ def _group(
 ) -> tuple[list[dict], list[dict]]:
     """Group rows by the name they were filed under.
 
-    Returns the groups kept (confirmed before name-matched, largest first,
-    at most ``MAX_GROUPS``) and the largest names that are neither. Names with
+    Returns the groups kept (every confirmed one, then name-matched ones
+    while fewer than ``MAX_GROUPS`` are kept, largest first within each kind)
+    and the largest names that are neither. Names with
     the same key are one name, shown as its most frequent spelling.
     """
     groups: dict[str, dict] = {}
@@ -594,9 +598,13 @@ def _group(
                 if key and key not in counted:
                     counted.add(key)
                     others.setdefault(key, Counter())[name] += 1
-    kept = sorted(
+    ranked = sorted(
         groups.items(), key=lambda item: (item[1]["kind"] != CONFIRMED, -len(item[1]["rows"])),
-    )[:MAX_GROUPS]
+    )
+    # Every confirmed name is kept, however many there are: the company's
+    # counts are of all of them. The cap only limits name-matched names.
+    confirmed = sum(1 for _key, group in ranked if group["kind"] == CONFIRMED)
+    kept = ranked[:max(MAX_GROUPS, confirmed)]
     largest = sorted(others.values(), key=lambda spellings: -sum(spellings.values()))
     return (
         [
@@ -666,7 +674,7 @@ def _order(candidates: list[dict], frequencies: Counter[str] | None) -> list[dic
 
     Without a baseline, newest first. With one, the first half of the slots
     (rounded up) goes to the candidates whose rarest CPC subclass the company
-    filed in least over the baseline year, a subclass it never filed in first;
+    filed in least in its recent filings, a subclass absent from them first;
     everything else follows newest first. The newer candidate wins a tie.
     """
     newest = sorted(candidates, key=lambda candidate: candidate["published"], reverse=True)

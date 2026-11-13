@@ -497,6 +497,9 @@ def test_one_family_is_not_a_cluster_and_three_families_are():
     # A continuation inside a cluster is not one of its families.
     members = [dict(cluster["cluster"][0], kind="continuation"), *cluster["cluster"][1:]]
     assert not rule.qualifies({**cluster, "cluster": members})
+    # A titles-only member prints no dates, so it is not one of the three.
+    members = [dict(cluster["cluster"][0], titles_only=True), *cluster["cluster"][1:]]
+    assert not rule.qualifies({**cluster, "cluster": members})
     # A cluster with three families still needs a path.
     assert not rule.qualifies({**cluster, "paths": []})
 

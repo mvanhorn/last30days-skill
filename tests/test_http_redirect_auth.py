@@ -66,11 +66,13 @@ def test_cross_origin_redirect_strips_authorization():
             "Authorization": "Bearer SENTINEL",
             "X-Api-Key": "SENTINEL-KEY",
             "X-Subscription-Token": "BRAVE-KEY",
+            "X-Access-Token": "SESSION-TOKEN",
         },
         timeout=5,
     )
     assert result == {"ok": True}
     seen = {k.lower(): v for k, v in _CaptureHandler.captured.items()}
+    assert "x-access-token" not in seen
     assert "authorization" not in seen
     assert "x-api-key" not in seen
     assert "x-subscription-token" not in seen

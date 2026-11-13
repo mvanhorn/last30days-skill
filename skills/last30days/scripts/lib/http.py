@@ -96,7 +96,7 @@ USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 
 # urllib copies almost all headers across 3xx; strip credentials when origin changes (#1062).
 _CROSS_ORIGIN_AUTH_HEADERS = frozenset(
-    {"authorization", "x-api-key", "x-csrf-token", "x-subscription-token"}
+    {"authorization", "x-access-token", "x-api-key", "x-csrf-token", "x-subscription-token"}
 )
 
 
