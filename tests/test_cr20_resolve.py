@@ -40,6 +40,7 @@ def test_unsupported_search_credentials_do_not_claim_autoresolve(
     ("exa", "EXA_API_KEY"),
     ("serper", "SERPER_API_KEY"),
     ("parallel", "PARALLEL_API_KEY"),
+    ("outcrawl", "OUTCRAWL_API_KEY"),
 ])
 def test_supported_search_credentials_resolve_through_real_dispatcher(
     monkeypatch, backend, key,
@@ -70,7 +71,9 @@ def test_supported_search_credentials_resolve_through_real_dispatcher(
             "text": snippet,
             "excerpts": [snippet],
         }
-        return {"web": {"results": [item]}, "results": [item], "organic": [item]}
+        return {
+            "web": {"results": [item]}, "results": [item], "organic": [item], "hits": [item],
+        }
 
     monkeypatch.setattr(grounding.http, "request", request)
     config = {key: "dummy-key", "LAST30DAYS_NATIVE_SEARCH": "1"}
@@ -150,7 +153,7 @@ def test_non_latin_runbook_preserves_available_backend_selection():
 def test_competitor_instructions_only_claim_supported_search_backends():
     text = reference_text("competitors")
     capability = text.split("**Engine-internal auto-resolve:**", 1)[1].split("\n", 1)[0]
-    for key in ("BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY", "PARALLEL_API_KEY"):
+    for key in ("BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY", "PARALLEL_API_KEY", "OUTCRAWL_API_KEY"):
         assert key in capability
     assert "PERPLEXITY_API_KEY" not in capability
     assert "OPENROUTER_API_KEY" not in capability
