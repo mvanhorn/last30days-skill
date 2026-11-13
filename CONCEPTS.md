@@ -110,6 +110,12 @@ The user-set status on a Topic queue row meaning "I already produced content for
 
 The ordered list of X backends the Engine tries for one run when none is pinned, failing over to the next when one returns nothing. On an ordinary host the chain puts the free browser-session path first and the key-based backends after it. The chain is defined once and read everywhere it is described or predicted, so what doctor says the run will use and what the run actually uses cannot disagree.
 
+### Browser-session failover
+
+The move, inside the browser-session X backend, from one browser's x.com session to the next browser's when X rejects the session in use; distinct from the X backend chain, which moves between backends.
+
+The first browser holding a complete session is used as before, and later browsers are read only after a rejection, so a working setup costs no extra request or Keychain prompt. A session X rejected is never retried in the same run, a switch holds for the rest of the run across every phase, and reading another browser never runs past the search's time budget. It applies only to sessions read from a browser, never to one the user supplied directly or one obtained by an Extras host's additional paths.
+
 ### Opt-in backend
 
 An X backend that is never part of the unpinned X backend chain and runs only when explicitly selected by the backend pin. The point is that a leftover login or an ambient credential on the machine can never silently claim the X lane, or spend metered credits, on a host that never asked for it. On ordinary hosts the Grok CLI and the direct X API bearer are Opt-in backends.
