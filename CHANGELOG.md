@@ -9,6 +9,17 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.39.0] - 2026-11-13
+
+### Added
+
+- A run about a company now reads that company's US patent applications published and patents granted inside the report window from USPTO Patent Public Search, with no API key and no flag. The report gets a `## Patent Digest` evidence block of first US publications and a `📜 Patents` footer line, and the skill may write a "Patent Secret Signals" section when a filing reveals a product the company has not shipped or a direction it is not known for. It is skipped on comparison, quick, `--hiring-signals` and mock runs. Turn it off with `EXCLUDE_SOURCES=patents` or `LAST30DAYS_NO_PATENT_DIGEST=1` (the MCP server sets the latter). The Wikidata lookup for company topics now also asks for the labels of the company's listed subsidiaries.
+
+### Fixed
+
+- X post text is unescaped, so titles, quotes and video titles show `&` and `'` instead of `&amp;` and `&#39;`. A reel or TikTok that arrives twice keeps its spoken transcript and `spoken_caption` mark together when the copies merge, so a longer written description no longer replaces the transcript.
+
+
 ## [3.38.1] - 2026-11-12
 
 ### Fixed
