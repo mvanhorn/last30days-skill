@@ -98,6 +98,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Amazon** | 商品评分、价格和客户评价。按需启用，需要已认证的 `brightdata` CLI，并消耗你的 Bright Data 额度。 |
 | **DripStack** | 通过无需密钥的公共 API 搜索金融通讯和分析师文章。通过 `--search dripstack` 或 `INCLUDE_SOURCES=dripstack` 按需启用。 |
 | **招聘 / 职位页面** | 以公开职位信息作为企业重点方向的证据。通过 `--hiring-signals`、`--search jobs` 或研究计划选择。 |
+| **专利** | 公司新公布的美国专利申请，作为它在产品发布前正在做什么的证据。免费，无需 API 密钥。当你的主题是一家公司时出现。 |
 | **本地语料** | 你的本地 Markdown 和文本文件；PATH 中有 `pdftotext` 时也支持 PDF。通过 `--corpus` 或 `LAST30DAYS_CORPUS_DIRS` 按需启用。 |
 | **Web** | 编辑报道和博客对比。它只是众多信号之一，而不是唯一来源。 |
 
@@ -112,6 +113,8 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 **开会之前。** `/last30days Peter Steinberger`——加入 OpenAI Codex 团队、反对 Anthropic 禁止第三方智能体、GitHub 上合并了 23 个 PR 且合并率达 85%、正在开发跨设备智能体控制系统 LobsterOS。r/ClaudeCode 上的一条评论说：“自从 OpenClaw 发布之后，大家就知道，只要你不是通过 API 运行它，迟早会被封。”（227 个赞同票）。这些不会出现在 LinkedIn 上。
 
 **判断招聘信号。** `/last30days Listen Labs --hiring-signals`——把最新职位和招聘页面变成有引用依据的证据，从中判断公司是否正转向企业安全、客户成功、基础设施或产品扩张。报告只解释招聘看起来释放了什么信号，不会武断预测路线图一定会交付什么。
+
+**查看公司在申请什么。** `/last30days Nvidia` 现在会把该公司在你的时间窗口内新公布的美国专利申请作为证据，所以公司尚未公布的产品或方向可能出现在报告里。
 
 **在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg 的话题，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
 
@@ -265,7 +268,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 
 | 来源 | 你需要准备什么 | 成本 |
 |------|----------------|------|
-| Reddit（含评论）+ HN + Polymarket + GitHub + StockTwits | 无 | 免费 |
+| Reddit（含评论）+ HN + Polymarket + GitHub + StockTwits + 公司专利申请 | 无 | 免费 |
 | arXiv + Techmeme + Yahoo Finance | 免费 CLI，由首次配置自动安装 | 免费 |
 | X / Twitter | 设置 `X_BEARER_TOKEN` 使用官方 X API（近期帖子，大约最近一周；除非你的 X 开发者项目拥有完整归档访问权限。Grok Bot 上作为机器人内置 X 工具之后的备用方式，其他宿主需通过 `LAST30DAYS_X_BACKEND=xapi` 选择启用），或在任意浏览器中登录 x.com，或设置 `XQUIK_API_KEY` / `XAI_API_KEY` | X API 额度来自你自己的 X 开发者项目；浏览器 Cookie 免费；其他密钥费用取决于服务商 |
 | YouTube | `brew install yt-dlp` | 免费 |

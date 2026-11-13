@@ -95,6 +95,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Amazon** | Product ratings, prices, and customer reviews. Opt-in; requires an authenticated `brightdata` CLI and uses your Bright Data credits. |
 | **DripStack** | Financial newsletters and analyst writeups through a public, keyless API. Opt in with `--search dripstack` or `INCLUDE_SOURCES=dripstack`. |
 | **Jobs / careers pages** | Public job postings as evidence of a company's focus. Selected with `--hiring-signals`, `--search jobs`, or the research plan. |
+| **Patents** | A company's new US patent filings, as evidence of what it is building before it ships. Free, no API key. Shows when your topic is a company. |
 | **Local corpus** | Your local Markdown and text files, plus PDFs when `pdftotext` is on PATH. Opt in with `--corpus` or `LAST30DAYS_CORPUS_DIRS`. |
 | **Web** | The editorial coverage, the blog comparisons. One signal of many, not the only one. |
 
@@ -109,6 +110,8 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 **Before a meeting.** `/last30days Peter Steinberger` - joined OpenAI's Codex team, fighting Anthropic's ban on third-party agents, 23 PRs merged at 85% merge rate on GitHub, building LobsterOS for cross-device agent control. r/ClaudeCode: "Ever since OpenClaw released, it was widely known that if you run it through anything other than the API, you were gonna get banned eventually" (227 upvotes). That's not on LinkedIn.
 
 **To read hiring signals.** `/last30days Listen Labs --hiring-signals` - current jobs and careers pages become cited evidence for focus shifts: hiring into enterprise security, customer success, infrastructure, or product expansion. The report says what the hiring appears to signal, not what the roadmap will ship.
+
+**To see what a company is filing.** `/last30days Nvidia` now includes the company's new US patent filings from your window as evidence, so a product or direction the company has not announced can show up in the report.
 
 **To find the topic before it peaks.** Ask `/last30days what's exploding in AI agents?` and the skill switches to discovery mode: the engine sweeps Reddit category listings, Hacker News front/best stories, Digg stories, and X when authenticated; your agent judges the nominations (names, junk filtering, content-worthiness) and writes podcast / X-article angles; then you get 5-10 velocity-ranked topics. Every result includes cross-source numbers, a momentum label, and a ready-to-run `/last30days "<topic>"` follow-up.
 
@@ -266,7 +269,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 
 | Sources | What you need | Cost |
 |---------|---------------|------|
-| Reddit (with comments) + HN + Polymarket + GitHub + StockTwits | Nothing | Free |
+| Reddit (with comments) + HN + Polymarket + GitHub + StockTwits + company patent filings | Nothing | Free |
 | arXiv + Techmeme + Yahoo Finance | Free CLIs, auto-installed by first-run setup | Free |
 | X / Twitter | Set `X_BEARER_TOKEN` for the official X API (recent posts, about the last week, unless your X developer project has full-archive access; a backup on Grok Bot after the bot's built-in X tools, opt-in elsewhere with `LAST30DAYS_X_BACKEND=xapi`), or log into x.com in any browser, or set `XQUIK_API_KEY` / `XAI_API_KEY` | X API credits come from your X developer project; browser cookies are free; other keys are provider-specific |
 | YouTube | `brew install yt-dlp` | Free |

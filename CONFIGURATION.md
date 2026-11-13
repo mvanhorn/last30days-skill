@@ -196,6 +196,7 @@ The source table covers the engine's research sources and optional comment or tr
 | Perplexity Agent API / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` uses background Agent API with a direct key or synchronous Sonar through OpenRouter | no |
 | Caption-free transcription | `GROQ_API_KEY` (free tier, preferred) or `OPENAI_API_KEY` (paid backstop); requires `ffmpeg` | Whisper transcription for audio/video without captions (groundwork: module shipped, not yet auto-invoked by the engine) | Groq free tier is generous; needs ffmpeg installed |
 | Jobs / careers pages | none for public ATS/careers pages; a configured web backend can improve discovery and fallback | `--hiring-signals`, `--search jobs`, a host research plan that includes `jobs`, or any host-planned run about a company (`--official-site`, `--ticker`, `--company`, or a resolved company), where the engine adds `jobs` itself. Engine-planned company runs may add it automatically when no source list is supplied | public ATS/careers access is keyless; a configured web provider may charge for discovery or fallback |
+| Patents | none (US Patent Public Search, `ppubs.uspto.gov`, read without an account) | any run about a company (a topic the engine resolves to a company, or a company the host names with `--company`), with no flag. Skipped on comparison runs, `--quick`, `--hiring-signals` and `--mock`. `EXCLUDE_SOURCES=patents` or `LAST30DAYS_NO_PATENT_DIGEST=1` turns it off; see [Patent filings](#patent-filings) | yes (free, keyless; quiet for a company with no filings in the window, and if USPTO starts requiring sign-in) |
 
 **Instagram recovery budget.** When the primary reels search returns no results or HTTP 404, Instagram can recover Google-indexed reels through ScrapeCreators. Each source fetch shares at most 1 Google page and 9 post-detail attempts at quick depth, 2 and 16 at default depth, or 3 and 27 at deep depth across its expanded queries. These calls spend credits; primary searches, transcripts, comments, and later source retries are outside those counts. Successful details are reused by reel shortcode within the fetch. The source's time budget also covers transcripts and comments: if it expires, completed reels remain available as partial coverage and no further requests start. A request already accepted by the provider can still be charged.
 
@@ -585,6 +586,23 @@ Any other board gives the footer count with no digest, a stderr line says why, a
 
 Either flag alone, `--official-site`, a usable `--ticker` pair, or a topic the engine resolves to a company marks the run as about a company. On such a run with a host `--plan` that names `jobs` in no subquery, the engine adds `jobs` to the primary subquery and logs `[Planner] Added jobs to primary: ...`. It does not do so on `--quick`, with a `--search` list that leaves `jobs` out, or with `EXCLUDE_SOURCES=jobs`. On a comparison run both flags apply to the main topic only.
 
+### Patent filings
+
+On a run about a company (a topic the engine resolves to a company, or a company the host names with `--company`), the engine reads that company's US patent applications published and patents granted inside the report window from USPTO Patent Public Search. It needs no key and no flag, and this lane adds no CLI flag. It is skipped on comparison runs, `--quick`, `--hiring-signals` and `--mock` runs.
+
+Filings are grouped by the name they were filed under: the company's own name, subsidiaries its Wikidata record lists, and longer legal names that add words to the company's name, such as "Microsoft Technology Licensing, LLC". Other names are only counted. The report gets a `## Patent Digest` evidence block of first US publications and a `📜 Patents` footer line, and the skill may write a "Patent Secret Signals" section when a filing reveals a product the company has not shipped or a direction it is not known for.
+
+A first US publication is an application published for the first time, or a grant with no earlier published application, that does not continue an older application. Continuations, grants of applications that were already published, and design patents are counted and never shown. Applications publish about 18 months after filing, so a filing shows what the company was working on well before it published.
+
+Two ways to turn it off:
+
+- `EXCLUDE_SOURCES=patents` skips the lane. Nothing is sent to USPTO.
+- `LAST30DAYS_NO_PATENT_DIGEST=1` does the same from the process environment, for callers that cannot edit `.env`. The MCP server sets it on every run.
+
+What leaves your machine: the company name, the names of its listed subsidiaries and the report's date window go to `ppubs.uspto.gov`; the reader links in the digest point at `image-ppubs.uspto.gov`. No account or key is involved. The Wikidata lookup the engine already makes for company topics now also asks Wikidata for the labels of the company's listed subsidiaries.
+
+Name matching has limits. A filing made in the inventors' names before an assignment is recorded is not found, and neither is an entity that shares no word with the company and is missing from its Wikidata record. USPTO has announced that this search will require sign-in at some point; when it does, the lane goes quiet with no failure line.
+
 ### `--ticker` flag
 
 ```
@@ -676,6 +694,7 @@ Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json
 | `LAST30DAYS_YOUTUBE_BACKEND` | `yt-dlp` keeps YouTube off ScrapeCreators (search backfill, transcript rescue, and comments) while `SCRAPECREATORS_API_KEY` still serves TikTok, Instagram, and Reddit; yt-dlp then uses the keyless retry budget. Unset or any other value keeps the default yt-dlp → ScrapeCreators chain. Doctor shows the pin and the disarmed backstop. |
 | `LAST30DAYS_YT_SC_MIN_ITEMS` | Keyed YouTube search backfill floor. Default `3`; `0` restores empty-only search fallback. Invalid values behave like `0`. See [YouTube search backfill](#youtube-search-backfill) for per-stream credit usage and retry behavior. |
 | `LAST30DAYS_NO_JOBS_DIGEST` | Truthy (`1`/`true`/`yes`/`on`): leaves the `## Jobs Digest` section out of the output; the footer Jobs line stays, and each ranked job posting keeps its own evidence line. For callers whose reader never sees the skill's instruction files: the MCP `research` tool sets it on every run. Process environment only. |
+| `LAST30DAYS_NO_PATENT_DIGEST` | Truthy (`1`/`true`/`yes`/`on`): the run does not search a company's patent filings at all, so nothing is sent to USPTO and there is no `## Patent Digest` section or Patents footer line. For callers whose reader never sees the skill's instruction files: the MCP `research` tool sets it on every run. Process environment only. |
 | `LAST30DAYS_NO_REPORT_CHECKLIST` | Truthy (`1`/`true`/`yes`/`on`): `--emit=compact` stdout ends at the canonical boundary, without the `## Before you write the report` format checklist the command line otherwise prints after it. For the same callers: the MCP `research` tool sets it on every run. Process environment only. |
 
 Web search has **no** env pin — pin it per-run with `--web-backend=<name>` only (see [Web search backend priority](#web-search-backend-priority)).
