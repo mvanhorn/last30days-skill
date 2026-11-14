@@ -8,7 +8,8 @@ that publish nothing new, and reads the text of a few of the rest.
 One call makes one anonymous session, two list searches over the window
 (published applications by applicant name, grants by assignee name), one list
 search over the twelve months before the window, and up to ``DETAIL_SLOTS``
-document reads, all inside one wall-clock budget.
+document reads, all inside one wall-clock budget. The baseline search gets at
+most a third of it, so the reads are left time.
 
 - Whose filings: every name a row was filed under is classified against the
   company (``lib.company_names``). Rows are grouped by that name; a group is
@@ -65,8 +66,11 @@ GRANTS = "USPAT"
 # database -> (search field, the row field holding the filed-under names)
 _NAME_FIELDS = {APPLICATIONS: ("aanm", "applicantName"), GRANTS: ("asnm", "assigneeName")}
 
-# Everything one run spends on the lane, measured from ``start``.
-LANE_BUDGET_SECONDS = 30.0
+# Everything one run spends on the lane, measured from ``start``. The lane
+# runs beside a pipeline that takes minutes, so this rarely lengthens a run.
+LANE_BUDGET_SECONDS = 90.0
+# The most of the lane's budget the year-back baseline search may take.
+BASELINE_SHARE = 1 / 3
 COLLECT_GRACE_SECONDS = 2.0
 REQUEST_TIMEOUT_SECONDS = 8.0
 REQUEST_ATTEMPTS = 2
@@ -112,6 +116,12 @@ class _OutOfTime(Exception):
     """The lane's budget ran out before a request could be sent."""
 
 
+# lib.http raises this when a request's deadline passes; every document read
+# carries the lane's own deadline. Bound here so a test transport standing in
+# for ``http`` does not have to provide it.
+_LANE_DEADLINE_PASSED = http.DeadlineExceeded
+
+
 def _log(message: str) -> None:
     log.source_log("Patents", message, tty_only=False)
 
@@ -119,8 +129,16 @@ def _log(message: str) -> None:
 class _Budget:
     """The wall-clock allowance for everything one call does."""
 
-    def __init__(self, seconds: float) -> None:
-        self.deadline = time.monotonic() + max(0.0, float(seconds))
+    def __init__(self, seconds: float, *, within: _Budget | None = None) -> None:
+        self.seconds = max(0.0, float(seconds))
+        self.deadline = time.monotonic() + self.seconds
+        if within is not None:
+            self.deadline = min(self.deadline, within.deadline)
+
+    def share(self, fraction: float) -> _Budget:
+        """A budget of ``fraction`` of this one's seconds, from now, ending no
+        later than this one."""
+        return _Budget(self.seconds * fraction, within=self)
 
     def bounds(self) -> dict[str, Any]:
         """The limits of the next request: its own timeout clipped to what is
@@ -142,7 +160,7 @@ def fetch_patent_data(
     date_to: str,
     config: dict | None = None,
     *,
-    budget_seconds: float = 30.0,
+    budget_seconds: float = LANE_BUDGET_SECONDS,
 ) -> dict:
     """Return the company's filings published between two YYYY-MM-DD dates.
 
@@ -288,7 +306,7 @@ def _fetch(company: dict, date_from: str, date_to: str, budget: _Budget) -> dict
 
     frequencies = None
     if candidates:
-        frequencies = _baseline(session, phrases, day_from, classify, budget)
+        frequencies = _baseline(session, phrases, day_from, classify, budget.share(BASELINE_SHARE))
     ordered = _order(candidates, frequencies)
     entries, demoted, rest = _read_details(session, ordered, budget)
     for candidate in demoted:
@@ -475,7 +493,8 @@ def _baseline(
     budget: _Budget,
 ) -> Counter[str] | None:
     """How many of the company's recent applications named each CPC subclass,
-    or None when that cannot be said. The sample is one page: the newest
+    or None when that cannot be said, including when the search outlasts
+    ``budget``, the baseline's own share of the lane's. The sample is one page: the newest
     ``PAGE_SIZE`` applications of the twelve months before the window, which
     for a large filer covers only the latest months of that year. It says what
     the company has been filing lately, not what it filed all year."""
@@ -503,10 +522,15 @@ def _read_details(
 
     Returns the entries built, the candidates their own continuity data showed
     to continue an older application, and the candidates left with list data
-    only. Any failed read ends the reading; what was built stays.
+    only: those whose read failed, then those never read. A read that fails
+    or times out costs only its own document, and the reading goes on. The
+    reading ends, keeping what was built, when the lane's budget is spent,
+    when the site rate-limits past its one honoured wait, or when it asks for
+    sign-in.
     """
     entries: list[dict] = []
     demoted: list[dict] = []
+    failed: list[dict] = []
     position = 0
     while (
         position < len(ordered)
@@ -529,15 +553,23 @@ def _read_details(
                 raise
             _log(f"stopped reading documents after {len(entries)}: sign-in required")
             break
-        except (http.HTTPError, _OutOfTime, TypeError) as exc:
+        except (_OutOfTime, _LANE_DEADLINE_PASSED) as exc:
             _log(f"stopped reading documents after {len(entries)}: {exc}")
             break
+        except (http.HTTPError, TypeError) as exc:
+            if isinstance(exc, http.HTTPError) and exc.status_code == 429:
+                _log(f"stopped reading documents after {len(entries)}: {exc}")
+                break
+            _log(f"no text for {candidate['number']}, reading on: {exc}")
+            failed.append(candidate)
+            position += 1
+            continue
         position += 1
         if _CONTINUES_A_PARENT.search(" ".join(_strings(document.get("continuityData")))):
             demoted.append(candidate)
         else:
             entries.append(_entry(candidate, document))
-    return entries, demoted, ordered[position:]
+    return entries, demoted, failed + ordered[position:]
 
 
 # --- whose filing -----------------------------------------------------------

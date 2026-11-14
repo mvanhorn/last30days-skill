@@ -620,6 +620,22 @@ def test_a_thin_baseline_orders_entries_newest_first(monkeypatch):
     assert numbers(artifact["index"]) == [row["guid"].split("-")[1] for row in rows[12:]]
 
 
+def test_a_baseline_past_its_third_of_the_budget_still_reads_newest_first(monkeypatch):
+    rows = window_rows()
+    # A full baseline would put the unseen class first; this one takes 31 of
+    # the lane's 90 seconds, past its own share of 30.
+    fake = FakeUSPTO(
+        lists={"US-PGPUB": rows}, baseline=baseline_rows(30), seconds={"baseline": 31.0},
+    ).install(monkeypatch)
+
+    artifact = run()["artifact"]
+
+    assert len(fake.of("baseline")) == 1
+    assert [entry["guid"] for entry in artifact["entries"]] == [row["guid"] for row in rows[:12]]
+    assert all(entry["abstract"] and entry["first_claim"] for entry in artifact["entries"])
+    assert artifact["partial"] is None
+
+
 def test_an_unseen_class_gets_a_slot_ahead_of_newer_common_filings(monkeypatch):
     rows = window_rows()
     FakeUSPTO(lists={"US-PGPUB": rows}, baseline=baseline_rows(30)).install(monkeypatch)
