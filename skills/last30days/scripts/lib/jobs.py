@@ -2584,6 +2584,122 @@ def fetch_apple_details(
     return late, failed
 
 
+# Eightfold: hosted boards with two API generations, and a tenant has one of
+# them (``api`` in the registry entry). Both list 10 roles per call with no
+# text, and give a role's text through one more call. Neither date a row
+# carries is shown to be the day the role was first posted, so no row claims
+# one and the board prints no count of roles new in the window.
+
+EIGHTFOLD_PAGE_SIZE = 10
+# The digest picks 40 roles; ten times that is enough to choose from.
+EIGHTFOLD_ROW_CEILING = 400
+
+
+def parse_eightfold_response(
+    payload: Any, entry: dict[str, str],
+) -> tuple[list[dict[str, Any]], int]:
+    """Rows and the reported total from one Eightfold listing page."""
+    pcsx = entry.get("api") == "pcsx"
+    body = payload.get("data") if pcsx and isinstance(payload, dict) else payload
+    positions = body.get("positions") if isinstance(body, dict) else None
+    if not isinstance(positions, list):
+        raise BoardShapeError("no positions list")
+    board, domain = entry["board"], entry["domain"]
+    items: list[dict[str, Any]] = []
+    for job in positions:
+        if not isinstance(job, dict) or not job.get("id") or not job.get("name"):
+            continue
+        ident = str(job["id"])
+        if pcsx:
+            url = f"https://{board}{job.get('positionUrl') or f'/careers/job/{ident}'}"
+            detail = f"https://{board}/api/pcsx/position_details?position_id={ident}&domain={domain}&hl=en"
+        else:
+            url = str(job.get("canonicalPositionUrl") or f"https://{board}/careers/job/{ident}")
+            detail = f"https://{board}/api/apply/v2/jobs/{ident}?domain={domain}"
+        locations = [str(loc).strip() for loc in job.get("locations") or [] if loc]
+        item = _ats_item(
+            provider=COMPANY_PROVIDER_EIGHTFOLD,
+            slug=board,
+            ident=ident,
+            title=str(job["name"]).strip(),
+            url=url,
+            description="",
+            date=None,
+            department=str(job.get("department") or "").strip(),
+            location=locations[0] if locations else str(job.get("location") or "").strip(),
+            company_name=entry.get("name", ""),
+            whole_posting=True,
+        )
+        item["detail_url"] = detail
+        items.append(item)
+    return items, _reported_total(body, "count")
+
+
+def read_eightfold_board(
+    entry: dict[str, str], *, deadline: float, date_range: tuple[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """An Eightfold board's newest roles, up to the row ceiling, with its total.
+
+    A 403 on the registered API generation reads as no rows: the board cannot
+    be read.
+    """
+    board, domain = entry["board"], entry["domain"]
+    if entry.get("api") == "pcsx":
+        url = f"https://{board}/api/pcsx/search"
+        base = {"domain": domain, "query": "", "location": "", "sort_by": "timestamp"}
+    else:
+        url = f"https://{board}/api/apply/v2/jobs"
+        base = {"domain": domain, "num": str(EIGHTFOLD_PAGE_SIZE), "sort_by": "timestamp"}
+
+    def page(offset: int) -> Callable[[float], Any]:
+        params = {**base, "start": str(offset)}
+        return lambda http_deadline: http.get(
+            url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
+            deadline_monotonic=http_deadline,
+        )
+
+    items, info = _read_newest_first(
+        page, lambda payload: parse_eightfold_response(payload, entry),
+        page_size=EIGHTFOLD_PAGE_SIZE, row_ceiling=EIGHTFOLD_ROW_CEILING,
+        window_start=None, deadline=deadline,
+    )
+    # No row carries a true posted date, so the window is never counted.
+    info["board_window_covered"] = False
+    return items, info
+
+
+def fetch_eightfold_details(
+    items: list[dict[str, Any]], *, deadline: float,
+) -> tuple[int, int]:
+    """Fill the text of the given Eightfold roles, one call each.
+
+    Returns the counts left unfetched (late, failed), like the other fetchers.
+    """
+    clock = _clock()
+
+    def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        return lambda http_deadline: http.get(
+            str(item["detail_url"]), timeout=API_TIMEOUT_SECONDS, retries=1,
+            deadline_monotonic=http_deadline,
+        )
+
+    late = failed = 0
+    for item, payload in zip(items, _workday_run([call(item) for item in items], deadline, clock)):
+        if payload is _OUT_OF_TIME:
+            late += 1
+            continue
+        body = payload.get("data", payload) if isinstance(payload, dict) else None
+        html = ""
+        if isinstance(body, dict):
+            html = str(body.get("jobDescription") or body.get("job_description") or "")
+        if not html.strip():
+            failed += 1
+            continue
+        item["description_blocks"] = _block_text(html)
+        item["description"] = _clean_html(html)
+    return late, failed
+
+
 # Readers of company-run boards, by provider: given the registry entry and the
 # listing's deadline, each returns ``(items, board_info)`` like the hosted
 # readers. Detail fetchers fill role text for the roles the digest selected
@@ -2592,10 +2708,12 @@ def fetch_apple_details(
 _COMPANY_READERS: dict[str, str] = {
     COMPANY_PROVIDER_AMAZON: "read_amazon_board",
     COMPANY_PROVIDER_APPLE: "read_apple_board",
+    COMPANY_PROVIDER_EIGHTFOLD: "read_eightfold_board",
 }
 _DETAIL_FETCHERS: dict[str, str] = {
     ATS_PROVIDER_WORKDAY: "fetch_workday_details",
     COMPANY_PROVIDER_APPLE: "fetch_apple_details",
+    COMPANY_PROVIDER_EIGHTFOLD: "fetch_eightfold_details",
 }
 
 

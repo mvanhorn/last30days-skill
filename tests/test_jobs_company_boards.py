@@ -487,3 +487,131 @@ def test_a_slow_apple_page_ends_that_call_and_keeps_the_rows_read():
     assert len(items) == 20
     assert artifact["board_cut_short"] is True
     assert artifact["open_roles"] == 6459
+
+
+# --- Eightfold (Microsoft, Qualcomm, Netflix) ----------------------------------
+
+PCSX = json.loads((FIXTURES / "jobs_eightfold_pcsx.json").read_text(encoding="utf-8"))
+V2 = json.loads((FIXTURES / "jobs_eightfold_v2.json").read_text(encoding="utf-8"))
+MICROSOFT = jobs.COMPANY_BOARDS["microsoft.com"]
+NETFLIX = jobs.COMPANY_BOARDS["netflix.com"]
+
+
+def _eightfold_page(fixture, start, *, pcsx, total=None):
+    """The fixture's listing page with ids moved by ``start`` so every page differs."""
+    answer = copy.deepcopy(fixture["page"])
+    body = answer["data"] if pcsx else answer
+    for position in body["positions"]:
+        position["id"] = int(position["id"]) + start
+        if pcsx:
+            position["positionUrl"] = f"/careers/job/{position['id']}"
+        else:
+            position["canonicalPositionUrl"] = f"https://explore.jobs.netflix.net/careers/job/{position['id']}"
+    if total is not None:
+        body["count"] = total
+    if start >= body["count"]:
+        body["positions"] = []
+    return answer
+
+
+def _eightfold_search(company, site, fixture, *, pcsx, total=None, status=None):
+    listed, details = [], []
+
+    def get(url, params=None, **_kwargs):
+        if "/api/pcsx/search" in url or url.endswith("/api/apply/v2/jobs"):
+            listed.append((url, dict(params or {})))
+            if status is not None:
+                raise http.HTTPError(f"HTTP {status}", status_code=status)
+            return _eightfold_page(fixture, int(params["start"]), pcsx=pcsx, total=total)
+        if "/api/pcsx/position_details" in url or "/api/apply/v2/jobs/" in url:
+            details.append(url)
+            # Each role gets a sentence of its own, so it survives boilerplate removal.
+            answer = copy.deepcopy(fixture["detail"])
+            body = answer["data"] if pcsx else answer
+            key = "jobDescription" if pcsx else "job_description"
+            body[key] = f"<p>Own the work behind {url.split('jobs/')[-1]}.</p>" + body[key]
+            return answer
+        raise http.HTTPError("HTTP 404: Not Found", status_code=404)
+
+    texts = _NoRequests()
+    with patch.object(jobs.http, "get", side_effect=get), \
+            patch.object(jobs.http, "get_text", side_effect=texts.text), \
+            patch.object(jobs.http, "post", side_effect=texts):
+        items, artifact = jobs.search_jobs(company, WINDOW, {}, web_backend="none", site=site)
+    return items, artifact, listed, details, texts.urls
+
+
+def test_a_pcsx_page_parses_to_rows_with_a_public_url():
+    items, total = jobs.parse_eightfold_response(PCSX["page"], MICROSOFT)
+    assert total == 2392 and len(items) == 10
+    first = items[0]
+    assert first["title"] == "Technical Program Manager II - FD&E"
+    assert first["department"] == "Technical Program Management"
+    assert first["location"] == "United States, Washington, Redmond"
+    assert first["url"] == "https://apply.careers.microsoft.com/careers/job/1970393557041639"
+    assert first["id"] == "EF1970393557041639" and first["provider"] == "eightfold"
+    assert first["detail_url"].startswith(
+        "https://apply.careers.microsoft.com/api/pcsx/position_details?position_id=1970393557041639&domain=microsoft.com"
+    )
+
+
+def test_a_v2_page_parses_the_same_fields_from_its_own_names():
+    items, total = jobs.parse_eightfold_response(V2["page"], NETFLIX)
+    assert total == 418 and len(items) == 10
+    first = items[0]
+    assert first["title"] == "AI Engineer 6 - AI Foundation & Tooling, Ads Platform"
+    assert first["department"] == "Data & Insights"
+    assert first["location"] == "Los Gatos,California,United States of America"
+    assert first["url"] == "https://explore.jobs.netflix.net/careers/job/790298014263"
+    assert first["detail_url"] == "https://explore.jobs.netflix.net/api/apply/v2/jobs/790298014263?domain=netflix.com"
+
+
+def test_no_eightfold_row_claims_a_true_posted_date():
+    rows = (jobs.parse_eightfold_response(PCSX["page"], MICROSOFT)[0]
+            + jobs.parse_eightfold_response(V2["page"], NETFLIX)[0])
+    assert rows and not any(row["posted_date_true"] or row["date"] for row in rows)
+
+
+def test_a_403_on_the_registered_generation_is_the_cant_be_read_outcome():
+    items, artifact, listed, details, other = _eightfold_search(
+        "Microsoft", "https://www.microsoft.com/", PCSX, pcsx=True, status=403,
+    )
+    assert items == [] and artifact["job_site_unreadable"] == "Microsoft"
+    assert len(listed) == 1 and details == [] and other == []
+
+
+def test_a_large_eightfold_board_is_read_to_its_ceiling_and_prints_the_reported_total():
+    items, artifact, listed, details, other = _eightfold_search(
+        "Microsoft", "https://www.microsoft.com/", PCSX, pcsx=True,
+    )
+    assert len(items) == jobs.EIGHTFOLD_ROW_CEILING == 400
+    assert len(listed) == 40 and other == []
+    assert all(params["domain"] == "microsoft.com" and params["sort_by"] == "timestamp"
+               for _url, params in listed)
+    assert artifact["open_roles"] == 2392 and artifact["new_in_window"] is None
+    rendered = render.render_compact(_report(jobs=artifact))
+    assert "💼 Jobs: 2,392 open roles" in rendered
+    assert "new in the L30" not in rendered.split("💼 Jobs:", 1)[1].split("\n", 1)[0]
+
+
+def test_eightfold_role_text_is_requested_only_for_digest_selected_roles():
+    items, artifact, _listed, details, _other = _eightfold_search(
+        "Microsoft", "https://www.microsoft.com/", PCSX, pcsx=True,
+    )
+    roles = artifact["digest"]["roles"]
+    assert roles and len(details) == len(roles) < len(items)
+    by_url = {item["url"]: item for item in items}
+    assert {by_url[role["url"]]["detail_url"] for role in roles} == set(details)
+    assert all("Own the work behind" in role["text"] for role in roles)
+
+
+@pytest.mark.parametrize(
+    "company, site, fixture, pcsx",
+    [("Microsoft", "https://www.microsoft.com/", PCSX, True),
+     ("Netflix", "https://www.netflix.com/", V2, False)],
+)
+def test_microsoft_and_netflix_runs_print_a_digest(company, site, fixture, pcsx):
+    _items, artifact, _listed, _details, _other = _eightfold_search(company, site, fixture, pcsx=pcsx)
+    rendered = render.render_compact(_report(jobs=artifact))
+    assert "\n## Jobs Digest\n" in rendered
+    assert "role text fetched" not in (artifact["digest"].get("note") or "")

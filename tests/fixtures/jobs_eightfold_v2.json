@@ -1,0 +1,145 @@
+{
+ "page": {
+  "count": 418,
+  "positions": [
+   {
+    "id": 790298014263,
+    "name": "AI Engineer 6 - AI Foundation & Tooling, Ads Platform",
+    "location": "Los Gatos,California,United States of America",
+    "locations": [
+     "Los Gatos,California,United States of America"
+    ],
+    "department": "Data & Insights",
+    "business_unit": "Streaming",
+    "t_update": 1779148800,
+    "t_create": 1721692800,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790298014263"
+   },
+   {
+    "id": 790319500686,
+    "name": "Manager, Consumer Products Solutions",
+    "location": "Los Angeles,California,United States of America",
+    "locations": [
+     "Los Angeles,California,United States of America"
+    ],
+    "department": "Program Management",
+    "business_unit": "Streaming",
+    "t_update": 1794528000,
+    "t_create": 1794528000,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319500686"
+   },
+   {
+    "id": 790319503349,
+    "name": "Sales Solutions Lead (UCAN - Programmatic)",
+    "location": "New York,New York,United States of America",
+    "locations": [
+     "New York,New York,United States of America"
+    ],
+    "department": "Advertising",
+    "business_unit": "Streaming",
+    "t_update": 1794528000,
+    "t_create": 1794528000,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319503349"
+   },
+   {
+    "id": 790319503363,
+    "name": "Business Partner, Finance Procurement Operations - Studio",
+    "location": "Los Angeles,California,United States of America",
+    "locations": [
+     "Los Angeles,California,United States of America"
+    ],
+    "department": "Core Finance & Controllership",
+    "business_unit": "Streaming",
+    "t_update": 1794528000,
+    "t_create": 1794528000,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319503363"
+   },
+   {
+    "id": 790319500144,
+    "name": "Senior Manager, Brand Strategy, Marketing Partnerships",
+    "location": "Los Angeles,California,United States of America",
+    "locations": [
+     "Los Angeles,California,United States of America"
+    ],
+    "department": "Marketing",
+    "business_unit": "Streaming",
+    "t_update": 1794528000,
+    "t_create": 1794528000,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319500144"
+   },
+   {
+    "id": 790319503891,
+    "name": "Administrative Assistant, Content Licensing",
+    "location": "Los Angeles,California,United States of America",
+    "locations": [
+     "Los Angeles,California,United States of America"
+    ],
+    "department": "Administration",
+    "business_unit": "Streaming",
+    "t_update": 1794528000,
+    "t_create": 1794528000,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319503891"
+   },
+   {
+    "id": 790319479285,
+    "name": "Manager, Audience Strategy - Publishing",
+    "location": "Los Angeles,California,United States of America",
+    "locations": [
+     "Los Angeles,California,United States of America"
+    ],
+    "department": "Publishing",
+    "business_unit": "Streaming",
+    "t_update": 1794441600,
+    "t_create": 1794441600,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319479285"
+   },
+   {
+    "id": 790319479902,
+    "name": "Machine Learning Scientist 5 - Bidding & Pacing",
+    "location": "Remote, United States",
+    "locations": [
+     "Remote, United States"
+    ],
+    "department": "Data & Insights",
+    "business_unit": "Streaming",
+    "t_update": 1794441600,
+    "t_create": 1794441600,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319479902"
+   },
+   {
+    "id": 790319483034,
+    "name": "Game Reliability Manager",
+    "location": "Remote, United States",
+    "locations": [
+     "Remote, United States",
+     "Los Gatos,California,United States of America"
+    ],
+    "department": "Netflix Games Studio",
+    "business_unit": "Streaming",
+    "t_update": 1794441600,
+    "t_create": 1794441600,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319483034"
+   },
+   {
+    "id": 790319484232,
+    "name": "Technical Program Manager 6 - Content Promotion & Distribution",
+    "location": "Los Gatos,California,United States of America",
+    "locations": [
+     "Los Gatos,California,United States of America",
+     "Los Angeles,California,United States of America"
+    ],
+    "department": "Engineering Operations",
+    "business_unit": "Streaming",
+    "t_update": 1794441600,
+    "t_create": 1794441600,
+    "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790319484232"
+   }
+  ]
+ },
+ "detail": {
+  "id": 790298014263,
+  "name": "AI Engineer 6 - AI Foundation & Tooling, Ads Platform",
+  "canonicalPositionUrl": "https://explore.jobs.netflix.net/careers/job/790298014263?microsite=netflix.com",
+  "job_description": "<p>At Netflix, our mission is to entertain the world. Together, we are writing the next episode - pushing the boundaries of storytelling, global fandom and making the unimaginable a reality. We are a dream team obsessed with the uncomfortable excitement of discovering what happens when you merge creativity, intuition and cutting-edge technology. Come be a part of what\u2019s next.</p><p><a href=\"https://deadline.com/2022/11/netflix-ads-launch-what-to-know-1235162223/\" target=\"_blank\">We launched a new ad-supported tier</a><span> in November 2022 to offer our members more choice in how they consume their content. Our new tier allows us to attract new members at a lower price point, while also creating a compelling path for advertisers to reach audiences that are deeply engaged.</span></p><p></p><h2><span>Our Team</span></h2><p><span>The Ads Platform Engineering teams build advertising systems and integrations that powers the delivery of ads using our world class content delivery ecosystem. We use a number of Netflix investments and innovations to power our ads - unique mix of client and server side ad insertions, state of the art content delivery system, ad encoding recipes, content understanding and metadata etc. We deliver ads in a manner that\u2019s thoughtful of our member\u2019s viewing experience and drive great outcomes for advertisers. We also ensure that advertiser brand safety is ensured during serving, members only see the most appropriate ads for them.</span></p><p></p><h2><b>"
+ }
+}

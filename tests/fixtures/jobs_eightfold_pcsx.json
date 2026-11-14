@@ -1,0 +1,142 @@
+{
+ "page": {
+  "status": 200,
+  "error": {},
+  "data": {
+   "count": 2392,
+   "positions": [
+    {
+     "id": 1970393557041639,
+     "displayJobId": "200062221",
+     "name": "Technical Program Manager II - FD&E",
+     "locations": [
+      "United States, Washington, Redmond"
+     ],
+     "postedTs": 1794675874,
+     "department": "Technical Program Management",
+     "creationTs": 1792093337,
+     "positionUrl": "/careers/job/1970393557041639"
+    },
+    {
+     "id": 1970393557070369,
+     "displayJobId": "200066637",
+     "name": "Digital Solution Engineer - Data & Analytics - Greek Speaking",
+     "locations": [
+      "Ireland, Dublin, Dublin",
+      "Spain, Barcelona, Barcelona"
+     ],
+     "postedTs": 1794664273,
+     "department": "Digital Solution Engineering",
+     "creationTs": 1794303937,
+     "positionUrl": "/careers/job/1970393557070369"
+    },
+    {
+     "id": 1970393557070807,
+     "displayJobId": "200066870",
+     "name": "Customer Success Account Manager (CSAM) Manager",
+     "locations": [
+      "Singapore, Singapore, Singapore"
+     ],
+     "postedTs": 1794655715,
+     "department": "Customer Success Account Mgmt",
+     "creationTs": 1794367740,
+     "positionUrl": "/careers/job/1970393557070807"
+    },
+    {
+     "id": 1970393557070261,
+     "displayJobId": "200066563",
+     "name": "Senior Cloud Solution Architect - Azure Networking",
+     "locations": [
+      "United States, Multiple Locations, Multiple Locations"
+     ],
+     "postedTs": 1794643369,
+     "department": "Cloud Solution Architecture",
+     "creationTs": 1794273212,
+     "positionUrl": "/careers/job/1970393557070261"
+    },
+    {
+     "id": 1970393556961670,
+     "displayJobId": "200048553",
+     "name": "Senior Software Engineer - Kubernetes",
+     "locations": [
+      "United States, Washington, Redmond"
+     ],
+     "postedTs": 1794642818,
+     "department": "Software Engineering",
+     "creationTs": 1786515908,
+     "positionUrl": "/careers/job/1970393556961670"
+    },
+    {
+     "id": 1970393557053796,
+     "displayJobId": "200065525",
+     "name": "Data Center Program Manager",
+     "locations": [
+      "United States, Virginia, Sterling"
+     ],
+     "postedTs": 1794632400,
+     "department": "Data Center Operations Management",
+     "creationTs": 1793809904,
+     "positionUrl": "/careers/job/1970393557053796"
+    },
+    {
+     "id": 1970393556962236,
+     "displayJobId": "200048816",
+     "name": "Marketing MBA Internship Opportunities, United States",
+     "locations": [
+      "United States, Washington, Redmond"
+     ],
+     "postedTs": 1794618876,
+     "department": "Product Marketing",
+     "creationTs": 1786569783,
+     "positionUrl": "/careers/job/1970393556962236"
+    },
+    {
+     "id": 1970393557073246,
+     "displayJobId": "200067289",
+     "name": "Senior Director, Emerging Accessories - XBOX Devices",
+     "locations": [
+      "United States, Washington, Redmond"
+     ],
+     "postedTs": 1794618360,
+     "department": "Hardware Engineering",
+     "creationTs": 1794585489,
+     "positionUrl": "/careers/job/1970393557073246"
+    },
+    {
+     "id": 1970393557047513,
+     "displayJobId": "200063952",
+     "name": "Senior Partner Marketing Manager",
+     "locations": [
+      "United States, Multiple Locations, Multiple Locations"
+     ],
+     "postedTs": 1794617791,
+     "department": "Partner Marketing",
+     "creationTs": 1793053220,
+     "positionUrl": "/careers/job/1970393557047513"
+    },
+    {
+     "id": 1970393557073410,
+     "displayJobId": "200067367",
+     "name": "Software Engineer - MBO",
+     "locations": [
+      "United States, Washington, Redmond"
+     ],
+     "postedTs": 1794616202,
+     "department": "Software Engineering",
+     "creationTs": 1794595790,
+     "positionUrl": "/careers/job/1970393557073410"
+    }
+   ]
+  }
+ },
+ "detail": {
+  "status": 200,
+  "error": {},
+  "data": {
+   "id": 1970393557041639,
+   "name": "Technical Program Manager II - FD&E",
+   "publicUrl": "https://apply.careers.microsoft.com/careers/job/1970393557041639",
+   "jobDescription": "<b>Overview</b><br><div><p>Are you passionate about AI, data, and transformative user experiences? Do you bring energy, curiosity, and\u202fownership to your work?\u202f\u202f\u00a0</p></div><div><p>The Finance Data &amp; Experiences (FD&amp;E) organization is on a mission to redefine how Microsoft measures, monitors, and\u202foptimizes\u202fits global business \u2014 and\u202fwe\u2019re\u202flooking for top talent to join us. This is a unique opportunity to lead with bold ideas, apply\u202fcutting-edge\u202ftechnology, and work across Finance, Sales, Marketing, Business Operations, and Product Engineering to deliver high-impact business solutions. The right candidate will thrive in fast-paced, cross-functional environments, bring fresh thinking to complex problems, and be eager to learn to take ownership of end-to-end processes and outcomes. Join us and be part of a team\u202fthat\u2019s\u202fpushing the boundaries of innovation, taking risks, and implementing AI to drive business excellence\u202f\u202f\u202f\u00a0</p></div><div><p>At FD&amp;E, we foster a culture of customer centricity, innovation, agility, and transparency \u2014 and\u202fwe\u2019re\u202fbuilding a team\u202fthat\u2019s\u202fready to help Microsoft chart its next chapter in AI-driven business excellence.\u202f\u202f\u00a0</p></div><div><p>In this role, you will play a critical role in driving the evolution of the Finance Data platform, which serves as the backbone for numerous downstream solutions and enables standardized, scalable data consumption across Microsoft Finance organizations.\u00a0<br>\u00a0"
+  }
+ }
+}
