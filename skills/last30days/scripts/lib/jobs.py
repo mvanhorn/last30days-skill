@@ -117,6 +117,9 @@ AMAZON_PAGE_SIZE = 100
 # Amazon's search reports at most this many hits and pages no further.
 AMAZON_HITS_CAP = 10_000
 APPLE_PAGE_SIZE = 20
+EIGHTFOLD_PAGE_SIZE = 10
+# The digest picks 40 roles; ten times that is enough to choose from.
+EIGHTFOLD_ROW_CEILING = 400
 # Apple's details call usually answers in 2 to 7 seconds, but about one call
 # in four stalls; a second attempt after a short limit nearly always answers.
 APPLE_DETAIL_TIMEOUT_SECONDS = 6
@@ -2567,23 +2570,16 @@ def fetch_apple_details(
     call started, and those whose call failed or held no role text. A role
     left unfetched keeps its search summary.
     """
-    clock = _clock()
-
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
         return lambda http_deadline: http.get(
             str(item["detail_url"]), headers={"Accept": "application/json"},
             timeout=APPLE_DETAIL_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
         )
 
-    late = failed = 0
-    for item, payload in zip(items, _workday_run([call(item) for item in items], deadline, clock)):
-        if payload is _OUT_OF_TIME:
-            late += 1
-            continue
+    def text_of(payload: Any) -> tuple[str, str] | None:
         detail = parse_apple_detail(payload)
         if detail is None:
-            failed += 1
-            continue
+            return None
         blocks = [detail["description"]]
         for label, key in (
             ("Responsibilities", "responsibilities"),
@@ -2593,8 +2589,34 @@ def fetch_apple_details(
             if detail[key]:
                 blocks.append(f"{label}\n{detail[key]}")
         text = "\n".join(block for block in blocks if block)
-        item["description_blocks"] = text
-        item["description"] = " ".join(text.split())
+        return text, " ".join(text.split())
+
+    return _fill_role_text(items, call, text_of, deadline=deadline)
+
+
+def _fill_role_text(
+    items: list[dict[str, Any]],
+    call: Callable[[dict[str, Any]], Callable[[float], Any]],
+    text_of: Callable[[Any], tuple[str, str] | None],
+    *,
+    deadline: float,
+) -> tuple[int, int]:
+    """Make one detail call per role and store the text ``text_of`` reads.
+
+    ``text_of(payload)`` returns the role's text with its breaks kept and as
+    one line, or None when the answer holds none. Returns the counts left
+    unfetched (late, failed).
+    """
+    late = failed = 0
+    for item, payload in zip(items, _workday_run([call(item) for item in items], deadline, _clock())):
+        if payload is _OUT_OF_TIME:
+            late += 1
+            continue
+        text = text_of(payload)
+        if text is None:
+            failed += 1
+            continue
+        item["description_blocks"], item["description"] = text
     return late, failed
 
 
@@ -2603,11 +2625,6 @@ def fetch_apple_details(
 # text, and give a role's text through one more call. Neither date a row
 # carries is shown to be the day the role was first posted, so no row claims
 # one and the board prints no count of roles new in the window.
-
-EIGHTFOLD_PAGE_SIZE = 10
-# The digest picks 40 roles; ten times that is enough to choose from.
-EIGHTFOLD_ROW_CEILING = 400
-
 
 def parse_eightfold_response(
     payload: Any, entry: dict[str, str],
@@ -2689,29 +2706,20 @@ def fetch_eightfold_details(
 
     Returns the counts left unfetched (late, failed), like the other fetchers.
     """
-    clock = _clock()
-
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
         return lambda http_deadline: http.get(
             str(item["detail_url"]), timeout=API_TIMEOUT_SECONDS, retries=1,
             deadline_monotonic=http_deadline,
         )
 
-    late = failed = 0
-    for item, payload in zip(items, _workday_run([call(item) for item in items], deadline, clock)):
-        if payload is _OUT_OF_TIME:
-            late += 1
-            continue
+    def text_of(payload: Any) -> tuple[str, str] | None:
         body = payload.get("data", payload) if isinstance(payload, dict) else None
         html = ""
         if isinstance(body, dict):
             html = str(body.get("jobDescription") or body.get("job_description") or "")
-        if not html.strip():
-            failed += 1
-            continue
-        item["description_blocks"] = _block_text(html)
-        item["description"] = _clean_html(html)
-    return late, failed
+        return (_block_text(html), _clean_html(html)) if html.strip() else None
+
+    return _fill_role_text(items, call, text_of, deadline=deadline)
 
 
 # Readers of company-run boards, by provider: given the registry entry and the

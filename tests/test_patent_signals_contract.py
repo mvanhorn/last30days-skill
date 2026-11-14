@@ -346,7 +346,6 @@ def test_each_signal_links_the_filing_keeps_its_facts_and_hedges():
     assert "a possibility or a consequence of the described design" in paragraph
     assert "never as a plan or an announced fact" in paragraph
     assert "never say the company is building, will ship or has decided anything" in paragraph
-    # The fixed reading verbs and the second full date are no longer required.
     assert '"which suggests", "that points to"' not in paragraph
     assert "its publication date and its filing date" not in paragraph
     assert rule.CLUSTER_FILINGS_CITED == 2 and rule.PARAGRAPH_SENTENCES == 2
