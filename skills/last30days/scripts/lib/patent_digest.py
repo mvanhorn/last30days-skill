@@ -228,7 +228,7 @@ def _note(partial: Any, cut_entries: int, cut_titles: int) -> str:
         notes.append(
             f"{missing:,} of the filings listed by title only "
             f"{'has' if missing == 1 else 'have'} no abstract or claim text because the "
-            "patent office stopped answering or time ran out"
+            "patent office did not return it or time ran out"
         )
     cut = [
         quantity(number, noun, plural=plural)

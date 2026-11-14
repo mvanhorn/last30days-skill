@@ -395,7 +395,7 @@ def test_partial_renders_a_note_with_the_number():
     note = _line(lines(artifact), "- Note:")
     assert "3 of the filings listed by title only" in note
     assert "no abstract or claim text" in note
-    assert "stopped answering or time ran out" in note
+    assert "did not return it or time ran out" in note
     out = lines(artifact)
     assert out.index(_line(out, "- First US publications:")) + 1 == out.index(note)
 
