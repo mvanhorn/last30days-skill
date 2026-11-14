@@ -62,9 +62,9 @@ def families(candidate: dict[str, Any]) -> int:
 
 
 def paths_met(candidate: dict[str, Any]) -> set[int]:
-    """The paths that survive the web check: a shipped match removes the second."""
+    """The paths that survive the web check: a shipped or reported match removes the second."""
     met = set(candidate["paths"])
-    if candidate.get("shipped_match") is True:
+    if candidate.get("shipped_match") is True or candidate.get("reported_match") is True:
         met.discard(UNSHIPPED_PRODUCT)
     return met
 
@@ -118,7 +118,7 @@ def signals_shown(
 def wording(candidate: dict[str, Any]) -> str:
     """``public`` when the check found a match or coverage, else what it may say."""
     found = (candidate.get("shipped_match"), candidate.get("covered"))
-    if True in found:
+    if True in found or candidate.get("reported_match") is True:
         return "public"
     if found == (False, False):
         return "no coverage found"

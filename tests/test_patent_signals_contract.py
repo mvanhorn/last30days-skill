@@ -281,7 +281,7 @@ def test_web_check_comes_before_any_signal_is_written():
     assert "Isolated web search" in check
     assert "`research-runbook.md`" in check
     assert "coverage of the filing" in check
-    assert "a product the company already ships or has announced that matches it" in check
+    assert "one the company already ships or has announced, or one a leak or press report has already described" in check
     assert "with the Step 2 supplements when that dispatch has not gone yet" in check
 
 
@@ -388,6 +388,7 @@ def test_labelled_set_covers_one_case_per_rule():
         "Chip maker",
         "Phone maker, nothing shipped",
         "Phone maker, shipped match on the web",
+        "Console maker, leaked match on the web",
         "Car maker, titles only",
         "Search company, family and cluster",
         "Microsoft, name-matched entity known",
@@ -411,6 +412,8 @@ def test_labels_are_well_formed(case):
         assert set(candidate["paths"]) <= {1, 2, 3}, title
         for checked in ("shipped_match", "covered"):
             assert candidate[checked] in {True, False, None}, title
+        if "reported_match" in candidate:
+            assert candidate["reported_match"] in {True, False}, title
         assert candidate["expected"] in {"qualifies", "does not qualify"}, title
         if candidate.get("name_matched"):
             assert candidate["entity_known"] in {True, False, None}, title
@@ -475,6 +478,27 @@ def test_unshipped_product_qualifies_until_the_web_finds_a_shipped_match():
     assert rule.qualifies({**shipped, "paths": [1, 2]})
     assert not rule.standout({**shipped, "paths": [1, 2]})
     assert rule.standout(unshipped)
+
+
+def test_a_leaked_match_removes_the_unshipped_path_like_a_shipped_one():
+    (leaked,) = CASES["Console maker, leaked match on the web"]["candidates"]
+    assert leaked["shipped_match"] is False and leaked["reported_match"] is True
+    assert leaked["paths"] == [rule.UNSHIPPED_PRODUCT]
+    assert not rule.qualifies(leaked)
+    assert rule.qualifies({**leaked, "reported_match": False})
+    assert rule.wording(leaked) == "public" and not rule.standout(leaked)
+    # Only path 2 goes: a leaked match still qualifies by another path.
+    assert rule.qualifies({**leaked, "paths": [1, 2]})
+    bar = _rule("**The bar.**")
+    assert "no leak or press report has already described" in bar
+    assert "it is not a secret" in bar
+    assert "reported in a leak: the unshipped-product path (path 2) is gone" in _rule("**Check the web first.**")
+
+
+def test_a_name_matched_signal_gets_its_entitys_counts_in_the_lead_in():
+    fmt = _rule("**Format.**")
+    assert "the entity's counts from the digest's `- Name-matched:` line" in fmt
+    assert "a count of zero never sits beside a filing the section shows" in fmt
 
 
 def test_titles_only_entry_qualifies_only_through_the_report_story():

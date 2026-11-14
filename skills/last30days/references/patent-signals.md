@@ -31,7 +31,7 @@ A report on a company may carry one extra section, "Patent Secret Signals", buil
 **The bar.** A candidate must name something concrete: a device, material, user or use a reader can picture. Judge the first claim and the abstract, not the title alone. A concrete candidate qualifies by either of two paths:
 
 1. **Out of character.** This is not work the company is known for.
-2. **Unshipped product.** It describes a product or feature a general reader would recognise that the company has not shipped or announced.
+2. **Unshipped product.** It describes a product or feature a general reader would recognise that the company has not shipped or announced, and that no leak or press report has already described. A filing that only matches a reported leak confirms what readers can already find; it is not a secret.
 
 A candidate also qualifies, concrete or not, by a third path:
 
@@ -51,15 +51,15 @@ State only counts the digest prints. Never estimate one.
 
 **How many.** At most two signals in the section: pick the strongest, and a cluster is one of the two. One qualifying signal is enough to write the section. With none, write nothing about patents in the body; the engine's footer still carries its Patents line. A report that also has a Jobs Page Secret Signals section carries at most three signal paragraphs across both sections, jobs first: the jobs section keeps its signals, and this section has two when the jobs section has one and one when it has two.
 
-**Check the web first.** Before writing a signal, check the web for it with the runbook's Isolated web search procedure (`research-runbook.md`). Search each qualifying signal by the company and the concrete thing the filing names, for two things: coverage of the filing, and a product the company already ships or has announced that matches it. Send these searches with the Step 2 supplements when that dispatch has not gone yet. If the host has no web search, omit the section.
+**Check the web first.** Before writing a signal, check the web for it with the runbook's Isolated web search procedure (`research-runbook.md`). Search each qualifying signal by the company and the concrete thing the filing names, for two things: coverage of the filing, and a matching product: one the company already ships or has announced, or one a leak or press report has already described. Send these searches with the Step 2 supplements when that dispatch has not gone yet. If the host has no web search, omit the section.
 
-- The search finds a matching product, shipped or announced: the unshipped-product path (path 2) is gone, and so is any wording that says the filing is new or unreported. The signal stays only if it still qualifies by path 1 or path 3.
+- The search finds a matching product, shipped, announced or reported in a leak: the unshipped-product path (path 2) is gone, and so is any wording that says the filing is new or unreported. The signal stays only if it still qualifies by path 1 or path 3.
 - The search finds coverage of the filing: the signal may still appear, never worded as new or unreported.
 - The search finds neither: the signal may be worded as unreported, scoped to what was checked ("no coverage found"), not as a fact about the world.
 
 The counts above apply to signals kept after this check, however they are worded.
 
-**Format.** The section sits after the Jobs Page Secret Signals section when the report has one, otherwise after the last story paragraph, and before `KEY PATTERNS from the research:`. It opens with the bold lead-in `**Patent Secret Signals** - ` and one sentence giving the applications published, the patents granted and the first US publications as the engine printed them. Then one short paragraph per signal, with a blank line between paragraphs: no bullets, no numbered list, no `##` header, and no bold headline on the signal paragraphs, because the lead-in is the section's headline. The section closes with this sentence on its own line: "These are patent filings, not products: each was written well before it published, and most never ship."
+**Format.** The section sits after the Jobs Page Secret Signals section when the report has one, otherwise after the last story paragraph, and before `KEY PATTERNS from the research:`. It opens with the bold lead-in `**Patent Secret Signals** - ` and one sentence giving the applications published, the patents granted and the first US publications as the engine printed them. When a signal was filed by a name-matched entity, that sentence also gives the entity's counts from the digest's `- Name-matched:` line, so a count of zero never sits beside a filing the section shows. Then one short paragraph per signal, with a blank line between paragraphs: no bullets, no numbered list, no `##` header, and no bold headline on the signal paragraphs, because the lead-in is the section's headline. The section closes with this sentence on its own line: "These are patent filings, not products: each was written well before it published, and most never ship."
 
 **Each signal paragraph** is two to three sentences and does two things:
 
@@ -78,7 +78,7 @@ A patent application published {publication date} and filed {filing date}, [{fil
 These are patent filings, not products: each was written well before it published, and most never ship.
 ```
 
-**Key patterns and footer.** One standout signal, meaning one that is concrete, qualifies by path 1 or path 2, and for which the web check found no coverage and no matching product, may also be given one KEY PATTERNS line. Never add a signal count to the footer, or any other patent line: the footer is the engine's and passes through as printed.
+**Key patterns and footer.** One standout signal, meaning one that is concrete, qualifies by path 1 or path 2, and for which the web check found no coverage and no matching product (shipped, announced or reported), may also be given one KEY PATTERNS line. Never add a signal count to the footer, or any other patent line: the footer is the engine's and passes through as printed.
 
 ## Evidence, not prediction
 
