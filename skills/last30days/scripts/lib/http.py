@@ -469,7 +469,13 @@ def replaying_requests(path: str | Path):
 
 
 class ResponseHeaders(dict):
-    """Response headers keyed by lowercased name; lookups ignore case."""
+    """Response headers keyed by lowercased name; lookups ignore case.
+
+    ``url`` is the address that answered, after any redirects ('' when not
+    known, as for a replayed fixture).
+    """
+
+    url = ""
 
     def __init__(self, pairs=()):
         super().__init__(
@@ -1040,6 +1046,8 @@ def request(
             with transport as response:
                 if return_headers:
                     response_headers = ResponseHeaders(response.headers.items())
+                    final = response.geturl() if hasattr(response, "geturl") else ""
+                    response_headers.url = final if isinstance(final, str) else ""
                 return response.status, response.read().decode('utf-8'), None
         except urllib.error.HTTPError as error:
             # Error bodies can stall just like successful bodies. Read both
@@ -1298,6 +1306,7 @@ def get_text(
     headers: Optional[Dict[str, str]] = None,
     deadline_monotonic: float | None = None,
     retry_dns: bool = True,
+    landed: Optional[list] = None,
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1314,6 +1323,8 @@ def get_text(
         headers: Optional extra headers merged over the defaults
         deadline_monotonic: Optional absolute monotonic deadline for the call
         retry_dns: See ``request``
+        landed: When given, the address that answered (after redirects) is
+            appended to it on success, or ``url`` when that is not known.
 
     Returns:
         Decoded response body as text, or None on failure.
@@ -1331,14 +1342,21 @@ def get_text(
         bounds["deadline_monotonic"] = deadline_monotonic
     if not retry_dns:
         bounds["retry_dns"] = False
+    if landed is not None:
+        bounds["return_headers"] = True
     try:
-        return request(
+        answer = request(
             "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,
             **bounds,
         )
     except HTTPError as e:
         log(f"get_text failed ({e}): {url}")
         return None
+    if landed is None:
+        return answer
+    body, response_headers = answer
+    landed.append(getattr(response_headers, "url", "") or url)
+    return body
 
 
 class RateLimiter:

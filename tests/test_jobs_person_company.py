@@ -419,7 +419,7 @@ def test_known_site_whose_both_forms_drop_the_connection_is_one_outage():
             patch.object(http.time, "sleep"), \
             http.capture_failures() as failures:
         jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", site="https://acmecorp.com/")
-    assert [url for url in asked if "acmecorp.com/" in url] == [
+    assert [url for url in asked if url.split("/")[2] in ("acmecorp.com", "www.acmecorp.com")] == [
         "https://acmecorp.com/careers", "https://www.acmecorp.com/careers",
     ]
     assert len(_unreachable(failures)) == 1

@@ -135,9 +135,15 @@ def test_every_careers_request_carries_a_short_timeout_and_the_lanes_deadline():
         jobs.search_jobs("Kanye West", WINDOW, {}, web_backend="none")
         jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", site="https://www.acme.com")
 
-    assert len(seen) == 8
-    for url, kwargs in seen:
-        limit = jobs.PAGE_TIMEOUT_SECONDS if "acme.com" in url else jobs.GUESS_TIMEOUT_SECONDS
+    pages = [(url, kwargs) for url, kwargs in seen if not url.endswith("/robots.txt")]
+    # Six guessed pages for Kanye West; the known site's two pages and its
+    # careers. and jobs. hosts for Acme.
+    assert len(pages) == 10
+    for url, kwargs in pages:
+        limit = (
+            jobs.PAGE_TIMEOUT_SECONDS if url.startswith("https://www.acme.com/")
+            else jobs.GUESS_TIMEOUT_SECONDS
+        )
         assert kwargs["timeout"] == limit <= 8
         assert kwargs["retries"] == 1
         assert kwargs["deadline_monotonic"] is not None
@@ -215,7 +221,9 @@ def test_official_site_that_never_answers_is_asked_once_and_is_recorded():
             "Acme", WINDOW, {}, web_backend="none", site="https://www.acme.com",
         )
 
-    assert [url for url, _timeout in asked if "acme.com" in url] == ["https://www.acme.com/careers"]
+    assert [url for url, _timeout in asked if url.split("/")[2] == "www.acme.com"] == [
+        "https://www.acme.com/careers",
+    ]
     assert asked[0][1] <= jobs.PAGE_TIMEOUT_SECONDS
     assert items == []
     assert failures and all(failure.outcome_state == health.TIMEOUT for failure in failures)
@@ -286,10 +294,13 @@ def test_careers_site_with_no_supported_board_returns_quietly(capsys):
             "Initech", WINDOW, {}, web_backend="none", site="https://www.initech.com",
         )
 
-    assert fetched == [
+    assert fetched[:2] == [
         "https://www.initech.com/careers",
         "https://www.initech.com/about/careers/applications/jobs/results",
     ]
+    # Then the site's careers. and jobs. hosts and its robots.txt files, for a
+    # board or a job sitemap; nothing off the site.
+    assert all(jobs._same_site(jobs._host(url), "initech.com") for url in fetched)
     assert items == []
     assert artifact["tier"] == "web"
     assert failures == []

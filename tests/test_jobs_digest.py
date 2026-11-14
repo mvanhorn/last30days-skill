@@ -323,7 +323,10 @@ def test_a_known_official_site_stops_other_domains_being_guessed():
         _items, artifact = jobs.search_jobs(
             "Acme", WINDOW, {}, web_backend="none", site="https://www.acmecorp.com",
         )
-    assert fetched == ["https://www.acmecorp.com/careers", "https://www.acmecorp.com/jobs"]
+    assert fetched[:2] == ["https://www.acmecorp.com/careers", "https://www.acmecorp.com/jobs"]
+    # Only the site's own hosts are asked: its careers. and jobs. hosts and
+    # their robots.txt (for a job sitemap), never another domain.
+    assert all(jobs._same_site(jobs._host(url), "acmecorp.com") for url in fetched)
     assert artifact.get("owned") is not True
     assert "digest" not in artifact
 
