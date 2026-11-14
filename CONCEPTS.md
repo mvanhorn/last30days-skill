@@ -58,7 +58,7 @@ A Digg story whose title names the run topic as a whole word or phrase and that 
 
 ### Patent Digest
 
-The bounded evidence block (`## Patent Digest`) the Engine prints on a company run from USPTO Patent Public Search: how many of the company's US applications were published and patents granted in the window, the names they were filed under, a few First US publications with their abstract and first claim, and more by title. Filings under a name that only extends the company's name are marked name-matched and not verified as the company's. The digest is evidence only: the Engine decides nothing about what a filing means, and the hosting model, following `references/patent-signals.md`, decides whether the report carries a Patent Secret Signals section. No digest means no section.
+The bounded evidence block (`## Patent Digest`) the Engine prints on a company run from USPTO Patent Public Search: how many of the company's US applications were published and patents granted in the window, the names they were filed under, up to 12 First US publications with their abstract and first claim, and more by title. A filer known to belong to the company, such as a subsidiary Wikidata names, is the company's, and up to three such filers each get one of the 12 so the parent's filings cannot fill every slot. Filings under a name that only extends the company's name, which the Engine could not tie to the company, are marked not verified. The digest is evidence only: the Engine decides nothing about what a filing means, and the hosting model, following `references/patent-signals.md`, decides whether the report carries a Patent Secret Signals section. No digest means no section.
 
 ### First US publication
 

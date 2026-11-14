@@ -415,18 +415,19 @@ def _size(out):
 
 def test_a_block_over_the_cap_stops_early_and_says_how_many_were_left_out():
     out = lines(_full_size(entries=30, index=10))
-    assert _size(out) <= patent_digest.DIGEST_MAX_CHARS == 24_000
+    assert _size(out) <= patent_digest.DIGEST_MAX_CHARS == 36_000
     shown = sum(1 for line in out if line.startswith("- [T"))
     assert 0 < shown < 30
     note = _line(out, "- Note:")
     assert f"{30 - shown} entries and 10 titles left out" in note
-    assert "24,000 characters" in note
+    assert "36,000 characters" in note
     assert not any(line.startswith("- More first US publications") for line in out)
     assert not any(line.startswith("  - [") for line in out)
 
 
 def test_the_lane_s_largest_artifact_stays_under_the_cap():
     # Every slot filled with text at its own cap, and the whole index.
+    assert (patents.ABSTRACT_CHARS, patents.FIRST_CLAIM_CHARS) == (1000, 1200)
     out = lines(_full_size(entries=patents.DETAIL_SLOTS, index=patents.MAX_INDEX))
     assert _size(out) <= patent_digest.DIGEST_MAX_CHARS
     assert sum(1 for line in out if line.startswith("- [T")) == patents.DETAIL_SLOTS

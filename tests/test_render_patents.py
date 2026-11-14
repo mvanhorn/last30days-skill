@@ -168,7 +168,7 @@ def test_hostile_abstract_and_claim_are_fenced_as_job_posting_text_is():
 
 def test_live_nvidia_artifact_shape_renders_under_the_cap():
     block = render._patent_digest_block(_report(NVIDIA))
-    assert sum(len(line) + 1 for line in block) <= 24_000
+    assert sum(len(line) + 1 for line in block) <= 36_000
 
 
 def test_microsoft_shape_orders_and_marks_name_matched_entries():
