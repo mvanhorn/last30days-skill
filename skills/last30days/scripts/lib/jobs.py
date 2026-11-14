@@ -504,6 +504,13 @@ def _search_jobs(
             )
             if found is not None:
                 return found
+            if f"the {entry['provider']} board {entry['board']} did not answer" in budget.unanswered:
+                # A board that did not answer is not one that cannot be read:
+                # the budget names it, and a retry may read it.
+                return _web_tier(
+                    company, date_range, config, attempted=attempted,
+                    web_backend=web_backend, explicit=explicit,
+                )
             reason = "its job board answered with an error or with no roles the lane could read"
         else:
             reason = entry["reason"]
@@ -651,6 +658,8 @@ def _read_board(
             budget.unanswered.append(f"the {provider} board {slug} did not answer")
         items = []
     if not items:
+        if company_board is not None and board.get("board_unanswered"):
+            budget.unanswered.append(f"the {provider} board {slug} did not answer")
         return None
     stated = next(
         (str(item["company_name"]) for item in items if item.get("company_name")), "",
@@ -998,6 +1007,10 @@ def _resolve_careers_page(
     # Only a host guessed from the company's name may turn out not to exist.
     guessed = not (site and _host(site))
     for host in _site_hosts(company, site):
+        registered = _registry_entry(host)
+        if registered is not None and registered[0] == "unreadable":
+            # A job site the lane does not read gets no request, on any path.
+            continue
         for path in ("/careers", "/jobs"):
             url = f"https://{host}{path}"
             if _out_of_time(f"the careers page {url}"):
@@ -1038,13 +1051,18 @@ def _known_site_text(url: str) -> tuple[str | None, bool, str]:
     answers: dict[str, tuple[str | None, bool]] = {}
 
     def fetch(page: str) -> str | None:
-        answers[page] = _careers_text(page, guessed=False)
-        return answers[page][0]
+        with http.tee_failures() as failures:
+            text, gone = _careers_text(page, guessed=False)
+        answers[page] = (text, gone or http.connection_dropped(failures))
+        return text
 
     html, used = http.text_on_either_host_form(fetch, url)
-    # Both forms dropped the connection: nothing answers there, so the site's
-    # other page is not asked either.
-    return html, answers[used][1] or (len(answers) > 1 and html is None), used
+    if html is None:
+        # A form that answered, even with a 403 or 404, is where the site's
+        # other page is asked.
+        used = next((page for page, (_text, gone) in answers.items() if not gone), used)
+    # Only when every form tried gave no answer is the other page not asked.
+    return html, all(gone for _text, gone in answers.values()), used
 
 
 def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
@@ -2339,8 +2357,21 @@ def _read_newest_first(
         "board_newest_first": True, "board_window_covered": False,
         "board_row_ceiling": row_ceiling,
     }
-    first = _workday_run([page(0)], deadline, clock)[0]
+    failures: list[http.HTTPError] = []
+
+    def first_page(http_deadline: float) -> Any:
+        try:
+            return page(0)(http_deadline)
+        except http.HTTPError as exc:
+            failures.append(exc)
+            raise
+
+    first = _workday_run([first_page], deadline, clock)[0]
     if first is None or first is _OUT_OF_TIME:
+        # No answer, an overload or a rate limit is not the board refusing
+        # to be read: the run says it did not answer, and a retry may.
+        status = failures[0].status_code if failures else None
+        info["board_unanswered"] = first is _OUT_OF_TIME or status is None or status == 429 or status >= 500
         return [], info
     try:
         items, total = parse(first)

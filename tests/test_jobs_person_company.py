@@ -425,6 +425,30 @@ def test_known_site_whose_both_forms_drop_the_connection_is_one_outage():
     assert len(_unreachable(failures)) == 1
 
 
+def test_known_site_whose_other_form_answers_404_is_asked_its_jobs_page_there():
+    asked = []
+
+    def www(url):
+        if url.endswith("/jobs"):
+            return _html("<h2>Join our team</h2>")
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    opener = _by_host(asked, {"acmecorp.com": _dropped, "www.acmecorp.com": www})
+    with patch.object(http, "_open_request", side_effect=opener), \
+            patch.object(http.time, "sleep"):
+        jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", site="https://acmecorp.com/")
+    assert asked[:3] == [
+        "https://acmecorp.com/careers", "https://www.acmecorp.com/careers",
+        "https://www.acmecorp.com/jobs",
+    ]
+
+
+def test_a_guessed_domain_on_the_unreadable_list_gets_no_request():
+    asked = []
+    _search_capturing(_by_host(asked, {}), company="Tesla")
+    assert asked and not [url for url in asked if url.split("/")[2] in ("tesla.com", "www.tesla.com")]
+
+
 def test_guessed_domain_that_drops_the_connection_is_not_retried_on_another_form():
     asked = []
     opener = _by_host(asked, {"kanyewest.com": _dropped})

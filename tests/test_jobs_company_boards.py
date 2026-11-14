@@ -512,6 +512,16 @@ def test_an_apple_detail_that_fails_keeps_its_summary_and_is_counted():
     assert f"role text fetched for {selected - 1} of {selected} selected roles" in artifact["digest"]["note"]
 
 
+def test_a_company_board_that_does_not_answer_is_a_retryable_timeout_not_unreadable():
+    timeout = http.HTTPError("timed out", outcome_state=http.health.TIMEOUT)
+    items, artifact, _posts, details, others = _apple_search({1: timeout})
+    assert items == [] and details == [] and others == []
+    assert "job_site_unreadable" not in artifact
+    assert artifact["_source_outcome"]["state"] == http.health.TIMEOUT
+    assert "the apple board jobs.apple.com did not answer" in artifact["_source_outcome"]["detail"]
+    assert "can't be read automatically" not in render.render_compact(_report(jobs=artifact))
+
+
 def test_a_slow_apple_page_ends_that_call_and_keeps_the_rows_read():
     timeout = http.HTTPError("timed out", outcome_state=http.health.TIMEOUT)
     items, artifact, _posts, _details, _others = _apple_search(
