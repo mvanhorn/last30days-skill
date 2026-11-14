@@ -340,6 +340,103 @@ class TestWindowsPrintingPressCandidates:
                 assert candidate.name == "digg-pp-cli"
 
 
+class TestHelperMinimumVersion:
+    """A default helper below the engine's minimum reads as outdated, with the
+    upgrade command; a helper with no minimum or an unreadable version never
+    does."""
+
+    def _probe(self, name, version_line):
+        with mock.patch.object(health.shutil, "which", side_effect=_which_map({name: f"/x/{name}"})), \
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=_completed(stdout=version_line)):
+            return health.probe_dependency(name)
+
+    def test_versions_parse_as_dotted_integer_tuples(self):
+        assert health.parse_version("digg-pp-cli 2026.11.1") == (2026, 11, 1)
+        assert health.parse_version("yahoo-finance-pp-cli 1.0.0") == (1, 0, 0)
+        assert health.parse_version("digg-pp-cli v2026.10.2\n") == (2026, 10, 2)
+        assert health.parse_version("digg-pp-cli dev") is None
+        assert health.parse_version("") is None
+
+    def test_only_digg_has_a_minimum(self):
+        assert set(health.MIN_HELPER_VERSIONS) == {"digg-pp-cli"}
+
+    def test_digg_below_minimum_is_outdated_with_the_upgrade_command(self):
+        probe = self._probe("digg-pp-cli", "digg-pp-cli 2026.7.1\n")
+        assert probe.ok  # it still runs; outdated is not broken
+        assert probe.outdated is True
+        assert probe.prescription == health.helper_upgrade_cmd("digg")
+        assert "2026.7.1" in probe.detail
+        assert "older than" in probe.detail
+
+    def test_digg_at_minimum_is_current(self):
+        minimum = ".".join(str(n) for n in health.MIN_HELPER_VERSIONS["digg-pp-cli"])
+        probe = self._probe("digg-pp-cli", f"digg-pp-cli {minimum}\n")
+        assert probe.outdated is False
+        assert probe.prescription == ""
+        assert probe.detail == f"digg-pp-cli {minimum}"
+
+    def test_unparseable_digg_version_is_unknown_not_outdated(self):
+        probe = self._probe("digg-pp-cli", "digg-pp-cli dev\n")
+        assert probe.ok
+        assert probe.outdated is None
+        assert probe.prescription == ""
+        assert "version unknown" in probe.detail
+        assert "older than" not in probe.detail
+
+    def test_helper_with_no_minimum_is_never_outdated(self):
+        probe = self._probe("yahoo-finance-pp-cli", "yahoo-finance-pp-cli 1.0.0\n")
+        assert probe.ok
+        assert probe.outdated is None
+        assert probe.prescription == ""
+        assert probe.detail == "yahoo-finance-pp-cli 1.0.0"
+
+    def test_upgrade_command_is_the_pinned_catalog_install(self):
+        assert health.PRINTING_PRESS_NPM == "@mvanhorn/printing-press-library@0.1.27"
+        assert health.helper_upgrade_cmd("digg") == (
+            f"npx -y {health.PRINTING_PRESS_NPM} install digg --cli-only"
+        )
+
+    def test_outdated_check_runs_no_version_exec_without_a_minimum(self):
+        with mock.patch.object(health.subproc, "run_with_timeout") as run:
+            assert health.helper_outdated("yahoo-finance-pp-cli", "/x/yahoo-finance-pp-cli") is None
+        run.assert_not_called()
+
+    def test_outdated_check_execs_the_resolved_path(self):
+        with mock.patch.object(
+            health.subproc, "run_with_timeout", return_value=_completed(stdout="digg-pp-cli 2026.7.1"),
+        ) as run:
+            assert health.helper_outdated("digg-pp-cli", "/x/digg-pp-cli") is True
+        assert run.call_args.args[0] == ["/x/digg-pp-cli", "--version"]
+
+    def test_outdated_check_is_unknown_when_the_version_exec_fails(self):
+        with mock.patch.object(health.subproc, "run_with_timeout", side_effect=OSError("bad exec")):
+            assert health.helper_outdated("digg-pp-cli", "/x/digg-pp-cli") is None
+
+    def test_doctor_reports_an_outdated_digg_with_the_upgrade_command(self):
+        from lib import doctor
+
+        with mock.patch.object(health.shutil, "which", side_effect=_which_map({"digg-pp-cli": "/x/digg-pp-cli"})), \
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=_completed(stdout="digg-pp-cli 2026.7.1")), \
+             mock.patch("lib.digg.cli_searches_all_topics", return_value=None):
+            record = doctor._digg_record({})
+        # Its searches fail, so it is not ok, but it is present, not missing.
+        assert record["status"] == health.DEGRADED
+        assert health.helper_upgrade_cmd("digg") in record["fix"]
+        assert "older than" in record["detail"]
+
+    def test_doctor_reports_an_unreadable_digg_version_as_unknown(self):
+        from lib import doctor
+
+        with mock.patch.object(health.shutil, "which", side_effect=_which_map({"digg-pp-cli": "/x/digg-pp-cli"})), \
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=_completed(stdout="digg-pp-cli dev")), \
+             mock.patch("lib.digg.cli_searches_all_topics", return_value=True):
+            record = doctor._digg_record({})
+        assert record["status"] == health.OK
+        assert record["fix"] == ""
+        assert "version unknown" in record["detail"]
+        assert "older than" not in record["detail"]
+
+
 class TestRunOutcomeTaxonomy:
     """The per-run outcome vocabulary must stay enumerated in lockstep across
     ``health`` (constants), ``schema.RunOutcomeState`` (the export Literal),

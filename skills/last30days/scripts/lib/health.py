@@ -14,6 +14,7 @@ doomed *sources/tools*.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -153,8 +154,24 @@ def probe_command(
 PROBE_TIMEOUT = 5.0
 
 _PP_CLI_SUFFIX = "-pp-cli"
-# Matches setup_wizard.PRINTING_PRESS_NPM (pinned catalog installer).
-_PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.16"
+# The pinned Printing Press catalog installer. The only copy of this string:
+# setup_wizard imports it, so setup installs and doctor prescribes the same
+# release (default install dir $HOME/.local/bin on macOS/Linux).
+PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.27"
+
+# Oldest helper version the engine can call, per binary. Versions compare as
+# dotted integer tuples, never across helpers: each numbers its own releases
+# (digg-pp-cli 2026.11.1 beside yahoo-finance-pp-cli 1.0.0). A helper with no
+# entry here, or whose version cannot be read, is never called outdated.
+#
+# digg-pp-cli: 2026.10.1 is the first release whose `search` takes --topic,
+# the flag the engine sends when `search --help` lists no --sort. Earlier
+# releases reject the call outright.
+MIN_HELPER_VERSIONS: Dict[str, Tuple[int, ...]] = {
+    "digg-pp-cli": (2026, 10, 1),
+}
+
+_VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 
 # Dependencies the doctor probes by default.
 KNOWN_DEPENDENCIES: Tuple[str, ...] = (
@@ -235,6 +252,10 @@ class DependencyProbe:
     # True for the on-disk-but-off-PATH case: MISSING (the engine gate would
     # not pass) but the fix is a PATH edit, not an install.
     off_path: bool = False
+    # For an OK helper with a minimum in MIN_HELPER_VERSIONS: True when below
+    # it (``prescription`` then carries the upgrade), False when at or above
+    # it, None when the helper has no minimum or its version is unreadable.
+    outdated: Optional[bool] = None
 
     @property
     def ok(self) -> bool:
@@ -269,12 +290,72 @@ def _is_pp_cli(name: str) -> bool:
 
 def _pp_install_cmd(name: str) -> str:
     slug = name[: -len(_PP_CLI_SUFFIX)]
-    return f"npx -y {_PRINTING_PRESS_NPM} install {slug} --cli-only"
+    return f"npx -y {PRINTING_PRESS_NPM} install {slug} --cli-only"
 
 
 def pp_install_cmd(slug: str) -> str:
     """Public catalog-install command for the Printing Press CLI ``<slug>-pp-cli``."""
     return _pp_install_cmd(f"{slug}{_PP_CLI_SUFFIX}")
+
+
+def helper_upgrade_cmd(slug: str) -> str:
+    """Shell command that upgrades the helper ``<slug>-pp-cli`` in place.
+
+    The pinned catalog install replaces an older binary, so upgrading is the
+    install command run again, e.g.
+    ``npx -y @mvanhorn/printing-press-library@<pin> install digg --cli-only``.
+    """
+    return pp_install_cmd(slug)
+
+
+def parse_version(text: str) -> Optional[Tuple[int, ...]]:
+    """First dotted version in a ``--version`` line, as an integer tuple.
+
+    ``"digg-pp-cli 2026.11.1"`` -> ``(2026, 11, 1)``; None when the line has
+    no dotted number (``"digg-pp-cli dev"``).
+    """
+    match = _VERSION_RE.search(text or "")
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.group(0).split("."))
+
+
+def _format_version(version: Tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def _version_verdict(name: str, version_line: str) -> Optional[bool]:
+    """True below the helper's minimum, False at or above, None when unknown."""
+    minimum = MIN_HELPER_VERSIONS.get(name)
+    if minimum is None:
+        return None
+    version = parse_version(version_line)
+    if version is None:
+        return None
+    return version < minimum
+
+
+def helper_outdated(name: str, resolved: Optional[str] = None,
+                    timeout: float = PROBE_TIMEOUT) -> Optional[bool]:
+    """Whether the helper ``name`` on PATH is older than the engine can call.
+
+    Reads ``<resolved> --version`` fresh (setup asks again after an upgrade,
+    so the memoized probe would be stale). Runs nothing for a helper with no
+    minimum. Returns True/False, or None when there is no minimum or the
+    version could not be read; None never triggers an upgrade.
+    """
+    if name not in MIN_HELPER_VERSIONS:
+        return None
+    command = [resolved or name] + _VERSION_ARGS.get(name, ["--version"])
+    try:
+        proc = subproc.run_with_timeout(
+            command, timeout=timeout, cleanup_grace=0.1, capture_limit_bytes=64 * 1024,
+        )
+    except (OSError, subproc.SubprocTimeout):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _version_verdict(name, (proc.stdout or proc.stderr or "").strip())
 
 
 def static_prescription(name: str, manager: str) -> Tuple[str, str]:
@@ -459,7 +540,26 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
     if proc.returncode == 0:
         lines = (proc.stdout or proc.stderr or "").strip().splitlines()
         version = lines[0].strip() if lines else ""
-        return DependencyProbe(name=name, status=OK, detail=version)
+        if name not in MIN_HELPER_VERSIONS:
+            return DependencyProbe(name=name, status=OK, detail=version)
+        outdated = _version_verdict(name, version)
+        if outdated is None:
+            return DependencyProbe(
+                name=name, status=OK, detail=f"{version} (version unknown)".strip(),
+            )
+        if not outdated:
+            return DependencyProbe(name=name, status=OK, detail=version, outdated=False)
+        minimum = _format_version(MIN_HELPER_VERSIONS[name])
+        # A Printing Press install replaces the older binary in place.
+        prescription, manager = _prescription(name, "install")
+        return DependencyProbe(
+            name=name,
+            status=OK,
+            detail=f"{version} (older than {minimum}, the oldest the engine can call)",
+            prescription=prescription,
+            owner_pkg_manager=manager,
+            outdated=True,
+        )
 
     lines = (proc.stderr or proc.stdout or "").strip().splitlines()
     why = lines[0].strip() if lines else f"exit {proc.returncode}"

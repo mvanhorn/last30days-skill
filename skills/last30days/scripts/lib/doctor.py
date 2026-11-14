@@ -708,6 +708,15 @@ def _digg_record(config):
     probe = health.probe_dependency("digg-pp-cli")
     requires = "digg-pp-cli on the agent-subprocess PATH"
     if probe.ok:
+        if probe.outdated:
+            # Below the oldest release the engine can call, so its searches
+            # fail: degraded, with the pinned upgrade as the fix. The detail
+            # names both versions.
+            return _record(
+                status=health.DEGRADED, fix=probe.prescription,
+                note="digg-pp-cli is older than the engine can call; upgrade it",
+                detail=probe.detail, requires=requires,
+            )
         if digg.cli_searches_all_topics() is not False:
             # Current, or its help could not be read: nothing known to fix.
             return _record(status=health.OK, detail=probe.detail, requires=requires)

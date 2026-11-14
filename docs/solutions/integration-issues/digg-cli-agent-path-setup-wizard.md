@@ -50,10 +50,11 @@ First-run setup auto-install for `digg-pp-cli` could report success while the en
 
 Align setup wizard with the catalog installer and the engine PATH gate:
 
-1. **Pin installer:** `npx -y @mvanhorn/printing-press-library@0.1.16 install digg --cli-only` (`--cli-only` only — last30days embeds Digg as an engine source, not pp-digg skill).
-2. **Split outcomes:** `already_installed` / `installed` only when `shutil.which` resolves; `installed_off_path` when the binary exists under known dirs (`~/.local/bin`, legacy `~/go/bin`, Windows PrintingPress bin) but is not PATH-visible; surface `digg_path` and PATH-restart guidance in status text.
-3. **OpenClaw parity:** `run_openclaw_setup()` runs the same `_install_digg_cli()` and returns `digg_cli`, `digg_action`, optional `digg_path`.
-4. **Docs:** CONFIGURATION.md, SKILL.md Step 0, HERMES_SETUP.md, AGENTS.md rule for CLI-gated sources.
+1. **Pin installer:** `npx -y @mvanhorn/printing-press-library@<pin> install digg --cli-only` (`--cli-only` only — last30days embeds Digg as an engine source, not pp-digg skill). The pin is `health.PRINTING_PRESS_NPM`, the only copy in `lib/` (0.1.27 as of 2026-11); `setup_wizard` imports it, so setup and doctor cannot drift apart. `health.helper_upgrade_cmd(slug)` renders the command.
+2. **Split outcomes:** `already_installed` / `installed` / `upgraded` only when `shutil.which` resolves; `installed_off_path` when the binary exists under known dirs (`~/.local/bin`, legacy `~/go/bin`, Windows PrintingPress bin) but is not PATH-visible; surface `digg_path` and PATH-restart guidance in status text.
+3. **Upgrade a helper that is too old:** PATH-visible is not enough when the binary predates the call the engine makes. `digg-pp-cli` before 2026.10.1 rejects `search --topic`, which the engine sends whenever `search --help` lists no `--sort` (a Grok Bot box with 2026.7.1 crashed on it). `health.MIN_HELPER_VERSIONS` holds the oldest version the engine can call, per helper; versions compare as dotted integer tuples and never across helpers (`digg-pp-cli 2026.11.1` beside `yahoo-finance-pp-cli 1.0.0`). When the helper on PATH is below its entry, setup re-runs the pinned install and reports `upgraded`, but only after the PATH-resolved binary reads at or above the minimum. A failed upgrade or a missing `npx` reports `install_failed` / `no_npx` with the helper still marked present, plus the manual command. A helper with no entry, or whose `--version` cannot be parsed, is never upgraded. Doctor reports a below-minimum Digg as degraded with the upgrade command, and an unparseable version as unknown, not outdated.
+4. **OpenClaw parity:** `run_openclaw_setup()` runs the same `_install_digg_cli()` and returns `digg_cli`, `digg_action`, optional `digg_path`.
+5. **Docs:** CONFIGURATION.md, SKILL.md Step 0, HERMES_SETUP.md, AGENTS.md rule for CLI-gated sources.
 
 Key helper shape in `setup_wizard.py`:
 
@@ -76,5 +77,7 @@ The engine never reads "is pp-digg skill installed?" — every research run shel
 
 - When adding NUX auto-install for a CLI-gated source, match the upstream installer's default bin dir and pin the npm semver.
 - Success messaging must use the same probe as `available_sources()` (`shutil.which`), with a separate off-PATH outcome when the binary exists on disk.
+- Bump the installer pin in one place (`health.PRINTING_PRESS_NPM`); `tests/test_health.py` fails if a second pinned copy appears in `lib/`.
+- When a helper release changes a flag the engine sends, add that helper's minimum to `health.MIN_HELPER_VERSIONS`, taken from its release history (the library's per-CLI `CHANGELOG.md`), not guessed.
 - Cover Hermes/OpenClaw in tests with redirected `HOME` and mocked PATH; add OpenClaw JSON fields when server setup should mirror desktop NUX.
 - Search `docs/solutions/` for `digg`, `setup-wizard`, and `agent-path` before changing optional-source onboarding.
