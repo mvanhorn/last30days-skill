@@ -4340,6 +4340,9 @@ def _add_ranked_roles_to_jobs_digest(
     digest = board.get("digest") if isinstance(board, dict) else None
     if not rows or not isinstance(digest, dict) or not digest.get("roles"):
         return
+    # Roles the board keeps out of the digest (Apple's retail store roles)
+    # stay out however well they rank.
+    rows = [row for row in rows if not row.get("digest_excluded")]
     # Ranking sees normalized items; the digest holds the board's own URLs.
     board_urls = {fusion._normalize_url(str(row.get("url") or "")): str(row["url"])
                   for row in rows if row.get("url")}

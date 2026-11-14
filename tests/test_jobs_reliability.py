@@ -707,6 +707,23 @@ def test_pipeline_adds_the_ranked_roles_to_the_boards_digest_and_drops_the_rows(
     assert text.index("Engineer 58") < text.index("Role 0")
 
 
+def test_a_ranked_role_the_board_keeps_out_of_the_digest_stays_out():
+    rows = _waymo_board()
+    rows[58]["digest_excluded"] = True
+    eligible = [row for row in rows if not row.get("digest_excluded")]
+    digest = jobs_digest.build_digest(eligible, jobs_digest.select_roles(eligible))
+    board = {"tier": "ats", "provider": "apple", "company": "Waymo", "open_roles": 60,
+             "owned": True, "digest": digest}
+    bundle = schema.RetrievalBundle(artifacts={"jobs": board})
+    bundle.jobs_board_rows = rows
+    ranked = [_job_candidate(rows[index], 90 - index) for index in (58, 59)]
+
+    pipeline._add_ranked_roles_to_jobs_digest(bundle, ranked, None)
+
+    titles = [entry["title"] for entry in bundle.artifacts["jobs"]["digest"]["roles"]]
+    assert titles[0] == "Engineer 59" and "Engineer 58" not in titles
+
+
 def test_board_with_no_digest_gets_no_ranked_roles():
     rows = _waymo_board()
     board = {"tier": "ats", "provider": "greenhouse", "company": "Waymo", "open_roles": 60, "owned": False}
