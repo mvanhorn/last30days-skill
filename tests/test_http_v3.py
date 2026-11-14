@@ -8,6 +8,30 @@ from unittest.mock import patch, MagicMock
 
 from lib import http
 
+http_lib = http
+
+
+class TestCutOffBody(unittest.TestCase):
+    """A body cut off mid-read is a failed request, never a crash."""
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    def test_incomplete_read_is_retried_then_raised_as_an_http_error(self, mock_sleep, mock_urlopen):
+        import http.client
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.side_effect = http.client.IncompleteRead(b"partial")
+        mock_urlopen.return_value = response
+
+        with self.assertRaises(http_lib.HTTPError) as ctx:
+            http_lib.request("GET", "https://www.example.com/", retries=2, raw=True)
+        self.assertIn("IncompleteRead", str(ctx.exception))
+        self.assertEqual(mock_urlopen.call_count, 2)
+        # ``get_text`` answers the same failure with None.
+        self.assertIsNone(http_lib.get_text("https://www.example.com/", retries=1))
+
 
 class Test429RetryLimit(unittest.TestCase):
     """429 retries must be capped at max_429_retries to avoid wasting latency."""

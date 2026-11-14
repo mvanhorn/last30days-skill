@@ -1,5 +1,6 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
+import http.client
 import json
 from collections import OrderedDict
 import math
@@ -1240,8 +1241,10 @@ def request(
                 outcome_state=health.SCHEMA_DRIFT,
             )
             raise_recorded(last_error)
-        except (OSError, TimeoutError, ConnectionResetError) as e:
-            # Handle socket-level errors (connection reset, timeout, etc.)
+        except (OSError, TimeoutError, ConnectionResetError, http.client.HTTPException) as e:
+            # Handle socket-level errors (connection reset, timeout, etc.),
+            # and a body cut off mid-read (``IncompleteRead``), which
+            # ``http.client`` raises as an ``HTTPException``, not an OSError.
             log_request(f"Connection error: {type(e).__name__}: {e}")
             state = health.TIMEOUT if isinstance(e, TimeoutError) else health.UNREACHABLE
             last_error = HTTPError(
