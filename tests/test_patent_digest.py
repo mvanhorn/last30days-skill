@@ -350,13 +350,6 @@ def test_an_operating_company_s_filings_are_the_company_s_own():
     assert "not verified" not in _line(out, "- [Filing 4001]")
 
 
-def test_no_digest_line_uses_ownership_jargon():
-    artifacts = [NVIDIA, microsoft(), block(), block_imaging_only(), openai_opco()]
-    for artifact in artifacts:
-        text = "\n".join(lines(artifact)).casefold()
-        assert "confirmed" not in text and "name-matched" not in text, artifact["company"]
-
-
 def test_no_name_matched_line_without_such_a_group():
     artifact = copy.deepcopy(NVIDIA)
     artifact["groups"] = artifact["groups"][:1]

@@ -92,7 +92,7 @@ def is_today(value: str, now: Optional[datetime] = None) -> bool:
 
     West of UTC the two calendars differ for part of every day, and a date
     that is today on either one is a live window. ``now`` is an aware
-    datetime; tests pass one.
+    datetime.
     """
     day = date.fromisoformat(value)
     now = now or _local_now()
