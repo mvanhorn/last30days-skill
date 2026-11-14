@@ -662,3 +662,19 @@ def test_microsoft_and_netflix_runs_print_a_digest(company, site, fixture, pcsx)
     rendered = render.render_compact(_report(jobs=artifact))
     assert "\n## Jobs Digest\n" in rendered
     assert "role text fetched" not in (artifact["digest"].get("note") or "")
+
+
+def test_a_place_several_merged_roles_share_is_not_a_rare_location():
+    def role(n, places):
+        return {
+            "title": "Engineer", "department": "Hardware", "url": f"https://example.com/{n}",
+            "description": f"text {n}", "location": places[0], "locations": places,
+        }
+
+    # Cupertino is one role's first place and an extra place of three others.
+    shared = [role(0, ["Cupertino"])] + [role(n, ["Austin", "Cupertino"]) for n in (1, 2, 3)]
+    rare = role(4, ["Austin", "Reno"])
+
+    chosen = jobs_digest.select_roles([*shared, rare], limit=1)
+
+    assert [picked["item"]["url"] for picked in chosen] == ["https://example.com/4"]

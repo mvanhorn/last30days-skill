@@ -120,7 +120,12 @@ def select_roles(
     roles = distinct_roles(items)
     groups = {_group(role["item"]) for role in roles}
     departments = Counter(department for _title, department in groups if department)
-    locations = Counter(_key(item.get("location")) for item in items if _key(item.get("location")))
+    # Counted from the same places a role is shown with, so a place that is
+    # one role's first and several others' extra is not taken for rare.
+    locations = Counter(
+        _key(place) for item in items
+        for place in item.get("locations") or [item.get("location")] if _key(place)
+    )
     terms = Counter(
         term for title in {title for title, _department in groups}
         for term in set(_TITLE_TERM.findall(title))
