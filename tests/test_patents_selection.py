@@ -793,3 +793,25 @@ def test_a_subsidiary_whose_first_filing_is_demoted_still_gets_its_second(monkey
     ]
     assert len(artifact["entries"]) == 12
     assert len(fake.of("detail")) <= 18
+
+
+def test_a_second_subsidiary_takes_a_spare_slot_from_the_first():
+    from collections import Counter
+
+    from lib import patents
+
+    def candidate(guid, published, key, cpc, other):
+        return {"guid": guid, "published": published, "group_key": key, "cpc": [cpc], "other_filer": other}
+
+    # Six rare parent filings, then six newer filings from subsidiary A fill
+    # the twelve slots; subsidiary B's two older filings sit outside them.
+    parent = [candidate(f"p{n}", f"2026-01-{n + 1:02d}", "parent", f"A0{n}B 1/00", False) for n in range(6)]
+    first = [candidate(f"a{n}", f"2026-06-{n + 1:02d}", "sub-a", "G06F 1/00", True) for n in range(6)]
+    second = [candidate(f"b{n}", f"2025-12-{n + 1:02d}", "sub-b", "G06F 1/00", True) for n in range(2)]
+    frequencies = Counter({"G06F": 50})
+
+    ordered, reserved = patents._order(parent + first + second, frequencies)
+
+    slots = [item["group_key"] for item in ordered[:patents.DETAIL_SLOTS]]
+    assert reserved == {"sub-a", "sub-b"}
+    assert slots.count("sub-b") == 1 and slots.count("sub-a") == 5 and slots.count("parent") == 6

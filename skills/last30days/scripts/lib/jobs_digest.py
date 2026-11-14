@@ -94,9 +94,11 @@ def distinct_roles(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not _key(item.get("title")):
             continue
         role = roles.setdefault(_role_key(item), {"item": item, "locations": [], "urls": []})
-        location = str(item.get("location") or "").strip()
-        if location and location not in role["locations"]:
-            role["locations"].append(location)
+        # A row a reader already merged across locations names them all itself.
+        for place in item.get("locations") or [item.get("location")]:
+            location = str(place or "").strip()
+            if location and location not in role["locations"]:
+                role["locations"].append(location)
         url = str(item.get("url") or "").strip()
         if url and url not in role["urls"]:
             role["urls"].append(url)

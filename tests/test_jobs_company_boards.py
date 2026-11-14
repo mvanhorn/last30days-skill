@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lib import http, jobs, render
+from lib import http, jobs, jobs_digest, render
 
 from tests.test_render_patents import _report
 
@@ -426,6 +426,9 @@ def test_an_apple_role_listed_once_per_location_is_one_row_with_every_location()
     items, _artifact, _posts, _details, _others = _apple_search({1: APPLE["corporate_page"]})
     merged = [item for item in items if f"/details/{repeated}/" in item["url"]]
     assert len(merged) == 1 and set(merged[0]["offices"]) == places
+    # The digest shows every place, not only the first row's.
+    assert len(places) > 1
+    assert set(jobs_digest.distinct_roles(merged)[0]["locations"]) == places
     assert len(items) == len({row["positionId"] for row in rows})
 
 

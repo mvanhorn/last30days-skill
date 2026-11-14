@@ -386,6 +386,21 @@ def test_first_host_company_with_a_board_ends_the_search():
     assert artifact["board_of"] == "Tesla"
 
 
+def test_a_host_company_whose_job_site_cannot_be_read_keeps_its_footer_line():
+    def search(name, *_args, **_kwargs):
+        if name == "Tesla":
+            return [], {"tier": "web", "job_site_unreadable": "Tesla"}
+        return [], {"tier": "web", "company": name}
+
+    (items, artifact), names, _mock = _run_lane(
+        "Elon Musk", {"host_companies": ["Tesla", "SpaceX"]}, search,
+    )
+    assert names == ["Elon Musk", "Tesla", "SpaceX"]
+    assert items == []
+    assert artifact["company"] == "Elon Musk"
+    assert artifact["job_site_unreadable"] == "Tesla"
+
+
 def test_host_companies_cut_off_by_the_budget_leave_the_reason_on_the_topics_result():
     outcome = {"state": health.TIMEOUT, "detail": "Tesla: jobs lane ran out of time", "attempted": True}
 

@@ -4227,6 +4227,11 @@ def _search_jobs_lane(
                 for key in ("_source_outcome", "_source_out_of_time"):
                     if key in host_artifact and not items:
                         artifact = {**artifact, key: host_artifact[key]}
+                # A named company whose job site is known and not read keeps
+                # its footer line; the first such company is the one named.
+                unreadable = host_artifact.get("job_site_unreadable")
+                if unreadable and not artifact.get("job_site_unreadable"):
+                    artifact = {**artifact, "job_site_unreadable": unreadable}
     if held and not _is_jobs_board("jobs", artifact):
         items, artifact = held[0], named(held[1])
         # A board tied to no company here is shown under the name it states.

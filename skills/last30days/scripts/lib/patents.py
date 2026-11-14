@@ -765,10 +765,13 @@ def _order(
         slots = ordered[:DETAIL_SLOTS]
         if any(candidate["group_key"] == key for candidate in slots):
             continue
-        # The lowest-ranked slot that is neither a rare-class pick nor already reserved.
+        # The lowest-ranked slot that is not a rare-class pick and is not a
+        # reserved filer's only slot; a reserved filer's extra slots can go.
+        held = Counter(candidate["group_key"] for candidate in slots)
         replaceable = [
             position for position, candidate in enumerate(slots)
-            if id(candidate) not in chosen and candidate["group_key"] not in reserved
+            if id(candidate) not in chosen
+            and (candidate["group_key"] not in reserved or held[candidate["group_key"]] > 1)
         ]
         if not replaceable:
             break

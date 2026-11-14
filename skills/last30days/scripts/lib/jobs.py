@@ -2577,6 +2577,9 @@ def _one_row_per_role(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             kept["offices"].extend(
                 office for office in item["offices"] if office not in kept["offices"]
             )
+    for role in roles.values():
+        # The digest names a role's places from ``locations`` when a row has it.
+        role["locations"] = list(role["offices"])
     return list(roles.values())
 
 
