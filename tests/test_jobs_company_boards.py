@@ -8,7 +8,10 @@ when a known job site cannot be read.
 
 from __future__ import annotations
 
+import copy
+import json
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -39,7 +42,7 @@ def stub(monkeypatch):
     calls = {"reader": [], "details": []}
     state = {"rows": [_role(n) for n in range(6)], "info": {"board_total": 6}}
 
-    def reader(entry, *, deadline):
+    def reader(entry, *, deadline, **_kwargs):
         calls["reader"].append({"entry": entry, "deadline": deadline})
         return list(state["rows"]), dict(state["info"])
 
@@ -273,3 +276,89 @@ def test_a_board_url_on_a_company_job_site_is_still_ignored_without_a_request(ca
     assert requests.urls == []
     err = capsys.readouterr().err
     assert err.count("--jobs-board ignored: jobs.apple.com") == 1
+
+
+# --- Amazon -------------------------------------------------------------------
+
+FIXTURES = Path(__file__).parent / "fixtures"
+AMAZON = json.loads((FIXTURES / "jobs_amazon_search.json").read_text(encoding="utf-8"))
+
+
+def _amazon(pages, *, fail_at=None):
+    asked = []
+
+    def get(url, params=None, **_kwargs):
+        offset = int((params or {}).get("offset") or 0)
+        asked.append((url, offset))
+        index = offset // jobs.AMAZON_PAGE_SIZE
+        if index == fail_at:
+            raise http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
+        if url.startswith("https://www.amazon.jobs/") and index < len(pages):
+            return copy.deepcopy(pages[index])
+        raise http.HTTPError("HTTP 404: Not Found", status_code=404)
+
+    return asked, get
+
+
+def _amazon_search(pages, **kwargs):
+    asked, get = _amazon(pages, **kwargs)
+    texts = _NoRequests()
+    with patch.object(jobs.http, "get", side_effect=get), \
+            patch.object(jobs.http, "get_text", side_effect=texts.text), \
+            patch.object(jobs.http, "post", side_effect=texts):
+        items, artifact = jobs.search_jobs(
+            "Amazon", WINDOW, {}, web_backend="none", site="https://www.amazon.com/",
+        )
+    return items, artifact, asked, texts.urls
+
+
+def test_amazon_pages_parse_to_rows_with_their_full_text():
+    items = [item for page in AMAZON["pages"] for item in jobs.parse_amazon_response(page)[0]]
+    assert len(items) == 9
+    first = items[0]
+    assert first["title"] == "Sr. Electrical Engineer, Prime Air Perception"
+    assert first["url"] == "https://www.amazon.jobs/en/jobs/10605151/sr-electrical-engineer-prime-air-perception"
+    assert first["department"] == "retail"
+    assert first["location"] == "Seattle, Washington, USA"
+    assert (first["date"], first["posted_date_true"]) == ("2026-11-14", True)
+    assert first["provider"] == "amazon" and first["id"] == "AZ10605151"
+    assert "Bachelor's degree" in first["description_blocks"]
+    assert "\n" in first["description_blocks"]
+
+
+def test_amazon_reads_past_a_mixed_page_and_stops_after_one_with_no_new_role():
+    items, artifact, asked, other = _amazon_search(AMAZON["pages"])
+    assert len(items) == 9
+    assert [offset for _url, offset in asked][:3] == [0, 100, 200]
+    assert artifact["tier"] == "ats" and artifact["provider"] == "amazon"
+    # Three new on the first page and two on the mixed second page.
+    assert artifact["new_in_window"] == 5
+    assert artifact["open_roles"] == 10000 and artifact["open_roles_floor"] is True
+    assert other == []
+
+
+def test_amazon_s_capped_total_prints_as_a_floor_and_the_run_prints_a_digest():
+    _items, artifact, _asked, _other = _amazon_search(AMAZON["pages"])
+    rendered = render.render_compact(_report(jobs=artifact))
+    assert "\n## Jobs Digest\n" in rendered
+    assert "💼 Jobs: 10,000+ open roles │ 5 new in the L30" in rendered
+    assert "Prime Air Perception" in rendered
+
+
+def test_amazon_error_answered_as_http_200_is_the_cant_be_read_outcome():
+    error = {"error": "Result limit cannot be greater than 100", "hits": 0, "jobs": None}
+    items, artifact, asked, other = _amazon_search([error])
+    assert items == []
+    assert artifact["job_site_unreadable"] == "Amazon"
+    assert len(asked) == 1
+    # No careers page and no hosted-system slug was tried.
+    assert other == []
+    assert all(url.startswith("https://www.amazon.jobs/") for url, _offset in asked)
+
+
+def test_amazon_page_that_fails_midway_keeps_the_rows_read():
+    items, artifact, _asked, _other = _amazon_search(AMAZON["pages"], fail_at=1)
+    assert len(items) == 3
+    assert artifact["board_cut_short"] is True
+    assert artifact["new_in_window"] is None
+    assert artifact["open_roles"] == 10000

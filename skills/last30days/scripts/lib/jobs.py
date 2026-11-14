@@ -110,6 +110,12 @@ UNREADABLE_JOB_SITES: dict[str, dict[str, str]] = {
 # role text of the roles the digest selects, so a long list never costs the
 # digest its text.
 DETAIL_SHARE = 1 / 3
+# A company board is read newest first, a few pages at once, and stops after
+# the first page that holds no role posted in the window, or at its ceiling.
+COMPANY_BOARD_ROW_CEILING = 2000
+AMAZON_PAGE_SIZE = 100
+# Amazon's search reports at most this many hits and pages no further.
+AMAZON_HITS_CAP = 10_000
 
 # Detection patterns: map an ATS embed/link found on a careers page to
 # (provider, slug). The published slug is authoritative - this is why discovery
@@ -616,7 +622,9 @@ def _read_board(
         elif _out_of_time(f"reading the {provider} board {slug}"):
             items = []
         elif company_board is not None:
-            items, board = _company_reader(provider)(company_board, deadline=list_deadline)
+            items, board = _company_reader(provider)(
+                company_board, deadline=list_deadline, date_range=date_range,
+            )
         elif provider == ATS_PROVIDER_WORKDAY:
             items, board = search_workday_board(slug, deadline=deadline, **part)
         elif provider == ATS_PROVIDER_SMARTRECRUITERS:
@@ -2289,12 +2297,156 @@ def _looks_like_careers_html(html: str) -> bool:
     return bool(re.search(r"\b(open roles|open positions|join (our|the) team|current openings|jobposting)\b", lowered))
 
 
+class BoardShapeError(ValueError):
+    """A company board answered, but not in the shape its reader expects."""
+
+
+def _read_newest_first(
+    page: Callable[[int], Callable[[float], Any]],
+    parse: Callable[[Any], tuple[list[dict[str, Any]], int]],
+    *,
+    page_size: int,
+    row_ceiling: int,
+    window_start: str | None,
+    deadline: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read a board's pages newest first, a few at a time.
+
+    ``page(offset)`` makes one listing call and ``parse(payload)`` returns its
+    rows and the total the board reports, raising ``BoardShapeError`` for an
+    answer it cannot read. Reading stops after the first page with no role
+    posted on or after ``window_start`` (a page may mix dates, so one older
+    row does not stop it), at ``row_ceiling``, at the board's end, at the
+    deadline, or at a failed page; the rows read so far are kept.
+
+    A first page that fails or cannot be read, or that is empty while the
+    board reports roles, returns no rows: the board cannot be read.
+    """
+    clock = _clock()
+    info: dict[str, Any] = {
+        "board_total": 0, "board_capped": False, "board_cut_short": False,
+        "board_newest_first": True, "board_window_covered": False,
+        "board_row_ceiling": row_ceiling,
+    }
+    first = _workday_run([page(0)], deadline, clock)[0]
+    if first is None or first is _OUT_OF_TIME:
+        return [], info
+    try:
+        items, total = parse(first)
+    except BoardShapeError:
+        return [], info
+    info["board_total"] = max(total, len(items))
+    if not items:
+        return [], info
+
+    def in_window(rows: list[dict[str, Any]]) -> bool:
+        return window_start is None or any(
+            str(row.get("date") or "") >= window_start for row in rows
+        )
+
+    covered = not in_window(items)
+    stop = covered or len(items) >= info["board_total"]
+    offset = page_size
+    limit = min(info["board_total"], row_ceiling)
+    while not stop and offset < limit:
+        offsets = list(range(offset, limit, page_size))[:WORKDAY_MAX_WORKERS]
+        offset = offsets[-1] + page_size
+        for payload in _workday_run([page(start) for start in offsets], deadline, clock):
+            try:
+                rows, _total = parse(payload) if isinstance(payload, dict) else ([], 0)
+            except BoardShapeError:
+                rows = []
+            if not rows:
+                stop = True
+                break
+            items.extend(rows)
+            if not in_window(rows):
+                covered = stop = True
+                break
+    info["board_window_covered"] = covered or len(items) >= info["board_total"]
+    info["board_cut_short"] = len(items) < info["board_total"]
+    return items[:row_ceiling], info
+
+
+# Amazon: one search endpoint, 100 roles per call with their full text. Errors
+# arrive as HTTP 200 with an ``error`` key.
+
+
+def parse_amazon_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
+    """Rows and reported hits from one ``amazon.jobs`` search page."""
+    if not isinstance(payload, dict):
+        raise BoardShapeError("not a JSON object")
+    if payload.get("error"):
+        raise BoardShapeError(str(payload["error"])[:120])
+    jobs_list = payload.get("jobs")
+    if not isinstance(jobs_list, list):
+        raise BoardShapeError("no jobs list")
+    items: list[dict[str, Any]] = []
+    for job in jobs_list:
+        if not isinstance(job, dict) or not job.get("title") or not job.get("job_path"):
+            continue
+        text = "<br/>".join(
+            str(job.get(key) or "")
+            for key in ("description", "basic_qualifications", "preferred_qualifications")
+            if job.get(key)
+        )
+        posted = _amazon_date(job.get("posted_date"))
+        items.append(_ats_item(
+            provider=COMPANY_PROVIDER_AMAZON,
+            slug="www.amazon.jobs",
+            ident=str(job.get("id_icims") or job.get("id") or ""),
+            title=str(job["title"]).strip(),
+            url=f"https://www.amazon.jobs{job['job_path']}",
+            description=_clean_html(text),
+            description_blocks=_block_text(text),
+            date=posted,
+            posted_date_true=bool(posted),
+            department=str(job.get("business_category") or "").strip(),
+            location=str(job.get("normalized_location") or job.get("location") or "").strip(),
+            company_name=str(job.get("company_name") or "").strip(),
+            whole_posting=True,
+        ))
+    return items, _reported_total(payload, "hits")
+
+
+def _amazon_date(value: Any) -> str | None:
+    """``November 14, 2026`` as ``2026-11-14``."""
+    try:
+        return time.strftime("%Y-%m-%d", time.strptime(str(value or "").strip(), "%B %d, %Y"))
+    except ValueError:
+        return None
+
+
+def read_amazon_board(
+    entry: dict[str, str], *, deadline: float, date_range: tuple[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Amazon's roles, newest first, with the board's reported total."""
+    url = f"https://{entry.get('board') or 'www.amazon.jobs'}/en/search.json"
+
+    def page(offset: int) -> Callable[[float], Any]:
+        params = {"sort": "recent", "result_limit": str(AMAZON_PAGE_SIZE), "offset": str(offset)}
+        return lambda http_deadline: http.get(
+            url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
+            deadline_monotonic=http_deadline,
+        )
+
+    items, info = _read_newest_first(
+        page, parse_amazon_response, page_size=AMAZON_PAGE_SIZE,
+        row_ceiling=COMPANY_BOARD_ROW_CEILING, window_start=date_range[0], deadline=deadline,
+    )
+    # The search stops counting at 10,000, so that total is a floor.
+    info["board_total_floor"] = info["board_total"] >= AMAZON_HITS_CAP
+    return items, info
+
+
 # Readers of company-run boards, by provider: given the registry entry and the
 # listing's deadline, each returns ``(items, board_info)`` like the hosted
 # readers. Detail fetchers fill role text for the roles the digest selected
 # and return how many were left unfetched (late, failed). Both are named, and
 # looked up when called, so a test may stand in for one.
-_COMPANY_READERS: dict[str, str] = {}
+_COMPANY_READERS: dict[str, str] = {
+    COMPANY_PROVIDER_AMAZON: "read_amazon_board",
+}
 _DETAIL_FETCHERS: dict[str, str] = {
     ATS_PROVIDER_WORKDAY: "fetch_workday_details",
 }
