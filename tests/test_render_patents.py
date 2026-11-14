@@ -202,6 +202,41 @@ def test_digest_checklist_says_the_reference_decides():
     assert "no `## Patent Digest` block" not in checklist
 
 
+OWED_CHECK = "web-check the two strongest concrete entries"
+
+
+def _titles_only():
+    artifact = copy.deepcopy(NVIDIA)
+    artifact["entries"] = []
+    return artifact
+
+
+def test_checklist_owes_the_two_candidate_checks_when_the_digest_has_text():
+    rendered = render.render_compact(_report(NVIDIA))
+    checklist = _checklist(rendered)
+    assert OWED_CHECK in checklist
+    assert "judge every detailed entry for something concrete" in checklist
+    assert "in the Step 2 dispatch in addition to the three supplements" in checklist
+    assert "With no concrete entry, run no patent search." in checklist
+    # The instruction is the checklist's, printed after the output, never inside the evidence.
+    assert OWED_CHECK not in rendered
+
+
+def test_checklist_owes_no_check_for_a_titles_only_digest_or_no_digest():
+    titles_only = render.render_compact(_report(_titles_only()))
+    assert "\n## Patent Digest\n" in titles_only
+    assert OWED_CHECK not in _checklist(titles_only)
+    assert OWED_CHECK not in _checklist(render.render_compact(_report()))
+    assert OWED_CHECK not in _checklist(render.render_compact(_report(_counts_only())))
+
+
+def test_checklist_owes_no_check_on_recommendation_or_exec_runs():
+    rendered = render.render_compact(_report(NVIDIA))
+    assert OWED_CHECK not in _checklist(rendered, recommendation=True)
+    assert OWED_CHECK not in _checklist(rendered, register="exec")
+    assert OWED_CHECK not in _checklist(rendered, comparison=True)
+
+
 def test_checklist_states_both_digests_on_one_line_and_holds_no_list():
     for artifact in (None, NVIDIA):
         checklist = _checklist(render.render_compact(_report(artifact)))

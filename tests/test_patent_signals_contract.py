@@ -278,7 +278,7 @@ def test_one_signal_by_default_and_a_second_only_when_both_are_unmatched():
 
 def test_web_check_comes_before_any_signal_is_written():
     check = _rule("**Check the web first.**")
-    assert check.lstrip().startswith("Before writing a signal, check the web for it")
+    assert check.lstrip().startswith("Before writing a signal or leaving the section out, check the web")
     assert "Isolated web search" in check
     assert "`research-runbook.md`" in check
     assert "coverage of the filing" in check
@@ -413,6 +413,13 @@ def test_labelled_set_covers_one_case_per_rule():
         "Meta, unverified filer known to be the company's",
         "Block, unverified filer not the company's",
         "Report that also has two jobs signals",
+        "Server maker, persistent display",
+        "Device maker, photo control among nine routine filings",
+        "Concrete candidate dropped unchecked",
+        "Concrete candidate checked, shipped match found",
+        "Concrete candidate dropped as already shipped, no search",
+        "Four concrete candidates",
+        "Nothing concrete",
     }
 
 
@@ -421,6 +428,8 @@ def test_labels_are_well_formed(case):
     company = CASES[case]
     assert company["expected_section"] in {"present", "absent"}
     assert 0 <= company.get("jobs_signals", 0) <= jobs_rule.MAX_SIGNALS
+    assert company.get("valid", True) in {True, False}
+    assert 0 <= company["expected_checks"] <= rule.MAX_CHECKS
     for candidate in company["candidates"]:
         title = candidate["title"]
         assert title
@@ -432,6 +441,9 @@ def test_labels_are_well_formed(case):
         assert isinstance(candidate.get("story_tie", False), bool), title
         for checked in ("shipped_match", "covered"):
             assert candidate[checked] in {True, False, None}, title
+        assert isinstance(candidate["checked"], bool), title
+        if candidate["checked"]:
+            assert candidate["shipped_match"] is not None, title
         if "reported_match" in candidate:
             assert candidate["reported_match"] in {True, False}, title
         assert candidate["expected"] in {"qualifies", "does not qualify"}, title
@@ -456,6 +468,8 @@ def test_each_labelled_filing_gets_its_expected_outcome(case):
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_each_labelled_case_gets_its_expected_section_and_signal_count(case):
     company = CASES[case]
+    if not company.get("valid", True):
+        pytest.skip("an invalid decision records what was written, not what the rule gives")
     candidates = company["candidates"]
     assert rule.section_present(candidates) is (company["expected_section"] == "present")
     shown = rule.signals_shown(candidates, jobs_signals=company.get("jobs_signals", 0))
@@ -634,3 +648,82 @@ def test_the_cluster_example_stays_under_the_word_limit_outside_its_two_titles()
     _first, cluster = [line for line in _example().splitlines() if line.strip()]
     assert cluster.count("](") == 2
     assert rule.words(cluster) <= rule.MAX_PARAGRAPH_WORDS
+
+
+# --- checking candidates before deciding ----------------------------------------------------
+
+
+def test_the_two_strongest_concrete_candidates_are_checked_before_either_is_dropped():
+    check = _rule("**Check the web first.**")
+    assert "judge every detailed entry for concreteness from its abstract and first claim" in check
+    assert "list the concrete ones" in check
+    assert "search the two strongest concrete candidates before dropping either" in check
+    assert "decided by that search, never from memory" in check
+    assert "With no concrete entry, run no patent search and write no section." in check
+    assert rule.MAX_CHECKS == 2
+
+
+def test_both_signal_checks_sit_apart_from_the_step_2_ceiling():
+    jobs_check = reference_text("hiring-signals").split("**Check the web first.**", 1)[1].split("\n\n", 1)[0]
+    for check in (_rule("**Check the web first.**"), jobs_check):
+        assert "ride the same isolated dispatch" in check
+        assert "in addition to the supplements" in check
+        assert "do not count toward the Step 2 ceiling of three" in check
+
+
+def test_shipped_status_is_not_judged_from_memory_in_the_bar():
+    bar = _rule("**The bar.**")
+    assert "Judge both paths from what you know of the company." not in bar
+    assert "settled by the web check below, not from memory" in bar
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_each_labelled_case_owes_its_expected_checks_and_is_judged_valid_or_not(case):
+    company = CASES[case]
+    assert len(rule.checks_owed(company["candidates"])) == company["expected_checks"]
+    assert rule.decision_valid(company["candidates"]) is company.get("valid", True)
+
+
+def test_a_concrete_candidate_dropped_unchecked_is_invalid_and_a_checked_shipped_one_is_not():
+    (unchecked,) = CASES["Concrete candidate dropped unchecked"]["candidates"]
+    (checked,) = CASES["Concrete candidate checked, shipped match found"]["candidates"]
+    assert unchecked["title"] == checked["title"] and unchecked["concrete"]
+    assert CASES["Concrete candidate dropped unchecked"]["expected_section"] == "absent"
+    assert not rule.decision_valid([unchecked])
+    assert rule.decision_valid([checked])
+    assert not rule.section_present([checked])
+
+
+def test_a_candidate_called_shipped_without_a_search_is_invalid():
+    (memory,) = CASES["Concrete candidate dropped as already shipped, no search"]["candidates"]
+    assert memory["shipped_match"] is True and not memory["checked"]
+    assert not rule.decision_valid([memory])
+    assert rule.decision_valid([{**memory, "checked": True}])
+
+
+def test_no_concrete_candidate_means_no_search():
+    candidates = CASES["Nothing concrete"]["candidates"]
+    assert rule.checks_owed(candidates) == []
+    assert rule.decision_valid(candidates)
+    assert not rule.decision_valid([{**candidates[0], "checked": True, "shipped_match": False}, *candidates[1:]])
+    assert not rule.section_present(candidates)
+
+
+def test_four_concrete_candidates_get_exactly_two_checks():
+    candidates = CASES["Four concrete candidates"]["candidates"]
+    assert all(candidate["concrete"] for candidate in candidates)
+    assert rule.checks_owed(candidates) == candidates[:2]
+    assert rule.decision_valid(candidates)
+    third = {**candidates[2], "checked": True, "shipped_match": False, "covered": False}
+    assert not rule.decision_valid([*candidates[:2], third, candidates[3]])
+
+
+def test_the_persistent_display_and_photo_control_filings_get_a_section_after_a_clean_search():
+    for case in ("Server maker, persistent display", "Device maker, photo control among nine routine filings"):
+        company = CASES[case]
+        lead = company["candidates"][0]
+        assert lead["concrete"] and lead["checked"] and lead["shipped_match"] is False
+        assert rule.decision_valid(company["candidates"])
+        assert rule.section_present(company["candidates"])
+        assert rule.signals_shown(company["candidates"]) == 1
+    assert len(CASES["Device maker, photo control among nine routine filings"]["candidates"]) == 10

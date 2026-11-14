@@ -12,7 +12,11 @@ part that is arithmetic, so the labelled set in
   paths of the bar it meets and what the web check found (a cluster is one
   candidate; a tie to a story in the report never qualifies one);
 - is the section written, and with how many signals, given a company's
-  candidates and how many jobs signals the same report carries.
+  candidates and how many jobs signals the same report carries;
+- was the decision made properly: the strongest two concrete candidates (in
+  the order listed, strongest first) were web-checked before either was
+  dropped, no shipped or reported match was claimed without a check, and no
+  search ran when nothing was concrete.
 
 It does NOT test whether a model finds the right filings in a digest or judges
 the bar correctly. Nothing here reads a digest. That needs live runs, read by a
@@ -42,6 +46,8 @@ PARAGRAPH_SENTENCES = 2
 # the longest optional quote from the filing.
 MAX_PARAGRAPH_WORDS = 60
 MAX_QUOTE_WORDS = 12
+# Concrete candidates web-checked before the section is written or left out.
+MAX_CHECKS = 2
 
 _LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[{A-Z])")
@@ -115,6 +121,42 @@ def qualifies(candidate: dict[str, Any]) -> bool:
 
 def qualifying(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [candidate for candidate in candidates if qualifies(candidate)]
+
+
+def check_candidate(candidate: dict[str, Any]) -> bool:
+    """A concrete candidate whose fate turns on the web check.
+
+    It must be one the report could use: a first US publication with its text,
+    by an entity known to be the company's, and for a cluster, enough families.
+    """
+    if not usable(candidate) or candidate.get("titles_only") or not candidate.get("concrete"):
+        return False
+    return "cluster" not in candidate or families(candidate) >= MIN_CLUSTER_FAMILIES
+
+
+def checks_owed(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The strongest two concrete candidates; none when nothing is concrete."""
+    return [candidate for candidate in candidates if check_candidate(candidate)][:MAX_CHECKS]
+
+
+def decision_valid(candidates: list[dict[str, Any]]) -> bool:
+    """The candidates were checked as the rule requires before any was dropped.
+
+    Every owed check ran, no other search ran, and no candidate carries a
+    shipped, reported or coverage finding that no search produced.
+    """
+    owed = checks_owed(candidates)
+    if not all(candidate.get("checked") for candidate in owed):
+        return False
+    if sum(bool(candidate.get("checked")) for candidate in candidates) != len(owed):
+        return False
+    return not any(
+        not candidate.get("checked")
+        and True in (
+            candidate.get("shipped_match"), candidate.get("reported_match"), candidate.get("covered"),
+        )
+        for candidate in candidates
+    )
 
 
 def max_section_paragraphs() -> int:
