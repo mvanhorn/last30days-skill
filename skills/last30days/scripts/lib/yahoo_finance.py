@@ -69,7 +69,7 @@ from concurrent.futures import Future
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from . import env, http, log, schema, subproc
+from . import env, health, http, log, schema, subproc
 
 CLI_BIN = "yahoo-finance-pp-cli"
 SOURCE = "yahoo_finance"
@@ -533,6 +533,19 @@ def _record_failure(report: schema.Report, error: str) -> None:
     )
 
 
+def _record_missing_cli(report: schema.Report) -> None:
+    """Say once that the host's tickers went unchecked for want of the helper,
+    with the command that installs it."""
+    detail = f"{CLI_BIN} is not on PATH; install: {health.pp_install_cmd('yahoo-finance')}"
+    _log(f"--ticker not checked: {detail}")
+    report.source_status[SOURCE] = schema.SourceOutcome(
+        source=SOURCE,
+        state=health.SKIPPED_UNCONFIGURED,
+        detail=detail,
+        attempted=False,
+    )
+
+
 def attach_host_tickers(
     report: schema.Report, pairs: list[dict[str, str]], config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -555,6 +568,8 @@ def attach_host_tickers(
         not_run = f"not checked: {SOURCE} is excluded"
     elif not _is_available():
         not_run = f"not checked: {CLI_BIN} is not on PATH"
+        if pairs:
+            _record_missing_cli(report)
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
     errors: list[str] = []
