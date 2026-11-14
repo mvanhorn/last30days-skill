@@ -440,6 +440,16 @@ def test_apple_retail_pipeline_roles_are_counted_but_never_chosen():
     assert artifact["digest"]["roles"] == [] and details == []
 
 
+def test_apple_retail_by_team_name_is_excluded_and_a_pipe_row_has_no_true_date():
+    page = copy.deepcopy(APPLE["corporate_page"])
+    rows = page["res"]["searchResults"]
+    rows[0]["team"] = {"teamName": "Apple Retail", "teamCode": "RTLMY"}
+    rows[1].update({"type": "PIPE", "managedPipelineRole": False})
+    items, _total = jobs.parse_apple_response(page)
+    assert items[0]["digest_excluded"] is True
+    assert items[1]["posted_date_true"] is False and items[1]["digest_excluded"] is False
+
+
 def test_apple_digest_holds_only_corporate_roles_with_their_full_text():
     pages = {1: APPLE["retail_page"], 2: APPLE["corporate_page"], 3: APPLE["mixed_page"]}
 
@@ -453,6 +463,8 @@ def test_apple_digest_holds_only_corporate_roles_with_their_full_text():
     items, artifact, posts, details, others = _apple_search(pages, detail=detail)
     assert {1, 2, 3} <= set(posts)
     assert len(items) == 50
+    # The board's total counts rows, so its note counts the 60 rows read, not the 50 roles.
+    assert artifact["coverage_note"].startswith("board read in part: 60 rows read of the 6,459")
     roles = artifact["digest"]["roles"]
     by_url = {item["url"]: item for item in items}
     assert roles and not any(by_url[role["url"]]["digest_excluded"] for role in roles)

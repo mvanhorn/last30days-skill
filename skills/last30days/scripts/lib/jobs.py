@@ -117,6 +117,9 @@ AMAZON_PAGE_SIZE = 100
 # Amazon's search reports at most this many hits and pages no further.
 AMAZON_HITS_CAP = 10_000
 APPLE_PAGE_SIZE = 20
+# Apple's details call usually answers in 2 to 7 seconds, but about one call
+# in four stalls; a second attempt after a short limit nearly always answers.
+APPLE_DETAIL_TIMEOUT_SECONDS = 6
 # Apple's retail store team. Its roles are counted on the board and never
 # chosen for the digest: the newest pages are almost all retail.
 APPLE_RETAIL_TEAM = "APPST"
@@ -953,8 +956,9 @@ def _coverage_note(
     listed = int(board.get("board_total") or 0)
     if not board.get("board_newest_first"):
         listed = min(listed, WORKDAY_ROW_CEILING)
-    read = f"{len(items):,} rows read" + (
-        f" of the {listed:,} the board lists" if listed > len(items) else ""
+    rows = int(board.get("board_rows_read") or len(items))
+    read = f"{rows:,} rows read" + (
+        f" of the {listed:,} the board lists" if listed > rows else ""
     )
     if board.get("board_newest_first"):
         cause = "the newest roles are read first"
@@ -2465,9 +2469,10 @@ def _apple_search_body(page: int) -> dict[str, Any]:
 def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
     """Rows and the reported total from one Apple search page.
 
-    A managed pipeline role (a standing retail requisition) carries the day of
-    the request as its posting date, so its date is not a true posted date.
-    Retail store roles are marked ``digest_excluded``.
+    A pipeline role (a standing requisition, flagged as managed or typed
+    ``PIPE``) carries the day of the request as its posting date, so its date
+    is not a true posted date. Managed pipeline roles and retail store roles
+    (by team code or team name) are marked ``digest_excluded``.
     """
     res = payload.get("res") if isinstance(payload, dict) else None
     results = res.get("searchResults") if isinstance(res, dict) else None
@@ -2480,7 +2485,8 @@ def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
         team = job.get("team") if isinstance(job.get("team"), dict) else {}
         locations = [loc for loc in job.get("locations") or [] if isinstance(loc, dict)]
         slug = str(job.get("transformedPostingTitle") or "role").strip()
-        pipeline = bool(job.get("managedPipelineRole"))
+        # A standing requisition: flagged as managed, or typed ``PIPE``.
+        pipeline = bool(job.get("managedPipelineRole")) or job.get("type") == "PIPE"
         summary = str(job.get("jobSummary") or "").strip()
         item = _ats_item(
             provider=COMPANY_PROVIDER_APPLE,
@@ -2497,7 +2503,11 @@ def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
             company_name="Apple",
             whole_posting=True,
         )
-        item["digest_excluded"] = pipeline or team.get("teamCode") == APPLE_RETAIL_TEAM
+        retail = (
+            team.get("teamCode") == APPLE_RETAIL_TEAM
+            or str(team.get("teamName") or "").strip().lower() == "apple retail"
+        )
+        item["digest_excluded"] = bool(job.get("managedPipelineRole")) or retail
         item["detail_url"] = _APPLE_DETAILS_URL.format(position=job["positionId"])
         items.append(item)
     return items, _reported_total(res, "totalRecords")
@@ -2519,6 +2529,8 @@ def read_apple_board(
         page, parse_apple_response, page_size=APPLE_PAGE_SIZE,
         row_ceiling=COMPANY_BOARD_ROW_CEILING, window_start=date_range[0], deadline=deadline,
     )
+    # The board's total counts rows, so the rows read are counted the same way.
+    info["board_rows_read"] = len(items)
     return _one_row_per_role(items), info
 
 
@@ -2560,7 +2572,7 @@ def fetch_apple_details(
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
         return lambda http_deadline: http.get(
             str(item["detail_url"]), headers={"Accept": "application/json"},
-            timeout=API_TIMEOUT_SECONDS, retries=1, deadline_monotonic=http_deadline,
+            timeout=APPLE_DETAIL_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
         )
 
     late = failed = 0
