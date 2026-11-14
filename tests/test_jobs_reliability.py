@@ -307,6 +307,16 @@ def test_official_site_reaches_the_jobs_lane_when_wikidata_named_no_company():
     }
     resolved = {"company": "Nvidia", "company_site": "https://www.nvidia.com/"}
     assert cli._company_for_jobs(resolved, None, "Nvidia", official_site="example.com") == resolved
+    # A Yahoo match after a failed Wikidata lookup names the company with no
+    # site; the official site the run knows is still the topic's.
+    yahoo = {"company": "Apple", "ticker": "AAPL"}
+    assert cli._company_for_jobs(yahoo, None, "Apple", official_site="apple.com") == {
+        **yahoo, "topic_site": "apple.com",
+    }
+    # A company that is not the topic (a person's company) never takes the
+    # person's site.
+    person = {"company": "Anduril"}
+    assert cli._company_for_jobs(person, None, "Palmer Luckey", official_site="palmerluckey.com") == person
 
     (_items, _artifact), _names, mock = _run_lane(
         "Disney", {"topic_site": "thewaltdisneycompany.com"}, lambda *_a, **_k: ([], {"tier": "web"}),
