@@ -1,0 +1,1105 @@
+{
+ "about": "Apple search API responses (POST https://jobs.apple.com/api/v1/search, sort newest) recorded on 2026-11-14 with a plain request and no Origin or Referer header, trimmed to the fields the reader reads and summaries cut to 200 characters. retail_page is page 1 (20 managed pipeline retail roles, each dated the day of the request); corporate_page is page 6; mixed_page is page 20 (corporate roles and one retail role). Rows are in posted-date order apart from the pipeline roles.",
+ "totalRecords": 6459,
+ "retail_page": {
+  "res": {
+   "searchResults": [
+    {
+     "id": "PIPE-114438346",
+     "positionId": "114438346",
+     "postingTitle": "TH - Specialist: Part-Time, Seasonal",
+     "transformedPostingTitle": "th-specialist-part-time-seasonal",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648271223Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Thailand"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438210",
+     "positionId": "114438210",
+     "postingTitle": "JP-Technical Specialist",
+     "transformedPostingTitle": "jp-technical-specialist",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. At Apple, we believe inclusion is a shared resp",
+     "postDateInGMT": "2026-11-14T20:31:46.648278279Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Japan"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438102",
+     "positionId": "114438102",
+     "postingTitle": "JP-Operations Expert",
+     "transformedPostingTitle": "jp-operations-expert",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648279797Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Japan"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-200313970",
+     "positionId": "200313970",
+     "postingTitle": "IN-Business Expert",
+     "transformedPostingTitle": "in-business-expert",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648281250Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "India"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-200314033",
+     "positionId": "200314033",
+     "postingTitle": "IN-Operations Expert",
+     "transformedPostingTitle": "in-operations-expert",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648282316Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "India"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-200314003",
+     "positionId": "200314003",
+     "postingTitle": "IN-Business Pro",
+     "transformedPostingTitle": "in-business-pro",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648283613Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "India"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-200314010",
+     "positionId": "200314010",
+     "postingTitle": "IN-Expert",
+     "transformedPostingTitle": "in-expert",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648284991Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "India"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-200314117",
+     "positionId": "200314117",
+     "postingTitle": "IN - Specialist: Full-time and Part-time",
+     "transformedPostingTitle": "in-specialist-full-time-and-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648286427Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "India"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438164",
+     "positionId": "114438164",
+     "postingTitle": "TR - Specialist: Seasonal, Part-time",
+     "transformedPostingTitle": "tr-specialist-seasonal-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648287904Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Turkiye"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438225",
+     "positionId": "114438225",
+     "postingTitle": "UAE - Specialist: Seasonal, Part-time ",
+     "transformedPostingTitle": "uae-specialist-seasonal-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648289266Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "United Arab Emirates"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438095",
+     "positionId": "114438095",
+     "postingTitle": "IT - Specialist (Sales)",
+     "transformedPostingTitle": "it-specialist-sales",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648290538Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Italy"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438056",
+     "positionId": "114438056",
+     "postingTitle": "ES - Specialist: Seasonal, Part-time",
+     "transformedPostingTitle": "es-specialist-seasonal-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648291809Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Spain"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438043",
+     "positionId": "114438043",
+     "postingTitle": "DE - Specialist: Seasonal, Full-time and Part-time",
+     "transformedPostingTitle": "de-specialist-seasonal-full-time-and-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648293122Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Germany"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438017",
+     "positionId": "114438017",
+     "postingTitle": "CH-Specialist (m/f/d)",
+     "transformedPostingTitle": "ch-specialist-m-f-d",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648294591Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Switzerland"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438340",
+     "positionId": "114438340",
+     "postingTitle": "AT-Specialist (m/f/d)",
+     "transformedPostingTitle": "at-specialist-m-f-d",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648295846Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Austria"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438069",
+     "positionId": "114438069",
+     "postingTitle": "FR - Specialist: Fixed Term Contracts, Full-time and Part-time",
+     "transformedPostingTitle": "fr-specialist-fixed-term-contracts-full-time-and-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648297175Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "France"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438251",
+     "positionId": "114438251",
+     "postingTitle": "BE-Specialist: Full-Time, Part-Time, and Part-Time Temporary",
+     "transformedPostingTitle": "be-specialist-full-time-part-time-and-part-time-temporary",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648298841Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Belgium"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438119",
+     "positionId": "114438119",
+     "postingTitle": "NL - Specialist: Seasonal, Part-time ",
+     "transformedPostingTitle": "nl-specialist-seasonal-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648300162Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Netherlands"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438132",
+     "positionId": "114438132",
+     "postingTitle": "SE - Specialist: Seasonal, Part-time ",
+     "transformedPostingTitle": "se-specialist-seasonal-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648301434Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Sweden"
+      }
+     ]
+    },
+    {
+     "id": "PIPE-114438004",
+     "positionId": "114438004",
+     "postingTitle": "CA - Specialist: Seasonal, Part-time",
+     "transformedPostingTitle": "ca-specialist-seasonal-part-time",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-14T20:31:46.648302673Z",
+     "managedPipelineRole": true,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Canada"
+      }
+     ]
+    }
+   ],
+   "totalRecords": 6459
+  }
+ },
+ "corporate_page": {
+  "res": {
+   "searchResults": [
+    {
+     "id": "200689996-0836",
+     "positionId": "200689996",
+     "postingTitle": "Senior Legal Counsel – Home and Wearables Product Counsel",
+     "transformedPostingTitle": "senior-legal-counsel-home-and-wearables-product-counsel",
+     "jobSummary": "Imagine what you could do here. At Apple, new ideas have a way of becoming great products, services, and customer experiences very quickly. Bring passion and dedication to your job, and there's no tel",
+     "postDateInGMT": "2026-11-14T00:37:44.257Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Corporate Functions",
+      "teamCode": "CORSV"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200695056-0670",
+     "positionId": "200695056",
+     "postingTitle": "Channel Activation Lead",
+     "transformedPostingTitle": "channel-activation-lead",
+     "jobSummary": "At Apple, we work every day to create products that enrich people’s lives. Our Apple Ads group makes it possible for people around the world to easily access informative and imaginative content on the",
+     "postDateInGMT": "2026-11-14T00:32:08.542Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Marketing",
+      "teamCode": "MKTG"
+     },
+     "locations": [
+      {
+       "name": "Culver City"
+      }
+     ]
+    },
+    {
+     "id": "200695054-0157",
+     "positionId": "200695054",
+     "postingTitle": "Performance Modeling Software Architect, Platform Architecture",
+     "transformedPostingTitle": "performance-modeling-software-architect-platform-architecture",
+     "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-14T00:28:59.123Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Austin"
+      }
+     ]
+    },
+    {
+     "id": "200695054-0505",
+     "positionId": "200695054",
+     "postingTitle": "Performance Modeling Software Architect, Platform Architecture",
+     "transformedPostingTitle": "performance-modeling-software-architect-platform-architecture",
+     "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-14T00:28:59.123Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Beaverton"
+      }
+     ]
+    },
+    {
+     "id": "200695054-1242",
+     "positionId": "200695054",
+     "postingTitle": "Performance Modeling Software Architect, Platform Architecture",
+     "transformedPostingTitle": "performance-modeling-software-architect-platform-architecture",
+     "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-14T00:28:59.123Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cambridge"
+      }
+     ]
+    },
+    {
+     "id": "200695054-2907",
+     "positionId": "200695054",
+     "postingTitle": "Performance Modeling Software Architect, Platform Architecture",
+     "transformedPostingTitle": "performance-modeling-software-architect-platform-architecture",
+     "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-14T00:28:59.123Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Orlando"
+      }
+     ]
+    },
+    {
+     "id": "200695054-0836",
+     "positionId": "200695054",
+     "postingTitle": "Performance Modeling Software Architect, Platform Architecture",
+     "transformedPostingTitle": "performance-modeling-software-architect-platform-architecture",
+     "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-14T00:28:59.123Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200695036-0836",
+     "positionId": "200695036",
+     "postingTitle": "Prototyping Systems Engineer - Platform Architecture",
+     "transformedPostingTitle": "prototyping-systems-engineer-platform-architecture",
+     "jobSummary": "Imagine what you could do here. At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job, and there'",
+     "postDateInGMT": "2026-11-14T00:28:08.440Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694963-0836",
+     "positionId": "200694963",
+     "postingTitle": "Machine Learning Research Engineer, Fitness Intelligence – Watch Software",
+     "transformedPostingTitle": "machine-learning-research-engineer-fitness-intelligence-watch-software",
+     "jobSummary": "magine what you could do here at Apple. Innovation runs through everything we do, from amazing technology to industry-leading environmental efforts, and the diversity of people and ideas makes it poss",
+     "postDateInGMT": "2026-11-14T00:27:19.113Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200686608-0836",
+     "positionId": "200686608",
+     "postingTitle": "Camera Competitive Intelligence & Strategy Lead",
+     "transformedPostingTitle": "camera-competitive-intelligence-strategy-lead",
+     "jobSummary": "Apple is where individual imaginations gather together, committing to the values that lead to great work. Every new product we build, service we create, or Apple Store experience we deliver is the res",
+     "postDateInGMT": "2026-11-14T00:20:51.145Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200695045-0836",
+     "positionId": "200695045",
+     "postingTitle": "Performance Modeling Software Engineer, Platform Architecture",
+     "transformedPostingTitle": "performance-modeling-software-engineer-platform-architecture",
+     "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-13T23:59:46.427Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694136-3337",
+     "positionId": "200694136",
+     "postingTitle": "GenAI Research Engineer",
+     "transformedPostingTitle": "genai-research-engineer",
+     "jobSummary": "Do you believe that generative models can fundamentally change how people interact with devices? Are you excited by the possibility of connecting people to unprecedented levels of creativity? Come joi",
+     "postDateInGMT": "2026-11-13T23:59:15.107Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Machine Learning and AI",
+      "teamCode": "MLAI"
+     },
+     "locations": [
+      {
+       "name": "Seattle"
+      }
+     ]
+    },
+    {
+     "id": "200694136-0836",
+     "positionId": "200694136",
+     "postingTitle": "GenAI Research Engineer",
+     "transformedPostingTitle": "genai-research-engineer",
+     "jobSummary": "Do you believe that generative models can fundamentally change how people interact with devices? Are you excited by the possibility of connecting people to unprecedented levels of creativity? Come joi",
+     "postDateInGMT": "2026-11-13T23:59:15.107Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Machine Learning and AI",
+      "teamCode": "MLAI"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694527-0836",
+     "positionId": "200694527",
+     "postingTitle": "Sr. Software Engineer, Distributed Systems - Platform Apps & Technologies ",
+     "transformedPostingTitle": "sr-software-engineer-distributed-systems-platform-apps-technologies",
+     "jobSummary": "Our team is on a mission to build innovative infrastructure and tools to help other engineers be more productive and make software easier to create, build, and distribute. We believe that streamlining",
+     "postDateInGMT": "2026-11-13T23:53:50.816Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694682-3715",
+     "positionId": "200694682",
+     "postingTitle": "Software Engineer Manager, IS&T Ai & Data Platforms",
+     "transformedPostingTitle": "software-engineer-manager-is-t-ai-data-platforms",
+     "jobSummary": "AI & Data Platforms (AiDP) is IS&T's engine for AI-powered innovation. The team brings together data, application development, and machine learning — including generative AI — along with data services",
+     "postDateInGMT": "2026-11-13T23:39:37.663Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Shanghai"
+      }
+     ]
+    },
+    {
+     "id": "200694233-3956",
+     "positionId": "200694233",
+     "postingTitle": "Sr. Software Engineer, AI & Data Platforms (AiDP)",
+     "transformedPostingTitle": "sr-software-engineer-ai-data-platforms-aidp",
+     "jobSummary": "AI & Data Platforms (AiDP) is IS&T's engine for AI-powered innovation. The team brings together data, application development, and machine learning — including generative AI — along with data services",
+     "postDateInGMT": "2026-11-13T23:38:53.941Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Sunnyvale"
+      }
+     ]
+    },
+    {
+     "id": "200692913-3956",
+     "positionId": "200692913",
+     "postingTitle": "Sr. Platform Software Engineer, AI & Data Platforms (AiDP)",
+     "transformedPostingTitle": "sr-platform-software-engineer-ai-data-platforms-aidp",
+     "jobSummary": "People at Apple don’t just build products — they craft the kind of experience that have revolutionized entire industries. The diverse collection of our people and their ideas inspire innovation in eve",
+     "postDateInGMT": "2026-11-13T23:38:22.087Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Sunnyvale"
+      }
+     ]
+    },
+    {
+     "id": "200694101-0836",
+     "positionId": "200694101",
+     "postingTitle": " UI Frameworks Engineer, Swift Platform Experience",
+     "transformedPostingTitle": "ui-frameworks-engineer-swift-platform-experience",
+     "jobSummary": "Do you want to help define the future of app development? Join the UI Frameworks team and empower developers to build better apps with less code. You’ll collaborate with passionate and creative collea",
+     "postDateInGMT": "2026-11-13T23:30:58.733Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694125-0836",
+     "positionId": "200694125",
+     "postingTitle": "Core Audio Software Engineer",
+     "transformedPostingTitle": "core-audio-software-engineer",
+     "jobSummary": "Imagine what you could do at Apple! Everyday, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Do you bring passion and dedication to your job?",
+     "postDateInGMT": "2026-11-13T23:11:34.251Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694753-3543",
+     "positionId": "200694753",
+     "postingTitle": "Software Engineer - Distributed Data Systems",
+     "transformedPostingTitle": "software-engineer-distributed-data-systems",
+     "jobSummary": "Every day, many Apple devices send diagnostics about battery life and performance: what drains power, what makes an app hang, what slows a launch. Our team builds the systems that bring that data in a",
+     "postDateInGMT": "2026-11-13T23:10:41.635Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "San Diego"
+      }
+     ]
+    }
+   ],
+   "totalRecords": 6459
+  }
+ },
+ "mixed_page": {
+  "res": {
+   "searchResults": [
+    {
+     "id": "200694335-0836",
+     "positionId": "200694335",
+     "postingTitle": "Sr iOS Software Engineer, Creativity Apps",
+     "transformedPostingTitle": "sr-ios-software-engineer-creativity-apps",
+     "jobSummary": "At Apple, new ideas have a way of becoming phenomenal products, services, and customer experiences very quickly. You bring passion, and dedication to your job and there is no telling what you could ac",
+     "postDateInGMT": "2026-11-11T01:22:31.896Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694335-3337",
+     "positionId": "200694335",
+     "postingTitle": "Sr iOS Software Engineer, Creativity Apps",
+     "transformedPostingTitle": "sr-ios-software-engineer-creativity-apps",
+     "jobSummary": "At Apple, new ideas have a way of becoming phenomenal products, services, and customer experiences very quickly. You bring passion, and dedication to your job and there is no telling what you could ac",
+     "postDateInGMT": "2026-11-11T01:22:31.896Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Seattle"
+      }
+     ]
+    },
+    {
+     "id": "200694335-1435",
+     "positionId": "200694335",
+     "postingTitle": "Sr iOS Software Engineer, Creativity Apps",
+     "transformedPostingTitle": "sr-ios-software-engineer-creativity-apps",
+     "jobSummary": "At Apple, new ideas have a way of becoming phenomenal products, services, and customer experiences very quickly. You bring passion, and dedication to your job and there is no telling what you could ac",
+     "postDateInGMT": "2026-11-11T01:22:31.896Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Cary"
+      }
+     ]
+    },
+    {
+     "id": "200694335-3673",
+     "positionId": "200694335",
+     "postingTitle": "Sr iOS Software Engineer, Creativity Apps",
+     "transformedPostingTitle": "sr-ios-software-engineer-creativity-apps",
+     "jobSummary": "At Apple, new ideas have a way of becoming phenomenal products, services, and customer experiences very quickly. You bring passion, and dedication to your job and there is no telling what you could ac",
+     "postDateInGMT": "2026-11-11T01:22:31.896Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "Vancouver"
+      }
+     ]
+    },
+    {
+     "id": "200694335-3543",
+     "positionId": "200694335",
+     "postingTitle": "Sr iOS Software Engineer, Creativity Apps",
+     "transformedPostingTitle": "sr-ios-software-engineer-creativity-apps",
+     "jobSummary": "At Apple, new ideas have a way of becoming phenomenal products, services, and customer experiences very quickly. You bring passion, and dedication to your job and there is no telling what you could ac",
+     "postDateInGMT": "2026-11-11T01:22:31.896Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Software and Services",
+      "teamCode": "SFTWR"
+     },
+     "locations": [
+      {
+       "name": "San Diego"
+      }
+     ]
+    },
+    {
+     "id": "200694333-3760",
+     "positionId": "200694333",
+     "postingTitle": "Advanced Packaging Development Engineer",
+     "transformedPostingTitle": "advanced-packaging-development-engineer",
+     "jobSummary": "Apple’s Advanced Packaging team is seeking an experienced Packaging Development Engineer to drive next-generation packaging integration and technology development for future products. In this role, yo",
+     "postDateInGMT": "2026-11-11T01:16:35.487Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Santa Clara"
+      }
+     ]
+    },
+    {
+     "id": "200694385-2459",
+     "positionId": "200694385",
+     "postingTitle": "Strategic Media Planning Lead, Apple Services",
+     "transformedPostingTitle": "strategic-media-planning-lead-apple-services",
+     "jobSummary": "At Apple, new ideas have a way of becoming great products, services, and customer experiences very quickly. The Services Central Marketing team at Apple is responsible for cultivating awareness and ed",
+     "postDateInGMT": "2026-11-11T00:47:07.039Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Marketing",
+      "teamCode": "MKTG"
+     },
+     "locations": [
+      {
+       "name": "New York City"
+      }
+     ]
+    },
+    {
+     "id": "200694385-0670",
+     "positionId": "200694385",
+     "postingTitle": "Strategic Media Planning Lead, Apple Services",
+     "transformedPostingTitle": "strategic-media-planning-lead-apple-services",
+     "jobSummary": "At Apple, new ideas have a way of becoming great products, services, and customer experiences very quickly. The Services Central Marketing team at Apple is responsible for cultivating awareness and ed",
+     "postDateInGMT": "2026-11-11T00:47:07.039Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Marketing",
+      "teamCode": "MKTG"
+     },
+     "locations": [
+      {
+       "name": "Culver City"
+      }
+     ]
+    },
+    {
+     "id": "200694386-0836",
+     "positionId": "200694386",
+     "postingTitle": "Camera Optical Illumination Engineer",
+     "transformedPostingTitle": "camera-optical-illumination-engineer",
+     "jobSummary": "Apple is where individual imaginations gather together, committing to the values that lead to great work. Every new product we build, service we create, or Apple Store experience we deliver is the res",
+     "postDateInGMT": "2026-11-11T00:42:09.821Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200693517-0836",
+     "positionId": "200693517",
+     "postingTitle": "Battery Modeling and Algorithm Engineer",
+     "transformedPostingTitle": "battery-modeling-and-algorithm-engineer",
+     "jobSummary": "Do you have a passion for invention and self-challenge? Do you thrive on pushing the limits of what’s considered feasible? As part of our Battery Engineering group, you’ll help craft creative battery ",
+     "postDateInGMT": "2026-11-11T00:38:06.533Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694405-4099",
+     "positionId": "200694405",
+     "postingTitle": "ML Data Operations Engineer",
+     "transformedPostingTitle": "ml-data-operations-engineer",
+     "jobSummary": "Imagine what you could do here. At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-11T00:37:44.045Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Washington DC"
+      }
+     ]
+    },
+    {
+     "id": "200692936-0836",
+     "positionId": "200692936",
+     "postingTitle": "Product Design Engineer - Battery Cell",
+     "transformedPostingTitle": "product-design-engineer-battery-cell",
+     "jobSummary": "Do you have a passion for invention and self-challenge? Do you thrive on pushing the limits of what’s considered feasible? As part of our Battery Engineering group, you’ll help craft creative battery ",
+     "postDateInGMT": "2026-11-11T00:37:25.133Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200693280-2770",
+     "positionId": "200693280",
+     "postingTitle": "ML Data Operations Engineer",
+     "transformedPostingTitle": "ml-data-operations-engineer",
+     "jobSummary": "Imagine what you could do here. At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-11T00:37:02.371Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Philadelphia"
+      }
+     ]
+    },
+    {
+     "id": "200694428-2883",
+     "positionId": "200694428",
+     "postingTitle": "US-Manager",
+     "transformedPostingTitle": "us-manager",
+     "jobSummary": "Apple Retail is where the best of Apple comes together. We bring our expertise to help people do what they love, delivering an only-at-Apple experience. We believe inclusion is a shared responsibility",
+     "postDateInGMT": "2026-11-11T00:32:40.663Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Apple Retail",
+      "teamCode": "APPST"
+     },
+     "locations": [
+      {
+       "name": "Park Meadows"
+      }
+     ]
+    },
+    {
+     "id": "200693613-3956",
+     "positionId": "200693613",
+     "postingTitle": "Machine Learning Engineer, (Applied Machine Learning), AI & Data Platforms (AiDP)",
+     "transformedPostingTitle": "machine-learning-engineer-applied-machine-learning-ai-data-platforms-aidp",
+     "jobSummary": "Imagine what you could do here. At Apple, revolutionary ideas have a way of becoming extraordinary products, services, and customer experiences. Join the Ai Data Platform Applied Machine Learning team",
+     "postDateInGMT": "2026-11-11T00:17:37.156Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Corporate Functions",
+      "teamCode": "CORSV"
+     },
+     "locations": [
+      {
+       "name": "Sunnyvale"
+      }
+     ]
+    },
+    {
+     "id": "200611467-2114",
+     "positionId": "200611467",
+     "postingTitle": "Graphics Architect",
+     "transformedPostingTitle": "graphics-architect",
+     "jobSummary": "Imagine what you could do here! At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion, and dedication to your job and there ",
+     "postDateInGMT": "2026-11-11T00:15:31.592Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "London"
+      }
+     ]
+    },
+    {
+     "id": "200618437-0836",
+     "positionId": "200618437",
+     "postingTitle": "Product Manager, Siri AI ",
+     "transformedPostingTitle": "product-manager-siri-ai",
+     "jobSummary": "Imagine what you could do here. At Apple, great ideas have a way of becoming outstanding products, services and customer experiences very quickly. We believe that if you bring passion and dedication t",
+     "postDateInGMT": "2026-11-11T00:03:16.257Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Marketing",
+      "teamCode": "MKTG"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694106-0836",
+     "positionId": "200694106",
+     "postingTitle": "PR Specialist, AI",
+     "transformedPostingTitle": "pr-specialist-ai",
+     "jobSummary": "Apple's worldwide communications team informs the world about the company, our innovative products and services, and the values that drive our company. The team includes professionals with backgrounds",
+     "postDateInGMT": "2026-11-10T23:43:45.456Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Marketing",
+      "teamCode": "MKTG"
+     },
+     "locations": [
+      {
+       "name": "Cupertino"
+      }
+     ]
+    },
+    {
+     "id": "200694408-4099",
+     "positionId": "200694408",
+     "postingTitle": "ML Data Operations Engineer",
+     "transformedPostingTitle": "ml-data-operations-engineer",
+     "jobSummary": "Imagine what you could do here. At Apple, new ideas have a way of becoming extraordinary products, services, and customer experiences very quickly. Bring passion and dedication to your job and there's",
+     "postDateInGMT": "2026-11-10T23:41:48.315Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "Washington DC"
+      }
+     ]
+    },
+    {
+     "id": "200694416-3401",
+     "positionId": "200694416",
+     "postingTitle": "IC Packaging Integration Engineer",
+     "transformedPostingTitle": "ic-packaging-integration-engineer",
+     "jobSummary": "Do you like to work on groundbreaking technologies that enable amazing new products? Do you have the attention for details and love for excellence to work towards an extraordinary result? Envision wha",
+     "postDateInGMT": "2026-11-10T23:30:09.517Z",
+     "managedPipelineRole": false,
+     "team": {
+      "teamName": "Hardware",
+      "teamCode": "HRDWR"
+     },
+     "locations": [
+      {
+       "name": "San Francisco Bay Area"
+      }
+     ]
+    }
+   ],
+   "totalRecords": 6459
+  }
+ }
+}

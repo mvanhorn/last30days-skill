@@ -329,7 +329,7 @@ def test_amazon_pages_parse_to_rows_with_their_full_text():
 def test_amazon_reads_past_a_mixed_page_and_stops_after_one_with_no_new_role():
     items, artifact, asked, other = _amazon_search(AMAZON["pages"])
     assert len(items) == 9
-    assert [offset for _url, offset in asked][:3] == [0, 100, 200]
+    assert {0, 100, 200} <= {offset for _url, offset in asked}
     assert artifact["tier"] == "ats" and artifact["provider"] == "amazon"
     # Three new on the first page and two on the mixed second page.
     assert artifact["new_in_window"] == 5
@@ -362,3 +362,128 @@ def test_amazon_page_that_fails_midway_keeps_the_rows_read():
     assert artifact["board_cut_short"] is True
     assert artifact["new_in_window"] is None
     assert artifact["open_roles"] == 10000
+
+
+# --- Apple --------------------------------------------------------------------
+
+APPLE = json.loads((FIXTURES / "jobs_apple_search.json").read_text(encoding="utf-8"))
+APPLE_DETAIL = (FIXTURES / "jobs_apple_detail.html").read_text(encoding="utf-8")
+
+
+def _apple_search(pages, *, detail=lambda url: APPLE_DETAIL, window=("2026-10-15", "2026-11-14")):
+    posts, details = [], []
+
+    def post(url, body, **_kwargs):
+        posts.append(body["page"])
+        assert url == "https://jobs.apple.com/api/v1/search" and "format" in body
+        answer = pages.get(body["page"])
+        if isinstance(answer, Exception):
+            raise answer
+        if answer is None:
+            raise http.HTTPError("HTTP 404: Not Found", status_code=404)
+        return copy.deepcopy(answer)
+
+    def get_text(url, **_kwargs):
+        details.append(url)
+        return detail(url) if url.startswith("https://jobs.apple.com/en-us/details/") else None
+
+    others = _NoRequests()
+    with patch.object(jobs.http, "post", side_effect=post), \
+            patch.object(jobs.http, "get_text", side_effect=get_text), \
+            patch.object(jobs.http, "get", side_effect=others):
+        items, artifact = jobs.search_jobs(
+            "Apple", window, {}, web_backend="none", site="https://www.apple.com/",
+        )
+    return items, artifact, posts, details, others.urls
+
+
+def test_an_apple_page_parses_to_twenty_rows():
+    items, total = jobs.parse_apple_response(APPLE["corporate_page"])
+    assert total == 6459 and len(items) == 20
+    first = items[0]
+    assert first["title"].startswith("Senior Legal Counsel")
+    assert first["title"].endswith("Home and Wearables Product Counsel")
+    assert first["department"] == "Corporate Functions"
+    assert first["location"] == "Cupertino"
+    assert (first["date"], first["posted_date_true"]) == ("2026-11-14", True)
+    assert first["url"] == (
+        "https://jobs.apple.com/en-us/details/200689996/senior-legal-counsel-home-and-wearables-product-counsel"
+    )
+    assert not first["digest_excluded"]
+
+
+def test_apple_retail_pipeline_roles_are_counted_but_never_chosen():
+    items, total = jobs.parse_apple_response(APPLE["retail_page"])
+    assert len(items) == 20 and total == 6459
+    assert all(item["digest_excluded"] for item in items)
+    # A standing pipeline role carries the request's day, which is not when it was posted.
+    assert not any(item["posted_date_true"] for item in items)
+    _items, artifact, _posts, details, _others = _apple_search({1: APPLE["retail_page"]})
+    assert artifact["open_roles"] == 6459
+    assert artifact["digest"]["roles"] == [] and details == []
+
+
+def test_apple_digest_holds_only_corporate_roles_with_their_full_text():
+    pages = {1: APPLE["retail_page"], 2: APPLE["corporate_page"], 3: APPLE["mixed_page"]}
+
+    def detail(url):
+        # Each page gets a sentence of its own, so it survives boilerplate removal.
+        position = url.split("/details/", 1)[1].split("/", 1)[0]
+        return APPLE_DETAIL.replace("Develop knowledge", f"Own the work of position {position}. Develop knowledge")
+
+    items, artifact, posts, details, others = _apple_search(pages, detail=detail)
+    assert {1, 2, 3} <= set(posts)
+    assert len(items) == 60
+    roles = artifact["digest"]["roles"]
+    by_url = {item["url"]: item for item in items}
+    assert roles and not any(by_url[role["url"]]["digest_excluded"] for role in roles)
+    assert set(details) == {role["url"] for role in roles}
+    assert all("Own the work of position" in role["text"] for role in roles)
+    assert "role text fetched" not in (artifact["digest"].get("note") or "")
+    assert artifact["open_roles"] == 6459 and artifact["new_in_window"] is None
+    rendered = render.render_compact(_report(jobs=artifact))
+    assert "\n## Jobs Digest\n" in rendered
+    assert "💼 Jobs: 6,459 open roles" in rendered
+    assert others == []
+
+
+def test_the_apple_detail_parser_keeps_description_and_qualifications_apart():
+    detail = jobs.parse_apple_detail(APPLE_DETAIL)
+    assert detail["description"].startswith("Develop knowledge and stay up to date on Apple products")
+    assert detail["minimumQualifications"].startswith("You should have availability")
+    assert detail["preferredQualifications"].startswith("You can:")
+    assert jobs.parse_apple_detail("<html>no data</html>") is None
+
+
+def test_apple_answering_no_rows_against_a_total_is_the_cant_be_read_outcome():
+    empty = {"res": {"searchResults": [], "totalRecords": 6459}}
+    items, artifact, posts, _details, others = _apple_search({1: empty})
+    assert items == [] and posts == [1]
+    assert artifact["job_site_unreadable"] == "Apple"
+    assert others == []
+
+
+def test_an_apple_detail_that_fails_keeps_its_summary_and_is_counted():
+    first_failed = []
+
+    def detail(url):
+        if not first_failed:
+            first_failed.append(url)
+            return None
+        return APPLE_DETAIL
+
+    _items, artifact, _posts, _details, _others = _apple_search(
+        {1: APPLE["corporate_page"]}, detail=detail,
+    )
+    selected = len(artifact["digest"]["roles"])
+    assert f"role text fetched for {selected - 1} of {selected} selected roles" in artifact["digest"]["note"]
+
+
+def test_a_slow_apple_page_ends_that_call_and_keeps_the_rows_read():
+    timeout = http.HTTPError("timed out", outcome_state=http.health.TIMEOUT)
+    items, artifact, _posts, _details, _others = _apple_search(
+        {1: APPLE["corporate_page"], 2: timeout},
+    )
+    assert len(items) == 20
+    assert artifact["board_cut_short"] is True
+    assert artifact["open_roles"] == 6459

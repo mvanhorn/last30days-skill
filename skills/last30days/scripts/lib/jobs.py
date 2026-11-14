@@ -116,6 +116,10 @@ COMPANY_BOARD_ROW_CEILING = 2000
 AMAZON_PAGE_SIZE = 100
 # Amazon's search reports at most this many hits and pages no further.
 AMAZON_HITS_CAP = 10_000
+APPLE_PAGE_SIZE = 20
+# Apple's retail store team. Its roles are counted on the board and never
+# chosen for the digest: the newest pages are almost all retail.
+APPLE_RETAIL_TEAM = "APPST"
 
 # Detection patterns: map an ATS embed/link found on a careers page to
 # (provider, slug). The published slug is authoritative - this is why discovery
@@ -2439,6 +2443,147 @@ def read_amazon_board(
     return items, info
 
 
+# Apple: a JSON search API, 20 roles per call with a short summary, and a
+# details page per role whose embedded data holds the full text.
+
+_APPLE_SEARCH_URL = "https://jobs.apple.com/api/v1/search"
+_APPLE_HYDRATION = re.compile(
+    r"__staticRouterHydrationData\s*=\s*JSON\.parse\((\"(?:[^\"\\]|\\.)*\")\)", re.S,
+)
+
+
+def _apple_search_body(page: int) -> dict[str, Any]:
+    # Without the ``format`` key the API answers 200 with no results.
+    return {
+        "query": "",
+        "filters": {"range": {"standardWeeklyHours": {"start": None, "end": None}}},
+        "page": page,
+        "locale": "en-us",
+        "sort": "newest",
+        "format": {"longDate": "MMMM D, YYYY", "mediumDate": "MMM D, YYYY"},
+    }
+
+
+def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
+    """Rows and the reported total from one Apple search page.
+
+    A managed pipeline role (a standing retail requisition) carries the day of
+    the request as its posting date, so its date is not a true posted date.
+    Retail store roles are marked ``digest_excluded``.
+    """
+    res = payload.get("res") if isinstance(payload, dict) else None
+    results = res.get("searchResults") if isinstance(res, dict) else None
+    if not isinstance(results, list) or "totalRecords" not in res:
+        raise BoardShapeError("no searchResults or totalRecords")
+    items: list[dict[str, Any]] = []
+    for job in results:
+        if not isinstance(job, dict) or not job.get("postingTitle") or not job.get("positionId"):
+            continue
+        team = job.get("team") if isinstance(job.get("team"), dict) else {}
+        locations = [loc for loc in job.get("locations") or [] if isinstance(loc, dict)]
+        slug = str(job.get("transformedPostingTitle") or "role").strip()
+        pipeline = bool(job.get("managedPipelineRole"))
+        summary = str(job.get("jobSummary") or "").strip()
+        item = _ats_item(
+            provider=COMPANY_PROVIDER_APPLE,
+            slug="jobs.apple.com",
+            ident=str(job.get("id") or job["positionId"]),
+            title=str(job["postingTitle"]).strip(),
+            url=f"https://jobs.apple.com/en-us/details/{job['positionId']}/{slug}",
+            description=summary,
+            description_blocks=summary,
+            date=_date_part(job.get("postDateInGMT")),
+            posted_date_true=not pipeline and bool(_date_part(job.get("postDateInGMT"))),
+            department=str(team.get("teamName") or "").strip(),
+            location=str(locations[0].get("name") or "").strip() if locations else "",
+            company_name="Apple",
+            whole_posting=True,
+        )
+        item["digest_excluded"] = pipeline or team.get("teamCode") == APPLE_RETAIL_TEAM
+        items.append(item)
+    return items, _reported_total(res, "totalRecords")
+
+
+def read_apple_board(
+    entry: dict[str, str], *, deadline: float, date_range: tuple[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apple's roles, newest first, with the board's reported total."""
+
+    def page(offset: int) -> Callable[[float], Any]:
+        body = _apple_search_body(offset // APPLE_PAGE_SIZE + 1)
+        return lambda http_deadline: http.post(
+            _APPLE_SEARCH_URL, body, headers={"Accept": "application/json"},
+            timeout=API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+        )
+
+    return _read_newest_first(
+        page, parse_apple_response, page_size=APPLE_PAGE_SIZE,
+        row_ceiling=COMPANY_BOARD_ROW_CEILING, window_start=date_range[0], deadline=deadline,
+    )
+
+
+def parse_apple_detail(html: str) -> dict[str, str] | None:
+    """The description and the minimum and preferred qualifications from an
+    Apple details page, or None when the page holds no role data.
+
+    The data is a JSON string inside a JavaScript string, so it is decoded twice.
+    """
+    match = _APPLE_HYDRATION.search(html or "")
+    if not match:
+        return None
+    try:
+        data = json.loads(json.loads(match.group(1)))
+        role = data["loaderData"]["jobDetails"]["jobsData"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(role, dict):
+        return None
+    found = {
+        key: str(role.get(key) or "").strip()
+        for key in ("description", "minimumQualifications", "preferredQualifications")
+    }
+    return found if any(found.values()) else None
+
+
+def fetch_apple_details(
+    items: list[dict[str, Any]], *, deadline: float,
+) -> tuple[int, int]:
+    """Fill the full text of the given Apple roles from their details pages.
+
+    Returns the counts left unfetched: those the deadline stopped before their
+    call started, and those whose page failed or held no role data. A role
+    left unfetched keeps its search summary.
+    """
+    clock = _clock()
+
+    def page(item: dict[str, Any]) -> Callable[[float], Any]:
+        return lambda http_deadline: http.get_text(
+            str(item["url"]), accept="text/html", timeout=API_TIMEOUT_SECONDS, retries=1,
+            deadline_monotonic=http_deadline,
+        )
+
+    late = failed = 0
+    for item, html in zip(items, _workday_run([page(item) for item in items], deadline, clock)):
+        if html is _OUT_OF_TIME:
+            late += 1
+            continue
+        detail = parse_apple_detail(html) if isinstance(html, str) else None
+        if detail is None:
+            failed += 1
+            continue
+        blocks = [detail["description"]]
+        for label, key in (
+            ("Minimum Qualifications", "minimumQualifications"),
+            ("Preferred Qualifications", "preferredQualifications"),
+        ):
+            if detail[key]:
+                blocks.append(f"{label}\n{detail[key]}")
+        text = "\n".join(block for block in blocks if block)
+        item["description_blocks"] = text
+        item["description"] = " ".join(text.split())
+    return late, failed
+
+
 # Readers of company-run boards, by provider: given the registry entry and the
 # listing's deadline, each returns ``(items, board_info)`` like the hosted
 # readers. Detail fetchers fill role text for the roles the digest selected
@@ -2446,9 +2591,11 @@ def read_amazon_board(
 # looked up when called, so a test may stand in for one.
 _COMPANY_READERS: dict[str, str] = {
     COMPANY_PROVIDER_AMAZON: "read_amazon_board",
+    COMPANY_PROVIDER_APPLE: "read_apple_board",
 }
 _DETAIL_FETCHERS: dict[str, str] = {
     ATS_PROVIDER_WORKDAY: "fetch_workday_details",
+    COMPANY_PROVIDER_APPLE: "fetch_apple_details",
 }
 
 
