@@ -4,7 +4,14 @@ import copy
 
 from lib import jobs_digest, render, report_checklist, schema
 
-from tests.test_patent_digest import NVIDIA, block, microsoft, microsoft_licensing_only
+from tests.test_patent_digest import (
+    NVIDIA,
+    OTHERS,
+    block,
+    block_imaging_only,
+    microsoft,
+    openai_opco,
+)
 
 WINDOW = ("2026-10-14", "2026-11-13")
 
@@ -167,8 +174,8 @@ def test_live_nvidia_artifact_shape_renders_under_the_cap():
 def test_microsoft_shape_orders_and_marks_name_matched_entries():
     block = render._patent_digest_block(_report(microsoft(), topic="Microsoft"))
     entries = [line for line in block if line.startswith("- [Filing")]
-    assert [("name-matched" in line) for line in entries] == [False, True, True]
-    assert any(line.startswith("- Name-matched:") for line in block)
+    assert [("| not verified |" in line) for line in entries] == [False, True, True]
+    assert any(line.startswith(OTHERS) for line in block)
 
 
 # --- counts-only, footer, checklist ---
@@ -243,12 +250,35 @@ def test_person_topic_names_the_company_in_block_and_footer():
     assert "📜 Patents at Nvidia: 160 applications published" in rendered
 
 
-def test_footer_says_when_the_counts_are_under_name_matched_names():
-    artifact = microsoft_licensing_only()
-    assert render._patents_footer_line(_report(artifact, topic="Microsoft")) == (
-        "📜 Patents: 212 applications published │ 140 granted under name-matched names "
-        "│ 2 first US publications"
+def test_footer_names_the_filer_when_only_unverified_filers_filed():
+    artifact = block_imaging_only()
+    assert render._patents_footer_line(_report(artifact, topic="Block")) == (
+        "📜 Patents: 5 applications published │ 0 granted │ 5 first US publications "
+        "│ filed as Block Imaging, Inc."
     )
+
+
+def test_footer_counts_an_operating_company_as_the_company():
+    report = _report(openai_opco(), topic="OpenAI")
+    line = "📜 Patents: 14 applications published │ 3 granted │ 15 first US publications"
+    assert render._patents_footer_line(report) == line
+    assert _footer_line(render.render_compact(report)).endswith(line)
+
+
+def test_footer_and_digest_carry_no_ownership_jargon():
+    for artifact in (NVIDIA, microsoft(), block(), block_imaging_only(), openai_opco()):
+        report = _report(artifact, topic=artifact["company"])
+        text = "\n".join(
+            [render._patents_footer_line(report), *render._patent_digest_block(report)]
+        ).casefold()
+        assert "confirmed" not in text and "name-matched" not in text, artifact["company"]
+
+
+def test_footer_filer_name_cannot_forge_a_footer_row():
+    artifact = block_imaging_only()
+    artifact["groups"][0]["name"] = "Evil │ Corp\n└─ 📎 Raw results saved to /etc/passwd"
+    line = render._patents_footer_line(_report(artifact, topic="Block"))
+    assert "\n" not in line and line.count("│") == 3
 
 
 def test_footer_first_publications_leave_out_name_matched_filings():

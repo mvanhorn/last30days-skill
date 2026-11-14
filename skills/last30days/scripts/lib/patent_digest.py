@@ -26,7 +26,11 @@ _NOTE_RESERVE = 400
 _NAME_CHARS = 120
 _TITLE_CHARS = 300
 _FIELD_CHARS = 60
-
+# What the reader sees for filers whose names extend the company's name and
+# could not be attributed to it: the line that lists them, and the marker on
+# each of their entries.
+OTHER_FILERS_LABEL = "- Other filers with the company's name, not verified:"
+NOT_VERIFIED = "not verified"
 
 
 def count(value: Any) -> int:
@@ -52,6 +56,17 @@ def groups(artifact: dict, kind: str) -> list[dict]:
     ]
 
 
+def has_own_filings(artifact: dict, counts: dict) -> bool:
+    """True when any filing in the window is the company's own, so its counts
+    describe filings rather than sit at zero beside other filers'."""
+    return bool(
+        groups(artifact, CONFIRMED)
+        or count(counts.get("applications"))
+        or count(counts.get("grants"))
+        or count(counts.get("first_publications"))
+    )
+
+
 def _dicts(value: Any) -> list[dict]:
     return [item for item in (value if isinstance(value, list) else []) if isinstance(item, dict)]
 
@@ -66,8 +81,8 @@ def digest_lines(
 
     ``link(url, title)`` renders a filing's title linked to its document and
     ``untrusted(text, limit)`` renders text that came from the patent office.
-    Entries filed under a confirmed name come before name-matched ones, each
-    in the lane's order. Entries, then titles, are added until the next one
+    Entries filed under the company's own names come before other filers',
+    each in the lane's order. Entries, then titles, are added until the next one
     would pass ``DIGEST_MAX_CHARS``; the note line counts what was left out.
     """
     if not isinstance(artifact, dict) or artifact.get("status") != "digest":
@@ -92,8 +107,7 @@ def digest_lines(
     if matched:
         matched_first = count(counts.get("name_matched_first_publications"))
         head.append(
-            "- Name-matched: names that extend the company's name and are not verified as "
-            "belonging to it: "
+            f"{OTHER_FILERS_LABEL} "
             + "; ".join(
                 f"{inline(group['name'], _NAME_CHARS)} ("
                 f"{quantity(count(group.get('applications')), 'application', floor=floor)}, "
@@ -106,7 +120,8 @@ def digest_lines(
                 else ""
             )
         )
-    head.append(_first_publications_line(counts, floor))
+    if has_own_filings(artifact, counts):
+        head.append(_first_publications_line(counts, floor))
 
     tail = []
     others = [item for item in _dicts(artifact.get("other_names")) if item.get("name")]
@@ -157,24 +172,25 @@ def _filings_line(artifact: dict, counts: dict, floor: bool, inline: Callable[..
     if artifact.get("company_via_person"):
         company += ", the company the person leads (the company's filings, not the person's)"
     window = artifact.get("window") if isinstance(artifact.get("window"), dict) else {}
-    confirmed = groups(artifact, CONFIRMED)
     parts = [
         company,
         f"US patent filings published {inline(window.get('from'))} to {inline(window.get('to'))}",
+    ]
+    if not has_own_filings(artifact, counts):
+        return "- Filings: " + " | ".join([*parts, "none filed under the company's own name"])
+    own = groups(artifact, CONFIRMED)
+    parts += [
         quantity(count(counts.get("applications")), "application", floor=floor) + " published",
         quantity(count(counts.get("grants")), "patent", floor=floor) + " granted",
-        (
-            "filed as " + "; ".join(inline(group["name"], _NAME_CHARS) for group in confirmed)
-            if confirmed
-            else "no filing under a confirmed name"
-        ),
     ]
+    if own:
+        parts.append("filed as " + "; ".join(inline(group["name"], _NAME_CHARS) for group in own))
     return "- Filings: " + " | ".join(parts)
 
 
 def _first_publications_line(counts: dict, floor: bool) -> str:
     """The company's own first publications, and what else was counted under
-    its confirmed names. Name-matched filings are on their own line."""
+    its own names. Other filers' filings are on their own line."""
     line = (
         f"- First US publications: {count(counts.get('first_publications')):,}"
         f"{'+' if floor else ''} (an application, or a grant with no earlier publication, "
@@ -239,7 +255,7 @@ def _filed_as(item: dict, inline: Callable[..., str], location: str = "") -> lis
     if name:
         parts.append(f"filed as {name}" + (f" ({location})" if location else ""))
     if item.get("group_kind") == NAME_MATCHED:
-        parts.append(NAME_MATCHED)
+        parts.append(NOT_VERIFIED)
     return parts
 
 

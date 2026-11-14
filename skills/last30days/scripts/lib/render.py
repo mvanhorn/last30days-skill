@@ -2586,11 +2586,12 @@ def _patents_footer_line(report: schema.Report) -> str | None:
     artifact, whether or not the run read any filing's text.
 
     Applications published, patents granted and first US publications, all
-    under the company's confirmed names; a ``+`` on each when the search
-    stopped short of its full count. When nothing sits under a confirmed name
-    all three are those of the name-matched names, and the line says so. Filings
-    of the company a person leads name it: ``📜 Patents at Tesla: ...``. None
-    when the run has no artifact.
+    under the company's own names; a ``+`` on each when the search stopped
+    short of its full count. When none is the company's own, all three are
+    those of the other filers with the company's name, and the line ends
+    ``filed as {name}`` so the reader can judge whose they are. Filings of the
+    company a person leads name it: ``📜 Patents at Tesla: ...``. None when
+    the run has no artifact.
     """
     artifact = (report.artifacts or {}).get("patents")
     if not isinstance(artifact, dict) or artifact.get("status") not in {"digest", "counts-only"}:
@@ -2602,18 +2603,20 @@ def _patents_footer_line(report: schema.Report) -> str | None:
     floor = bool(counts.get("floor"))
     applications, grants = count(counts.get("applications")), count(counts.get("grants"))
     first = count(counts.get("first_publications"))
-    under = ""
-    if not applications and not grants and patent_digest.groups(artifact, patent_digest.NAME_MATCHED):
+    filed_as = []
+    others = patent_digest.groups(artifact, patent_digest.NAME_MATCHED)
+    if others and not patent_digest.has_own_filings(artifact, counts):
         applications = count(counts.get("name_matched_applications"))
         grants = count(counts.get("name_matched_grants"))
         first = count(counts.get("name_matched_first_publications"))
-        under = " under name-matched names"
+        filed_as = ["filed as " + "; ".join(_footer_safe(group["name"], 60) for group in others)]
     company = _footer_safe(artifact.get("company") or "", 60)
     label = f"Patents at {company}" if artifact.get("company_via_person") and company else "Patents"
     return " │ ".join([
         f"📜 {label}: {quantity(applications, 'application', floor=floor)} published",
-        f"{grants:,}{'+' if floor else ''} granted{under}",
+        f"{grants:,}{'+' if floor else ''} granted",
         quantity(first, "first US publication", floor=floor),
+        *filed_as,
     ])
 
 
