@@ -308,7 +308,7 @@ def test_search_digg_unknown_flag_names_an_outdated_helper_and_its_upgrade(monke
     out = digg.search_digg("openclaw", "2026-04-09", "2026-05-09")
     assert out["results"] == []
     assert out["error"] == (
-        f"digg-pp-cli is outdated and rejected the search; upgrade: {health.pp_install_cmd('digg')}"
+        f"digg-pp-cli is outdated and rejected the search; upgrade: {health.helper_upgrade_cmd('digg')}"
     )
     assert len(out["error"]) <= 140
     outcome = pipeline._result_outcome_artifact("digg", out)

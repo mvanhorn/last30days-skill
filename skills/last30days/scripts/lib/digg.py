@@ -460,7 +460,7 @@ def outdated_cli_error(error: Optional[str]) -> Optional[str]:
     """
     if "unknown flag" not in (error or "").lower():
         return None
-    return f"{CLI_BIN} is outdated and rejected the search; upgrade: {health.pp_install_cmd('digg')}"
+    return f"{CLI_BIN} is outdated and rejected the search; upgrade: {health.helper_upgrade_cmd('digg')}"
 
 
 def _invoke_cli(
