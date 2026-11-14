@@ -833,7 +833,12 @@ def _resolve_careers_page(
             url = f"https://{host}{path}"
             if _out_of_time(f"the careers page {url}"):
                 return None, None
-            html, no_answer = _careers_text(url, guessed=guessed)
+            if guessed:
+                html, no_answer = _careers_text(url, guessed=True)
+            else:
+                html, no_answer, url = _known_site_text(url)
+                # The site answered on its other host form: ask that one from now on.
+                host = _host(url)
             if no_answer:
                 # Nothing answers at this host, so its other page is not tried.
                 break
@@ -854,6 +859,23 @@ def _resolve_careers_page(
                 return html, careers_url
 
     return None, None
+
+
+def _known_site_text(url: str) -> tuple[str | None, bool, str]:
+    """A page on the company's known site, retried once on the site's other
+    host form (``www.`` or bare) when the connection was dropped. Returns the
+    page text, whether the host gave no answer (counting both forms dropping
+    the connection), and the URL that was read."""
+    answers: dict[str, tuple[str | None, bool]] = {}
+
+    def fetch(page: str) -> str | None:
+        answers[page] = _careers_text(page, guessed=False)
+        return answers[page][0]
+
+    html, used = http.text_on_either_host_form(fetch, url)
+    # Both forms dropped the connection: nothing answers there, so the site's
+    # other page is not asked either.
+    return html, answers[used][1] or (len(answers) > 1 and html is None), used
 
 
 def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:

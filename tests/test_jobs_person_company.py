@@ -361,3 +361,82 @@ def test_jobs_page_linked_from_the_official_site_that_does_not_resolve_is_record
 
     _result, failures = _search_official(opener)
     assert [f for f in failures if f.no_host]
+
+
+# --- A known site that drops the connection on one host form ---------------------
+
+
+def _dropped(*_args, **_kwargs):
+    from http.client import RemoteDisconnected
+
+    raise RemoteDisconnected("Remote end closed connection without response")
+
+
+def _html(text):
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.__exit__.return_value = False
+    response.read.return_value = text.encode("utf-8")
+    response.status = 200
+    response.headers = {}
+    return response
+
+
+def _by_host(asked, answers):
+    """Answer each request from ``answers`` keyed by host, else 404."""
+    def opener(req, timeout=None, **_kwargs):
+        asked.append(req.full_url)
+        host = req.full_url.split("/")[2]
+        if host in answers:
+            return answers[host](req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+    return opener
+
+
+def _unreachable(failures):
+    return [f for f in failures if f.outcome_state == http.health.UNREACHABLE]
+
+
+def test_known_bare_site_that_drops_the_connection_is_read_on_its_www_form():
+    asked = []
+    landing = "<h2>Join our team</h2>"
+    opener = _by_host(asked, {
+        "acmecorp.com": _dropped,
+        "www.acmecorp.com": lambda url: _html(landing) if url.endswith("/careers") else _dropped(),
+    })
+    with patch.object(http, "_open_request", side_effect=opener), \
+            patch.object(http.time, "sleep"), \
+            http.capture_failures() as failures:
+        jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", site="https://acmecorp.com/")
+    assert asked[:2] == ["https://acmecorp.com/careers", "https://www.acmecorp.com/careers"]
+    assert _unreachable(failures) == []
+
+
+def test_known_site_whose_both_forms_drop_the_connection_is_one_outage():
+    asked = []
+    opener = _by_host(asked, {"acmecorp.com": _dropped, "www.acmecorp.com": _dropped})
+    with patch.object(http, "_open_request", side_effect=opener), \
+            patch.object(http.time, "sleep"), \
+            http.capture_failures() as failures:
+        jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", site="https://acmecorp.com/")
+    assert [url for url in asked if "acmecorp.com/" in url] == [
+        "https://acmecorp.com/careers", "https://www.acmecorp.com/careers",
+    ]
+    assert len(_unreachable(failures)) == 1
+
+
+def test_guessed_domain_that_drops_the_connection_is_not_retried_on_another_form():
+    asked = []
+    opener = _by_host(asked, {"kanyewest.com": _dropped})
+    _search_capturing(opener)
+    assert not [url for url in asked if "www.kanyewest" in url]
+
+
+def test_known_site_that_answers_404_is_not_retried_on_another_form():
+    asked = []
+    opener = _by_host(asked, {})
+    with patch.object(http, "_open_request", side_effect=opener), \
+            patch.object(http.time, "sleep"):
+        jobs.search_jobs("Acme", WINDOW, {}, web_backend="none", site="https://acmecorp.com/")
+    assert "https://acmecorp.com/careers" in asked
+    assert not [url for url in asked if "www.acmecorp.com" in url]
