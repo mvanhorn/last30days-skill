@@ -122,6 +122,64 @@ def test_install_is_idempotent(monkeypatch):
     assert run_calls == []
 
 
+def _version_stub(monkeypatch, line_for):
+    """Stub the helper version exec; ``line_for(argv)`` returns its stdout."""
+    import subprocess
+
+    from lib import health
+
+    execs = []
+
+    def fake_version(cmd, **kwargs):
+        execs.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=line_for(cmd), stderr="")
+
+    monkeypatch.setattr(health.subproc, "run_with_timeout", fake_version)
+    return execs
+
+
+def test_helper_with_no_minimum_is_never_upgraded(monkeypatch):
+    # yahoo-finance-pp-cli numbers its releases 1.0.0, far below Digg's
+    # date-shaped versions; with no table entry it is left alone and its
+    # version is not even read.
+    monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
+    execs = _version_stub(monkeypatch, lambda cmd: "yahoo-finance-pp-cli 1.0.0\n")
+    run_calls = []
+    monkeypatch.setattr(sw.subprocess, "run", lambda *a, **k: run_calls.append(a))
+    installed, action, stderr, off = sw._install_pp_cli("yahoo-finance", YF_BIN)
+    assert (installed, action) == (True, "already_installed")
+    assert run_calls == []
+    assert execs == []
+
+
+def test_pp_helper_below_its_minimum_is_upgraded(monkeypatch):
+    from lib import health
+
+    monkeypatch.setitem(health.MIN_HELPER_VERSIONS, "arxiv-pp-cli", (2, 0, 0))
+    state = {"installed": False}
+    monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
+    _version_stub(
+        monkeypatch,
+        lambda cmd: "arxiv-pp-cli 2.1.0\n" if state["installed"] else "arxiv-pp-cli 1.9.9\n",
+    )
+    runs = []
+
+    def fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        state["installed"] = True
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    out = sw.install_default_pp_sources()
+    assert out["arxiv"] == {"installed": True, "action": "upgraded"}
+    assert runs == [["/usr/bin/npx", "-y", sw.PRINTING_PRESS_NPM, "install", "arxiv", "--cli-only"]]
+
+
+def test_status_text_pp_helper_upgraded():
+    text = sw.get_setup_status_text({"pp_sources": {"arxiv": {"installed": True, "action": "upgraded"}}})
+    assert "Upgraded arXiv CLI" in text
+
+
 # --- Yahoo Finance: source key and catalog slug differ (underscore vs hyphen) ---
 
 YF_BIN = "yahoo-finance-pp-cli"

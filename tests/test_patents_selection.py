@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from datetime import date
 
+from lib import render
 from tests.test_patents_client import (
     DETAILS,
     PDF,
@@ -14,6 +15,7 @@ from tests.test_patents_client import (
     recorded,
     run,
 )
+from tests.test_render_patents import _report
 
 ARTIFACT_KEYS = {
     "company", "company_via_person", "window", "groups", "other_names", "counts",
@@ -347,28 +349,51 @@ def test_refills_stop_after_six_extra_requests(monkeypatch):
 # --- groups -----------------------------------------------------------------
 
 
-def test_microsoft_filings_are_name_matched_and_still_make_a_digest(monkeypatch):
+def test_microsoft_licensing_filings_are_the_company_s_own(monkeypatch):
     FakeUSPTO().install(monkeypatch)
 
     artifact = run({"company": "Microsoft"})["artifact"]
 
     assert artifact["groups"] == [{
-        "name": "Microsoft Technology Licensing, LLC", "kind": "name-matched",
+        "name": "Microsoft Technology Licensing, LLC", "kind": "confirmed",
         "applications": 25, "grants": 25,
     }]
     counts = artifact["counts"]
-    assert (counts["applications"], counts["grants"]) == (0, 0)
-    assert (counts["name_matched_applications"], counts["name_matched_grants"]) == (25, 25)
+    assert (counts["applications"], counts["grants"]) == (25, 25)
+    assert (counts["name_matched_applications"], counts["name_matched_grants"]) == (0, 0)
     # The 25 applications: 18 first publications and 7 continuing. The 25
-    # grants are all B2. None is under a confirmed name, so none is the company's.
-    assert counts["name_matched_first_publications"] == 18
-    assert counts["first_publications"] == 0
-    assert (counts["continuing"], counts["previously_published_grants"]) == (0, 0)
+    # grants are all B2, each the grant of an application published earlier.
+    assert counts["first_publications"] == 18
+    assert counts["name_matched_first_publications"] == 0
+    assert (counts["continuing"], counts["previously_published_grants"]) == (7, 25)
     assert artifact["status"] == "digest"
     assert len(artifact["entries"]) == 12
     for item in artifact["entries"] + artifact["index"]:
-        assert item["group_kind"] == "name-matched"
+        assert item["group_kind"] == "confirmed"
         assert item["filed_as"] == "Microsoft Technology Licensing, LLC"
+
+
+def test_an_operating_company_s_filings_count_as_the_company_s_in_the_footer(monkeypatch):
+    opco = "OpenAI OpCo, LLC"
+    applications = [
+        *[make_row(f"US-2026043000{n}-A1", "2026-11-05", name=opco) for n in range(3)],
+        make_row("US-20260430010-A1", "2026-11-04", name=opco, **CONTINUING),
+    ]
+    grants = [make_row("US-12790041-B1", "2026-11-03", name=opco, kind="B1")]
+    FakeUSPTO(lists={"US-PGPUB": applications, "USPAT": grants}).install(monkeypatch)
+
+    artifact = run({"company": "OpenAI"})["artifact"]
+
+    assert artifact["groups"] == [
+        {"name": opco, "kind": "confirmed", "applications": 4, "grants": 1},
+    ]
+    report = _report(artifact, topic="OpenAI")
+    assert render._patents_footer_line(report) == (
+        "📜 Patents: 4 applications published │ 1 granted │ 4 first US publications"
+    )
+    block = "\n".join(render._patent_digest_block(report))
+    assert "filed as OpenAI OpCo, LLC" in block
+    assert "not verified" not in block and "confirmed" not in block.casefold()
 
 
 BLOCK_IMAGING = "Block Imaging, Inc."
@@ -618,6 +643,22 @@ def test_a_thin_baseline_orders_entries_newest_first(monkeypatch):
 
     assert [entry["guid"] for entry in artifact["entries"]] == [row["guid"] for row in rows[:12]]
     assert numbers(artifact["index"]) == [row["guid"].split("-")[1] for row in rows[12:]]
+
+
+def test_a_baseline_past_its_third_of_the_budget_still_reads_newest_first(monkeypatch):
+    rows = window_rows()
+    # A full baseline would put the unseen class first; this one takes 31 of
+    # the lane's 90 seconds, past its own share of 30.
+    fake = FakeUSPTO(
+        lists={"US-PGPUB": rows}, baseline=baseline_rows(30), seconds={"baseline": 31.0},
+    ).install(monkeypatch)
+
+    artifact = run()["artifact"]
+
+    assert len(fake.of("baseline")) == 1
+    assert [entry["guid"] for entry in artifact["entries"]] == [row["guid"] for row in rows[:12]]
+    assert all(entry["abstract"] and entry["first_claim"] for entry in artifact["entries"])
+    assert artifact["partial"] is None
 
 
 def test_an_unseen_class_gets_a_slot_ahead_of_newer_common_filings(monkeypatch):

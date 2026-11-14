@@ -5,6 +5,7 @@ import copy
 from lib import patent_digest, patents
 
 PDF = "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/"
+OTHERS = "- Other filers with the company's name, not verified:"
 
 # Trimmed from a live Nvidia run on 2026-11-13: two of its twelve entries and
 # two of its forty index items, counts as returned.
@@ -88,7 +89,7 @@ def _entry(number, *, filed_as="Microsoft Corporation", group_kind="confirmed", 
 
 
 def microsoft():
-    licensing = "Microsoft Technology Licensing, LLC"
+    licensing = "Microsoft Mobile Oy"
     return {
         "company": "Microsoft",
         "company_via_person": False,
@@ -147,15 +148,40 @@ def block():
     }
 
 
-def microsoft_licensing_only():
-    """Microsoft with every filing under the licensing subsidiary's name."""
-    artifact = microsoft()
+def block_imaging_only():
+    """Block with every filing under a stranger's name that extends it."""
+    artifact = block()
     artifact["groups"] = artifact["groups"][1:]
-    artifact["counts"].update(grants=0, first_publications=0)
+    artifact["counts"].update(applications=0, first_publications=0)
     artifact["entries"] = [
         entry for entry in artifact["entries"] if entry["group_kind"] == "name-matched"
     ]
     return artifact
+
+
+def openai_opco():
+    """OpenAI with every filing under its operating company's name, which the
+    lane counts as the company's own."""
+    return {
+        "company": "OpenAI",
+        "company_via_person": False,
+        "window": {"from": "2026-10-14", "to": "2026-11-13"},
+        "groups": [
+            {"name": "OpenAI OpCo, LLC", "kind": "confirmed", "applications": 14, "grants": 3},
+        ],
+        "other_names": [],
+        "counts": {
+            "applications": 14, "grants": 3,
+            "name_matched_applications": 0, "name_matched_grants": 0,
+            "first_publications": 15, "name_matched_first_publications": 0,
+            "continuing": 2, "previously_published_grants": 0,
+            "designs": 0, "other_kinds": 0, "floor": False,
+        },
+        "entries": [_entry(4001, filed_as="OpenAI OpCo, LLC")],
+        "index": [],
+        "partial": None,
+        "status": "digest",
+    }
 
 
 def _link(url, title):
@@ -182,7 +208,7 @@ def test_block_lines_come_in_the_documented_order():
     out = lines(artifact)
     assert out[:2] == ["## Patent Digest", ""]
     labels = [
-        "- Filings:", "- Name-matched:", "- First US publications:",
+        "- Filings:", OTHERS, "- First US publications:",
         "- [DYNAMICALLY UPDATABLE", "- [TARGET OBJECT",
         "- More first US publications (titles only):",
         "  - [COMPILER-SCHEDULED", "  - [TRIANGULAR UPDATE",
@@ -224,7 +250,7 @@ def test_entry_line_carries_every_field_and_the_text():
     )
     assert "earliest priority" not in first
     assert " | first claim: 1. A display device, comprising" in first
-    assert "name-matched" not in first
+    assert "not verified" not in first
     second = _line(out, "- [TARGET OBJECT")
     assert "| filed 2025-06-30 | earliest priority 2025-04-10 | CPC" in second
 
@@ -243,7 +269,7 @@ def test_index_lines_carry_kind_date_cpc_and_filed_as():
     )
     assert _line(out, "  - [TRIANGULAR UPDATE").endswith(
         "| grant | published 2026-11-12 | CPC G06N3/084; G06N3/048 | "
-        "filed as NVIDIA Corparation | name-matched"
+        "filed as NVIDIA Corparation | not verified"
     )
 
 
@@ -253,10 +279,10 @@ def test_name_matched_entries_follow_confirmed_ones_and_are_marked():
     assert order == ["- [Filing 1002", "- [Filing 1001", "- [Filing 1003"]
     confirmed = _line(out, "- [Filing 1002]")
     assert "| grant 1002 |" in confirmed
-    assert "name-matched" not in confirmed
+    assert "not verified" not in confirmed
     matched = _line(out, "- [Filing 1001]")
     assert (
-        "| filed as Microsoft Technology Licensing, LLC (Redmond, WA, US) | name-matched | "
+        "| filed as Microsoft Mobile Oy (Redmond, WA, US) | not verified | "
         "abstract:" in matched
     )
 
@@ -265,12 +291,12 @@ def test_name_matched_line_lists_the_group_and_filings_counts_exclude_it():
     out = lines(microsoft())
     filings = _line(out, "- Filings:")
     assert "0 applications published" in filings and "1 patent granted" in filings
-    assert "212" not in filings and "140" not in filings and "Licensing" not in filings
+    assert "212" not in filings and "140" not in filings and "Mobile" not in filings
     assert "Microsoft Corporation" in filings
-    matched = _line(out, "- Name-matched:")
-    assert "Microsoft Technology Licensing, LLC (212 applications, 140 grants)" in matched
-    assert "extend the company's name" in matched
-    assert "not verified as belonging to it" in matched
+    assert _line(out, OTHERS) == (
+        f"{OTHERS} Microsoft Mobile Oy (212 applications, 140 grants); "
+        "2 first US publications among them"
+    )
 
 
 def test_first_publications_under_name_matched_names_are_counted_apart():
@@ -278,16 +304,16 @@ def test_first_publications_under_name_matched_names_are_counted_apart():
     filings = _line(out, "- Filings:")
     assert "1 application published | 0 patents granted | filed as Block, Inc." in filings
     assert _line(out, "- First US publications:").startswith("- First US publications: 1 (")
-    assert _line(out, "- Name-matched:").endswith(
+    assert _line(out, OTHERS).endswith(
         "Block Imaging, Inc. (5 applications, 0 grants); 5 first US publications among them"
     )
     # The name-matched filings are still listed, labelled.
     listed = [line for line in out if line.startswith("- [Filing")]
-    assert [("name-matched" in line) for line in listed] == [False] + [True] * 5
+    assert [("not verified" in line) for line in listed] == [False] + [True] * 5
 
 
 def test_one_name_matched_first_publication_is_singular():
-    assert _line(lines(NVIDIA), "- Name-matched:").endswith(
+    assert _line(lines(NVIDIA), OTHERS).endswith(
         "NVIDIA Corparation (0 applications, 1 grant); 1 first US publication among them"
     )
 
@@ -295,25 +321,39 @@ def test_one_name_matched_first_publication_is_singular():
 def test_name_matched_line_says_nothing_of_first_publications_when_it_has_none():
     artifact = block()
     artifact["counts"]["name_matched_first_publications"] = 0
-    assert _line(lines(artifact), "- Name-matched:").endswith(
+    assert _line(lines(artifact), OTHERS).endswith(
         "Block Imaging, Inc. (5 applications, 0 grants)"
     )
 
 
-def test_with_nothing_confirmed_the_first_publications_are_on_the_name_matched_line():
-    out = lines(microsoft_licensing_only())
-    assert "no filing under a confirmed name" in _line(out, "- Filings:")
-    assert _line(out, "- First US publications:").startswith("- First US publications: 0 (")
-    assert _line(out, "- Name-matched:").endswith(
-        "Microsoft Technology Licensing, LLC (212 applications, 140 grants); "
-        "2 first US publications among them"
+def test_with_no_own_filing_no_zero_count_sits_beside_the_other_filers():
+    out = lines(block_imaging_only())
+    assert _line(out, "- Filings:") == (
+        "- Filings: Block | US patent filings published 2026-10-14 to 2026-11-13 | "
+        "none filed under the company's own name"
     )
+    assert not any(line.startswith("- First US publications:") for line in out)
+    assert _line(out, OTHERS).endswith(
+        "Block Imaging, Inc. (5 applications, 0 grants); 5 first US publications among them"
+    )
+    listed = [line for line in out if line.startswith("- [Filing")]
+    assert len(listed) == 5 and all("| not verified |" in line for line in listed)
+
+
+def test_an_operating_company_s_filings_are_the_company_s_own():
+    out = lines(openai_opco())
+    assert _line(out, "- Filings:").endswith(
+        "| 14 applications published | 3 patents granted | filed as OpenAI OpCo, LLC"
+    )
+    assert _line(out, "- First US publications:").startswith("- First US publications: 15 (")
+    assert not any(line.startswith(OTHERS) for line in out)
+    assert "not verified" not in _line(out, "- [Filing 4001]")
 
 
 def test_no_name_matched_line_without_such_a_group():
     artifact = copy.deepcopy(NVIDIA)
     artifact["groups"] = artifact["groups"][:1]
-    assert not any(line.startswith("- Name-matched:") for line in lines(artifact))
+    assert not any(line.startswith(OTHERS) for line in lines(artifact))
 
 
 def test_other_names_line_lists_names_with_counts():
@@ -328,7 +368,7 @@ def test_floor_puts_a_plus_on_the_counts():
     out = lines(artifact)
     filings = _line(out, "- Filings:")
     assert "0+ applications published" in filings and "1+ patents granted" in filings
-    assert _line(out, "- Name-matched:").endswith(
+    assert _line(out, OTHERS).endswith(
         "(212+ applications, 140+ grants); 2+ first US publications among them"
     )
     assert _line(out, "- First US publications:").startswith("- First US publications: 1+ (")
@@ -348,7 +388,7 @@ def test_partial_renders_a_note_with_the_number():
     note = _line(lines(artifact), "- Note:")
     assert "3 of the filings listed by title only" in note
     assert "no abstract or claim text" in note
-    assert "stopped answering or time ran out" in note
+    assert "did not return it or time ran out" in note
     out = lines(artifact)
     assert out.index(_line(out, "- First US publications:")) + 1 == out.index(note)
 

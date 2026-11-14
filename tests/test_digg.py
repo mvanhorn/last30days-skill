@@ -294,6 +294,40 @@ def test_search_digg_nonzero_exit_returns_empty(monkeypatch):
     assert "error" in out
 
 
+def test_search_digg_unknown_flag_names_an_outdated_helper_and_its_upgrade(monkeypatch):
+    from lib import health, pipeline
+
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: subproc.SubprocResult(
+            returncode=1, stdout="", stderr="Error: unknown flag: --topic\nUsage: ..."
+        ),
+    )
+    out = digg.search_digg("openclaw", "2026-04-09", "2026-05-09")
+    assert out["results"] == []
+    assert out["error"] == (
+        f"digg-pp-cli is outdated and rejected the search; upgrade: {health.helper_upgrade_cmd('digg')}"
+    )
+    assert len(out["error"]) <= 140
+    outcome = pipeline._result_outcome_artifact("digg", out)
+    assert outcome["_source_outcome"]["detail"] == out["error"]
+    assert outcome["_source_outcome"]["state"] != health.OK
+
+
+def test_search_digg_other_nonzero_exit_keeps_its_own_error(monkeypatch):
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: subproc.SubprocResult(returncode=2, stdout="", stderr="cluster not found"),
+    )
+    out = digg.search_digg("openclaw", "2026-04-09", "2026-05-09")
+    assert out["error"] == "cluster not found"
+    assert digg.outdated_cli_error(out["error"]) is None
+
+
 def test_search_digg_invalid_json_returns_empty(monkeypatch):
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
     monkeypatch.setattr(

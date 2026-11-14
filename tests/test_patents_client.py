@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from lib import health, http, patents
+from lib import health, http, patent_digest, patents
 from lib.company_names import name_key
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -98,6 +98,7 @@ class FakeUSPTO:
         session_headers: dict | None = None,
         session_body: object = None,
         errors: dict[tuple[str, int], Exception] | None = None,
+        seconds: dict[str, float] | None = None,
     ):
         self.lists = lists
         self.baseline = baseline or []
@@ -108,12 +109,19 @@ class FakeUSPTO:
         self.session_body = SESSION["body"] if session_body is None else session_body
         # ("session" | "search" | "baseline" | "detail", nth call of that kind) -> error
         self.errors = errors or {}
+        # kind -> seconds each call of that kind takes. When given, the lane
+        # reads a clock only these calls move, and a call that ends at or past
+        # its deadline fails the way lib.http fails it.
+        self.seconds = seconds
+        self.now = 1000.0
         self.calls: list[dict] = []
 
     def install(self, monkeypatch) -> FakeUSPTO:
         monkeypatch.setattr(
             patents, "http", SimpleNamespace(post=self.post, get=self.get, HTTPError=http.HTTPError),
         )
+        if self.seconds is not None:
+            monkeypatch.setattr(patents, "time", SimpleNamespace(monotonic=lambda: self.now))
         return self
 
     def of(self, kind: str) -> list[dict]:
@@ -121,6 +129,10 @@ class FakeUSPTO:
 
     def _note(self, kind: str, **call) -> None:
         self.calls.append({"kind": kind, **call})
+        if self.seconds is not None:
+            self.now += self.seconds.get(kind, 0.0)
+            if self.now >= call["kwargs"]["deadline_monotonic"]:
+                raise http.DeadlineExceeded()
         error = self.errors.get((kind, len(self.of(kind))))
         if error is not None:
             raise error
@@ -214,8 +226,12 @@ def test_every_request_is_bounded_by_the_budget(monkeypatch):
     run(budget_seconds=5.0)
 
     assert fake.calls
-    deadlines = {call["kwargs"]["deadline_monotonic"] for call in fake.calls}
+    lane = [call for call in fake.calls if call["kind"] != "baseline"]
+    deadlines = {call["kwargs"]["deadline_monotonic"] for call in lane}
     assert len(deadlines) == 1
+    # The baseline search has its own deadline, earlier than the lane's.
+    [baseline] = fake.of("baseline")
+    assert baseline["kwargs"]["deadline_monotonic"] < min(deadlines)
     for call in fake.calls:
         assert 0 < call["kwargs"]["timeout"] <= 5.0
         assert call["kwargs"]["retries"] <= 2
@@ -427,6 +443,77 @@ def test_a_deadline_that_passes_during_detail_fetches_is_partial(monkeypatch):
     assert len(artifact["entries"]) == 2
     assert artifact["partial"] == {"missing_text": 10}
     assert len(fake.of("detail")) == 3
+
+
+def twelve_candidates() -> dict[str, list[dict]]:
+    return {"US-PGPUB": [make_row(f"US-202603500{n:02d}-A1", f"2026-11-{12 - n:02d}") for n in range(12)]}
+
+
+def note_line(artifact: dict) -> str:
+    lines = patent_digest.digest_lines(
+        artifact, link=lambda _url, title: title, untrusted=lambda text, _limit: text,
+    )
+    return next(line for line in lines if line.startswith("- Note:"))
+
+
+def test_the_lane_and_the_fetch_default_have_a_ninety_second_budget(monkeypatch):
+    fake = FakeUSPTO(seconds={}).install(monkeypatch)
+
+    run()
+
+    assert patents.LANE_BUDGET_SECONDS == 90.0
+    assert fake.of("session")[0]["kwargs"]["deadline_monotonic"] == fake.now + 90.0
+
+
+def test_a_read_that_times_out_mid_list_does_not_end_the_reading(monkeypatch):
+    timeout = http.HTTPError("Request timed out", outcome_state=health.TIMEOUT)
+    fake = FakeUSPTO(lists=twelve_candidates(), errors={("detail", 3): timeout}).install(monkeypatch)
+
+    artifact = run()["artifact"]
+
+    assert len(fake.of("detail")) == 12
+    third = fake.detail_guids()[2]
+    assert len(artifact["entries"]) == 11
+    assert third not in [entry["guid"] for entry in artifact["entries"]]
+    assert all(entry["abstract"] and entry["first_claim"] for entry in artifact["entries"])
+    assert [guid_of(item["url"]) for item in artifact["index"]] == [third.split("-")[1]]
+    assert artifact["partial"] == {"missing_text": 1}
+    assert note_line(artifact).startswith(
+        "- Note: 1 of the filings listed by title only has no abstract or claim text",
+    )
+
+
+def test_a_budget_that_runs_out_after_five_reads_keeps_their_text(monkeypatch):
+    fake = FakeUSPTO(lists=twelve_candidates(), seconds={"detail": 17.0}).install(monkeypatch)
+
+    artifact = run()["artifact"]
+
+    # The sixth read ends past the lane's ninety seconds.
+    assert len(fake.of("detail")) == 6
+    assert len(artifact["entries"]) == 5
+    assert all(entry["abstract"] and entry["first_claim"] for entry in artifact["entries"])
+    assert len(artifact["index"]) == 7
+    assert artifact["partial"] == {"missing_text": 7}
+    assert note_line(artifact).startswith(
+        "- Note: 7 of the filings listed by title only have no abstract or claim text",
+    )
+
+
+def test_every_read_failing_leaves_a_titles_only_digest_that_says_so(monkeypatch):
+    error = http.HTTPError("HTTP 500: Internal Server Error", 500)
+    errors = {("detail", n): error for n in range(1, 13)}
+    fake = FakeUSPTO(lists=twelve_candidates(), errors=errors).install(monkeypatch)
+
+    artifact = run()["artifact"]
+
+    assert len(fake.of("detail")) == 12
+    assert artifact["entries"] == []
+    assert len(artifact["index"]) == 12
+    assert artifact["status"] == "digest"
+    assert artifact["partial"] == {"missing_text": 12}
+    assert note_line(artifact).startswith(
+        "- Note: 12 of the filings listed by title only have no abstract or claim text",
+    )
 
 
 def test_a_failed_baseline_search_still_builds_the_digest(monkeypatch):

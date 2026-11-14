@@ -87,6 +87,18 @@ def reader_end_date(to_date: str, now: Optional[datetime] = None) -> date:
     return end
 
 
+def is_today(value: str, now: Optional[datetime] = None) -> bool:
+    """Whether a YYYY-MM-DD date is today in UTC or on the reader's calendar.
+
+    West of UTC the two calendars differ for part of every day, and a date
+    that is today on either one is a live window. ``now`` is an aware
+    datetime.
+    """
+    day = date.fromisoformat(value)
+    now = now or _local_now()
+    return day in (now.astimezone(timezone.utc).date(), now.date())
+
+
 def format_window(from_date: str, to_date: str, now: Optional[datetime] = None) -> str:
     """Render an ISO date window for readers, e.g. ``Oct 11 to Nov 10, 2026``.
 

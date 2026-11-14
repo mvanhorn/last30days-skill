@@ -28,6 +28,26 @@ class TestGetDateRange(unittest.TestCase):
         self.assertEqual(delta.days, 30)
 
 
+class TestIsToday(unittest.TestCase):
+    LA = timezone(timedelta(hours=-8))
+
+    def _now(self):
+        # 5pm Nov 13 in Los Angeles is already Nov 14 in UTC.
+        return datetime(2026, 11, 13, 17, 0, tzinfo=self.LA)
+
+    def test_utc_date_is_today(self):
+        self.assertTrue(dates.is_today("2026-11-14", now=self._now()))
+
+    def test_local_date_is_today(self):
+        self.assertTrue(dates.is_today("2026-11-13", now=self._now()))
+
+    def test_yesterday_on_both_calendars_is_not_today(self):
+        self.assertFalse(dates.is_today("2026-11-12", now=self._now()))
+
+    def test_future_date_is_not_today(self):
+        self.assertFalse(dates.is_today("2026-11-15", now=self._now()))
+
+
 class TestParseDate(unittest.TestCase):
     def test_parse_iso_date(self):
         result = dates.parse_date("2026-01-15")

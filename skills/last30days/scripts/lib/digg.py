@@ -52,7 +52,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
-from . import log, subproc
+from . import health, log, subproc
 from .fusion import _normalize_url
 from .relevance import LOW_SIGNAL_QUERY_TOKENS, STOPWORDS, token_overlap_relevance
 
@@ -450,6 +450,19 @@ def _empty_local_fallback_error(data: Dict[str, Any], stderr: str = "") -> Optio
     return f"live-search-unavailable: {detail}"
 
 
+def outdated_cli_error(error: Optional[str]) -> Optional[str]:
+    """Name an outdated helper and its upgrade when ``error`` is an unknown flag.
+
+    A digg-pp-cli older than both search generations rejects the flags the
+    engine sends (``unknown flag: --topic``). The outcome note then says so
+    and carries the pinned install command, which replaces the old binary.
+    Kept under the 140-character outcome note limit in render.
+    """
+    if "unknown flag" not in (error or "").lower():
+        return None
+    return f"{CLI_BIN} is outdated and rejected the search; upgrade: {health.helper_upgrade_cmd('digg')}"
+
+
 def _invoke_cli(
     cmd: List[str],
     timeout: float,
@@ -575,6 +588,10 @@ def search_digg(
     response, stderr = _invoke_cli(
         cmd, timeout=SEARCH_TIMEOUT, deadline=deadline, cancel=cancel
     )
+    outdated = outdated_cli_error(response.get("error"))
+    if outdated:
+        _log(outdated)
+        return {"results": [], "error": outdated}
     fallback_error = _empty_local_fallback_error(response, stderr)
     if fallback_error:
         _log(fallback_error)

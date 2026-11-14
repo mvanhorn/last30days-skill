@@ -561,6 +561,124 @@ class TestDiggAutoInstall:
         assert results["digg_action"] == "install_failed"
 
 
+class TestDiggUpgrade:
+    """A Digg helper already on PATH but older than the engine can call is
+    upgraded by re-running the pinned catalog install. No real npx runs: the
+    version exec and the install subprocess are both stubbed."""
+
+    DIGG = "/Users/me/.local/bin/digg-pp-cli"
+    NPX = "/opt/homebrew/bin/npx"
+
+    def _run(self, monkeypatch, *, before, after=None, npx=True, rc=0, stderr=""):
+        from lib import health
+
+        state = {"installed": False}
+        installs = []
+
+        def fake_which(name, *args, **kwargs):
+            if name == "digg-pp-cli":
+                return self.DIGG
+            if name == "npx":
+                return self.NPX if npx else None
+            return None
+
+        def fake_version(cmd, **kwargs):
+            line = after if state["installed"] else before
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=line + "\n", stderr="")
+
+        def fake_install(cmd, **kwargs):
+            installs.append(cmd)
+            if rc == 0:
+                state["installed"] = True
+            return MagicMock(returncode=rc, stderr=stderr)
+
+        monkeypatch.setattr(setup_wizard.shutil, "which", fake_which)
+        monkeypatch.setattr(health.subproc, "run_with_timeout", fake_version)
+        monkeypatch.setattr(setup_wizard.subprocess, "run", fake_install)
+        return setup_wizard._install_digg_cli(), installs
+
+    def test_old_digg_is_upgraded(self, monkeypatch):
+        (active, action, stderr, off_path), installs = self._run(
+            monkeypatch, before="digg-pp-cli 2026.7.1", after="digg-pp-cli 2026.11.1",
+        )
+        assert (active, action, off_path) == (True, "upgraded", "")
+        assert installs == [
+            [self.NPX, "-y", setup_wizard.PRINTING_PRESS_NPM, "install", "digg", "--cli-only"]
+        ]
+
+    def test_digg_at_the_minimum_is_left_alone(self, monkeypatch):
+        from lib import health
+
+        minimum = ".".join(str(n) for n in health.MIN_HELPER_VERSIONS["digg-pp-cli"])
+        (active, action, _, _), installs = self._run(monkeypatch, before=f"digg-pp-cli {minimum}")
+        assert (active, action) == (True, "already_installed")
+        assert installs == []
+
+    def test_unreadable_digg_version_is_never_upgraded(self, monkeypatch):
+        (active, action, _, _), installs = self._run(monkeypatch, before="digg-pp-cli dev")
+        assert (active, action) == (True, "already_installed")
+        assert installs == []
+
+    def test_failed_upgrade_keeps_the_old_helper_present(self, monkeypatch):
+        (active, action, stderr, _), installs = self._run(
+            monkeypatch, before="digg-pp-cli 2026.7.1", rc=1, stderr="npm ERR! boom",
+        )
+        assert active is True  # the older helper is still on PATH
+        assert action == "install_failed"
+        assert "boom" in stderr
+        assert len(installs) == 1
+
+    def test_upgrade_that_leaves_an_old_copy_on_path_is_not_upgraded(self, monkeypatch):
+        (active, action, stderr, _), installs = self._run(
+            monkeypatch, before="digg-pp-cli 2026.7.1", after="digg-pp-cli 2026.7.1",
+        )
+        assert (active, action) == (True, "install_failed")
+        assert "older" in stderr
+
+    def test_upgrade_whose_new_version_cannot_be_read_is_not_upgraded(self, monkeypatch):
+        (active, action, stderr, _), installs = self._run(
+            monkeypatch, before="digg-pp-cli 2026.7.1", after="digg-pp-cli dev",
+        )
+        assert (active, action) == (True, "install_failed")
+        assert "could not be read" in stderr
+        assert len(installs) == 1
+
+    def test_no_npx_reports_the_outdated_helper_with_the_manual_command(self, monkeypatch):
+        (active, action, _, _), installs = self._run(
+            monkeypatch, before="digg-pp-cli 2026.7.1", npx=False,
+        )
+        assert (active, action) == (True, "no_npx")
+        assert installs == []
+        text = setup_wizard.get_setup_status_text({
+            "cookies_found": {}, "ytdlp_action": "already_installed",
+            "digg_installed": True, "digg_action": "no_npx", "env_written": False,
+        })
+        assert setup_wizard.DIGG_INSTALL_CMD in text
+        assert "older" in text
+        assert "not installed" not in text
+
+    def test_status_text_upgraded(self):
+        text = setup_wizard.get_setup_status_text({
+            "cookies_found": {}, "ytdlp_action": "already_installed",
+            "digg_installed": True, "digg_action": "upgraded", "env_written": False,
+        })
+        assert "Upgraded Digg CLI" in text
+
+    def test_status_text_failed_upgrade_names_the_older_helper(self):
+        text = setup_wizard.get_setup_status_text({
+            "cookies_found": {}, "ytdlp_action": "already_installed",
+            "digg_installed": True, "digg_action": "install_failed", "env_written": False,
+        })
+        assert "upgrade failed" in text
+        assert setup_wizard.DIGG_INSTALL_CMD in text
+
+    def test_digg_install_command_uses_the_shared_upgrade_command(self):
+        from lib import health
+
+        assert setup_wizard.DIGG_INSTALL_CMD == health.helper_upgrade_cmd("digg")
+        assert setup_wizard.PRINTING_PRESS_NPM is health.PRINTING_PRESS_NPM
+
+
 class TestWriteSetupConfig:
     """Tests for write_setup_config()."""
 

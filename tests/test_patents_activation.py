@@ -62,7 +62,7 @@ class FakeLane:
         self.wait_for = wait_for
         self.calls: list[dict] = []
 
-    def __call__(self, company, date_from, date_to, config=None, *, budget_seconds=30.0):
+    def __call__(self, company, date_from, date_to, config=None, *, budget_seconds=90.0):
         self.calls.append({
             "company": company, "date_from": date_from, "date_to": date_to,
             "budget_seconds": budget_seconds,
@@ -321,7 +321,7 @@ def test_lane_window_is_the_reports_own_range(monkeypatch, tmp_path, args, expec
 def test_lane_gets_the_budget_it_is_waited_for(monkeypatch, tmp_path):
     observed = _run(monkeypatch, tmp_path)
 
-    assert observed.lane.calls[0]["budget_seconds"] == patents.LANE_BUDGET_SECONDS == 30.0
+    assert observed.lane.calls[0]["budget_seconds"] == patents.LANE_BUDGET_SECONDS == 90.0
 
 
 def test_lane_still_running_after_its_budget_is_dropped_without_a_trace(monkeypatch, tmp_path):

@@ -75,7 +75,7 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 
 ### Installs and external programs
 
-- First-run setup installs `yt-dlp` with Homebrew when it's missing on macOS. It also installs the Digg, arXiv, Techmeme, and Yahoo Finance CLIs with `npx -y @mvanhorn/printing-press-library@0.1.16`, by default into `~/.local/bin`. That package and the CLIs it installs come from outside this repository.
+- First-run setup installs `yt-dlp` with Homebrew when it's missing on macOS. It also installs the Digg, arXiv, Techmeme, and Yahoo Finance CLIs with `npx -y @mvanhorn/printing-press-library@0.1.27`, by default into `~/.local/bin`. That package and the CLIs it installs come from outside this repository.
 - During research, the engine can run `node` (the vendored X client), `yt-dlp`, `gh`, the Printing Press CLIs, `brightdata`, `grok`, `xurl`, `pass`, and `pdftotext`, depending on which sources you turned on. On macOS it also runs `security` and `openssl` to decrypt Chromium cookies.
 
 ### Local files

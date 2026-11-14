@@ -68,7 +68,7 @@ CASES = [
         CONFIRMED,
     ),
     ("International Business Machines Corporation", "IBM", [], NEITHER),
-    ("Microsoft Technology Licensing, LLC", "Microsoft", [], NAME_MATCHED),
+    ("Microsoft Technology Licensing, LLC", "Microsoft", [], CONFIRMED),
     ("Samsung Electronics Co., Ltd.", "Samsung", [], NAME_MATCHED),
     ("Microsoft Corporation", "Microsoft", [], CONFIRMED),
     ("Block Imaging, Inc.", "Block", [], NAME_MATCHED),
@@ -76,9 +76,26 @@ CASES = [
     ("QUICK BLOCK LIMITED", "Block", [], NEITHER),
     ("SEOUL NATIONAL UNIVERSITY R&amp;DB FOUNDATION", "Samsung", [], NEITHER),
     ("Amazon Technologies, Inc.", "Amazon", [], NAME_MATCHED),
-    ("OpenAI OpCo, LLC", "OpenAI", [], NAME_MATCHED),
+    ("OpenAI OpCo, LLC", "OpenAI", [], CONFIRMED),
     ("Notion Labs, Inc.", "Notion", [], NAME_MATCHED),
     ("Block Imaging, Inc.", "Alphabet", ["Block"], NAME_MATCHED),
+    # A company's own holding, licensing and numbered entities are the company.
+    ("Intellectual Ventures Holding 81 LLC", "Intellectual Ventures", [], CONFIRMED),
+    ("Intellectual Ventures II LLC", "Intellectual Ventures", [], CONFIRMED),
+    ("Apple Rubber Products Inc.", "Apple", [], NAME_MATCHED),
+    ("OpenAI Group PBC", "OpenAI", [], CONFIRMED),
+    ("Acme Holdco, Inc.", "Acme", [], CONFIRMED),
+    ("Acme Holdings Group LLC", "Acme", [], CONFIRMED),
+    ("Acme IP, LLC", "Acme", [], CONFIRMED),
+    ("Acme Intellectual Property Ltd.", "Acme", [], CONFIRMED),
+    ("Acme 2, Inc.", "Acme", [], CONFIRMED),
+    ("Waymo Holding Inc.", "Alphabet", ["Waymo"], CONFIRMED),
+    # A structure word among other words does not make the name the company's.
+    ("Acme Technology Holdings", "Acme", [], NAME_MATCHED),
+    ("Acme Licensing LLC", "Acme", [], NAME_MATCHED),
+    ("Acme Property Group", "Acme", [], NAME_MATCHED),
+    ("Acme Mix LLC", "Acme", [], NAME_MATCHED),
+    ("Group Acme", "Acme", [], NEITHER),
 ]
 
 
@@ -128,21 +145,31 @@ def _names_for(company):
     return out
 
 
-@pytest.mark.parametrize("company", ["Apple", "Nvidia", "Figure AI", "Google", "Block"])
-def test_real_data_confirmed_means_same_key(company):
-    names = _names_for(company)
-    assert names
-    for name in names:
-        if classify_applicant(name, company) == CONFIRMED:
-            assert name_key(name) == name_key(company), name
+# Recorded names that extend the company's name by structure words alone, and
+# so count as the company's. Every other confirmed name has the company's key.
+OWN_EXTENSIONS = {
+    "Microsoft": {"microsoft technology licensing"},
+    "Sony": {"sony group"},
+    "OpenAI": {"openai opco"},
+}
 
 
-@pytest.mark.parametrize("company", ["Microsoft", "Amazon", "Samsung", "Sony", "OpenAI", "Notion"])
-def test_real_data_name_matched_never_confirmed(company):
+@pytest.mark.parametrize(
+    "company",
+    ["Apple", "Nvidia", "Figure AI", "Google", "Block", "Microsoft", "Amazon", "Samsung", "Sony",
+     "OpenAI", "Notion"],
+)
+def test_real_data_confirmed_is_the_key_or_a_structure_extension(company):
     names = _names_for(company)
     assert names
-    kinds = [classify_applicant(name, company) for name in names]
+    extensions = {
+        name_key(name) for name in names
+        if classify_applicant(name, company) == CONFIRMED and name_key(name) != name_key(company)
+    }
+    assert extensions == OWN_EXTENSIONS.get(company, set())
+
+
+@pytest.mark.parametrize("company", ["Amazon", "Samsung", "Sony", "Notion"])
+def test_real_data_keeps_name_matched_names(company):
+    kinds = [classify_applicant(name, company) for name in _names_for(company)]
     assert NAME_MATCHED in kinds
-    for name, kind in zip(names, kinds):
-        if kind == CONFIRMED:
-            assert name_key(name) == name_key(company), name

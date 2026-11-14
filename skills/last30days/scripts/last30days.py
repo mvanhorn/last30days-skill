@@ -3679,6 +3679,9 @@ def main() -> int:
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
     # --openclaw) pass through without argparse hard-exiting.
     args, extra_argv = parser.parse_known_args()
+    if args.as_of_date and dates.is_today(args.as_of_date):
+        # Naming today is a live run: every lane takes its live path.
+        args.as_of_date = None
     option_argv = sys.argv[1:sys.argv.index("--")] if "--" in sys.argv else sys.argv[1:]
     option_tokens = {token.split("=", 1)[0] for token in option_argv}
     args._explicit_options = {
