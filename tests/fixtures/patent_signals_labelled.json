@@ -1,5 +1,5 @@
 {
-  "about": "Labelled candidate filings for the Patent Secret Signals rules in skills/last30days/references/patent-signals.md. These are constructed cases, one per rule, not saved digests: the filings are invented to show a rule and say nothing about any real company's filings. Per candidate: kind is 'first publication' unless stated ('continuation', 'divisional', 'grant published earlier' and 'design' are counted by the digest and never signals). titles_only is true for an entry the digest lists by title, with no abstract or first claim; such an entry is never a signal. concrete is true when the first claim and abstract name a device, material, user or use a reader can picture. paths lists which of the two qualifying paths the candidate meets (1 out of character, 2 a recognisable product the company has not shipped or announced). story_tie is true when the filing fits a story in the report; it never qualifies a candidate on its own. shipped_match is true when the web check found a shipped or announced product that matches, false when it found none, null when it was not checked while labelling; covered is the same for coverage of the filing. reported_match, when present, is true when the web check found no shipped or announced product but found a leak or press report describing a matching one; it removes path 2 just as a shipped match does. not_verified is true for an entry the digest marks not verified (a filer whose name extends the company's by more than legal or holding words); entity_known is then true when the filing entity is known to belong to the company, false when known not to, null when not known. location_contradicts is true when the applicant location plainly contradicts the company. A candidate with a cluster list is several filings that share one specific focus; members that share one priority date and one filed_as name are one invention family. jobs_signals is how many signal paragraphs the same report's Jobs Page Secret Signals section has.",
+  "about": "Labelled candidate filings for the Patent Secret Signals rules in skills/last30days/references/patent-signals.md. These are constructed cases, one per rule, not saved digests: the filings are invented to show a rule and say nothing about any real company's filings. Per candidate: kind is 'first publication' unless stated ('continuation', 'divisional', 'grant published earlier' and 'design' are counted by the digest and never signals). titles_only is true for an entry the digest lists by title, with no abstract or first claim; such an entry is never a signal. concrete is true when the first claim and abstract name a device, material, user or use a reader can picture. paths lists which of the two qualifying paths the candidate meets (1 out of character, 2 a recognisable product the company has not shipped or announced). story_tie is true when the filing fits a story in the report; it never qualifies a candidate on its own. shipped_match is true when the web check found a shipped or announced product that matches, false when it found none, null when it was not checked while labelling; covered is the same for coverage of the filing. reported_match, when present, is true when the web check found no shipped or announced product but found a leak or press report describing a matching one; it removes path 2 just as a shipped match does. not_verified is true for an entry the digest marks not verified (a filer whose name extends the company's by more than legal or holding words); entity_known is then true when the filing entity is known to belong to the company, false when known not to, null when not known. location_contradicts is true when the applicant location plainly contradicts the company. A candidate with a cluster list is several filings that share one specific focus; members that share one priority date and one filed_as name are one invention family. jobs_signals is how many signal paragraphs the same report's Jobs Page Secret Signals section has. paragraphs holds written signal paragraphs labelled valid or invalid against the plain-words shape: two sentences, at most 60 words outside the linked titles, application or grant, the filing month and year in parentheses, any quote at most 12 words, and nothing worded as a plan.",
   "companies": [
     {
       "case": "Chip maker",
@@ -374,6 +374,41 @@
           "expected": "qualifies"
         }
       ]
+    }
+  ],
+  "paragraphs": [
+    {
+      "case": "Accepted plain-words signal",
+      "text": "**Patent Secret Signals** - An NVIDIA application published Oct 15 (filed April 2025), [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), describes an e-ink screen on a server or GPU that would \"remain visible in an event of a failure of the hardware device\". That way a dead rack can tell a technician what broke without anyone plugging in a laptop.",
+      "expected": "valid"
+    },
+    {
+      "case": "Constructed photo-control signal",
+      "text": "**Patent Secret Signals** - A device maker's patent application published Nov 12 (filed May 2025), [Controlling objects using an image](https://example.com/filing), describes controlling home devices by tapping them in a photo of your room. Coming the same week as its new home app, it suggests the company has worked on point-and-tap home control.",
+      "expected": "valid"
+    },
+    {
+      "case": "Worded as a plan",
+      "text": "**Patent Secret Signals** - An NVIDIA application published Oct 15 (filed April 2025), [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), describes an e-ink screen on a server or GPU that would \"remain visible in an event of a failure of the hardware device\". NVIDIA is building self-reporting racks for its next data center line.",
+      "expected": "invalid",
+      "note": "A filing does not show that the company is building anything."
+    },
+    {
+      "case": "Three sentences",
+      "text": "**Patent Secret Signals** - An NVIDIA application published Oct 15 (filed April 2025), [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), describes an e-ink screen on a server or GPU that would \"remain visible in an event of a failure of the hardware device\". That way a dead rack can tell a technician what broke. It also fits this month's data center story.",
+      "expected": "invalid"
+    },
+    {
+      "case": "Citation first and too long",
+      "text": "**Patent Secret Signals** - A patent application published October 15, 2026 and filed April 3, 2025, [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), by NVIDIA Corporation of Santa Clara, California, describes a hardware device with a persistent display that would \"remain visible in an event of a failure of the hardware device, so that status information about the failure stays readable\". That points to a reading in which NVIDIA has looked at how its servers report their own failures to the people who repair them in a data center.",
+      "expected": "invalid",
+      "note": "Sentence one carries the full dates and a long quote before the reader learns what the thing is."
+    },
+    {
+      "case": "No filing date",
+      "text": "**Patent Secret Signals** - A patent application published Nov 12, [Controlling objects using an image](https://example.com/filing), describes controlling home devices by tapping them in a photo of your room. It suggests the company has worked on point-and-tap home control.",
+      "expected": "invalid",
+      "note": "The short filing-date parenthetical is one of the facts that says this is a filing and not a product."
     }
   ]
 }

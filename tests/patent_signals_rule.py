@@ -21,6 +21,7 @@ person. It is test support, not shipped code.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 OUT_OF_CHARACTER, UNSHIPPED_PRODUCT = 1, 2
@@ -37,6 +38,22 @@ MIN_CLUSTER_FAMILIES = 3
 # Filings of a cluster cited in its paragraph, and sentences per paragraph.
 CLUSTER_FILINGS_CITED = 2
 PARAGRAPH_SENTENCES = 2
+# Words in one signal paragraph, counted outside its linked filing titles, and
+# the longest optional quote from the filing.
+MAX_PARAGRAPH_WORDS = 60
+MAX_QUOTE_WORDS = 12
+
+_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[{A-Z])")
+_QUOTE = re.compile(r'"([^"]+)"')
+_FILED = re.compile(r"\(filed (?:[A-Z][a-z]+ \d{4}|\{filing month and year\})\)")
+# Wording that turns a filing into a plan or a product announcement.
+_OVERCLAIM = re.compile(
+    r"\b(?:is|are) (?:building|developing|launching|shipping)\b"
+    r"|\bwill (?:ship|launch|release|sell|build)\b"
+    r"|\bhas decided\b|\bplans to\b",
+    re.IGNORECASE,
+)
 
 
 def usable(filing: dict[str, Any]) -> bool:
@@ -146,4 +163,33 @@ def standout(candidate: dict[str, Any]) -> bool:
         qualifies(candidate)
         and bool(candidate.get("concrete"))
         and wording(candidate) == "no coverage found"
+    )
+
+
+def sentences(paragraph: str) -> list[str]:
+    body = paragraph.removeprefix("**Patent Secret Signals** - ")
+    return [part for part in _SENTENCE_BREAK.split(body) if part]
+
+
+def words(paragraph: str) -> int:
+    """Words in a paragraph, not counting its linked filing titles or the lead-in."""
+    body = paragraph.removeprefix("**Patent Secret Signals** - ")
+    return len(_LINK.sub("", body).split())
+
+
+def paragraph_ok(paragraph: str) -> bool:
+    """A signal paragraph in the plain-words shape.
+
+    Two sentences, at most 60 words outside the linked titles, application or
+    grant named, the filing linked with its month and year of filing in
+    parentheses (a cluster cites two filings by publication date instead), any quote at most 12 words, and nothing worded as a plan.
+    """
+    return (
+        len(sentences(paragraph)) == PARAGRAPH_SENTENCES
+        and words(paragraph) <= MAX_PARAGRAPH_WORDS
+        and bool(re.search(r"\b(?:application|grant)\b", paragraph))
+        and bool(_LINK.search(paragraph))
+        and (len(_LINK.findall(paragraph)) > 1 or bool(_FILED.search(paragraph)))
+        and all(len(quote.split()) <= MAX_QUOTE_WORDS for quote in _QUOTE.findall(paragraph))
+        and not _OVERCLAIM.search(paragraph)
     )

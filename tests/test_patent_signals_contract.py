@@ -327,26 +327,36 @@ def test_the_old_counts_sentence_and_disclaimer_are_gone():
     assert "US patent applications published and" not in text
 
 
-def test_each_signal_links_the_filing_gives_both_dates_and_hedges():
+def test_each_signal_links_the_filing_keeps_its_facts_and_hedges():
     paragraph = _rule("**Each signal paragraph**")
-    assert "is two sentences" in paragraph
+    assert "is two sentences of at most 60 words together, not counting the linked filing titles" in paragraph
+    assert "lead with what the thing is" in paragraph
     assert "**What the filing describes.**" in paragraph
     assert "**Why it is interesting.**" in paragraph
     assert "whether it is an application or a grant" in paragraph
-    assert "its publication date and its filing date" in paragraph
+    assert "gives its publication date" in paragraph
+    assert 'a short parenthetical of month and year ("filed April 2025")' in paragraph
+    assert "says in plain words what the filing describes, so a reader can picture it" in paragraph
     assert "exactly as the digest printed it" in paragraph
     assert "`[filing title](filing URL)` on every host" in paragraph
     assert "hedged verbs (describes, would, could)" in paragraph
+    assert "A quote from the abstract or first claim is optional and at most 12 words." in paragraph
     assert "say how many filings there are and cite two of them" in paragraph
     assert "say which entity filed it" in paragraph
-    assert '"which suggests", "that points to"' in paragraph
+    assert "a possibility or a consequence of the described design" in paragraph
     assert "never as a plan or an announced fact" in paragraph
+    assert "never say the company is building, will ship or has decided anything" in paragraph
+    # The fixed reading verbs and the second full date are no longer required.
+    assert '"which suggests", "that points to"' not in paragraph
+    assert "its publication date and its filing date" not in paragraph
     assert rule.CLUSTER_FILINGS_CITED == 2 and rule.PARAGRAPH_SENTENCES == 2
+    assert rule.MAX_PARAGRAPH_WORDS == 60 and rule.MAX_QUOTE_WORDS == 12
 
 
 def test_section_length_is_one_short_signal_and_at_most_one_more():
     length = _rule("**Length.**")
     assert "The lead-in and one signal of two sentences" in length
+    assert "at most 60 words" in length
     assert "at most one more two-sentence signal paragraph" in length
     assert "Nothing more." in length
     assert rule.max_section_paragraphs() == 2
@@ -356,19 +366,21 @@ def test_format_example_opens_on_the_lead_in_and_has_no_extra_lines():
     lines = [line for line in _example().splitlines() if line.strip()]
     assert len(lines) == rule.max_section_paragraphs()
     first, second = lines
-    assert first.startswith("**Patent Secret Signals** - A patent application published")
+    assert first.startswith("**Patent Secret Signals** - A patent application published {publication date}")
     for line in lines:
         assert not re.match(r"\s*(?:[-*•]\s|\d+[.)\\]|#)", line), line
         body = line.removeprefix("**Patent Secret Signals** - ")
         assert "**" not in body, line
-        sentences = [part for part in re.split(r"(?<=[.!?])\s+(?=[{A-Z])", body) if part]
-        assert len(sentences) == rule.PARAGRAPH_SENTENCES, line
-        assert re.search(r"points to|suggests", line), line
-        assert "{publication date}" in line and "{filing date}" in line, line
+        assert len(rule.sentences(line)) == rule.PARAGRAPH_SENTENCES, line
+        assert rule.words(line) <= rule.MAX_PARAGRAPH_WORDS, line
+        assert "{publication date}" in line, line
         assert re.search(r"\b(?:application|grant)\b", line), line
+        assert not re.search(r"\b(?:is building|will ship|has decided)\b", line), line
+    assert "(filed {filing month and year})" in first
     assert re.search(r"\b(?:describes|would|could)\b", first)
     assert first.count("]({filing URL})") == 1
     assert second.count("]({filing URL})") == rule.CLUSTER_FILINGS_CITED
+    assert rule.paragraph_ok(first) and rule.paragraph_ok(second)
 
 
 def test_standout_may_be_a_key_pattern_and_the_footer_stays_the_engines():
@@ -596,3 +608,29 @@ def test_rule_arithmetic_at_the_edges():
     assert rule.signals_shown([{**base, "paths": []}]) == 0
     assert rule.wording(base) == "check first"
     assert not rule.standout(base)
+
+
+PARAGRAPHS = {paragraph["case"]: paragraph for paragraph in LABELLED["paragraphs"]}
+
+
+@pytest.mark.parametrize("case", sorted(PARAGRAPHS))
+def test_each_labelled_paragraph_gets_its_expected_verdict(case):
+    paragraph = PARAGRAPHS[case]
+    assert paragraph["expected"] in {"valid", "invalid"}
+    assert rule.paragraph_ok(paragraph["text"]) is (paragraph["expected"] == "valid"), case
+
+
+def test_a_paragraph_that_says_the_company_is_building_it_is_rejected():
+    plan = PARAGRAPHS["Worded as a plan"]["text"]
+    assert "is building" in plan
+    assert len(rule.sentences(plan)) == 2 and rule.words(plan) <= rule.MAX_PARAGRAPH_WORDS
+    assert not rule.paragraph_ok(plan)
+    accepted = PARAGRAPHS["Accepted plain-words signal"]["text"]
+    assert rule.paragraph_ok(accepted)
+    assert rule.paragraph_ok(accepted.replace("That way", "It suggests that"))
+
+
+def test_the_cluster_example_stays_under_the_word_limit_outside_its_two_titles():
+    _first, cluster = [line for line in _example().splitlines() if line.strip()]
+    assert cluster.count("](") == 2
+    assert rule.words(cluster) <= rule.MAX_PARAGRAPH_WORDS
