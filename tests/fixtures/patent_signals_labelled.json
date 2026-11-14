@@ -1,5 +1,5 @@
 {
-  "about": "Labelled candidate filings for the Patent Secret Signals rules in skills/last30days/references/patent-signals.md. These are constructed cases, one per rule, not saved digests: the filings are invented to show a rule and say nothing about any real company's filings. Per candidate: kind is 'first publication' unless stated ('continuation', 'divisional', 'grant published earlier' and 'design' are counted by the digest and never signals). titles_only is true for an entry the digest lists by title, with no abstract or first claim. concrete is true when the first claim and abstract name a device, material, user or use a reader can picture. paths lists which paths of the bar the candidate meets (1 out of character, 2 a recognisable product the company has not shipped or announced, 3 bears on a story in the report). shipped_match is true when the web check found a shipped or announced product that matches, false when it found none, null when it was not checked while labelling; covered is the same for coverage of the filing. reported_match, when present, is true when the web check found no shipped or announced product but found a leak or press report describing a matching one; it removes path 2 just as a shipped match does. name_matched is true for an entry the digest marks name-matched; entity_known is then true when the filing entity is known to belong to the company, false when known not to, null when not known. location_contradicts is true when the applicant location plainly contradicts the company. A candidate with a cluster list is several filings that share one specific focus; members that share one priority date and one filed_as name are one invention family. jobs_signals is how many signal paragraphs the same report's Jobs Page Secret Signals section has.",
+  "about": "Labelled candidate filings for the Patent Secret Signals rules in skills/last30days/references/patent-signals.md. These are constructed cases, one per rule, not saved digests: the filings are invented to show a rule and say nothing about any real company's filings. Per candidate: kind is 'first publication' unless stated ('continuation', 'divisional', 'grant published earlier' and 'design' are counted by the digest and never signals). titles_only is true for an entry the digest lists by title, with no abstract or first claim; such an entry is never a signal. concrete is true when the first claim and abstract name a device, material, user or use a reader can picture. paths lists which of the two qualifying paths the candidate meets (1 out of character, 2 a recognisable product the company has not shipped or announced). story_tie is true when the filing fits a story in the report; it never qualifies a candidate on its own. shipped_match is true when the web check found a shipped or announced product that matches, false when it found none, null when it was not checked while labelling; covered is the same for coverage of the filing. reported_match, when present, is true when the web check found no shipped or announced product but found a leak or press report describing a matching one; it removes path 2 just as a shipped match does. not_verified is true for an entry the digest marks not verified (a filer whose name extends the company's by more than legal or holding words); entity_known is then true when the filing entity is known to belong to the company, false when known not to, null when not known. location_contradicts is true when the applicant location plainly contradicts the company. A candidate with a cluster list is several filings that share one specific focus; members that share one priority date and one filed_as name are one invention family. jobs_signals is how many signal paragraphs the same report's Jobs Page Secret Signals section has.",
   "companies": [
     {
       "case": "Chip maker",
@@ -110,19 +110,19 @@
     {
       "case": "Car maker, titles only",
       "report_story": "Regulators are investigating crashes involving the car maker's driver-assistance system",
-      "expected_section": "present",
-      "expected_signals": 1,
+      "expected_section": "absent",
+      "expected_signals": 0,
       "candidates": [
         {
           "title": "Detecting driver inattention while a driver-assistance system is engaged",
           "titles_only": true,
           "concrete": false,
-          "paths": [
-            3
-          ],
+          "paths": [],
           "shipped_match": null,
           "covered": null,
-          "expected": "qualifies"
+          "expected": "does not qualify",
+          "story_tie": true,
+          "note": "Titles only and only fits a story: never a signal."
         },
         {
           "title": "Robotic arm for folding laundry",
@@ -132,6 +132,54 @@
           "paths": [
             1
           ],
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "case": "AI lab, story tie and an announced product",
+      "report_story": "The lab is pushing hard into security products this month",
+      "expected_section": "absent",
+      "expected_signals": 0,
+      "candidates": [
+        {
+          "title": "Detecting vulnerabilities in code commits with generative model agents",
+          "note": "Concrete and fits the story, but the lab announced this agent last year.",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "story_tie": true,
+          "shipped_match": true,
+          "covered": null,
+          "expected": "does not qualify"
+        }
+      ]
+    },
+    {
+      "case": "Device maker, one unshipped product and one story tie",
+      "report_story": "The company's first folding phone has display returns",
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Controlling objects in a room by tapping them in a saved photo of it",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies"
+        },
+        {
+          "title": "Trim around a folding display made of rigid and elastic polymers",
+          "note": "In character for a company that sells a folding phone; it only fits the display story.",
+          "concrete": true,
+          "paths": [],
+          "story_tie": true,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify"
@@ -228,15 +276,14 @@
       ]
     },
     {
-      "case": "Microsoft, name-matched entity known",
+      "case": "Meta, unverified filer known to be the company's",
       "report_story": null,
       "expected_section": "present",
       "expected_signals": 1,
       "candidates": [
         {
           "title": "Glove that gives the wearer a sense of touch in a virtual scene",
-          "filed_as": "Microsoft Technology Licensing, LLC",
-          "name_matched": true,
+          "filed_as": "Meta Platforms Technologies, LLC",
           "entity_known": true,
           "concrete": true,
           "paths": [
@@ -244,12 +291,13 @@
           ],
           "shipped_match": false,
           "covered": false,
-          "expected": "qualifies"
+          "expected": "qualifies",
+          "not_verified": true
         }
       ]
     },
     {
-      "case": "Block, name-matched entity not the company's",
+      "case": "Block, unverified filer not the company's",
       "report_story": null,
       "expected_section": "absent",
       "expected_signals": 0,
@@ -258,7 +306,6 @@
           "title": "Cradle for moving an MRI magnet",
           "filed_as": "Block Imaging, Inc.",
           "note": "A different company whose name starts with the same word.",
-          "name_matched": true,
           "entity_known": false,
           "concrete": true,
           "paths": [
@@ -266,13 +313,13 @@
           ],
           "shipped_match": null,
           "covered": null,
-          "expected": "does not qualify"
+          "expected": "does not qualify",
+          "not_verified": true
         },
         {
           "title": "Card reader that charges from the phone it is attached to",
           "filed_as": "Block Payments Holdings Ltd",
           "note": "The labeller does not know whose entity this is, so it is left out.",
-          "name_matched": true,
           "entity_known": null,
           "concrete": true,
           "paths": [
@@ -280,7 +327,8 @@
           ],
           "shipped_match": null,
           "covered": null,
-          "expected": "does not qualify"
+          "expected": "does not qualify",
+          "not_verified": true
         },
         {
           "title": "Concrete block with interlocking faces",
