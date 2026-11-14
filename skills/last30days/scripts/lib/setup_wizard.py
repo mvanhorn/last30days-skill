@@ -340,10 +340,13 @@ def _upgrade_helper(slug: str, bin_name: str) -> Tuple[bool, str, str, str]:
         stderr_msg = stderr or f"upgrade completed but {bin_name} was not found"
         logger.warning("npx upgrade %s failed verification: %s", slug, stderr_msg)
         return False, "install_failed", stderr_msg, ""
-    if health.helper_outdated(bin_name, resolved):
+    outdated = health.helper_outdated(bin_name, resolved)
+    if outdated is not False:
         stderr_msg = (
             f"upgrade completed but {resolved} is still older than the engine "
             "needs; an older copy may sit earlier on PATH"
+            if outdated
+            else f"upgrade completed but the version of {resolved} could not be read"
         )
         logger.warning("npx upgrade %s: %s", slug, stderr_msg)
         return True, "install_failed", stderr_msg, ""

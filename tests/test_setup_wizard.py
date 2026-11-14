@@ -635,6 +635,14 @@ class TestDiggUpgrade:
         assert (active, action) == (True, "install_failed")
         assert "older" in stderr
 
+    def test_upgrade_whose_new_version_cannot_be_read_is_not_upgraded(self, monkeypatch):
+        (active, action, stderr, _), installs = self._run(
+            monkeypatch, before="digg-pp-cli 2026.7.1", after="digg-pp-cli dev",
+        )
+        assert (active, action) == (True, "install_failed")
+        assert "could not be read" in stderr
+        assert len(installs) == 1
+
     def test_no_npx_reports_the_outdated_helper_with_the_manual_command(self, monkeypatch):
         (active, action, _, _), installs = self._run(
             monkeypatch, before="digg-pp-cli 2026.7.1", npx=False,
