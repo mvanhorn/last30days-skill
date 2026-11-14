@@ -34,6 +34,11 @@ DIGEST_MAX_CHARS = 36_000
 # Locations named on one entry before the rest are counted.
 DIGEST_ENTRY_LOCATIONS = 3
 
+def unreadable_job_site_line(name: str) -> str:
+    """What the run says about a company's job site it knows and cannot read."""
+    return f"{name}'s job site can't be read automatically"
+
+
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"“(])")
 _TITLE_TERM = re.compile(r"[a-z][a-z0-9+#-]{2,}")
 

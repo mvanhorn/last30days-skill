@@ -2997,6 +2997,13 @@ def run(
                 bundle.artifacts["jobs"] = _jobs_board_artifact(artifact)
                 bundle.jobs_board_rows = list(raw_items)
                 artifact = {key: value for key, value in artifact.items() if key != "digest"}
+            elif (
+                source == "jobs" and isinstance(artifact, dict)
+                and artifact.get("job_site_unreadable") and "jobs" not in bundle.artifacts
+            ):
+                # The company's job site is known and cannot be read: the
+                # footer says so rather than printing nothing.
+                bundle.artifacts["jobs_site_unreadable"] = str(artifact["job_site_unreadable"])
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
@@ -4228,6 +4235,7 @@ def _search_jobs_lane(
             artifact["board_of"] = stated
     if not items and not _is_jobs_board("jobs", artifact) and not (
         budget.stopped_at or budget.spent() or budget.unanswered
+        or artifact.get("job_site_unreadable")
     ):
         jobs.log_no_board([name, *hosts])
     # Nothing failed and time was left: the answer will not change on a

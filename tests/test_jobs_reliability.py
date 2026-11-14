@@ -271,29 +271,31 @@ OWN_SYSTEM = """
 
 
 def test_careers_site_with_no_supported_board_returns_quietly(capsys):
+    # A company whose site is in neither the company-board registry nor its
+    # list of unreadable job sites.
     fetched = []
 
     def page(url, **_kwargs):
         fetched.append(url)
-        return OWN_SYSTEM if "google.com" in url else None
+        return OWN_SYSTEM if "initech.com" in url else None
 
     with patch("lib.jobs.http.get_text", side_effect=page), \
             patch("lib.jobs.http.get", side_effect=_not_found), \
             http.capture_failures() as failures:
         items, artifact = jobs.search_jobs(
-            "Google", WINDOW, {}, web_backend="none", site="https://www.google.com",
+            "Initech", WINDOW, {}, web_backend="none", site="https://www.initech.com",
         )
 
     assert fetched == [
-        "https://www.google.com/careers",
-        "https://www.google.com/about/careers/applications/jobs/results",
+        "https://www.initech.com/careers",
+        "https://www.initech.com/about/careers/applications/jobs/results",
     ]
     assert items == []
     assert artifact["tier"] == "web"
     assert failures == []
     assert "_source_outcome" not in artifact
     assert "_source_outcome_detail" not in artifact
-    assert "[Jobs] no supported job board found for Google" in capsys.readouterr().err
+    assert "[Jobs] no supported job board found for Initech" in capsys.readouterr().err
 
 
 # --- The official site the run already knows ---

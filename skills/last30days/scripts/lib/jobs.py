@@ -66,6 +66,51 @@ API_TIMEOUT_SECONDS = 10
 SMARTRECRUITERS_PAGE_SIZE = 100
 SMARTRECRUITERS_ROW_CEILING = 2000
 
+# Company-run job boards. A large company often runs its own job site rather
+# than a hosted system, so no link on its careers page names a board to read.
+# These are read only when the run knows the company's official site, and the
+# site's host is what picks the board, so a reader is never reached by
+# guessing a domain or matching a name.
+COMPANY_PROVIDER_APPLE = "apple"
+COMPANY_PROVIDER_AMAZON = "amazon"
+COMPANY_PROVIDER_EIGHTFOLD = "eightfold"
+# Official-site host -> the board that site's company runs. ``name`` is how
+# the footer names the company when its board cannot be read.
+COMPANY_BOARDS: dict[str, dict[str, str]] = {
+    "apple.com": {"name": "Apple", "provider": COMPANY_PROVIDER_APPLE, "board": "jobs.apple.com"},
+    "amazon.com": {"name": "Amazon", "provider": COMPANY_PROVIDER_AMAZON, "board": "www.amazon.jobs"},
+    "microsoft.com": {
+        "name": "Microsoft", "provider": COMPANY_PROVIDER_EIGHTFOLD,
+        "board": "apply.careers.microsoft.com", "domain": "microsoft.com", "api": "pcsx",
+    },
+    "qualcomm.com": {
+        "name": "Qualcomm", "provider": COMPANY_PROVIDER_EIGHTFOLD,
+        "board": "careers.qualcomm.com", "domain": "qualcomm.com", "api": "pcsx",
+    },
+    "netflix.com": {
+        "name": "Netflix", "provider": COMPANY_PROVIDER_EIGHTFOLD,
+        "board": "explore.jobs.netflix.net", "domain": "netflix.com", "api": "v2",
+    },
+}
+# Official-site hosts whose job site is not read: its robots.txt disallows the
+# listing, its site prohibits automated collection, or it answers automated
+# requests with a challenge page. No request is sent to them.
+UNREADABLE_JOB_SITES: dict[str, dict[str, str]] = {
+    "google.com": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
+    "about.google": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
+    "abc.xyz": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
+    "disney.com": {"name": "Disney", "reason": "its robots.txt disallows the job search"},
+    "thewaltdisneycompany.com": {"name": "Disney", "reason": "its robots.txt disallows the job search"},
+    "meta.com": {"name": "Meta", "reason": "its site prohibits automated collection"},
+    "tesla.com": {"name": "Tesla", "reason": "it answers automated requests with a block page"},
+    "uber.com": {"name": "Uber", "reason": "it answers automated requests with a challenge page"},
+    "sap.com": {"name": "SAP", "reason": "it answers automated requests with a challenge page"},
+}
+# Share of the lane's remaining time a company board's listing leaves for the
+# role text of the roles the digest selects, so a long list never costs the
+# digest its text.
+DETAIL_SHARE = 1 / 3
+
 # Detection patterns: map an ATS embed/link found on a careers page to
 # (provider, slug). The published slug is authoritative - this is why discovery
 # is careers-page-first rather than blind probing.
@@ -327,7 +372,10 @@ def _with_budget_outcome(
             **artifact,
             "_source_outcome": {"state": health.TIMEOUT, "detail": reason, "attempted": True},
         }
-    if artifact.get("tier") == "web" and not items and not quiet:
+    if (
+        artifact.get("tier") == "web" and not items and not quiet
+        and not artifact.get("job_site_unreadable")
+    ):
         log_no_board([company])
     return artifact
 
@@ -345,6 +393,76 @@ def log_no_board(companies: list[str]) -> None:
     )
 
 
+def _registry_entry(site: str) -> tuple[str, dict[str, str]] | None:
+    """The registry entry for a known official site: ``("board", entry)`` for a
+    company board the lane reads, ``("unreadable", entry)`` for a job site it
+    does not, or None when the site is in neither."""
+    host = _host(site) if site else ""
+    if not host:
+        return None
+    for kind, table in (("board", COMPANY_BOARDS), ("unreadable", UNREADABLE_JOB_SITES)):
+        for key, entry in table.items():
+            if _same_site(host, key):
+                return kind, {**entry, "site": key}
+    return None
+
+
+def _job_site_unreadable(
+    company: str,
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+    entry: dict[str, str],
+    reason: str,
+    *,
+    attempted: list[str],
+    web_backend: str,
+    explicit: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The lane's answer when the company's job site is known and not read.
+
+    Says so once, then runs the web tier as any run without a board does. No
+    careers page is fetched and no hosted-system slug is guessed.
+    """
+    name = entry.get("name") or company
+    log.source_log(
+        "Jobs", f"{jobs_digest.unreadable_job_site_line(name)} ({entry.get('site', '')}: {reason})",
+        tty_only=False,
+    )
+    items, artifact = _web_tier(
+        company, date_range, config, attempted=attempted, web_backend=web_backend,
+        explicit=explicit,
+    )
+    artifact["job_site_unreadable"] = name
+    return items, artifact
+
+
+def _web_tier(
+    company: str,
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+    *,
+    attempted: list[str],
+    web_backend: str,
+    explicit: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Tier 3: a generic web search for postings (noisy, low-confidence)."""
+    fallback_items, artifact = _within_budget(
+        lambda: search_jobs_web(company, date_range, config, backend=web_backend),
+        "the web search for jobs pages",
+        ([], {}),
+    ) if web_backend != "none" else ([], {})
+    artifact = dict(artifact or {})
+    artifact.setdefault("attempted", attempted)
+    artifact.update({
+        "label": artifact.get("label", "jobs"),
+        "company": company,
+        "tier": "web",
+        "explicit": explicit,
+        "resultCount": len(fallback_items),
+    })
+    return fallback_items, artifact
+
+
 def _search_jobs(
     company: str,
     date_range: tuple[str, str],
@@ -356,6 +474,27 @@ def _search_jobs(
     budget: LaneBudget,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     attempted: list[str] = []
+
+    # --- A company that runs its own job site, known by its official site. ---
+    registered = _registry_entry(site)
+    if registered is not None:
+        kind, entry = registered
+        if kind == "board":
+            attempted.append(f"company:{entry['provider']}:{entry['board']}")
+            found = _read_board(
+                company, entry["provider"], entry["board"], date_range,
+                attempted=attempted, explicit=explicit, budget=budget,
+                found_via="site", company_board=entry,
+            )
+            if found is not None:
+                return found
+            reason = "its job board answered with an error or with no roles the lane could read"
+        else:
+            reason = entry["reason"]
+        return _job_site_unreadable(
+            company, date_range, config, entry, reason,
+            attempted=attempted, web_backend=web_backend, explicit=explicit,
+        )
 
     # --- Discovery: fetch the careers page and read the ATS off it (Tier 1). ---
     careers_html, careers_url = _resolve_careers_page(
@@ -419,21 +558,10 @@ def _search_jobs(
                                            explicit, tier="careers-jsonld")
 
     # --- Tier 3: generic web search (noisy, low-confidence). ---
-    fallback_items, artifact = _within_budget(
-        lambda: search_jobs_web(company, date_range, config, backend=web_backend),
-        "the web search for jobs pages",
-        ([], {}),
-    ) if web_backend != "none" else ([], {})
-    artifact = dict(artifact or {})
-    artifact.setdefault("attempted", attempted)
-    artifact.update({
-        "label": artifact.get("label", "jobs"),
-        "company": company,
-        "tier": "web",
-        "explicit": explicit,
-        "resultCount": len(fallback_items),
-    })
-    return fallback_items, artifact
+    return _web_tier(
+        company, date_range, config, attempted=attempted, web_backend=web_backend,
+        explicit=explicit,
+    )
 
 
 def _read_board(
@@ -451,6 +579,7 @@ def _read_board(
     owner: Callable[[str], tuple[str, str]] | None = None,
     full: bool = True,
     probed_board: dict[str, Any] | None = None,
+    company_board: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     """Read a found board and build its artifact, or None when it holds nothing.
 
@@ -466,11 +595,18 @@ def _read_board(
     that is known. With ``full`` off (a host board not yet tied to the
     company) the read stays inside the discovery share and a paged board
     gives its first page only.
+
+    ``company_board`` is the registry entry of a company-run board, which is
+    read by its own reader. Its listing stops early enough to leave
+    ``DETAIL_SHARE`` of the time for the role text of the selected roles.
     """
     if full:
         budget.limit_discovery(None)
     board: dict[str, Any] = dict(probed_board or {})
     deadline = budget.deadline if full else min(budget.deadline, budget.step_deadline)
+    list_deadline = deadline
+    if company_board is not None and provider in _DETAIL_FETCHERS:
+        list_deadline = deadline - budget.remaining() * DETAIL_SHARE
     # Passed only when set, so the plain call stays what it always was.
     part: dict[str, Any] = {} if full else {"first_page_only": True}
     try:
@@ -479,6 +615,8 @@ def _read_board(
             items = probed
         elif _out_of_time(f"reading the {provider} board {slug}"):
             items = []
+        elif company_board is not None:
+            items, board = _company_reader(provider)(company_board, deadline=list_deadline)
         elif provider == ATS_PROVIDER_WORKDAY:
             items, board = search_workday_board(slug, deadline=deadline, **part)
         elif provider == ATS_PROVIDER_SMARTRECRUITERS:
@@ -521,13 +659,17 @@ def _read_board(
         "owned": owned,
     })
     if owned:
-        selected = jobs_digest.select_roles(items)
+        # Roles a board marks as kept out of the digest (Apple's retail store
+        # roles) are counted on the board but never chosen.
+        eligible = [item for item in items if not item.get("digest_excluded")]
+        selected = jobs_digest.select_roles(eligible)
         late = failed = 0
-        if provider == ATS_PROVIDER_WORKDAY:
-            late, failed = fetch_workday_details(
+        fetch_details = _detail_fetcher(provider)
+        if fetch_details is not None:
+            late, failed = fetch_details(
                 [role["item"] for role in selected], deadline=deadline,
             )
-        artifact["digest"] = jobs_digest.build_digest(items, selected)
+        artifact["digest"] = jobs_digest.build_digest(eligible, selected)
         notes = []
         coverage = _coverage_note(items, board, provider, budget)
         if coverage:
@@ -796,11 +938,19 @@ def _coverage_note(
     """What stopped a board's listing short of the rows it reports, or ''."""
     if not board.get("board_cut_short"):
         return ""
-    listed = min(int(board.get("board_total") or 0), WORKDAY_ROW_CEILING)
+    listed = int(board.get("board_total") or 0)
+    if not board.get("board_newest_first"):
+        listed = min(listed, WORKDAY_ROW_CEILING)
     read = f"{len(items):,} rows read" + (
         f" of the {listed:,} the board lists" if listed > len(items) else ""
     )
-    if provider == ATS_PROVIDER_WORKABLE:
+    if board.get("board_newest_first"):
+        cause = "the newest roles are read first"
+        if budget.spent():
+            cause += f" and the lane's {budget.seconds:g}s time budget ran out"
+        elif board.get("board_row_ceiling"):
+            cause += f", up to {int(board['board_row_ceiling']):,} rows"
+    elif provider == ATS_PROVIDER_WORKABLE:
         cause = "only the board's first page is read"
     elif board.get("board_first_page_only"):
         cause = "only the first page of a board not tied to the company is read"
@@ -1140,9 +1290,27 @@ def _board_counts(
     ``open_roles_floor`` marks a count the board stopped short of (its row
     ceiling, or a listing cut short). ``new_in_window`` is a number only when
     the whole board was read and every role carries a true first-posted date;
-    otherwise it is None.
+    otherwise it is None. A board read newest first (``board_newest_first``)
+    reports its own total instead, see below.
     """
     from_date, to_date = date_range
+    if board.get("board_newest_first"):
+        # A board too large to read whole, read newest first: the open-role
+        # count is the total it reports, and the roles new in the window are
+        # counted only when the read went past the window's oldest day.
+        covered = bool(board.get("board_window_covered"))
+        return {
+            "open_roles": max(int(board.get("board_total") or 0), len(items)),
+            "open_roles_floor": bool(board.get("board_total_floor")),
+            "new_in_window": (
+                sum(
+                    1 for item in items
+                    if item.get("posted_date_true") and item.get("date")
+                    and from_date <= str(item["date"]) <= to_date
+                )
+                if covered else None
+            ),
+        }
     floor = bool(board.get("board_capped") or board.get("board_cut_short"))
     dated = not floor and all(
         item.get("posted_date_true") and item.get("date") for item in items
@@ -1951,6 +2119,9 @@ def _ats_item(
         ATS_PROVIDER_WORKABLE: "WK",
         ATS_PROVIDER_SMARTRECRUITERS: "SR",
         ATS_PROVIDER_WORKDAY: "WD",
+        COMPANY_PROVIDER_APPLE: "AP",
+        COMPANY_PROVIDER_AMAZON: "AZ",
+        COMPANY_PROVIDER_EIGHTFOLD: "EF",
     }.get(provider, "AT")
     return {
         "id": f"{prefix}{ident or slug}",
@@ -2117,3 +2288,22 @@ def _looks_like_careers_html(html: str) -> bool:
         return True
     return bool(re.search(r"\b(open roles|open positions|join (our|the) team|current openings|jobposting)\b", lowered))
 
+
+# Readers of company-run boards, by provider: given the registry entry and the
+# listing's deadline, each returns ``(items, board_info)`` like the hosted
+# readers. Detail fetchers fill role text for the roles the digest selected
+# and return how many were left unfetched (late, failed). Both are named, and
+# looked up when called, so a test may stand in for one.
+_COMPANY_READERS: dict[str, str] = {}
+_DETAIL_FETCHERS: dict[str, str] = {
+    ATS_PROVIDER_WORKDAY: "fetch_workday_details",
+}
+
+
+def _company_reader(provider: str) -> Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]]:
+    return globals()[_COMPANY_READERS[provider]]
+
+
+def _detail_fetcher(provider: str) -> Callable[..., tuple[int, int]] | None:
+    name = _DETAIL_FETCHERS.get(provider)
+    return globals()[name] if name else None
