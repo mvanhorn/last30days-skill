@@ -47,21 +47,19 @@ State only counts the digest prints or its listed roles show. Never estimate one
 
 The counts above apply to signals kept after this check, however they are worded.
 
-**Format.** The section sits after the last story paragraph and before `KEY PATTERNS from the research:`. It opens with the bold lead-in `**Jobs Page Secret Signals** - ` and one sentence giving the board's open-role count and its new-in-window count as the engine printed them (leave the second out when the `Board:` line has none). Then one short paragraph per signal, with a blank line between paragraphs: no bullets, no numbered list, no `##` header, and no bold headline on the signal paragraphs, because the lead-in is the section's headline. The section closes with this sentence on its own line: "These are open postings, not hires or announcements."
+**Format.** The section sits after the last story paragraph and before `KEY PATTERNS from the research:`. It opens with the bold lead-in `**Jobs Page Secret Signals** - ` and runs straight into the first signal, whose opening sentence carries the board's open-role count and its new-in-window count as a clause, as the engine printed them: not a sentence of its own. Leave the new-in-window count out when the `Board:` line has none, and the open-role count too when the `Board:` line prints none. Then one short paragraph per signal, with a blank line between paragraphs: no bullets, no numbered list, no `##` header, and no bold headline on the signal paragraphs, because the lead-in is the section's headline. The section closes with this sentence on its own line: "These are open postings, not hires or announcements."
 
-**Each signal paragraph** is two to three sentences and does two things:
+**Each signal paragraph** is two sentences, written for a reader who has never seen the posting: lead with what the role is, then what it would mean.
 
-- **What the company is hiring for.** Say it in plain words, name the role, quote the posting's own words briefly, and link the posting URL exactly as the digest printed it: `[role title](posting URL)` on every host, never a rebuilt or shortened URL. For a cluster, say how many postings there are and cite two of them, each with its link and a short quote.
-- **Why it is interesting.** One sentence on what it suggests and why that matters this month, tied to a story in this report when one exists. Word it as a reading ("which suggests", "that points to"), never as an announced fact.
+- **What the company is hiring for.** The first sentence says it in plain words; name the role and link the posting URL exactly as the digest printed it: `[role title](posting URL)` on every host, never a rebuilt or shortened URL. You may quote the posting's own words briefly, at most 12 words. For a cluster, say how many postings there are and cite two of them, each with its link.
+- **Why it is interesting.** The second sentence says what the hire would let the company do, or what it suggests and why that matters this month, tied to a story in this report when one exists. Word it as a possibility or a reading ("which suggests", "that points to"), never as an announced fact: never say the company is building, will ship or has decided anything.
 
-**Length.** The lead-in line, at most two signal paragraphs of two to three sentences each, and the closing line. Nothing more.
+**Length.** The lead-in running into the first signal, at most two signal paragraphs of two sentences each, and the closing line. Nothing more.
 
 ```
-**Jobs Page Secret Signals** - {Company}'s own job board lists {N} open roles, {M} of them posted in the window.
+**Jobs Page Secret Signals** - Among the {N} open roles on {Company}'s own job board ({M} posted in the window) is a [{role title}]({posting URL}) asking for "{the posting's own words}". {What that hire would let the company do, or what it suggests this month}.
 
-{What the company is hiring for, in plain words}: the [{role title}]({posting URL}) posting asks for "{the posting's own words}". {That points to a reading of it, and why it matters this month}.
-
-{Company} has {K} open postings on {the shared focus}, among them [{role title}]({posting URL}) ("{its words}") and [{role title}]({posting URL}) ("{its words}"). {Which suggests a reading, tied to a story in this report}.
+{Company} has {K} open postings on {the shared focus}, among them [{role title}]({posting URL}) and [{role title}]({posting URL}). {What that suggests, tied to a story in this report}.
 
 These are open postings, not hires or announcements.
 ```

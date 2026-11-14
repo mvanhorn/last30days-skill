@@ -96,10 +96,10 @@ This set is separate from the harness above, which runs the pipeline and never a
 That proves the arithmetic and the labels' consistency. It does not prove a model finds those signals or judges the tests the same way. For that, check by hand on a host with web search:
 
 1. Run `/last30days <Company>` for each of the four companies.
-2. Compare the section with the board's `expected_section`. Stripe should show one signal, and no section has more than two signal paragraphs of two to three sentences. A "Jensen Huang" run should show the public sector cluster as one signal that cites two postings.
+2. Compare the section with the board's `expected_section`. Stripe should show one signal, and no section has more than two signal paragraphs of two sentences each. A "Jensen Huang" run should show the public sector cluster as one signal that cites two postings.
 3. Where a section appears, compare its signals with the candidates labelled `qualifies`. Boards change, so match on what the signal is, not on the exact role title, and look for a signal labelled `does not qualify` being shown.
 4. Check the wording against `public`: SpaceX's Starmind may appear only as already public, never as unreported.
-5. Check the form: bold lead-in with the board's counts, one paragraph per signal with a quote and the posting link, no list, and the closing sentence about open postings.
+5. Check the form: the bold lead-in runs straight into the first signal, whose opening sentence carries the board's counts as a clause; each signal is two sentences that say what the role is in plain words, link the posting, and say what it would mean; no list; and the closing sentence about open postings.
 
 The Nvidia label that rests on a report story applies only when that month's report carries that story.
 

@@ -151,22 +151,26 @@ def test_a_cluster_of_three_or_more_postings_is_one_signal():
 
 def test_each_signal_says_what_is_hired_for_and_why_it_is_interesting():
     paragraph = _rule("**Each signal paragraph**")
-    assert "two to three sentences" in paragraph
+    assert "is two sentences" in paragraph
+    assert "lead with what the role is" in paragraph
     assert "**What the company is hiring for.**" in paragraph
     assert "**Why it is interesting.**" in paragraph
-    assert "what it suggests and why that matters this month" in paragraph
+    assert "what the hire would let the company do, or what it suggests and why that matters this month" in paragraph
     assert "tied to a story in this report when one exists" in paragraph
     assert '"which suggests", "that points to"' in paragraph
     assert "never as an announced fact" in paragraph
+    assert "never say the company is building, will ship or has decided anything" in paragraph
     assert "say how many postings there are and cite two of them" in paragraph
-    assert rule.CLUSTER_POSTINGS_CITED == 2 and rule.MAX_PARAGRAPH_SENTENCES == 3
+    assert rule.CLUSTER_POSTINGS_CITED == 2 and rule.MAX_PARAGRAPH_SENTENCES == 2
+    assert rule.MAX_QUOTE_WORDS == 12
 
 
 def test_section_length_is_a_lead_in_two_short_paragraphs_at_most_and_the_closing_line():
     length = _rule("**Length.**")
-    assert "at most two signal paragraphs of two to three sentences each" in length
+    assert "The lead-in running into the first signal" in length
+    assert "at most two signal paragraphs of two sentences each" in length
     assert "Nothing more." in length
-    assert rule.max_section_paragraphs() == 4
+    assert rule.max_section_paragraphs() == 3
 
 
 # --- the web check ------------------------------------------------------------------
@@ -198,6 +202,11 @@ def test_format_is_a_lead_in_then_one_list_free_paragraph_per_signal():
     fmt = _rule("**Format.**")
     assert "`**Jobs Page Secret Signals** - `" in fmt
     assert "as the engine printed them" in fmt
+    assert "runs straight into the first signal" in fmt
+    assert "carries the board's open-role count and its new-in-window count as a clause" in fmt
+    assert "not a sentence of its own" in fmt
+    assert "Leave the new-in-window count out when the `Board:` line has none" in fmt
+    assert "the open-role count too when the `Board:` line prints none" in fmt
     assert "one short paragraph per signal" in fmt
     assert "no bullets, no numbered list, no `##` header" in fmt
 
@@ -222,13 +231,15 @@ def test_format_example_is_list_free_and_ends_on_the_disclaimer():
     assert lines[-1] == CLOSING
     for line in lines:
         assert not re.match(r"\s*(?:[-*•]\s|\d+[.)\\]|#)", line), line
-    # Lead-in, a single-posting signal, a cluster signal, the closing line.
+    # The lead-in running into a single-posting signal, a cluster signal, the closing line.
     assert len(lines) == rule.max_section_paragraphs()
-    for paragraph in lines[1:-1]:
-        sentences = [part for part in re.split(r"(?<=[.!?])\s+(?=[{A-Z])", paragraph) if part]
-        assert 2 <= len(sentences) <= rule.MAX_PARAGRAPH_SENTENCES, paragraph
-        assert re.search(r"points to|suggests", paragraph), paragraph
-    assert lines[2].count("]({posting URL})") == rule.CLUSTER_POSTINGS_CITED
+    opening = rule.sentences(lines[0])[0]
+    assert "{N} open roles" in opening and "({M} posted in the window)" in opening
+    for paragraph in lines[:-1]:
+        assert len(rule.sentences(paragraph)) == rule.MAX_PARAGRAPH_SENTENCES, paragraph
+        assert rule.paragraph_ok(paragraph), paragraph
+    assert lines[0].count("]({posting URL})") == 1
+    assert lines[1].count("]({posting URL})") == rule.CLUSTER_POSTINGS_CITED
 
 
 def test_standout_may_be_a_key_pattern_and_the_footer_stays_the_engines():
@@ -368,3 +379,19 @@ def test_rule_arithmetic_at_the_edges():
     assert not rule.qualifies([2], postings=5)
     assert rule.wording({"public": None}) == "check first"
     assert not rule.standout({"tests": [1, 2, 3], "public": None})
+
+
+PARAGRAPHS = {paragraph["case"]: paragraph for paragraph in LABELLED["paragraphs"]}
+
+
+@pytest.mark.parametrize("case", sorted(PARAGRAPHS))
+def test_each_labelled_paragraph_gets_its_expected_verdict(case):
+    paragraph = PARAGRAPHS[case]
+    assert paragraph["expected"] in {"valid", "invalid"}
+    assert rule.paragraph_ok(paragraph["text"]) is (paragraph["expected"] == "valid"), case
+
+
+def test_a_three_sentence_paragraph_is_rejected():
+    three = PARAGRAPHS["Three sentences"]["text"]
+    assert len(rule.sentences(three)) == 3
+    assert not rule.paragraph_ok(three)
