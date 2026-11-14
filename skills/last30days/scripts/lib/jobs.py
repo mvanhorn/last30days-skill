@@ -2443,13 +2443,11 @@ def read_amazon_board(
     return items, info
 
 
-# Apple: a JSON search API, 20 roles per call with a short summary, and a
-# details page per role whose embedded data holds the full text.
+# Apple: a JSON search API, 20 rows per call with a short summary, one row per
+# role and location, and a JSON details call per role with the full text.
 
 _APPLE_SEARCH_URL = "https://jobs.apple.com/api/v1/search"
-_APPLE_HYDRATION = re.compile(
-    r"__staticRouterHydrationData\s*=\s*JSON\.parse\((\"(?:[^\"\\]|\\.)*\")\)", re.S,
-)
+_APPLE_DETAILS_URL = "https://jobs.apple.com/api/v1/jobDetails/{position}?locale=en-us"
 
 
 def _apple_search_body(page: int) -> dict[str, Any]:
@@ -2500,6 +2498,7 @@ def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
             whole_posting=True,
         )
         item["digest_excluded"] = pipeline or team.get("teamCode") == APPLE_RETAIL_TEAM
+        item["detail_url"] = _APPLE_DETAILS_URL.format(position=job["positionId"])
         items.append(item)
     return items, _reported_total(res, "totalRecords")
 
@@ -2516,31 +2515,33 @@ def read_apple_board(
             timeout=API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
         )
 
-    return _read_newest_first(
+    items, info = _read_newest_first(
         page, parse_apple_response, page_size=APPLE_PAGE_SIZE,
         row_ceiling=COMPANY_BOARD_ROW_CEILING, window_start=date_range[0], deadline=deadline,
     )
+    return _one_row_per_role(items), info
 
 
-def parse_apple_detail(html: str) -> dict[str, str] | None:
-    """The description and the minimum and preferred qualifications from an
-    Apple details page, or None when the page holds no role data.
+def _one_row_per_role(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apple lists a role once per location; keep one row with every location."""
+    roles: dict[str, dict[str, Any]] = {}
+    for item in items:
+        kept = roles.setdefault(str(item["url"]), item)
+        if kept is not item:
+            kept["offices"].extend(
+                office for office in item["offices"] if office not in kept["offices"]
+            )
+    return list(roles.values())
 
-    The data is a JSON string inside a JavaScript string, so it is decoded twice.
-    """
-    match = _APPLE_HYDRATION.search(html or "")
-    if not match:
-        return None
-    try:
-        data = json.loads(json.loads(match.group(1)))
-        role = data["loaderData"]["jobDetails"]["jobsData"]
-    except (ValueError, KeyError, TypeError):
-        return None
+
+def parse_apple_detail(payload: Any) -> dict[str, str] | None:
+    """The text fields of one Apple details answer, or None when it holds none."""
+    role = payload.get("res") if isinstance(payload, dict) else None
     if not isinstance(role, dict):
         return None
     found = {
         key: str(role.get(key) or "").strip()
-        for key in ("description", "minimumQualifications", "preferredQualifications")
+        for key in ("description", "responsibilities", "minimumQualifications", "preferredQualifications")
     }
     return found if any(found.values()) else None
 
@@ -2548,31 +2549,32 @@ def parse_apple_detail(html: str) -> dict[str, str] | None:
 def fetch_apple_details(
     items: list[dict[str, Any]], *, deadline: float,
 ) -> tuple[int, int]:
-    """Fill the full text of the given Apple roles from their details pages.
+    """Fill the full text of the given Apple roles from their details calls.
 
     Returns the counts left unfetched: those the deadline stopped before their
-    call started, and those whose page failed or held no role data. A role
+    call started, and those whose call failed or held no role text. A role
     left unfetched keeps its search summary.
     """
     clock = _clock()
 
-    def page(item: dict[str, Any]) -> Callable[[float], Any]:
-        return lambda http_deadline: http.get_text(
-            str(item["url"]), accept="text/html", timeout=API_TIMEOUT_SECONDS, retries=1,
-            deadline_monotonic=http_deadline,
+    def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        return lambda http_deadline: http.get(
+            str(item["detail_url"]), headers={"Accept": "application/json"},
+            timeout=API_TIMEOUT_SECONDS, retries=1, deadline_monotonic=http_deadline,
         )
 
     late = failed = 0
-    for item, html in zip(items, _workday_run([page(item) for item in items], deadline, clock)):
-        if html is _OUT_OF_TIME:
+    for item, payload in zip(items, _workday_run([call(item) for item in items], deadline, clock)):
+        if payload is _OUT_OF_TIME:
             late += 1
             continue
-        detail = parse_apple_detail(html) if isinstance(html, str) else None
+        detail = parse_apple_detail(payload)
         if detail is None:
             failed += 1
             continue
         blocks = [detail["description"]]
         for label, key in (
+            ("Responsibilities", "responsibilities"),
             ("Minimum Qualifications", "minimumQualifications"),
             ("Preferred Qualifications", "preferredQualifications"),
         ):
