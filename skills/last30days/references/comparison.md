@@ -220,7 +220,7 @@ I've compared {TOPIC_A} vs {TOPIC_B} [vs ...] using the latest community data. S
 - [follow-up on the emerging-stack combination pattern]
 ````
 
-**On Claude Code** (`CLAUDECODE` set), `references/synthesis.md` NO MARKDOWN LISTS applies here too: write the Strengths, Weaknesses, and follow-up bullets as `• ` lines, not `- ` lists.
+**On Claude Code** (`CLAUDECODE` set), `references/synthesis.md` NO MARKDOWN LISTS applies here too: write the Strengths, Weaknesses, and follow-up bullets as `• ` lines with a blank line between them, not `- ` lists.
 
 **Do NOT:**
 - Use `What I learned:` prose label (that is general-query voice)

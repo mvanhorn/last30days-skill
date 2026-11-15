@@ -131,7 +131,7 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **ODDS LINE.** Polymarket odds for a market that names the topic and bears on a story go on its own blockquote line under that story's paragraph: `> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · 18% by Mar 31, 2027`. Copy the whole odds line from `## Polymarket Markets`, up to the ` — ` before its URL. At most three in the report, apart from the six quote lines. The paragraph says what the market is about and links it, and does not repeat the line's numbers. Other markets may be cited inline. Not in `exec`, RECOMMENDATIONS, or COMPARISON.
 
-**NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, one per line with no blank lines between. Other hosts keep normal lists.
+**NO MARKDOWN LISTS ON CLAUDE CODE.** When `CLAUDECODE` is set, write no markdown list in the reply: while a list streams, Claude Code can redraw every link as `label (url)`. Write numbered markers as `1\.` (escaped period) and bullets as `• ` instead of `- `, with a blank line between each (renderers merge single breaks). Other hosts keep normal lists.
 
 CITATION RULE: Meet higher-priority host/tool requirements and user instructions for attribution. Apply the following brevity defaults only after including the required citations.
 - In the "What I learned" intro: cite 1-2 top sources total, not every sentence

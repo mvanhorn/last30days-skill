@@ -692,6 +692,7 @@ def test_checklist_says_copy_through_the_count_and_that_six_is_a_ceiling(monkeyp
 def test_checklist_names_the_marker_for_key_patterns_and_for_the_invitation(monkeypatch):
     block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=True))
     assert "KEY PATTERNS as `1\\.`, invitation lines as `•`" in block
+    assert "with a blank line between each" in block
 
 
 def test_posts_entry_ends_its_copyable_part_at_the_count():
