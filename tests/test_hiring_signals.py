@@ -47,6 +47,22 @@ class HiringSignalsTests(unittest.TestCase):
             "communications": ["Detail Editor"],
         }, evidence)
 
+    def test_plural_role_keywords_still_group_in_standard_mode(self):
+        cases = [
+            ("go-to-market", "Partnerships Manager", "Account Executive"),
+            ("ai and machine learning", "LLMs Engineer", "Machine Learning Engineer"),
+        ]
+        for theme, first, second in cases:
+            with self.subTest(theme=theme):
+                items = [job(first, "Work on our product", "Operations"),
+                         job(second, "Work on our product", "Engineering")]
+                summary = hiring_signals.analyze(items, explicit=False, topic="Acme")
+                self.assertEqual(
+                    [(theme, 2)],
+                    [(signal["theme"], signal["evidence_count"]) for signal in summary["signals"]],
+                )
+
+
     def test_mega_cap_scattered_roles_do_not_surface_standard_mode(self):
         items = [
             job("Retail Associate", "store operations", "Retail"),

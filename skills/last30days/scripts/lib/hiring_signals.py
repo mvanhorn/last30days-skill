@@ -15,11 +15,11 @@ THEME_KEYWORDS: dict[str, tuple[str, ...]] = {
         "admin", "governance", "audit",
     ),
     "go-to-market": (
-        "sales", "account executive", "customer success", "solutions", "partnership",
+        "sales", "account executive", "customer success", "solutions", "partnership", "partnerships",
         "revenue", "demand generation", "marketing",
     ),
     "ai and machine learning": (
-        "machine learning", "ml", "ai", "llm", "model", "research scientist",
+        "machine learning", "ml", "ai", "llm", "llms", "model", "research scientist",
         "applied scientist", "data scientist",
     ),
     "infrastructure and reliability": (
