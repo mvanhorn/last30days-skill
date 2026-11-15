@@ -570,7 +570,9 @@ def verify_report(
             verdicts.append(_point_verdict(claim, checked, refreshed))
         except Exception as exc:  # verifier failures degrade to a typed verdict
             detail = f"Re-check failed: {exc}"
-            point_errors[cache_key] = detail
+            # A miss on one datum says nothing of the snapshot's other data.
+            if not getattr(exc, "datum_only", False):
+                point_errors[cache_key] = detail
             verdicts.append(_unsupported(claim, checked, detail))
 
     report.freshness_verdicts = verdicts
