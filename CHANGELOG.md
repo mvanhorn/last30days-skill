@@ -9,6 +9,25 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.40.0] - 2026-11-15
+
+### Added
+
+- The jobs lane reads company-run job boards through a registry: Amazon's and Apple's own boards, plus Eightfold boards for Microsoft, Qualcomm and Netflix. Sites it can't read automatically, such as Tesla's, get a footer line saying so and no requests. ([#1428](https://github.com/mvanhorn/last30days-skill/issues/1428))
+- The jobs lane detects the hiring platform a company's careers page runs on (Oracle Recruiting Cloud, Jibe, Phenom, TalentBrew, Eightfold on any host, or a linked Workday board) and reads its public listing, and reads Google's and IBM's job sites, so a company run now gets a Jobs Digest for Oracle, JPMorgan, Dell, AMD, Adobe, Cisco, Disney, IBM, Salesforce, Intel and Google. A careers site with no readable listing but a job sitemap (SAP, Uber, Walmart) gets a titles-only digest. Set `LAST30DAYS_JOBS_RESPECT_ROBOTS=1` to skip any listing a site's robots.txt disallows. ([#1431](https://github.com/mvanhorn/last30days-skill/issues/1431))
+
+### Changed
+
+- Patent Secret Signals now appear only for a filing that is out of character for the company or describes a product it has not shipped, announced or had reported. A tie to a story in the report no longer qualifies a filing, filings listed by title only are never signals, and the section is one short paragraph with no counts sentence or closing disclaimer. The patent digest and footer no longer say "confirmed" or "name-matched": a company's own holding, licensing and numbered entities count as the company, and other filers with the company's name are marked "not verified". ([#1427](https://github.com/mvanhorn/last30days-skill/issues/1427))
+- Patent and jobs Secret Signals are written as two plain-words sentences: what the filing or role is, then what it could mean. Patent entries print fuller abstract and claim text and give subsidiaries a slot. The two strongest candidates are checked on the web before a section is written or left out. ([#1428](https://github.com/mvanhorn/last30days-skill/issues/1428))
+- Big company boards are read concurrently up to 7,000 rows. When a platform reader fails, the lane falls to the site's job sitemap and then the web tier, and the Jobs footer says which happened. The footer for a site that can't be read now gives the reason. ([#1431](https://github.com/mvanhorn/last30days-skill/issues/1431))
+
+### Fixed
+
+- Large patent filers get abstract and first-claim text again: the patent lane has 90 seconds and keeps reading after one failed document. `--as-of` set to today is now a live run. An outdated Digg helper is reported with its upgrade command instead of failing on `unknown flag: --topic`, and a `--ticker` run with no stock helper says so with the install command. Setup installs from `@mvanhorn/printing-press-library@0.1.27` and upgrades a Digg helper older than 2026.10.1, and doctor reports it. Grok Bot post-write checks may no longer remove a required report section or a verbatim quote. ([#1427](https://github.com/mvanhorn/last30days-skill/issues/1427))
+- A response body cut off mid-read no longer crashes a run. A company's official site is kept when Yahoo Finance resolves the company. A site that fails on one host form is retried on its www or bare form. A job board that does not answer is reported as a retryable timeout, not as unreadable. ([#1428](https://github.com/mvanhorn/last30days-skill/issues/1428))
+
+
 ## [3.39.0] - 2026-11-13
 
 ### Added
