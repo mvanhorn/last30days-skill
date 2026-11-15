@@ -268,3 +268,32 @@ class HiringSignalGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GreenhouseParagraphsTest(unittest.TestCase):
+    """HTML paragraphs without ending punctuation still split company from role text."""
+
+    def test_unpunctuated_company_paragraph_themes_nothing(self):
+        from lib import jobs, normalize
+
+        roles = [
+            ("Logistics Technician", "Move parts between sites"),
+            ("Paralegal", "Draft contracts for review"),
+            ("Executive Chef", "Run the kitchen line"),
+            ("Office Coordinator", "Plan team events"),
+        ]
+        items = []
+        for index, (title, duty) in enumerate(roles):
+            raw = jobs._greenhouse_job_to_item({
+                "id": index + 1,
+                "title": title,
+                "absolute_url": f"https://boards.greenhouse.io/acme/jobs/{index + 1}",
+                "content": f"<p>We build cloud infrastructure</p><p>{duty}</p>",
+                "departments": [{"name": "Operations"}],
+            }, "acme")
+            items.append(normalize._normalize_jobs("jobs", raw, index, "2026-10-16", "2026-11-15"))
+
+        themed = hiring_signals._theme_items(items)
+
+        for title, _duty in roles:
+            self.assertNotIn("infrastructure and reliability", themes_of(themed, title))
