@@ -578,8 +578,52 @@ def _price_movement_points(market: Dict[str, Any]) -> Optional[List[Any]]:
     return [round(change * 100, 1), period]
 
 
-def _parse_outcome_prices(market: Dict[str, Any]) -> List[tuple]:
-    """Parse outcomePrices JSON string into list of (outcome_name, price) tuples."""
+# Polymarket displays a market's midpoint only while its book is tight: a bid
+# and an ask no more than 10 cents apart. A wider or one-sided book shows the
+# last trade instead, since the midpoint of an empty book (no bid, ask 0.87)
+# is no one's price.
+_MAX_MIDPOINT_SPREAD = 0.10
+_BOOK_FIELDS = ("bestBid", "bestAsk", "spread")
+# The most a mutually exclusive (negRisk) set's Yes prices may sum to and
+# still be shown as one distribution.
+_MAX_EXCLUSIVE_YES_TOTAL = 1.10
+
+
+def _quoted_price(market: Dict[str, Any], midpoint: float) -> Optional[float]:
+    """The price Polymarket would display for a market's first (Yes) outcome.
+
+    The midpoint (``outcomePrices``) when the book has a bid and an ask within
+    ``_MAX_MIDPOINT_SPREAD``; otherwise the last trade; otherwise None (the
+    market is unpriced). A market served without any book field (older
+    fixtures, saved replays) and a closed market (its price is the
+    resolution) keep the midpoint.
+    """
+    if market.get("closed") or all(market.get(field) is None for field in _BOOK_FIELDS):
+        return midpoint
+    bid = _safe_float(market.get("bestBid"))
+    ask = _safe_float(market.get("bestAsk"))
+    spread = (
+        _safe_float(market.get("spread"))
+        if market.get("spread") is not None
+        else ask - bid
+    )
+    # Float noise: an ask of 0.13 over a bid of 0.03 is a 0.10 spread.
+    if bid > 0 and ask > 0 and round(spread, 6) <= _MAX_MIDPOINT_SPREAD:
+        return midpoint
+    last = _safe_float(market.get("lastTradePrice"))
+    if 0 < last < 1:
+        return last
+    return None
+
+
+def _parse_outcome_prices(market: Dict[str, Any], *, book_aware: bool = True) -> List[tuple]:
+    """Parse outcomePrices JSON string into list of (outcome_name, price) tuples.
+
+    ``book_aware`` prices the market the way Polymarket displays it (see
+    ``_quoted_price``): an unpriced market parses to no outcomes, and a
+    two-outcome market quoted from its last trade prices its second outcome
+    as the complement.
+    """
     outcomes_raw = market.get("outcomes") or []
     prices_raw = market.get("outcomePrices")
 
@@ -611,6 +655,15 @@ def _parse_outcome_prices(market: Dict[str, Any]) -> List[tuple]:
             continue
         name = outcomes[i] if i < len(outcomes) else f"Outcome {i+1}"
         result.append((name, p))
+
+    if book_aware and result:
+        quoted = _quoted_price(market, result[0][1])
+        if quoted is None:
+            return []
+        if quoted != result[0][1]:
+            result[0] = (result[0][0], quoted)
+            if len(result) == 2:
+                result[1] = (result[1][0], round(1 - quoted, 4))
 
     return result
 
@@ -669,6 +722,7 @@ def _own_outcome_labels(
     outcome_prices: List[tuple],
     outcome_questions: List[Optional[str]],
     outcome_markets: List[Dict[str, Any]],
+    sibling_names: Optional[List[str]] = None,
 ) -> List[tuple]:
     """Give each sub-market of an event a label of its own.
 
@@ -680,6 +734,10 @@ def _own_outcome_labels(
     sub-market (``groupItemTitle``: "12-15", "Denver, CO"), or by the whole
     question when it has none or the label repeats too.
 
+    ``sibling_names`` are the names of every sub-market of the event, priced
+    or not, so a subject still counts as repeated when the book check leaves
+    only one of its brackets.
+
     Only subject names are replaced, and the order is kept, so every name an
     older build saved still reads its own market through
     ``_legacy_shorten_question``.
@@ -690,10 +748,10 @@ def _own_outcome_labels(
         for question in outcome_questions
     ]
     repeats: Dict[str, int] = {}
-    for name in names:
+    for name in names if sibling_names is None else sibling_names:
         repeats[name.casefold()] = repeats.get(name.casefold(), 0) + 1
     relabel = [
-        is_subject and (repeats[name.casefold()] > 1 or name.casefold() in _ARTICLES)
+        is_subject and (repeats.get(name.casefold(), 0) > 1 or name.casefold() in _ARTICLES)
         for name, is_subject in zip(names, subjects)
     ]
     labels = [
@@ -1163,10 +1221,19 @@ def parse_polymarket_response(
         outcome_questions: List[Optional[str]] = [None] * len(outcome_prices)
         # The market each outcome is priced in.
         outcome_markets: List[Dict[str, Any]] = [top_market] * len(outcome_prices)
+        # Whether the sub-markets are Yes/No is read from the served outcomes,
+        # so an unpriced top market still leads to its priced siblings.
+        top_labels = _parse_outcome_prices(top_market, book_aware=False)
         top_outcomes_are_binary = (
-            len(outcome_prices) == 2
-            and {n.lower() for n, _ in outcome_prices} == {"yes", "no"}
+            len(top_labels) == 2
+            and {n.lower() for n, _ in top_labels} == {"yes", "no"}
         )
+        # Mutually exclusive sub-markets (one bracket of a range resolves Yes).
+        mutually_exclusive = bool(event.get("negRisk")) or any(
+            m.get("negRisk") for m in active_markets
+        )
+        impossible_set = False
+        sibling_names: Optional[List[str]] = None
         if top_outcomes_are_binary and len(active_markets) > 1:
             synth_outcomes = []
             for m in active_markets:
@@ -1177,11 +1244,24 @@ def parse_polymarket_response(
                 yes_price = next((p for name, p in pairs if name.lower() == "yes"), None)
                 if yes_price is not None and yes_price > 0.005:
                     synth_outcomes.append((q, yes_price, m))
+            sibling_names = [
+                _shorten_question(m["question"]) for m in active_markets if m.get("question")
+            ]
             if synth_outcomes:
                 synth_outcomes.sort(key=lambda x: x[1], reverse=True)
                 outcome_prices = [(_shorten_question(q), p) for q, p, _m in synth_outcomes]
                 outcome_questions = [q for q, _p, _m in synth_outcomes]
                 outcome_markets = [m for _q, _p, m in synth_outcomes]
+                # Only one bracket of a negRisk set can resolve Yes, so its
+                # Yes prices sum to about 1. A set still well over 1 after
+                # the book check is no distribution to show.
+                yes_total = sum(p for _q, p, _m in synth_outcomes)
+                if mutually_exclusive and yes_total > _MAX_EXCLUSIVE_YES_TOTAL:
+                    impossible_set = True
+                    _log(
+                        f"Suppressed odds for '{title[:60]}': mutually exclusive "
+                        f"Yes prices sum to {yes_total:.2f}"
+                    )
 
         # Format price movement
         price_movement = _format_price_movement(top_market)
@@ -1264,7 +1344,9 @@ def parse_polymarket_response(
                 outcome_markets = [m for _priced, _q, m in reordered + rest]
 
         # After the ordering above, which reads the subject names.
-        outcome_prices = _own_outcome_labels(outcome_prices, outcome_questions, outcome_markets)
+        outcome_prices = _own_outcome_labels(
+            outcome_prices, outcome_questions, outcome_markets, sibling_names,
+        )
         headline = _headline_market(
             title, top_market, outcome_prices, outcome_questions, outcome_markets,
         )
@@ -1275,6 +1357,17 @@ def parse_polymarket_response(
         remaining = len(outcome_prices) - 3
         if remaining < 0:
             remaining = 0
+        odds = _odds_summary(
+            title, top_market, outcome_prices, outcome_questions, outcome_markets,
+        )
+        if impossible_set:
+            # The event stays as evidence, with no odds line, headline or
+            # listed outcomes. Verification still sees each market's quote.
+            odds = None
+            headline = None
+            remaining = 0
+            if not include_all_outcomes:
+                top_outcomes = []
 
         items.append({
             "event_id": event_id,
@@ -1285,9 +1378,7 @@ def parse_polymarket_response(
             "outcome_questions": outcome_questions[: len(top_outcomes)],
             "outcomes_remaining": remaining,
             "headline": headline,
-            "odds": _odds_summary(
-                title, top_market, outcome_prices, outcome_questions, outcome_markets,
-            ),
+            "odds": odds,
             "price_movement": price_movement,
             "volume24hr": volume24hr,
             "volume1mo": event_volume1mo,
@@ -1324,6 +1415,18 @@ def parse_polymarket_response(
 
     cap = response.get("_cap", len(items))
     return items[:cap]
+
+
+class DatumNotFound(KeyError):
+    """The event re-fetched, but it no longer prices this one datum.
+
+    ``datum_only`` tells verification the failure belongs to this claim, so
+    other claims on the same event are still re-checked (a market dropped as
+    unpriced must not fail its priced siblings).
+    """
+
+    datum_only = True
+    snapshot: Optional[Dict[str, Any]] = None
 
 
 def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
@@ -1453,6 +1556,24 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         legacy_counts[normalized] = occurrence + 1
         key = f"{name}\x1f{occurrence}" if legacy_totals[normalized] > 1 else name
         values.setdefault(key, price)
+    # A repeated name is told apart by its rank among the priced markets. When
+    # the book check drops one market carrying that name, the ranks shift and a
+    # saved occurrence could read a sibling's price, so repeated names of a
+    # dropped market are not answered at all.
+    dropped_names: set[str] = set()
+    for market in markets:
+        if not isinstance(market, dict) or not market.get("question"):
+            continue
+        if has_active and (not market.get("active", True) or market.get("closed", False)):
+            continue
+        if _parse_outcome_prices(market) or not _parse_outcome_prices(market, book_aware=False):
+            continue
+        question = str(market["question"])
+        dropped_names.add(_shorten_question(question).strip().casefold())
+        dropped_names.add(_legacy_shorten_question(question).strip().casefold())
+    for key in [k for k in values if "\x1f" in k]:
+        if key.rsplit("\x1f", 1)[0].casefold() in dropped_names:
+            del values[key]
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
@@ -1475,11 +1596,17 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
                 price for name, price in legacy_pairs if name.casefold() == wanted
             ]
         value = matches[occurrence] if occurrence < len(matches) else None
-    if value is None:
-        raise KeyError(f"Polymarket datum {datum_key!r} was not found")
-    return {
-        "value": value,
+        if "\x1f" in datum_key and wanted in dropped_names:
+            value = None
+    snapshot = {
         "values": values,
         "url": str(getattr(item, "url", "")),
         "timestamp": event.get("updatedAt"),
     }
+    if value is None:
+        missing = DatumNotFound(f"Polymarket datum {datum_key!r} was not found")
+        # The event was fetched; sibling claims read this snapshot instead of
+        # fetching it again.
+        missing.snapshot = snapshot
+        raise missing
+    return {"value": value, **snapshot}
