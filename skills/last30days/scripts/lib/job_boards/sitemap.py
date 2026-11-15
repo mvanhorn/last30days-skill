@@ -151,7 +151,9 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
         jobs_host = bool(re.match(r"(?:jobs|careers?)\.", host)) or _JOBS_WORD.search(host.split(".")[0] or "")
         queue = [
             url for url in rules.sitemaps
-            if jobs._same_site(jobs._host(url), host) and (jobs_host or _JOBS_WORD.search(url))
+            # robots.txt is remote content too: its sitemaps pass the same
+            # check as the role URLs they list.
+            if _public_url(url, host) and (jobs_host or _JOBS_WORD.search(url))
         ]
         found: dict[str, tuple[str, str]] = {}
         asked = 0

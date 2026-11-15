@@ -879,3 +879,19 @@ def test_name_resolution_rejects_any_private_answer(monkeypatch):
         assert resolve("missing.example") is False
     finally:
         resolve.cache_clear()
+
+
+def test_a_robots_txt_sitemap_on_a_private_address_is_not_fetched():
+    robots_txt = (
+        "User-Agent: *\n"
+        "Sitemap: http://127.0.0.1:8080/jobs/sitemap.xml\n"
+        "Sitemap: https://internal.jobs.uber.com/sitemap.xml\n"
+        "Sitemap: https://jobs.uber.com/sitemap.xml\n"
+    )
+    fake = _Site(texts={
+        "https://jobs.uber.com/robots.txt": robots_txt,
+        "https://jobs.uber.com/sitemap.xml": '<urlset><url><loc>https://jobs.uber.com/en/jobs/149574/</loc></url></urlset>',
+    })
+    _items, artifact = _run("Uber", "https://www.uber.com/", fake)
+    assert not any("127.0.0.1" in url or "internal." in url for url in fake.asked)
+    assert artifact["open_roles"] == 1
