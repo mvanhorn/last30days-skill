@@ -9,6 +9,18 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.0.2] - 2026-11-15
+
+### Fixed
+
+- Company resolution no longer gets rate-limited by Wikidata when several reports or a comparison run at once, so those runs keep their Jobs section. The Wikidata request now sends a User-Agent with a contact URL, as Wikimedia asks. ([#1447](https://github.com/mvanhorn/last30days-skill/issues/1447))
+- Polymarket odds now follow Polymarket's own display rule: the midpoint only for a tight book (bid and ask within $0.10), otherwise the last trade, and a market with neither is left out. A mutually exclusive range set whose prices still sum well over 100% no longer prints an impossible odds line, so an empty-book range can't top the list at 44%. ([#1450](https://github.com/mvanhorn/last30days-skill/issues/1450))
+- The top clusters in the chat report are now story-diverse: one story takes at most 3 of the top 8, near-duplicate clusters are pushed down, each plan subquery with on-topic evidence gets a slot, and `--drill N` still opens the cluster shown as N. ([#1451](https://github.com/mvanhorn/last30days-skill/issues/1451))
+- Top voices in the footer and `## Stats` now rank @handles by engagement (best 3 posts each) and drop near-zero-engagement accounts, so a prolific headline account no longer outranks the subject's own posts. ([#1452](https://github.com/mvanhorn/last30days-skill/issues/1452))
+- YouTube transcript health is judged against the transcript target, and a YouTube bot check now gets its own message (route yt-dlp through `LAST30DAYS_YOUTUBE_SSH_HOST` or add a ScrapeCreators key) instead of advice to upgrade yt-dlp. Host plans no longer gain Trustpilot when it cannot run this session. Techmeme searches are scoped to the run window, and setup upgrades a techmeme-pp-cli older than 2026.9.1. ([#1453](https://github.com/mvanhorn/last30days-skill/issues/1453))
+- Hiring Signals no longer lists the same roles under every theme: themes match a role's title, department, and only the description text other roles on the board do not share, each role is an example under one theme at most, and generic keywords such as "growth", "design" and "platform" no longer theme unrelated roles. ([#1454](https://github.com/mvanhorn/last30days-skill/issues/1454))
+
+
 ## [4.0.1] - 2026-11-15
 
 ### Fixed
