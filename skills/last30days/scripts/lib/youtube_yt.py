@@ -1801,12 +1801,17 @@ def backfill_transcripts(
         return
     _log(f"Backfilling transcripts for {len(attempts)} finalized videos (target: {need})")
     captions_disabled: Set[str] = set()
-    transcripts = fetch_transcripts_parallel(
-        [it.item_id for it in attempts],
-        out_captions_disabled=captions_disabled,
-        token=token,
-        max_sc_rescues=need,
-    )
+    with _youtube_block_scope() as block:
+        transcripts = fetch_transcripts_parallel(
+            [it.item_id for it in attempts],
+            out_captions_disabled=captions_disabled,
+            token=token,
+            max_sc_rescues=need,
+        )
+    # A bot check here is a network loss like one in the search pass, so the
+    # footer gives the bot-check advice rather than "upgrade yt-dlp".
+    if block.tripped:
+        _add_transcript_fetch_stats(blocked=1)
     for it in attempts:
         if it.item_id in captions_disabled:
             it.metadata["captions_disabled"] = True
