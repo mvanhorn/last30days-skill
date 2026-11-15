@@ -621,6 +621,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_X_BACKEND', None),
         ('LAST30DAYS_REDDIT_BACKEND', None),
         ('LAST30DAYS_YOUTUBE_BACKEND', None),
+        # Jobs lane: skip a job listing its site's robots.txt disallows.
+        # job_boards.robots reads os.environ, so .env values are exported below.
+        ('LAST30DAYS_JOBS_RESPECT_ROBOTS', None),
         # Keyless reddit.com token-bucket rate (req/sec). http.py reads it
         # from os.environ on each acquire, so .env values are exported below.
         ('LAST30DAYS_REDDIT_KEYLESS_RATE', None),
@@ -808,6 +811,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         'LAST30DAYS_YT_SEARCH_TIMEOUT',
         'LAST30DAYS_REDDIT_KEYLESS_RATE',
         'LAST30DAYS_YT_PLAYER_CLIENT',
+        'LAST30DAYS_JOBS_RESPECT_ROBOTS',
     ):
         value = config.get(key)
         # Empty LAST30DAYS_YT_PLAYER_CLIENT is a valid disable; other knobs

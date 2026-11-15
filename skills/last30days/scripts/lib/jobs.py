@@ -9,6 +9,12 @@ tier produced results so synthesis knows the confidence level):
   We only emit ATS results when a call actually returns a non-empty board, so a
   bad slug guess never produces fabricated coverage. Slug-probing is a fallback,
   never the entry point.
+  A careers page on a hiring platform (Oracle Recruiting Cloud, Jibe, Phenom,
+  TalentBrew, Eightfold; ``lib.job_boards.detect``) is read through that
+  platform's public listing endpoint. A reader that fails falls to the
+  roster tier, then the web tier, and the artifact says so.
+- Tier 1b - roster. A job sitemap the careers site lists in its robots.txt
+  (``lib.job_boards.sitemap``): titles only, no posting dates.
 - Tier 2 - careers page found, no supported ATS API. Parse schema.org
   ``JobPosting`` JSON-LD (emitted by most careers pages for Google Jobs SEO,
   regardless of ATS).
@@ -17,6 +23,7 @@ tier produced results so synthesis knows the confidence level):
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 import threading
@@ -29,6 +36,8 @@ from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
 from . import dates, grounding, health, http, jobs_digest, log
+from .job_boards import detect as board_detect
+from .job_boards import robots as board_robots
 
 
 ATS_PROVIDER_GREENHOUSE = "greenhouse"
@@ -66,53 +75,73 @@ API_TIMEOUT_SECONDS = 10
 SMARTRECRUITERS_PAGE_SIZE = 100
 SMARTRECRUITERS_ROW_CEILING = 2000
 
-# Company-run job boards. A large company often runs its own job site rather
-# than a hosted system, so no link on its careers page names a board to read.
-# These are read only when the run knows the company's official site, and the
-# site's host is what picks the board, so a reader is never reached by
-# guessing a domain or matching a name.
+# Company-run job boards. Most large companies run their careers site on one
+# of a few hiring platforms, and the careers page names it: such a board is
+# found by detection (``lib.job_boards.detect``) and read by that platform's
+# reader, with no entry here. This table is only for the few companies whose
+# board cannot be found from their official site: a job site of their own
+# with no platform behind it (Apple, Amazon, Google), or a careers page that
+# answers automated requests with a block while its hosted board does not
+# (Intel, Salesforce). Each is read only when the run knows the company's
+# official site, and the site's host is what picks the board, so a reader is
+# never reached by guessing a domain or matching a name.
 COMPANY_PROVIDER_APPLE = "apple"
 COMPANY_PROVIDER_AMAZON = "amazon"
 COMPANY_PROVIDER_EIGHTFOLD = "eightfold"
+COMPANY_PROVIDER_GOOGLE = "google"
+COMPANY_PROVIDER_IBM = "ibm"
+# Platforms found by detection, read by ``lib.job_boards``.
+PLATFORM_PROVIDER_ORACLE = board_detect.PROVIDER_ORACLE
+PLATFORM_PROVIDER_JIBE = board_detect.PROVIDER_JIBE
+PLATFORM_PROVIDER_PHENOM = board_detect.PROVIDER_PHENOM
+PLATFORM_PROVIDER_TALENTBREW = board_detect.PROVIDER_TALENTBREW
+SITEMAP_PROVIDER = "sitemap"
+_GOOGLE_BOARD = {"name": "Google", "provider": COMPANY_PROVIDER_GOOGLE, "board": "www.google.com"}
 # Official-site host -> the board that site's company runs. ``name`` is how
-# the footer names the company when its board cannot be read.
+# the footer names the company when its board cannot be read. A ``workday``
+# entry's ``board`` is the board token ``detect_ats`` would build.
 COMPANY_BOARDS: dict[str, dict[str, str]] = {
     "apple.com": {"name": "Apple", "provider": COMPANY_PROVIDER_APPLE, "board": "jobs.apple.com"},
     "amazon.com": {"name": "Amazon", "provider": COMPANY_PROVIDER_AMAZON, "board": "www.amazon.jobs"},
-    "microsoft.com": {
-        "name": "Microsoft", "provider": COMPANY_PROVIDER_EIGHTFOLD,
-        "board": "apply.careers.microsoft.com", "domain": "microsoft.com", "api": "pcsx",
-    },
-    "qualcomm.com": {
-        "name": "Qualcomm", "provider": COMPANY_PROVIDER_EIGHTFOLD,
-        "board": "careers.qualcomm.com", "domain": "qualcomm.com", "api": "pcsx",
-    },
-    "netflix.com": {
-        "name": "Netflix", "provider": COMPANY_PROVIDER_EIGHTFOLD,
-        "board": "explore.jobs.netflix.net", "domain": "netflix.com", "api": "v2",
+    "google.com": _GOOGLE_BOARD,
+    "about.google": _GOOGLE_BOARD,
+    "abc.xyz": _GOOGLE_BOARD,
+    # intel.com and its jobs host answer every request with a 403.
+    "intel.com": {"name": "Intel", "provider": ATS_PROVIDER_WORKDAY, "board": "intel.wd1/External"},
+    # careers.ibm.com answers an empty 202 to pages and sitemaps alike; the
+    # search page reads IBM's own search API.
+    "ibm.com": {"name": "IBM", "provider": COMPANY_PROVIDER_IBM, "board": "careers.ibm.com"},
+    # Salesforce's job search loads its roles in the browser from Workday.
+    "salesforce.com": {
+        "name": "Salesforce", "provider": ATS_PROVIDER_WORKDAY,
+        "board": "salesforce.wd12/External_Career_Site",
     },
 }
-# Official-site hosts whose job site is not read: its robots.txt disallows the
-# listing, its site prohibits automated collection, or it answers automated
-# requests with a challenge page. No request is sent to them.
+# Official-site host -> the careers page to read first, for a company whose
+# careers site is on a domain of its own that its official site does not link
+# in a way the lane can follow. The page is then read like any careers page.
+CAREERS_PAGES: dict[str, str] = {
+    "disney.com": "https://join.disneycareers.com/global/en",
+    "thewaltdisneycompany.com": "https://join.disneycareers.com/global/en",
+}
+# Official-site hosts whose job site is not read: its site prohibits
+# automated collection, or it answers every automated request (pages,
+# robots.txt and sitemap alike) with a block page. No request is sent to them.
 UNREADABLE_JOB_SITES: dict[str, dict[str, str]] = {
-    "google.com": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
-    "about.google": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
-    "abc.xyz": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
-    "disney.com": {"name": "Disney", "reason": "its robots.txt disallows the job search"},
-    "thewaltdisneycompany.com": {"name": "Disney", "reason": "its robots.txt disallows the job search"},
     "meta.com": {"name": "Meta", "reason": "its site prohibits automated collection"},
-    "tesla.com": {"name": "Tesla", "reason": "it answers automated requests with a block page"},
-    "uber.com": {"name": "Uber", "reason": "it answers automated requests with a challenge page"},
-    "sap.com": {"name": "SAP", "reason": "it answers automated requests with a challenge page"},
+    "metacareers.com": {"name": "Meta", "reason": "its site prohibits automated collection"},
+    "tesla.com": {"name": "Tesla", "reason": "it answers every automated request with a block page"},
 }
 # Share of the lane's remaining time a company board's listing leaves for the
 # role text of the roles the digest selects, so a long list never costs the
 # digest its text.
 DETAIL_SHARE = 1 / 3
-# A company board is read newest first, a few pages at once, and stops after
-# the first page that holds no role posted in the window, or at its ceiling.
-COMPANY_BOARD_ROW_CEILING = 2000
+# A company board is read newest first, a bounded number of pages at once,
+# to its end or its ceiling. At about half a second a page, sixteen at once
+# read Apple's 6,500 rows (20 a page) in about 20 s, inside the listing's
+# share of the budget; Amazon (100 a page) and Oracle (200) take less.
+COMPANY_BOARD_ROW_CEILING = 7000
+COMPANY_BOARD_MAX_WORKERS = 16
 AMAZON_PAGE_SIZE = 100
 # Amazon's search reports at most this many hits and pages no further.
 AMAZON_HITS_CAP = 10_000
@@ -154,6 +183,8 @@ _BOARD_DOMAINS = (
     "smartrecruiters.com", "myworkdayjobs.com",
 )
 SUPPORTED_SYSTEMS = "Greenhouse, Ashby, Lever, Workable, SmartRecruiters and Workday"
+# Hiring platforms read off a careers page on the company's own site.
+PLATFORM_SYSTEMS = "Oracle Recruiting Cloud, Jibe, Phenom, TalentBrew and Eightfold"
 
 # Tokens that show up in ATS URLs but are never real board slugs.
 _SLUG_STOPWORDS = {"embed", "job_board", "v1", "v0", "api", "posting-api", "boards", "jobs", "job-boards", "www", "wday"}
@@ -190,6 +221,10 @@ class LaneBudget:
         # Set once the lane reached its answer for the topic, so a second
         # pass of the same run does not ask the same hosts again.
         self.settled = False
+        # Careers page URL -> the address that answered it, after redirects.
+        self.landed: dict[str, str] = {}
+        # Hosts that gave no answer at all, so no later step asks them again.
+        self.unreachable: set[str] = set()
 
     def remaining(self) -> float:
         return max(0.0, min(self.deadline, self.step_deadline) - self.clock())
@@ -404,7 +439,7 @@ def log_no_board(companies: list[str]) -> None:
     log.source_log(
         "Jobs",
         f"no supported job board found for {first}{also}; the lane reads "
-        f"{SUPPORTED_SYSTEMS}",
+        f"{SUPPORTED_SYSTEMS}, and {PLATFORM_SYSTEMS} on a careers page",
         tty_only=False,
     )
 
@@ -449,6 +484,7 @@ def _job_site_unreadable(
         explicit=explicit,
     )
     artifact["job_site_unreadable"] = name
+    artifact["job_site_unreadable_reason"] = reason
     return items, artifact
 
 
@@ -491,36 +527,39 @@ def _search_jobs(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     attempted: list[str] = []
 
-    # --- A company that runs its own job site, known by its official site. ---
+    # --- A company whose board cannot be found from its site, or is not read. ---
     registered = _registry_entry(site)
     if registered is not None:
         kind, entry = registered
-        if kind == "board":
-            attempted.append(f"company:{entry['provider']}:{entry['board']}")
-            found = _read_board(
-                company, entry["provider"], entry["board"], date_range,
-                attempted=attempted, explicit=explicit, budget=budget,
-                found_via="site", company_board=entry,
+        if kind == "unreadable":
+            return _job_site_unreadable(
+                company, date_range, config, entry, entry["reason"],
+                attempted=attempted, web_backend=web_backend, explicit=explicit,
             )
-            if found is not None:
-                return found
-            if f"the {entry['provider']} board {entry['board']} did not answer" in budget.unanswered:
-                # A board that did not answer is not one that cannot be read:
-                # the budget names it, and a retry may read it.
-                return _web_tier(
-                    company, date_range, config, attempted=attempted,
-                    web_backend=web_backend, explicit=explicit,
-                )
-            reason = "its job board answered with an error or with no roles the lane could read"
-        else:
-            reason = entry["reason"]
-        return _job_site_unreadable(
+        attempted.append(f"company:{entry['provider']}:{entry['board']}")
+        hosted = entry["provider"] in _HOSTED_PROVIDERS
+        found, reason = _read_found_board(
+            company, entry["provider"], entry["board"], date_range,
+            attempted=attempted, explicit=explicit, budget=budget,
+            found_via="site", company_board=None if hosted else entry,
+        )
+        if found is not None:
+            return found
+        if reason == "unanswered":
+            # A board that did not answer is not one that cannot be read:
+            # the budget names it, and a retry may read it.
+            return _web_tier(
+                company, date_range, config, attempted=attempted,
+                web_backend=web_backend, explicit=explicit,
+            )
+        return _fall_through(
             company, date_range, config, entry, reason,
-            attempted=attempted, web_backend=web_backend, explicit=explicit,
+            hosts=_sitemap_hosts([entry["board"]] if not hosted else [], site),
+            attempted=attempted, web_backend=web_backend, explicit=explicit, budget=budget,
         )
 
-    # --- Discovery: fetch the careers page and read the ATS off it (Tier 1). ---
-    careers_html, careers_url = _resolve_careers_page(
+    # --- Discovery: fetch the careers page and read the board off it (Tier 1). ---
+    careers_html, careers_url, page_via = _find_careers_page(
         company, date_range, config, backend=web_backend, site=site,
     )
     provider, slug = (None, None)
@@ -529,16 +568,48 @@ def _search_jobs(
     # What the careers page calls its organization, when that is a longer or
     # shorter form of the company's name ("Anduril Industries" for "Anduril").
     # A page a web search named is anyone's page and is not read for this.
-    page_via = _found_via(careers_url or "", company, site)
     stated_names = [
         name for name in _stated_names(careers_html or "")
         if _leads_with(name, company) and not _same_company(name, company)
     ] if page_via != "search" else []
+    platform: tuple[str, dict[str, Any]] | None = None
     if careers_html:
         provider, slug = detect_ats(careers_html)
         if provider:
             attempted.append(f"careers:{provider}:{slug}")
-            found_via = _found_via(careers_url or "", company, site)
+            found_via = page_via
+        elif page_via == "site":
+            # A hiring platform under the company's own host, named by the
+            # page: read by the platform's reader. Only on a site known to be
+            # the company's: a domain guessed from the name can be another
+            # business's, and a platform board states no company of its own
+            # (its reader names it after the company asked for), so it would
+            # pass as the company's. A page a web search named is not read
+            # for one either.
+            platform = board_detect.detect_platform(careers_html, careers_url or "")
+
+    if platform is not None:
+        platform_provider, entry = platform
+        entry = {"name": company, **entry}
+        attempted.append(f"careers:{platform_provider}:{entry['board']}")
+        found, reason = _read_found_board(
+            company, platform_provider, entry["board"], date_range,
+            attempted=attempted, explicit=explicit, budget=budget,
+            found_via=page_via, company_board=entry,
+        )
+        if found is not None:
+            return found
+        if reason == "unanswered":
+            return _web_tier(
+                company, date_range, config, attempted=attempted,
+                web_backend=web_backend, explicit=explicit,
+            )
+        return _fall_through(
+            company, date_range, config, {"name": company, "site": entry["board"]},
+            reason, hosts=_sitemap_hosts([entry["board"], _host(careers_url or "")], site),
+            attempted=attempted, web_backend=web_backend, explicit=explicit, budget=budget,
+            platform=platform_provider,
+        )
 
     # Fallback discovery: cheap deterministic slug probe (only after careers-page
     # discovery fails - never the entry point).
@@ -580,11 +651,175 @@ def _search_jobs(
             return jsonld_items, _artifact("jobs", company, attempted, jsonld_items,
                                            explicit, tier="careers-jsonld")
 
+    # --- The roster tier: the job sitemap of the company's own site. ---
+    if site and _host(site):
+        roster = _sitemap_tier(
+            company, date_range, _sitemap_hosts([_host(careers_url or "")], site),
+            attempted=attempted, explicit=explicit, budget=budget,
+        )
+        if roster is not None:
+            return roster
+
     # --- Tier 3: generic web search (noisy, low-confidence). ---
     return _web_tier(
         company, date_range, config, attempted=attempted, web_backend=web_backend,
         explicit=explicit,
     )
+
+
+# Providers ``_read_board`` reads by slug or token rather than through a
+# company reader.
+_HOSTED_PROVIDERS = frozenset({
+    ATS_PROVIDER_GREENHOUSE, ATS_PROVIDER_ASHBY, ATS_PROVIDER_LEVER,
+    ATS_PROVIDER_WORKABLE, ATS_PROVIDER_SMARTRECRUITERS, ATS_PROVIDER_WORKDAY,
+})
+ROBOTS_REASON = "its robots.txt disallows the job listing"
+
+
+def _read_found_board(
+    company: str,
+    provider: str,
+    board: str,
+    date_range: tuple[str, str],
+    *,
+    attempted: list[str],
+    explicit: bool,
+    budget: LaneBudget,
+    found_via: str,
+    company_board: dict[str, Any] | None,
+) -> tuple[tuple[list[dict[str, Any]], dict[str, Any]] | None, str]:
+    """Read a board the registry or detection named; ``(found, reason)``.
+
+    ``reason`` says why nothing was read: ``unanswered`` for a board that did
+    not answer (a retry may read it), or the words the footer gives.
+    """
+    entry = company_board or {"board": board}
+    listing = _listing_url(provider, entry)
+    if listing and board_robots.disallowed(
+        listing, deadline_monotonic=time.monotonic() + max(0.0, budget.remaining()),
+    ):
+        attempted.append(f"robots-disallowed:{provider}:{board}")
+        log.source_log(
+            "Jobs", f"{company}: the {provider} board {board} is not read: {ROBOTS_REASON} "
+            f"({board_robots.RESPECT_ROBOTS_VAR} is set)", tty_only=False,
+        )
+        return None, ROBOTS_REASON
+    found = _read_board(
+        company, provider, board, date_range,
+        attempted=attempted, explicit=explicit, budget=budget,
+        found_via=found_via, company_board=company_board,
+    )
+    if found is not None:
+        return found, ""
+    if f"the {provider} board {board} did not answer" in budget.unanswered:
+        return None, "unanswered"
+    return None, f"its {provider} board answered with an error or with no roles the lane could read"
+
+
+def _fall_through(
+    company: str,
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+    entry: dict[str, str],
+    reason: str,
+    *,
+    hosts: list[str],
+    attempted: list[str],
+    web_backend: str,
+    explicit: bool,
+    budget: LaneBudget,
+    platform: str = "",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """A named board that could not be read: the site's job sitemap, then the
+    web tier, and the run says which happened. Never a silent zero."""
+    name = entry.get("name") or company
+    roster = _sitemap_tier(
+        company, date_range, hosts, attempted=attempted, explicit=explicit, budget=budget,
+        fallback=f"{entry.get('provider') or platform or 'its'} board not read: {reason}",
+    )
+    if roster is not None:
+        return roster
+    return _job_site_unreadable(
+        company, date_range, config, {**entry, "name": name}, reason,
+        attempted=attempted, web_backend=web_backend, explicit=explicit,
+    )
+
+
+def _sitemap_hosts(first: list[str], site: str) -> list[str]:
+    """Hosts asked for a job sitemap: the board's and careers page's own,
+    then the official site's jobs and careers hosts, then the site itself."""
+    hosts = [host for host in first if host]
+    base = _host(site).removeprefix("www.") if site else ""
+    if base:
+        hosts += [f"jobs.{base}", f"careers.{base}", _host(site)]
+    return list(dict.fromkeys(host.lower() for host in hosts))
+
+
+def _sitemap_tier(
+    company: str,
+    date_range: tuple[str, str],
+    hosts: list[str],
+    *,
+    attempted: list[str],
+    explicit: bool,
+    budget: LaneBudget,
+    fallback: str = "",
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """The roster tier (``lib.job_boards.sitemap``): roles listed in a job
+    sitemap of the company's own site, as a board read titles only. None when
+    no host has a job sitemap."""
+    hosts = [host for host in hosts if host not in budget.unreachable]
+    if not hosts or _out_of_time("the job sitemap"):
+        return None
+    sitemap = importlib.import_module(f"{__package__}.job_boards.sitemap")
+    deadline = budget.deadline - budget.remaining() * DETAIL_SHARE
+    attempted.append("sitemap:" + ",".join(hosts[:4]))
+    def read() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        try:
+            return sitemap.read_roster(hosts, company=company, deadline=deadline)
+        except (UnicodeDecodeError, ValueError):
+            # A sitemap that is not text, or not XML a pattern can read.
+            return [], {}
+
+    items, info = _within_budget(read, "the job sitemap", ([], {}))
+    total = int(info.get("board_total") or 0)
+    if not total:
+        return None
+    host = str(info.get("board_sitemap_host") or "")
+    artifact = _artifact("jobs", company, attempted, items, explicit,
+                         tier="ats", provider=SITEMAP_PROVIDER, slug=host)
+    artifact.update(info)
+    artifact.update({
+        "found_via": "site", "board_company": company, "owned": True,
+        "titles_only": True,
+        "open_roles": total, "open_roles_floor": bool(info.get("board_total_floor")),
+        "new_in_window": None,
+    })
+    if fallback:
+        artifact["board_fallback"] = fallback
+    notes = []
+    if fallback:
+        notes.append(fallback)
+    if items:
+        eligible = [item for item in items if not item.get("digest_excluded")]
+        selected = jobs_digest.select_roles(eligible)
+        artifact["digest"] = jobs_digest.build_digest(eligible, selected)
+        artifact["digest"]["titles_only"] = True
+        notes.append(
+            f"titles only: the roles come from the job sitemap of {host}, "
+            "whose role pages could not be read, so each role is its title and link"
+            + (f" ({len(items):,} of {total:,} listed roles have a title)"
+               if len(items) < total else "")
+        )
+        artifact["digest"]["note"] = "; ".join(notes)
+    else:
+        notes.append(
+            f"{total:,} roles are listed in the job sitemap of {host}, "
+            "but neither their addresses nor their pages give a title"
+        )
+    artifact["coverage_note"] = "; ".join(notes)
+    log.source_log("Jobs", f"{company}: {artifact['coverage_note']}", tty_only=False)
+    return items, artifact
 
 
 def _read_board(
@@ -656,6 +891,16 @@ def _read_board(
             # Its own request limit or the lane's: either way the board
             # was found and not read, which is said by name.
             budget.unanswered.append(f"the {provider} board {slug} did not answer")
+        items = []
+    except ValueError as exc:  # BoardShapeError, UnicodeDecodeError, bad JSON
+        # A company reader's answer in a shape or encoding it cannot read:
+        # the board was not read, and the run falls through, not over.
+        if company_board is None:
+            raise
+        log.source_log(
+            "Jobs", f"{company}: the {provider} board {slug} could not be read "
+            f"({type(exc).__name__})", tty_only=False,
+        )
         items = []
     if not items:
         if company_board is not None and board.get("board_unanswered"):
@@ -966,14 +1211,17 @@ def _coverage_note(
     if not board.get("board_cut_short"):
         return ""
     listed = int(board.get("board_total") or 0)
-    if not board.get("board_newest_first"):
+    if not (board.get("board_newest_first") or board.get("board_reports_total")):
         listed = min(listed, WORKDAY_ROW_CEILING)
     rows = int(board.get("board_rows_read") or len(items))
     read = f"{rows:,} rows read" + (
         f" of the {listed:,} the board lists" if listed > rows else ""
     )
-    if board.get("board_newest_first"):
-        cause = "the newest roles are read first"
+    if board.get("board_newest_first") or board.get("board_reports_total"):
+        cause = (
+            "the newest roles are read first" if board.get("board_newest_first")
+            else "the board is read in its own order, which is not by date"
+        )
         if budget.spent():
             cause += f" and the lane's {budget.seconds:g}s time budget ran out"
         elif board.get("board_row_ceiling"):
@@ -997,35 +1245,76 @@ def _resolve_careers_page(
     backend: str = "auto",
     site: str = "",
 ) -> tuple[str | None, str | None]:
+    """Find and fetch the company's careers page HTML: ``(html, url)`` or
+    ``(None, None)``. See ``_find_careers_page``."""
+    html, url, _via = _find_careers_page(company, date_range, config, backend=backend, site=site)
+    return html, url
+
+
+def _find_careers_page(
+    company: str,
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+    *,
+    backend: str = "auto",
+    site: str = "",
+) -> tuple[str | None, str | None, str]:
     """Find and fetch the company's careers page HTML.
 
     Tries conventional URLs on the company's known site, or on guessed
-    domains when no site is known (free, deterministic); falls back to a single web search for the
-    careers page when a backend is configured. Returns (html, url) or
-    (None, None). Never raises.
+    domains when no site is known (free, deterministic). On a known site it
+    also tries the site's ``careers.`` and ``jobs.`` hosts, which is where a
+    large company's careers site often answers when its main site blocks
+    automated requests, and a careers page the registry names for it
+    (``CAREERS_PAGES``). A page that names a board ends the search; otherwise
+    the first careers page found is kept. Falls back to a single web search
+    for the careers page when a backend is configured.
+
+    Returns ``(html, url, via)``: ``url`` is the address that answered (after
+    redirects), so a platform under the company's own host is called there,
+    and ``via`` is how the page was reached (``site``, ``guess`` or
+    ``search``, as ``_found_via`` says). Never raises.
     """
     # Only a host guessed from the company's name may turn out not to exist.
     guessed = not (site and _host(site))
-    for host in _site_hosts(company, site):
-        registered = _registry_entry(host)
-        if registered is not None and registered[0] == "unreadable":
-            # A job site the lane does not read gets no request, on any path.
-            continue
-        for path in ("/careers", "/jobs"):
-            url = f"https://{host}{path}"
+    kept: tuple[str, str, str] | None = None
+    # Hosts that gave no answer at all: their other page is not asked.
+    dead: set[str] = set()
+    budget = _BUDGET.get()
+    for phase in _careers_candidates(company, site):
+        # The site answered on its other host form: ask that one from now on.
+        moved: dict[str, str] = {}
+        for url, on_site, named in phase:
+            host = _host(url)
+            if host in moved:
+                url = url.replace(f"//{host}", f"//{moved[host]}", 1)
+                host = moved[host]
+            if host in dead:
+                continue
             if _out_of_time(f"the careers page {url}"):
-                return None, None
-            if guessed:
-                html, no_answer = _careers_text(url, guessed=True)
-            else:
-                html, no_answer, url = _known_site_text(url)
-                # The site answered on its other host form: ask that one from now on.
-                host = _host(url)
+                return kept or (None, None, "search")
+            page, no_answer, used = _careers_page_at(
+                url, guessed=guessed or not on_site, company=company, site=site, named=named,
+            )
+            if _host(used) != host:
+                moved[host] = _host(used)
             if no_answer:
-                # Nothing answers at this host, so its other page is not tried.
-                break
-            if html and _looks_like_careers_html(html):
-                return _board_page(html, url, guessed=guessed)
+                dead.add(host)
+                if budget is not None:
+                    # Both host forms were asked for a known site.
+                    budget.unreachable.update({host, f"www.{host.removeprefix('www.')}",
+                                               host.removeprefix("www.")})
+            if page is None:
+                continue
+            if _names_board(page[0], page[1]):
+                return page
+            if kept is None:
+                kept = page
+            # The site's first careers page ends this group of pages; a
+            # later group is tried only while no page has named a board.
+            break
+    if kept is not None:
+        return kept
 
     if backend != "none":
         careers_url = _within_budget(
@@ -1038,9 +1327,82 @@ def _resolve_careers_page(
             # domain, its failure to answer is not an outage of the lane.
             html, _no_answer = _careers_text(careers_url, guessed=True)
             if html:
-                return html, careers_url
+                return html, careers_url, _found_via(careers_url, company, site)
 
-    return None, None
+    return None, None, "search"
+
+
+def _careers_candidates(company: str, site: str) -> list[list[tuple[str, bool, bool]]]:
+    """Careers page URLs to try, in groups, each with whether it is on the
+    host the run knows or guessed, and whether the registry names it as the
+    known site's careers page.
+
+    The groups: a careers page the registry names (``CAREERS_PAGES``); the
+    ``/careers`` and ``/jobs`` pages of the known site, or of each guessed
+    domain; then, for a known site only, its ``careers.`` and ``jobs.`` hosts,
+    which may not exist.
+    """
+    groups: list[list[tuple[str, bool, bool]]] = []
+    known = bool(site and _host(site))
+    if known:
+        hinted = next(
+            (page for key, page in CAREERS_PAGES.items() if _same_site(_host(site), key)), "",
+        )
+        if hinted:
+            groups.append([(hinted, False, True)])
+    for host in _site_hosts(company, site):
+        registered = _registry_entry(host)
+        if registered is not None and registered[0] == "unreadable":
+            # A job site the lane does not read gets no request, on any path.
+            continue
+        groups.append([(f"https://{host}{path}", True, False) for path in ("/careers", "/jobs")])
+    if known:
+        base = _host(site).removeprefix("www.")
+        groups.extend([(f"https://{label}.{base}/", False, False)] for label in ("careers", "jobs"))
+    return groups
+
+
+def _careers_page_at(
+    url: str, *, guessed: bool, company: str, site: str, named: bool = False,
+) -> tuple[tuple[str, str, str] | None, bool, str]:
+    """The careers page at ``url`` and the page naming its board, if any,
+    whether the host gave no answer at all, and the URL that was asked (the
+    site's other host form when that is the one that answered).
+
+    The page is ``(html, landed, via)``. A guessed URL (a domain guessed from
+    the name, a ``careers.``/``jobs.`` host of the known site, a registry
+    careers page) may not exist, so its failure is recorded nowhere. A page
+    that redirected off the company's site to a host that is not a jobs or
+    careers host (``microsoft.com/careers`` to a search engine) is not its
+    careers page. A page the registry names for the known site (``named``)
+    is the site's own, wherever it is hosted.
+    """
+    budget = _BUDGET.get()
+    if guessed:
+        html, no_answer = _careers_text(url, guessed=True)
+    else:
+        html, no_answer, url = _known_site_text(url)
+    if not html:
+        return None, no_answer, url
+    landed = (budget.landed.get(url) if budget is not None else None) or url
+    if not (_same_site(_host(landed), _host(url)) or _jobs_host(_host(landed)) or named):
+        return None, False, url
+    if not (_looks_like_careers_html(html) or _names_board(html, landed)):
+        return None, False, url
+    page, page_url = _board_page(html, landed, guessed=guessed)
+    return (page, page_url, "site" if named else _found_via(url, company, site)), False, url
+
+
+def _names_board(html: str, url: str) -> bool:
+    """Whether a page names a board the lane reads: a hosted system's link or
+    a hiring platform's markup."""
+    return bool(detect_ats(html)[0] or board_detect.detect_platform(html, url))
+
+
+def _jobs_host(host: str) -> bool:
+    """A host whose name says it serves jobs (``jobs.``, ``careers.``,
+    ``apply.careers.``, ``explore.jobs.``)."""
+    return bool(re.search(r"(?:^|\.)(?:jobs|careers?)\.", host or ""))
 
 
 def _known_site_text(url: str) -> tuple[str | None, bool, str]:
@@ -1089,22 +1451,28 @@ def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
 
 
 def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, bool]:
+    landed: list[str] = []
+    budget = _BUDGET.get()
     with http.expected_misses(403, 404):
         if guessed:
             # ``capture_failures`` keeps a guessed host's failures out of the
             # run's record, whatever they are.
             with http.capture_failures() as failures:
                 html = http.get_text(
-                    url, accept="text/html", retries=1, retry_dns=False,
+                    url, accept="text/html", retries=1, retry_dns=False, landed=landed,
                     **_bounds(GUESS_TIMEOUT_SECONDS),
                 )
             if any(failure.outcome_state == health.TIMEOUT for failure in failures):
                 _note_slow(f"{host} did not answer in {GUESS_TIMEOUT_SECONDS}s")
+            if landed and budget is not None:
+                budget.landed[url] = landed[-1]
             return html, any(failure.status_code is None for failure in failures)
         with http.tee_failures() as failures:
             html = http.get_text(
-                url, accept="text/html", retries=1, **_bounds(PAGE_TIMEOUT_SECONDS),
+                url, accept="text/html", retries=1, landed=landed, **_bounds(PAGE_TIMEOUT_SECONDS),
             )
+    if landed and budget is not None:
+        budget.landed[url] = landed[-1]
     timed_out = any(failure.outcome_state == health.TIMEOUT for failure in failures)
     if timed_out:
         _note_slow(f"{host} did not answer in {PAGE_TIMEOUT_SECONDS}s")
@@ -1120,41 +1488,66 @@ _FILE_LINK = re.compile(r"\.(?:pdf|docx?|xlsx?|pptx?|zip|png|jpe?g|gif|svg|webp|
 
 def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str]:
     """The page that names the company's board: the careers page, or a jobs
-    page of the same site that it links to.
+    page it links to.
 
     A large company's careers page is often a landing page whose job search
     lives one link away, on a host of its own (``jobs.nvidia.com``), and only
     that page names the hiring system. Up to ``_LINKED_PAGE_LIMIT`` such links
-    are followed, and only within the careers page's own site, so a board found
-    this way is named by the same site that named the careers page.
+    are followed: within the careers page's own site, or to a jobs host that
+    carries the site's name (``explore.jobs.netflix.net`` from
+    ``jobs.netflix.com``), so a board found this way is named by the page
+    the company's site led to. An Eightfold board the page points at by name
+    (``careers-eightFoldCareerUrl``) is followed first.
+
+    Returns the page and the address that answered with it.
     """
-    if detect_ats(html)[0]:
+    if _names_board(html, url):
         return html, url
-    for link in _jobs_links(html, url)[:_LINKED_PAGE_LIMIT]:
+    budget = _BUDGET.get()
+    pointed = board_detect.eightfold_career_url(html)
+    links = _jobs_links(html, url)
+    if pointed and (_same_site(_host(pointed), _host(url)) or _named_jobs_host(_host(pointed), url)):
+        links = [pointed, *(link for link in links if link != pointed)]
+    for link in links[:_LINKED_PAGE_LIMIT]:
         if _out_of_time(f"the jobs page {link}"):
             break
         linked, _no_answer = _careers_text(link, guessed=guessed)
-        if linked and detect_ats(linked)[0]:
-            return linked, link
+        landed = (budget.landed.get(link) if budget is not None else None) or link
+        if linked and _names_board(linked, landed):
+            return linked, landed
     return html, url
 
 
+def _named_jobs_host(host: str, page_url: str) -> bool:
+    """A jobs host on another domain that carries the page's site name:
+    ``explore.jobs.netflix.net`` for a page on ``jobs.netflix.com``."""
+    page_host = _host(page_url).removeprefix("www.")
+    parts = page_host.split(".")
+    name = parts[-2] if len(parts) >= 2 else ""
+    return bool(name) and len(name) >= 3 and _jobs_host(host) and name in host.split(".")
+
+
 def _jobs_links(html: str, page_url: str) -> list[str]:
-    """Links on a careers page to a jobs page of the same site, best first:
-    a jobs or careers host of its own, then a path that reads like a job
-    search. A link to the page itself or to another page of the same kind
-    (a translation of it, "life at") is left out."""
+    """Links on a careers page to a jobs page, best first: a jobs or careers
+    host of its own site, then a path of its own host that reads like a job
+    search, then a jobs host on another domain that carries the site's name
+    (``_named_jobs_host``). A link to the page itself or to another page of
+    the same kind (a translation of it, "life at") is left out."""
     page = urlparse(page_url)
     ranked: list[tuple[int, str]] = []
     for href in re.findall(r"""href\s*=\s*["']([^"'#\s]+)""", html, flags=re.I):
         link = urljoin(page_url, unescape(href))
         parsed = urlparse(link)
         host = parsed.netloc.lower()
-        if parsed.scheme not in ("http", "https") or not _same_site(host, page.netloc):
+        if parsed.scheme not in ("http", "https"):
             continue
-        if _FILE_LINK.search(parsed.path):
+        if not _same_site(host, page.netloc):
+            if not _named_jobs_host(host, page_url) or _FILE_LINK.search(parsed.path):
+                continue
+            rank = 2
+        elif _FILE_LINK.search(parsed.path):
             continue
-        if host != page.netloc.lower() and re.match(r"(jobs|careers?)\.", host):
+        elif host != page.netloc.lower() and _jobs_host(host):
             rank = 0
         elif host == page.netloc.lower() and _JOBS_LINK_WORDS.search(parsed.path):
             rank = 1
@@ -1331,10 +1724,11 @@ def _board_counts(
     reports its own total instead, see below.
     """
     from_date, to_date = date_range
-    if board.get("board_newest_first"):
-        # A board too large to read whole, read newest first: the open-role
-        # count is the total it reports, and the roles new in the window are
-        # counted only when the read went past the window's oldest day.
+    if board.get("board_newest_first") or board.get("board_reports_total"):
+        # A board that reports its own total, read newest first or in its own
+        # order up to a ceiling: the open-role count is the total it reports,
+        # and the roles new in the window are counted only when the read
+        # covered the window (went past its oldest day, or read the board).
         covered = bool(board.get("board_window_covered"))
         return {
             "open_roles": max(int(board.get("board_total") or 0), len(items)),
@@ -2025,6 +2419,38 @@ def extract_jsonld_jobs(html: str, base_url: str = "") -> list[dict[str, Any]]:
     return items
 
 
+def role_page_text(
+    url: str, *, timeout: float, deadline_monotonic: float, landed: list | None = None,
+    redirect_guard: Callable[[str], bool] | None = None,
+) -> str | None:
+    """A role or sitemap page as text, or None when it is not text the lane
+    can decode (a gzip sitemap, a page in another encoding): one such page
+    costs its own role, not the whole read."""
+    try:
+        return http.get_text(
+            url, accept="text/html,application/xml,*/*", timeout=timeout, retries=1,
+            deadline_monotonic=deadline_monotonic, landed=landed,
+            **({"redirect_guard": redirect_guard} if redirect_guard is not None else {}),
+        )
+    except UnicodeDecodeError:
+        return None
+
+
+def jsonld_role_text(html: Any) -> tuple[str, str] | None:
+    """The text of the first ``JobPosting`` a role's page carries, with its
+    breaks kept and as one line, or None when the page has none."""
+    if not isinstance(html, str):
+        return None
+    for block in _JSONLD_RE.findall(html):
+        for obj in _walk_jsonld(block):
+            if isinstance(obj, dict) and _is_job_posting(obj):
+                text = str(obj.get("description") or "")
+                if text.strip():
+                    text = unescape(text)
+                    return _block_text(text), _clean_html(text)
+    return None
+
+
 def _walk_jsonld(block: str) -> list[Any]:
     try:
         data = json.loads(block.strip())
@@ -2159,6 +2585,13 @@ def _ats_item(
         COMPANY_PROVIDER_APPLE: "AP",
         COMPANY_PROVIDER_AMAZON: "AZ",
         COMPANY_PROVIDER_EIGHTFOLD: "EF",
+        COMPANY_PROVIDER_GOOGLE: "GG",
+        COMPANY_PROVIDER_IBM: "IB",
+        PLATFORM_PROVIDER_ORACLE: "OR",
+        PLATFORM_PROVIDER_JIBE: "JB",
+        PLATFORM_PROVIDER_PHENOM: "PH",
+        PLATFORM_PROVIDER_TALENTBREW: "TB",
+        SITEMAP_PROVIDER: "SM",
     }.get(provider, "AT")
     return {
         "id": f"{prefix}{ident or slug}",
@@ -2321,7 +2754,11 @@ def _block_text(value: str) -> str:
 
 def _looks_like_careers_html(html: str) -> bool:
     lowered = html.lower()
-    if any(token in lowered for token in ("ashbyhq.com", "greenhouse.io", "lever.co", "workable.com", "smartrecruiters.com", "myworkdayjobs.com")):
+    if any(token in lowered for token in (
+        "ashbyhq.com", "greenhouse.io", "lever.co", "workable.com", "smartrecruiters.com",
+        "myworkdayjobs.com", "oraclecloud.com/hcmui", "/hcmui/candidateexperience",
+        "phenompeople", "tbcdn.talentbrew.com", "jibecdn.com", "eightfold",
+    )):
         return True
     return bool(re.search(r"\b(open roles|open positions|join (our|the) team|current openings|jobposting)\b", lowered))
 
@@ -2338,24 +2775,31 @@ def _read_newest_first(
     row_ceiling: int,
     window_start: str | None,
     deadline: float,
+    workers: int = COMPANY_BOARD_MAX_WORKERS,
+    newest_first: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Read a board's pages newest first, a few at a time.
+    """Read a board's pages, newest first, ``workers`` at a time.
 
     ``page(offset)`` makes one listing call and ``parse(payload)`` returns its
     rows and the total the board reports, raising ``BoardShapeError`` for an
-    answer it cannot read. Reading stops after the first page with no role
-    posted on or after ``window_start`` (a page may mix dates, so one older
-    row does not stop it), at ``row_ceiling``, at the board's end, at the
-    deadline, or at a failed page; the rows read so far are kept.
+    answer it cannot read. The first page gives the total; every page after
+    it up to ``row_ceiling`` is then asked, a bounded number at once, so a
+    board of a few thousand rows is read whole inside the budget. Reading
+    stops at the board's end, at the ceiling, at the deadline, or at a page
+    that fails or comes back empty: no page after a failed one is asked, and
+    the rows read before it are kept in board order.
 
     A first page that fails or cannot be read, or that is empty while the
     board reports roles, returns no rows: the board cannot be read.
+
+    ``newest_first`` off is for a board that cannot be sorted by date: its
+    rows are the whole board or a part of it, never the newest ones.
     """
     clock = _clock()
     info: dict[str, Any] = {
         "board_total": 0, "board_capped": False, "board_cut_short": False,
-        "board_newest_first": True, "board_window_covered": False,
-        "board_row_ceiling": row_ceiling,
+        "board_newest_first": newest_first, "board_window_covered": False,
+        "board_row_ceiling": row_ceiling, "board_reports_total": True,
     }
     failures: list[http.HTTPError] = []
 
@@ -2380,34 +2824,99 @@ def _read_newest_first(
     info["board_total"] = max(total, len(items))
     if not items:
         return [], info
-
-    def in_window(rows: list[dict[str, Any]]) -> bool:
-        return window_start is None or any(
-            str(row.get("date") or "") >= window_start for row in rows
-        )
-
-    covered = not in_window(items)
-    stop = covered or len(items) >= info["board_total"]
-    offset = page_size
     limit = min(info["board_total"], row_ceiling)
-    while not stop and offset < limit:
-        offsets = list(range(offset, limit, page_size))[:WORKDAY_MAX_WORKERS]
-        offset = offsets[-1] + page_size
-        for payload in _workday_run([page(start) for start in offsets], deadline, clock):
-            try:
-                rows, _total = parse(payload) if isinstance(payload, dict) else ([], 0)
-            except BoardShapeError:
-                rows = []
-            if not rows:
-                stop = True
+    calls = [page(offset) for offset in range(page_size, limit, page_size)]
+    rest = _paged_run(calls, parse, deadline, clock, workers=workers)
+    pages = [list(items), *rest]
+    for rows in rest:
+        items.extend(rows)
+    # Every page up to the ceiling answered: a board that lost a role or two
+    # while it was read is still read whole.
+    every_page = len(rest) == len(calls)
+    # Newest first, a row older than the window means the window was read
+    # whole; in any other order only the whole board covers it.
+    # Only rows reached through full pages count: a page that served fewer
+    # rows than asked for leaves a gap the offsets skip, and a role posted in
+    # the window may sit in it.
+    older = False
+    if newest_first and window_start is not None:
+        for rows in pages:
+            if any(str(row.get("date") or "") < window_start for row in rows if row.get("date")):
+                older = True
                 break
-            items.extend(rows)
-            if not in_window(rows):
-                covered = stop = True
+            if len(rows) < page_size:
                 break
-    info["board_window_covered"] = covered or len(items) >= info["board_total"]
-    info["board_cut_short"] = len(items) < info["board_total"]
+    # A board that serves fewer rows a page than asked for (a server-side cap)
+    # answers every page and still leaves rows unread: whole only when the
+    # rows read come to the total, give or take the drift of a live board.
+    drift = max(2, info["board_total"] // 100)
+    whole = (
+        every_page and info["board_total"] <= row_ceiling
+        and len(items) >= info["board_total"] - drift
+    )
+    info["board_window_covered"] = older or whole or len(items) >= info["board_total"]
+    info["board_cut_short"] = not whole and len(items) < info["board_total"]
+    info["board_capped"] = info["board_total"] > row_ceiling
     return items[:row_ceiling], info
+
+
+_STOPPED = object()
+
+
+def _paged_run(
+    calls: list[Callable[[float], Any]],
+    parse: Callable[[Any], tuple[list[dict[str, Any]], int]],
+    deadline: float,
+    clock: Callable[[], float],
+    *,
+    workers: int,
+) -> list[list[dict[str, Any]]]:
+    """Run listing calls at most ``workers`` at once and return the rows of
+    each page in order, up to the first page that failed, could not be read,
+    came back empty or would start after the deadline. Once one has, no later
+    call that has not started yet is made; an earlier one still is, so the
+    pages before the failed one are all read."""
+    lock = threading.Lock()
+    first_bad = [len(calls)]
+
+    def mark(index: int) -> None:
+        with lock:
+            first_bad[0] = min(first_bad[0], index)
+
+    def run(index: int, call: Callable[[float], Any]) -> Any:
+        if index > first_bad[0]:
+            return _STOPPED
+        remaining = deadline - clock()
+        if remaining <= 0:
+            mark(index)
+            return _OUT_OF_TIME
+        try:
+            payload = call(time.monotonic() + min(remaining, _request_seconds(API_TIMEOUT_SECONDS, 2)))
+        except http.HTTPError:
+            mark(index)
+            return None
+        try:
+            rows = parse(payload)[0] if payload is not None else []
+        except BoardShapeError:
+            rows = []
+        if not rows:
+            mark(index)
+        return rows
+
+    if not calls:
+        return []
+    pages: list[list[dict[str, Any]]] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(calls)))) as executor:
+        futures = [
+            http.submit_with_context(executor, run, index, call)
+            for index, call in enumerate(calls)
+        ]
+        for future in futures:
+            rows = future.result()
+            if not isinstance(rows, list) or not rows:
+                break
+            pages.append(rows)
+    return pages
 
 
 # Amazon: one search endpoint, 100 roles per call with their full text. Errors
@@ -2705,9 +3214,34 @@ def read_eightfold_board(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """An Eightfold board's newest roles, up to the row ceiling, with its total.
 
-    A 403 on the registered API generation reads as no rows: the board cannot
-    be read.
+    A tenant serves one of two API generations. A detected board does not say
+    which, so ``pcsx`` is asked first and ``v2`` when ``pcsx`` gives no rows;
+    an entry that names its ``api`` is asked on that one alone. A 403 on every
+    generation asked reads as no rows: the board cannot be read.
     """
+    if entry.get("api"):
+        return _read_eightfold_generation(entry, deadline=deadline)
+    items, info = _read_eightfold_generation({**entry, "api": "pcsx"}, deadline=deadline)
+    if items or info.get("board_unanswered"):
+        return items, info
+    # The robots check before the read covered the first generation's
+    # listing; the second has its own path, checked before it is asked.
+    if board_robots.disallowed(
+        _eightfold_listing_url(entry["board"], "v2"),
+        deadline_monotonic=time.monotonic() + max(0.0, deadline - _clock()()),
+    ):
+        return items, info
+    return _read_eightfold_generation({**entry, "api": "v2"}, deadline=deadline)
+
+
+def _eightfold_listing_url(board: str, api: str) -> str:
+    """The listing call of an Eightfold API generation."""
+    return f"https://{board}/api/pcsx/search" if api == "pcsx" else f"https://{board}/api/apply/v2/jobs"
+
+
+def _read_eightfold_generation(
+    entry: dict[str, str], *, deadline: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     board, domain = entry["board"], entry["domain"]
     if entry.get("api") == "pcsx":
         url = f"https://{board}/api/pcsx/search"
@@ -2756,27 +3290,71 @@ def fetch_eightfold_details(
     return _fill_role_text(items, call, text_of, deadline=deadline)
 
 
-# Readers of company-run boards, by provider: given the registry entry and the
-# listing's deadline, each returns ``(items, board_info)`` like the hosted
-# readers. Detail fetchers fill role text for the roles the digest selected
-# and return how many were left unfetched (late, failed). Both are named, and
-# looked up when called, so a test may stand in for one.
+# Readers of company-run and platform boards, by provider: given the board's
+# entry (from the registry or from detection) and the listing's deadline,
+# each returns ``(items, board_info)`` like the hosted readers. Detail
+# fetchers fill role text for the roles the digest selected and return how
+# many were left unfetched (late, failed). Both are named, and looked up
+# when called, so a test may stand in for one: a bare name is a function of
+# this module, ``module:function`` one of ``lib.job_boards``.
 _COMPANY_READERS: dict[str, str] = {
     COMPANY_PROVIDER_AMAZON: "read_amazon_board",
     COMPANY_PROVIDER_APPLE: "read_apple_board",
     COMPANY_PROVIDER_EIGHTFOLD: "read_eightfold_board",
+    COMPANY_PROVIDER_GOOGLE: "google:read_board",
+    COMPANY_PROVIDER_IBM: "ibm:read_board",
+    PLATFORM_PROVIDER_ORACLE: "oracle:read_board",
+    PLATFORM_PROVIDER_JIBE: "jibe:read_board",
+    PLATFORM_PROVIDER_PHENOM: "phenom:read_board",
+    PLATFORM_PROVIDER_TALENTBREW: "talentbrew:read_board",
 }
 _DETAIL_FETCHERS: dict[str, str] = {
     ATS_PROVIDER_WORKDAY: "fetch_workday_details",
     COMPANY_PROVIDER_APPLE: "fetch_apple_details",
     COMPANY_PROVIDER_EIGHTFOLD: "fetch_eightfold_details",
+    PLATFORM_PROVIDER_ORACLE: "oracle:fetch_details",
+    PLATFORM_PROVIDER_PHENOM: "phenom:fetch_details",
+    PLATFORM_PROVIDER_TALENTBREW: "talentbrew:fetch_details",
 }
 
 
+def _named(name: str) -> Callable[..., Any]:
+    if ":" not in name:
+        return globals()[name]
+    module, function = name.split(":", 1)
+    return getattr(importlib.import_module(f"{__package__}.job_boards.{module}"), function)
+
+
 def _company_reader(provider: str) -> Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]]:
-    return globals()[_COMPANY_READERS[provider]]
+    return _named(_COMPANY_READERS[provider])
 
 
 def _detail_fetcher(provider: str) -> Callable[..., tuple[int, int]] | None:
     name = _DETAIL_FETCHERS.get(provider)
-    return globals()[name] if name else None
+    return _named(name) if name else None
+
+
+def _listing_url(provider: str, entry: dict[str, Any]) -> str:
+    """The first listing call a board's reader makes, for the robots.txt check."""
+    board = str(entry.get("board") or "")
+    if provider == COMPANY_PROVIDER_APPLE:
+        return _APPLE_SEARCH_URL
+    if provider == COMPANY_PROVIDER_AMAZON:
+        return f"https://{board or 'www.amazon.jobs'}/en/search.json"
+    if provider == COMPANY_PROVIDER_EIGHTFOLD:
+        # An entry that names its generation is asked on that one alone.
+        return _eightfold_listing_url(board, str(entry.get("api") or "pcsx"))
+    if provider == ATS_PROVIDER_WORKDAY:
+        return workday_list_url(board)
+    if provider in _COMPANY_READERS and ":" in _COMPANY_READERS[provider]:
+        module = importlib.import_module(
+            f"{__package__}.job_boards.{_COMPANY_READERS[provider].split(':', 1)[0]}"
+        )
+        if provider == PLATFORM_PROVIDER_PHENOM:
+            return module.widgets_url(entry)
+        if provider == COMPANY_PROVIDER_GOOGLE:
+            return module.listing_url(1)
+        if provider == COMPANY_PROVIDER_IBM:
+            return module.listing_url()
+        return module.listing_url(entry)
+    return ""

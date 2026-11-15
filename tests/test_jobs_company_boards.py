@@ -209,13 +209,16 @@ def test_a_capped_board_total_prints_as_a_floor(stub):
 # --- a job site that cannot be read ---
 
 
-def test_a_reader_that_fails_gives_the_cant_be_read_outcome_and_no_slug_probe(stub, capsys):
+def test_a_reader_that_fails_falls_to_the_sitemap_then_the_cant_be_read_outcome(stub, capsys):
     _calls, state = stub
     state["rows"] = []
     items, artifact, urls, _failures = _search()
     assert items == []
     assert artifact["job_site_unreadable"] == "Acme"
-    assert urls == []
+    assert "answered with an error" in artifact["job_site_unreadable_reason"]
+    # No slug probe: only the site's robots.txt files, asked for a job sitemap.
+    assert urls and all(url.endswith("/robots.txt") for url in urls)
+    assert "https://jobs.acmecorp.com/robots.txt" in urls
     err = capsys.readouterr().err
     assert "[Jobs] Acme's job site can't be read automatically" in err
     assert "no supported job board found" not in err
@@ -225,7 +228,6 @@ def test_a_reader_that_fails_gives_the_cant_be_read_outcome_and_no_slug_probe(st
     ("company", "site", "name"),
     [
         ("Tesla", "https://www.tesla.com/", "Tesla"),
-        ("Google", "https://www.google.com/", "Google"),
         ("Meta Platforms", "https://about.meta.com/", "Meta"),
     ],
 )
@@ -303,7 +305,10 @@ def _amazon(pages, *, fail_at=None):
 def _amazon_search(pages, **kwargs):
     asked, get = _amazon(pages, **kwargs)
     texts = _NoRequests()
-    with patch.object(jobs.http, "get", side_effect=get), \
+    # The recorded pages are trimmed to three rows each: the page size the
+    # reader asks for matches them, so a full page reads as full.
+    with patch.object(jobs, "AMAZON_PAGE_SIZE", 3), \
+            patch.object(jobs.http, "get", side_effect=get), \
             patch.object(jobs.http, "get_text", side_effect=texts.text), \
             patch.object(jobs.http, "post", side_effect=texts):
         items, artifact = jobs.search_jobs(
@@ -329,7 +334,7 @@ def test_amazon_pages_parse_to_rows_with_their_full_text():
 def test_amazon_reads_past_a_mixed_page_and_stops_after_one_with_no_new_role():
     items, artifact, asked, other = _amazon_search(AMAZON["pages"])
     assert len(items) == 9
-    assert {0, 100, 200} <= {offset for _url, offset in asked}
+    assert {0, 3, 6} <= {offset for _url, offset in asked}
     assert artifact["tier"] == "ats" and artifact["provider"] == "amazon"
     # Three new on the first page and two on the mixed second page.
     assert artifact["new_in_window"] == 5
@@ -351,8 +356,9 @@ def test_amazon_error_answered_as_http_200_is_the_cant_be_read_outcome():
     assert items == []
     assert artifact["job_site_unreadable"] == "Amazon"
     assert len(asked) == 1
-    # No careers page and no hosted-system slug was tried.
-    assert other == []
+    # No careers page and no hosted-system slug was tried: only robots.txt
+    # files, asked for a job sitemap before the run says it cannot read the site.
+    assert all(url.endswith("/robots.txt") for url in other)
     assert all(url.startswith("https://www.amazon.jobs/") for url, _offset in asked)
 
 
@@ -496,7 +502,7 @@ def test_apple_answering_no_rows_against_a_total_is_the_cant_be_read_outcome():
     items, artifact, posts, _details, others = _apple_search({1: empty})
     assert items == [] and posts == [1]
     assert artifact["job_site_unreadable"] == "Apple"
-    assert others == []
+    assert all(url.endswith("/robots.txt") for url in others)
 
 
 def test_an_apple_detail_that_fails_keeps_its_summary_and_is_counted():
@@ -540,8 +546,38 @@ def test_a_slow_apple_page_ends_that_call_and_keeps_the_rows_read():
 
 PCSX = json.loads((FIXTURES / "jobs_eightfold_pcsx.json").read_text(encoding="utf-8"))
 V2 = json.loads((FIXTURES / "jobs_eightfold_v2.json").read_text(encoding="utf-8"))
-MICROSOFT = jobs.COMPANY_BOARDS["microsoft.com"]
-NETFLIX = jobs.COMPANY_BOARDS["netflix.com"]
+# What detection reads off each careers site (no registry row any more).
+MICROSOFT = {"name": "Microsoft", "provider": "eightfold", "board": "apply.careers.microsoft.com",
+             "domain": "microsoft.com", "api": "pcsx"}
+NETFLIX = {"name": "Netflix", "provider": "eightfold", "board": "explore.jobs.netflix.net",
+           "domain": "netflix.com", "api": "v2"}
+# Recorded shapes of the pages detection follows: Microsoft's careers host
+# points at its Eightfold board by name; Netflix's jobs page links a jobs
+# host on its other domain; both Eightfold pages state their group id.
+_MICROSOFT_LANDING = (
+    '<html><body><div id="careers-eightFoldCareerUrl" hidden>'
+    "https://apply.careers.microsoft.com/careers</div>"
+    "<p>Join our team. Open positions.</p></body></html>"
+)
+_NETFLIX_LANDING = (
+    '<html><body><a href="https://explore.jobs.netflix.net/careers">See open roles</a>'
+    "<p>Join our team.</p></body></html>"
+)
+
+
+def _eightfold_page_html(group):
+    return (
+        '<html><head><link href="https://static.vscdn.net/fonts/css/eightfold-font-base.css">'
+        f'<script>window._EF_GROUP_ID = "{group}";</script></head><body></body></html>'
+    )
+
+
+_EIGHTFOLD_PAGES = {
+    "https://careers.microsoft.com/": _MICROSOFT_LANDING,
+    "https://apply.careers.microsoft.com/careers": _eightfold_page_html("microsoft.com"),
+    "https://www.netflix.com/jobs": _NETFLIX_LANDING,
+    "https://explore.jobs.netflix.net/careers": _eightfold_page_html("netflix.com"),
+}
 
 
 def _eightfold_page(fixture, start, *, pcsx, total=None):
@@ -581,11 +617,19 @@ def _eightfold_search(company, site, fixture, *, pcsx, total=None, status=None):
         raise http.HTTPError("HTTP 404: Not Found", status_code=404)
 
     texts = _NoRequests()
+
+    def page_text(url, *args, **kwargs):
+        if url in _EIGHTFOLD_PAGES:
+            return _EIGHTFOLD_PAGES[url]
+        return texts.text(url, *args, **kwargs)
+
     with patch.object(jobs.http, "get", side_effect=get), \
-            patch.object(jobs.http, "get_text", side_effect=texts.text), \
+            patch.object(jobs.http, "get_text", side_effect=page_text), \
             patch.object(jobs.http, "post", side_effect=texts):
         items, artifact = jobs.search_jobs(company, WINDOW, {}, web_backend="none", site=site)
-    return items, artifact, listed, details, texts.urls
+    return items, artifact, listed, details, [
+        url for url in texts.urls if not url.endswith("/robots.txt")
+    ]
 
 
 def test_a_pcsx_page_parses_to_rows_with_a_public_url():
@@ -619,12 +663,14 @@ def test_no_eightfold_row_claims_a_true_posted_date():
     assert rows and not any(row["posted_date_true"] or row["date"] for row in rows)
 
 
-def test_a_403_on_the_registered_generation_is_the_cant_be_read_outcome():
-    items, artifact, listed, details, other = _eightfold_search(
+def test_a_403_on_both_api_generations_is_the_cant_be_read_outcome():
+    items, artifact, listed, details, _other = _eightfold_search(
         "Microsoft", "https://www.microsoft.com/", PCSX, pcsx=True, status=403,
     )
     assert items == [] and artifact["job_site_unreadable"] == "Microsoft"
-    assert len(listed) == 1 and details == [] and other == []
+    # A detected board does not say its generation: pcsx is asked, then v2.
+    assert [url.rsplit("/api/", 1)[1] for url, _params in listed] == ["pcsx/search", "apply/v2/jobs"]
+    assert details == []
 
 
 def test_a_large_eightfold_board_is_read_to_its_ceiling_and_prints_the_reported_total():
@@ -632,7 +678,9 @@ def test_a_large_eightfold_board_is_read_to_its_ceiling_and_prints_the_reported_
         "Microsoft", "https://www.microsoft.com/", PCSX, pcsx=True,
     )
     assert len(items) == jobs.EIGHTFOLD_ROW_CEILING == 400
-    assert len(listed) == 40 and other == []
+    # Only the careers pages detection read before the board was found.
+    assert len(listed) == 40
+    assert other == ["https://www.microsoft.com/careers", "https://www.microsoft.com/jobs"]
     assert all(params["domain"] == "microsoft.com" and params["sort_by"] == "timestamp"
                for _url, params in listed)
     assert artifact["open_roles"] == 2392 and artifact["new_in_window"] is None

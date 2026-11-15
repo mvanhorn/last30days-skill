@@ -2464,6 +2464,15 @@ def _jobs_board_footer_line(report: schema.Report) -> str | None:
     new = board.get("new_in_window")
     if isinstance(new, int) and not isinstance(new, bool):
         line += f" │ {new:,} new in the L30"
+    if board.get("titles_only"):
+        # Roles read off the site's job sitemap: no text, no posting dates.
+        line += " │ from its job sitemap"
+        if board.get("board_titles_missing"):
+            line += ", no titles readable"
+        fallback = board.get("board_fallback")
+        if isinstance(fallback, str) and fallback.strip():
+            # The platform reader failed and the run fell to the sitemap.
+            line += f" ({_footer_safe(fallback, 100)})"
     return line
 
 
@@ -2473,7 +2482,11 @@ def _jobs_unreadable_footer_line(report: schema.Report) -> str | None:
     name = (report.artifacts or {}).get("jobs_site_unreadable")
     if not isinstance(name, str) or not name.strip():
         return None
-    return f"💼 Jobs: {jobs_digest.unreadable_job_site_line(_footer_safe(name, 60))}"
+    line = f"💼 Jobs: {jobs_digest.unreadable_job_site_line(_footer_safe(name, 60))}"
+    reason = (report.artifacts or {}).get("jobs_site_unreadable_reason")
+    if isinstance(reason, str) and reason.strip():
+        line += f" ({_footer_safe(reason, 100)})"
+    return line
 
 
 def _jobs_digest(report: schema.Report) -> dict | None:

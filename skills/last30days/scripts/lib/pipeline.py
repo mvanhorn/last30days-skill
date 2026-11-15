@@ -3004,6 +3004,10 @@ def run(
                 # The company's job site is known and cannot be read: the
                 # footer says so rather than printing nothing.
                 bundle.artifacts["jobs_site_unreadable"] = str(artifact["job_site_unreadable"])
+                if artifact.get("job_site_unreadable_reason"):
+                    bundle.artifacts["jobs_site_unreadable_reason"] = str(
+                        artifact["job_site_unreadable_reason"]
+                    )
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
@@ -4231,7 +4235,10 @@ def _search_jobs_lane(
                 # its footer line; the first such company is the one named.
                 unreadable = host_artifact.get("job_site_unreadable")
                 if unreadable and not artifact.get("job_site_unreadable"):
-                    artifact = {**artifact, "job_site_unreadable": unreadable}
+                    artifact = {
+                        **artifact, "job_site_unreadable": unreadable,
+                        "job_site_unreadable_reason": host_artifact.get("job_site_unreadable_reason", ""),
+                    }
     if held and not _is_jobs_board("jobs", artifact):
         items, artifact = held[0], named(held[1])
         # A board tied to no company here is shown under the name it states.
