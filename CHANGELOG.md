@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.0.5] - 2026-11-15
+
+### Fixed
+
+- X keyword searches through the bird client now read X's Top tab, so busy topics return the month's most-engaged posts instead of the last few minutes of zero-engagement ones. ([#1465](https://github.com/mvanhorn/last30days-skill/issues/1465))
+
+
 ## [4.0.4] - 2026-11-15
 
 ### Fixed
