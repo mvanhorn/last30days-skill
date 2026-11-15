@@ -1239,3 +1239,112 @@ class TestXaiErrorRemediation:
         q = _compute(config_overrides=config, result_overrides=results, ytdlp_installed=True)
         assert expected_fix in q["nudge_text"]
         assert "log into x.com" not in q["nudge_text"]
+
+
+class TestYouTubeTranscriptTargetAndBotCheck:
+    """#1449: health is measured against the transcript target, and a bot
+    check gets its own cause instead of stale-yt-dlp upgrade advice."""
+
+    def test_four_of_six_with_target_two_is_not_degraded(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 4,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 2,
+                "youtube_transcript_target": 2,
+            },
+        )
+        assert "youtube" not in q["core_degraded"]
+
+    def test_issue_run_four_of_fifteen_with_target_two_is_not_degraded(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 15,
+                "youtube_transcripts_count": 4,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 4,
+                "youtube_transcript_target": 2,
+                "youtube_bot_checked": 1,
+                "youtube_sc_rescued": 2,
+            },
+        )
+        assert "youtube" not in q["core_degraded"]
+
+    def test_zero_of_target_is_still_degraded(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 15,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+    def test_bot_check_with_rescues_names_the_cause_without_upgrade_advice(self):
+        q = _compute(
+            config_overrides={"SCRAPECREATORS_API_KEY": "sc-dummy"},
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 15,
+                "youtube_transcripts_count": 1,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 5,
+                "youtube_transcript_target": 8,
+                "youtube_bot_checked": 1,
+                "youtube_sc_rescued": 1,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+        text = q["nudge_text"]
+        assert "bot-checked yt-dlp" in text
+        assert "ScrapeCreators rescued 1 of them" in text
+        assert "LAST30DAYS_YOUTUBE_SSH_HOST" in text
+        assert "won't help" in text
+        assert "stale yt-dlp binary" not in text
+        assert "brew upgrade" not in text
+        assert "pip install" not in text
+        # A keyed run is not told to add the key it already has.
+        assert "add SCRAPECREATORS_API_KEY" not in text
+
+    def test_bot_check_without_a_key_suggests_ssh_host_and_scrapecreators_key(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 8,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+                "youtube_bot_checked": 1,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+        text = q["nudge_text"]
+        assert "bot-checked yt-dlp" in text
+        assert "LAST30DAYS_YOUTUBE_SSH_HOST" in text
+        assert "SCRAPECREATORS_API_KEY" in text
+        assert "stale yt-dlp binary" not in text
+        assert "brew upgrade" not in text
+
+    def test_failures_without_a_bot_check_keep_the_stale_ytdlp_advice(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 8,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+                "youtube_bot_checked": 0,
+            },
+        )
+        text = q["nudge_text"]
+        assert "stale yt-dlp" in text.lower()
+        assert "brew" in text.lower()
+        assert "bot-checked" not in text
