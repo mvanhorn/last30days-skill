@@ -2421,6 +2421,7 @@ def extract_jsonld_jobs(html: str, base_url: str = "") -> list[dict[str, Any]]:
 
 def role_page_text(
     url: str, *, timeout: float, deadline_monotonic: float, landed: list | None = None,
+    redirect_guard: Callable[[str], bool] | None = None,
 ) -> str | None:
     """A role or sitemap page as text, or None when it is not text the lane
     can decode (a gzip sitemap, a page in another encoding): one such page
@@ -2429,6 +2430,7 @@ def role_page_text(
         return http.get_text(
             url, accept="text/html,application/xml,*/*", timeout=timeout, retries=1,
             deadline_monotonic=deadline_monotonic, landed=landed,
+            **({"redirect_guard": redirect_guard} if redirect_guard is not None else {}),
         )
     except UnicodeDecodeError:
         return None

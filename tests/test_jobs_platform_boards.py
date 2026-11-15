@@ -794,3 +794,41 @@ def test_the_eightfold_fallback_generation_is_checked_against_robots(monkeypatch
     assert asked == ["pcsx"]
     assert jobs._listing_url(jobs.COMPANY_PROVIDER_EIGHTFOLD, {"board": "b.example", "api": "v2"}) == \
         "https://b.example/api/apply/v2/jobs"
+
+
+def test_a_redirect_to_a_private_address_is_refused_before_it_is_followed():
+    import io
+    import urllib.error
+    import urllib.request
+    from email.message import Message
+
+    handler = http._StripAuthOnCrossOriginRedirect()
+    req = urllib.request.Request("https://jobs.uber.com/en/jobs/149574/")
+    setattr(req, http._REDIRECT_GUARD_ATTR, sitemap._guard(req.full_url))
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(req, io.BytesIO(), 302, "Found", Message(), "http://192.168.1.1/admin")
+    followed = handler.redirect_request(
+        req, io.BytesIO(), 302, "Found", Message(), "https://jobs.uber.com/en/jobs/149574/data-engineer",
+    )
+    # A redirect on the site is followed and keeps the check for the next hop.
+    assert getattr(followed, http._REDIRECT_GUARD_ATTR) is getattr(req, http._REDIRECT_GUARD_ATTR)
+
+
+def test_role_pages_from_a_sitemap_are_fetched_with_the_redirect_check():
+    urlset = '<urlset><url><loc>https://jobs.uber.com/en/jobs/149574/</loc></url></urlset>'
+    guards = []
+    fake = _Site(texts={
+        "https://jobs.uber.com/robots.txt": "User-Agent: *\nSitemap: https://jobs.uber.com/sitemap.xml\n",
+        "https://jobs.uber.com/sitemap.xml": urlset,
+    })
+    original = fake.text
+
+    def text(url, *args, **kwargs):
+        if "/en/jobs/" in url:
+            guards.append(kwargs.get("redirect_guard"))
+        return original(url, *args, **kwargs)
+
+    fake.text = text
+    _run("Uber", "https://www.uber.com/", fake)
+    assert guards and all(guard is not None for guard in guards)
+    assert not guards[0]("http://127.0.0.1/") and guards[0]("https://jobs.uber.com/en/jobs/1/")

@@ -85,7 +85,15 @@ def _fetch(url: str, deadline: float) -> str | None:
         return _on_site(url, lambda landed: jobs.role_page_text(
             url, timeout=TIMEOUT_SECONDS,
             deadline_monotonic=time.monotonic() + min(remaining, TIMEOUT_SECONDS), landed=landed,
+            redirect_guard=_guard(url),
         ))
+
+
+def _guard(url: str) -> Callable[[str], bool]:
+    """The redirect check for a fetch of ``url``: it may be redirected only to
+    an address on the same site that is not on a private network."""
+    host = jobs._host(url)
+    return lambda target: _public_url(target, host)
 
 
 def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
@@ -256,6 +264,7 @@ def _titles_from_pages(urls: list[str], company: str, deadline: float) -> list[t
     def call(url: str) -> Callable[[float], Any]:
         return lambda http_deadline: _on_site(url, lambda landed: jobs.role_page_text(
             url, timeout=TIMEOUT_SECONDS, deadline_monotonic=http_deadline, landed=landed,
+            redirect_guard=_guard(url),
         ))
 
     # The first wave tells whether the role pages can be read at all: a site

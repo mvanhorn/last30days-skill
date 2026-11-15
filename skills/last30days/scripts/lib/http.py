@@ -116,11 +116,24 @@ def _request_origin(url: str) -> tuple[str, str, int]:
     return scheme, host, port
 
 
+# A request may carry a check on where it is allowed to be redirected: a
+# caller that fetches an address from remote content (a sitemap) refuses a
+# redirect to a private network before it is followed, not after.
+_REDIRECT_GUARD_ATTR = "_last30days_redirect_guard"
+
+
 class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        guard = getattr(req, _REDIRECT_GUARD_ATTR, None)
+        if guard is not None and not guard(newurl):
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "redirect refused: off the site or to a private address", headers, fp,
+            )
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is None:
             return None
+        if guard is not None:
+            setattr(new, _REDIRECT_GUARD_ATTR, guard)
         if _request_origin(req.full_url) != _request_origin(new.full_url):
             for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
                 if not store:
@@ -918,6 +931,7 @@ def request(
     bypass_proxy: bool = False,
     retry_dns: bool = True,
     return_headers: bool = False,
+    redirect_guard: Callable[[str], bool] | None = None,
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
@@ -994,6 +1008,8 @@ def request(
         headers.setdefault("Content-Type", "application/json")
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    if redirect_guard is not None:
+        setattr(req, _REDIRECT_GUARD_ATTR, redirect_guard)
 
     def log_request(message: str) -> None:
         log(_scrub_fixture_value(message, redactions=fixture_redactions))
@@ -1307,6 +1323,7 @@ def get_text(
     deadline_monotonic: float | None = None,
     retry_dns: bool = True,
     landed: Optional[list] = None,
+    redirect_guard: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1325,6 +1342,8 @@ def get_text(
         retry_dns: See ``request``
         landed: When given, the address that answered (after redirects) is
             appended to it on success, or ``url`` when that is not known.
+        redirect_guard: When given, a redirect to an address it returns False
+            for is refused before it is followed, and the call returns None.
 
     Returns:
         Decoded response body as text, or None on failure.
@@ -1344,6 +1363,8 @@ def get_text(
         bounds["retry_dns"] = False
     if landed is not None:
         bounds["return_headers"] = True
+    if redirect_guard is not None:
+        bounds["redirect_guard"] = redirect_guard
     try:
         answer = request(
             "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,
