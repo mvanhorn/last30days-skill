@@ -475,8 +475,8 @@ def _build_nudge_text(
             bonus_hints.append("Pinterest")
         if bonus_hints:
             free_suggestions.append(
-                f"Your SC key also powers {', '.join(bonus_hints)} and YouTube comments. "
-                "Add them to INCLUDE_SOURCES in your .env to enable."
+                f"Your SC key also powers {' and '.join(bonus_hints)}. "
+                "Add these sources to INCLUDE_SOURCES in your .env to enable them."
             )
 
     if free_suggestions:

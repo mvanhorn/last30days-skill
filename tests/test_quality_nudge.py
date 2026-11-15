@@ -210,6 +210,31 @@ class TestFullCoverageWithSC:
         assert q["nudge_text"] is None
 
 
+@pytest.mark.parametrize(
+    ("active_sources", "hint"),
+    [
+        (["youtube_comments"], "Threads and Pinterest"),
+        (["youtube_comments", "threads"], "Pinterest"),
+        (["youtube_comments", "pinterest"], "Threads"),
+        (["youtube_comments", "threads", "pinterest"], None),
+    ],
+)
+def test_scrapecreators_hint_only_lists_disabled_opt_in_sources(active_sources, hint):
+    score = _compute(
+        config_overrides={
+            "SCRAPECREATORS_API_KEY": "dummy-key",
+            "INCLUDE_SOURCES": ",".join(["reddit", "hn", "youtube", *active_sources]),
+        },
+        result_overrides={"active_sources": active_sources},
+    )
+    nudge = score["nudge_text"] or ""
+    assert "YouTube comments" not in nudge
+    if hint is None:
+        assert "Your SC key also powers" not in nudge
+    else:
+        assert f"Your SC key also powers {hint}." in nudge
+
+
 class TestSCDoesNotAffectCoreScore:
     """SC key should not change core score - it only adds bonus sources."""
 
