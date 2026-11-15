@@ -255,15 +255,18 @@ def diversify_clusters(
         if uncovered and slots_left <= len(uncovered):
             options = [opt for opt in options if covers[opt.index] & uncovered]
         # Out-of-window clusters are never promoted: one is eligible only
-        # while no current option comes before it in the incoming order.
+        # while no unplaced current cluster comes before it in the incoming
+        # order, including one the story cap just skipped.
         first_current = min(
-            (opt.index for opt in options if not stale[opt.index]), default=None,
+            (index for index in remaining if not stale[index]), default=None,
         )
         if first_current is not None:
             options = [
                 opt for opt in options
                 if not stale[opt.index] or opt.index < first_current
             ]
+            if not options:
+                break
 
         choice = _mmr_pick(options, solid)
         picked.append(choice.index)
