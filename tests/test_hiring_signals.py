@@ -18,6 +18,15 @@ def job(title: str, body: str, department: str = "Engineering") -> schema.Source
 
 
 class HiringSignalsTests(unittest.TestCase):
+    def test_theme_keywords_match_whole_words_only(self):
+        themed = hiring_signals._theme_items([
+            job("JP-Technical Specialist", "Apple Retail store training and maintaining displays", "Apple Retail"),
+            job("Web Developer", "html and css", "Engineering"),
+            job("Staff Engineer, LLMs", "train large models", "Engineering"),
+        ])
+        ai = [item.title for item in themed.get("ai and machine learning", [])]
+        self.assertEqual(["Staff Engineer, LLMs"], ai)
+
     def test_startup_cluster_surfaces_in_standard_mode(self):
         items = [
             job("Founding Enterprise Solutions Engineer", "SSO SOC 2 procurement enterprise", "Sales"),

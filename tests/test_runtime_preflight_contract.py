@@ -116,14 +116,14 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
     def test_missing_python_stops_before_engine(self) -> None:
         result = self._run_preflight()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("ERROR: last30days v3 requires Python 3.12+", result.stderr)
+        self.assertIn("ERROR: last30days v4 requires Python 3.12+", result.stderr)
         self.assertNotIn("Resolved save directory:", result.stderr)
 
     def test_old_python_stops_before_engine(self) -> None:
         self._python_candidate("python3", (3, 11))
         result = self._run_preflight()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("ERROR: last30days v3 requires Python 3.12+", result.stderr)
+        self.assertIn("ERROR: last30days v4 requires Python 3.12+", result.stderr)
         self.assertNotIn("Resolved save directory:", result.stderr)
 
     def test_selects_supported_python_after_rejecting_old_candidate(self) -> None:

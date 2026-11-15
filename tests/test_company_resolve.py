@@ -152,8 +152,12 @@ CASES = [
     ),
     pytest.param(
         "Apple", None,
-        # Apple's many regional sites carry no preferred one, so no site.
-        {"company": "Apple Inc.", "ticker": "AAPL", "exchange": "Nasdaq"},
+        # Apple's regional sites carry no preferred one but share one host,
+        # so the site is that host's root.
+        {
+            "company": "Apple Inc.", "company_site": "https://apple.com/",
+            "ticker": "AAPL", "exchange": "Nasdaq",
+        },
         id="apple-ignores-its-ended-tokyo-listing",
     ),
     # Recorded Tesla data lists four exchanges and marks none as primary, so
@@ -750,3 +754,22 @@ def test_resolved_entities_row_marks_a_ticker_from_the_yahoo_backup():
 
     assert rows[2] == "- **Tesla**: X - | Subs - | GitHub - | Ticker TSLA (Yahoo match) | Context: -"
     assert rows[3] == "- **Rust**: X - | Subs - | GitHub - | Context: -"
+
+
+@pytest.mark.parametrize(
+    ("urls", "expected"),
+    [
+        pytest.param(["https://apple.com/de/", "https://www.apple.com/tw", "https://apple.com.cn/"],
+                     "https://apple.com/", id="majority-host-root"),
+        pytest.param(["https://a.example/", "https://b.example/"], "", id="split-hosts-settle-nothing"),
+        pytest.param(["https://a.example/", "https://a.example/x", "https://b.example/", "https://c.example/"],
+                     "", id="half-is-not-a-majority"),
+        pytest.param(["https://only.example/path"], "https://only.example/path", id="single-site-kept"),
+    ],
+)
+def test_official_site_from_several_statements(urls, expected):
+    statements = [
+        {"rank": "normal", "mainsnak": {"snaktype": "value", "datavalue": {"value": url}}}
+        for url in urls
+    ]
+    assert company_resolve._official_site(statements) == expected

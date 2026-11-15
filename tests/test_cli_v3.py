@@ -710,7 +710,7 @@ class CliV3Tests(unittest.TestCase):
                 cli.ensure_supported_python((3, 9, 6))
         self.assertEqual(1, exc.exception.code)
         message = stderr.getvalue()
-        self.assertIn("last30days v3 requires Python 3.12+", message)
+        self.assertIn("last30days v4 requires Python 3.12+", message)
         self.assertIn("Detected Python 3.9.6", message)
         self.assertIn("python3.12", message)
 
