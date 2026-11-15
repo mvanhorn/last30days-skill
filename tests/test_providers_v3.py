@@ -379,3 +379,33 @@ class TestProviderUsage(unittest.TestCase):
         with mock.patch.object(providers.http, "post", return_value=response):
             client.generate_text("model", "prompt")
         self.assertIsNone(client.total_usage)
+
+    def test_stale_non_gemini_pin_falls_back_to_default_on_gemini(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            runtime = providers.mock_runtime(
+                {"LAST30DAYS_PLANNER_MODEL": "grok-4.20-0309-non-reasoning"},
+                depth="default",
+            )
+        self.assertEqual(providers.GEMINI_FLASH_LITE, runtime.planner_model)
+        self.assertEqual(providers.GEMINI_FLASH_LITE, runtime.rerank_model)
+        self.assertIn("grok-4.20-0309-non-reasoning", stderr.getvalue())
+        self.assertIn(f"using {providers.GEMINI_FLASH_LITE}", stderr.getvalue())
+
+    def test_stale_rerank_pin_falls_back_to_default_on_gemini(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            runtime = providers.mock_runtime(
+                {"LAST30DAYS_RERANK_MODEL": "gemini-2.5-flash"},
+                depth="default",
+            )
+        self.assertEqual(providers.GEMINI_FLASH_LITE, runtime.rerank_model)
+        self.assertIn("gemini-2.5-flash", stderr.getvalue())
+        self.assertIn(f"using {providers.GEMINI_FLASH_LITE}", stderr.getvalue())
+
+    def test_newer_gemini_pins_are_accepted(self):
+        for model in ("gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-4-hydrogen", "gemini-10-pro"):
+            runtime = providers.mock_runtime(
+                {"LAST30DAYS_PLANNER_MODEL": model, "LAST30DAYS_RERANK_MODEL": model},
+                depth="default",
+            )
+            self.assertEqual(model, runtime.planner_model)
+            self.assertEqual(model, runtime.rerank_model)
