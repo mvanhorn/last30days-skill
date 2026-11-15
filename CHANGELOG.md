@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.0.4] - 2026-11-15
+
+### Fixed
+
+- Claude Code KEY PATTERNS and invitation lines no longer collapse into one paragraph in markdown renderers such as T3 Code and the desktop and mobile apps; the skill now puts a blank line between them. ([#1463](https://github.com/mvanhorn/last30days-skill/issues/1463))
+
+
 ## [4.0.3] - 2026-11-15
 
 ### Fixed
