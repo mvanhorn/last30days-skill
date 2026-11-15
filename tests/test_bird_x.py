@@ -178,6 +178,39 @@ class TestVendoredBirdRuntime(unittest.TestCase):
         self.assertTrue(payload["warnings"])
         self.assertIn("Missing auth_token", " ".join(payload["warnings"]))
 
+    def _search_products(self, *flags):
+        """Run a search with fetch stubbed; return each SearchTimeline product."""
+        import tempfile
+        stub = textwrap.dedent("""
+            globalThis.fetch = async (url) => {
+              const u = String(url);
+              if (u.includes('SearchTimeline')) {
+                const v = JSON.parse(new URL(u).searchParams.get('variables'));
+                process.stderr.write(`PRODUCT=${v.product}\\n`);
+                const body = {data: {search_by_raw_query: {search_timeline: {timeline: {instructions: []}}}}};
+                return new Response(JSON.stringify(body), {status: 200, headers: {'content-type': 'application/json'}});
+              }
+              return new Response('', {status: 404});
+            };
+        """)
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_path = Path(tmp) / "stub.mjs"
+            stub_path.write_text(stub)
+            env = os.environ.copy()
+            env.update(AUTH_TOKEN="dummy-auth", CT0="dummy-ct0", BIRD_DISABLE_BROWSER_COOKIES="1")
+            result = subprocess.run(
+                ["node", "--import", stub_path.as_uri(), str(VENDORED_BIRD), "q", "--count", "1", "--json", *flags],
+                cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return [line.split("=", 1)[1] for line in result.stderr.splitlines() if line.startswith("PRODUCT=")]
+
+    def test_search_requests_latest_by_default(self):
+        self.assertEqual(["Latest"], self._search_products())
+
+    def test_top_flag_requests_the_top_tab(self):
+        self.assertEqual(["Top"], self._search_products("--top"))
+
     def test_browser_cookie_helpers_lazy_load_sweet_cookie(self):
         sweet_cookie_dir = (
             REPO_ROOT
