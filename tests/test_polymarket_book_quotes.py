@@ -298,3 +298,55 @@ def test_refetch_of_a_dropped_market_raises_not_found(monkeypatch):
     with pytest.raises(KeyError, match="was not found"):
         polymarket.refetch_datum(item, "<$480")
     assert polymarket.refetch_datum(item, "$530-$540")["value"] == 0.145
+
+
+def test_dropped_repeat_does_not_let_a_saved_occurrence_read_its_sibling(monkeypatch):
+    question = "Will Bitcoin reach $150k in November?"
+    event = _event(
+        "77", "Bitcoin in November",
+        [
+            _market(question, "A", 0.6, bid=0.01, ask=0.9, spread=0.89),  # dropped
+            _market(question, "B", 0.3, bid=0.29, ask=0.31, spread=0.02),  # priced
+        ],
+        slug="bitcoin-november",
+    )
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+    item = SimpleNamespace(metadata={"event_id": "77"}, url="", item_id="pm-77")
+    legacy = polymarket._legacy_shorten_question(question).strip()
+    for occurrence in (0, 1):
+        with pytest.raises(KeyError, match="was not found"):
+            polymarket.refetch_datum(item, f"{legacy}\x1f{occurrence}")
+
+
+def test_missing_claims_reuse_one_event_fetch(monkeypatch):
+    calls = []
+
+    def _request(*args, **kwargs):
+        calls.append(args)
+        return [MSFT_WEEK_RANGES]
+
+    monkeypatch.setattr(polymarket.http, "request", _request)
+    saved = _item(
+        "polymarket",
+        title=MSFT_WEEK_RANGES["title"],
+        url="https://polymarket.com/event/msft-week-november-20-2026",
+        metadata={
+            "event_id": "1382631",
+            "outcome_prices": [["<$480", 0.435], ["$560-$570", 0.4], ["$520-$530", 0.2]],
+        },
+    )
+    report = _report(saved)
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-11-15T19:00:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    by_key = {
+        claim.datum_key: claim.claim_id
+        for claim in freshness.extract_claims(report)
+        if claim.datum_kind == "polymarket_probability"
+    }
+    by_id = {verdict.claim_id: verdict for verdict in verdicts}
+    assert by_id[by_key["$520-$530"]].verdict == "current"
+    assert by_id[by_key["<$480"]].verdict == "unsupported"
+    assert len(calls) == 1

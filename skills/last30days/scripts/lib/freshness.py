@@ -573,6 +573,18 @@ def verify_report(
             # A miss on one datum says nothing of the snapshot's other data.
             if not getattr(exc, "datum_only", False):
                 point_errors[cache_key] = detail
+            elif cache_key not in point_cache and getattr(exc, "snapshot", None):
+                # Keep the fetched snapshot so sibling claims reuse it.
+                snapshot = exc.snapshot
+                point_cache[cache_key] = (
+                    None,
+                    RefetchedDatum(
+                        value=None,
+                        url=str(snapshot.get("url") or claim.source_url),
+                        timestamp=snapshot.get("timestamp"),
+                        values=dict(snapshot.get("values") or {}),
+                    ),
+                )
             verdicts.append(_unsupported(claim, checked, detail))
 
     report.freshness_verdicts = verdicts

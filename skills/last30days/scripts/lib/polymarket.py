@@ -1426,6 +1426,7 @@ class DatumNotFound(KeyError):
     """
 
     datum_only = True
+    snapshot: Optional[Dict[str, Any]] = None
 
 
 def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
@@ -1555,6 +1556,24 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         legacy_counts[normalized] = occurrence + 1
         key = f"{name}\x1f{occurrence}" if legacy_totals[normalized] > 1 else name
         values.setdefault(key, price)
+    # A repeated name is told apart by its rank among the priced markets. When
+    # the book check drops one market carrying that name, the ranks shift and a
+    # saved occurrence could read a sibling's price, so repeated names of a
+    # dropped market are not answered at all.
+    dropped_names: set[str] = set()
+    for market in markets:
+        if not isinstance(market, dict) or not market.get("question"):
+            continue
+        if has_active and (not market.get("active", True) or market.get("closed", False)):
+            continue
+        if _parse_outcome_prices(market) or not _parse_outcome_prices(market, book_aware=False):
+            continue
+        question = str(market["question"])
+        dropped_names.add(_shorten_question(question).strip().casefold())
+        dropped_names.add(_legacy_shorten_question(question).strip().casefold())
+    for key in [k for k in values if "\x1f" in k]:
+        if key.rsplit("\x1f", 1)[0].casefold() in dropped_names:
+            del values[key]
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
@@ -1577,11 +1596,17 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
                 price for name, price in legacy_pairs if name.casefold() == wanted
             ]
         value = matches[occurrence] if occurrence < len(matches) else None
-    if value is None:
-        raise DatumNotFound(f"Polymarket datum {datum_key!r} was not found")
-    return {
-        "value": value,
+        if "\x1f" in datum_key and wanted in dropped_names:
+            value = None
+    snapshot = {
         "values": values,
         "url": str(getattr(item, "url", "")),
         "timestamp": event.get("updatedAt"),
     }
+    if value is None:
+        missing = DatumNotFound(f"Polymarket datum {datum_key!r} was not found")
+        # The event was fetched; sibling claims read this snapshot instead of
+        # fetching it again.
+        missing.snapshot = snapshot
+        raise missing
+    return {"value": value, **snapshot}
