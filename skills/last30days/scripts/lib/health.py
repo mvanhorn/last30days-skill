@@ -168,12 +168,19 @@ PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.27"
 # the flag the engine sends when `search --help` lists no --sort. Earlier
 # releases reject the call outright.
 #
-# techmeme-pp-cli: 2026.9.1 is the first release whose `search` emits a dated
-# record per headline (printing-press-library #1440). Older releases emit no
-# `date`, so the engine cannot window Techmeme hits to the run.
+# techmeme-pp-cli: 2026.11.1 is the first release whose `search` takes --pages
+# (printing-press-library #2470), so a run reads past Techmeme's first 10 hits.
+# It also emits a dated record per headline (since 2026.9.1, #1440), which the
+# engine needs to window hits to the run. Older releases still work, one page.
 MIN_HELPER_VERSIONS: Dict[str, Tuple[int, ...]] = {
     "digg-pp-cli": (2026, 10, 1),
-    "techmeme-pp-cli": (2026, 9, 1),
+    "techmeme-pp-cli": (2026, 11, 1),
+}
+
+# Why an older helper falls short, for doctor's detail line, when it still runs
+# in a reduced form. A helper absent here cannot be called below its minimum.
+MIN_HELPER_SHORTFALL: Dict[str, str] = {
+    "techmeme-pp-cli": "it still runs but reads only Techmeme's first 10 results; upgrade to read more pages",
 }
 
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
@@ -560,7 +567,8 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
         return DependencyProbe(
             name=name,
             status=OK,
-            detail=f"{version} (older than {minimum}, the oldest the engine can call)",
+            detail=f"{version} (older than {minimum}; "
+            f"{MIN_HELPER_SHORTFALL.get(name, 'the oldest the engine can call')})",
             prescription=prescription,
             owner_pkg_manager=manager,
             outdated=True,
