@@ -149,6 +149,34 @@ def _board_report(board, *, range_to="2026-06-16"):
     )
 
 
+class DistinctHiringExamplesRenderTests(unittest.TestCase):
+    def test_rendered_block_never_lists_a_role_under_two_themes(self):
+        from lib import hiring_signals
+
+        def job(title, department):
+            return schema.SourceItem(
+                item_id=title, source="jobs", title=title, body=title,
+                url=f"https://example.com/jobs/{title.replace(' ', '-').lower()}",
+                container=department, metadata={"department": department},
+            )
+
+        items = [job(f"Sales ML Cloud Architect {n}", "Office") for n in range(2)]
+        for prefix, department in (("Sales Lead", "Sales"), ("ML Engineer", "Research"),
+                                   ("Cloud Engineer", "Infra")):
+            items.extend(job(f"{prefix} {n}", department) for n in range(3))
+        report = _board_report({})
+        report.artifacts["hiring_signals"] = hiring_signals.analyze(
+            items, explicit=True, topic="Acme",
+        )
+
+        block = render._render_hiring_signals(report)
+
+        examples = [line for line in block if line.startswith("  - [")]
+        self.assertTrue(examples)
+        self.assertEqual(len(examples), len(set(examples)))
+        self.assertEqual(3, sum("evidence: 5 roles" in line for line in block))
+
+
 class JobsBoardFooterTests(unittest.TestCase):
     def _footer(self, board):
         return "\n".join(render._render_emoji_footer(_board_report(board), "/tmp/x.md"))

@@ -13,7 +13,9 @@ def _jobs(count):
             {
                 "id": f"job-{index}",
                 "title": f"Software Engineer {index}",
-                "description": "Build Acme backend infrastructure.",
+                # Role-unique text: a sentence every role shares is company
+                # boilerplate and themes nothing.
+                "description": f"Build Acme backend infrastructure for team {index}.",
                 "url": f"https://boards.greenhouse.io/acme/jobs/{index}",
                 "provider": "greenhouse",
                 "department": "Engineering",
