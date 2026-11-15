@@ -12,7 +12,7 @@ def _jobs(count):
         [
             {
                 "id": f"job-{index}",
-                "title": f"Software Engineer {index}",
+                "title": f"Backend Software Engineer {index}",
                 "description": "Build Acme backend infrastructure.",
                 "url": f"https://boards.greenhouse.io/acme/jobs/{index}",
                 "provider": "greenhouse",
@@ -198,7 +198,7 @@ def test_hiring_analysis_does_not_revive_pruned_entity_miss(monkeypatch, only_re
 @pytest.mark.parametrize("rejected", [False, True])
 def test_hiring_analysis_uses_canonical_job_urls(rejected):
     jobs = _jobs(5)
-    jobs[-1].title = "Founding Research Scientist, Human Simulation"
+    jobs[-1].title = "Founding Research Scientist, Backend Infrastructure"
     if rejected:
         jobs[-1].body = "Research an unrelated company."
         jobs[-1].snippet = jobs[-1].body
