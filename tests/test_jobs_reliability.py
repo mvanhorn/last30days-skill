@@ -271,29 +271,31 @@ OWN_SYSTEM = """
 
 
 def test_careers_site_with_no_supported_board_returns_quietly(capsys):
+    # A company whose site is in neither the company-board registry nor its
+    # list of unreadable job sites.
     fetched = []
 
     def page(url, **_kwargs):
         fetched.append(url)
-        return OWN_SYSTEM if "google.com" in url else None
+        return OWN_SYSTEM if "initech.com" in url else None
 
     with patch("lib.jobs.http.get_text", side_effect=page), \
             patch("lib.jobs.http.get", side_effect=_not_found), \
             http.capture_failures() as failures:
         items, artifact = jobs.search_jobs(
-            "Google", WINDOW, {}, web_backend="none", site="https://www.google.com",
+            "Initech", WINDOW, {}, web_backend="none", site="https://www.initech.com",
         )
 
     assert fetched == [
-        "https://www.google.com/careers",
-        "https://www.google.com/about/careers/applications/jobs/results",
+        "https://www.initech.com/careers",
+        "https://www.initech.com/about/careers/applications/jobs/results",
     ]
     assert items == []
     assert artifact["tier"] == "web"
     assert failures == []
     assert "_source_outcome" not in artifact
     assert "_source_outcome_detail" not in artifact
-    assert "[Jobs] no supported job board found for Google" in capsys.readouterr().err
+    assert "[Jobs] no supported job board found for Initech" in capsys.readouterr().err
 
 
 # --- The official site the run already knows ---
@@ -305,6 +307,16 @@ def test_official_site_reaches_the_jobs_lane_when_wikidata_named_no_company():
     }
     resolved = {"company": "Nvidia", "company_site": "https://www.nvidia.com/"}
     assert cli._company_for_jobs(resolved, None, "Nvidia", official_site="example.com") == resolved
+    # A Yahoo match after a failed Wikidata lookup names the company with no
+    # site; the official site the run knows is still the topic's.
+    yahoo = {"company": "Apple", "ticker": "AAPL"}
+    assert cli._company_for_jobs(yahoo, None, "Apple", official_site="apple.com") == {
+        **yahoo, "topic_site": "apple.com",
+    }
+    # A company that is not the topic (a person's company) never takes the
+    # person's site.
+    person = {"company": "Anduril"}
+    assert cli._company_for_jobs(person, None, "Palmer Luckey", official_site="palmerluckey.com") == person
 
     (_items, _artifact), _names, mock = _run_lane(
         "Disney", {"topic_site": "thewaltdisneycompany.com"}, lambda *_a, **_k: ([], {"tier": "web"}),
@@ -372,6 +384,21 @@ def test_first_host_company_with_a_board_ends_the_search():
     )
     assert names == ["Elon Musk", "Tesla"]
     assert artifact["board_of"] == "Tesla"
+
+
+def test_a_host_company_whose_job_site_cannot_be_read_keeps_its_footer_line():
+    def search(name, *_args, **_kwargs):
+        if name == "Tesla":
+            return [], {"tier": "web", "job_site_unreadable": "Tesla"}
+        return [], {"tier": "web", "company": name}
+
+    (items, artifact), names, _mock = _run_lane(
+        "Elon Musk", {"host_companies": ["Tesla", "SpaceX"]}, search,
+    )
+    assert names == ["Elon Musk", "Tesla", "SpaceX"]
+    assert items == []
+    assert artifact["company"] == "Elon Musk"
+    assert artifact["job_site_unreadable"] == "Tesla"
 
 
 def test_host_companies_cut_off_by_the_budget_leave_the_reason_on_the_topics_result():
@@ -693,6 +720,23 @@ def test_pipeline_adds_the_ranked_roles_to_the_boards_digest_and_drops_the_rows(
     text = "\n".join(render._render_jobs_digest(_report("Waymo", bundle.artifacts["jobs"])))
     assert "- Roles listed: 40 of 60 distinct roles, the first 2 are the roles this run's own ranking" in text
     assert text.index("Engineer 58") < text.index("Role 0")
+
+
+def test_a_ranked_role_the_board_keeps_out_of_the_digest_stays_out():
+    rows = _waymo_board()
+    rows[58]["digest_excluded"] = True
+    eligible = [row for row in rows if not row.get("digest_excluded")]
+    digest = jobs_digest.build_digest(eligible, jobs_digest.select_roles(eligible))
+    board = {"tier": "ats", "provider": "apple", "company": "Waymo", "open_roles": 60,
+             "owned": True, "digest": digest}
+    bundle = schema.RetrievalBundle(artifacts={"jobs": board})
+    bundle.jobs_board_rows = rows
+    ranked = [_job_candidate(rows[index], 90 - index) for index in (58, 59)]
+
+    pipeline._add_ranked_roles_to_jobs_digest(bundle, ranked, None)
+
+    titles = [entry["title"] for entry in bundle.artifacts["jobs"]["digest"]["roles"]]
+    assert titles[0] == "Engineer 59" and "Engineer 58" not in titles
 
 
 def test_board_with_no_digest_gets_no_ranked_roles():

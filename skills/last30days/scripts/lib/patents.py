@@ -90,8 +90,12 @@ MIN_BASELINE_ROWS = 20
 # An application filed more than 13 months after the earliest application it
 # is related to continues it. A provisional is at most 12 months older.
 CONTINUING_AFTER_DAYS = 396
-ABSTRACT_CHARS = 400
-FIRST_CLAIM_CHARS = 700
+ABSTRACT_CHARS = 1_000
+FIRST_CLAIM_CHARS = 1_200
+# Confirmed filers other than the company's own name (a subsidiary named by
+# Wikidata) that are each given one of the detailed slots, so the parent's
+# filings cannot take every slot.
+MAX_RESERVED_FILERS = 3
 MAX_CPC_CODES = 5
 
 _FIRST = "first_publications"
@@ -287,6 +291,11 @@ def _fetch(company: dict, date_from: str, date_to: str, budget: _Budget) -> dict
     groups, other_names = _group(rows, classify)
     if not groups:
         return {"state": "none", "other_names": other_names}
+    for group in groups:
+        group["other_filer"] = (
+            group["kind"] == CONFIRMED
+            and classify_applicant(group["name"], company.get("company")) != CONFIRMED
+        )
 
     # The company's own counts are of confirmed groups. Of a name-matched
     # group, which may be a stranger's, only the first publications are
@@ -307,8 +316,8 @@ def _fetch(company: dict, date_from: str, date_to: str, budget: _Budget) -> dict
     frequencies = None
     if candidates:
         frequencies = _baseline(session, phrases, day_from, classify, budget.share(BASELINE_SHARE))
-    ordered = _order(candidates, frequencies)
-    entries, demoted, rest = _read_details(session, ordered, budget)
+    ordered, reserved = _order(candidates, frequencies)
+    entries, demoted, rest = _read_details(session, ordered, budget, reserved)
     for candidate in demoted:
         if candidate["group_kind"] == CONFIRMED:
             counts[_FIRST] -= 1
@@ -516,7 +525,7 @@ def _baseline(
 
 
 def _read_details(
-    session: dict[str, Any], ordered: list[dict], budget: _Budget,
+    session: dict[str, Any], ordered: list[dict], budget: _Budget, reserved: set[str] = frozenset(),
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Read candidates in order until the slots are full.
 
@@ -527,11 +536,29 @@ def _read_details(
     reading ends, keeping what was built, when the lane's budget is spent,
     when the site rate-limits past its one honoured wait, or when it asks for
     sign-in.
+
+    A filer in ``reserved`` keeps its slot: when its candidate is demoted or
+    its read fails before it has an entry, its next candidate is read next,
+    within the same number of reads.
     """
+    ordered = list(ordered)
     entries: list[dict] = []
     demoted: list[dict] = []
     failed: list[dict] = []
+    filled: set[str] = set()
     position = 0
+
+    def keep_reserved_slot(candidate: dict) -> None:
+        key = candidate["group_key"]
+        if key not in reserved or key in filled:
+            return
+        later = next(
+            (index for index in range(position, len(ordered)) if ordered[index]["group_key"] == key),
+            None,
+        )
+        if later is not None:
+            ordered.insert(position, ordered.pop(later))
+
     while (
         position < len(ordered)
         and len(entries) < DETAIL_SLOTS
@@ -563,12 +590,15 @@ def _read_details(
             _log(f"no text for {candidate['number']}, reading on: {exc}")
             failed.append(candidate)
             position += 1
+            keep_reserved_slot(candidate)
             continue
         position += 1
         if _CONTINUES_A_PARENT.search(" ".join(_strings(document.get("continuityData")))):
             demoted.append(candidate)
+            keep_reserved_slot(candidate)
         else:
             entries.append(_entry(candidate, document))
+            filled.add(candidate["group_key"])
     return entries, demoted, failed + ordered[position:]
 
 
@@ -698,28 +728,59 @@ def _candidate(database: str, row: dict, group: dict) -> dict:
         "cpc": _cpc_codes(row),
         "filed_as": group["name"],
         "group_kind": group["kind"],
+        "other_filer": bool(group.get("other_filer")),
     }
 
 
-def _order(candidates: list[dict], frequencies: Counter[str] | None) -> list[dict]:
-    """The order candidates are read in.
+def _order(
+    candidates: list[dict], frequencies: Counter[str] | None,
+) -> tuple[list[dict], set[str]]:
+    """The order candidates are read in, and the filers given a reserved slot.
 
     Without a baseline, newest first. With one, the first half of the slots
     (rounded up) goes to the candidates whose rarest CPC subclass the company
     filed in least in its recent filings, a subclass absent from them first;
     everything else follows newest first. The newer candidate wins a tie.
+
+    Then each confirmed filer other than the company's own name, up to
+    ``MAX_RESERVED_FILERS`` and largest first, is given one slot: when none of
+    its candidates is already among the first ``DETAIL_SLOTS``, its best one
+    takes the place of the lowest-ranked newest-first candidate there, which
+    moves to the head of the refills.
     """
     newest = sorted(candidates, key=lambda candidate: candidate["published"], reverse=True)
-    if frequencies is None:
-        return newest
+    rare: list[dict] = []
+    if frequencies is not None:
+        def rarity(candidate: dict) -> float:
+            subclasses = _subclasses(candidate["cpc"])
+            return min((frequencies[subclass] for subclass in subclasses), default=float("inf"))
 
-    def rarity(candidate: dict) -> float:
-        subclasses = _subclasses(candidate["cpc"])
-        return min((frequencies[subclass] for subclass in subclasses), default=float("inf"))
-
-    rare = sorted(newest, key=rarity)[:(DETAIL_SLOTS + 1) // 2]
+        rare = sorted(newest, key=rarity)[:(DETAIL_SLOTS + 1) // 2]
     chosen = {id(candidate) for candidate in rare}
-    return rare + [candidate for candidate in newest if id(candidate) not in chosen]
+    ordered = rare + [candidate for candidate in newest if id(candidate) not in chosen]
+
+    filers = Counter(candidate["group_key"] for candidate in ordered if candidate.get("other_filer"))
+    reserved = {key for key, _count in filers.most_common(MAX_RESERVED_FILERS)}
+    for key in sorted(reserved, key=lambda key: -filers[key]):
+        slots = ordered[:DETAIL_SLOTS]
+        if any(candidate["group_key"] == key for candidate in slots):
+            continue
+        # The lowest-ranked slot that is not a rare-class pick and is not a
+        # reserved filer's only slot; a reserved filer's extra slots can go.
+        held = Counter(candidate["group_key"] for candidate in slots)
+        replaceable = [
+            position for position, candidate in enumerate(slots)
+            if id(candidate) not in chosen
+            and (candidate["group_key"] not in reserved or held[candidate["group_key"]] > 1)
+        ]
+        if not replaceable:
+            break
+        best = next(candidate for candidate in ordered if candidate["group_key"] == key)
+        ordered.remove(best)
+        displaced = ordered[replaceable[-1]]
+        ordered[replaceable[-1]] = best
+        ordered.insert(DETAIL_SLOTS, displaced)
+    return ordered, reserved
 
 
 def _entry(candidate: dict, document: dict) -> dict:

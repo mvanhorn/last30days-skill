@@ -20,7 +20,7 @@ from .company_names import CONFIRMED, NAME_MATCHED
 HEADING = "## Patent Digest"
 # Ceiling for the whole block. Entries are added before titles, so when the
 # block is cut it is the title list that is shortened.
-DIGEST_MAX_CHARS = 24_000
+DIGEST_MAX_CHARS = 36_000
 # Room kept for the note line, written after it is known what was cut.
 _NOTE_RESERVE = 400
 _NAME_CHARS = 120

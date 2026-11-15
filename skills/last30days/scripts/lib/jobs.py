@@ -66,6 +66,67 @@ API_TIMEOUT_SECONDS = 10
 SMARTRECRUITERS_PAGE_SIZE = 100
 SMARTRECRUITERS_ROW_CEILING = 2000
 
+# Company-run job boards. A large company often runs its own job site rather
+# than a hosted system, so no link on its careers page names a board to read.
+# These are read only when the run knows the company's official site, and the
+# site's host is what picks the board, so a reader is never reached by
+# guessing a domain or matching a name.
+COMPANY_PROVIDER_APPLE = "apple"
+COMPANY_PROVIDER_AMAZON = "amazon"
+COMPANY_PROVIDER_EIGHTFOLD = "eightfold"
+# Official-site host -> the board that site's company runs. ``name`` is how
+# the footer names the company when its board cannot be read.
+COMPANY_BOARDS: dict[str, dict[str, str]] = {
+    "apple.com": {"name": "Apple", "provider": COMPANY_PROVIDER_APPLE, "board": "jobs.apple.com"},
+    "amazon.com": {"name": "Amazon", "provider": COMPANY_PROVIDER_AMAZON, "board": "www.amazon.jobs"},
+    "microsoft.com": {
+        "name": "Microsoft", "provider": COMPANY_PROVIDER_EIGHTFOLD,
+        "board": "apply.careers.microsoft.com", "domain": "microsoft.com", "api": "pcsx",
+    },
+    "qualcomm.com": {
+        "name": "Qualcomm", "provider": COMPANY_PROVIDER_EIGHTFOLD,
+        "board": "careers.qualcomm.com", "domain": "qualcomm.com", "api": "pcsx",
+    },
+    "netflix.com": {
+        "name": "Netflix", "provider": COMPANY_PROVIDER_EIGHTFOLD,
+        "board": "explore.jobs.netflix.net", "domain": "netflix.com", "api": "v2",
+    },
+}
+# Official-site hosts whose job site is not read: its robots.txt disallows the
+# listing, its site prohibits automated collection, or it answers automated
+# requests with a challenge page. No request is sent to them.
+UNREADABLE_JOB_SITES: dict[str, dict[str, str]] = {
+    "google.com": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
+    "about.google": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
+    "abc.xyz": {"name": "Google", "reason": "its robots.txt disallows the job listing"},
+    "disney.com": {"name": "Disney", "reason": "its robots.txt disallows the job search"},
+    "thewaltdisneycompany.com": {"name": "Disney", "reason": "its robots.txt disallows the job search"},
+    "meta.com": {"name": "Meta", "reason": "its site prohibits automated collection"},
+    "tesla.com": {"name": "Tesla", "reason": "it answers automated requests with a block page"},
+    "uber.com": {"name": "Uber", "reason": "it answers automated requests with a challenge page"},
+    "sap.com": {"name": "SAP", "reason": "it answers automated requests with a challenge page"},
+}
+# Share of the lane's remaining time a company board's listing leaves for the
+# role text of the roles the digest selects, so a long list never costs the
+# digest its text.
+DETAIL_SHARE = 1 / 3
+# A company board is read newest first, a few pages at once, and stops after
+# the first page that holds no role posted in the window, or at its ceiling.
+COMPANY_BOARD_ROW_CEILING = 2000
+AMAZON_PAGE_SIZE = 100
+# Amazon's search reports at most this many hits and pages no further.
+AMAZON_HITS_CAP = 10_000
+APPLE_PAGE_SIZE = 20
+EIGHTFOLD_PAGE_SIZE = 10
+# The digest picks 40 roles; ten times that is enough to choose from.
+EIGHTFOLD_ROW_CEILING = 400
+# Apple's details call usually answers in 2 to 7 seconds, but about one call
+# in four stalls; a second attempt after a short limit nearly always answers.
+APPLE_DETAIL_TIMEOUT_SECONDS = 6
+# Apple's retail store team. Its roles are counted on the board and never
+# chosen for the digest: the newest pages are almost all retail.
+APPLE_RETAIL_TEAM = "APPST"
+
 # Detection patterns: map an ATS embed/link found on a careers page to
 # (provider, slug). The published slug is authoritative - this is why discovery
 # is careers-page-first rather than blind probing.
@@ -327,7 +388,10 @@ def _with_budget_outcome(
             **artifact,
             "_source_outcome": {"state": health.TIMEOUT, "detail": reason, "attempted": True},
         }
-    if artifact.get("tier") == "web" and not items and not quiet:
+    if (
+        artifact.get("tier") == "web" and not items and not quiet
+        and not artifact.get("job_site_unreadable")
+    ):
         log_no_board([company])
     return artifact
 
@@ -345,6 +409,76 @@ def log_no_board(companies: list[str]) -> None:
     )
 
 
+def _registry_entry(site: str) -> tuple[str, dict[str, str]] | None:
+    """The registry entry for a known official site: ``("board", entry)`` for a
+    company board the lane reads, ``("unreadable", entry)`` for a job site it
+    does not, or None when the site is in neither."""
+    host = _host(site) if site else ""
+    if not host:
+        return None
+    for kind, table in (("board", COMPANY_BOARDS), ("unreadable", UNREADABLE_JOB_SITES)):
+        for key, entry in table.items():
+            if _same_site(host, key):
+                return kind, {**entry, "site": key}
+    return None
+
+
+def _job_site_unreadable(
+    company: str,
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+    entry: dict[str, str],
+    reason: str,
+    *,
+    attempted: list[str],
+    web_backend: str,
+    explicit: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The lane's answer when the company's job site is known and not read.
+
+    Says so once, then runs the web tier as any run without a board does. No
+    careers page is fetched and no hosted-system slug is guessed.
+    """
+    name = entry.get("name") or company
+    log.source_log(
+        "Jobs", f"{jobs_digest.unreadable_job_site_line(name)} ({entry.get('site', '')}: {reason})",
+        tty_only=False,
+    )
+    items, artifact = _web_tier(
+        company, date_range, config, attempted=attempted, web_backend=web_backend,
+        explicit=explicit,
+    )
+    artifact["job_site_unreadable"] = name
+    return items, artifact
+
+
+def _web_tier(
+    company: str,
+    date_range: tuple[str, str],
+    config: dict[str, Any],
+    *,
+    attempted: list[str],
+    web_backend: str,
+    explicit: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Tier 3: a generic web search for postings (noisy, low-confidence)."""
+    fallback_items, artifact = _within_budget(
+        lambda: search_jobs_web(company, date_range, config, backend=web_backend),
+        "the web search for jobs pages",
+        ([], {}),
+    ) if web_backend != "none" else ([], {})
+    artifact = dict(artifact or {})
+    artifact.setdefault("attempted", attempted)
+    artifact.update({
+        "label": artifact.get("label", "jobs"),
+        "company": company,
+        "tier": "web",
+        "explicit": explicit,
+        "resultCount": len(fallback_items),
+    })
+    return fallback_items, artifact
+
+
 def _search_jobs(
     company: str,
     date_range: tuple[str, str],
@@ -356,6 +490,34 @@ def _search_jobs(
     budget: LaneBudget,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     attempted: list[str] = []
+
+    # --- A company that runs its own job site, known by its official site. ---
+    registered = _registry_entry(site)
+    if registered is not None:
+        kind, entry = registered
+        if kind == "board":
+            attempted.append(f"company:{entry['provider']}:{entry['board']}")
+            found = _read_board(
+                company, entry["provider"], entry["board"], date_range,
+                attempted=attempted, explicit=explicit, budget=budget,
+                found_via="site", company_board=entry,
+            )
+            if found is not None:
+                return found
+            if f"the {entry['provider']} board {entry['board']} did not answer" in budget.unanswered:
+                # A board that did not answer is not one that cannot be read:
+                # the budget names it, and a retry may read it.
+                return _web_tier(
+                    company, date_range, config, attempted=attempted,
+                    web_backend=web_backend, explicit=explicit,
+                )
+            reason = "its job board answered with an error or with no roles the lane could read"
+        else:
+            reason = entry["reason"]
+        return _job_site_unreadable(
+            company, date_range, config, entry, reason,
+            attempted=attempted, web_backend=web_backend, explicit=explicit,
+        )
 
     # --- Discovery: fetch the careers page and read the ATS off it (Tier 1). ---
     careers_html, careers_url = _resolve_careers_page(
@@ -419,21 +581,10 @@ def _search_jobs(
                                            explicit, tier="careers-jsonld")
 
     # --- Tier 3: generic web search (noisy, low-confidence). ---
-    fallback_items, artifact = _within_budget(
-        lambda: search_jobs_web(company, date_range, config, backend=web_backend),
-        "the web search for jobs pages",
-        ([], {}),
-    ) if web_backend != "none" else ([], {})
-    artifact = dict(artifact or {})
-    artifact.setdefault("attempted", attempted)
-    artifact.update({
-        "label": artifact.get("label", "jobs"),
-        "company": company,
-        "tier": "web",
-        "explicit": explicit,
-        "resultCount": len(fallback_items),
-    })
-    return fallback_items, artifact
+    return _web_tier(
+        company, date_range, config, attempted=attempted, web_backend=web_backend,
+        explicit=explicit,
+    )
 
 
 def _read_board(
@@ -451,6 +602,7 @@ def _read_board(
     owner: Callable[[str], tuple[str, str]] | None = None,
     full: bool = True,
     probed_board: dict[str, Any] | None = None,
+    company_board: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     """Read a found board and build its artifact, or None when it holds nothing.
 
@@ -466,11 +618,18 @@ def _read_board(
     that is known. With ``full`` off (a host board not yet tied to the
     company) the read stays inside the discovery share and a paged board
     gives its first page only.
+
+    ``company_board`` is the registry entry of a company-run board, which is
+    read by its own reader. Its listing stops early enough to leave
+    ``DETAIL_SHARE`` of the time for the role text of the selected roles.
     """
     if full:
         budget.limit_discovery(None)
     board: dict[str, Any] = dict(probed_board or {})
     deadline = budget.deadline if full else min(budget.deadline, budget.step_deadline)
+    list_deadline = deadline
+    if company_board is not None and provider in _DETAIL_FETCHERS:
+        list_deadline = deadline - budget.remaining() * DETAIL_SHARE
     # Passed only when set, so the plain call stays what it always was.
     part: dict[str, Any] = {} if full else {"first_page_only": True}
     try:
@@ -479,6 +638,10 @@ def _read_board(
             items = probed
         elif _out_of_time(f"reading the {provider} board {slug}"):
             items = []
+        elif company_board is not None:
+            items, board = _company_reader(provider)(
+                company_board, deadline=list_deadline, date_range=date_range,
+            )
         elif provider == ATS_PROVIDER_WORKDAY:
             items, board = search_workday_board(slug, deadline=deadline, **part)
         elif provider == ATS_PROVIDER_SMARTRECRUITERS:
@@ -495,6 +658,8 @@ def _read_board(
             budget.unanswered.append(f"the {provider} board {slug} did not answer")
         items = []
     if not items:
+        if company_board is not None and board.get("board_unanswered"):
+            budget.unanswered.append(f"the {provider} board {slug} did not answer")
         return None
     stated = next(
         (str(item["company_name"]) for item in items if item.get("company_name")), "",
@@ -521,13 +686,17 @@ def _read_board(
         "owned": owned,
     })
     if owned:
-        selected = jobs_digest.select_roles(items)
+        # Roles a board marks as kept out of the digest (Apple's retail store
+        # roles) are counted on the board but never chosen.
+        eligible = [item for item in items if not item.get("digest_excluded")]
+        selected = jobs_digest.select_roles(eligible)
         late = failed = 0
-        if provider == ATS_PROVIDER_WORKDAY:
-            late, failed = fetch_workday_details(
+        fetch_details = _detail_fetcher(provider)
+        if fetch_details is not None:
+            late, failed = fetch_details(
                 [role["item"] for role in selected], deadline=deadline,
             )
-        artifact["digest"] = jobs_digest.build_digest(items, selected)
+        artifact["digest"] = jobs_digest.build_digest(eligible, selected)
         notes = []
         coverage = _coverage_note(items, board, provider, budget)
         if coverage:
@@ -796,11 +965,20 @@ def _coverage_note(
     """What stopped a board's listing short of the rows it reports, or ''."""
     if not board.get("board_cut_short"):
         return ""
-    listed = min(int(board.get("board_total") or 0), WORKDAY_ROW_CEILING)
-    read = f"{len(items):,} rows read" + (
-        f" of the {listed:,} the board lists" if listed > len(items) else ""
+    listed = int(board.get("board_total") or 0)
+    if not board.get("board_newest_first"):
+        listed = min(listed, WORKDAY_ROW_CEILING)
+    rows = int(board.get("board_rows_read") or len(items))
+    read = f"{rows:,} rows read" + (
+        f" of the {listed:,} the board lists" if listed > rows else ""
     )
-    if provider == ATS_PROVIDER_WORKABLE:
+    if board.get("board_newest_first"):
+        cause = "the newest roles are read first"
+        if budget.spent():
+            cause += f" and the lane's {budget.seconds:g}s time budget ran out"
+        elif board.get("board_row_ceiling"):
+            cause += f", up to {int(board['board_row_ceiling']):,} rows"
+    elif provider == ATS_PROVIDER_WORKABLE:
         cause = "only the board's first page is read"
     elif board.get("board_first_page_only"):
         cause = "only the first page of a board not tied to the company is read"
@@ -829,11 +1007,20 @@ def _resolve_careers_page(
     # Only a host guessed from the company's name may turn out not to exist.
     guessed = not (site and _host(site))
     for host in _site_hosts(company, site):
+        registered = _registry_entry(host)
+        if registered is not None and registered[0] == "unreadable":
+            # A job site the lane does not read gets no request, on any path.
+            continue
         for path in ("/careers", "/jobs"):
             url = f"https://{host}{path}"
             if _out_of_time(f"the careers page {url}"):
                 return None, None
-            html, no_answer = _careers_text(url, guessed=guessed)
+            if guessed:
+                html, no_answer = _careers_text(url, guessed=True)
+            else:
+                html, no_answer, url = _known_site_text(url)
+                # The site answered on its other host form: ask that one from now on.
+                host = _host(url)
             if no_answer:
                 # Nothing answers at this host, so its other page is not tried.
                 break
@@ -854,6 +1041,28 @@ def _resolve_careers_page(
                 return html, careers_url
 
     return None, None
+
+
+def _known_site_text(url: str) -> tuple[str | None, bool, str]:
+    """A page on the company's known site, retried once on the site's other
+    host form (``www.`` or bare) when the connection was dropped. Returns the
+    page text, whether the host gave no answer (counting both forms dropping
+    the connection), and the URL that was read."""
+    answers: dict[str, tuple[str | None, bool]] = {}
+
+    def fetch(page: str) -> str | None:
+        with http.tee_failures() as failures:
+            text, gone = _careers_text(page, guessed=False)
+        answers[page] = (text, gone or http.connection_dropped(failures))
+        return text
+
+    html, used = http.text_on_either_host_form(fetch, url)
+    if html is None:
+        # A form that answered, even with a 403 or 404, is where the site's
+        # other page is asked.
+        used = next((page for page, (_text, gone) in answers.items() if not gone), used)
+    # Only when every form tried gave no answer is the other page not asked.
+    return html, all(gone for _text, gone in answers.values()), used
 
 
 def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
@@ -1118,9 +1327,27 @@ def _board_counts(
     ``open_roles_floor`` marks a count the board stopped short of (its row
     ceiling, or a listing cut short). ``new_in_window`` is a number only when
     the whole board was read and every role carries a true first-posted date;
-    otherwise it is None.
+    otherwise it is None. A board read newest first (``board_newest_first``)
+    reports its own total instead, see below.
     """
     from_date, to_date = date_range
+    if board.get("board_newest_first"):
+        # A board too large to read whole, read newest first: the open-role
+        # count is the total it reports, and the roles new in the window are
+        # counted only when the read went past the window's oldest day.
+        covered = bool(board.get("board_window_covered"))
+        return {
+            "open_roles": max(int(board.get("board_total") or 0), len(items)),
+            "open_roles_floor": bool(board.get("board_total_floor")),
+            "new_in_window": (
+                sum(
+                    1 for item in items
+                    if item.get("posted_date_true") and item.get("date")
+                    and from_date <= str(item["date"]) <= to_date
+                )
+                if covered else None
+            ),
+        }
     floor = bool(board.get("board_capped") or board.get("board_cut_short"))
     dated = not floor and all(
         item.get("posted_date_true") and item.get("date") for item in items
@@ -1929,6 +2156,9 @@ def _ats_item(
         ATS_PROVIDER_WORKABLE: "WK",
         ATS_PROVIDER_SMARTRECRUITERS: "SR",
         ATS_PROVIDER_WORKDAY: "WD",
+        COMPANY_PROVIDER_APPLE: "AP",
+        COMPANY_PROVIDER_AMAZON: "AZ",
+        COMPANY_PROVIDER_EIGHTFOLD: "EF",
     }.get(provider, "AT")
     return {
         "id": f"{prefix}{ident or slug}",
@@ -2095,3 +2325,458 @@ def _looks_like_careers_html(html: str) -> bool:
         return True
     return bool(re.search(r"\b(open roles|open positions|join (our|the) team|current openings|jobposting)\b", lowered))
 
+
+class BoardShapeError(ValueError):
+    """A company board answered, but not in the shape its reader expects."""
+
+
+def _read_newest_first(
+    page: Callable[[int], Callable[[float], Any]],
+    parse: Callable[[Any], tuple[list[dict[str, Any]], int]],
+    *,
+    page_size: int,
+    row_ceiling: int,
+    window_start: str | None,
+    deadline: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read a board's pages newest first, a few at a time.
+
+    ``page(offset)`` makes one listing call and ``parse(payload)`` returns its
+    rows and the total the board reports, raising ``BoardShapeError`` for an
+    answer it cannot read. Reading stops after the first page with no role
+    posted on or after ``window_start`` (a page may mix dates, so one older
+    row does not stop it), at ``row_ceiling``, at the board's end, at the
+    deadline, or at a failed page; the rows read so far are kept.
+
+    A first page that fails or cannot be read, or that is empty while the
+    board reports roles, returns no rows: the board cannot be read.
+    """
+    clock = _clock()
+    info: dict[str, Any] = {
+        "board_total": 0, "board_capped": False, "board_cut_short": False,
+        "board_newest_first": True, "board_window_covered": False,
+        "board_row_ceiling": row_ceiling,
+    }
+    failures: list[http.HTTPError] = []
+
+    def first_page(http_deadline: float) -> Any:
+        try:
+            return page(0)(http_deadline)
+        except http.HTTPError as exc:
+            failures.append(exc)
+            raise
+
+    first = _workday_run([first_page], deadline, clock)[0]
+    if first is None or first is _OUT_OF_TIME:
+        # No answer, an overload or a rate limit is not the board refusing
+        # to be read: the run says it did not answer, and a retry may.
+        status = failures[0].status_code if failures else None
+        info["board_unanswered"] = first is _OUT_OF_TIME or status is None or status == 429 or status >= 500
+        return [], info
+    try:
+        items, total = parse(first)
+    except BoardShapeError:
+        return [], info
+    info["board_total"] = max(total, len(items))
+    if not items:
+        return [], info
+
+    def in_window(rows: list[dict[str, Any]]) -> bool:
+        return window_start is None or any(
+            str(row.get("date") or "") >= window_start for row in rows
+        )
+
+    covered = not in_window(items)
+    stop = covered or len(items) >= info["board_total"]
+    offset = page_size
+    limit = min(info["board_total"], row_ceiling)
+    while not stop and offset < limit:
+        offsets = list(range(offset, limit, page_size))[:WORKDAY_MAX_WORKERS]
+        offset = offsets[-1] + page_size
+        for payload in _workday_run([page(start) for start in offsets], deadline, clock):
+            try:
+                rows, _total = parse(payload) if isinstance(payload, dict) else ([], 0)
+            except BoardShapeError:
+                rows = []
+            if not rows:
+                stop = True
+                break
+            items.extend(rows)
+            if not in_window(rows):
+                covered = stop = True
+                break
+    info["board_window_covered"] = covered or len(items) >= info["board_total"]
+    info["board_cut_short"] = len(items) < info["board_total"]
+    return items[:row_ceiling], info
+
+
+# Amazon: one search endpoint, 100 roles per call with their full text. Errors
+# arrive as HTTP 200 with an ``error`` key.
+
+
+def parse_amazon_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
+    """Rows and reported hits from one ``amazon.jobs`` search page."""
+    if not isinstance(payload, dict):
+        raise BoardShapeError("not a JSON object")
+    if payload.get("error"):
+        raise BoardShapeError(str(payload["error"])[:120])
+    jobs_list = payload.get("jobs")
+    if not isinstance(jobs_list, list):
+        raise BoardShapeError("no jobs list")
+    items: list[dict[str, Any]] = []
+    for job in jobs_list:
+        if not isinstance(job, dict) or not job.get("title") or not job.get("job_path"):
+            continue
+        text = "<br/>".join(
+            str(job.get(key) or "")
+            for key in ("description", "basic_qualifications", "preferred_qualifications")
+            if job.get(key)
+        )
+        posted = _amazon_date(job.get("posted_date"))
+        items.append(_ats_item(
+            provider=COMPANY_PROVIDER_AMAZON,
+            slug="www.amazon.jobs",
+            ident=str(job.get("id_icims") or job.get("id") or ""),
+            title=str(job["title"]).strip(),
+            url=f"https://www.amazon.jobs{job['job_path']}",
+            description=_clean_html(text),
+            description_blocks=_block_text(text),
+            date=posted,
+            posted_date_true=bool(posted),
+            department=str(job.get("business_category") or "").strip(),
+            location=str(job.get("normalized_location") or job.get("location") or "").strip(),
+            company_name=str(job.get("company_name") or "").strip(),
+            whole_posting=True,
+        ))
+    return items, _reported_total(payload, "hits")
+
+
+def _amazon_date(value: Any) -> str | None:
+    """``November 14, 2026`` as ``2026-11-14``."""
+    try:
+        return time.strftime("%Y-%m-%d", time.strptime(str(value or "").strip(), "%B %d, %Y"))
+    except ValueError:
+        return None
+
+
+def read_amazon_board(
+    entry: dict[str, str], *, deadline: float, date_range: tuple[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Amazon's roles, newest first, with the board's reported total."""
+    url = f"https://{entry.get('board') or 'www.amazon.jobs'}/en/search.json"
+
+    def page(offset: int) -> Callable[[float], Any]:
+        params = {"sort": "recent", "result_limit": str(AMAZON_PAGE_SIZE), "offset": str(offset)}
+        return lambda http_deadline: http.get(
+            url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
+            deadline_monotonic=http_deadline,
+        )
+
+    items, info = _read_newest_first(
+        page, parse_amazon_response, page_size=AMAZON_PAGE_SIZE,
+        row_ceiling=COMPANY_BOARD_ROW_CEILING, window_start=date_range[0], deadline=deadline,
+    )
+    # The search stops counting at 10,000, so that total is a floor.
+    info["board_total_floor"] = info["board_total"] >= AMAZON_HITS_CAP
+    return items, info
+
+
+# Apple: a JSON search API, 20 rows per call with a short summary, one row per
+# role and location, and a JSON details call per role with the full text.
+
+_APPLE_SEARCH_URL = "https://jobs.apple.com/api/v1/search"
+_APPLE_DETAILS_URL = "https://jobs.apple.com/api/v1/jobDetails/{position}?locale=en-us"
+
+
+def _apple_search_body(page: int) -> dict[str, Any]:
+    # Without the ``format`` key the API answers 200 with no results.
+    return {
+        "query": "",
+        "filters": {"range": {"standardWeeklyHours": {"start": None, "end": None}}},
+        "page": page,
+        "locale": "en-us",
+        "sort": "newest",
+        "format": {"longDate": "MMMM D, YYYY", "mediumDate": "MMM D, YYYY"},
+    }
+
+
+def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
+    """Rows and the reported total from one Apple search page.
+
+    A pipeline role (a standing requisition, flagged as managed or typed
+    ``PIPE``) carries the day of the request as its posting date, so its date
+    is not a true posted date. Managed pipeline roles and retail store roles
+    (by team code or team name) are marked ``digest_excluded``.
+    """
+    res = payload.get("res") if isinstance(payload, dict) else None
+    results = res.get("searchResults") if isinstance(res, dict) else None
+    if not isinstance(results, list) or "totalRecords" not in res:
+        raise BoardShapeError("no searchResults or totalRecords")
+    items: list[dict[str, Any]] = []
+    for job in results:
+        if not isinstance(job, dict) or not job.get("postingTitle") or not job.get("positionId"):
+            continue
+        team = job.get("team") if isinstance(job.get("team"), dict) else {}
+        locations = [loc for loc in job.get("locations") or [] if isinstance(loc, dict)]
+        slug = str(job.get("transformedPostingTitle") or "role").strip()
+        # A standing requisition: flagged as managed, or typed ``PIPE``.
+        pipeline = bool(job.get("managedPipelineRole")) or job.get("type") == "PIPE"
+        summary = str(job.get("jobSummary") or "").strip()
+        item = _ats_item(
+            provider=COMPANY_PROVIDER_APPLE,
+            slug="jobs.apple.com",
+            ident=str(job.get("id") or job["positionId"]),
+            title=str(job["postingTitle"]).strip(),
+            url=f"https://jobs.apple.com/en-us/details/{job['positionId']}/{slug}",
+            description=summary,
+            description_blocks=summary,
+            date=_date_part(job.get("postDateInGMT")),
+            posted_date_true=not pipeline and bool(_date_part(job.get("postDateInGMT"))),
+            department=str(team.get("teamName") or "").strip(),
+            location=str(locations[0].get("name") or "").strip() if locations else "",
+            company_name="Apple",
+            whole_posting=True,
+        )
+        retail = (
+            team.get("teamCode") == APPLE_RETAIL_TEAM
+            or str(team.get("teamName") or "").strip().lower() == "apple retail"
+        )
+        item["digest_excluded"] = bool(job.get("managedPipelineRole")) or retail
+        item["detail_url"] = _APPLE_DETAILS_URL.format(position=job["positionId"])
+        items.append(item)
+    return items, _reported_total(res, "totalRecords")
+
+
+def read_apple_board(
+    entry: dict[str, str], *, deadline: float, date_range: tuple[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apple's roles, newest first, with the board's reported total."""
+
+    def page(offset: int) -> Callable[[float], Any]:
+        body = _apple_search_body(offset // APPLE_PAGE_SIZE + 1)
+        return lambda http_deadline: http.post(
+            _APPLE_SEARCH_URL, body, headers={"Accept": "application/json"},
+            timeout=API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+        )
+
+    items, info = _read_newest_first(
+        page, parse_apple_response, page_size=APPLE_PAGE_SIZE,
+        row_ceiling=COMPANY_BOARD_ROW_CEILING, window_start=date_range[0], deadline=deadline,
+    )
+    # The board's total counts rows, so the rows read are counted the same way.
+    info["board_rows_read"] = len(items)
+    return _one_row_per_role(items), info
+
+
+def _one_row_per_role(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apple lists a role once per location; keep one row with every location."""
+    roles: dict[str, dict[str, Any]] = {}
+    for item in items:
+        kept = roles.setdefault(str(item["url"]), item)
+        if kept is not item:
+            kept["offices"].extend(
+                office for office in item["offices"] if office not in kept["offices"]
+            )
+    for role in roles.values():
+        # The digest names a role's places from ``locations`` when a row has it.
+        role["locations"] = list(role["offices"])
+    return list(roles.values())
+
+
+def parse_apple_detail(payload: Any) -> dict[str, str] | None:
+    """The text fields of one Apple details answer, or None when it holds none."""
+    role = payload.get("res") if isinstance(payload, dict) else None
+    if not isinstance(role, dict):
+        return None
+    found = {
+        key: str(role.get(key) or "").strip()
+        for key in ("description", "responsibilities", "minimumQualifications", "preferredQualifications")
+    }
+    return found if any(found.values()) else None
+
+
+def fetch_apple_details(
+    items: list[dict[str, Any]], *, deadline: float,
+) -> tuple[int, int]:
+    """Fill the full text of the given Apple roles from their details calls.
+
+    Returns the counts left unfetched: those the deadline stopped before their
+    call started, and those whose call failed or held no role text. A role
+    left unfetched keeps its search summary.
+    """
+    def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        return lambda http_deadline: http.get(
+            str(item["detail_url"]), headers={"Accept": "application/json"},
+            timeout=APPLE_DETAIL_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+        )
+
+    def text_of(payload: Any) -> tuple[str, str] | None:
+        detail = parse_apple_detail(payload)
+        if detail is None:
+            return None
+        blocks = [detail["description"]]
+        for label, key in (
+            ("Responsibilities", "responsibilities"),
+            ("Minimum Qualifications", "minimumQualifications"),
+            ("Preferred Qualifications", "preferredQualifications"),
+        ):
+            if detail[key]:
+                blocks.append(f"{label}\n{detail[key]}")
+        text = "\n".join(block for block in blocks if block)
+        return text, " ".join(text.split())
+
+    return _fill_role_text(items, call, text_of, deadline=deadline)
+
+
+def _fill_role_text(
+    items: list[dict[str, Any]],
+    call: Callable[[dict[str, Any]], Callable[[float], Any]],
+    text_of: Callable[[Any], tuple[str, str] | None],
+    *,
+    deadline: float,
+) -> tuple[int, int]:
+    """Make one detail call per role and store the text ``text_of`` reads.
+
+    ``text_of(payload)`` returns the role's text with its breaks kept and as
+    one line, or None when the answer holds none. Returns the counts left
+    unfetched (late, failed).
+    """
+    late = failed = 0
+    for item, payload in zip(items, _workday_run([call(item) for item in items], deadline, _clock())):
+        if payload is _OUT_OF_TIME:
+            late += 1
+            continue
+        text = text_of(payload)
+        if text is None:
+            failed += 1
+            continue
+        item["description_blocks"], item["description"] = text
+    return late, failed
+
+
+# Eightfold: hosted boards with two API generations, and a tenant has one of
+# them (``api`` in the registry entry). Both list 10 roles per call with no
+# text, and give a role's text through one more call. Neither date a row
+# carries is shown to be the day the role was first posted, so no row claims
+# one and the board prints no count of roles new in the window.
+
+def parse_eightfold_response(
+    payload: Any, entry: dict[str, str],
+) -> tuple[list[dict[str, Any]], int]:
+    """Rows and the reported total from one Eightfold listing page."""
+    pcsx = entry.get("api") == "pcsx"
+    body = payload.get("data") if pcsx and isinstance(payload, dict) else payload
+    positions = body.get("positions") if isinstance(body, dict) else None
+    if not isinstance(positions, list):
+        raise BoardShapeError("no positions list")
+    board, domain = entry["board"], entry["domain"]
+    items: list[dict[str, Any]] = []
+    for job in positions:
+        if not isinstance(job, dict) or not job.get("id") or not job.get("name"):
+            continue
+        ident = str(job["id"])
+        if pcsx:
+            url = f"https://{board}{job.get('positionUrl') or f'/careers/job/{ident}'}"
+            detail = f"https://{board}/api/pcsx/position_details?position_id={ident}&domain={domain}&hl=en"
+        else:
+            url = str(job.get("canonicalPositionUrl") or f"https://{board}/careers/job/{ident}")
+            detail = f"https://{board}/api/apply/v2/jobs/{ident}?domain={domain}"
+        locations = [str(loc).strip() for loc in job.get("locations") or [] if loc]
+        item = _ats_item(
+            provider=COMPANY_PROVIDER_EIGHTFOLD,
+            slug=board,
+            ident=ident,
+            title=str(job["name"]).strip(),
+            url=url,
+            description="",
+            date=None,
+            department=str(job.get("department") or "").strip(),
+            location=locations[0] if locations else str(job.get("location") or "").strip(),
+            company_name=entry.get("name", ""),
+            whole_posting=True,
+        )
+        item["detail_url"] = detail
+        items.append(item)
+    return items, _reported_total(body, "count")
+
+
+def read_eightfold_board(
+    entry: dict[str, str], *, deadline: float, date_range: tuple[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """An Eightfold board's newest roles, up to the row ceiling, with its total.
+
+    A 403 on the registered API generation reads as no rows: the board cannot
+    be read.
+    """
+    board, domain = entry["board"], entry["domain"]
+    if entry.get("api") == "pcsx":
+        url = f"https://{board}/api/pcsx/search"
+        base = {"domain": domain, "query": "", "location": "", "sort_by": "timestamp"}
+    else:
+        url = f"https://{board}/api/apply/v2/jobs"
+        base = {"domain": domain, "num": str(EIGHTFOLD_PAGE_SIZE), "sort_by": "timestamp"}
+
+    def page(offset: int) -> Callable[[float], Any]:
+        params = {**base, "start": str(offset)}
+        return lambda http_deadline: http.get(
+            url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
+            deadline_monotonic=http_deadline,
+        )
+
+    items, info = _read_newest_first(
+        page, lambda payload: parse_eightfold_response(payload, entry),
+        page_size=EIGHTFOLD_PAGE_SIZE, row_ceiling=EIGHTFOLD_ROW_CEILING,
+        window_start=None, deadline=deadline,
+    )
+    # No row carries a true posted date, so the window is never counted.
+    info["board_window_covered"] = False
+    return items, info
+
+
+def fetch_eightfold_details(
+    items: list[dict[str, Any]], *, deadline: float,
+) -> tuple[int, int]:
+    """Fill the text of the given Eightfold roles, one call each.
+
+    Returns the counts left unfetched (late, failed), like the other fetchers.
+    """
+    def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        return lambda http_deadline: http.get(
+            str(item["detail_url"]), timeout=API_TIMEOUT_SECONDS, retries=1,
+            deadline_monotonic=http_deadline,
+        )
+
+    def text_of(payload: Any) -> tuple[str, str] | None:
+        body = payload.get("data", payload) if isinstance(payload, dict) else None
+        html = ""
+        if isinstance(body, dict):
+            html = str(body.get("jobDescription") or body.get("job_description") or "")
+        return (_block_text(html), _clean_html(html)) if html.strip() else None
+
+    return _fill_role_text(items, call, text_of, deadline=deadline)
+
+
+# Readers of company-run boards, by provider: given the registry entry and the
+# listing's deadline, each returns ``(items, board_info)`` like the hosted
+# readers. Detail fetchers fill role text for the roles the digest selected
+# and return how many were left unfetched (late, failed). Both are named, and
+# looked up when called, so a test may stand in for one.
+_COMPANY_READERS: dict[str, str] = {
+    COMPANY_PROVIDER_AMAZON: "read_amazon_board",
+    COMPANY_PROVIDER_APPLE: "read_apple_board",
+    COMPANY_PROVIDER_EIGHTFOLD: "read_eightfold_board",
+}
+_DETAIL_FETCHERS: dict[str, str] = {
+    ATS_PROVIDER_WORKDAY: "fetch_workday_details",
+    COMPANY_PROVIDER_APPLE: "fetch_apple_details",
+    COMPANY_PROVIDER_EIGHTFOLD: "fetch_eightfold_details",
+}
+
+
+def _company_reader(provider: str) -> Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]]:
+    return globals()[_COMPANY_READERS[provider]]
+
+
+def _detail_fetcher(provider: str) -> Callable[..., tuple[int, int]] | None:
+    name = _DETAIL_FETCHERS.get(provider)
+    return globals()[name] if name else None

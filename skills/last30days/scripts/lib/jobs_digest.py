@@ -34,6 +34,11 @@ DIGEST_MAX_CHARS = 36_000
 # Locations named on one entry before the rest are counted.
 DIGEST_ENTRY_LOCATIONS = 3
 
+def unreadable_job_site_line(name: str) -> str:
+    """What the run says about a company's job site it knows and cannot read."""
+    return f"{name}'s job site can't be read automatically"
+
+
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"“(])")
 _TITLE_TERM = re.compile(r"[a-z][a-z0-9+#-]{2,}")
 
@@ -89,9 +94,11 @@ def distinct_roles(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not _key(item.get("title")):
             continue
         role = roles.setdefault(_role_key(item), {"item": item, "locations": [], "urls": []})
-        location = str(item.get("location") or "").strip()
-        if location and location not in role["locations"]:
-            role["locations"].append(location)
+        # A row a reader already merged across locations names them all itself.
+        for place in item.get("locations") or [item.get("location")]:
+            location = str(place or "").strip()
+            if location and location not in role["locations"]:
+                role["locations"].append(location)
         url = str(item.get("url") or "").strip()
         if url and url not in role["urls"]:
             role["urls"].append(url)
@@ -113,7 +120,12 @@ def select_roles(
     roles = distinct_roles(items)
     groups = {_group(role["item"]) for role in roles}
     departments = Counter(department for _title, department in groups if department)
-    locations = Counter(_key(item.get("location")) for item in items if _key(item.get("location")))
+    # Counted from the same places a role is shown with, so a place that is
+    # one role's first and several others' extra is not taken for rare.
+    locations = Counter(
+        _key(place) for item in items
+        for place in item.get("locations") or [item.get("location")] if _key(place)
+    )
     terms = Counter(
         term for title in {title for title, _department in groups}
         for term in set(_TITLE_TERM.findall(title))

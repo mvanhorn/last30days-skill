@@ -1,0 +1,140 @@
+{
+  "about": "Three amazon.jobs search.json pages recorded on 2026-11-14 (sort=recent, result_limit=100), trimmed to three rows each and to the fields the reader reads, with text cut to 240 characters. posted_date values are set so the first page is inside the test window, the second mixes in-window and older rows, and the third is all older.",
+  "pages": [
+    {
+      "error": null,
+      "hits": 10000,
+      "jobs": [
+        {
+          "id_icims": "10605151",
+          "title": "Sr. Electrical Engineer, Prime Air Perception",
+          "job_path": "/en/jobs/10605151/sr-electrical-engineer-prime-air-perception",
+          "posted_date": "November 14, 2026",
+          "description": "We are hiring an Electrical Engineer responsible for owning the design, development, and verification of the Prime Air Drone Perception subsystem and ground based package loading infrastructure. This candidate will own power and signal arch",
+          "basic_qualifications": "- Bachelor's degree in Electrical Engineering or a related field<br/>- 7+ years of engineering experience<br/>- Proven track record of completing full FPGA product cycles from concept through production<br/>- Strong Digital Signal Processin",
+          "preferred_qualifications": "- Experience with modern ASIC/FPGA design and verification tools<br/>- Experience using scripting languages, such as Python, Perl, Linux bash<br/>- Experience with version control systems and CI/CD pipeline implementation<br/>- Experience w",
+          "business_category": "retail",
+          "normalized_location": "Seattle, Washington, USA",
+          "location": "US, WA, Seattle",
+          "company_name": "Amazon.com Services LLC"
+        },
+        {
+          "id_icims": "10605096",
+          "title": "Sr. Drone Avionics Electrical Engineer, Prime Air ",
+          "job_path": "/en/jobs/10605096/sr-drone-avionics-electrical-engineer-prime-air",
+          "posted_date": "November 13, 2026",
+          "description": "Prime Air is seeking an experienced Electrical Engineer to design and develop electronic hardware and related Avionic systems and architecture for Prime Air Drones. This includes, Avionic compute and Avionics distributed systems hardware. I",
+          "basic_qualifications": "- Bachelor's degree in electrical engineering, computer engineering, or equivalent<br/>- 6+ years of hardware design and validation of components, subsystems and systems experience<br/>- 6+ years of electrical engineering work experience in",
+          "preferred_qualifications": "- Master's degree in electrical engineering, computer engineering, or equivalent<br/>- Experience collaborating with the ECAD/physical board designer and able to review PCB designs with Allegro, CAM350, or equivalent<br/>- 5+ years of devel",
+          "business_category": "retail",
+          "normalized_location": "Seattle, Washington, USA",
+          "location": "US, WA, Seattle",
+          "company_name": "Amazon.com Services LLC"
+        },
+        {
+          "id_icims": "10604965",
+          "title": "Data Center Logistics Tech",
+          "job_path": "/en/jobs/10604965/data-center-logistics-tech",
+          "posted_date": "November 12, 2026",
+          "description": "Join our dynamic team and become a critical enabler of the world's most advanced cloud computing infrastructure. In this role, you'll play a pivotal part in maintaining the heartbeat of our data center operations by ensuring seamless logist",
+          "basic_qualifications": "- Experience as a logistics professional supporting inventory cycle counts, shipments, maintenance, stock control functions and reverse logistics<br/>- Speak, write, and read fluently in English",
+          "preferred_qualifications": "- 1+ years of logistics operations experience<br/>- Can lift loads of up to 49 pounds and carry them for short distances<br/><br/>Amazon is an equal opportunity employer and does not discriminate on the basis of protected veteran status, di",
+          "business_category": "aws",
+          "normalized_location": "Fredericksburg, Virginia, USA",
+          "location": "US, VA, Fredericksburg",
+          "company_name": "Amazon Data Services, Inc."
+        }
+      ]
+    },
+    {
+      "error": null,
+      "hits": 10000,
+      "jobs": [
+        {
+          "id_icims": "10604971",
+          "title": "EHS Specialist ",
+          "job_path": "/en/jobs/10604971/ehs-specialist",
+          "posted_date": "November 1, 2026",
+          "description": "Join Amazon’s mission to become Earth’s safest place to work! At Amazon, we’ve set the ambitious goal to become the benchmark of safety excellence across all industries in which we operate. As a Workplace Health & Safety Specialist (WHSS), ",
+          "basic_qualifications": "- High school or equivalent<br/>- A minimum of 1 year in an Environmental Health & Safety (EHS) related field OR; A Bachelor’s degree in EHS-relevant background OR; 6 months experience performing in a safety-related role within Amazon<br/>-",
+          "preferred_qualifications": "- Bachelor’s degree or higher, preferably in a safety related field<br/>- Strong communication, teamwork, analysis, judgment, and customer focus skills<br/>- Experience leading and managing a team, ability to analyze accident data, new proc",
+          "business_category": "fulfillment-and-operations",
+          "normalized_location": "University Park, Illinois, USA",
+          "location": "US, IL, University Park",
+          "company_name": "Amazon.com Services LLC"
+        },
+        {
+          "id_icims": "10604727",
+          "title": "Solutions Engineer, REDI",
+          "job_path": "/en/jobs/10604727/solutions-engineer-redi",
+          "posted_date": "October 1, 2026",
+          "description": "Reliability, Maintenance, and Engineering (RME) is hiring a Solutions Engineer.<br/><br/>***This role can be based in any United States Amazon location that is within driving distance of an airport to support frequent travel***<br/><br/>At ",
+          "basic_qualifications": "- Experience programming with at least one modern language such as Python, Ruby, Golang, Java, C++, C#, Rust<br/>- Experience in automation or complex MHE environments<br/>- Bachelor's degree in Electrical Engineering, Mechanical Engineerin",
+          "preferred_qualifications": "- Master's degree in Electrical or Mechanical Engineering, or Master's degree or above in engineering, management, or technology<br/>- Systems controls design or programming experience<br/>- Systems trainer or training experience.<br/>- Pro",
+          "business_category": "transportation-and-logistics",
+          "normalized_location": "Dallas, Texas, USA",
+          "location": "US, TX, Dallas",
+          "company_name": "Amazon.com Services LLC"
+        },
+        {
+          "id_icims": "10604201",
+          "title": "Data Center Technician (Night Shift), ADC InfraOps DCO",
+          "job_path": "/en/jobs/10604201/data-center-technician-night-shift-adc-infraops-dco",
+          "posted_date": "October 20, 2026",
+          "description": "The Infrastructure Operations team is looking for cleared Data Center Technicians to join our expanding Infrastructure Operations team. Data Center Technicians are the primary resolver and troubleshoot and solve a range of datacenter infras",
+          "basic_qualifications": "- High school or equivalent diploma, or A+ or CND (Certified Network Defender) or Network+ or Security+<br/>- Current, active US Government Security Clearance of TS/SCI with Polygraph",
+          "preferred_qualifications": "- 2+ years of equivalent experience<br/>- industry standard certification (CompTIA, CCENT, or Network+), or experience in networking<br/>- Hands-on experience with one or more of the following hardware platforms (e.g. Dell, HP) is a plus<br",
+          "business_category": "aws",
+          "normalized_location": "Manassas, Virginia, USA",
+          "location": "US, VA, Manassas",
+          "company_name": "Amazon Data Services, Inc."
+        }
+      ]
+    },
+    {
+      "error": null,
+      "hits": 10000,
+      "jobs": [
+        {
+          "id_icims": "10604683",
+          "title": "Cloud Support Engineer - Big Data, AWS Support Engineering",
+          "job_path": "/en/jobs/10604683/cloud-support-engineer-big-data-aws-support-engineering",
+          "posted_date": "October 10, 2026",
+          "description": "AWS Applied AI Solutions (AAIS) is building toward a future where every business innovates with Amazon AI teammates. To get there, we build AI solutions that improve human capabilities and transform entire business functions. We create end-",
+          "basic_qualifications": "- Experience in system administration, and troubleshooting any operating system (Linux and/or Windows) and networking (HTTP/s, TCP/IP, DNS, OSI model, routing, switching, firewalls, LAN/WAN, traceroute, iperf, dig, CURL or related)<br/>- 3+",
+          "preferred_qualifications": "- Experience using data analysis techniques such as quantitative or qualitative analysis<br/>- Experience with big data or distributed systems (NoSQL, search, and streaming)<br/>- Understanding of cloud computing concepts and/or experience ",
+          "business_category": "aws",
+          "normalized_location": "Mexico City, Mexico City, MEX",
+          "location": "MX, DIF, Mexico City",
+          "company_name": "Amazon Web Services Mexico S. de R.L. de C.V."
+        },
+        {
+          "id_icims": "10603997",
+          "title": "Abteilungsleiter Instandhaltung, RME",
+          "job_path": "/en/jobs/10603997/abteilungsleiter-instandhaltung-rme",
+          "posted_date": "September 30, 2026",
+          "description": "Amazon unterhält Hunderte von Betriebsstandorten in ganz Europa. Diese Standorte sind mehr als nur Arbeitsplätze – hier treffen sich unsere Teams und sorgen gemeinsam dafür, dass unsere Kund:innen zufrieden sind. Als Reliability Maintenance",
+          "basic_qualifications": "- Abschluss in einem technischen Fachgebiet<br/>- Arbeitserfahrung in einem Wartungsteam in Bereichen der Industrie oder Produktion, in denen verschiedene komplexe Prozesse ablaufen<br/>- Erfahrung im Management von technischen Fachkräften<",
+          "preferred_qualifications": "- Erfahrung im Umgang mit gesetzlichen Vorschriften, beispielsweise Compliance-Prüfungen und Sicherheitsprotokollen für Maschinen<br/>- Erfahrung mit automatisierten Geräten, einschließlich Packmaschinen, Sortier- und Fördersystemen<br/>- E",
+          "business_category": "fulfillment-ops",
+          "normalized_location": "Pforzheim, Baden-Wurttemberg, DEU",
+          "location": "DE, BW, Pforzheim",
+          "company_name": "Amazon Pforzheim GmbH"
+        },
+        {
+          "id_icims": "10603953",
+          "title": "Process Improvement Executor, Sort Center",
+          "job_path": "/en/jobs/10603953/process-improvement-executor-sort-center",
+          "posted_date": "October 2, 2026",
+          "description": "Amazon物流拠点の生産性改善ならびにOperationの標準化に取り組んでみませんか？<br/><br/>Amazonは、Earth's most customer-centric company（地球上で最もお客様を大切にする企業）を目指しており、お客様が欲しい商品を高品質、低コストでお届けできる輸送ネットワークを構築することでそのVision達成に向かってきました。この輸送ネットワークは、全国にある大規模倉庫と各ご家庭までの配送拠点（Last Mile）とを結んでおり",
+          "basic_qualifications": "- 2+ years of program or project management experience",
+          "preferred_qualifications": "- Knowledge of Lean principles and DMAIC methodology<br/><br/>Our inclusive culture empowers Amazonians to deliver the best results for our customers. If you have a disability and need a workplace accommodation or adjustment during the appl",
+          "business_category": "operations",
+          "normalized_location": "Tokyo, JPN",
+          "location": "JP, 13, Tokyo",
+          "company_name": "Amazon Japan G.K."
+        }
+      ]
+    }
+  ]
+}

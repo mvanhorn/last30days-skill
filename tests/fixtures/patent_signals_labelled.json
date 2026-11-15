@@ -1,5 +1,5 @@
 {
-  "about": "Labelled candidate filings for the Patent Secret Signals rules in skills/last30days/references/patent-signals.md. These are constructed cases, one per rule, not saved digests: the filings are invented to show a rule and say nothing about any real company's filings. Per candidate: kind is 'first publication' unless stated ('continuation', 'divisional', 'grant published earlier' and 'design' are counted by the digest and never signals). titles_only is true for an entry the digest lists by title, with no abstract or first claim; such an entry is never a signal. concrete is true when the first claim and abstract name a device, material, user or use a reader can picture. paths lists which of the two qualifying paths the candidate meets (1 out of character, 2 a recognisable product the company has not shipped or announced). story_tie is true when the filing fits a story in the report; it never qualifies a candidate on its own. shipped_match is true when the web check found a shipped or announced product that matches, false when it found none, null when it was not checked while labelling; covered is the same for coverage of the filing. reported_match, when present, is true when the web check found no shipped or announced product but found a leak or press report describing a matching one; it removes path 2 just as a shipped match does. not_verified is true for an entry the digest marks not verified (a filer whose name extends the company's by more than legal or holding words); entity_known is then true when the filing entity is known to belong to the company, false when known not to, null when not known. location_contradicts is true when the applicant location plainly contradicts the company. A candidate with a cluster list is several filings that share one specific focus; members that share one priority date and one filed_as name are one invention family. jobs_signals is how many signal paragraphs the same report's Jobs Page Secret Signals section has.",
+  "about": "Labelled candidate filings for the Patent Secret Signals rules in skills/last30days/references/patent-signals.md. These are constructed cases, one per rule, not saved digests: the filings are invented to show a rule and say nothing about any real company's filings. Per candidate: kind is 'first publication' unless stated ('continuation', 'divisional', 'grant published earlier' and 'design' are counted by the digest and never signals). titles_only is true for an entry the digest lists by title, with no abstract or first claim; such an entry is never a signal. concrete is true when the first claim and abstract name a device, material, user or use a reader can picture. paths lists which of the two qualifying paths the candidate meets (1 out of character, 2 a recognisable product the company has not shipped or announced). story_tie is true when the filing fits a story in the report; it never qualifies a candidate on its own. shipped_match is true when the web check found a shipped or announced product that matches, false when it found none, null when it was not checked while labelling; covered is the same for coverage of the filing. reported_match, when present, is true when the web check found no shipped or announced product but found a leak or press report describing a matching one; it removes path 2 just as a shipped match does. not_verified is true for an entry the digest marks not verified (a filer whose name extends the company's by more than legal or holding words); entity_known is then true when the filing entity is known to belong to the company, false when known not to, null when not known. location_contradicts is true when the applicant location plainly contradicts the company. A candidate with a cluster list is several filings that share one specific focus; members that share one priority date and one filed_as name are one invention family. jobs_signals is how many signal paragraphs the same report's Jobs Page Secret Signals section has. paragraphs holds written signal paragraphs labelled valid or invalid against the plain-words shape: two sentences, at most 60 words outside the linked titles, application or grant, the filing month and year in parentheses, any quote at most 12 words, and nothing worded as a plan. checked is true when the web check ran for a candidate. The two strongest concrete candidates (listed strongest first) must be checked before either is dropped, and only they; expected_checks is how many that is. A case with valid false records a decision the rule rejects, so its section and signal labels are what was written, not what the rule gives.",
   "companies": [
     {
       "case": "Chip maker",
@@ -13,6 +13,7 @@
           "paths": [
             1
           ],
+          "checked": true,
           "shipped_match": false,
           "covered": false,
           "expected": "qualifies"
@@ -22,6 +23,7 @@
           "note": "In character, and nothing a reader can picture.",
           "concrete": false,
           "paths": [],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify"
@@ -34,6 +36,7 @@
           "paths": [
             1
           ],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify"
@@ -43,11 +46,13 @@
           "kind": "design",
           "concrete": true,
           "paths": [],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 1
     },
     {
       "case": "Phone maker, nothing shipped",
@@ -62,11 +67,13 @@
           "paths": [
             2
           ],
+          "checked": true,
           "shipped_match": false,
           "covered": false,
           "expected": "qualifies"
         }
-      ]
+      ],
+      "expected_checks": 1
     },
     {
       "case": "Phone maker, shipped match on the web",
@@ -81,11 +88,13 @@
           "paths": [
             2
           ],
+          "checked": true,
           "shipped_match": true,
           "covered": null,
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 1
     },
     {
       "case": "Console maker, leaked match on the web",
@@ -100,12 +109,14 @@
           "paths": [
             2
           ],
+          "checked": true,
           "shipped_match": false,
           "reported_match": true,
           "covered": false,
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 1
     },
     {
       "case": "Car maker, titles only",
@@ -118,6 +129,7 @@
           "titles_only": true,
           "concrete": false,
           "paths": [],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify",
@@ -132,11 +144,13 @@
           "paths": [
             1
           ],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 0
     },
     {
       "case": "AI lab, story tie and an announced product",
@@ -152,11 +166,13 @@
             2
           ],
           "story_tie": true,
+          "checked": true,
           "shipped_match": true,
           "covered": null,
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 1
     },
     {
       "case": "Device maker, one unshipped product and one story tie",
@@ -170,21 +186,24 @@
           "paths": [
             2
           ],
+          "checked": true,
           "shipped_match": false,
           "covered": false,
           "expected": "qualifies"
         },
         {
           "title": "Trim around a folding display made of rigid and elastic polymers",
-          "note": "In character for a company that sells a folding phone; it only fits the display story.",
+          "note": "In character for a company that sells a folding phone; it only fits the display story. It is concrete, so it is one of the two candidates checked; the search found nothing, and it still meets no path.",
           "concrete": true,
           "paths": [],
           "story_tie": true,
-          "shipped_match": null,
-          "covered": null,
+          "checked": true,
+          "shipped_match": false,
+          "covered": false,
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 2
     },
     {
       "case": "Search company, family and cluster",
@@ -200,6 +219,7 @@
           "paths": [
             1
           ],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "cluster": [
@@ -228,6 +248,7 @@
           "paths": [
             1
           ],
+          "checked": true,
           "shipped_match": false,
           "covered": false,
           "cluster": [
@@ -257,6 +278,7 @@
           "paths": [
             1
           ],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "cluster": [
@@ -273,7 +295,8 @@
           ],
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 1
     },
     {
       "case": "Meta, unverified filer known to be the company's",
@@ -289,12 +312,14 @@
           "paths": [
             2
           ],
+          "checked": true,
           "shipped_match": false,
           "covered": false,
           "expected": "qualifies",
           "not_verified": true
         }
-      ]
+      ],
+      "expected_checks": 1
     },
     {
       "case": "Block, unverified filer not the company's",
@@ -311,6 +336,7 @@
           "paths": [
             1
           ],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify",
@@ -325,6 +351,7 @@
           "paths": [
             2
           ],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify",
@@ -339,11 +366,13 @@
           "paths": [
             1
           ],
+          "checked": false,
           "shipped_match": null,
           "covered": null,
           "expected": "does not qualify"
         }
-      ]
+      ],
+      "expected_checks": 0
     },
     {
       "case": "Report that also has two jobs signals",
@@ -358,6 +387,7 @@
           "paths": [
             1
           ],
+          "checked": true,
           "shipped_match": false,
           "covered": false,
           "expected": "qualifies"
@@ -369,11 +399,357 @@
             1,
             2
           ],
+          "checked": true,
           "shipped_match": false,
           "covered": true,
           "expected": "qualifies"
         }
-      ]
+      ],
+      "expected_checks": 2
+    },
+    {
+      "case": "Server maker, persistent display",
+      "report_story": null,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Dynamically updatable persistent display that stays readable when a server fails",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "checked": true,
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies",
+          "note": "Modelled on a real run where the filing was dropped on judgment alone. A status screen on a server is something a reader can picture, and the search found no such product."
+        },
+        {
+          "title": "Compressing activations during neural network training",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Scheduling work across processing units of a cluster",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        }
+      ],
+      "expected_checks": 1
+    },
+    {
+      "case": "Device maker, photo control among nine routine filings",
+      "report_story": null,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Controlling objects in a room by tapping them in a saved photo of it",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "checked": true,
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies",
+          "note": "Modelled on a real run where only the start of the abstract was read and the filing was dropped. One search for it runs before the decision."
+        },
+        {
+          "title": "Routine method 1 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 2 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 3 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 4 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 5 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 6 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 7 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 8 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routine method 9 for managing device resources",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        }
+      ],
+      "expected_checks": 1
+    },
+    {
+      "case": "Concrete candidate dropped unchecked",
+      "report_story": null,
+      "expected_section": "absent",
+      "expected_signals": 0,
+      "valid": false,
+      "candidates": [
+        {
+          "title": "Controlling objects in a room by tapping them in a saved photo of it",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "qualifies",
+          "note": "Concrete, and the section was left out with no search: the decision is invalid whatever the search would have found."
+        }
+      ],
+      "expected_checks": 1
+    },
+    {
+      "case": "Concrete candidate checked, shipped match found",
+      "report_story": null,
+      "expected_section": "absent",
+      "expected_signals": 0,
+      "candidates": [
+        {
+          "title": "Controlling objects in a room by tapping them in a saved photo of it",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "checked": true,
+          "shipped_match": true,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "The same filing; the search found the company already ships photo-based device control, so the section is left out."
+        }
+      ],
+      "expected_checks": 1
+    },
+    {
+      "case": "Concrete candidate dropped as already shipped, no search",
+      "report_story": null,
+      "expected_section": "absent",
+      "expected_signals": 0,
+      "valid": false,
+      "candidates": [
+        {
+          "title": "Controlling objects in a room by tapping them in a saved photo of it",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "checked": false,
+          "shipped_match": true,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Called already shipped from memory. Shipped status comes from the search, so the decision is invalid."
+        }
+      ],
+      "expected_checks": 1
+    },
+    {
+      "case": "Four concrete candidates",
+      "report_story": null,
+      "expected_section": "present",
+      "expected_signals": 1,
+      "candidates": [
+        {
+          "title": "Glasses that caption speech for a deaf wearer",
+          "concrete": true,
+          "paths": [
+            1,
+            2
+          ],
+          "checked": true,
+          "shipped_match": false,
+          "covered": false,
+          "expected": "qualifies"
+        },
+        {
+          "title": "Charging pad that powers three devices through a desk",
+          "concrete": true,
+          "paths": [
+            2
+          ],
+          "checked": true,
+          "shipped_match": true,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "The search found the company already sells one."
+        },
+        {
+          "title": "Hinge for a laptop lid",
+          "concrete": true,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Concrete but in character and not a product a reader would recognise; only the strongest two are checked."
+        },
+        {
+          "title": "Bracket that holds a server drive",
+          "concrete": true,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Concrete but in character; not checked."
+        }
+      ],
+      "expected_checks": 2
+    },
+    {
+      "case": "Nothing concrete",
+      "report_story": null,
+      "expected_section": "absent",
+      "expected_signals": 0,
+      "candidates": [
+        {
+          "title": "Method for scheduling memory reads",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Compressing model weights for inference",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        },
+        {
+          "title": "Routing packets across a network fabric",
+          "concrete": false,
+          "paths": [],
+          "checked": false,
+          "shipped_match": null,
+          "covered": null,
+          "expected": "does not qualify",
+          "note": "Nothing a reader can picture."
+        }
+      ],
+      "expected_checks": 0
+    }
+  ],
+  "paragraphs": [
+    {
+      "case": "Accepted plain-words signal",
+      "text": "**Patent Secret Signals** - An NVIDIA application published Oct 15 (filed April 2025), [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), describes an e-ink screen on a server or GPU that would \"remain visible in an event of a failure of the hardware device\". That way a dead rack can tell a technician what broke without anyone plugging in a laptop.",
+      "expected": "valid"
+    },
+    {
+      "case": "Constructed photo-control signal",
+      "text": "**Patent Secret Signals** - A device maker's patent application published Nov 12 (filed May 2025), [Controlling objects using an image](https://example.com/filing), describes controlling home devices by tapping them in a photo of your room. Coming the same week as its new home app, it suggests the company has worked on point-and-tap home control.",
+      "expected": "valid"
+    },
+    {
+      "case": "Worded as a plan",
+      "text": "**Patent Secret Signals** - An NVIDIA application published Oct 15 (filed April 2025), [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), describes an e-ink screen on a server or GPU that would \"remain visible in an event of a failure of the hardware device\". NVIDIA is building self-reporting racks for its next data center line.",
+      "expected": "invalid",
+      "note": "A filing does not show that the company is building anything."
+    },
+    {
+      "case": "Three sentences",
+      "text": "**Patent Secret Signals** - An NVIDIA application published Oct 15 (filed April 2025), [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), describes an e-ink screen on a server or GPU that would \"remain visible in an event of a failure of the hardware device\". That way a dead rack can tell a technician what broke. It also fits this month's data center story.",
+      "expected": "invalid"
+    },
+    {
+      "case": "Citation first and too long",
+      "text": "**Patent Secret Signals** - A patent application published October 15, 2026 and filed April 3, 2025, [Dynamically Updatable Persistent Displays for Hardware Resources](https://example.com/filing), by NVIDIA Corporation of Santa Clara, California, describes a hardware device with a persistent display that would \"remain visible in an event of a failure of the hardware device, so that status information about the failure stays readable\". That points to a reading in which NVIDIA has looked at how its servers report their own failures to the people who repair them in a data center.",
+      "expected": "invalid",
+      "note": "Sentence one carries the full dates and a long quote before the reader learns what the thing is."
+    },
+    {
+      "case": "No filing date",
+      "text": "**Patent Secret Signals** - A patent application published Nov 12, [Controlling objects using an image](https://example.com/filing), describes controlling home devices by tapping them in a photo of your room. It suggests the company has worked on point-and-tap home control.",
+      "expected": "invalid",
+      "note": "The short filing-date parenthetical is one of the facts that says this is a filing and not a product."
     }
   ]
 }

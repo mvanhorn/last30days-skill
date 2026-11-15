@@ -241,3 +241,45 @@ def test_check_does_not_apply_when_x_will_not_run(monkeypatch):
 def test_check_does_not_apply_outside_agent_hosts(monkeypatch):
     rc, _err, _run, _ = _run_main(monkeypatch, ["Jev", "--plan", PLAN_WITH_X])
     assert rc is None
+
+
+def _dropped_or(page, *, dropped_hosts):
+    from http.client import RemoteDisconnected
+    from unittest.mock import MagicMock
+
+    def opener(req, timeout=None, **_kwargs):
+        if req.full_url.split("/")[2] in dropped_hosts:
+            raise RemoteDisconnected("Remote end closed connection without response")
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = page.encode("utf-8")
+        response.status = 200
+        response.headers = {}
+        return response
+
+    return opener
+
+
+def test_official_site_that_drops_the_connection_is_read_on_its_www_form():
+    stderr = io.StringIO()
+    opener = _dropped_or(HOMEPAGE, dropped_hosts={"typesafe.ai"})
+    with mock.patch.object(resolve.http, "_open_request", side_effect=opener), \
+            mock.patch.object(resolve.http.time, "sleep"), \
+            resolve.http.capture_failures() as failures, redirect_stderr(stderr):
+        socials = resolve.official_site_socials("typesafe.ai")
+    assert socials == {"x_handle": "typesafeai", "github_user": "typesafe-ai"}
+    assert "could not be fetched" not in stderr.getvalue()
+    assert failures == []
+
+
+def test_official_site_whose_both_forms_drop_the_connection_logs_one_line():
+    stderr = io.StringIO()
+    opener = _dropped_or(HOMEPAGE, dropped_hosts={"typesafe.ai", "www.typesafe.ai"})
+    with mock.patch.object(resolve.http, "_open_request", side_effect=opener), \
+            mock.patch.object(resolve.http.time, "sleep"), \
+            resolve.http.capture_failures() as failures, redirect_stderr(stderr):
+        socials = resolve.official_site_socials("typesafe.ai")
+    assert socials == {"x_handle": "", "github_user": ""}
+    assert stderr.getvalue().count("could not be fetched") == 1
+    assert len(failures) == 1

@@ -1,5 +1,6 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
+import http.client
 import json
 from collections import OrderedDict
 import math
@@ -712,6 +713,55 @@ def tee_failures():
             parent.extend(local)
 
 
+def other_host_form(host: str) -> str:
+    """The ``www.`` form of a bare two-label host, or the bare form of a ``www.``
+    host, or "" when the host has neither (a subdomain such as ``jobs.x.com``).
+
+    Some sites answer on only one of the two: ``nvidia.com`` drops the
+    connection while ``www.nvidia.com`` serves the page.
+    """
+    host = (host or "").strip().lower()
+    if host.startswith("www."):
+        bare = host[4:]
+        return bare if "." in bare else ""
+    return f"www.{host}" if host.count(".") == 1 else ""
+
+
+def connection_dropped(failures: list[HTTPError]) -> bool:
+    """True when a request reached no page because the connection was dropped:
+    no HTTP status, not a timeout, and not a name that failed to resolve or a
+    refused connection, which say nothing answers there at all."""
+    return any(
+        failure.status_code is None
+        and failure.outcome_state != health.TIMEOUT
+        and not failure.no_host
+        for failure in failures
+    )
+
+
+def text_on_either_host_form(fetch: Callable[[str], Optional[str]], url: str) -> tuple[Optional[str], str]:
+    """``fetch(url)``, retried once on the site's other host form when the
+    connection was dropped. Returns the text and the URL that gave it.
+
+    Only one failure is kept for the run's record: the first one when both
+    forms fail, none when the other form answers.
+    """
+    parts = urlsplit(url)
+    other = other_host_form(parts.hostname or "")
+    with tee_failures() as failures:
+        text = fetch(url)
+        if text or not other or not connection_dropped(failures):
+            return text, url
+        first = list(failures)
+        failures.clear()
+        other_url = urlunsplit(parts._replace(netloc=other))
+        text = fetch(other_url)
+        if text:
+            return text, other_url
+        failures[:] = first
+        return None, url
+
+
 @contextmanager
 def expected_misses(*status_codes: int):
     """Exclude adapter-declared probe misses from captured run failures."""
@@ -1191,8 +1241,10 @@ def request(
                 outcome_state=health.SCHEMA_DRIFT,
             )
             raise_recorded(last_error)
-        except (OSError, TimeoutError, ConnectionResetError) as e:
-            # Handle socket-level errors (connection reset, timeout, etc.)
+        except (OSError, TimeoutError, ConnectionResetError, http.client.HTTPException) as e:
+            # Handle socket-level errors (connection reset, timeout, etc.),
+            # and a body cut off mid-read (``IncompleteRead``), which
+            # ``http.client`` raises as an ``HTTPException``, not an OSError.
             log_request(f"Connection error: {type(e).__name__}: {e}")
             state = health.TIMEOUT if isinstance(e, TimeoutError) else health.UNREACHABLE
             last_error = HTTPError(

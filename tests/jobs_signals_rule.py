@@ -17,6 +17,7 @@ compared against the labels by a person. It is test support, not shipped code.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 OUT_OF_CHARACTER, CONCRETE, HARD_TO_UNDO, BEARS_ON_STORY = 1, 2, 3, 4
@@ -26,7 +27,20 @@ MAX_SIGNALS = 2
 MIN_CLUSTER_POSTINGS = 3
 # Postings of a cluster cited in its paragraph, and sentences per paragraph.
 CLUSTER_POSTINGS_CITED = 2
-MAX_PARAGRAPH_SENTENCES = 3
+MAX_PARAGRAPH_SENTENCES = 2
+# The longest optional quote from a posting.
+MAX_QUOTE_WORDS = 12
+LEAD_IN = "**Jobs Page Secret Signals** - "
+
+_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[{A-Z])")
+_QUOTE = re.compile(r'"([^"]+)"')
+_OVERCLAIM = re.compile(
+    r"\b(?:is|are) (?:building|developing|launching|shipping)\b"
+    r"|\bwill (?:ship|launch|release|sell|build)\b"
+    r"|\bhas decided\b|\bplans to\b",
+    re.IGNORECASE,
+)
 
 
 def qualifies(tests: list[int], postings: int = 1) -> bool:
@@ -55,8 +69,8 @@ def qualifying(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def max_section_paragraphs() -> int:
-    """The lead-in line, the signal paragraphs and the closing line."""
-    return 1 + MAX_SIGNALS + 1
+    """The signal paragraphs (the lead-in runs into the first) and the closing line."""
+    return MAX_SIGNALS + 1
 
 
 def section_present(
@@ -92,4 +106,20 @@ def standout(candidate: dict[str, Any]) -> bool:
     return (
         {OUT_OF_CHARACTER, CONCRETE, HARD_TO_UNDO} <= set(candidate["tests"])
         and wording(candidate) == "unreported"
+    )
+
+
+def sentences(paragraph: str) -> list[str]:
+    body = paragraph.removeprefix(LEAD_IN)
+    return [part for part in _SENTENCE_BREAK.split(body) if part]
+
+
+def paragraph_ok(paragraph: str) -> bool:
+    """A signal paragraph in the plain-words shape: two sentences, the role linked,
+    any quote at most 12 words, and nothing worded as a plan."""
+    return (
+        len(sentences(paragraph)) == MAX_PARAGRAPH_SENTENCES
+        and bool(_LINK.search(paragraph))
+        and all(len(quote.split()) <= MAX_QUOTE_WORDS for quote in _QUOTE.findall(paragraph))
+        and not _OVERCLAIM.search(paragraph)
     )

@@ -2997,6 +2997,13 @@ def run(
                 bundle.artifacts["jobs"] = _jobs_board_artifact(artifact)
                 bundle.jobs_board_rows = list(raw_items)
                 artifact = {key: value for key, value in artifact.items() if key != "digest"}
+            elif (
+                source == "jobs" and isinstance(artifact, dict)
+                and artifact.get("job_site_unreadable") and "jobs" not in bundle.artifacts
+            ):
+                # The company's job site is known and cannot be read: the
+                # footer says so rather than printing nothing.
+                bundle.artifacts["jobs_site_unreadable"] = str(artifact["job_site_unreadable"])
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
@@ -4220,6 +4227,11 @@ def _search_jobs_lane(
                 for key in ("_source_outcome", "_source_out_of_time"):
                     if key in host_artifact and not items:
                         artifact = {**artifact, key: host_artifact[key]}
+                # A named company whose job site is known and not read keeps
+                # its footer line; the first such company is the one named.
+                unreadable = host_artifact.get("job_site_unreadable")
+                if unreadable and not artifact.get("job_site_unreadable"):
+                    artifact = {**artifact, "job_site_unreadable": unreadable}
     if held and not _is_jobs_board("jobs", artifact):
         items, artifact = held[0], named(held[1])
         # A board tied to no company here is shown under the name it states.
@@ -4228,6 +4240,7 @@ def _search_jobs_lane(
             artifact["board_of"] = stated
     if not items and not _is_jobs_board("jobs", artifact) and not (
         budget.stopped_at or budget.spent() or budget.unanswered
+        or artifact.get("job_site_unreadable")
     ):
         jobs.log_no_board([name, *hosts])
     # Nothing failed and time was left: the answer will not change on a
@@ -4332,6 +4345,9 @@ def _add_ranked_roles_to_jobs_digest(
     digest = board.get("digest") if isinstance(board, dict) else None
     if not rows or not isinstance(digest, dict) or not digest.get("roles"):
         return
+    # Roles the board keeps out of the digest (Apple's retail store roles)
+    # stay out however well they rank.
+    rows = [row for row in rows if not row.get("digest_excluded")]
     # Ranking sees normalized items; the digest holds the board's own URLs.
     board_urls = {fusion._normalize_url(str(row.get("url") or "")): str(row["url"])
                   for row in rows if row.get("url")}

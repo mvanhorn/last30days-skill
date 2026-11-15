@@ -2467,6 +2467,15 @@ def _jobs_board_footer_line(report: schema.Report) -> str | None:
     return line
 
 
+def _jobs_unreadable_footer_line(report: schema.Report) -> str | None:
+    """The 💼 Jobs footer line for a company whose job site is known and
+    cannot be read, when no board gave an open-role count."""
+    name = (report.artifacts or {}).get("jobs_site_unreadable")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return f"💼 Jobs: {jobs_digest.unreadable_job_site_line(_footer_safe(name, 60))}"
+
+
 def _jobs_digest(report: schema.Report) -> dict | None:
     board = (report.artifacts or {}).get("jobs")
     digest = board.get("digest") if isinstance(board, dict) else None
@@ -3340,7 +3349,7 @@ def _build_source_footer_lines(
     for source_key, emoji, label, item_word, engagement_fields in _FOOTER_SOURCES:
         items = report.items_by_source.get(source_key) or []
         if source_key == "jobs":
-            board_line = _jobs_board_footer_line(report)
+            board_line = _jobs_board_footer_line(report) or _jobs_unreadable_footer_line(report)
             if board_line:
                 out.append(board_line)
                 continue

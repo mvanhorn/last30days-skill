@@ -1,5 +1,5 @@
 {
-  "about": "Labelled candidate signals from four company job boards (Nvidia twice, from two saved digests), for the Jobs Page Secret Signals rules in skills/last30days/references/hiring-signals.md. tests lists which of the four tests of the bar a candidate meets (1 out of character, 2 names something concrete, 3 large and hard to undo, 4 bears on a story in the report). public is true when the thing is already publicly announced, false when a web check found nothing, null when it was not checked while labelling. quote is the posting's own words, or null where the label rests on the role or a count. The labels are a person's judgment of saved boards; boards change, so compare a live run by signal, not by exact role. A candidate with a cluster list is three or more postings that share one concrete focus and count together as one signal; its paragraph cites two of them.",
+  "about": "Labelled candidate signals from four company job boards (Nvidia twice, from two saved digests), for the Jobs Page Secret Signals rules in skills/last30days/references/hiring-signals.md. tests lists which of the four tests of the bar a candidate meets (1 out of character, 2 names something concrete, 3 large and hard to undo, 4 bears on a story in the report). public is true when the thing is already publicly announced, false when a web check found nothing, null when it was not checked while labelling. quote is the posting's own words, or null where the label rests on the role or a count. The labels are a person's judgment of saved boards; boards change, so compare a live run by signal, not by exact role. A candidate with a cluster list is three or more postings that share one concrete focus and count together as one signal; its paragraph cites two of them. paragraphs holds written signal paragraphs labelled valid or invalid against the plain-words shape: two sentences, the role linked, any quote at most 12 words, and nothing worded as a plan. The board counts in them are illustrative.",
   "boards": [
     {
       "company": "Anthropic",
@@ -199,6 +199,25 @@
           "expected": "does not qualify"
         }
       ]
+    }
+  ],
+  "paragraphs": [
+    {
+      "case": "Plain-words first signal with the count as a clause",
+      "text": "**Jobs Page Secret Signals** - Among the 412 open roles on Anthropic's own job board is a [Gas Supply and Transport Lead, US and Canada](https://example.com/posting) asking for pipeline \"federal, state, or provincial approvals\". That would let the company secure its own gas for the power its data centers need.",
+      "expected": "valid"
+    },
+    {
+      "case": "Three sentences",
+      "text": "**Jobs Page Secret Signals** - Among the 412 open roles on Anthropic's own job board is a [Gas Supply and Transport Lead, US and Canada](https://example.com/posting) asking for pipeline \"federal, state, or provincial approvals\". That points to its own power supply. It fits this month's data center story.",
+      "expected": "invalid",
+      "note": "A signal paragraph is two sentences."
+    },
+    {
+      "case": "Worded as a plan",
+      "text": "**Jobs Page Secret Signals** - Among the 412 open roles on Anthropic's own job board is a [Gas Supply and Transport Lead, US and Canada](https://example.com/posting) asking for pipeline \"federal, state, or provincial approvals\". Anthropic is building its own gas-fired power plants.",
+      "expected": "invalid",
+      "note": "An open posting does not show that the company is building anything."
     }
   ]
 }

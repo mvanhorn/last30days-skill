@@ -278,7 +278,7 @@ def test_one_signal_by_default_and_a_second_only_when_both_are_unmatched():
 
 def test_web_check_comes_before_any_signal_is_written():
     check = _rule("**Check the web first.**")
-    assert check.lstrip().startswith("Before writing a signal, check the web for it")
+    assert check.lstrip().startswith("Before writing a signal or leaving the section out, check the web")
     assert "Isolated web search" in check
     assert "`research-runbook.md`" in check
     assert "coverage of the filing" in check
@@ -327,26 +327,35 @@ def test_the_old_counts_sentence_and_disclaimer_are_gone():
     assert "US patent applications published and" not in text
 
 
-def test_each_signal_links_the_filing_gives_both_dates_and_hedges():
+def test_each_signal_links_the_filing_keeps_its_facts_and_hedges():
     paragraph = _rule("**Each signal paragraph**")
-    assert "is two sentences" in paragraph
+    assert "is two sentences of at most 60 words together, not counting the linked filing titles" in paragraph
+    assert "lead with what the thing is" in paragraph
     assert "**What the filing describes.**" in paragraph
     assert "**Why it is interesting.**" in paragraph
     assert "whether it is an application or a grant" in paragraph
-    assert "its publication date and its filing date" in paragraph
+    assert "gives its publication date" in paragraph
+    assert 'a short parenthetical of month and year ("filed April 2025")' in paragraph
+    assert "says in plain words what the filing describes, so a reader can picture it" in paragraph
     assert "exactly as the digest printed it" in paragraph
     assert "`[filing title](filing URL)` on every host" in paragraph
     assert "hedged verbs (describes, would, could)" in paragraph
+    assert "A quote from the abstract or first claim is optional and at most 12 words." in paragraph
     assert "say how many filings there are and cite two of them" in paragraph
     assert "say which entity filed it" in paragraph
-    assert '"which suggests", "that points to"' in paragraph
+    assert "a possibility or a consequence of the described design" in paragraph
     assert "never as a plan or an announced fact" in paragraph
+    assert "never say the company is building, will ship or has decided anything" in paragraph
+    assert '"which suggests", "that points to"' not in paragraph
+    assert "its publication date and its filing date" not in paragraph
     assert rule.CLUSTER_FILINGS_CITED == 2 and rule.PARAGRAPH_SENTENCES == 2
+    assert rule.MAX_PARAGRAPH_WORDS == 60 and rule.MAX_QUOTE_WORDS == 12
 
 
 def test_section_length_is_one_short_signal_and_at_most_one_more():
     length = _rule("**Length.**")
     assert "The lead-in and one signal of two sentences" in length
+    assert "at most 60 words" in length
     assert "at most one more two-sentence signal paragraph" in length
     assert "Nothing more." in length
     assert rule.max_section_paragraphs() == 2
@@ -356,19 +365,21 @@ def test_format_example_opens_on_the_lead_in_and_has_no_extra_lines():
     lines = [line for line in _example().splitlines() if line.strip()]
     assert len(lines) == rule.max_section_paragraphs()
     first, second = lines
-    assert first.startswith("**Patent Secret Signals** - A patent application published")
+    assert first.startswith("**Patent Secret Signals** - A patent application published {publication date}")
     for line in lines:
         assert not re.match(r"\s*(?:[-*•]\s|\d+[.)\\]|#)", line), line
         body = line.removeprefix("**Patent Secret Signals** - ")
         assert "**" not in body, line
-        sentences = [part for part in re.split(r"(?<=[.!?])\s+(?=[{A-Z])", body) if part]
-        assert len(sentences) == rule.PARAGRAPH_SENTENCES, line
-        assert re.search(r"points to|suggests", line), line
-        assert "{publication date}" in line and "{filing date}" in line, line
+        assert len(rule.sentences(line)) == rule.PARAGRAPH_SENTENCES, line
+        assert rule.words(line) <= rule.MAX_PARAGRAPH_WORDS, line
+        assert "{publication date}" in line, line
         assert re.search(r"\b(?:application|grant)\b", line), line
+        assert not re.search(r"\b(?:is building|will ship|has decided)\b", line), line
+    assert "(filed {filing month and year})" in first
     assert re.search(r"\b(?:describes|would|could)\b", first)
     assert first.count("]({filing URL})") == 1
     assert second.count("]({filing URL})") == rule.CLUSTER_FILINGS_CITED
+    assert rule.paragraph_ok(first) and rule.paragraph_ok(second)
 
 
 def test_standout_may_be_a_key_pattern_and_the_footer_stays_the_engines():
@@ -401,6 +412,13 @@ def test_labelled_set_covers_one_case_per_rule():
         "Meta, unverified filer known to be the company's",
         "Block, unverified filer not the company's",
         "Report that also has two jobs signals",
+        "Server maker, persistent display",
+        "Device maker, photo control among nine routine filings",
+        "Concrete candidate dropped unchecked",
+        "Concrete candidate checked, shipped match found",
+        "Concrete candidate dropped as already shipped, no search",
+        "Four concrete candidates",
+        "Nothing concrete",
     }
 
 
@@ -409,6 +427,8 @@ def test_labels_are_well_formed(case):
     company = CASES[case]
     assert company["expected_section"] in {"present", "absent"}
     assert 0 <= company.get("jobs_signals", 0) <= jobs_rule.MAX_SIGNALS
+    assert company.get("valid", True) in {True, False}
+    assert 0 <= company["expected_checks"] <= rule.MAX_CHECKS
     for candidate in company["candidates"]:
         title = candidate["title"]
         assert title
@@ -420,6 +440,9 @@ def test_labels_are_well_formed(case):
         assert isinstance(candidate.get("story_tie", False), bool), title
         for checked in ("shipped_match", "covered"):
             assert candidate[checked] in {True, False, None}, title
+        assert isinstance(candidate["checked"], bool), title
+        if candidate["checked"]:
+            assert candidate["shipped_match"] is not None, title
         if "reported_match" in candidate:
             assert candidate["reported_match"] in {True, False}, title
         assert candidate["expected"] in {"qualifies", "does not qualify"}, title
@@ -444,6 +467,8 @@ def test_each_labelled_filing_gets_its_expected_outcome(case):
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_each_labelled_case_gets_its_expected_section_and_signal_count(case):
     company = CASES[case]
+    if not company.get("valid", True):
+        pytest.skip("an invalid decision records what was written, not what the rule gives")
     candidates = company["candidates"]
     assert rule.section_present(candidates) is (company["expected_section"] == "present")
     shown = rule.signals_shown(candidates, jobs_signals=company.get("jobs_signals", 0))
@@ -596,3 +621,108 @@ def test_rule_arithmetic_at_the_edges():
     assert rule.signals_shown([{**base, "paths": []}]) == 0
     assert rule.wording(base) == "check first"
     assert not rule.standout(base)
+
+
+PARAGRAPHS = {paragraph["case"]: paragraph for paragraph in LABELLED["paragraphs"]}
+
+
+@pytest.mark.parametrize("case", sorted(PARAGRAPHS))
+def test_each_labelled_paragraph_gets_its_expected_verdict(case):
+    paragraph = PARAGRAPHS[case]
+    assert paragraph["expected"] in {"valid", "invalid"}
+    assert rule.paragraph_ok(paragraph["text"]) is (paragraph["expected"] == "valid"), case
+
+
+def test_a_paragraph_that_says_the_company_is_building_it_is_rejected():
+    plan = PARAGRAPHS["Worded as a plan"]["text"]
+    assert "is building" in plan
+    assert len(rule.sentences(plan)) == 2 and rule.words(plan) <= rule.MAX_PARAGRAPH_WORDS
+    assert not rule.paragraph_ok(plan)
+    accepted = PARAGRAPHS["Accepted plain-words signal"]["text"]
+    assert rule.paragraph_ok(accepted)
+    assert rule.paragraph_ok(accepted.replace("That way", "It suggests that"))
+
+
+def test_the_cluster_example_stays_under_the_word_limit_outside_its_two_titles():
+    _first, cluster = [line for line in _example().splitlines() if line.strip()]
+    assert cluster.count("](") == 2
+    assert rule.words(cluster) <= rule.MAX_PARAGRAPH_WORDS
+
+
+# --- checking candidates before deciding ----------------------------------------------------
+
+
+def test_the_two_strongest_concrete_candidates_are_checked_before_either_is_dropped():
+    check = _rule("**Check the web first.**")
+    assert "judge every detailed entry for concreteness from its abstract and first claim" in check
+    assert "list the concrete ones" in check
+    assert "search the two strongest concrete candidates before dropping either" in check
+    assert "decided by that search, never from memory" in check
+    assert "With no concrete entry, run no patent search and write no section." in check
+    assert rule.MAX_CHECKS == 2
+
+
+def test_both_signal_checks_sit_apart_from_the_step_2_ceiling():
+    jobs_check = reference_text("hiring-signals").split("**Check the web first.**", 1)[1].split("\n\n", 1)[0]
+    for check in (_rule("**Check the web first.**"), jobs_check):
+        assert "ride the same isolated dispatch" in check
+        assert "in addition to the supplements" in check
+        assert "do not count toward the Step 2 ceiling of three" in check
+
+
+def test_shipped_status_is_not_judged_from_memory_in_the_bar():
+    bar = _rule("**The bar.**")
+    assert "Judge both paths from what you know of the company." not in bar
+    assert "settled by the web check below, not from memory" in bar
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_each_labelled_case_owes_its_expected_checks_and_is_judged_valid_or_not(case):
+    company = CASES[case]
+    assert len(rule.checks_owed(company["candidates"])) == company["expected_checks"]
+    assert rule.decision_valid(company["candidates"]) is company.get("valid", True)
+
+
+def test_a_concrete_candidate_dropped_unchecked_is_invalid_and_a_checked_shipped_one_is_not():
+    (unchecked,) = CASES["Concrete candidate dropped unchecked"]["candidates"]
+    (checked,) = CASES["Concrete candidate checked, shipped match found"]["candidates"]
+    assert unchecked["title"] == checked["title"] and unchecked["concrete"]
+    assert CASES["Concrete candidate dropped unchecked"]["expected_section"] == "absent"
+    assert not rule.decision_valid([unchecked])
+    assert rule.decision_valid([checked])
+    assert not rule.section_present([checked])
+
+
+def test_a_candidate_called_shipped_without_a_search_is_invalid():
+    (memory,) = CASES["Concrete candidate dropped as already shipped, no search"]["candidates"]
+    assert memory["shipped_match"] is True and not memory["checked"]
+    assert not rule.decision_valid([memory])
+    assert rule.decision_valid([{**memory, "checked": True}])
+
+
+def test_no_concrete_candidate_means_no_search():
+    candidates = CASES["Nothing concrete"]["candidates"]
+    assert rule.checks_owed(candidates) == []
+    assert rule.decision_valid(candidates)
+    assert not rule.decision_valid([{**candidates[0], "checked": True, "shipped_match": False}, *candidates[1:]])
+    assert not rule.section_present(candidates)
+
+
+def test_four_concrete_candidates_get_exactly_two_checks():
+    candidates = CASES["Four concrete candidates"]["candidates"]
+    assert all(candidate["concrete"] for candidate in candidates)
+    assert rule.checks_owed(candidates) == candidates[:2]
+    assert rule.decision_valid(candidates)
+    third = {**candidates[2], "checked": True, "shipped_match": False, "covered": False}
+    assert not rule.decision_valid([*candidates[:2], third, candidates[3]])
+
+
+def test_the_persistent_display_and_photo_control_filings_get_a_section_after_a_clean_search():
+    for case in ("Server maker, persistent display", "Device maker, photo control among nine routine filings"):
+        company = CASES[case]
+        lead = company["candidates"][0]
+        assert lead["concrete"] and lead["checked"] and lead["shipped_match"] is False
+        assert rule.decision_valid(company["candidates"])
+        assert rule.section_present(company["candidates"])
+        assert rule.signals_shown(company["candidates"]) == 1
+    assert len(CASES["Device maker, photo control among nine routine filings"]["candidates"]) == 10

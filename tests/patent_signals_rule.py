@@ -12,7 +12,11 @@ part that is arithmetic, so the labelled set in
   paths of the bar it meets and what the web check found (a cluster is one
   candidate; a tie to a story in the report never qualifies one);
 - is the section written, and with how many signals, given a company's
-  candidates and how many jobs signals the same report carries.
+  candidates and how many jobs signals the same report carries;
+- was the decision made properly: the strongest two concrete candidates (in
+  the order listed, strongest first) were web-checked before either was
+  dropped, no shipped or reported match was claimed without a check, and no
+  search ran when nothing was concrete.
 
 It does NOT test whether a model finds the right filings in a digest or judges
 the bar correctly. Nothing here reads a digest. That needs live runs, read by a
@@ -21,6 +25,7 @@ person. It is test support, not shipped code.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 OUT_OF_CHARACTER, UNSHIPPED_PRODUCT = 1, 2
@@ -37,6 +42,24 @@ MIN_CLUSTER_FAMILIES = 3
 # Filings of a cluster cited in its paragraph, and sentences per paragraph.
 CLUSTER_FILINGS_CITED = 2
 PARAGRAPH_SENTENCES = 2
+# Words in one signal paragraph, counted outside its linked filing titles, and
+# the longest optional quote from the filing.
+MAX_PARAGRAPH_WORDS = 60
+MAX_QUOTE_WORDS = 12
+# Concrete candidates web-checked before the section is written or left out.
+MAX_CHECKS = 2
+
+_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[{A-Z])")
+_QUOTE = re.compile(r'"([^"]+)"')
+_FILED = re.compile(r"\(filed (?:[A-Z][a-z]+ \d{4}|\{filing month and year\})\)")
+# Wording that turns a filing into a plan or a product announcement.
+_OVERCLAIM = re.compile(
+    r"\b(?:is|are) (?:building|developing|launching|shipping)\b"
+    r"|\bwill (?:ship|launch|release|sell|build)\b"
+    r"|\bhas decided\b|\bplans to\b",
+    re.IGNORECASE,
+)
 
 
 def usable(filing: dict[str, Any]) -> bool:
@@ -100,6 +123,42 @@ def qualifying(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [candidate for candidate in candidates if qualifies(candidate)]
 
 
+def check_candidate(candidate: dict[str, Any]) -> bool:
+    """A concrete candidate whose fate turns on the web check.
+
+    It must be one the report could use: a first US publication with its text,
+    by an entity known to be the company's, and for a cluster, enough families.
+    """
+    if not usable(candidate) or candidate.get("titles_only") or not candidate.get("concrete"):
+        return False
+    return "cluster" not in candidate or families(candidate) >= MIN_CLUSTER_FAMILIES
+
+
+def checks_owed(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The strongest two concrete candidates; none when nothing is concrete."""
+    return [candidate for candidate in candidates if check_candidate(candidate)][:MAX_CHECKS]
+
+
+def decision_valid(candidates: list[dict[str, Any]]) -> bool:
+    """The candidates were checked as the rule requires before any was dropped.
+
+    Every owed check ran, no other search ran, and no candidate carries a
+    shipped, reported or coverage finding that no search produced.
+    """
+    owed = checks_owed(candidates)
+    if not all(candidate.get("checked") for candidate in owed):
+        return False
+    if sum(bool(candidate.get("checked")) for candidate in candidates) != len(owed):
+        return False
+    return not any(
+        not candidate.get("checked")
+        and True in (
+            candidate.get("shipped_match"), candidate.get("reported_match"), candidate.get("covered"),
+        )
+        for candidate in candidates
+    )
+
+
 def max_section_paragraphs() -> int:
     """The lead-in runs into the first signal, so each signal is one paragraph."""
     return MAX_SIGNALS
@@ -146,4 +205,33 @@ def standout(candidate: dict[str, Any]) -> bool:
         qualifies(candidate)
         and bool(candidate.get("concrete"))
         and wording(candidate) == "no coverage found"
+    )
+
+
+def sentences(paragraph: str) -> list[str]:
+    body = paragraph.removeprefix("**Patent Secret Signals** - ")
+    return [part for part in _SENTENCE_BREAK.split(body) if part]
+
+
+def words(paragraph: str) -> int:
+    """Words in a paragraph, not counting its linked filing titles or the lead-in."""
+    body = paragraph.removeprefix("**Patent Secret Signals** - ")
+    return len(_LINK.sub("", body).split())
+
+
+def paragraph_ok(paragraph: str) -> bool:
+    """A signal paragraph in the plain-words shape.
+
+    Two sentences, at most 60 words outside the linked titles, application or
+    grant named, the filing linked with its month and year of filing in
+    parentheses (a cluster cites two filings by publication date instead), any quote at most 12 words, and nothing worded as a plan.
+    """
+    return (
+        len(sentences(paragraph)) == PARAGRAPH_SENTENCES
+        and words(paragraph) <= MAX_PARAGRAPH_WORDS
+        and bool(re.search(r"\b(?:application|grant)\b", paragraph))
+        and bool(_LINK.search(paragraph))
+        and (len(_LINK.findall(paragraph)) > 1 or bool(_FILED.search(paragraph)))
+        and all(len(quote.split()) <= MAX_QUOTE_WORDS for quote in _QUOTE.findall(paragraph))
+        and not _OVERCLAIM.search(paragraph)
     )

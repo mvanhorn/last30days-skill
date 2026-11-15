@@ -141,18 +141,17 @@ def test_an_entry_carries_the_recorded_text(monkeypatch):
     assert (entry["filed_as"], entry["group_kind"]) == ("Apple Inc.", "confirmed")
     assert entry["applicant_location"] == "Cupertino, CA, US"
     assert entry["abstract"].startswith("Some examples of the disclosure are directed to")
-    assert len(entry["abstract"]) <= 400
+    assert len(entry["abstract"]) <= 1000
     assert entry["first_claim"].startswith("1. A method comprising: at a first computer system")
-    # The recorded claim 1 is longer than the cap; it names the idea before the cut.
     assert "an intention of the user to speak" in entry["first_claim"]
-    assert 690 <= len(entry["first_claim"]) <= 700
+    assert len(entry["first_claim"]) <= 1200
     assert "<" not in entry["abstract"] + entry["first_claim"]
 
 
 def test_text_is_capped_and_a_grant_reads_the_assignee_location(monkeypatch):
     row = make_row("US-12790001-B1", "2026-11-10", kind="B1")
     detail = {
-        "abstractHtml": "<p>An&nbsp;&amp; abstract</p>\n " + "word " * 200,
+        "abstractHtml": "<p>An&nbsp;&amp; abstract</p>\n " + "word " * 280,
         "claimsHtml": "<b>1</b>. A device " + "that works " * 200 + "<br /> <b>2</b>. Other.",
         "applicantName": ["Somebody Else LLC", "Apple Inc."],
         "applicantCity": ["Austin", "Cupertino"],
@@ -169,9 +168,10 @@ def test_text_is_capped_and_a_grant_reads_the_assignee_location(monkeypatch):
 
     assert entry["kind"] == "grant"
     assert entry["abstract"].startswith("An & abstract word word")
-    assert 395 <= len(entry["abstract"]) <= 400
+    # A 1,400-character abstract prints 1,000; a 2,000-character claim prints 1,200.
+    assert 995 <= len(entry["abstract"]) <= 1000
     assert entry["first_claim"].startswith("1. A device that works")
-    assert 690 <= len(entry["first_claim"]) <= 700
+    assert 1190 <= len(entry["first_claim"]) <= 1200
     assert entry["applicant_location"] == "Cupertino, CA, US"
     assert len(entry["cpc"]) == 5
     assert entry["cpc"][0] == "G06F3/00"
@@ -706,3 +706,112 @@ def test_baseline_rows_filed_by_strangers_do_not_make_a_class_look_common(monkey
     FakeUSPTO(lists={"US-PGPUB": rows}, baseline=baseline_rows(30) + strangers).install(monkeypatch)
 
     assert run()["artifact"]["entries"][0]["guid"] == "US-20260390099-A1"
+
+
+# --- a slot for each confirmed filer other than the company's own name ------------
+
+
+NVIDIA_CO = {"company": "NVIDIA Corporation", "company_names": ["Mellanox Technologies"]}
+
+
+def own_rows(count: int, *, name: str = "NVIDIA Corporation") -> list[dict]:
+    """The company's own filings, all newer than any subsidiary's."""
+    return [
+        make_row(f"US-2026041{n:04d}-A1", f"2026-11-{12 - n % 10:02d}", name=name, cpc="G06F3/01")
+        for n in range(count)
+    ]
+
+
+def filer_rows(prefix: str, name: str, count: int) -> list[dict]:
+    return [
+        make_row(f"US-2026042{prefix}{n:02d}-A1", f"2026-10-{20 - n:02d}", name=name, cpc="G06F3/01")
+        for n in range(count)
+    ]
+
+
+def filed_as(artifact: dict) -> list[str]:
+    return [entry["filed_as"] for entry in artifact["entries"]]
+
+
+def test_with_no_other_filer_the_twelve_are_the_newest_own_filings(monkeypatch):
+    rows = own_rows(20)
+    FakeUSPTO(lists={"US-PGPUB": rows}).install(monkeypatch)
+
+    artifact = run(NVIDIA_CO)["artifact"]
+
+    newest = sorted(rows, key=lambda row: row["datePublished"], reverse=True)
+    assert [entry["guid"] for entry in artifact["entries"]] == [row["guid"] for row in newest[:12]]
+
+
+def test_a_confirmed_subsidiary_gets_one_of_the_twelve(monkeypatch):
+    rows = own_rows(150) + filer_rows("10", "Mellanox Technologies, Ltd.", 4)
+    fake = FakeUSPTO(lists={"US-PGPUB": rows}).install(monkeypatch)
+
+    artifact = run(NVIDIA_CO)["artifact"]
+
+    assert len(artifact["entries"]) == 12
+    assert filed_as(artifact).count("Mellanox Technologies, Ltd.") == 1
+    assert len(fake.of("detail")) <= 18
+
+
+def test_five_confirmed_subsidiaries_get_three_reserved_slots(monkeypatch):
+    names = [f"Subsidiary {letter} Inc." for letter in "ABCDE"]
+    rows = own_rows(60)
+    for n, name in enumerate(names):
+        rows += filer_rows(f"{n}0", name, 2)
+    FakeUSPTO(lists={"US-PGPUB": rows}).install(monkeypatch)
+
+    artifact = run({"company": "NVIDIA Corporation", "company_names": names})["artifact"]
+
+    others = [name for name in filed_as(artifact) if name != "NVIDIA Corporation"]
+    assert len(artifact["entries"]) == 12
+    assert len(others) == len(set(others)) == 3
+
+
+def test_a_filer_the_engine_could_not_verify_never_takes_a_reserved_slot(monkeypatch):
+    rows = own_rows(40) + filer_rows("20", "NVIDIA Networking Solutions Inc.", 3)
+    FakeUSPTO(lists={"US-PGPUB": rows}).install(monkeypatch)
+
+    artifact = run(NVIDIA_CO)["artifact"]
+
+    assert "NVIDIA Networking Solutions Inc." not in filed_as(artifact)
+    assert set(filed_as(artifact)) == {"NVIDIA Corporation"}
+
+
+def test_a_subsidiary_whose_first_filing_is_demoted_still_gets_its_second(monkeypatch):
+    mellanox = filer_rows("30", "Mellanox Technologies, Ltd.", 2)
+    rows = own_rows(40) + mellanox
+    continuing = {"abstractHtml": "x", "continuityData": ["parent US continuation 1 20200101"]}
+    fake = FakeUSPTO(
+        lists={"US-PGPUB": rows}, details={mellanox[0]["guid"]: continuing},
+    ).install(monkeypatch)
+
+    artifact = run(NVIDIA_CO)["artifact"]
+
+    assert [entry["guid"] for entry in artifact["entries"] if entry["filed_as"] != "NVIDIA Corporation"] == [
+        mellanox[1]["guid"],
+    ]
+    assert len(artifact["entries"]) == 12
+    assert len(fake.of("detail")) <= 18
+
+
+def test_a_second_subsidiary_takes_a_spare_slot_from_the_first():
+    from collections import Counter
+
+    from lib import patents
+
+    def candidate(guid, published, key, cpc, other):
+        return {"guid": guid, "published": published, "group_key": key, "cpc": [cpc], "other_filer": other}
+
+    # Six rare parent filings, then six newer filings from subsidiary A fill
+    # the twelve slots; subsidiary B's two older filings sit outside them.
+    parent = [candidate(f"p{n}", f"2026-01-{n + 1:02d}", "parent", f"A0{n}B 1/00", False) for n in range(6)]
+    first = [candidate(f"a{n}", f"2026-06-{n + 1:02d}", "sub-a", "G06F 1/00", True) for n in range(6)]
+    second = [candidate(f"b{n}", f"2025-12-{n + 1:02d}", "sub-b", "G06F 1/00", True) for n in range(2)]
+    frequencies = Counter({"G06F": 50})
+
+    ordered, reserved = patents._order(parent + first + second, frequencies)
+
+    slots = [item["group_key"] for item in ordered[:patents.DETAIL_SLOTS]]
+    assert reserved == {"sub-a", "sub-b"}
+    assert slots.count("sub-b") == 1 and slots.count("sub-a") == 5 and slots.count("parent") == 6
