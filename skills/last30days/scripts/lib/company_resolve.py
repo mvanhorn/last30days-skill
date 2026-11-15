@@ -193,9 +193,15 @@ def _resolve(topic: str, listing: bool = True, names: bool = False) -> dict[str,
     return _company_fields(entity, listing, names)
 
 
+# Wikimedia's User-Agent policy asks for a contact URL. Without one, Wikidata
+# answers bursts with 429: two company runs at once lost their resolution.
+WIKIMEDIA_USER_AGENT = "last30days-skill (https://github.com/mvanhorn/last30days-skill)"
+
+
 def _api(params: dict[str, Any]) -> dict[str, Any]:
     data = http.get(
         WIKIDATA_API,
+        headers={"User-Agent": WIKIMEDIA_USER_AGENT},
         params={**params, "format": "json"},
         timeout=TIMEOUT_SECONDS,
         retries=1,
