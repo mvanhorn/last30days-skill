@@ -306,3 +306,22 @@ def test_out_of_window_subquery_cluster_is_not_reserved_a_head_slot():
     )
 
     assert _ids(ordered[:8]) == [f"cluster-{i}" for i in range(1, 9)]
+
+
+def test_out_of_window_cluster_is_not_promoted_past_current_ones():
+    # A near-duplicate's penalty makes the next non-duplicate the default; an
+    # old cluster must not take that place ahead of current stories.
+    outage = [_candidate(f"o{i}", OUTAGE_TITLES[i], 95 - i) for i in range(2)]
+    old = _candidate("old", "Earnings beat estimates on cloud demand", 93)
+    old.source_items[0].published_at = "2025-01-10"
+    old.metadata["range_from"] = "2026-10-16"
+    old.metadata["range_to"] = "2026-11-15"
+    assert schema.candidate_out_of_window(old)
+    current = [_candidate(f"d{i}", t, 60 - i) for i, t in enumerate(DISTINCT_TITLES[:6])]
+    candidates = outage + [old] + current
+    clusters = _singletons(candidates)
+
+    ordered = _ids(cluster_diversity.diversify_clusters(clusters, candidates, _plan(("primary",))))
+
+    # The old cluster keeps its incoming place, after the current near-duplicate.
+    assert ordered[:3] == ["cluster-1", "cluster-2", "cluster-3"]

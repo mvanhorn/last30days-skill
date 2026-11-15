@@ -198,6 +198,7 @@ def diversify_clusters(
     texts = [_title_texts(c, candidate_by_id) for c in solid]
     angle_of: list[str | None] = []
     covers: list[set[str]] = []
+    stale = [_only_out_of_window(cluster, candidate_by_id) for cluster in solid]
     for cluster, prepared in zip(solid, texts):
         carried = _carried_labels(cluster, candidate_by_id, angles)
         title_terms = frozenset().union(*(p.tokens for p in prepared))
@@ -210,7 +211,7 @@ def diversify_clusters(
         # subquery's reserved slot: it stays behind current clusters.
         covers.append(
             set()
-            if _only_out_of_window(cluster, candidate_by_id)
+            if stale[len(covers)]
             else ({angle} if angle else set())
             | {label for label in carried if not angles[label]}
         )
@@ -253,6 +254,16 @@ def diversify_clusters(
         uncovered &= set().union(*(covers[opt.index] for opt in options))
         if uncovered and slots_left <= len(uncovered):
             options = [opt for opt in options if covers[opt.index] & uncovered]
+        # Out-of-window clusters are never promoted: one is eligible only
+        # while no current option comes before it in the incoming order.
+        first_current = min(
+            (opt.index for opt in options if not stale[opt.index]), default=None,
+        )
+        if first_current is not None:
+            options = [
+                opt for opt in options
+                if not stale[opt.index] or opt.index < first_current
+            ]
 
         choice = _mmr_pick(options, solid)
         picked.append(choice.index)
