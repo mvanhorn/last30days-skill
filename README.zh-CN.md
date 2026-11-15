@@ -22,7 +22,7 @@
 
 **一个由 AI 智能体驱动的搜索引擎：按赞同票、点赞和真金白银评分，而不是由编辑决定。**
 
-本文档对应当前的 v3 流水线。运行时 Skill 规范位于 [skills/last30days/SKILL.md](skills/last30days/SKILL.md)，最新命令与配置行为以该文件为准。
+本文档对应当前的 v4 流水线。运行时 Skill 规范位于 [skills/last30days/SKILL.md](skills/last30days/SKILL.md)，最新命令与配置行为以该文件为准。
 
 **Claude Code（推荐——通过 marketplace 自动更新）：**
 

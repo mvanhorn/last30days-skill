@@ -22,7 +22,7 @@
 
 **Un moteur de recherche piloté par un agent IA, qui classe les résultats selon les upvotes, les likes et l'argent réel — pas selon des rédacteurs.**
 
-Ce README décrit le pipeline v3 actuel. La spécification d'exécution de la skill se trouve dans [skills/last30days/SKILL.md](skills/last30days/SKILL.md), qui fait référence pour le comportement des commandes et de la configuration.
+Ce README décrit le pipeline v4 actuel. La spécification d'exécution de la skill se trouve dans [skills/last30days/SKILL.md](skills/last30days/SKILL.md), qui fait référence pour le comportement des commandes et de la configuration.
 
 **Claude Code (recommandé — mises à jour automatiques via la marketplace) :**
 ```

@@ -22,7 +22,7 @@ English | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](READM
 
 **An AI agent-led search engine scored by upvotes, likes, and real money - not editors.**
 
-This README tracks the current v3 pipeline. The runtime skill spec lives in [skills/last30days/SKILL.md](skills/last30days/SKILL.md), which is the source of truth for the latest command and setup behavior.
+This README tracks the current v4 pipeline. The runtime skill spec lives in [skills/last30days/SKILL.md](skills/last30days/SKILL.md), which is the source of truth for the latest command and setup behavior.
 
 **Claude Code (recommended — auto-updates via marketplace):**
 ```

@@ -22,7 +22,7 @@
 
 **Eine von einem KI-Agenten gesteuerte Suchmaschine, die nach Upvotes, Likes und echtem Geld gewichtet – nicht nach Redaktionen.**
 
-Dieses README beschreibt die aktuelle v3-Pipeline. Die Laufzeitspezifikation der Skill liegt in [skills/last30days/SKILL.md](skills/last30days/SKILL.md) und ist maßgeblich für das aktuelle Verhalten von Befehlen und Setup.
+Dieses README beschreibt die aktuelle v4-Pipeline. Die Laufzeitspezifikation der Skill liegt in [skills/last30days/SKILL.md](skills/last30days/SKILL.md) und ist maßgeblich für das aktuelle Verhalten von Befehlen und Setup.
 
 **Claude Code (empfohlen – automatische Updates über den Marketplace):**
 ```
