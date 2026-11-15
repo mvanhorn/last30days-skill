@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.0.1] - 2026-11-15
+
+### Fixed
+
+- A company that lists many regional sites on Wikidata with none preferred, such as Apple, now resolves to the host most of them share, so its own job board is read without web search. Hiring themes match keywords as whole words, so retail and training roles no longer fill the AI theme. ([#1445](https://github.com/mvanhorn/last30days-skill/issues/1445))
+
+
 ## [4.0.0] - 2026-11-15
 
 ### Added
