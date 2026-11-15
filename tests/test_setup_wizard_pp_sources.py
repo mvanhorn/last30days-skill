@@ -161,7 +161,7 @@ def test_pp_helper_below_its_minimum_is_upgraded(monkeypatch):
     _version_stub(
         monkeypatch,
         lambda cmd: (
-            "techmeme-pp-cli 2026.9.1\n" if "techmeme" in cmd[0]
+            "techmeme-pp-cli 2026.11.1\n" if "techmeme" in cmd[0]
             else "arxiv-pp-cli 2.1.0\n" if state["installed"] else "arxiv-pp-cli 1.9.9\n"
         ),
     )
@@ -198,17 +198,25 @@ def _techmeme_setup(monkeypatch, current: str, after: str):
 
 def test_techmeme_without_dates_is_upgraded_by_setup(monkeypatch):
     # Real table entry, not monkeypatched: 2026.6.2 predates dated search.
-    runs = _techmeme_setup(monkeypatch, "2026.6.2", "2026.9.1")
+    runs = _techmeme_setup(monkeypatch, "2026.6.2", "2026.11.1")
     installed, action, _stderr, _off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
     assert (installed, action) == (True, "upgraded")
     assert runs == [["/usr/bin/npx", "-y", sw.PRINTING_PRESS_NPM, "install", "techmeme", "--cli-only"]]
 
 
 def test_techmeme_at_the_minimum_is_left_alone(monkeypatch):
-    runs = _techmeme_setup(monkeypatch, "2026.9.1", "2026.9.1")
+    runs = _techmeme_setup(monkeypatch, "2026.11.1", "2026.11.1")
     installed, action, _stderr, _off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
     assert (installed, action) == (True, "already_installed")
     assert runs == []
+
+
+def test_techmeme_without_search_pages_is_upgraded_by_setup(monkeypatch):
+    # 2026.9.1 has dated search but reads only one page of 10.
+    runs = _techmeme_setup(monkeypatch, "2026.9.1", "2026.11.1")
+    installed, action, _stderr, _off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
+    assert (installed, action) == (True, "upgraded")
+    assert runs == [["/usr/bin/npx", "-y", sw.PRINTING_PRESS_NPM, "install", "techmeme", "--cli-only"]]
 
 
 def test_status_text_pp_helper_upgraded():
