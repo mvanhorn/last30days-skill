@@ -296,6 +296,25 @@ def test_stats_top_voices_names_no_department_or_hiring_system():
     assert not any("Engineering" in line or "greenhouse" in line for line in stats)
 
 
+def test_stats_top_voices_drop_a_zero_engagement_handle_but_keep_departments_out():
+    quiet = _posts(4)
+    loud = [
+        schema.SourceItem(
+            item_id="loud-1", source="x", title="Acme launch", body="Acme launch",
+            url="https://x.com/acmeceo/status/1", author="acmeceo",
+            engagement={"likes": 900, "reposts": 50, "replies": 20},
+        )
+    ]
+    for post in quiet:
+        post.engagement = {"likes": 0, "reposts": 0, "replies": 1}
+    report = _stats_report({"jobs": _jobs(40), "x": quiet + loud})
+
+    stats = render._render_stats(report)
+
+    assert "- Top voices: @acmeceo" in stats
+    assert not any("@acmefan" in line for line in stats if "Top voices" in line)
+
+
 def test_stats_for_a_jobs_only_run_reports_roles_without_an_evidence_total():
     report = _stats_report({"jobs": _jobs(1)})
 

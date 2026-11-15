@@ -204,3 +204,106 @@ def test_candidate_gate_keeps_the_topics_own_account_and_grounded_related_posts(
         ("x", RELATED_OFF_TOPIC.url): False,
         ("x", RELATED_OFF_TOPIC_2.url): False,
     }
+
+
+# Microsoft run, #1449: @TheCyberSecHub's ten headline posts (93 likes at
+# best) were "most prolific" and so the top voice, above @Microsoft's own
+# account with a 69,910-like post. Top voices now rank @handles by engagement.
+
+def _x_post(index, author, likes, reposts=0, replies=0):
+    return _item("x", f"{author}-{index}", f"Microsoft news {index}", author,
+                 {"likes": likes, "reposts": reposts, "replies": replies})
+
+
+def _voices(report):
+    return render._top_voices_footer_line(report)
+
+
+def test_ten_zero_like_posts_lose_to_three_high_engagement_posts():
+    posts = [_x_post(i, "Aggregator", 0, replies=1 if i % 2 else 0) for i in range(10)]
+    posts += [_x_post(i, "RealVoice", 500 + i, reposts=40) for i in range(3)]
+    report = _report("Microsoft", posts, [])
+
+    assert _voices(report) == "🗣️ Top voices: @RealVoice"
+
+
+def test_grumpy_news_style_digest_loses_to_one_liked_post():
+    posts = [_x_post(i, "GrumpyNews_", 0, replies=1) for i in range(10)]
+    posts.append(_x_post(0, "WmBrackbill", 44))
+    report = _report("Microsoft", posts, [])
+
+    assert _voices(report) == "🗣️ Top voices: @WmBrackbill"
+
+
+def test_volume_counts_only_three_posts_per_handle():
+    # Ten 50-like posts score as three; three 300-like posts beat them.
+    posts = [_x_post(i, "Prolific", 50) for i in range(10)]
+    posts += [_x_post(i, "Popular", 300) for i in range(3)]
+    report = _report("Microsoft", posts, [])
+
+    assert _voices(report) == "🗣️ Top voices: @Popular, @Prolific"
+
+
+def test_handle_counted_beyond_three_posts_ranks_like_its_best_three():
+    best_three = [_x_post(i, "Capped", 100) for i in range(3)]
+    many = best_three + [_x_post(i, "Capped", 1) for i in range(3, 10)]
+
+    assert (render._rank_voice_handles(many) == render._rank_voice_handles(best_three)
+            == ["@Capped"])
+
+
+def test_subject_handle_is_kept_below_the_engagement_floor():
+    posts = [_x_post(0, "Microsoft", 1), _x_post(0, "TheCyberSecHub", 93)]
+    report = _report("Microsoft", posts, [])
+    assert _voices(report) == "🗣️ Top voices: @TheCyberSecHub"
+
+    report.artifacts["resolved"] = {"x_handle": "microsoft"}
+    assert _voices(report) == "🗣️ Top voices: @TheCyberSecHub, @Microsoft"
+
+
+def test_issue_run_shape_puts_the_subject_account_first():
+    likes = [93, 20, 6, 4, 2, 1, 3, 0, 1, 0]
+    posts = [_x_post(i, "TheCyberSecHub", n) for i, n in enumerate(likes)]
+    posts += [_x_post(i, "Microsoft", n) for i, n in enumerate([69910, 4200, 2100, 900])]
+    posts.append(_x_post(0, "mustafasuleyman", 1800, reposts=200))
+    report = _report("Microsoft", posts, [])
+    report.artifacts["resolved"] = {"x_handle": "Microsoft"}
+
+    # Sum of log1p over up to three posts: 93, 20 and 6 likes (about 9.5)
+    # still edge out one 2,000-engagement post (about 7.6), but no longer the
+    # subject's own account (about 27).
+    assert _voices(report) == "🗣️ Top voices: @Microsoft, @TheCyberSecHub, @mustafasuleyman"
+
+
+def test_names_without_an_at_are_not_ranked_as_handles():
+    video = _item("youtube", "v1", "Microsoft keynote", "Microsoft Developer",
+                  {"views": 900000, "likes": 30000})
+    posts = [video, _x_post(0, "Satya", 12)]
+    report = _report("Microsoft", posts, [])
+
+    assert _voices(report) == "🗣️ Top voices: @Satya"
+    assert render._rank_voice_handles(posts) == ["@Satya"]
+
+
+def test_handles_without_engagement_metrics_stay_eligible():
+    # A source that reports no metrics cannot fail the floor.
+    posts = [_item("x", f"n{i}", "Microsoft news", "NoMetrics", {}) for i in range(2)]
+    posts.append(_x_post(0, "Measured", 10))
+
+    assert render._rank_voice_handles(posts) == ["@Measured", "@NoMetrics"]
+
+
+def test_engagement_ties_fall_back_to_post_count_then_handle():
+    posts = [_x_post(0, "beta", 20), _x_post(0, "Alpha", 20),
+             _x_post(0, "gamma", 0), _x_post(1, "gamma", 0)]
+    posts += [_item("x", "g2", "Microsoft news", "gamma", {"likes": 20})]
+
+    assert render._rank_voice_handles(posts) == ["@gamma", "@Alpha", "@beta"]
+
+
+def test_tiktok_shares_and_comments_count_as_reposts_and_replies():
+    clip = _item("tiktok", "t1", "Microsoft layoffs", "@clipper",
+                 {"views": 10000, "likes": 2, "shares": 2, "comments": 2})
+
+    assert render._voice_post_engagement(clip) == 6
+    assert render._rank_voice_handles([clip]) == ["@clipper"]
