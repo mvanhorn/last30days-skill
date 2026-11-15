@@ -69,6 +69,19 @@ def cluster_clears_relevance_floor(
     return True
 
 
+def _only_out_of_window(
+    cluster: schema.Cluster,
+    candidate_by_id: dict[str, schema.Candidate],
+) -> bool:
+    """Every known member of the cluster is out of the requested window."""
+    members = [
+        candidate_by_id[candidate_id]
+        for candidate_id in cluster.candidate_ids
+        if candidate_id in candidate_by_id
+    ]
+    return bool(members) and all(schema.candidate_out_of_window(c) for c in members)
+
+
 def _terms(text: str, exclude: frozenset[str] = frozenset()) -> frozenset[str]:
     """Content tokens of ``text``, minus stopwords and ``exclude``."""
     return frozenset(
@@ -193,8 +206,12 @@ def diversify_clusters(
         # A subquery with its own terms is represented only by a cluster on
         # its angle; one whose search terms are just the topic is represented
         # by any cluster it retrieved.
+        # A cluster holding only out-of-window evidence never fills a
+        # subquery's reserved slot: it stays behind current clusters.
         covers.append(
-            ({angle} if angle else set())
+            set()
+            if _only_out_of_window(cluster, candidate_by_id)
+            else ({angle} if angle else set())
             | {label for label in carried if not angles[label]}
         )
     # Only labels some solid cluster represents can be reserved.
@@ -202,11 +219,13 @@ def diversify_clusters(
 
     remaining = list(range(len(solid)))
     picked: list[int] = []
-    story_of: dict[int, object] = {}  # picked index -> story key
+    # picked index -> every story key it counts toward (its title chain and
+    # its angle), so a story reached by both routes shares one counter.
+    story_of: dict[int, frozenset] = {}
     story_counts: Counter = Counter()
 
-    def title_duplicate(index: int) -> tuple[float, object | None]:
-        """Highest title similarity to a picked cluster, and its story key."""
+    def title_duplicate(index: int) -> tuple[float, frozenset | None]:
+        """Highest title similarity to a picked cluster, and its story keys."""
         best_sim, best_story = 0.0, None
         for chosen in picked:
             sim = _similarity(texts[index], texts[chosen])
@@ -221,14 +240,12 @@ def diversify_clusters(
         options: list[_Option] = []
         for index in remaining:
             sim, dup_story = title_duplicate(index)
-            angle_story = ("angle", angle_of[index]) if angle_of[index] else None
-            if any(
-                key is not None and story_counts[key] >= story_cap
-                for key in (dup_story, angle_story)
-            ):
+            keys = set(dup_story or {("cluster", index)})
+            if angle_of[index]:
+                keys.add(("angle", angle_of[index]))
+            if any(story_counts[key] >= story_cap for key in keys):
                 continue
-            key = angle_story or dup_story or ("cluster", index)
-            options.append(_Option(index, sim, dup_story is not None, key))
+            options.append(_Option(index, sim, dup_story is not None, frozenset(keys)))
         if not options:
             break
 
@@ -240,7 +257,8 @@ def diversify_clusters(
         choice = _mmr_pick(options, solid)
         picked.append(choice.index)
         story_of[choice.index] = choice.story
-        story_counts[choice.story] += 1
+        for key in choice.story:
+            story_counts[key] += 1
         uncovered -= covers[choice.index]
         remaining.remove(choice.index)
 
@@ -254,7 +272,7 @@ class _Option(NamedTuple):
     index: int
     similarity: float
     duplicate: bool  # a title near-duplicate of a picked cluster
-    story: object
+    story: frozenset  # every story key the cluster counts toward
 
 
 def _mmr_pick(options: list[_Option], solid: list[schema.Cluster]) -> _Option:

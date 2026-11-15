@@ -270,3 +270,39 @@ def test_compact_numbering_and_drill_agree_after_story_reorder():
     assert sum(title in OUTAGE_TITLES for title in shown.values()) == 3
     for number, title in shown.items():
         assert planner.resolve_drill_clusters(report, number)[0].title == title
+
+
+def test_title_chain_and_angle_share_one_story_cap():
+    # The first near-duplicate carries only the primary label; the next three
+    # carry the outage angle. They are still one story: at most three in the head.
+    outage = [_candidate("o0", OUTAGE_TITLES[0], 95)] + [
+        _candidate(f"o{i}", OUTAGE_TITLES[i], 95 - i, labels=("outage",))
+        for i in range(1, 4)
+    ]
+    other = [_candidate(f"d{i}", t, 40 - i) for i, t in enumerate(DISTINCT_TITLES[:6])]
+    candidates = outage + other
+    clusters = _singletons(candidates)
+
+    ordered = cluster_diversity.diversify_clusters(
+        clusters, candidates, _plan(("primary", "outage"))
+    )
+
+    outage_ids = {f"cluster-{i}" for i in range(1, 5)}
+    assert sum(c.cluster_id in outage_ids for c in ordered[:8]) == 3
+
+
+def test_out_of_window_subquery_cluster_is_not_reserved_a_head_slot():
+    distinct = [_candidate(f"d{i}", t, 90 - i) for i, t in enumerate(DISTINCT_TITLES)]
+    earnings = _candidate("e1", "Earnings beat estimates on cloud demand", 20, labels=("earnings",))
+    earnings.source_items[0].published_at = "2025-01-10"
+    earnings.metadata["range_from"] = "2026-10-16"
+    earnings.metadata["range_to"] = "2026-11-15"
+    assert schema.candidate_out_of_window(earnings)
+    candidates = distinct + [earnings]
+    clusters = _singletons(candidates)
+
+    ordered = cluster_diversity.diversify_clusters(
+        clusters, candidates, _plan(("primary", "earnings"))
+    )
+
+    assert _ids(ordered[:8]) == [f"cluster-{i}" for i in range(1, 9)]
