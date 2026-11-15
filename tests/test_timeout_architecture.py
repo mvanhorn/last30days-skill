@@ -171,7 +171,7 @@ def test_bird_clamps_timeout_to_remaining_deadline(monkeypatch):
     seen = []
     monkeypatch.setattr(
         bird_x, "_run_bird_search",
-        lambda q, count, timeout, deadline=None: (seen.append(timeout), {"items": [], "error": ""})[1],
+        lambda q, count, timeout, deadline=None, top=False: (seen.append(timeout), {"items": [], "error": ""})[1],
     )
     monkeypatch.setattr(bird_x, "parse_bird_response", lambda *a, **k: [])
     bird_x.search_x("topic", "2026-08-01", "2026-08-31", depth="default",
@@ -578,7 +578,7 @@ def test_bird_decode_retry_skipped_when_delay_exceeds_budget(monkeypatch):
     timeouts, sleeps = [], []
     monkeypatch.setattr(
         bird_x, "_invoke_bird_subprocess",
-        lambda q, c, timeout: (timeouts.append(timeout), (_interstitial(), None))[1],
+        lambda q, c, timeout, top=False: (timeouts.append(timeout), (_interstitial(), None))[1],
     )
     monkeypatch.setattr(bird_x.time, "sleep", lambda s: sleeps.append(s))
     response = bird_x._run_bird_search(
@@ -595,7 +595,7 @@ def test_bird_decode_retry_reclamps_timeout_to_remaining_budget(monkeypatch):
     timeouts = []
     monkeypatch.setattr(
         bird_x, "_invoke_bird_subprocess",
-        lambda q, c, timeout: (timeouts.append(timeout), (_interstitial(), None))[1],
+        lambda q, c, timeout, top=False: (timeouts.append(timeout), (_interstitial(), None))[1],
     )
     monkeypatch.setattr(bird_x.time, "sleep", lambda s: None)
     bird_x._run_bird_search("q", count=10, timeout=60, deadline=time.monotonic() + 30)
@@ -607,7 +607,7 @@ def test_bird_budget_stop_keeps_clean_empty_outcome(monkeypatch):
     from lib import bird_x
     deadline = time.monotonic() + 30
     calls = []
-    def fake_run(query, count, timeout, deadline=None):
+    def fake_run(query, count, timeout, deadline=None, top=False):
         calls.append(query)
         monkeypatch.setattr(bird_x.time, "monotonic", lambda: deadline + 1)
         return {"items": []}

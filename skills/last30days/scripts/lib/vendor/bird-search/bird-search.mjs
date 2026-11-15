@@ -4,7 +4,7 @@
  * Subset of @steipete/bird v0.8.0 (MIT License, Peter Steinberger).
  *
  * Usage:
- *   node bird-search.mjs <query> [--count N] [--json]
+ *   node bird-search.mjs <query> [--count N] [--json] [--top]
  *   node bird-search.mjs --whoami
  *   node bird-search.mjs --check
  */
@@ -63,6 +63,9 @@ async function main() {
   let query = null;
   let count = 20;
   let jsonOutput = false;
+  // --top reads X's Top tab (engagement-ranked) instead of Latest. Topic
+  // searches need it: on a busy topic Latest holds only the last few minutes.
+  let product = 'Latest';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--count' && args[i + 1]) {
@@ -73,13 +76,15 @@ async function main() {
       i++;
     } else if (args[i] === '--json') {
       jsonOutput = true;
+    } else if (args[i] === '--top') {
+      product = 'Top';
     } else if (!args[i].startsWith('-')) {
       query = args[i];
     }
   }
 
   if (!query) {
-    writeStderr('Usage: node bird-search.mjs <query> [--count N] [--json]\n');
+    writeStderr('Usage: node bird-search.mjs <query> [--count N] [--json] [--top]\n');
     return 1;
   }
 
@@ -106,7 +111,7 @@ async function main() {
       timeoutMs: 30000,
     });
 
-    const result = await client.search(query, count);
+    const result = await client.search(query, count, { product });
 
     if (!result.success) {
       if (jsonOutput) {

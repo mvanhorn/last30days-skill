@@ -570,6 +570,51 @@ class TestHandleSearchLogsOnSuccess(unittest.TestCase):
                         f"expected a Searching: log on success, got {logged}")
 
 
+class TestTopicSearchReadsTopTab(unittest.TestCase):
+    """Topic searches read X's Top tab; handle and mention lanes keep Latest.
+
+    Latest is time-ordered, so on a busy topic ("taylor swift") its first page
+    is the last few minutes of zero-engagement posts, and handle expansion then
+    promoted whoever posted in those minutes.
+    """
+
+    def _result(self):
+        class _R:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps([])
+        return _R()
+
+    def test_every_topic_search_tier_asks_for_top(self):
+        tops = []
+
+        def fake_run(query, count, timeout, deadline=None, top=False):
+            tops.append(top)
+            return {"items": []}  # 0 results forces every retry tier
+
+        with mock.patch.object(bird_x, "_run_bird_search", side_effect=fake_run):
+            bird_x.search_x("trevin chow ai agents compound", "2026-05-19", "2026-06-18")
+        self.assertGreater(len(tops), 1)
+        self.assertTrue(all(tops), tops)
+
+    def test_top_flag_reaches_the_bird_command_line(self):
+        cmds = []
+
+        def fake_run(cmd, timeout=None, env=None):
+            cmds.append(cmd)
+            return self._result()
+
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=fake_run):
+            bird_x.search_x("taylor swift", "2026-10-16", "2026-11-15")
+            bird_x.search_handles(["taylorswift13"], "taylor swift", "2026-10-16", count_per=1)
+            bird_x.search_mentions(["taylorswift13"], "2026-10-16", count_per=1)
+        topic = [c for c in cmds if c[2].startswith("taylor swift")]
+        lanes = [c for c in cmds if c[2].startswith(("from:", "@"))]
+        self.assertTrue(topic and lanes)
+        self.assertTrue(all("--top" in c for c in topic), topic)
+        self.assertFalse(any("--top" in c for c in lanes), lanes)
+
+
 class TestStrongestTokenRetryAnchored(unittest.TestCase):
     """The last-chance retry must keep an entity anchor, not collapse to a bare
     generic token (e.g. 'compound') that floods the X pool with off-topic noise.
@@ -581,7 +626,7 @@ class TestStrongestTokenRetryAnchored(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout, deadline=None):
+        def fake_run(query, count, timeout, deadline=None, top=False):
             queries.append(query)
             return {"items": []}  # always 0 → forces every retry tier
 
@@ -603,7 +648,7 @@ class TestStrongestTokenRetryAnchored(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout, deadline=None):
+        def fake_run(query, count, timeout, deadline=None, top=False):
             queries.append(query)
             return {"items": []}
 
@@ -622,7 +667,7 @@ class TestBirdRetryQueryCorrectness(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout, deadline=None):
+        def fake_run(query, count, timeout, deadline=None, top=False):
             queries.append(query)
             if len(queries) == 1:
                 return {"items": []}

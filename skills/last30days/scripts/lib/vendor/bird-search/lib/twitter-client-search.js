@@ -45,7 +45,7 @@ export function withSearch(Base) {
             let cursor = options.cursor;
             let nextCursor;
             let pagesFetched = 0;
-            const { includeRaw = false, maxPages } = options;
+            const { includeRaw = false, maxPages, product = 'Latest' } = options;
             const fetchPage = async (pageCount, pageCursor) => {
                 let lastError;
                 let had404 = false;
@@ -55,7 +55,7 @@ export function withSearch(Base) {
                         rawQuery: query,
                         count: pageCount,
                         querySource: 'typed_query',
-                        product: 'Latest',
+                        product,
                         ...(pageCursor ? { cursor: pageCursor } : {}),
                     };
                     const params = new URLSearchParams({
