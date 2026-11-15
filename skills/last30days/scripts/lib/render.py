@@ -4214,23 +4214,28 @@ def _rank_voice_handles(
     handle whose counted posts total under ``_VOICE_MIN_ENGAGEMENT`` is
     dropped, except the run's own subject handle. A handle with no engagement
     metrics at all stays eligible with score 0, since its source does not
-    report them. Ties fall back to counted posts, then the handle.
+    report them. Ties fall back to counted posts, then the handle. Handles
+    group case-insensitively (X keeps the supplied case), shown in the first
+    spelling seen.
     """
     posts: dict[str, list[int | None]] = {}
+    spelling: dict[str, str] = {}
     for item in items:
         actor = _stats_actor(item)
         if actor and actor.startswith("@"):
-            posts.setdefault(actor, []).append(_voice_post_engagement(item))
+            key = actor.lower()
+            spelling.setdefault(key, actor)
+            posts.setdefault(key, []).append(_voice_post_engagement(item))
     subject = subject_handle.strip().lstrip("@").lower()
     ranked: list[tuple[float, int, str]] = []
-    for handle, values in posts.items():
+    for key, values in posts.items():
         measured = sorted((v for v in values if v is not None), reverse=True)
         counted = measured[:_VOICE_POSTS_PER_HANDLE]
-        is_subject = bool(subject) and handle.lstrip("@").lower() == subject
+        is_subject = bool(subject) and key.lstrip("@") == subject
         if measured and sum(counted) < _VOICE_MIN_ENGAGEMENT and not is_subject:
             continue
         score = sum(math.log1p(v) for v in counted)
-        ranked.append((score, min(len(values), _VOICE_POSTS_PER_HANDLE), handle))
+        ranked.append((score, min(len(values), _VOICE_POSTS_PER_HANDLE), spelling[key]))
     ranked.sort(key=lambda entry: (-entry[0], -entry[1], entry[2].lower()))
     return [handle for _, _, handle in ranked]
 
@@ -4249,13 +4254,14 @@ def _top_voices_overall(
     """
     all_items = [item for items in items_by_source.values() for item in items]
     ranked_handles = _rank_voice_handles(all_items, subject_handle)
-    eligible = set(ranked_handles)
+    eligible = {handle.lower() for handle in ranked_handles}
     counts: Counter[str] = Counter()
     for item in all_items:
         actor = _stats_actor(item)
         if not actor:
             continue
         if actor.startswith("@"):
+            actor = actor.lower()
             if actor not in eligible or counts[actor] >= _VOICE_POSTS_PER_HANDLE:
                 continue
         counts[actor] += 1

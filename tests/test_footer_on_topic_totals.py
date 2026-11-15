@@ -307,3 +307,13 @@ def test_tiktok_shares_and_comments_count_as_reposts_and_replies():
 
     assert render._voice_post_engagement(clip) == 6
     assert render._rank_voice_handles([clip]) == ["@clipper"]
+
+
+def test_handle_spellings_group_case_insensitively():
+    # Two 3-like posts each miss the floor alone; as one account they clear it.
+    posts = [_x_post(0, "Example", 3), _x_post(1, "example", 3)]
+    report = _report("Microsoft", posts, [])
+
+    assert render._rank_voice_handles(posts) == ["@Example"]
+    assert _voices(report) == "🗣️ Top voices: @Example"
+    assert render._top_voices_overall({"x": posts}) == ["@Example"]
