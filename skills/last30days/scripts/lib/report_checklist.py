@@ -141,7 +141,9 @@ def build(
     if on_claude_code(environ):
         lines.append(
             "• `CLAUDECODE` is set: no markdown lists anywhere in the reply "
-            "(KEY PATTERNS as `1\\.`, invitation lines as `•`). In a reply that holds a list, "
+            "(KEY PATTERNS as `1\\.`, invitation lines as `•`, with a blank line between each: "
+            "a single line break joins them into one paragraph in a markdown renderer). "
+            "In a reply that holds a list, "
             "Claude Code prints every link as raw `name (url)` text. This holds for the whole "
             "message, not only the report: notes you add before or after it carry no bullets or "
             "numbered lines either, and it holds again whenever you show the report in a later "
