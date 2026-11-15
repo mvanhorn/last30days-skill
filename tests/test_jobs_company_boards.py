@@ -305,7 +305,10 @@ def _amazon(pages, *, fail_at=None):
 def _amazon_search(pages, **kwargs):
     asked, get = _amazon(pages, **kwargs)
     texts = _NoRequests()
-    with patch.object(jobs.http, "get", side_effect=get), \
+    # The recorded pages are trimmed to three rows each: the page size the
+    # reader asks for matches them, so a full page reads as full.
+    with patch.object(jobs, "AMAZON_PAGE_SIZE", 3), \
+            patch.object(jobs.http, "get", side_effect=get), \
             patch.object(jobs.http, "get_text", side_effect=texts.text), \
             patch.object(jobs.http, "post", side_effect=texts):
         items, artifact = jobs.search_jobs(
@@ -331,7 +334,7 @@ def test_amazon_pages_parse_to_rows_with_their_full_text():
 def test_amazon_reads_past_a_mixed_page_and_stops_after_one_with_no_new_role():
     items, artifact, asked, other = _amazon_search(AMAZON["pages"])
     assert len(items) == 9
-    assert {0, 100, 200} <= {offset for _url, offset in asked}
+    assert {0, 3, 6} <= {offset for _url, offset in asked}
     assert artifact["tier"] == "ats" and artifact["provider"] == "amazon"
     # Three new on the first page and two on the mixed second page.
     assert artifact["new_in_window"] == 5

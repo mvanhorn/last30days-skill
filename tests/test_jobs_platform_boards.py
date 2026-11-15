@@ -410,6 +410,8 @@ def test_a_walled_careers_site_is_read_from_its_job_sitemap():
     fake = _Site(texts={
         "https://jobs.sap.com/robots.txt": FX["sap_robots"],
         "https://jobs.sap.com/sitemap.xml": FX["sap_index"],
+        # The site's general sitemap answers with no role pages.
+        "https://jobs.sap.com/en/sitemap.xml": "<urlset></urlset>",
         "https://jobs.sap.com/en/jobs/sitemap.xml": FX["sap_sitemap"],
     })
     items, artifact = _run("SAP", "https://www.sap.com/", fake)
@@ -683,3 +685,112 @@ def test_the_robots_opt_in_is_read_from_the_env_file(tmp_path, monkeypatch):
         assert robots.respect_robots()
     finally:
         os.environ.pop(robots.RESPECT_ROBOTS_VAR, None)
+
+
+# --- review fixes -------------------------------------------------------------
+
+
+def test_a_sitemap_cannot_point_the_lane_at_a_private_address():
+    urlset = (
+        "<urlset>"
+        "<url><loc>http://127.0.0.1:8080/jobs/12345</loc></url>"
+        "<url><loc>http://10.0.0.5/jobs/12346</loc></url>"
+        "<url><loc>http://localhost/jobs/12347</loc></url>"
+        "<url><loc>https://evil.example/jobs/12348</loc></url>"
+        "<url><loc>file:///etc/jobs/12349</loc></url>"
+        "<url><loc>https://jobs.uber.com/en/jobs/149574/</loc></url>"
+        "</urlset>"
+    )
+    fake = _Site(texts={
+        "https://jobs.uber.com/robots.txt": "User-Agent: *\nSitemap: https://jobs.uber.com/sitemap.xml\n",
+        "https://jobs.uber.com/sitemap.xml": urlset,
+    })
+    _items, artifact = _run("Uber", "https://www.uber.com/", fake)
+    assert not any(host in url for url in fake.asked for host in ("127.0.0.1", "10.0.0.5", "localhost", "evil.example", "file:"))
+    assert artifact["open_roles"] == 1
+
+
+def test_a_role_page_redirected_off_the_site_gives_no_title():
+    urlset = '<urlset><url><loc>https://jobs.uber.com/en/jobs/149574/</loc></url></urlset>'
+    fake = _Site(texts={
+        "https://jobs.uber.com/robots.txt": "User-Agent: *\nSitemap: https://jobs.uber.com/sitemap.xml\n",
+        "https://jobs.uber.com/sitemap.xml": urlset,
+        "https://jobs.uber.com/en/jobs/149574/": "<title>Internal Admin Console</title>",
+    })
+    fake.redirects["https://jobs.uber.com/en/jobs/149574/"] = "http://192.168.1.1/admin"
+    items, artifact = _run("Uber", "https://www.uber.com/", fake)
+    assert items == [] and artifact["board_titles_missing"]
+
+
+@pytest.mark.parametrize("title", [
+    "Just a moment...", "Access Denied", "Attention Required! | Cloudflare", "403 Forbidden", "Page Not Found",
+])
+def test_a_block_page_answered_with_200_gives_no_title(title):
+    urlset = "<urlset>" + "".join(
+        f"<url><loc>https://jobs.uber.com/en/jobs/{149500 + n}/</loc></url>" for n in range(20)
+    ) + "</urlset>"
+    fake = _Site(texts={
+        "https://jobs.uber.com/robots.txt": "User-Agent: *\nSitemap: https://jobs.uber.com/sitemap.xml\n",
+        "https://jobs.uber.com/sitemap.xml": urlset,
+        "https://jobs.uber.com/en/jobs/*": f"<title>{title}</title>",
+    })
+    items, artifact = _run("Uber", "https://www.uber.com/", fake)
+    assert items == [] and artifact["board_titles_missing"]
+    # The first wave found only block pages, so the rest were not asked.
+    assert len([url for url in fake.asked if "/en/jobs/1495" in url]) == sitemap.TITLE_FIRST_WAVE
+    assert sitemap.title_from_page("<title>Senior Error Analysis Engineer</title>") == "Senior Error Analysis Engineer"
+
+
+def test_an_unread_numbered_sitemap_on_a_jobs_host_leaves_the_count_a_floor():
+    index = ('<sitemapindex><sitemap><loc>https://jobs.sap.com/sitemap-1.xml</loc></sitemap>'
+             '<sitemap><loc>https://jobs.sap.com/sitemap-2.xml</loc></sitemap></sitemapindex>')
+    fake = _Site(texts={
+        "https://jobs.sap.com/robots.txt": FX["sap_robots"],
+        "https://jobs.sap.com/sitemap.xml": index,
+        "https://jobs.sap.com/sitemap-1.xml": FX["sap_sitemap"],
+    })
+    _items, artifact = _run("SAP", "https://www.sap.com/", fake)
+    assert artifact["open_roles"] == 6 and artifact["open_roles_floor"] is True
+
+
+def test_a_capped_page_leaves_a_gap_so_an_older_row_does_not_cover_the_window():
+    # Asked for 500 a page, the server caps at 100: rows 100-499 are skipped.
+    # The older row on a later page must not declare the window read whole.
+    def page(offset):
+        def call(_deadline):
+            rows = [
+                {"id": f"r{n}", "title": f"Role {n}", "date": "2026-11-10" if n < 1000 else "2026-09-01"}
+                for n in range(offset, min(offset + 100, 2000))
+            ]
+            return {"rows": rows, "total": 2000}
+        return call
+
+    items, info = jobs._read_newest_first(
+        page, lambda payload: (payload["rows"], payload["total"]), page_size=500,
+        row_ceiling=7000, window_start="2026-10-15", deadline=jobs.time.monotonic() + 30,
+        newest_first=True,
+    )
+    assert any(row["date"] < "2026-10-15" for row in items)
+    assert info["board_window_covered"] is False
+    assert jobs._board_counts(items, info, WINDOW)["new_in_window"] is None
+
+
+def test_the_eightfold_fallback_generation_is_checked_against_robots(monkeypatch):
+    monkeypatch.setenv(robots.RESPECT_ROBOTS_VAR, "1")
+    asked = []
+
+    def generation(entry, *, deadline):
+        asked.append(entry["api"])
+        return [], {}
+
+    monkeypatch.setattr(jobs, "_read_eightfold_generation", generation)
+    with patch.object(jobs.http, "get_text", side_effect=_Site(texts={
+        "https://careers.example.com/robots.txt": "User-agent: *\nDisallow: /api/apply/\n",
+    }).text):
+        jobs.read_eightfold_board(
+            {"board": "careers.example.com", "domain": "example.com"},
+            deadline=jobs._clock()() + 30, date_range=WINDOW,
+        )
+    assert asked == ["pcsx"]
+    assert jobs._listing_url(jobs.COMPANY_PROVIDER_EIGHTFOLD, {"board": "b.example", "api": "v2"}) == \
+        "https://b.example/api/apply/v2/jobs"

@@ -16,6 +16,7 @@ titles only, and says so.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import time
 from html import unescape
@@ -48,15 +49,55 @@ _LOCALE = re.compile(r"^/[a-z]{2}(?:[-_][A-Za-z]{2})?/")
 _ID_PART = re.compile(r"^(?:[A-Za-z]{0,4}[-_]?\d[\w-]*|\d+)$")
 
 
+# A page title a challenge, block or error page gives in place of the role's.
+_BLOCK_TITLE = re.compile(
+    r"just a moment|attention required|access denied|forbidden|captcha|are you (?:a )?(?:human|robot)"
+    r"|security check|verify(?:ing)? you are|request (?:rejected|blocked)|unusual traffic"
+    r"|page not found|service unavailable|^not found$|^error\b|^(?:40[134]|50[0-9])\b|^sign in|^log ?in$",
+    re.I,
+)
+
+
+def _public_url(url: str, host: str) -> bool:
+    """Whether ``url`` is an http(s) address on the site of ``host`` whose host
+    is a name, not an address on a private, loopback or reserved network.
+
+    A sitemap is remote content: a role URL it lists is fetched only when it
+    stays on the company's own site, so a sitemap cannot point the lane at a
+    service on the user's network.
+    """
+    parsed = urlparse(url)
+    name = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not name or name == "localhost" or name.endswith(".localhost"):
+        return False
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return jobs._same_site(name, host)
+    return address.is_global and jobs._same_site(name, host)
+
+
 def _fetch(url: str, deadline: float) -> str | None:
     remaining = deadline - jobs._clock()()
     if remaining <= 0:
         return None
     with http.capture_failures():
-        return jobs.role_page_text(
+        return _on_site(url, lambda landed: jobs.role_page_text(
             url, timeout=TIMEOUT_SECONDS,
-            deadline_monotonic=time.monotonic() + min(remaining, TIMEOUT_SECONDS),
-        )
+            deadline_monotonic=time.monotonic() + min(remaining, TIMEOUT_SECONDS), landed=landed,
+        ))
+
+
+def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
+    """``fetch``'s text, or None when the request was redirected off the
+    site ``url`` is on or to a private address: such a page never enters the
+    report."""
+    landed: list = []
+    text = fetch(landed)
+    host = jobs._host(url)
+    if text is not None and landed and not _public_url(str(landed[-1]), host):
+        return None
+    return text
 
 
 def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str, str]], bool]:
@@ -91,7 +132,9 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
             asked += 1
             text = _fetch(url, deadline)
             if not text:
-                missed = missed or bool(_JOBS_WORD.search(urlparse(url).path))
+                # On a jobs host any sitemap file may hold roles
+                # (``sitemap-2.xml``); elsewhere only one that names jobs.
+                missed = missed or bool(jobs_host) or bool(_JOBS_WORD.search(urlparse(url).path))
                 continue
             if "<sitemapindex" in text[:2000]:
                 children = [unescape(loc) for loc in _LOC.findall(text)]
@@ -103,7 +146,7 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                 # lists the roles /en/jobs/sitemap.xml does.
                 kept: dict[str, str] = {}
                 for child in children:
-                    if jobs._same_site(jobs._host(child), host):
+                    if _public_url(child, host):
                         kept.setdefault(_LOCALE.sub("/", urlparse(child).path, count=1), child)
                 queue = list(kept.values()) + queue
                 continue
@@ -113,11 +156,13 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                     continue
                 page = unescape(loc.group(1)).strip()
                 key = _role_key(page)
-                if _JOB_PATH.search(urlparse(page).path) and key not in found:
+                if _public_url(page, host) and _JOB_PATH.search(urlparse(page).path) and key not in found:
                     lastmod = _LASTMOD.search(block)
                     found[key] = (page, lastmod.group(1).strip() if lastmod else "")
         if found:
-            unread = any(_JOBS_WORD.search(urlparse(url).path) for url in queue)
+            unread = bool(queue) and (
+                bool(jobs_host) or any(_JOBS_WORD.search(urlparse(url).path) for url in queue)
+            )
             return host, list(found.values()), missed or unread
     return "", [], False
 
@@ -154,7 +199,7 @@ def title_from_page(html: str, site_name: str = "") -> str:
             parts = re.split(r"\s+[-|–]\s+", title)
             if len(parts) > 1 and re.search(r"career|job|" + re.escape(site_name or "~"), parts[-1], re.I):
                 title = " - ".join(parts[:-1])
-            if title:
+            if title and not _BLOCK_TITLE.search(title):
                 return title
     return ""
 
@@ -209,9 +254,9 @@ def read_roster(
 
 def _titles_from_pages(urls: list[str], company: str, deadline: float) -> list[tuple[str, str]]:
     def call(url: str) -> Callable[[float], Any]:
-        return lambda http_deadline: jobs.role_page_text(
-            url, timeout=TIMEOUT_SECONDS, deadline_monotonic=http_deadline,
-        )
+        return lambda http_deadline: _on_site(url, lambda landed: jobs.role_page_text(
+            url, timeout=TIMEOUT_SECONDS, deadline_monotonic=http_deadline, landed=landed,
+        ))
 
     # The first wave tells whether the role pages can be read at all: a site
     # that walls them answers every one of those with a block, and the rest

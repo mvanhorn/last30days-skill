@@ -2419,14 +2419,16 @@ def extract_jsonld_jobs(html: str, base_url: str = "") -> list[dict[str, Any]]:
     return items
 
 
-def role_page_text(url: str, *, timeout: float, deadline_monotonic: float) -> str | None:
+def role_page_text(
+    url: str, *, timeout: float, deadline_monotonic: float, landed: list | None = None,
+) -> str | None:
     """A role or sitemap page as text, or None when it is not text the lane
     can decode (a gzip sitemap, a page in another encoding): one such page
     costs its own role, not the whole read."""
     try:
         return http.get_text(
             url, accept="text/html,application/xml,*/*", timeout=timeout, retries=1,
-            deadline_monotonic=deadline_monotonic,
+            deadline_monotonic=deadline_monotonic, landed=landed,
         )
     except UnicodeDecodeError:
         return None
@@ -2823,6 +2825,7 @@ def _read_newest_first(
     limit = min(info["board_total"], row_ceiling)
     calls = [page(offset) for offset in range(page_size, limit, page_size)]
     rest = _paged_run(calls, parse, deadline, clock, workers=workers)
+    pages = [list(items), *rest]
     for rows in rest:
         items.extend(rows)
     # Every page up to the ceiling answered: a board that lost a role or two
@@ -2830,9 +2833,17 @@ def _read_newest_first(
     every_page = len(rest) == len(calls)
     # Newest first, a row older than the window means the window was read
     # whole; in any other order only the whole board covers it.
-    older = newest_first and window_start is not None and any(
-        str(row.get("date") or "") < window_start for row in items if row.get("date")
-    )
+    # Only rows reached through full pages count: a page that served fewer
+    # rows than asked for leaves a gap the offsets skip, and a role posted in
+    # the window may sit in it.
+    older = False
+    if newest_first and window_start is not None:
+        for rows in pages:
+            if any(str(row.get("date") or "") < window_start for row in rows if row.get("date")):
+                older = True
+                break
+            if len(rows) < page_size:
+                break
     # A board that serves fewer rows a page than asked for (a server-side cap)
     # answers every page and still leaves rows unread: whole only when the
     # rows read come to the total, give or take the drift of a live board.
@@ -3211,7 +3222,19 @@ def read_eightfold_board(
     items, info = _read_eightfold_generation({**entry, "api": "pcsx"}, deadline=deadline)
     if items or info.get("board_unanswered"):
         return items, info
+    # The robots check before the read covered the first generation's
+    # listing; the second has its own path, checked before it is asked.
+    if board_robots.disallowed(
+        _eightfold_listing_url(entry["board"], "v2"),
+        deadline_monotonic=time.monotonic() + max(0.0, deadline - _clock()()),
+    ):
+        return items, info
     return _read_eightfold_generation({**entry, "api": "v2"}, deadline=deadline)
+
+
+def _eightfold_listing_url(board: str, api: str) -> str:
+    """The listing call of an Eightfold API generation."""
+    return f"https://{board}/api/pcsx/search" if api == "pcsx" else f"https://{board}/api/apply/v2/jobs"
 
 
 def _read_eightfold_generation(
@@ -3317,7 +3340,8 @@ def _listing_url(provider: str, entry: dict[str, Any]) -> str:
     if provider == COMPANY_PROVIDER_AMAZON:
         return f"https://{board or 'www.amazon.jobs'}/en/search.json"
     if provider == COMPANY_PROVIDER_EIGHTFOLD:
-        return f"https://{board}/api/pcsx/search"
+        # An entry that names its generation is asked on that one alone.
+        return _eightfold_listing_url(board, str(entry.get("api") or "pcsx"))
     if provider == ATS_PROVIDER_WORKDAY:
         return workday_list_url(board)
     if provider in _COMPANY_READERS and ":" in _COMPANY_READERS[provider]:
