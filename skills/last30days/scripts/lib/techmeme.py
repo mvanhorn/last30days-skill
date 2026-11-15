@@ -56,6 +56,11 @@ DEPTH_CONFIG = {
 MIN_HEADLINE_WORDS = 4
 
 SEARCH_TIMEOUT = 30
+# Techmeme's archive search returns 10 newest-first hits per page. Helpers
+# from the printing-press-library release with `search --pages` read enough
+# pages to fill the depth cap; each extra page gets this many more seconds.
+SEARCH_PAGE_SIZE = 10
+SEARCH_PAGE_TIMEOUT = 10
 
 # Old binaries print this prose to stdout (exit 0) on zero hits, even in JSON
 # mode. It is a zero-result response, not malformed output.
@@ -93,23 +98,39 @@ def _date_clause(from_date: str | None, to_date: str | None) -> str:
     return f"date:[{start} TO {end}]"
 
 
+def _pages_for(limit: int) -> int:
+    """Result pages needed to fill a depth cap of ``limit`` records."""
+    return max(1, -(-limit // SEARCH_PAGE_SIZE))
+
+
+def _rejects_pages_flag(response: Dict[str, Any]) -> bool:
+    """The helper predates ``search --pages`` (cobra: ``unknown flag: --pages``)."""
+    error = str(response.get("error") or "")
+    return "unknown flag" in error and "--pages" in error
+
+
 def _build_search_args(
     topic: str,
     from_date: str | None = None,
     to_date: str | None = None,
+    pages: int = 1,
 ) -> List[str]:
     # --json (not --agent) avoids --compact, which blanks headline records on
     # pre-PR-1383 binaries. Techmeme's `search` has no result-limit flag and
-    # returns one page of 10 newest-first hits, so the run window goes into the
+    # returns pages of 10 newest-first hits, so the run window goes into the
     # query as Techmeme's `date:[...]` operator; otherwise narrow queries burn
     # all 10 slots on years-old archive hits. The helper passes the operator
     # through to Techmeme unchanged. The depth cap and the date window are
-    # still applied client-side as a backstop.
+    # still applied client-side as a backstop. ``pages`` above 1 adds
+    # ``--pages N`` so a busy topic's window is not capped at those 10.
     query = topic
     clause = _date_clause(from_date, to_date)
     if clause and "date:" not in topic:
         query = f"{topic} {clause}"
-    return [CLI_BIN, "search", query, "--json"]
+    args = [CLI_BIN, "search", query, "--json"]
+    if pages > 1:
+        args += ["--pages", str(pages)]
+    return args
 
 
 def _coerce_list(data: Any) -> List[Dict[str, Any]]:
@@ -196,9 +217,21 @@ def search_techmeme(
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    cmd = _build_search_args(topic, from_date, to_date)
-    _log(f"search '{topic}' (cap={limit})")
-    response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
+    pages = _pages_for(limit)
+    cmd = _build_search_args(topic, from_date, to_date, pages=pages)
+    _log(f"search '{topic}' (cap={limit}, pages={pages})")
+    response = _run_cli(
+        cmd, timeout=SEARCH_TIMEOUT + SEARCH_PAGE_TIMEOUT * (pages - 1),
+    )
+    if pages > 1 and _rejects_pages_flag(response):
+        # An older helper reads one page; upgrading it lifts the 10-hit cap.
+        _log(
+            "helper has no `search --pages`; reading one page of 10 (upgrade "
+            "via `npx -y @mvanhorn/printing-press-library install techmeme "
+            "--cli-only`)"
+        )
+        cmd = _build_search_args(topic, from_date, to_date)
+        response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
     records = response.get("results") or []
     if isinstance(records, list):
         # Hard date window: drop records whose date falls outside the research
