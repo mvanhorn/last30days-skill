@@ -1,0 +1,1 @@
+Techmeme now reads enough result pages to fill the depth cap (16 headlines by default, 30 at deep) instead of stopping at Techmeme's first 10, when the installed `techmeme-pp-cli` supports `search --pages`; older helpers still read one page.
