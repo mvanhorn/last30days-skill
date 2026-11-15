@@ -374,6 +374,9 @@ class TestHelperMinimumVersion:
         assert probe.ok
         assert probe.outdated is True
         assert "older than 2026.11.1" in probe.detail
+        # It still works on one page, so doctor must not call it uncallable.
+        assert "the oldest the engine can call" not in probe.detail
+        assert "first 10 results" in probe.detail
 
     def test_techmeme_at_the_pages_release_is_current(self):
         probe = self._probe("techmeme-pp-cli", "techmeme-pp-cli 2026.11.1\n")

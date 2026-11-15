@@ -177,6 +177,12 @@ MIN_HELPER_VERSIONS: Dict[str, Tuple[int, ...]] = {
     "techmeme-pp-cli": (2026, 11, 1),
 }
 
+# Why an older helper falls short, for doctor's detail line, when it still runs
+# in a reduced form. A helper absent here cannot be called below its minimum.
+MIN_HELPER_SHORTFALL: Dict[str, str] = {
+    "techmeme-pp-cli": "it still runs but reads only Techmeme's first 10 results; upgrade to read more pages",
+}
+
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 
 # Dependencies the doctor probes by default.
@@ -561,7 +567,8 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
         return DependencyProbe(
             name=name,
             status=OK,
-            detail=f"{version} (older than {minimum}, the oldest the engine can call)",
+            detail=f"{version} (older than {minimum}; "
+            f"{MIN_HELPER_SHORTFALL.get(name, 'the oldest the engine can call')})",
             prescription=prescription,
             owner_pkg_manager=manager,
             outdated=True,
