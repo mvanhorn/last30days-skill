@@ -22,7 +22,7 @@
 
 **Um buscador conduzido por um agente de IA, que pontua por votos positivos, curtidas e dinheiro de verdade — não por redações.**
 
-Este README descreve o pipeline v3 atual. A especificação de execução da skill fica em [skills/last30days/SKILL.md](skills/last30days/SKILL.md), que é a referência definitiva sobre o comportamento dos comandos e da configuração.
+Este README descreve o pipeline v4 atual. A especificação de execução da skill fica em [skills/last30days/SKILL.md](skills/last30days/SKILL.md), que é a referência definitiva sobre o comportamento dos comandos e da configuração.
 
 **Claude Code (recomendado — atualizações automáticas via marketplace):**
 ```
