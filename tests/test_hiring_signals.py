@@ -28,6 +28,25 @@ class HiringSignalsTests(unittest.TestCase):
         self.assertEqual("startup", summary["company_size_tier"])
         self.assertEqual("enterprise readiness", summary["signals"][0]["theme"])
 
+    def test_theme_evidence_uses_title_and_department_words(self):
+        boilerplate = "Help maintain HTML newsletters for our global sales, cloud, and data teams."
+        items = [
+            job("Detail Editor", boilerplate, "Communications"),
+            job("AI/ML Engineer", boilerplate),
+            job("Engineer", boilerplate, "Machine-Learning"),
+            job("Security Engineer", boilerplate, "Security"),
+        ]
+        summary = hiring_signals.analyze(items, explicit=True, topic="Acme")
+        evidence = {
+            signal["theme"]: [row["title"] for row in signal["evidence"]]
+            for signal in summary["signals"]
+        }
+        self.assertEqual({
+            "ai and machine learning": ["AI/ML Engineer", "Engineer"],
+            "enterprise readiness": ["Security Engineer"],
+            "communications": ["Detail Editor"],
+        }, evidence)
+
     def test_mega_cap_scattered_roles_do_not_surface_standard_mode(self):
         items = [
             job("Retail Associate", "store operations", "Retail"),

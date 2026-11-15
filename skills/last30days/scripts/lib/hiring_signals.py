@@ -36,6 +36,12 @@ THEME_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_THEME_PATTERNS = {
+    theme: re.compile(r"\b(?:" + "|".join(map(re.escape, keywords)) + r")\b")
+    for theme, keywords in THEME_KEYWORDS.items()
+}
+
+
 SENIORITY_TERMS = ("head of", "director", "vp", "principal", "staff", "lead", "founding")
 
 # Leadership markers that establish/own a function (a first-of-function hire).
@@ -133,14 +139,14 @@ def infer_company_size(items: list[schema.SourceItem], *, topic: str = "") -> st
 def _theme_items(items: list[schema.SourceItem]) -> dict[str, list[schema.SourceItem]]:
     themed: dict[str, list[schema.SourceItem]] = defaultdict(list)
     for item in items:
-        text = f"{item.title} {item.body}".lower()
+        dept = str(item.metadata.get("department") or item.container or "").strip().lower()
+        text = re.sub(r"[\s_-]+", " ", f"{item.title.lower()} | {dept}")
         matched = False
-        for theme, keywords in THEME_KEYWORDS.items():
-            if any(keyword in text for keyword in keywords):
+        for theme, pattern in _THEME_PATTERNS.items():
+            if pattern.search(text):
                 themed[theme].append(item)
                 matched = True
         if not matched:
-            dept = str(item.metadata.get("department") or item.container or "").strip().lower()
             fallback = dept or "general hiring"
             themed[fallback].append(item)
     return dict(themed)
