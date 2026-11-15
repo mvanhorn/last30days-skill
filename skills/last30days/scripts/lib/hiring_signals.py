@@ -6,34 +6,44 @@ import re
 from collections import Counter, defaultdict
 from typing import Any
 
-from . import schema
+from . import job_boilerplate, schema
 
 
+# Bare words a company's own text uses on every role ("growth", "design",
+# "solutions", "platform", "model", "insights", "admin", "warehouse") are
+# left out or narrowed to the role phrase that carries them.
 THEME_KEYWORDS: dict[str, tuple[str, ...]] = {
     "enterprise readiness": (
         "enterprise", "soc 2", "sso", "security", "compliance", "procurement",
-        "admin", "governance", "audit",
+        "governance", "audit",
     ),
     "go-to-market": (
-        "sales", "account executive", "customer success", "solutions", "partnership",
-        "revenue", "demand generation", "marketing",
+        "sales", "account executive", "customer success", "solutions engineer",
+        "solution engineer", "solutions architect", "solution architect",
+        "partnership", "revenue", "demand generation", "marketing",
     ),
     "ai and machine learning": (
-        "machine learning", "ml", "ai", "llm", "model", "research scientist",
-        "applied scientist", "data scientist",
+        "machine learning", "ml", "ai", "llm", "language model", "foundation model",
+        "research scientist", "applied scientist", "data scientist",
     ),
     "infrastructure and reliability": (
-        "infrastructure", "platform", "devops", "sre", "reliability", "cloud",
-        "distributed systems", "backend",
+        "infrastructure", "platform engineer", "platform engineering", "devops", "sre",
+        "site reliability", "reliability", "cloud", "distributed systems", "backend",
+        "data center", "data centre",
     ),
     "product expansion": (
-        "product manager", "product designer", "growth", "activation", "mobile",
-        "frontend", "design",
+        "product manager", "product designer", "product design", "growth engineer",
+        "growth marketing", "growth product", "mobile", "frontend", "ux",
     ),
     "data and analytics": (
-        "data", "analytics", "business intelligence", "warehouse", "etl",
-        "insights",
+        "data", "analytics", "business intelligence", "data warehouse", "etl",
     ),
+}
+
+# Phrases a keyword must not be followed by: a "Data Center Technician" works on
+# infrastructure, not data and analytics.
+_KEYWORD_EXCLUSIONS: dict[str, str] = {
+    "data": r"(?!\s+cent(?:er|re)s?\b)",
 }
 
 SENIORITY_TERMS = ("head of", "director", "vp", "principal", "staff", "lead", "founding")
@@ -83,6 +93,7 @@ def analyze(
     ) if explicit else any(_passes_standard_threshold(signal, size_tier) for signal in signals)
     if not explicit:
         signals = [signal for signal in signals if _passes_standard_threshold(signal, size_tier)]
+    _assign_evidence(signals, themes)
 
     return {
         "mode": "explicit" if explicit else "standard",
@@ -133,25 +144,137 @@ def infer_company_size(items: list[schema.SourceItem], *, topic: str = "") -> st
 # Keywords match as whole words (plural "s" allowed), so "ai" does not match "retail" or
 # "training" and "ml" does not match "html".
 _THEME_PATTERNS: dict[str, re.Pattern[str]] = {
-    theme: re.compile(r"\b(?:" + "|".join(re.escape(k) for k in keywords) + r")s?\b")
+    theme: re.compile(r"\b(?:" + "|".join(
+        re.escape(keyword) + r"s?\b" + _KEYWORD_EXCLUSIONS.get(keyword, "")
+        for keyword in keywords
+    ) + ")")
     for theme, keywords in THEME_KEYWORDS.items()
 }
+_ALL_KEYWORDS = frozenset(keyword for keywords in THEME_KEYWORDS.values() for keyword in keywords)
+
+
+def _keyword(matched: str) -> str:
+    """The keyword a match stands for: its text, less a plural "s"."""
+    return matched if matched in _ALL_KEYWORDS else matched[:-1]
+
+
+# Where a theme keyword was found, strongest first. A title says what the role
+# is; a department says where it sits; a description sentence only hints.
+_TITLE_MATCH, _DEPARTMENT_MATCH, _BODY_MATCH = 3, 2, 1
+
+# Examples kept per theme.
+EVIDENCE_PER_THEME = 5
+
+
+def _department(item: schema.SourceItem) -> str:
+    return str(item.metadata.get("department") or item.container or "").strip()
+
+
+def _description(item: schema.SourceItem) -> str:
+    """The posting's description, without the title, department and location lines.
+
+    Normalized job bodies open with those fields; they are matched on their own.
+    """
+    header = {
+        job_boilerplate.key(part)
+        for part in (item.title, _department(item), str(item.metadata.get("location") or ""))
+        if part
+    }
+    return "\n".join(
+        line for line in str(item.body or "").splitlines()
+        if job_boilerplate.key(line) not in header
+    )
+
+
+def _match_strength(
+    pattern: re.Pattern[str], title: str, department: str, body: str,
+) -> tuple[int, int]:
+    """(strongest field matched, distinct keywords matched), or (0, 0)."""
+    best = 0
+    keywords: set[str] = set()
+    for field, text in ((_TITLE_MATCH, title), (_DEPARTMENT_MATCH, department), (_BODY_MATCH, body)):
+        hits = {_keyword(match.group()) for match in pattern.finditer(text)}
+        if hits:
+            best = max(best, field)
+            keywords |= hits
+    return best, len(keywords)
+
+
+def _ranked_theme_items(
+    items: list[schema.SourceItem],
+) -> dict[str, list[tuple[tuple[int, int], schema.SourceItem]]]:
+    """Each theme's roles with their match strength, strongest first.
+
+    Themes match a role's title and department, and its description only after
+    sentences that ``job_boilerplate.BOILERPLATE_MIN_ROLES`` or more distinct
+    roles share are removed: company text every posting repeats themes nothing.
+    """
+    descriptions = [_description(item) for item in items]
+    shared = job_boilerplate.shared_sentence_counts(
+        (item.title, _department(item), text) for item, text in zip(items, descriptions)
+    )
+    themed: dict[str, list[tuple[tuple[int, int], schema.SourceItem]]] = defaultdict(list)
+    for item, text in zip(items, descriptions):
+        title = item.title.lower()
+        department = _department(item).lower()
+        body = " ".join(job_boilerplate.role_sentences(text, shared)).lower()
+        matched = False
+        for theme, pattern in _THEME_PATTERNS.items():
+            strength = _match_strength(pattern, title, department, body)
+            if strength[0]:
+                themed[theme].append((strength, item))
+                matched = True
+        if not matched:
+            fallback = department or "general hiring"
+            themed[fallback].append(((0, 0), item))
+    # sort is stable: equal strengths keep the board's order.
+    return {
+        theme: sorted(ranked, key=lambda pair: pair[0], reverse=True)
+        for theme, ranked in themed.items()
+    }
 
 
 def _theme_items(items: list[schema.SourceItem]) -> dict[str, list[schema.SourceItem]]:
-    themed: dict[str, list[schema.SourceItem]] = defaultdict(list)
-    for item in items:
-        text = f"{item.title} {item.body}".lower()
-        matched = False
-        for theme, pattern in _THEME_PATTERNS.items():
-            if pattern.search(text):
-                themed[theme].append(item)
-                matched = True
-        if not matched:
-            dept = str(item.metadata.get("department") or item.container or "").strip().lower()
-            fallback = dept or "general hiring"
-            themed[fallback].append(item)
-    return dict(themed)
+    return {
+        theme: [item for _strength, item in ranked]
+        for theme, ranked in _ranked_theme_items(items).items()
+    }
+
+
+def _evidence_entry(item: schema.SourceItem) -> dict[str, Any]:
+    return {
+        "title": item.title,
+        "url": item.url,
+        "department": item.metadata.get("department") or item.container or "",
+        "published_at": item.published_at,
+    }
+
+
+def _assign_evidence(
+    signals: list[dict[str, Any]], themes: dict[str, list[schema.SourceItem]],
+) -> None:
+    """Give each signal up to ``EVIDENCE_PER_THEME`` examples no other signal shows.
+
+    Signals take turns in their ranked order, each taking its strongest role not
+    yet shown, so every theme gets its best distinct example before any gets a
+    second. ``evidence_count`` stays the theme's full role count.
+    """
+    shown: set[str] = set()
+    picks: list[list[schema.SourceItem]] = [[] for _signal in signals]
+    cursors = [0] * len(signals)
+    for _round in range(EVIDENCE_PER_THEME):
+        for index, signal in enumerate(signals):
+            ranked = themes.get(signal["theme"], [])
+            while cursors[index] < len(ranked):
+                item = ranked[cursors[index]]
+                cursors[index] += 1
+                role = item.url or item.item_id
+                if role not in shown:
+                    shown.add(role)
+                    picks[index].append(item)
+                    break
+    for signal, items in zip(signals, picks):
+        signal["evidence"] = [_evidence_entry(item) for item in items]
 
 
 def _build_signal(theme: str, items: list[schema.SourceItem], size_tier: str) -> dict[str, Any]:
@@ -170,15 +293,7 @@ def _build_signal(theme: str, items: list[schema.SourceItem], size_tier: str) ->
         len(items), len(set(departments)), len(senior_roles), size_tier,
         strategic_count=strategic_count,
     )
-    evidence = [
-        {
-            "title": item.title,
-            "url": item.url,
-            "department": item.metadata.get("department") or item.container or "",
-            "published_at": item.published_at,
-        }
-        for item in items[:5]
-    ]
+    evidence = [_evidence_entry(item) for item in items[:EVIDENCE_PER_THEME]]
     return {
         "theme": theme,
         "interpretation": _interpretation(theme),
