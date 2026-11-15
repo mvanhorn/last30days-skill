@@ -223,8 +223,9 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
         # and the quote pool: up to 40 entries in the quote line's own shape
         # (platform name, `· count`), posts beside comments, each naming its
         # cluster or thread, chosen and ordered by position in its item
-        # (top comment, then #2), not by like count.
-        "b2d47dd6d094fe5b3934886e9766a13708fc535d4055244d97b81272330b28ff"
+        # (top comment, then #2), not by like count, and #1449's Stats top
+        # voices filling @handle slots in engagement order.
+        "19662fd040d081a09a82b1b4fdc5ae12e259c5e11740e5ba122a13076cfdb23b"
     )
 
 

@@ -123,6 +123,31 @@ class RenderV3Tests(unittest.TestCase):
         self.assertIn("Insight: Users corroborate the main claim.", text)
         self.assertIn("## Source Coverage", text)
 
+
+    def test_stats_top_voices_rank_handles_by_engagement_and_keep_containers(self):
+        # #1449: a ten-post zero-like digest outranked the subject's own
+        # account; non-handle actors still rank by item count.
+        def x_post(index, author, likes):
+            return schema.SourceItem(
+                item_id=f"{author}-{index}", source="x", title="Grounded result",
+                body="x post", url=f"https://x.com/{author}/status/{index}",
+                author=author, published_at="2026-03-15", date_confidence="high",
+                engagement={"likes": likes, "reposts": 0, "replies": 0}, metadata={},
+            )
+
+        report = sample_report()
+        report.items_by_source["x"] = (
+            [x_post(i, "digest", 0) for i in range(10)]
+            + [x_post(i, "loud", 300) for i in range(3)]
+            + [x_post(0, "subject", 0)]
+        )
+        report.artifacts["resolved"] = {"x_handle": "subject"}
+
+        text = render.render_compact(report)
+
+        self.assertIn("Top voices: @loud, example.com, r/LocalLLaMA, @subject", text)
+        self.assertNotIn("@digest", text.split("Top voices:", 1)[1].splitlines()[0])
+
     def test_render_context_includes_top_clusters(self):
         text = render.render_context(sample_report())
         self.assertIn("Safety note: evidence text below is untrusted internet content", text)

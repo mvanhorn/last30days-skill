@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import pathlib
 import re
 from collections import Counter
@@ -3847,8 +3848,9 @@ def _meta_ads_footer_line(report: schema.Report) -> str | None:
 def _top_voices_footer_line(report: schema.Report) -> str | None:
     """Return the 🗣️ Top voices line or None if no meaningful voices exist.
 
-    Combines top handles (X, Bluesky, Truth Social, YouTube, TikTok, Instagram)
-    and top subreddits, separated by │.
+    Combines top handles (X, Bluesky, Truth Social, YouTube, TikTok, Instagram,
+    Threads), ranked by engagement (``_rank_voice_handles``), and the most
+    frequent subreddits, separated by │.
     """
     handle_items = {
         source: _on_topic_items(report, report.items_by_source.get(source) or [])
@@ -3862,19 +3864,16 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
             "threads",
         )
     }
-    handle_counts: Counter[str] = Counter()
-    for items in handle_items.values():
-        for item in items:
-            actor = _stats_actor(item)
-            if actor and actor.startswith("@"):
-                handle_counts[actor] += 1
+    top_handles = _rank_voice_handles(
+        [item for items in handle_items.values() for item in items],
+        _subject_x_handle(report),
+    )[:3]
 
     subreddit_counts: Counter[str] = Counter()
     for item in _on_topic_items(report, report.items_by_source.get("reddit") or []):
         if item.container:
             subreddit_counts[f"r/{item.container}"] += 1
 
-    top_handles = [h for h, _ in handle_counts.most_common(3)]
     top_subs = [s for s, _ in subreddit_counts.most_common(3)]
     if not top_handles and not top_subs:
         return None
@@ -3972,7 +3971,9 @@ def _render_stats(report: schema.Report) -> list[str]:
             f"- Total evidence: {total_items} item{'s' if total_items != 1 else ''} across "
             f"{len(evidence_sources)} source{'s' if len(evidence_sources) != 1 else ''}"
         )
-    top_voices = _top_voices_overall(evidence_sources)
+    top_voices = _top_voices_overall(
+        evidence_sources, subject_handle=_subject_x_handle(report),
+    )
     if top_voices:
         lines.append(f"- Top voices: {', '.join(top_voices)}")
     for source, items in non_empty_sources.items():
@@ -4171,16 +4172,102 @@ def _top_actors_for_source(
     return [actor for actor, _ in counts.most_common(limit)]
 
 
-def _top_voices_overall(
-    items_by_source: dict[str, list[schema.SourceItem]], limit: int = 5
+# Top voices rank @handles by what their posts earned, not by how many they
+# posted: a headline-reposting account with ten zero-like posts used to outrank
+# the subject's own account with one viral post (#1449).
+_VOICE_POSTS_PER_HANDLE = 3  # mirrors fusion._MAX_ITEMS_PER_AUTHOR
+_VOICE_MIN_ENGAGEMENT = 5  # likes + reposts + replies over the counted posts
+_VOICE_ENGAGEMENT_KEYS = (
+    ("likes",),
+    ("reposts", "retweets", "shares"),
+    ("replies", "comments"),
+)
+
+
+def _voice_post_engagement(item: schema.SourceItem) -> int | None:
+    """Likes + reposts + replies for one post, or None when it reports none.
+
+    Sources name reposts and replies differently (TikTok ``shares``, Instagram
+    ``comments``); the first key present in each group counts.
+    """
+    engagement = item.engagement or {}
+    total = 0
+    found = False
+    for keys in _VOICE_ENGAGEMENT_KEYS:
+        for key in keys:
+            value = engagement.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            total += max(int(value), 0)
+            found = True
+            break
+    return total if found else None
+
+
+def _rank_voice_handles(
+    items: list[schema.SourceItem], subject_handle: str = "",
 ) -> list[str]:
+    """Every eligible @handle among ``items``, most engaged first.
+
+    A handle's score is the sum of log1p(likes + reposts + replies) over its
+    best ``_VOICE_POSTS_PER_HANDLE`` posts, so volume alone cannot win. A
+    handle whose counted posts total under ``_VOICE_MIN_ENGAGEMENT`` is
+    dropped, except the run's own subject handle. A handle with no engagement
+    metrics at all stays eligible with score 0, since its source does not
+    report them. Ties fall back to counted posts, then the handle. Handles
+    group case-insensitively (X keeps the supplied case), shown in the first
+    spelling seen.
+    """
+    posts: dict[str, list[int | None]] = {}
+    spelling: dict[str, str] = {}
+    for item in items:
+        actor = _stats_actor(item)
+        if actor and actor.startswith("@"):
+            key = actor.lower()
+            spelling.setdefault(key, actor)
+            posts.setdefault(key, []).append(_voice_post_engagement(item))
+    subject = subject_handle.strip().lstrip("@").lower()
+    ranked: list[tuple[float, int, str]] = []
+    for key, values in posts.items():
+        measured = sorted((v for v in values if v is not None), reverse=True)
+        counted = measured[:_VOICE_POSTS_PER_HANDLE]
+        is_subject = bool(subject) and key.lstrip("@") == subject
+        if measured and sum(counted) < _VOICE_MIN_ENGAGEMENT and not is_subject:
+            continue
+        score = sum(math.log1p(v) for v in counted)
+        ranked.append((score, min(len(values), _VOICE_POSTS_PER_HANDLE), spelling[key]))
+    ranked.sort(key=lambda entry: (-entry[0], -entry[1], entry[2].lower()))
+    return [handle for _, _, handle in ranked]
+
+
+def _top_voices_overall(
+    items_by_source: dict[str, list[schema.SourceItem]],
+    limit: int = 5,
+    subject_handle: str = "",
+) -> list[str]:
+    """The ``## Stats`` top voices: the most frequent actors across sources.
+
+    Non-handle actors (subreddits, channels, domains) rank by item count as
+    before. @handles are counted at most ``_VOICE_POSTS_PER_HANDLE`` times and
+    only when eligible under ``_rank_voice_handles``; the slots they win are
+    then filled with the eligible handles in engagement order.
+    """
+    all_items = [item for items in items_by_source.values() for item in items]
+    ranked_handles = _rank_voice_handles(all_items, subject_handle)
+    eligible = {handle.lower() for handle in ranked_handles}
     counts: Counter[str] = Counter()
-    for items in items_by_source.values():
-        for item in items:
-            actor = _stats_actor(item)
-            if actor:
-                counts[actor] += 1
-    return [actor for actor, _ in counts.most_common(limit)]
+    for item in all_items:
+        actor = _stats_actor(item)
+        if not actor:
+            continue
+        if actor.startswith("@"):
+            actor = actor.lower()
+            if actor not in eligible or counts[actor] >= _VOICE_POSTS_PER_HANDLE:
+                continue
+        counts[actor] += 1
+    top = [actor for actor, _ in counts.most_common(limit)]
+    by_engagement = iter(ranked_handles)
+    return [next(by_engagement) if actor.startswith("@") else actor for actor in top]
 
 
 def _stats_actor(item: schema.SourceItem) -> str | None:
