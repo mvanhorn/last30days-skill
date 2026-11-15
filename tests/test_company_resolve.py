@@ -42,7 +42,7 @@ class FakeWikidata:
 
     def __call__(self, url, headers=None, **kwargs):
         params = kwargs.get("params") or {}
-        self.calls.append({"url": url, **kwargs})
+        self.calls.append({"url": url, "headers": headers, **kwargs})
         if self.error is not None:
             raise self.error
         action = params.get("action")
@@ -773,3 +773,11 @@ def test_official_site_from_several_statements(urls, expected):
         for url in urls
     ]
     assert company_resolve._official_site(statements) == expected
+
+
+def test_wikidata_requests_send_a_contact_user_agent(monkeypatch):
+    _, fake = _resolve(monkeypatch, "Nvidia")
+    assert fake.calls
+    for call in fake.calls:
+        agent = (call.get("headers") or {}).get("User-Agent", "")
+        assert "https://github.com/mvanhorn/last30days-skill" in agent
