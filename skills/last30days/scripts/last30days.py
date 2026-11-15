@@ -29,7 +29,7 @@ def ensure_supported_python(version_info: tuple[int, int, int] | object | None =
         return
     req = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
     sys.stderr.write(
-        f"last30days v3 requires Python {req}+.\n"
+        f"last30days v4 requires Python {req}+.\n"
         f"Detected Python {major}.{minor}.{micro}.\n"
         f"Install with:\n"
         f"  Mac:     brew install python@{req}\n"

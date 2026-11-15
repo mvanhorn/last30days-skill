@@ -289,14 +289,38 @@ def _company_led_by(person_id: str) -> dict[str, Any] | None:
     return led[0]
 
 
+def _site_host(url: str) -> str:
+    host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", str(url).strip().casefold()).split("/", 1)[0]
+    return host.split(":", 1)[0].removeprefix("www.")
+
+
+def _official_site(sites: list[dict[str, Any]]) -> str:
+    """The one official site, or "" when the statements do not settle one.
+
+    A single statement is the site. Several with no preferred one settle a
+    site only when most of them are on one host, as with a company that lists
+    a regional page per country (apple.com/de/, apple.com/jp/, ...): the site
+    is that host's root.
+    """
+    if len(sites) == 1:
+        return _value(sites[0])
+    hosts = [_site_host(_value(site)) for site in sites]
+    if not hosts:
+        return ""
+    top = max(set(hosts), key=hosts.count)
+    if not top or hosts.count(top) * 2 <= len(hosts):
+        return ""
+    return f"https://{top}/"
+
+
 def _company_fields(
     entity: dict[str, Any], listing: bool = True, names: bool = False,
 ) -> dict[str, Any]:
     labels = entity["labels"]
     fields: dict[str, Any] = {"company": (labels.get("en") or labels["mul"])["value"]}
-    sites = _preferred_or_all(_statements(entity, _OFFICIAL_WEBSITE))
-    if len(sites) == 1:
-        fields["company_site"] = _value(sites[0])
+    site = _official_site(_preferred_or_all(_statements(entity, _OFFICIAL_WEBSITE)))
+    if site:
+        fields["company_site"] = site
     if listing:
         fields.update(_primary_listing(entity))
     if names:

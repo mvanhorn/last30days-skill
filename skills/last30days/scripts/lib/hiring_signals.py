@@ -130,13 +130,21 @@ def infer_company_size(items: list[schema.SourceItem], *, topic: str = "") -> st
     return "mid-market"
 
 
+# Keywords match as whole words (plural "s" allowed), so "ai" does not match "retail" or
+# "training" and "ml" does not match "html".
+_THEME_PATTERNS: dict[str, re.Pattern[str]] = {
+    theme: re.compile(r"\b(?:" + "|".join(re.escape(k) for k in keywords) + r")s?\b")
+    for theme, keywords in THEME_KEYWORDS.items()
+}
+
+
 def _theme_items(items: list[schema.SourceItem]) -> dict[str, list[schema.SourceItem]]:
     themed: dict[str, list[schema.SourceItem]] = defaultdict(list)
     for item in items:
         text = f"{item.title} {item.body}".lower()
         matched = False
-        for theme, keywords in THEME_KEYWORDS.items():
-            if any(keyword in text for keyword in keywords):
+        for theme, pattern in _THEME_PATTERNS.items():
+            if pattern.search(text):
                 themed[theme].append(item)
                 matched = True
         if not matched:
