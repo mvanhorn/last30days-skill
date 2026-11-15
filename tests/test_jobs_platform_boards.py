@@ -23,6 +23,8 @@ from lib.job_boards import detect, google, ibm, jibe, oracle, phenom, robots, si
 from tests.test_render_patents import _report
 
 WINDOW = ("2026-10-15", "2026-11-14")
+# The real resolver, kept before the autouse fixture stubs it.
+_REAL_RESOLVES_PUBLIC = sitemap._resolves_public
 FX = json.loads((Path(__file__).parent / "fixtures" / "jobs_platforms.json").read_text(encoding="utf-8"))
 
 # Careers-page markup as each platform serves it (trimmed from the live pages).
@@ -55,8 +57,11 @@ TALENTBREW_PAGE = (
 
 
 @pytest.fixture(autouse=True)
-def _fresh_robots():
+def _fresh_robots(monkeypatch):
     robots.clear_cache()
+    # Tests never resolve names: a name resolves to a public address unless
+    # it is one a test marks as internal.
+    monkeypatch.setattr(sitemap, "_resolves_public", lambda name: "internal" not in name)
     yield
     robots.clear_cache()
 
@@ -832,3 +837,45 @@ def test_role_pages_from_a_sitemap_are_fetched_with_the_redirect_check():
     _run("Uber", "https://www.uber.com/", fake)
     assert guards and all(guard is not None for guard in guards)
     assert not guards[0]("http://127.0.0.1/") and guards[0]("https://jobs.uber.com/en/jobs/1/")
+
+
+def test_a_same_site_name_that_resolves_to_a_private_address_is_not_fetched(monkeypatch):
+    urlset = (
+        "<urlset><url><loc>https://internal.jobs.uber.com/en/jobs/149573/</loc></url>"
+        "<url><loc>https://jobs.uber.com/en/jobs/149574/</loc></url></urlset>"
+    )
+    fake = _Site(texts={
+        "https://jobs.uber.com/robots.txt": "User-Agent: *\nSitemap: https://jobs.uber.com/sitemap.xml\n",
+        "https://jobs.uber.com/sitemap.xml": urlset,
+    })
+    _items, artifact = _run("Uber", "https://www.uber.com/", fake)
+    assert not any("internal." in url for url in fake.asked)
+    assert artifact["open_roles"] == 1
+
+
+def test_name_resolution_rejects_any_private_answer(monkeypatch):
+    import socket
+
+    answers = {
+        "public.example": ["93.184.216.34"],
+        "mixed.example": ["93.184.216.34", "10.1.2.3"],
+        "loopback.example": ["127.0.0.1"],
+        "v6local.example": ["fe80::1%en0"],
+    }
+
+    def getaddrinfo(name, *_args, **_kwargs):
+        if name not in answers:
+            raise socket.gaierror("no such name")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in answers[name]]
+
+    monkeypatch.setattr(sitemap.socket, "getaddrinfo", getaddrinfo)
+    resolve = _REAL_RESOLVES_PUBLIC
+    resolve.cache_clear()
+    try:
+        assert resolve("public.example") is True
+        assert resolve("mixed.example") is False
+        assert resolve("loopback.example") is False
+        assert resolve("v6local.example") is False
+        assert resolve("missing.example") is False
+    finally:
+        resolve.cache_clear()

@@ -16,8 +16,10 @@ titles only, and says so.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import re
+import socket
 import time
 from html import unescape
 from typing import Any, Callable
@@ -70,11 +72,30 @@ def _public_url(url: str, host: str) -> bool:
     name = (parsed.hostname or "").lower()
     if parsed.scheme not in ("http", "https") or not name or name == "localhost" or name.endswith(".localhost"):
         return False
+    if not jobs._same_site(name, host):
+        return False
     try:
-        address = ipaddress.ip_address(name)
+        return ipaddress.ip_address(name).is_global
     except ValueError:
-        return jobs._same_site(name, host)
-    return address.is_global and jobs._same_site(name, host)
+        return _resolves_public(name)
+
+
+@functools.lru_cache(maxsize=256)
+def _resolves_public(name: str) -> bool:
+    """Whether every address ``name`` resolves to is a public one. A name on
+    the company's site that points at a private network (an internal
+    subdomain) is not fetched; a name that does not resolve is not either."""
+    try:
+        answers = socket.getaddrinfo(name, None, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return False
+    addresses = set()
+    for answer in answers:
+        try:
+            addresses.add(ipaddress.ip_address(answer[4][0].split("%", 1)[0]))
+        except ValueError:
+            return False
+    return bool(addresses) and all(address.is_global for address in addresses)
 
 
 def _fetch(url: str, deadline: float) -> str | None:
