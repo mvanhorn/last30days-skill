@@ -9,6 +9,14 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.0.3] - 2026-11-15
+
+### Fixed
+
+- Techmeme now reads enough result pages to fill the depth cap (16 headlines by default, 30 at deep) instead of stopping at Techmeme's first 10, when the installed `techmeme-pp-cli` supports `search --pages`; older helpers still read one page. ([#1460](https://github.com/mvanhorn/last30days-skill/issues/1460))
+- Setup now upgrades the Techmeme helper to 2026.11.1, the first release that reads past Techmeme's first 10 results. ([#1461](https://github.com/mvanhorn/last30days-skill/issues/1461))
+
+
 ## [4.0.2] - 2026-11-15
 
 ### Fixed
