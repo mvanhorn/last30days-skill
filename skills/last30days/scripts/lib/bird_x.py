@@ -369,7 +369,7 @@ def get_bird_status() -> Dict[str, Any]:
     }
 
 
-def _invoke_bird_subprocess(query: str, count: int, timeout: int):
+def _invoke_bird_subprocess(query: str, count: int, timeout: int, top: bool = False):
     """Invoke the vendored bird-search.mjs subprocess once.
 
     Returns (result, error_dict). If error_dict is non-None, treat it as the
@@ -384,6 +384,8 @@ def _invoke_bird_subprocess(query: str, count: int, timeout: int):
         "--count", str(count),
         "--json",
     ]
+    if top:
+        cmd.append("--top")
 
     try:
         result = subproc.run_with_timeout(
@@ -421,6 +423,7 @@ def _run_bird_search(
     timeout: int,
     deadline: Optional[float] = None,
     cancel: Any = None,
+    top: bool = False,
 ) -> Dict[str, Any]:
     """Run one search, moving to the next browser's X session on rejection.
 
@@ -432,7 +435,9 @@ def _run_bird_search(
     """
     while True:
         started_with = _credentials.get('AUTH_TOKEN')
-        response = _run_bird_search_once(query, count, timeout, deadline=deadline, cancel=cancel)
+        response = _run_bird_search_once(
+            query, count, timeout, deadline=deadline, cancel=cancel, top=top,
+        )
         error = str(response.get("error") or "") if isinstance(response, dict) else ""
         if not error or not _session_suspect(error):
             return response
@@ -512,6 +517,7 @@ def _run_bird_search_once(
     timeout: int,
     deadline: Optional[float] = None,
     cancel: Any = None,
+    top: bool = False,
 ) -> Dict[str, Any]:
     """Run a search using the vendored bird-search.mjs module.
 
@@ -545,7 +551,7 @@ def _run_bird_search_once(
                 return _invalid_json_error(
                     attempt, last_decode_error, budget_exhausted=True,
                 )
-        result, terminal_error = _invoke_bird_subprocess(query, count, attempt_timeout)
+        result, terminal_error = _invoke_bird_subprocess(query, count, attempt_timeout, top=top)
         if terminal_error is not None:
             return terminal_error
 
@@ -671,7 +677,12 @@ def search_x(
         Raw Bird JSON response or error dict.
     """
     count = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    cancel_kwargs = {"cancel": cancel} if cancel is not None else {}
+    search_kwargs = {"cancel": cancel} if cancel is not None else {}
+    # Topic searches read X's Top tab. Latest is a time-ordered feed, so on a
+    # busy topic its first page is the last few minutes of zero-engagement
+    # posts, and handle expansion then promotes whoever happened to post in
+    # those minutes. Handle and mention searches keep Latest for coverage.
+    search_kwargs["top"] = True
     base_timeout = 30 if depth == "quick" else 45 if depth == "default" else 60
     timeout = _clamped_bird_timeout(base_timeout, deadline)
     if timeout is None:
@@ -685,7 +696,7 @@ def search_x(
     date_filters = _date_filters(from_date, to_date)
 
     _log(f"Searching: {query}")
-    response = _run_bird_search(query, count, timeout, deadline=deadline, **cancel_kwargs)
+    response = _run_bird_search(query, count, timeout, deadline=deadline, **search_kwargs)
     last_clean_response = response if not response.get("error") else None
 
     # Check if we got results
@@ -703,7 +714,7 @@ def search_x(
             timeout = _clamped_bird_timeout(base_timeout, deadline)
             if timeout is None:
                 return _budget_stop(response, last_clean_response)
-            response = _run_bird_search(query, count, timeout, deadline=deadline, **cancel_kwargs)
+            response = _run_bird_search(query, count, timeout, deadline=deadline, **search_kwargs)
             if not response.get("error"):
                 last_clean_response = response
             items = parse_bird_response(response, query=core_topic)
@@ -716,7 +727,7 @@ def search_x(
         timeout = _clamped_bird_timeout(base_timeout, deadline)
         if timeout is None:
             return _budget_stop(response, last_clean_response)
-        response = _run_bird_search(query, count, timeout, deadline=deadline, **cancel_kwargs)
+        response = _run_bird_search(query, count, timeout, deadline=deadline, **search_kwargs)
         if not response.get("error"):
             last_clean_response = response
         items = parse_bird_response(response, query=core_topic)
@@ -744,7 +755,7 @@ def search_x(
             timeout = _clamped_bird_timeout(base_timeout, deadline)
             if timeout is None:
                 return _budget_stop(response, last_clean_response)
-            response = _run_bird_search(query, count, timeout, deadline=deadline, **cancel_kwargs)
+            response = _run_bird_search(query, count, timeout, deadline=deadline, **search_kwargs)
             if not response.get("error"):
                 last_clean_response = response
 
