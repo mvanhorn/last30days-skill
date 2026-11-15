@@ -87,6 +87,7 @@ from . import (
     youtube_yt,
 )
 from .cluster import cluster_candidates
+from .cluster_diversity import diversify_clusters
 from . import fusion
 from . import render
 from .fusion import collapse_duplicate_urls, source_item_key, weighted_rrf
@@ -3336,7 +3337,11 @@ def run(
             )
             http.fixture_source_record(star_request, collected_star_map)
 
-    clusters = cluster_candidates(ranked_candidates, plan)
+    # Reorder here, not in render, so chat numbering, the saved file and
+    # --drill N (report.clusters[N - 1]) agree on which cluster is which.
+    clusters = diversify_clusters(
+        cluster_candidates(ranked_candidates, plan), ranked_candidates, plan,
+    )
     warnings = _warnings(items_by_source, ranked_candidates, bundle.errors_by_source, degraded_by_source)
     # One-sided entity coverage is a reporting warning, not a source failure:
     # marking the source PARTIAL would trip LAST30DAYS_STRICT_EXIT on runs that
