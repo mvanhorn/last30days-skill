@@ -266,3 +266,64 @@ def test_host_plan_naming_jobs_on_a_person_topic_fetches_jobs():
     )
     assert _planned(report) == [["reddit", "jobs"], ["hackernews"]]
     assert "jobs" in fetched
+
+
+# ---- #1449: backfill only lanes that can run this session ----
+
+def _backfill(available, monkeypatch, can_run, **kwargs):
+    from lib import trustpilot
+
+    calls = []
+
+    def fake_can_run(config=None):
+        calls.append(config)
+        return {"can_run": can_run}
+
+    monkeypatch.setattr(trustpilot, "can_run_now", fake_can_run)
+    plan = planner._sanitize_plan(
+        plan_with(["reddit"]), "test topic", available, None, "default",
+        honor_plan_sources=True,
+    )
+    pipeline._ensure_unplanned_lanes_in_host_plan(plan, available, **kwargs)
+    return plan.subqueries[0].sources, calls
+
+
+def test_trustpilot_without_a_session_is_not_backfilled(monkeypatch, capsys):
+    sources, calls = _backfill(["reddit", "trustpilot", "digg"], monkeypatch, can_run=False)
+    assert sources == ["reddit", "digg"]
+    assert calls
+    err = capsys.readouterr().err
+    assert "Not adding trustpilot" in err
+    assert "Added installed/opted-in/requested sources" in err
+    assert "digg" in err and "trustpilot" not in err.split("Added")[1]
+
+
+def test_trustpilot_that_can_run_is_still_backfilled(monkeypatch):
+    sources, _ = _backfill(["reddit", "trustpilot"], monkeypatch, can_run=True)
+    assert sources == ["reddit", "trustpilot"]
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"requested_sources": ["reddit", "trustpilot"]},
+    {"trustpilot_domain": "example.com"},
+])
+def test_explicitly_requested_trustpilot_is_backfilled_without_a_session(monkeypatch, kwargs):
+    sources, calls = _backfill(["reddit", "trustpilot"], monkeypatch, can_run=False, **kwargs)
+    assert sources == ["reddit", "trustpilot"]
+    assert calls == []
+
+
+def test_arxiv_backfill_is_unchanged_and_never_probes_trustpilot(monkeypatch):
+    sources, calls = _backfill(["reddit", "arxiv"], monkeypatch, can_run=False)
+    assert sources == ["reddit", "arxiv"]
+    assert calls == []
+
+
+def test_runbook_describes_host_plan_backfill_honestly():
+    from tests.skill_contract import reference_text
+
+    runbook = reference_text("research-runbook")
+    assert "never expands a narrow list" not in runbook
+    assert "is added to the primary subquery" in runbook
+    assert "`EXCLUDE_SOURCES` or `--search` keeps one out" in runbook
+    assert "Trustpilot when `trustpilot_can_run` is false" in runbook

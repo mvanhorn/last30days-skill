@@ -48,18 +48,35 @@ TRANSCRIPT_LIMITS = {
 # quality_nudge reads these via last30days.py to suppress the stale-yt-dlp
 # nudge when every attempted fetch actually succeeded. yt-dlp path only: the
 # nudge diagnoses the local binary, not the ScrapeCreators API.
-_TRANSCRIPT_FETCH_STATS = {"attempts": 0, "failures": 0}
+#
+# ``target`` sums each search's transcript target, so health is measured
+# against what the run tried to get rather than every surviving video.
+# ``blocked`` counts searches whose yt-dlp hit a YouTube bot check or rate
+# limit, and ``sc_rescued`` counts transcripts the ScrapeCreators fallback
+# fetched instead: those failures are the network, not a stale binary.
+_TRANSCRIPT_FETCH_STATS = {
+    "attempts": 0, "failures": 0, "target": 0, "blocked": 0, "sc_rescued": 0,
+}
+_TRANSCRIPT_FETCH_STATS_LOCK = threading.Lock()
 
 
 def get_transcript_fetch_stats() -> Dict[str, int]:
     """Return cumulative transcript-fetch stats for this process."""
-    return dict(_TRANSCRIPT_FETCH_STATS)
+    with _TRANSCRIPT_FETCH_STATS_LOCK:
+        return dict(_TRANSCRIPT_FETCH_STATS)
 
 
 def reset_transcript_fetch_stats() -> None:
     """Reset cumulative transcript-fetch stats (used by tests)."""
-    _TRANSCRIPT_FETCH_STATS["attempts"] = 0
-    _TRANSCRIPT_FETCH_STATS["failures"] = 0
+    with _TRANSCRIPT_FETCH_STATS_LOCK:
+        for key in _TRANSCRIPT_FETCH_STATS:
+            _TRANSCRIPT_FETCH_STATS[key] = 0
+
+
+def _add_transcript_fetch_stats(**counts: int) -> None:
+    with _TRANSCRIPT_FETCH_STATS_LOCK:
+        for key, value in counts.items():
+            _TRANSCRIPT_FETCH_STATS[key] += value
 
 # Max words to keep from each transcript
 TRANSCRIPT_MAX_WORDS = 5000
@@ -1741,6 +1758,7 @@ def _fetch_transcripts_parallel(
     # Surface the split so the summary can't misrepresent a masked failure
     # as a clean success.
     sc_rescued = sum(1 for st in statuses.values() if st.get("sc_rescued"))
+    _add_transcript_fetch_stats(sc_rescued=sc_rescued)
     if sc_rescued:
         _log(f"Got transcripts for {got}/{len(video_ids)} videos "
              f"({errors} failed, {sc_rescued} rescued via ScrapeCreators fallback)")
@@ -1948,10 +1966,14 @@ def _search_and_transcribe(
         # and unfinished ones never ran to an answer, so neither counts as a
         # failure) for the stale-yt-dlp nudge.
         finished_ids = [vid for vid in candidate_ids if vid not in unfinished_ids]
-        _TRANSCRIPT_FETCH_STATS["attempts"] += len(finished_ids)
-        _TRANSCRIPT_FETCH_STATS["failures"] += sum(
-            1 for vid in finished_ids
-            if not transcripts.get(vid) and vid not in captions_disabled_ids
+        _add_transcript_fetch_stats(
+            attempts=len(finished_ids),
+            failures=sum(
+                1 for vid in finished_ids
+                if not transcripts.get(vid) and vid not in captions_disabled_ids
+            ),
+            target=transcript_limit,
+            blocked=int(_youtube_transcripts_blocked()),
         )
     else:
         _log(f"Transcript limit is 0 for depth={depth}, skipping transcript fetch")

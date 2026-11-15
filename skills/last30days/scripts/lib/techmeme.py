@@ -73,11 +73,43 @@ def _is_available() -> bool:
     return shutil.which(CLI_BIN) is not None
 
 
-def _build_search_args(topic: str) -> List[str]:
+def _techmeme_date(iso: str) -> str | None:
+    """ISO YYYY-MM-DD as Techmeme's M/D/YY (no zero padding), else None."""
+    if not isinstance(iso, str) or not _ISO_DATE_RE.match(iso.strip()):
+        return None
+    year, month, day = (int(part) for part in iso.strip().split("-"))
+    return f"{month}/{day}/{year % 100:02d}"
+
+
+def _date_clause(from_date: str | None, to_date: str | None) -> str:
+    """Techmeme's server-side window operator, ``date:[M/D/YY TO M/D/YY]``.
+
+    No space after the colon: that is the form verified live against
+    d3results.jsp. Empty when either bound is missing or malformed."""
+    start = _techmeme_date(from_date) if from_date else None
+    end = _techmeme_date(to_date) if to_date else None
+    if not start or not end:
+        return ""
+    return f"date:[{start} TO {end}]"
+
+
+def _build_search_args(
+    topic: str,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> List[str]:
     # --json (not --agent) avoids --compact, which blanks headline records on
-    # pre-PR-1383 binaries. Techmeme's `search` has no result-limit flag, so the
-    # depth cap is applied client-side after windowing.
-    return [CLI_BIN, "search", topic, "--json"]
+    # pre-PR-1383 binaries. Techmeme's `search` has no result-limit flag and
+    # returns one page of 10 newest-first hits, so the run window goes into the
+    # query as Techmeme's `date:[...]` operator; otherwise narrow queries burn
+    # all 10 slots on years-old archive hits. The helper passes the operator
+    # through to Techmeme unchanged. The depth cap and the date window are
+    # still applied client-side as a backstop.
+    query = topic
+    clause = _date_clause(from_date, to_date)
+    if clause and "date:" not in topic:
+        query = f"{topic} {clause}"
+    return [CLI_BIN, "search", query, "--json"]
 
 
 def _coerce_list(data: Any) -> List[Dict[str, Any]]:
@@ -164,7 +196,7 @@ def search_techmeme(
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    cmd = _build_search_args(topic)
+    cmd = _build_search_args(topic, from_date, to_date)
     _log(f"search '{topic}' (cap={limit})")
     response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
     records = response.get("results") or []

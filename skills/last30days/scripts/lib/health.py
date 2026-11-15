@@ -167,8 +167,13 @@ PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.27"
 # digg-pp-cli: 2026.10.1 is the first release whose `search` takes --topic,
 # the flag the engine sends when `search --help` lists no --sort. Earlier
 # releases reject the call outright.
+#
+# techmeme-pp-cli: 2026.9.1 is the first release whose `search` emits a dated
+# record per headline (printing-press-library #1440). Older releases emit no
+# `date`, so the engine cannot window Techmeme hits to the run.
 MIN_HELPER_VERSIONS: Dict[str, Tuple[int, ...]] = {
     "digg-pp-cli": (2026, 10, 1),
+    "techmeme-pp-cli": (2026, 9, 1),
 }
 
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)+")

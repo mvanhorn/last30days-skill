@@ -357,8 +357,23 @@ class TestHelperMinimumVersion:
         assert health.parse_version("digg-pp-cli dev") is None
         assert health.parse_version("") is None
 
-    def test_only_digg_has_a_minimum(self):
-        assert set(health.MIN_HELPER_VERSIONS) == {"digg-pp-cli"}
+    def test_digg_and_techmeme_have_minimums(self):
+        assert set(health.MIN_HELPER_VERSIONS) == {"digg-pp-cli", "techmeme-pp-cli"}
+        # 2026.9.1 is the first techmeme-pp-cli whose search emits dates.
+        assert health.MIN_HELPER_VERSIONS["techmeme-pp-cli"] == (2026, 9, 1)
+
+    def test_techmeme_before_the_dates_fix_is_outdated(self):
+        probe = self._probe("techmeme-pp-cli", "techmeme-pp-cli 2026.6.2\n")
+        assert probe.ok
+        assert probe.outdated is True
+        assert probe.prescription == health.helper_upgrade_cmd("techmeme")
+        assert "older than 2026.9.1" in probe.detail
+
+    def test_techmeme_at_the_dates_fix_is_current(self):
+        probe = self._probe("techmeme-pp-cli", "techmeme-pp-cli 2026.9.1\n")
+        assert probe.outdated is False
+        assert probe.prescription == ""
+        assert probe.detail == "techmeme-pp-cli 2026.9.1"
 
     def test_digg_below_minimum_is_outdated_with_the_upgrade_command(self):
         probe = self._probe("digg-pp-cli", "digg-pp-cli 2026.7.1\n")

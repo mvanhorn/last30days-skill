@@ -2435,6 +2435,9 @@ def run(
             plan, available,
             asked=_paid_lanes_asked_for(planner_requested_sources, config),
             installed=depth != "quick",
+            config=config,
+            requested_sources=planner_requested_sources,
+            trustpilot_domain=trustpilot_domain,
         )
         if depth != "quick" and not hiring_signals_mode:
             _ensure_company_jobs_in_host_plan(plan, available, company_signal)
@@ -4413,6 +4416,8 @@ def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
 # in (INCLUDE_SOURCES, --search, a targeting flag). A host plan that names none
 # of them in any subquery almost always means the host planner never knew to
 # list them, not that it chose to skip them, so they ride the primary subquery.
+# A lane that cannot run this session (Trustpilot with no browser session or
+# cached record) is never added: the host skipped it on purpose.
 # Paid lanes with their own host decision step (amazon, meta_ads) stay out
 # unless this run asked for them (HOST_PLAN_PAID_LANES below);
 # EXCLUDE_SOURCES and --search already filter ``available``.
@@ -4453,21 +4458,57 @@ def _paid_lanes_asked_for(
     ]
 
 
+def _backfill_lane_can_run(
+    source: str,
+    config: dict[str, Any] | None,
+    requested_sources: list[str] | None,
+    trustpilot_domain: str | None,
+) -> bool:
+    """Whether a backfill candidate could return data in this session.
+
+    Backfill exists for lanes the host forgot, so it must not add one the
+    host was told to skip because it cannot run now. Trustpilot needs a
+    browser session or a cached company record (``trustpilot_can_run`` in
+    --diagnose); without one the lane is a guaranteed SESSION_NEEDED skip.
+    An explicit ask (--search trustpilot, --trustpilot-domain) still adds it,
+    so the user sees why it did not run. Local reads only."""
+    if source != "trustpilot":
+        return True
+    if trustpilot_domain or "trustpilot" in (requested_sources or []):
+        return True
+    return bool(trustpilot.can_run_now(config).get("can_run"))
+
+
 def _ensure_unplanned_lanes_in_host_plan(
     plan: schema.QueryPlan,
     available: list[str],
     *,
     asked: list[str] | tuple[str, ...] = (),
     installed: bool = True,
+    config: dict[str, Any] | None = None,
+    requested_sources: list[str] | None = None,
+    trustpilot_domain: str | None = None,
 ) -> None:
     if not plan.subqueries:
         return
     planned = {source for subquery in plan.subqueries for source in subquery.sources}
     candidates = (*(HOST_PLAN_BACKFILL_SOURCES if installed else ()), *asked)
-    missing = [
-        source for source in candidates
-        if source in available and source not in planned
-    ]
+    missing = []
+    for source in candidates:
+        if source not in available or source in planned or source in missing:
+            continue
+        if source in asked or _backfill_lane_can_run(
+            source, config, requested_sources, trustpilot_domain,
+        ):
+            missing.append(source)
+        else:
+            log.source_log(
+                "Planner",
+                f"Not adding {source} to the --plan: it cannot run this session "
+                "(no browser session or cached record; see trustpilot_can_run "
+                "in --diagnose).",
+                tty_only=False,
+            )
     for source, (_flag_key, label) in HOST_PLAN_PAID_LANES.items():
         if source in available and source not in planned and source not in missing:
             log.source_log(
