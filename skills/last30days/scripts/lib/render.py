@@ -24,6 +24,7 @@ from . import (
     meta_ads,
     patent_digest,
     polymarket,
+    reddit_refs,
     registers,
     relevance,
     rerank,
@@ -2074,6 +2075,9 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
         "ratings",
     ]:
         val = eng.get(key)
+        if key == "score" and item.source == "reddit" and reddit_refs.score_pending(item.metadata):
+            parts.append("score pending")
+            continue
         if val is not None and val != 0:
             parts.append(f"{val} {key}")
     # Same drift as the source list above: this allowlist silently blanks the
@@ -4097,6 +4101,10 @@ def _format_engagement(item: schema.SourceItem | None) -> str | None:
     fields = ENGAGEMENT_DISPLAY.get(item.source)
     if fields:
         text = _fmt_pairs([(engagement.get(field), label) for field, label in fields])
+        if item.source == "reddit" and reddit_refs.score_pending(item.metadata):
+            # A fresh archive snapshot reads 0 or 1 whatever the thread's
+            # real score is, so it is withheld rather than shown.
+            text = ", ".join(part for part in ("score pending", text) if part)
     else:
         # Generic fallback: engagement.items() yields (key, value) but
         # _fmt_pairs expects (value, label), so swap them.
@@ -4462,7 +4470,15 @@ def _top_comments_list(
         return []
     if min_score is None:
         min_score = _TOP_COMMENT_MIN_SCORE.get(item.source, 0)
-    return [c for c in comments if (c.get("score") or 0) >= min_score][:limit]
+    # A pending comment (a fresh archive snapshot, score withheld) is exempt
+    # from the vote floor; it is listed after every scored comment and printed
+    # with no vote count.
+    scored = [
+        c for c in comments
+        if isinstance(c, dict) and not c.get("score_pending") and (c.get("score") or 0) >= min_score
+    ]
+    pending = [c for c in comments if isinstance(c, dict) and c.get("score_pending")]
+    return (scored + pending)[:limit]
 
 
 def _comment_insight(item: schema.SourceItem | None) -> str | None:
@@ -5092,6 +5108,46 @@ def _is_community_comment(item: schema.SourceItem, comment: dict, text: str) -> 
     return not (_author_key(author) and _author_key(author) == _author_key(item.author))
 
 
+def _comment_entities(report) -> tuple[list[str] | None, str]:
+    """The entities a Reddit comment can be about: the comparison's, or the
+    single topic's primary entity."""
+    from . import rerank
+
+    topic = report.topic or ""
+    compared = _parse_comparison_entities(topic)
+    raw = (report.query_plan.raw_topic if report.query_plan else "") or topic
+    return compared, rerank._primary_entity(raw)
+
+
+def _comment_entity_tags(
+    item: schema.SourceItem,
+    comment: dict,
+    text: str,
+    compared: list[str] | None,
+    entity: str,
+) -> list[str] | None:
+    """Whether a Reddit comment names the topic, and for a comparison which of
+    its entities.
+
+    Returns None when the comment is not quotable. A single-topic run returns
+    ``[]`` for a quotable comment: it names the entity, or it is a top-level
+    reply (``depth`` 0, or unset) to a post whose title does. A comparison has no reply
+    exemption: the comment must itself name an entity, and the result lists
+    each one it names.
+    """
+    from . import rerank
+
+    if compared:
+        tags = [name for name in compared if rerank._entity_grounded(text, name)]
+        return tags or None
+    if not entity or rerank._entity_grounded(text, entity):
+        return []
+    # A flat top-comment list (no ``depth`` field) holds top-level replies.
+    if comment.get("depth") in (0, None) and rerank._entity_grounded(item.title or "", entity):
+        return []
+    return None
+
+
 def _quotable(body: str) -> bool:
     """Long enough to quote, and words rather than a row of emoji."""
     return len(body) >= 12 and sum(ch.isalnum() for ch in body) >= 4
@@ -5142,6 +5198,7 @@ def _render_top_comments(
     """
     candidate_pool = report.ranked_candidates if candidates is None else candidates
     subject_handle = _subject_x_handle(report)
+    compared_entities, comment_entity = _comment_entities(report)
     floor_candidates = [
         cand
         for cand in candidate_pool
@@ -5190,34 +5247,51 @@ def _render_top_comments(
             # item author's own, or one with nothing quotable in it is not a
             # reaction to quote, so the next comment takes its position.
             community: list[tuple[dict, str]] = []
+            entity_tags: dict[int, list[str]] = {}
             for tc in item.metadata.get("top_comments") or []:
                 if not isinstance(tc, dict):
                     continue
                 raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
                 if not _is_community_comment(item, tc, raw):
                     continue
+                if item.source == "reddit":
+                    tags = _comment_entity_tags(
+                        item, tc, raw, compared_entities, comment_entity
+                    )
+                    if tags is None:
+                        continue
+                    entity_tags[id(tc)] = tags
                 body = _quote_text(raw, _QUOTE_TEXT_LIMIT)
                 if _quotable(body):
                     community.append((tc, body))
-            if community and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
-                top_score = community[0][0].get("score")
+            # A pending comment (a fresh archive snapshot, its score withheld)
+            # has no vote count to clear the vote floors with; it is quoted
+            # without one, after every scored line.
+            scored = [(tc, body) for tc, body in community if not tc.get("score_pending")]
+            if scored and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
+                top_score = scored[0][0].get("score")
                 if not (
                     isinstance(top_score, (int, float))
                     and not isinstance(top_score, bool)
                     and top_score >= _quote_pool_item_floor(item)
                 ):
                     # Too few voted for the item's best comment: skip the item.
-                    community = []
+                    community = [
+                        (tc, body) for tc, body in community if tc.get("score_pending")
+                    ]
             for position, (tc, body) in enumerate(
                 community[:_QUOTE_POOL_COMMENTS_PER_ITEM]
             ):
                 score = tc.get("score")
-                if not _quote_pool_has_vote(item.source, score):
+                pending = bool(tc.get("score_pending"))
+                if not pending and not _quote_pool_has_vote(item.source, score):
                     continue
                 rows.append({
+                    "pending": pending,
                     "position": position, "cand": cand, "item": item, "funny": funny,
                     "author": tc.get("author"), "score": score,
                     "vote_label": _vote_label_for(item.source), "body": body,
+                    "entities": entity_tags.get(id(tc), []),
                     # A comment with no link of its own is cited by the item it
                     # sits on. The candidate's URL is another item's whenever
                     # the candidate fused several.
@@ -5305,6 +5379,11 @@ def _render_top_comments(
         *other_first,
         *other_second,
     ]
+    # Pending lines carry no vote count, so they never take a place or a
+    # printed position ahead of a scored line from any platform.
+    priority.sort(key=lambda row: bool(row.get("pending")))
+    first_order.sort(key=lambda row: bool(row.get("pending")))
+    second_order.sort(key=lambda row: bool(row.get("pending")))
 
     # Eligibility is settled above; only now are duplicates removed, and the
     # limit applied, in the order of who is covered first.
@@ -5341,10 +5420,11 @@ def _render_top_comments(
             label = "post"
         else:
             label = _QUOTE_POOL_POSITION_LABELS[position]
+        about = f" (about {', '.join(row['entities'])})" if row.get("entities") else ""
         lines.append(
             f'- "{row["body"]}" '
             f"{_quote_attribution(item, row['author'], row['score'], row['vote_label'])}"
-            f"{url_part}{origin} — {label}{' — funny' if row['funny'] else ''}"
+            f"{url_part}{origin} — {label}{about}{' — funny' if row['funny'] else ''}"
         )
     return lines
 

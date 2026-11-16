@@ -171,8 +171,13 @@ def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, 
             score = int(_attr(tag, "score") or 0)
         except ValueError:
             score = 0
+        try:
+            depth = int(_attr(tag, "depth") or 0)
+        except ValueError:
+            depth = 0
         permalink = _attr(tag, "permalink")
         comments.append({
+            "depth": depth,
             "score": score,
             "author": author,
             "body": body[:300],
@@ -239,6 +244,7 @@ def fetch_comments(
                 "author": c["author"],
                 "excerpt": c["excerpt"],
                 "url": c["url"],
+                "depth": c.get("depth", 0),
             }
             for c in comments
         ],

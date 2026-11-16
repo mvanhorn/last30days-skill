@@ -13,11 +13,13 @@ def _item(source, url, comments, container=None):
     return schema.SourceItem(
         item_id=f"i-{url}",
         source=source,
-        title="Post",
+        title="Kanye West post",
         body="",
         url=url,
         container=container,
-        metadata={"top_comments": comments} if comments else {},
+        metadata=(
+            {"top_comments": [{"depth": 0, **c} for c in comments]} if comments else {}
+        ),
     )
 
 
@@ -176,7 +178,7 @@ def test_author_score_and_subreddit_survive_a_duplicate_merge():
     (kept,) = fusion.collapse_duplicate_urls([first, second])
     assert kept is first
     assert kept.metadata["top_comments"] == [
-        {"author": "CappaccinoJay", "score": 1315, "excerpt": "Internet feelings vs reality."}
+        {"depth": 0, "author": "CappaccinoJay", "score": 1315, "excerpt": "Internet feelings vs reality."}
     ]
     line = _line(render._render_top_comments(_report(kept, TIKTOK)), "Internet feelings")
     assert "🟠 u/CappaccinoJay on r/hiphopheads · 1,315 upvotes" in line

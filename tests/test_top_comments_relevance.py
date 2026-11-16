@@ -11,12 +11,15 @@ from lib import render, schema, signals
 def _candidate(
     *,
     source: str = "reddit",
-    title: str = "Post",
+    title: str = "test post",
     url: str = "https://example.com/1",
     local_relevance: float = 0.8,
     top_comments=None,
 ) -> schema.Candidate:
     source_items = []
+    top_comments = (
+        [{"depth": 0, **c} for c in top_comments] if top_comments is not None else None
+    )
     if top_comments is not None:
         source_items.append(
             schema.SourceItem(
@@ -187,7 +190,7 @@ class TestTopCommentsReadAllFloorClearingClusters:
                     {"score": 400, "author": "u/third", "excerpt": "third comment body here"},
                 ]
             cand = _candidate(
-                title=f"Thread {i}",
+                title=f"test thread {i}",
                 url=f"https://www.reddit.com/r/Kanye/comments/t{i}/",
                 local_relevance=0.6,
                 top_comments=comments if comments else [],

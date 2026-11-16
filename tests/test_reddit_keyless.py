@@ -455,6 +455,23 @@ class TestScoredListingsFallback:
         assert arctic_post["url"] in urls
         arctic.assert_called_once()
 
+    def test_fresh_archive_listing_score_is_pending(self):
+        fresh = _scored(2, score=3)
+        fresh["created_utc"] = 1_000_000 - 3600
+        old = _scored(3, score=80)
+        old["created_utc"] = 1_000_000 - 5 * 86400
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[fresh, old]), \
+             mock.patch.object(reddit_keyless.time, "time", return_value=1_000_000):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        by_id = {p["metadata"]["post_id"]: p for p in out}
+        assert by_id["000002"]["engagement_source"] == reddit_keyless.reddit_refs.ARCTIC_PENDING
+        assert by_id["000002"]["engagement"]["score"] is None
+        assert by_id["000003"]["engagement_source"] == reddit_keyless.reddit_refs.ARCTIC
+        assert by_id["000003"]["engagement"]["score"] == 80
+
     def test_both_empty_returns_empty(self):
         with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[]), \
@@ -526,3 +543,172 @@ class TestEnrichDeadline:
         assert fetch.call_count == 2
         assert {c.kwargs["deadline"] for c in fetch.call_args_list} == {
             1000.0 + reddit_keyless.ENRICH_BUDGET}
+
+
+# --- Keyless web floor -----------------------------------------------------
+
+from lib import reddit_discover, reddit_refs  # noqa: E402
+
+
+def _ref(pid, sub="hiphopheads", title=""):
+    ref = reddit_refs.canonical_thread(f"https://www.reddit.com/r/{sub}/comments/{pid}/x/")
+    ref.provenance.add("web")
+    ref.title = title
+    return ref
+
+
+def _archived(pid, title, sub="hiphopheads", selftext="", score=40, ncmt=7):
+    """An Arctic /posts/ids row as reddit_arctic hands it back (an old post)."""
+    return {
+        "id": "", "title": title, "url": f"https://www.reddit.com/r/{sub}/comments/{pid}/slug/",
+        "score": score, "num_comments": ncmt, "subreddit": sub, "created_utc": 1_700_000_000,
+        "author": "u", "selftext": selftext, "date": "2026-05-20",
+        "engagement": {"score": score, "num_comments": ncmt, "upvote_ratio": None},
+        "relevance": 0.0, "why_relevant": "Reddit listing (arctic-shift)",
+        "metadata": {"post_id": pid},
+    }
+
+
+def _floor(refs, archived, order=None):
+    """Patch the floor's search and Arctic hydration; comments stay off the network."""
+    def web_refs(topic, **kwargs):
+        if order is not None:
+            order.append("web")
+        return reddit_discover.WebFloor(refs=list(refs), queries=[f"site:reddit.com {topic}"],
+                                        rungs={"brave": "ok"})
+
+    by_id = {row["metadata"]["post_id"]: row for row in archived}
+    return (
+        mock.patch.object(reddit_keyless.reddit_discover, "web_refs", side_effect=web_refs),
+        mock.patch.object(
+            reddit_keyless.reddit_arctic, "fetch_posts_by_ids",
+            side_effect=lambda ids, **_k: ({i: dict(by_id[i]) for i in ids if i in by_id}, "ok"),
+        ),
+        mock.patch.object(reddit_keyless.reddit_arctic, "fetch_comment_tree", return_value=[]),
+    )
+
+
+class TestWebFloor:
+    def test_floor_threads_pass_the_topic_bar_and_note_the_drops(self):
+        refs = [_ref("aaa111"), _ref("bbb222"), _ref("ccc333")]
+        archived = [
+            _archived("aaa111", "Kanye drops a surprise album"),
+            _archived("bbb222", "Kanye West tour dates announced"),
+            _archived("ccc333", "Best pizza in town"),
+        ]
+        p_web, p_ids, p_tree = _floor(refs, archived)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_web, p_ids, p_tree, p_search, p_listing, p_arctic_listing, p_scores as scores, \
+             reddit_keyless.lane_notes() as notes:
+            out = reddit_keyless._discover(
+                "Kanye West", "default", None, from_date="2026-05-01", to_date="2026-05-31")
+        assert [p["metadata"]["post_id"] for p in out] == ["aaa111", "bbb222"]
+        assert all(p["provenance"] == ["web"] for p in out)
+        assert out[0]["engagement"]["score"] == 40
+        # Hydrated threads already carry their score; no backfill lookup.
+        scores.assert_not_called()
+        assert notes == ["1 of 3 threads dropped for not naming the topic (web search)"]
+
+    def test_dedicated_thread_kept_on_its_body_unrelated_one_dropped(self):
+        refs = [_ref("aaa111", sub="Kanye"), _ref("bbb222", sub="music")]
+        body = "Track 3 sounds like peak Kanye"
+        archived = [
+            _archived("aaa111", "Album leak?", sub="Kanye", selftext=body),
+            _archived("bbb222", "Album leak?", sub="music", selftext=body),
+        ]
+        p_web, p_ids, p_tree = _floor(refs, archived)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_web, p_ids, p_tree, p_search, p_listing, p_arctic_listing, p_scores:
+            out = reddit_keyless._discover(
+                "Kanye West", "default", None, dedicated_subreddits=["Kanye"])
+        assert [p["metadata"]["post_id"] for p in out if p.get("provenance") == ["web"]] == ["aaa111"]
+
+    def test_floor_runs_before_the_listings(self):
+        order = []
+        p_web, p_ids, p_tree = _floor([], [], order=order)
+        p_search, _p_listing, p_arctic_listing, p_scores = _lanes()
+
+        def listing(*_a, **_k):
+            order.append("listing")
+            return []
+
+        with p_web, p_ids, p_tree, p_search, p_arctic_listing, p_scores, \
+             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", side_effect=listing):
+            reddit_keyless._discover(
+                "Kanye West", "default", ["hiphopheads"], dedicated_subreddits=["Kanye"])
+        assert order[0] == "web"
+        assert order.count("listing") == 2
+
+    def test_floor_gets_the_resolved_subreddits(self):
+        p_web, p_ids, p_tree = _floor([], [])
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_web as web, p_ids, p_tree, p_search, p_listing, p_arctic_listing, p_scores:
+            reddit_keyless._discover("Kanye West", "default", ["hiphopheads"],
+                                     from_date="2026-05-01", to_date="2026-05-31")
+        kwargs = web.call_args.kwargs
+        assert kwargs["subreddits"] == ["hiphopheads"]
+        assert (kwargs["from_date"], kwargs["to_date"]) == ("2026-05-01", "2026-05-31")
+
+    def test_thread_found_by_floor_and_listing_is_one_item(self):
+        listing_post = _scored(1, score=999, ncmt=50)
+        listing_post["title"] = "Kanye listing copy"
+        pid = listing_post["metadata"]["post_id"]
+        refs = [_ref(pid, sub="test")]
+        archived = [_archived(pid, "Kanye listing copy", sub="test", score=12)]
+        p_web, p_ids, p_tree = _floor(refs, archived)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(listing=[listing_post])
+        with p_web, p_ids, p_tree, p_search, p_listing, p_arctic_listing, p_scores:
+            out = reddit_keyless._discover("Kanye", "default", ["test"])
+        same = [p for p in out if p["metadata"].get("post_id") == pid]
+        assert len(same) == 1
+        assert same[0]["engagement"]["score"] == 999  # the listing's live score
+
+    def test_floor_threads_survive_the_lane_relevance_floor(self):
+        refs = [_ref("aaa111")]
+        archived = [_archived("aaa111", "Kanye: thoughts after the listening session tonight")]
+        offtopic = [_searched(10 + i, score=5, rel=0.0) for i in range(4)]
+        p_web, p_ids, p_tree = _floor(refs, archived)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(search=offtopic)
+        with p_web, p_ids, p_tree, p_search, p_listing, p_arctic_listing, p_scores, \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               return_value={"top_comments": [], "comment_insights": [],
+                                             "num_comments": None}):
+            out = reddit_keyless.search_and_enrich("Kanye West", "2026-05-01", "2026-05-31")
+        assert any(p["metadata"].get("post_id") == "aaa111" for p in out)
+
+    def test_threads_with_archive_comments_skip_the_reddit_comment_fetch(self):
+        post = _post(1)
+        post["top_comments"] = [{"id": "c1", "excerpt": "hi", "depth": 0}]
+        with mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments") as fetch:
+            reddit_keyless._enrich_one(post)
+        fetch.assert_not_called()
+
+
+class TestLaneNotesReachTheSourceDetail:
+    def test_lane_note_becomes_reddit_detail(self):
+        from lib import pipeline, schema
+
+        def public(*_args, **_kwargs):
+            reddit_keyless._note("2 of 5 threads dropped for not naming the topic (web search)")
+            return [_post(1)]
+
+        with mock.patch("lib.reddit_public.search_reddit_public", side_effect=public):
+            items, artifact = pipeline._retrieve_stream(
+                topic="Kanye West",
+                subquery=schema.SubQuery(
+                    label="primary", search_query="Kanye West", ranking_query="Kanye West",
+                    sources=["reddit"],
+                ),
+                source="reddit", config={}, depth="quick",
+                date_range=("2026-05-01", "2026-05-31"),
+                runtime=schema.ProviderRuntime(
+                    reasoning_provider="mock", planner_model="mock", rerank_model="mock",
+                ),
+                mock=False,
+            )
+        assert len(items) == 1
+        assert artifact["_source_outcome_detail"] == (
+            "reddit served 1; 2 of 5 threads dropped for not naming the topic (web search)")
+
+    def test_notes_outside_a_sink_are_ignored(self):
+        reddit_keyless._note("nobody listening")  # never raises

@@ -14,7 +14,7 @@ def _item(source, url, *, author="", comments=None, likes=None, snippet="",
     if spoken:
         metadata["spoken_caption"] = True
     if comments:
-        metadata["top_comments"] = comments
+        metadata["top_comments"] = [{"depth": 0, **c} for c in comments]
     if highlights:
         metadata["transcript_highlights"] = highlights
     engagement = {}
@@ -25,7 +25,7 @@ def _item(source, url, *, author="", comments=None, likes=None, snippet="",
     return schema.SourceItem(
         item_id=f"i-{url}",
         source=source,
-        title="Post",
+        title="Sequoia Capital post",
         body=snippet,
         url=url,
         author=author,

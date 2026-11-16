@@ -86,6 +86,13 @@ class TestParseComments:
         assert rs.parse_comments("") == []
         assert rs.parse_comments("<html>no comments here</html>") == []
 
+    def test_nested_replies_keep_their_depth(self):
+        depths = {c["url"].rstrip("/").rsplit("/", 1)[-1]: c["depth"]
+                  for c in rs.parse_comments(_html())}
+        assert depths["ol8tp8n"] == 0
+        assert depths["olcy1iv"] == 1
+        assert depths["omlbiqg"] == 2
+
     def test_lowercased_attribute_names_parsed(self):
         comments = rs.parse_comments(LOWERCASED_ATTR_HTML)
         assert [c["score"] for c in comments] == [1136, 42]
@@ -220,6 +227,7 @@ class TestFetchCommentsFallback:
         assert out["top_comments"] == [{
             "score": 42, "date": "2026-07-02", "author": "u",
             "excerpt": "great thread", "url": "https://reddit.com/r/Rakuten/comments/1taeiw0/x/",
+            "depth": 0,
         }]
         assert out["comment_insights"] == [] or isinstance(out["comment_insights"], list)
         assert out["num_comments"] is None  # archive rows carry no post total

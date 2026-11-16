@@ -9,10 +9,24 @@ on whatever was discovered:
                   whole (floor-exempt) because the sub IS the topic.
   Search lane     Reddit's site search fragment (reddit_search): global keyword
                   search plus per-sub search for targeted subreddits. Results
-                  arrive dated and scored. Targeted runs also merge the
-                  subreddits' listing partials. Relevance-floored.
+                  arrive dated and scored. Relevance-floored.
+  Web floor       keyless web search for recent ``site:reddit.com`` threads
+                  (reddit_discover), hydrated through reddit_hydrate (Arctic
+                  Shift, else the search result itself). Threads whose title,
+                  or whose body in a resolved or dedicated subreddit, does
+                  not name the topic are dropped before any merge.
+  Listings        the last discovery rung: targeted runs merge the
+                  subreddits' listing partials; dedicated subs are pulled in
+                  full.
   Enrichment      shreddit comment + count enrichment (reddit_shreddit) for the
                   top-ranked posts (author + score + text + permalink).
+
+Each path has a health state (``reddit_health``): a site search or web rung
+refused with a 403 or a challenge page is skipped for 6 h across runs, a 429
+for the rest of the run. Site search failures stay out of the stream's
+failure sink: one refused path is a detail note, never the source's outcome.
+A caller that opens ``lane_paths()`` gets each path's state for the call,
+which the pipeline turns into the served-path detail.
 
 Returns ``[]`` (never raises) so ``pipeline.py`` can fall through to the
 ScrapeCreators backup when every keyless lane comes up empty.
@@ -29,6 +43,7 @@ from typing import Any, Dict, List, Optional
 
 from . import http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
+from . import reddit_discover, reddit_health, reddit_hydrate, reddit_refs, web_search_keyless
 # High-upvote posts from targeted-sub listings can bury on-topic search hits
 # under an engagement-first final sort. A relevance floor + relevance-first
 # final ranking keeps the section on-topic. Thresholds are shared with the
@@ -62,6 +77,59 @@ def lane_deadline(deadline: Optional[float]):
         yield
     finally:
         _lane_deadline.reset(token)
+
+
+# Notes the lane wants on the Reddit source's detail line (such as how many
+# web-floor threads the topic bar dropped). The caller opens a sink with
+# lane_notes(); with none open, a note is only logged.
+_lane_notes: contextvars.ContextVar[Optional[List[str]]] = contextvars.ContextVar(
+    "last30days_reddit_lane_notes", default=None,
+)
+
+
+@contextlib.contextmanager
+def lane_notes():
+    """Collect the lane's detail notes made in this context; yields the list."""
+    notes: List[str] = []
+    token = _lane_notes.set(notes)
+    try:
+        yield notes
+    finally:
+        _lane_notes.reset(token)
+
+
+# Each Reddit path's state for one lane call (``search``, the web rungs,
+# ``listing``, ``arctic``), in reddit_health's vocabulary. The caller opens a
+# sink with lane_paths() and turns it into the served-path detail.
+_lane_paths: contextvars.ContextVar[Optional[Dict[str, str]]] = contextvars.ContextVar(
+    "last30days_reddit_lane_paths", default=None,
+)
+
+
+@contextlib.contextmanager
+def lane_paths():
+    """Collect each Reddit path's state for lane calls in this context; yields the dict."""
+    paths: Dict[str, str] = {}
+    token = _lane_paths.set(paths)
+    try:
+        yield paths
+    finally:
+        _lane_paths.reset(token)
+
+
+def _mark(path: str, state: Optional[str]) -> None:
+    sink = _lane_paths.get()
+    if sink is not None and state:
+        sink[path] = state
+
+
+def _note(msg: Optional[str]) -> None:
+    if not msg:
+        return
+    _log(msg)
+    sink = _lane_notes.get()
+    if sink is not None and msg not in sink:
+        sink.append(msg)
 
 
 def _out_of_time(deadline: Optional[float]) -> bool:
@@ -176,6 +244,10 @@ def _scored_listings(
             _log(f"arctic-shift listing supplement failed: {exc}")
             arctic_posts = []
         if arctic_posts:
+            # An archive count on a fresh post is not a settled score yet.
+            now = time.time()
+            for p in arctic_posts:
+                reddit_hydrate.label_archive_post(p, now)
             # Merge and dedupe by URL — shreddit posts take priority.
             seen = {p["url"] for p in posts}
             added = 0
@@ -189,6 +261,145 @@ def _scored_listings(
     return posts
 
 
+def _web_floor(
+    topic: str,
+    depth: str,
+    subreddits: Optional[List[str]],
+    dedicated_subreddits: Optional[List[str]],
+    from_date: Optional[str],
+    to_date: Optional[str],
+    deadline: Optional[float],
+) -> List[Dict[str, Any]]:
+    """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
+    reddit_health.seed_web_rungs()
+    try:
+        # Filled in place, so a floor still running at the deadline hands back
+        # the threads its earlier queries found.
+        partial = reddit_discover.WebFloor()
+        found = _within(
+            deadline, "web floor", partial,
+            reddit_discover.web_refs,
+            topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
+            floor=partial, **_stage_deadline(deadline),
+        )
+        floor = reddit_discover.WebFloor(
+            refs=list(found.refs), queries=list(found.queries), rungs=dict(found.rungs),
+        )
+        _record_web_rungs(floor)
+        if not floor.refs:
+            return []
+        if _out_of_time(deadline):
+            _log("web floor hydration skipped: lane budget spent")
+            return []
+        hydrated = _within(
+            deadline, "web floor hydration", None,
+            reddit_hydrate.hydrate,
+            floor.refs, topic=topic, depth=depth, from_date=from_date, to_date=to_date,
+            **_stage_deadline(deadline),
+        )
+    except Exception as exc:  # the floor must never break the lane
+        _log(f"web floor failed: {type(exc).__name__}: {exc}")
+        return []
+    if hydrated is None:
+        return []
+    _record_arctic(hydrated.arctic_state)
+    _log(f"web floor: {hydrated.detail}")
+    bar = reddit_discover.apply_bar(
+        topic, hydrated.items, subreddits=subreddits, dedicated=dedicated_subreddits,
+    )
+    _note(bar.note("web search"))
+    for post in bar.kept:
+        post["topic_bar"] = True
+    return bar.kept
+
+
+_RUNG_STATES = {
+    web_search_keyless.OK: reddit_health.OK,
+    web_search_keyless.EMPTY: reddit_health.EMPTY,
+    web_search_keyless.ERROR: reddit_health.ERROR,
+    web_search_keyless.THROTTLED: reddit_health.THROTTLED,
+    web_search_keyless.BLOCKED: reddit_health.BLOCKED,
+}
+
+
+def _record_web_rungs(floor: "reddit_discover.WebFloor") -> None:
+    """Persist what each web rung answered and mark the lane's web paths.
+
+    Only the call that asked a query sees its rung states; a later subquery
+    served from the run memo reads the run's rung health instead."""
+    if not floor.queries:
+        return
+    for rung, state in floor.rungs.items():
+        mapped = _RUNG_STATES.get(state)
+        if rung in reddit_health.WEB_RUNGS and mapped:
+            reddit_health.record(rung, mapped, f"web search {state}")
+    for rung, state in web_search_keyless.rung_health().items():
+        if rung not in reddit_health.WEB_RUNGS:
+            continue
+        if state == web_search_keyless.SKIPPED:
+            _mark(rung, reddit_health.SKIPPED_CACHED)
+        else:
+            _mark(rung, _RUNG_STATES.get(state))
+    _mark("web", reddit_health.OK if floor.refs else reddit_health.EMPTY)
+
+
+def _record_arctic(state: str) -> None:
+    mapped = {
+        "ok": reddit_health.OK,
+        "throttled": reddit_health.THROTTLED,
+        "down": reddit_health.ERROR,
+    }.get(state)
+    if mapped:
+        reddit_health.record("arctic", mapped, f"posts/ids {state}")
+        _mark("arctic", mapped)
+
+
+def _site_search(
+    topic: str,
+    depth: str,
+    subreddits: Optional[List[str]],
+    from_date: Optional[str],
+    to_date: Optional[str],
+    deadline: Optional[float],
+) -> List[Dict[str, Any]]:
+    """Reddit's site search, gated and judged by its path health.
+
+    A search skipped earlier this run, or within a persisted skip, sends no
+    request. Its HTTP failures stay out of the stream's failure sink: a
+    refused site search is one path failing while the others still run, so
+    it is a detail note, never the Reddit source's outcome.
+    """
+    skip = reddit_health.skip_reason("search")
+    if skip:
+        _log(f"site search skipped ({skip})")
+        _mark("search", skip)
+        return []
+    with http.capture_failures() as failures:
+        posts = _within(
+            deadline, "site search", [],
+            reddit_search.search,
+            topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date,
+            **_stage_deadline(deadline),
+        )
+    blocked = reddit_search._blocked_reason
+    statuses = {getattr(f, "status_code", None) for f in list(failures)}
+    if blocked:
+        state = reddit_health.BLOCKED
+    elif posts:
+        state = reddit_health.OK
+    elif 429 in statuses:
+        state = reddit_health.THROTTLED
+    elif failures:
+        state = reddit_health.ERROR
+    else:
+        state = reddit_health.EMPTY
+    reddit_health.record("search", state, blocked or "")
+    _mark("search", state)
+    for post in posts or []:
+        post.setdefault("provenance", ["search"])
+    return posts or []
+
+
 def _discover(
     topic: str,
     depth: str,
@@ -198,6 +409,25 @@ def _discover(
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
+    # search.json is permanently 403/429 keyless (no Tier 0). Discovery is
+    # Reddit's site search: global, plus per-sub for targeted subreddits. The
+    # dedicated subs keep their full-listing lane below and are not searched.
+    if _out_of_time(deadline):
+        _log("site search skipped: lane budget spent")
+        search_posts = []
+    else:
+        search_posts = _site_search(topic, depth, subreddits, from_date, to_date, deadline)
+
+    # Web floor: recent threads from keyless web search, hydrated and held to
+    # the topic bar. Runs before the listings, which stay the last rung.
+    if _out_of_time(deadline):
+        _log("web floor skipped: lane budget spent")
+        web_posts: List[Dict[str, Any]] = []
+    else:
+        web_posts = _web_floor(
+            topic, depth, subreddits, dedicated_subreddits, from_date, to_date, deadline,
+        )
+
     # Dedicated lane: the entity's home subs are wholly on-topic. Pull
     # top+hot+new (real scores from the listing) and mark them floor-exempt so
     # an on-topic post whose title lacks the entity name is never dropped.
@@ -209,21 +439,8 @@ def _discover(
         )
         for p in dedicated_posts:
             p["dedicated"] = True
+            p.setdefault("provenance", ["listing"])
         _log(f"Dedicated lane: {len(dedicated_posts)} posts from {dedicated_subreddits}")
-
-    # search.json is permanently 403/429 keyless (no Tier 0). Discovery is
-    # Reddit's site search: global, plus per-sub for targeted subreddits. The
-    # dedicated subs keep their full-listing lane above and are not searched.
-    if _out_of_time(deadline):
-        _log("site search skipped: lane budget spent")
-        search_posts = []
-    else:
-        search_posts = _within(
-            deadline, "site search", [],
-            reddit_search.search,
-            topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date,
-            **_stage_deadline(deadline),
-        )
 
     # Targeted run: the caller chose these subreddits, so their listing cards
     # are on-topic; include them as scored discovery. A bare run fetches no
@@ -236,8 +453,12 @@ def _discover(
         if subreddits and not _out_of_time(deadline)
         else []
     )
+    for p in listing_posts:
+        p.setdefault("provenance", ["listing"])
+    if subreddits or dedicated_subreddits:
+        _mark("listing", reddit_health.OK if listing_posts or dedicated_posts else reddit_health.EMPTY)
     _log(
-        f"Tier 1 (site search) {len(search_posts)} posts; "
+        f"Tier 1 (site search) {len(search_posts)} posts; web floor {len(web_posts)}; "
         f"{'listing discovery ' + str(len(listing_posts)) if subreddits else 'no listings'}"
     )
 
@@ -245,7 +466,7 @@ def _discover(
     score_map: Dict[str, Dict[str, int]] = {}
     for p in listing_posts:
         pid = p.get("metadata", {}).get("post_id", "")
-        if pid:
+        if pid and not reddit_refs.score_pending(p):
             score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
 
     # Merge: dedicated-sub posts first (floor-exempt), then scored listing posts
@@ -266,12 +487,31 @@ def _discover(
             _apply_scores(p, score_map[pid])
         seen.add(p["url"])
         merged.append(p)
+    # Web-floor threads merge by thread id: a copy another rung already holds
+    # keeps that copy's live score and gains the floor's comments.
+    by_thread = {}
+    for p in merged:
+        key = reddit_refs.thread_key(p.get("url", ""))
+        if key:
+            by_thread.setdefault(key, p)
+    for p in web_posts:
+        key = reddit_refs.thread_key(p.get("url", ""))
+        if key in by_thread:
+            reddit_hydrate.merge_post(by_thread[key], p)
+            by_thread[key]["topic_bar"] = True
+            continue
+        if key:
+            by_thread[key] = p
+        merged.append(p)
 
     # Backfill posts still at score 0 from the free arctic-shift archive. Posts
     # already scored by search or a listing keep that live score; arctic only
     # fills the gap, and is best-effort (never raises).
+    # Hydrated web-floor threads carry their own labeled score (a pending
+    # archive score stays pending) and are not looked up again.
     need = [pid for p in merged
             if not (p.get("engagement", {}).get("score"))
+            and not p.get("engagement_source")
             for pid in [reddit_listing._post_id(p["url"])] if pid]
     if need and not _out_of_time(deadline):
         scores = _within(
@@ -280,7 +520,7 @@ def _discover(
         )
         filled = 0
         for p in merged:
-            if p.get("engagement", {}).get("score"):
+            if p.get("engagement", {}).get("score") or p.get("engagement_source"):
                 continue
             pid = reddit_listing._post_id(p["url"])
             if pid in scores:
@@ -292,7 +532,12 @@ def _discover(
 
 
 def _enrich_one(post: Dict[str, Any], deadline: Optional[float] = None) -> Dict[str, Any]:
-    """Attach shreddit comments + real comment count. Never raises."""
+    """Attach shreddit comments + real comment count. Never raises.
+
+    A thread that already has comments (the web floor's archive comments)
+    is left as it is."""
+    if post.get("top_comments"):
+        return post
     try:
         data = reddit_shreddit.fetch_comments(post.get("url", ""), deadline=deadline)
         if data.get("top_comments"):
@@ -472,11 +717,15 @@ def search_and_enrich(
     before = len(posts)
     # Dedicated-sub posts are floor-exempt: their whole subreddit is the topic,
     # so an on-topic post whose title lacks the entity name must not be dropped.
-    on_topic = [p for p in posts if p.get("dedicated") or (p.get("relevance") or 0) >= RELEVANCE_FLOOR]
+    # Web-floor threads already passed the topic bar, which is the stricter
+    # judge of whether a thread names the topic.
+    on_topic = [p for p in posts if p.get("dedicated") or p.get("topic_bar")
+                or (p.get("relevance") or 0) >= RELEVANCE_FLOOR]
     if len(on_topic) >= MIN_ON_TOPIC:
         posts = on_topic
     else:
-        nonzero = [p for p in posts if p.get("dedicated") or (p.get("relevance") or 0) > 0]
+        nonzero = [p for p in posts if p.get("dedicated") or p.get("topic_bar")
+                   or (p.get("relevance") or 0) > 0]
         if nonzero:
             posts = nonzero
     if len(posts) < before:

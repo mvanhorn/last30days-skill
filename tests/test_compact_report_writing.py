@@ -20,7 +20,7 @@ import last30days as cli
 from lib import html_render, render, report_checklist, schema
 
 
-def _item(source, item_id, *, title="A post about the topic", body="", url=None,
+def _item(source, item_id, *, title="A post about Kanye West", body="", url=None,
           author=None, container=None, engagement=None, metadata=None,
           published_at="2026-11-05", snippet=""):
     return schema.SourceItem(
@@ -115,7 +115,7 @@ def _report(candidates, *, clusters=None, extra_items=(), x_handle="kanyewest",
 
 def _reddit_thread(index, comments):
     return _item(
-        "reddit", f"r{index}", title=f"Reddit thread number {index}",
+        "reddit", f"r{index}", title=f"Kanye West Reddit thread number {index}",
         url=f"https://www.reddit.com/r/hiphopheads/comments/t{index}/",
         container="hiphopheads", engagement={"score": 500, "num_comments": 40},
         metadata={"top_comments": comments},
@@ -783,7 +783,7 @@ def test_quote_text_carries_no_raw_url():
 
 def _thread(source, index, scores, *, container=None):
     return _item(
-        source, f"{source}{index}", title=f"{source} item {index}",
+        source, f"{source}{index}", title=f"Kanye West {source} item {index}",
         url=f"https://example.com/{source}/{index}", container=container,
         metadata={"top_comments": [
             {"author": f"{source}{index}rank{rank}", "score": score,
@@ -878,7 +878,7 @@ def test_pool_covers_shown_clusters_before_other_items_within_the_cap():
     assert authors[:8] == [f"reddit{index}rank1" for index in range(1, 9)]
     assert authors[8:32] == [f"tiktok{index}rank1" for index in range(9, 33)]
     assert authors[32:] == [f"reddit{index}rank2" for index in range(1, 9)]
-    assert all(' — re: "tiktok item' in line for line in entries[8:32])
+    assert all(' — re: "Kanye West tiktok item' in line for line in entries[8:32])
 
 
 @pytest.mark.parametrize(
@@ -1018,7 +1018,7 @@ def test_second_comments_are_shared_round_by_round_once_top_comments_are_in():
 
 def _comments_item(source, index, comments, *, author=None, container=None):
     return _item(
-        source, f"{source}{index}", title=f"{source} item {index}",
+        source, f"{source}{index}", title=f"Kanye West {source} item {index}",
         url=f"https://example.com/{source}/{index}", author=author, container=container,
         metadata={"top_comments": comments},
     )

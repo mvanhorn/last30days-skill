@@ -7,7 +7,7 @@ from collections.abc import Iterable
 
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from . import entity_extract, schema
+from . import entity_extract, reddit_refs, schema
 
 # Standard RRF smoothing constant (Cormack et al. 2009)
 RRF_K = 60
@@ -44,7 +44,9 @@ def _normalize_url(url: str) -> str:
 
 def candidate_key(item: schema.SourceItem) -> str:
     if item.url:
-        return _normalize_url(item.url)
+        # Every URL form of one Reddit thread (old., redd.it, a comment
+        # permalink) is one candidate, keyed by the thread id.
+        return reddit_refs.thread_key(item.url) or _normalize_url(item.url)
     return f"{item.source}:{item.item_id}"
 
 
@@ -81,9 +83,17 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
 
     Keeps the richer value per field: an enrichment list the existing copy
     lacks (or a longer one), the larger numeric engagement counters, and the
-    longer body/snippet. Mutates and returns ``existing``.
+    longer body/snippet. Reddit copies merge per field by provenance: the
+    score from the most trusted source wins (a live score beats an archive
+    snapshot, which beats a pending one) and comments are unioned by comment
+    id. Mutates and returns ``existing``.
     """
+    reddit = existing.source == "reddit" and incoming.source == "reddit"
+    if reddit:
+        _merge_reddit_fields(existing, incoming)
     for key in _ENRICHMENT_KEYS:
+        if reddit and key == "top_comments":
+            continue
         theirs = incoming.metadata.get(key)
         if not theirs:
             continue
@@ -91,6 +101,8 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
         if not mine or (isinstance(theirs, list) and isinstance(mine, list) and len(theirs) > len(mine)):
             existing.metadata[key] = theirs
     for field_name, value in (incoming.engagement or {}).items():
+        if reddit and field_name == "score":
+            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             if existing.engagement.get(field_name) is None and value is not None:
                 existing.engagement[field_name] = value
@@ -114,6 +126,38 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
     elif len(incoming.snippet or "") > len(existing.snippet or ""):
         existing.snippet = incoming.snippet
     return existing
+
+
+def _merge_reddit_fields(existing: schema.SourceItem, incoming: schema.SourceItem) -> None:
+    """The Reddit fields whose winner depends on where each copy got them."""
+    mine_source = existing.metadata.get("engagement_source")
+    theirs_source = incoming.metadata.get("engagement_source")
+    mine_score = existing.engagement.get("score")
+    theirs_score = (incoming.engagement or {}).get("score")
+    mine_rank = reddit_refs.score_rank(mine_source)
+    theirs_rank = reddit_refs.score_rank(theirs_source)
+    numeric = isinstance(theirs_score, (int, float)) and not isinstance(theirs_score, bool)
+    take = theirs_rank > mine_rank or (
+        theirs_rank == mine_rank
+        and numeric
+        and not (isinstance(mine_score, (int, float)) and not isinstance(mine_score, bool) and mine_score >= theirs_score)
+    )
+    if take:
+        existing.engagement["score"] = theirs_score
+        if theirs_source:
+            existing.metadata["engagement_source"] = theirs_source
+        else:
+            existing.metadata.pop("engagement_source", None)
+    theirs_comments = incoming.metadata.get("top_comments") or []
+    if theirs_comments:
+        existing.metadata["top_comments"] = reddit_refs.union_comments(
+            existing.metadata.get("top_comments") or [], theirs_comments,
+        )
+        sources = {
+            existing.metadata.get("comments_source"), incoming.metadata.get("comments_source"),
+        } - {None, ""}
+        if sources:
+            existing.metadata["comments_source"] = "+".join(sorted(sources))
 
 
 def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.SourceItem]:
@@ -335,7 +379,8 @@ def _reddit_engagement_reservation(
     entity: str,
 ) -> list[schema.Candidate]:
     """The *reserve* highest-engagement Reddit candidates that are in-window
-    and on-topic, in engagement order."""
+    and on-topic, in engagement order. A copy whose score is pending has no
+    engagement to rank by yet and is passed over."""
     if reserve <= 0:
         return []
     floor = relevance_floor_for_entity(entity)
@@ -343,7 +388,10 @@ def _reddit_engagement_reservation(
     for c in fused:
         if c.source != "reddit" or schema.candidate_out_of_window(c):
             continue
-        reddit_items = [it for it in c.source_items if it.source == "reddit"]
+        reddit_items = [
+            it for it in c.source_items
+            if it.source == "reddit" and not reddit_refs.score_pending(it.metadata)
+        ]
         if not reddit_items:
             continue
         best = max(reddit_items, key=raw_engagement)

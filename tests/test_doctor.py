@@ -30,7 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import backends, digg, doctor, env, grok_x, health, http, prescriptions, reddit_search, setup_wizard
+from lib import backends, digg, doctor, env, grok_x, health, http, prescriptions, reddit_health, setup_wizard
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -1058,7 +1058,14 @@ class FourStateAudit(unittest.TestCase):
 
     def test_keyless_ok_no_evidence_is_working(self):
         rec = {"tier": "ok", "status": "ok"}
-        self.assertEqual(doctor.AUDIT_WORKING, doctor.audit_state("reddit", rec))
+        self.assertEqual(doctor.AUDIT_WORKING, doctor.audit_state("hackernews", rec))
+
+    def test_reddit_is_not_keyless_always_on(self):
+        # Every anonymous Reddit route closed; the floor rides third-party
+        # search and an archive, so Reddit needs run or probe evidence.
+        self.assertNotIn("reddit", doctor.KEYLESS_ALWAYS_ON)
+        rec = {"tier": "ok", "status": "ok"}
+        self.assertEqual(doctor.AUDIT_UNVERIFIED, doctor.audit_state("reddit", rec))
 
     def test_configured_ok_no_evidence_is_unverified(self):
         rec = {"tier": "ok", "status": "ok"}
@@ -1246,33 +1253,57 @@ class LiveProbe(unittest.TestCase):
 
     def test_reddit_probe_targets_the_endpoint_the_engine_uses(self):
         # Probing a hand-copied URL certified endpoints the engine had already
-        # abandoned (hot.json, then the retired feed). The probe asks the lane.
+        # abandoned (hot.json, the retired feed, then the anonymous site
+        # search). The probe asks the floor the lane asks: Brave, then Arctic.
         url = doctor._HTTP_PROBE_URLS["reddit"]
-        self.assertEqual(reddit_search.search_url("test"), url)
+        self.assertEqual(reddit_health.brave_probe_url(), url)
+        self.assertTrue(url.startswith("https://search.brave.com/search?"))
+        self.assertIn("site%3Areddit.com", url)
+        self.assertNotIn("reddit.com/svc", url)
+        follow = doctor._PROBE_FOLLOW_UPS["reddit"]
+        self.assertEqual("arctic", follow[0][0])
+        self.assertIn("/api/posts/ids?ids=", follow[0][2])
 
-    def _probe_reddit_with_body(self, body):
-        with mock.patch("lib.bounded_get.get", return_value=(200, body.encode("utf-8"), None)):
-            return doctor._probe_source("reddit", {}, 5)
+    BRAVE_PAGE = (Path(__file__).resolve().parent.parent / "fixtures" / "brave_reddit_serp.html")
 
-    def test_reddit_probe_200_with_results_passes(self):
-        body = (Path(__file__).resolve().parent.parent / "fixtures" / "reddit_search_page1.html").read_text()
-        res = self._probe_reddit_with_body(body)
+    def _probe_reddit_with_bodies(self, *bodies):
+        answers = [(200, body.encode("utf-8"), None) for body in bodies]
+        with mock.patch("lib.bounded_get.get", side_effect=answers) as get:
+            return doctor._probe_source("reddit", {}, 5), get
+
+    def test_reddit_probe_brave_results_and_arctic_answer_passes(self):
+        res, get = self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), '{"data": []}')
         self.assertTrue(res["ok"])
-        self.assertEqual("HTTP 200", res["detail"])
+        self.assertEqual("Brave HTTP 200; Arctic Shift HTTP 200", res["detail"])
+        self.assertEqual(2, get.call_count)
+        # A pass is fresh evidence: both paths read ok in the health cache.
+        entries = reddit_health.entries()
+        self.assertEqual("ok", entries["brave"]["state"])
+        self.assertEqual("ok", entries["arctic"]["state"])
 
-    def test_reddit_probe_200_no_results_page_passes(self):
-        # Reddit's explicit empty page is still the search endpoint answering.
-        res = self._probe_reddit_with_body(f"<div {reddit_search.NO_RESULTS_MARKER}></div>")
-        self.assertTrue(res["ok"])
-
-    def test_reddit_probe_200_challenge_page_is_blocked(self):
+    def test_reddit_probe_brave_page_without_results_is_blocked(self):
         # A 200 challenge page is the failure the lane hits: status alone
-        # would report a blocked Reddit as working.
-        res = self._probe_reddit_with_body("<html><title>Please wait for verification</title></html>")
+        # would report a refused floor as working. Arctic is not asked.
+        res, get = self._probe_reddit_with_bodies("<html><title>Captcha</title></html>")
         self.assertFalse(res["ok"])
         self.assertIn("HTTP 200", res["detail"])
         self.assertIn("blocked", res["detail"])
         self.assertFalse(res.get("transient", False))
+        self.assertEqual(1, get.call_count)
+
+    def test_reddit_probe_arctic_failure_fails_the_floor(self):
+        res, _get = self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), "<html>down</html>")
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["detail"].startswith("Arctic Shift: HTTP 200 but blocked"))
+
+    def test_reddit_probe_never_reads_a_cookie(self):
+        with mock.patch("lib.env.extract_browser_credentials") as creds, \
+             mock.patch("lib.cookie_extract.extract_cookies") as cookies, \
+             mock.patch("lib.cookie_extract.extract_cookies_with_source") as sourced:
+            self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), '{"data": []}')
+        creds.assert_not_called()
+        cookies.assert_not_called()
+        sourced.assert_not_called()
 
     def _probe_reddit_with_status(self, code):
         error = urllib.error.HTTPError(
@@ -1317,7 +1348,7 @@ class LiveProbe(unittest.TestCase):
         with (
             mock.patch(
                 "lib.doctor._http_ok",
-                side_effect=[(False, "HTTP 429"), (True, "HTTP 200")],
+                side_effect=[(False, "HTTP 429"), (True, "HTTP 200"), (True, "HTTP 200")],
             ),
             mock.patch("lib.doctor.time.sleep"),
         ):

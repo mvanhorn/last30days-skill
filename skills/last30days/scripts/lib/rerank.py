@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterable
 from datetime import datetime
 
-from . import digg, entity_extract, http, providers, relevance, schema, signals
+from . import digg, entity_extract, http, providers, reddit_refs, relevance, schema, signals
 
 
 # Penalty applied when a candidate does not mention the primary entity
@@ -1153,18 +1153,35 @@ def _is_fallback_scored(candidate: schema.Candidate) -> bool:
     return (candidate.metadata or {}).get(RERANK_PROVENANCE_KEY) == RERANK_PROVENANCE_FALLBACK
 
 
+def _engagement_pending(candidate: schema.Candidate) -> bool:
+    """Whether a Reddit candidate's every Reddit copy has a pending score."""
+    if candidate.source != "reddit":
+        return False
+    copies = [item for item in candidate.source_items if item.source == "reddit"]
+    return bool(copies) and all(reddit_refs.score_pending(item.metadata) for item in copies)
+
+
 def _final_score(candidate: schema.Candidate) -> float:
     normalized_rrf = _normalized_rrf(candidate.rrf_score)
     rerank_score = candidate.rerank_score or 0.0
     # Engagement is already 0-100 on an absolute per-source log scale
     # (signals.engagement_score): ~8 for a 3-like X post, ~50 for a 254-upvote
     # Reddit thread, ~90 for a 380-point HN story.
-    engagement_val = candidate.engagement if candidate.engagement is not None else 0.0
-    base = (
+    known = (
         0.60 * rerank_score
         + 0.20 * normalized_rrf
         + 0.10 * candidate.freshness
         + 0.05 * (candidate.source_quality * 100.0)
+    )
+    if _engagement_pending(candidate):
+        # A thread whose only score is a fresh archive snapshot has unknown
+        # engagement, not zero: it takes the weighted average of the four
+        # signals above (their weights sum to 0.95).
+        engagement_val = known / 0.95
+    else:
+        engagement_val = candidate.engagement if candidate.engagement is not None else 0.0
+    base = (
+        known
         + ENGAGEMENT_FINAL_WEIGHT * max(0.0, min(engagement_val, 100.0))
         + _digg_confirmation_bonus(candidate)
     )

@@ -125,6 +125,36 @@ def _no_arctic_network():
 
 
 @pytest.fixture(autouse=True)
+def _no_reddit_web_floor():
+    """The Reddit lane's web floor searches the web for every run, so any
+    in-process Reddit run would reach the network. Default it to finding
+    nothing, with fresh per-run state; its own tests override this fixture."""
+    from lib import reddit_discover, web_search_keyless
+
+    reddit_discover.reset_run_state()
+    web_search_keyless.reset_rung_health()
+    with mock.patch(
+        "lib.reddit_discover.web_refs", side_effect=lambda *_a, **_k: reddit_discover.WebFloor(),
+    ):
+        yield
+    reddit_discover.reset_run_state()
+    web_search_keyless.reset_rung_health()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_reddit_health():
+    """Reddit path health persists to reddit-health.json in the config dir,
+    which _isolated_config already points at this test's own tmp home, and
+    keeps per-run states in module memory. Start and end every test with
+    neither, so a skip one test records never steers another."""
+    from lib import reddit_health
+
+    reddit_health.reset_run_state()
+    yield
+    reddit_health.reset_run_state()
+
+
+@pytest.fixture(autouse=True)
 def _no_reddit_kept_thread_comments():
     """The post-ranking comment pass fetches reddit.com for every kept Reddit
     thread, so any in-process run that keeps one would reach the network.
