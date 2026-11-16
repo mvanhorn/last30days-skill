@@ -181,7 +181,9 @@ def _stamp_uploader(post: dict) -> None:
 
 def _finish(post: dict, ref: ThreadRef, topic: str) -> dict:
     """Canonical URL, subreddit, provenance and topic relevance on one item."""
-    subreddit = ref.subreddit or str(post.get("subreddit") or "")
+    # The subreddit Reddit or the archive reported is authoritative; a ref's
+    # URL (a host-supplied one included) can name the wrong community.
+    subreddit = str(post.get("subreddit") or "") or ref.subreddit
     canon = canonical_thread(
         f"https://www.reddit.com/r/{subreddit}/comments/{ref.post_id}/" if subreddit else ref.post_id
     )
@@ -285,6 +287,21 @@ def _attach_comments(
             _stamp_uploader(item)
             filled += 1
     return filled, failed, throttled
+
+
+def in_window(item: dict, from_date: Optional[str], to_date: Optional[str]) -> bool:
+    """Whether a hydrated thread is in the window (see ``_in_window``)."""
+    return _in_window(item, from_date, to_date)
+
+
+def attach_comments(
+    items: list[dict], depth: str = "default", deadline: Optional[float] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Archive comments for ``items`` hydrated with ``comments=False``, within
+    the lane's comment budget. Returns how many threads gained comments."""
+    filled, _failed = _attach_comments(items, depth, deadline, time.time() if now is None else now)
+    return filled
 
 
 def on_topic_count(items: Iterable[dict], topic: str) -> int:
