@@ -588,7 +588,8 @@ def _strip_canonical_boundary(md: str) -> str:
 def _promote_prose_labels(md: str) -> str:
     for source, normalized in PROSE_LABELS:
         md = re.sub(
-            rf"^{re.escape(source)}$",
+            # The terminal report ends the label line with a `\` hard break.
+            rf"^{re.escape(source)}[ \t]*\\?[ \t]*$",
             f"## {normalized}",
             md,
             flags=re.MULTILINE,

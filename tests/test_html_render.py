@@ -181,6 +181,21 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertIn("<ul>\n<li>Go deeper</li>\n<li>Compare</li>\n</ul>", rendered)
         self.assertNotIn("\\", rendered)
 
+    def test_terminal_patterns_label_with_a_hard_break_still_becomes_a_heading(self):
+        synthesis = (
+            "What I learned:\\\n"
+            "Teams ship agents.\n\n"
+            "KEY PATTERNS from the research:\\\n"
+            "1\\. First\\\n"
+            "2\\. Second"
+        )
+        rendered = html_render.render_html(
+            _report("AI agent frameworks", ["One"]), synthesis_md=synthesis
+        )
+        self.assertIn("Key patterns from the research</h2>", rendered)
+        self.assertIn("What I learned</h2>", rendered)
+        self.assertNotIn("KEY PATTERNS from the research:", rendered)
+
     def test_an_escaped_trailing_backslash_is_kept(self):
         rendered = html_render._markdown_to_html("Path is C:\\\\")
         self.assertIn("\\", rendered)
