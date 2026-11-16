@@ -126,8 +126,8 @@ class TestOnboardingContract(unittest.TestCase):
         """Declining optional X access must never strand the requested topic."""
         self.assertIn("RESEARCH CONTINUATION OVERRIDE", self.step0)
         self.assertIn("declining or skipping X must never stop", self.step0)
-        self.assertIn("immediately research it with `--no-browser-cookies`", self.modal)
-        self.assertIn("immediately research it with `--no-browser-cookies`", self.prose)
+        self.assertIn("research it now (`--no-browser-cookies` if Reddit got a no)", self.modal)
+        self.assertIn("research it now (`--no-browser-cookies` if Reddit got a no)", self.prose)
         self.assertIn("a skip or no answer is never consent", self.step0)
 
     def test_waiting_topic_defers_optional_prompts_and_x_retry(self):

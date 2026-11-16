@@ -159,6 +159,22 @@ class TestParsers:
 
 # --- expiry, blocks and skips ----------------------------------------------------------
 
+class TestWindow:
+    def test_a_90_day_window_searches_past_the_month_bucket(self, fake):
+        reddit_session.discover(_session(), TOPIC, depth="quick", from_date="2026-08-17", to_date=TO)
+        searches = [u for u in fake.urls if "/search" in u and "type=communities" not in u]
+        assert searches and all("t=month" not in u for u in searches)
+        assert all("t=year" in u for u in searches)
+
+    def test_default_window_keeps_the_month_bucket(self, fake):
+        import datetime as _dt
+        today = _dt.date.today()
+        reddit_session.discover(_session(), TOPIC, depth="quick",
+                                from_date=(today - _dt.timedelta(days=20)).isoformat(), to_date=today.isoformat())
+        searches = [u for u in fake.urls if "/search" in u and "type=communities" not in u]
+        assert searches and all("t=month" in u for u in searches)
+
+
 class TestExpiry:
     def test_ae2_logged_out_shell_is_session_expired_and_the_floor_still_serves(self, fake):
         fake.pages["posts"] = LOGGED_OUT
@@ -245,6 +261,16 @@ class TestPrivacy:
         # The lane's planner-resolved subreddits never reach session.named.
         assert "secretclub" not in session.named
         assert self._hydrate([self._ref("1aaaaab", "secretclub")], session).items == []
+
+    def test_subreddit_named_in_the_topic_is_admitted(self, fake):
+        reddit_session.reset_run_state()
+        config = {"_BROWSER_COOKIE_MODE": "read", env.REDDIT_CONSENT_VAR: "true",
+                  env.REDDIT_FROM_BROWSER_VAR: "chrome"}
+        session = reddit_session.session_for(
+            config, reader=lambda *_a: (COOKIE, "ok"), topic="what is new in r/secretclub",
+        )
+        assert "secretclub" in session.named
+        reddit_session.reset_run_state()
 
     def test_over_18_dropped_and_viewer_fields_absent(self, fake):
         fake.threads["1aaaaac"] = thread_json("1aaaaac", over_18=True)

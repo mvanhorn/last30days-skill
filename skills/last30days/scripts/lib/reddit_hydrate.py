@@ -307,7 +307,7 @@ def merge_post(existing: dict, incoming: dict) -> None:
             existing.get("top_comments") or [], incoming["top_comments"],
         )[:COMMENTS_PER_THREAD]
         existing["comments_source"] = "+".join(sorted(sources)) or LIVE
-    for key in ("title", "date", "selftext", "author"):
+    for key in ("title", "date", "selftext", "author", "matched_comment"):
         if not existing.get(key) and incoming.get(key):
             existing[key] = incoming[key]
     existing["provenance"] = sorted(set(existing.get("provenance") or []) | set(incoming.get("provenance") or []))

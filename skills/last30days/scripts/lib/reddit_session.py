@@ -235,7 +235,9 @@ def status() -> Optional[str]:
         return _run.get("status")
 
 
-def session_for(config: Mapping[str, Any], *, reader: Optional[Callable[..., tuple]] = None) -> Optional[Session]:
+def session_for(
+    config: Mapping[str, Any], *, reader: Optional[Callable[..., tuple]] = None, topic: str = "",
+) -> Optional[Session]:
     """This run's session, reading the cookie on first use. None when the gate
     refuses, the browser has no Reddit login, or a persisted skip for this
     login is in force."""
@@ -262,7 +264,7 @@ def session_for(config: Mapping[str, Any], *, reader: Optional[Callable[..., tup
             browser=str(config.get(env.REDDIT_FROM_BROWSER_VAR) or ""),
             entity_count=int(config.get("_comparison_entity_count") or 1),
             sc_floor=env.reddit_sc_min_items(dict(config)),
-            named=named_subreddits("", config.get("_dedicated_subreddits") or []),
+            named=named_subreddits(topic, config.get("_dedicated_subreddits") or []),
         )
         skip = reddit_health.skip_reason(PATH, cookie_fp=session.fp)
         if skip:
@@ -557,6 +559,8 @@ def discover(
     *,
     depth: str = "default",
     deadline: Optional[float] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
 ) -> Discovery:
     """Session search for ``topic``: posts, comments, communities, then posts
     inside the top communities. Stops at the first page that says the session
@@ -566,7 +570,8 @@ def discover(
         found.state = session.state
         return found
     try:
-        _discover(session, topic, depth, deadline, found)
+        window = reddit_search._time_filter(from_date, to_date)
+        _discover(session, topic, depth, deadline, found, window)
     except Exception as exc:  # the session must never break the lane
         _log(f"session search failed: {type(exc).__name__}")
         found.state = found.state or ERROR
@@ -577,10 +582,13 @@ def discover(
     return found
 
 
-def _discover(session: Session, topic: str, depth: str, deadline: Optional[float], found: Discovery) -> None:
+def _discover(
+    session: Session, topic: str, depth: str, deadline: Optional[float], found: Discovery,
+    window: str = "month",
+) -> None:
     cursor: Optional[str] = None
     for _page in range(POST_PAGES.get(depth, POST_PAGES["default"])):
-        state, body = _search_page(session, reddit_search.search_url(topic, "month", cursor=cursor), deadline)
+        state, body = _search_page(session, reddit_search.search_url(topic, window, cursor=cursor), deadline)
         if state != OK:
             found.state = state if state != ERROR or not found.refs else None
             return
@@ -593,7 +601,7 @@ def _discover(session: Session, topic: str, depth: str, deadline: Optional[float
             break
     if not session.room():
         return
-    state, body = _search_page(session, reddit_search.search_url(topic, "month", kind="comments", sort="new"), deadline)
+    state, body = _search_page(session, reddit_search.search_url(topic, window, kind="comments", sort="new"), deadline)
     if state != OK:
         found.state = state if state in (EXPIRED, THROTTLED) else None
         return
@@ -612,7 +620,7 @@ def _discover(session: Session, topic: str, depth: str, deadline: Optional[float
     for name in chosen[:COMMUNITY_SEARCHES]:
         if not session.room():
             return
-        state, body = _search_page(session, reddit_search.search_url(topic, "month", subreddit=name), deadline)
+        state, body = _search_page(session, reddit_search.search_url(topic, window, subreddit=name), deadline)
         if state != OK:
             found.state = state if state in (EXPIRED, THROTTLED) else None
             return

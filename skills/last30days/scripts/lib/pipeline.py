@@ -6670,7 +6670,7 @@ def _retrieve_stream_impl(
         lane_paths: dict[str, str] = {}
         # The consented logged-in session, when its gate passes (read once per
         # run; None otherwise). Its budget is spent per entity.
-        lane_session = reddit_session.session_for(config)
+        lane_session = reddit_session.session_for(config, topic=raw_topic or reddit_query)
         try:
             with reddit_keyless.lane_deadline(lane_deadline), \
                     reddit_keyless.lane_notes() as lane_notes, \

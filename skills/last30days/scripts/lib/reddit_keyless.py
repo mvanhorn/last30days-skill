@@ -385,6 +385,7 @@ def _session_layer(
         found = _within(
             deadline, "session search", None,
             reddit_session.discover, session, topic, depth=depth,
+            from_date=from_date, to_date=to_date,
             **_stage_deadline(deadline),
         )
         if found is None:

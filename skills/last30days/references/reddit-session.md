@@ -1,6 +1,6 @@
 # Reddit session offer
 
-Read when the root route for the Reddit session offer applies: a first-run setup where the user just said yes to X cookies, or a returning user whose first-run gate printed `REDDIT_OFFER`. On a Grok Bot host (`LAST30DAYS_HOST=grok-bot`) never ask this question, never run these commands, and return to the original request.
+Read when the root route for the Reddit session offer applies: a first-run setup right after the X cookie answer (yes or skip), or a returning user whose first-run gate printed `REDDIT_OFFER`. On a Grok Bot host (`LAST30DAYS_HOST=grok-bot`) never ask this question, never run these commands, and return to the original request.
 
 The Reddit session is the logged-in layer of free Reddit: search runs as the user's own reddit.com account, which finds more threads and comments and returns live scores. It needs its own yes. X consent never implies it. A `BROWSER_CONSENT=false` saved by skipping X does not block an explicit Reddit yes; `FROM_BROWSER=off` still does.
 
