@@ -2649,6 +2649,8 @@ def _story_search_status(record: object) -> str:
             f"{matches:,} match{'' if matches == 1 else 'es'}"
             if matches else "story search: no matches"
         )
+    if record.get("ran") and record.get("titles_only"):
+        status += " (titles only)"
     if record.get("story_partial"):
         status += " (partial)"
     return f"; {status}"

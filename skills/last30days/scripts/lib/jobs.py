@@ -449,7 +449,13 @@ def _search_story(provider: str, targets: list[Any]) -> tuple[list[dict[str, Any
         story.deadline = clock() + left * STORY_SHARE
     search = _named(name)
     allowed = min(story.calls, EIGHTFOLD_STORY_CALLS) if provider == COMPANY_PROVIDER_EIGHTFOLD else story.calls
-    pairs = [(target, term) for target in targets for term in story.terms][:max(0, allowed)]
+    # Each round gives every site a different term, so a capped search
+    # reaches every site of a tenant, not only the first.
+    terms = story.terms
+    pairs = [
+        (target, terms[(index + offset) % len(terms)])
+        for offset in range(len(terms)) for index, target in enumerate(targets)
+    ][:max(0, allowed)]
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     searched: list[str] = []
@@ -533,6 +539,10 @@ def _local_story_record(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     _tag_story_matches(items, terms)
     record = _story_record(ran=True, terms=terms)
     record["matches"] = _story_matches(items)
+    if not any(item.get("description_blocks") or item.get("description") for item in items):
+        # Rows with no role text (Kula's listing, a sitemap) are matched on
+        # their titles alone, which the digest says.
+        record["titles_only"] = True
     return record
 
 
@@ -1126,6 +1136,11 @@ def _read_board(
                 # Every site of the tenant is one company's, under one cap.
                 story_rows, story_record = _search_story(provider, [slug, *tenant_sites])
             items, board = search_workday_board(slug, deadline=deadline, **part)
+            while not items and tenant_sites:
+                # An empty or failing first site does not hide its siblings:
+                # the first one that lists roles becomes the board.
+                slug, tenant_sites = tenant_sites[0], tenant_sites[1:]
+                items, board = search_workday_board(slug, deadline=deadline, **part)
         elif provider == ATS_PROVIDER_SMARTRECRUITERS:
             items, board = read_smartrecruiters_board(slug, deadline=deadline, **part)
         elif provider == ATS_PROVIDER_WORKABLE:
@@ -1190,6 +1205,11 @@ def _read_board(
             story_record = _local_story_record(items)
         elif story_record is not None:
             extras = _merge_story_rows(items, story_rows)
+            if provider == ATS_PROVIDER_WORKDAY:
+                # Sites the capped search did not reach are still matched on
+                # the titles their listing gave.
+                untagged = [item for item in items if not item.get("story_term")]
+                _tag_story_matches(untagged, _story_terms())
             story_record["matches"] = _story_matches([*items, *extras])
         elif _story_terms():
             # A board this lane has no story search for, or read in part.
@@ -2406,10 +2426,14 @@ def search_workday_board(
         )
 
     # The total is reported on the first page only, so read that one first.
-    first = _workday_run([page(0)], deadline, clock)[0]
+    with http.tee_failures() as failures:
+        first = _workday_run([page(0)], deadline, clock)[0]
     if not isinstance(first, dict) or not isinstance(first.get("jobPostings"), list):
         # Not a listing: a site name the tenant does not have answers an
-        # error record, which is not paged through.
+        # error record, which is not paged through. A call that failed or
+        # never started is said, so a caller can tell it from no site.
+        if not isinstance(first, dict) and not any(failure.status_code == 404 for failure in failures):
+            info["board_unanswered"] = True
         return [], info
     try:
         total = int(first.get("total") or 0)
@@ -2530,13 +2554,16 @@ def read_workday_tenant_sites(
                 seen.add(key)
                 merged.append(row)
         if not rows:
+            # A site that failed or ran out of time was not read: the count
+            # is then a floor. A name that is no site changes nothing.
+            cut_short = cut_short or bool(read.get("board_unanswered"))
             continue
         sites.append({"site": other.split("/", 1)[1], "roles": len(rows)})
         totals.append(min(int(read.get("board_total") or 0), WORKDAY_ROW_CEILING))
         capped = capped or bool(read.get("board_capped"))
         cut_short = cut_short or bool(read.get("board_cut_short"))
     if len(sites) < 2:
-        return items, info
+        return items, {**info, "board_cut_short": cut_short} if cut_short else info
     if len(merged) > COMPANY_BOARD_ROW_CEILING:
         capped = True
     log.source_log(

@@ -409,8 +409,12 @@ class FakeTenant:
             self.list_calls.append(url)
         match = re.fullmatch(r"https://([^/]+)/wday/cxs/[^/]+/([^/]+)/jobs", url)
         rows = self.sites.get(f"{match.group(1)}/{match.group(2)}") if match else None
-        if rows is None:
-            raise jobs.http.HTTPError("not found", status_code=404)
+        if rows is None or isinstance(rows, Exception):
+            # As ``http.post`` does: the failure is recorded, then raised.
+            error = jobs.http.HTTPError("not found", status_code=404) if rows is None else \
+                jobs.http.HTTPError("server error", status_code=500)
+            jobs.http._record_failure(error)
+            raise error
         if isinstance(rows, dict):
             return rows
         offset = json_data["offset"]
@@ -516,6 +520,58 @@ class WorkdayTenantSitesTests(unittest.TestCase):
         self.assertEqual(1, artifact["open_roles"])
         self.assertNotIn("board_sites", artifact)
         self.assertEqual(["nke2 role 0"], [item["title"] for item in items])
+
+    def test_an_empty_first_site_does_not_hide_a_sibling_that_lists_roles(self):
+        tenant = FakeTenant(
+            {
+                f"{NIKE}/nke2": [],
+                f"{NIKE}/nke": [_site_row("nke", 0), _site_row("nke", 1)],
+            },
+            robots=NIKE_ROBOTS, page=NIKE_PAGE,
+        )
+        items, artifact = tenant.search("Nike", "https://www.nike.com")
+        self.assertEqual(["nke role 0", "nke role 1"], [item["title"] for item in items])
+        self.assertTrue(artifact["owned"])
+
+    def test_a_sibling_site_that_fails_makes_the_count_a_floor(self):
+        tenant = FakeTenant(
+            {
+                f"{NIKE}/nke2": [_site_row("nke2", 0)],
+                f"{NIKE}/nke": RuntimeError("server error"),
+            },
+            robots=NIKE_ROBOTS, page=NIKE_PAGE,
+        )
+        _items, artifact = tenant.search("Nike", "https://www.nike.com")
+        self.assertEqual(1, artifact["open_roles"])
+        self.assertTrue(artifact["open_roles_floor"])
+
+    def test_a_site_name_the_tenant_does_not_have_leaves_the_count_exact(self):
+        tenant = FakeTenant({f"{NIKE}/nke2": [_site_row("nke2", 0)]}, robots=NIKE_ROBOTS, page=NIKE_PAGE)
+        _items, artifact = tenant.search("Nike", "https://www.nike.com")
+        self.assertFalse(artifact["open_roles_floor"])
+
+    def test_capped_story_calls_reach_every_site_of_the_tenant(self):
+        tenant = FakeTenant(
+            {f"{NIKE}/{site}": [_site_row(site, 0)] for site in ("nke", "nke2", "nke4")},
+            robots=NIKE_ROBOTS, page=NIKE_PAGE,
+        )
+        searched = []
+        post = tenant.post
+
+        def record(url, json_data, headers=None, **kwargs):
+            if json_data.get("searchText"):
+                searched.append(url.rsplit("/", 2)[-2])
+            return post(url, json_data, headers=headers, **kwargs)
+
+        with patch("lib.jobs.http.get_text", side_effect=tenant.get_text), \
+                patch("lib.jobs.http.post", side_effect=record), \
+                patch("lib.jobs.http.get", side_effect=tenant.get):
+            jobs.search_jobs(
+                "Nike", ("2026-10-11", "2026-11-10"),
+                {"_jobs_story_terms": ["air", "energy", "jordan", "golf"]},
+                web_backend="none", site="https://www.nike.com",
+            )
+        self.assertEqual({"nke", "nke2", "nke4"}, set(searched))
 
     def test_without_robots_txt_the_sites_the_page_links_are_read(self):
         page = NIKE_PAGE + '<a href="https://nike.wd1.myworkdayjobs.com/nke4">Students</a>'

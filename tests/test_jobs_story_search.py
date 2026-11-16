@@ -409,3 +409,8 @@ def test_a_board_this_lane_cannot_search_records_that_story_search_did_not_run(m
         "ran": False, "terms": [], "matches": 0, "story_partial": False,
     }
     assert not any(item.get("story_term") for item in items)
+
+
+def test_a_board_matched_on_titles_alone_says_so():
+    record = {"ran": True, "terms": ["subscription"], "matches": 2, "story_partial": False, "titles_only": True}
+    assert render._story_search_status(record) == "; story search: 1 term, 2 matches (titles only)"
