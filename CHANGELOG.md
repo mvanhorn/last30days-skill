@@ -9,6 +9,20 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.3.0] - 2026-11-16
+
+### Changed
+
+- Polymarket now picks the markets that say the most about the subject: a team's title odds at any price (the 49ers' Super Bowl odds lead a `49ers` run), races where the subject or one of its people leads, and the big multi-outcome markets whose title never names it, instead of near-settled props and title-word collisions. Each line shows the subject's own price and rank, and the host can pass `polymarket_hints` (kind, aliases, related names) in the plan.
+
+### Fixed
+
+- The jobs lane now stays on for company runs under `--search` and warns when `--search` drops a source the plan named. It reads every Workday career site on a company's tenant, reads Kula boards (Nothing), searches each board for the run's own story terms and reserves digest slots for those matches, and damps rarity scoring on boards with more than 500 roles.
+  The Jobs Digest now names the teams a board's titles repeat, with role counts and how many are new, and reserves slots for each top team's newest role and for heads, GMs and founding hires of teams no other title names, so a new team the press has not covered yet (Amazon's Fauna, Nike's DOTSWOOSH) reaches the report. ([#1491](https://github.com/mvanhorn/last30days-skill/issues/1491))
+- Polymarket now reports a partial result when some of its searches are rate-limited, instead of caching the incomplete result for the run, and every Polymarket search (retries included) stops at the stream deadline.
+- Polymarket topic matching now treats simple plurals as the same word, so a topic like "Fed rate cut" matches "Will the Fed cut rates?".
+
+
 ## [4.2.1] - 2026-11-16
 
 ### Security
