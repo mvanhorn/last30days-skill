@@ -55,6 +55,12 @@ def test_fixture_has_about_twelve_topics_with_the_required_kinds():
     assert len({row["topic"].lower() for row in rows}) == len(rows)
 
 
+def test_coverage_env_never_loads_config_or_keychain(monkeypatch):
+    with mock.patch.object(evaluator.envlib, "get_config", side_effect=AssertionError("config loaded")):
+        run_env = evaluator.create_reddit_coverage_env()
+    assert run_env["LAST30DAYS_SKIP_KEYCHAIN"] == "1"
+
+
 def test_coverage_env_has_no_sc_key_no_session_and_no_config(monkeypatch):
     monkeypatch.setenv("SCRAPECREATORS_API_KEY", "dummy-sc-key")
     monkeypatch.setenv("REDDIT_SESSION_COOKIE", "dummy-cookie")

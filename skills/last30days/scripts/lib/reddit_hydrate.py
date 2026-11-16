@@ -68,6 +68,10 @@ class Hydration:
     items: list[dict]
     detail: str
     arctic_state: str
+    # Archive comment-tree requests this call: trees attached, and requests
+    # that failed (an empty tree is neither).
+    comment_fills: int = 0
+    comment_failures: int = 0
 
 
 def _log(msg: str) -> None:
@@ -442,8 +446,9 @@ def hydrate(
     ]
     items = [item for item in items if _in_window(item, from_date, to_date)]
 
+    filled = failed = 0
     if comments and items and not skipped and arctic_state not in ("down", "throttled"):
-        filled, _failed = _attach_comments(items, depth, deadline, now)
+        filled, failed = _attach_comments(items, depth, deadline, now)
         if filled:
             served.add("arctic")
 
@@ -458,4 +463,7 @@ def hydrate(
             if _merge_sc(items, sc_items, topic, from_date, to_date):
                 served.add("sc")
 
-    return Hydration(items=items, detail=_detail(items, served, arctic_state), arctic_state=arctic_state)
+    return Hydration(
+        items=items, detail=_detail(items, served, arctic_state), arctic_state=arctic_state,
+        comment_fills=filled, comment_failures=failed,
+    )

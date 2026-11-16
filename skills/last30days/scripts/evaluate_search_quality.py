@@ -307,8 +307,7 @@ def get_judgments(
     return {row["id"]: int(row["grade"]) for row in payload.get("judgments") or []}
 
 
-def create_eval_env() -> dict[str, str]:
-    config = envlib.get_config()
+def create_eval_env(load_credentials: bool = True) -> dict[str, str]:
     passthrough = {
         "PATH": os.environ.get("PATH", ""),
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
@@ -317,6 +316,9 @@ def create_eval_env() -> dict[str, str]:
         "PYTHONUTF8": "1",
         "LAST30DAYS_CONFIG_DIR": "",
     }
+    # Without load_credentials there is no config load at all, so no .env
+    # read and no Keychain lookup; only keys already in the process env pass.
+    config = envlib.get_config() if load_credentials else {}
     for key in EVAL_CREDENTIAL_ENV_KEYS:
         value = os.environ.get(key) or config.get(key)
         if value:
@@ -354,7 +356,7 @@ TitleJudge = Callable[[str, list[str]], list[bool]]
 
 def create_reddit_coverage_env() -> dict[str, str]:
     """The eval env for --reddit-coverage: the floor only (see above)."""
-    run_env = create_eval_env()
+    run_env = create_eval_env(load_credentials=False)
     for key in REDDIT_COVERAGE_DROPPED_ENV:
         run_env.pop(key, None)
     run_env.update(REDDIT_COVERAGE_ENV)

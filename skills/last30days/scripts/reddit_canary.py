@@ -225,7 +225,15 @@ def check_hydration(topic: str, refs: list[ThreadRef], hydrate: HydrateFn) -> Op
     )
     comments = sum(len(item.get("top_comments") or []) for item in result.items)
     state = {"ok": OK, "unused": OK, "throttled": CHALLENGED}.get(result.arctic_state, DOWN)
-    note = f"{filled} of {len(refs)} threads from arctic, {comments} comments; {result.detail}"
+    failures = getattr(result, "comment_failures", 0)
+    if state == OK and failures and not getattr(result, "comment_fills", 0):
+        # Post lookups worked but every comment-tree request failed: the
+        # comments endpoint is out. An empty tree is not a failure.
+        state = DOWN
+    note = f"{filled} of {len(refs)} threads from arctic, {comments} comments"
+    if failures:
+        note += f", {failures} comment requests failed"
+    note += f"; {result.detail}"
     return Check(f"hydrate: {topic}", "hydrate", state, None, filled, note)
 
 

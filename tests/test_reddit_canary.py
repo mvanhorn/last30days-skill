@@ -192,6 +192,29 @@ def test_topic_hydration_down_fails(tmp_path):
     assert _states(report)["hydrate: Claude Code"] == canary.DOWN
 
 
+def test_comment_tree_outage_fails_even_when_post_lookups_work(tmp_path):
+    def hydrate_no_comments(refs, **_kwargs):
+        return SimpleNamespace(items=[], arctic_state="ok", detail="web+arctic served 3",
+                               comment_fills=0, comment_failures=3)
+
+    code, report = _run({
+        BRAVE: (200, BRAVE_PAGE), DDG: (202, ""), STARTPAGE: (429, ""), ARCTIC: (200, ARCTIC_OK),
+    }, tmp_path, hydrate=hydrate_no_comments)
+    assert code != 0
+    assert _states(report)["hydrate: Claude Code"] == canary.DOWN
+
+
+def test_empty_comment_trees_are_not_an_outage(tmp_path):
+    def hydrate_empty_trees(refs, **_kwargs):
+        return SimpleNamespace(items=[], arctic_state="ok", detail="web+arctic served 3",
+                               comment_fills=0, comment_failures=0)
+
+    code, report = _run({
+        BRAVE: (200, BRAVE_PAGE), DDG: (202, ""), STARTPAGE: (429, ""), ARCTIC: (200, ARCTIC_OK),
+    }, tmp_path, hydrate=hydrate_empty_trees)
+    assert _states(report)["hydrate: Claude Code"] == canary.OK
+
+
 def test_stubbed_202_is_challenged_and_exits_zero_on_day_one(tmp_path):
     pages = {BRAVE: (202, ""), DDG: (202, ""), STARTPAGE: (202, ""), ARCTIC: (200, ARCTIC_OK)}
     code, report = _run(pages, tmp_path)
