@@ -763,15 +763,36 @@ def hydrator(
     return run
 
 
+# Threads that name the topic only in one matched comment fill in only while
+# fewer than this many threads name it in their title or body.
+COMMENT_ONLY_FILL_BELOW = 8
+
+
 def topic_bar(topic: str, items: Iterable[dict]) -> list[dict]:
-    """Session items whose title, body, or matched comment names the topic
-    (Reddit's search already matched them in the body or a comment)."""
+    """Session items that name the topic, title or body first.
+
+    A thread whose title and body never name the topic, where only a matched
+    comment does, is often an unrelated conversation with one passing
+    mention. Such threads are kept only to fill a thin result: while fewer
+    than ``COMMENT_ONLY_FILL_BELOW`` threads name the topic themselves.
+    """
     from .reddit_discover import names_topic
 
-    kept = []
-    for item in items or []:
-        texts = [str(item.get("title") or ""), str(item.get("selftext") or "")]
-        texts += [str(c.get("excerpt") or "") for c in item.get("top_comments") or [] if c.get("matched")]
-        if not topic or any(names_topic(t, topic) for t in texts if t):
-            kept.append(item)
-    return kept
+    items = list(items or [])
+    if not topic:
+        return items
+    strong: list[dict] = []
+    comment_only: list[dict] = []
+    for item in items:
+        if any(names_topic(t, topic) for t in (str(item.get("title") or ""), str(item.get("selftext") or "")) if t):
+            strong.append(item)
+            continue
+        matched = [str(c.get("excerpt") or "") for c in item.get("top_comments") or [] if c.get("matched")]
+        if any(names_topic(t, topic) for t in matched if t):
+            item["comment_only_match"] = True
+            comment_only.append(item)
+    room = max(COMMENT_ONLY_FILL_BELOW - len(strong), 0)
+    left_out = len(comment_only) - room
+    if left_out > 0:
+        _log(f"{left_out} threads that name the topic only in a comment left out")
+    return strong + comment_only[:room]
