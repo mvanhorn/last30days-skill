@@ -49,7 +49,10 @@ _KEYWORD_EXCLUSIONS: dict[str, str] = {
 SENIORITY_TERMS = ("head of", "director", "vp", "principal", "staff", "lead", "founding")
 
 # Leadership markers that establish/own a function (a first-of-function hire).
-LEADERSHIP_TERMS = ("head of", "chief", "global head", "svp", "vp of", "vp,", "director of")
+LEADERSHIP_TERMS = (
+    "head of", "chief", "global head", "svp", "vp of", "vp,", "director of",
+    "general manager", "vice president",
+)
 
 # Title qualifiers that are level/logistics noise, not a specialized capability.
 _GENERIC_QUALIFIERS = {
@@ -419,7 +422,7 @@ def _title_flags(title: str, *, places: set[str] | frozenset[str] = frozenset())
     flags: list[str] = []
     if "founding" in lowered or re.search(r"\bfirst\b", lowered):
         flags.append("founding")
-    if any(term in lowered for term in LEADERSHIP_TERMS):
+    if any(term in lowered for term in LEADERSHIP_TERMS) or re.search(r"\bgm\b", lowered):
         flags.append("leadership")
     if _specialization(title, places=places):
         flags.append("specialized")

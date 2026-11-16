@@ -120,6 +120,33 @@ def test_a_large_board_s_one_off_locations_earn_no_place_and_its_story_matches_l
     assert [entry.get("story_term") for entry in digest["roles"][:3]] == ["kuiper", "kuiper", None]
 
 
+def test_a_large_board_lists_a_small_team_cluster_and_its_gm_over_newer_store_roles():
+    items = [
+        role(n, title=f"Retail Assistant (Athlete) - PT {n % 40} HRS - Store {n}", department="Retail",
+             location=f"Town {n}", date="2026-11-09", true_date=True)
+        for n in range(650)
+    ]
+    items += [
+        role(700 + n, title=f"Engineer {kind}, Air Manufacturing Innovation", department="Technology",
+             location="Beaverton, Oregon", date="2026-10-20", true_date=True)
+        for n, kind in enumerate(["Automation", "Tooling", "Controls", "Design"])
+    ]
+    items += [
+        role(800 + n, title=f"Product Developer {n}, Footwear", department="Product",
+             location="Beaverton, Oregon", date="2026-10-20", true_date=True)
+        for n in range(40)
+    ]
+    items.append(role(900, title="GM, NIKE Energy DOTSWOOSH", department="Product",
+                      location="Beaverton, Oregon", date="2026-10-20", true_date=True))
+    selected = jobs_digest.select_roles(items, limit=6)
+    titles = {entry["item"]["title"] for entry in selected}
+    assert "GM, NIKE Energy DOTSWOOSH" in titles
+    assert {t for t in titles if t.endswith("Air Manufacturing Innovation")} == {
+        f"Engineer {kind}, Air Manufacturing Innovation"
+        for kind in ["Automation", "Tooling", "Controls", "Design"]
+    }
+
+
 def test_a_small_board_still_ranks_one_off_locations_first():
     items = _rarity_board(80, it_roles=4)
     selected = jobs_digest.select_roles(items, limit=4)

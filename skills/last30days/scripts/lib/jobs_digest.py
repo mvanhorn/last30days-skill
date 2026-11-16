@@ -30,6 +30,10 @@ STORY_TERM_MIN_SLOTS = 2
 # On a board with more open roles than this, a place or a title word only one
 # role has is common enough to say nothing, and earns no score.
 RARITY_MAX_OPEN_ROLES = 500
+# A title tail shared by this many roles, on a large board, is a team cluster;
+# the upper bound grows to 1% of the board.
+CLUSTER_MIN_ROLES = 3
+CLUSTER_MAX_ROLES = 20
 DIGEST_ROLE_CHARS = 600
 # Ceiling for the whole rendered digest section: room for every role at its
 # full text plus about 300 characters of title, department, location and URL.
@@ -133,6 +137,20 @@ def select_roles(
         for place in item.get("locations") or [item.get("location")] if _key(place)
     }
 
+    # On a board too large for one-offs to mean anything, a small team named
+    # in several titles ("..., Air Manufacturing Innovation") is the signal.
+    tails = Counter(
+        tail.lower() for tail in (
+            hiring_signals._specialization(title, places=places)
+            for title in {title for title, _department in groups}
+        ) if tail
+    )
+    cluster_max = max(CLUSTER_MAX_ROLES, (open_roles or len(items)) // 100)
+
+    def clustered(item: dict[str, Any]) -> bool:
+        tail = hiring_signals._specialization(str(item.get("title") or ""), places=places)
+        return bool(tail) and CLUSTER_MIN_ROLES <= tails[tail.lower()] <= cluster_max
+
     def score(role: dict[str, Any]) -> int:
         item = role["item"]
         department = departments.get(_key(item.get("department")), 0)
@@ -145,6 +163,7 @@ def select_roles(
                 terms[term] == 1
                 for term in _TITLE_TERM.findall(_key(item.get("title")))
             )
+            + 3 * (not rarity) * clustered(item)
             + 4 * ("founding" in flags)
             + 2 * ("leadership" in flags)
             + 1 * ("specialized" in flags)

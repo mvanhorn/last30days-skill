@@ -325,3 +325,10 @@ class GreenhouseParagraphsTest(unittest.TestCase):
 
         for title, _duty in roles:
             self.assertNotIn("infrastructure and reliability", themes_of(themed, title))
+
+
+def test_general_manager_titles_are_leadership():
+    from lib import hiring_signals
+    assert "leadership" in hiring_signals._title_flags("GM, NIKE Energy DOTSWOOSH")
+    assert "leadership" in hiring_signals._title_flags("General Manager, Prime Video")
+    assert "leadership" not in hiring_signals._title_flags("Program Manager, Payments")
