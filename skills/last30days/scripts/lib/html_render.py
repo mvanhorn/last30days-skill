@@ -639,6 +639,12 @@ def _markdown_to_html(md: str) -> str:
             index += 1
             continue
 
+        # A single trailing backslash is a markdown hard break: the Claude Code
+        # terminal report ends each pseudo-list line but the last with one.
+        if stripped.endswith("\\") and not stripped.endswith("\\\\"):
+            stripped = stripped[:-1].rstrip()
+            line = stripped
+
         if stripped.startswith("```"):
             flush_paragraph()
             close_list()

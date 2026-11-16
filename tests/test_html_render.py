@@ -163,6 +163,28 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertNotIn("\\.", rendered)
         self.assertNotIn("•", rendered)
 
+    def test_hard_break_backslashes_from_the_terminal_report_are_dropped(self):
+        # In the Claude Code terminal each pseudo-list line but the last ends in
+        # a `\\` hard break; the export keeps the lists and drops the backslash.
+        md = (
+            "KEY PATTERNS from the research:\\\n"
+            "1\\. First, per [r/x](https://reddit.com/r/x)\\\n"
+            "2\\. Second\n\n"
+            "Some things I can help with:\\\n"
+            "• Go deeper\\\n"
+            "• Compare"
+        )
+        rendered = html_render._markdown_to_html(md)
+        self.assertIn("<p>KEY PATTERNS from the research:</p>", rendered)
+        self.assertIn('<li>First, per <a href="https://reddit.com/r/x"', rendered)
+        self.assertIn("<li>Second</li>\n</ol>", rendered)
+        self.assertIn("<ul>\n<li>Go deeper</li>\n<li>Compare</li>\n</ul>", rendered)
+        self.assertNotIn("\\", rendered)
+
+    def test_an_escaped_trailing_backslash_is_kept(self):
+        rendered = html_render._markdown_to_html("Path is C:\\\\")
+        self.assertIn("\\", rendered)
+
     def test_each_story_keeps_its_own_pulled_quote(self):
         md = (
             "**North West takes the stage** - Fans say she sounds like her father.\n"
