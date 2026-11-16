@@ -449,6 +449,28 @@ def test_apple_retail_pipeline_roles_are_counted_but_never_chosen():
     assert artifact["digest"]["roles"] == [] and details == []
 
 
+def test_an_apple_retail_role_story_search_finds_is_still_kept_out_of_the_digest():
+    retail = {item["url"] for item in jobs.parse_apple_response(APPLE["retail_page"])[0]}
+
+    def post(url, body, **_kwargs):
+        # The story search for the term answers with retail store roles only.
+        page = APPLE["retail_page"] if body["query"] else APPLE["corporate_page"]
+        return copy.deepcopy(page) if body["page"] == 1 else {"res": {"searchResults": [], "totalRecords": 6459}}
+
+    others = _NoRequests()
+    with patch.object(jobs.http, "post", side_effect=post), \
+            patch.object(jobs.http, "get_text", side_effect=others.text), \
+            patch.object(jobs.http, "get", side_effect=lambda url, *a, **k: copy.deepcopy(APPLE_DETAIL)):
+        _items, artifact = jobs.search_jobs(
+            "Apple", ("2026-10-15", "2026-11-14"), {"_jobs_story_terms": ["specialist"]},
+            web_backend="none", site="https://www.apple.com/",
+        )
+    roles = artifact["digest"]["roles"]
+    assert roles and not any(role["url"] in retail for role in roles)
+    assert not any(role.get("story_term") for role in roles)
+    assert artifact["story_search"]["ran"] is True and artifact["story_search"]["matches"] == 0
+
+
 def test_apple_retail_by_team_name_is_excluded_and_a_pipe_row_has_no_true_date():
     page = copy.deepcopy(APPLE["corporate_page"])
     rows = page["res"]["searchResults"]

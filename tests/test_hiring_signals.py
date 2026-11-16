@@ -108,6 +108,34 @@ class HiringSignalsTests(unittest.TestCase):
         self.assertTrue(ny)
         self.assertIn("new-geo", ny[0]["flags"])
 
+    def _located(self, *rows):
+        items = []
+        for title, location in rows:
+            item = job(title, "work", "Engineering")
+            item.metadata["location"] = location
+            items.append(item)
+        return hiring_signals.analyze(items, explicit=True, topic="Acme")["strategic_candidates"]
+
+    def test_a_spelling_of_a_place_already_on_the_board_is_not_a_new_geography(self):
+        candidates = self._located(
+            ("Engineer A", "San Francisco"),
+            ("Engineer B", "San Francisco"),
+            ("Engineer C", "San Francisco"),
+            ("Engineer D", "Seattle"),
+            ("Engineer E", "Seattle, WA"),
+        )
+        self.assertFalse([c for c in candidates if "new-geo" in c["flags"]])
+
+    def test_a_title_tail_is_specialized_only_when_it_names_a_specialty(self):
+        candidates = self._located(
+            ("Engineer, Payments", "Seattle"),
+            ("Engineer, Seattle", "Seattle"),
+            ("Engineer, Multiple Teams", "Seattle"),
+            ("Engineer, Entry Level", "Seattle"),
+        )
+        flagged = {c["title"] for c in candidates if "specialized" in c["flags"]}
+        self.assertEqual({"Engineer, Payments"}, flagged)
+
 
 # Company text a board repeats on every role, the way Microsoft's postings do.
 BOILERPLATE = (

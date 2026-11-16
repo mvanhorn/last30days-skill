@@ -484,7 +484,9 @@ def _search_story(provider: str, targets: list[Any]) -> tuple[list[dict[str, Any
             key = _story_key(row)
             if key and key not in seen:
                 seen.add(key)
-                rows.append({**row, "story_term": term})
+                # The order the board's search returned it, which the
+                # digest keeps among one term's roles.
+                rows.append({**row, "story_term": term, "story_rank": len(rows)})
     if partial:
         log.source_log(
             "Jobs", f"story search on the {provider} board stopped early "
@@ -518,6 +520,7 @@ def _merge_story_rows(
             extras.append(row)
         elif not board_row.get("story_term"):
             board_row["story_term"] = row["story_term"]
+            board_row["story_rank"] = row["story_rank"]
     return extras
 
 
@@ -1019,7 +1022,7 @@ def _sitemap_tier(
         artifact["story_search"] = story_record
     if items:
         eligible = [item for item in items if not item.get("digest_excluded")]
-        selected = jobs_digest.select_roles(eligible)
+        selected = jobs_digest.select_roles(eligible, open_roles=total)
         artifact["digest"] = jobs_digest.build_digest(eligible, selected)
         artifact["digest"]["titles_only"] = True
         notes.append(
@@ -1197,6 +1200,7 @@ def _read_board(
         # and are never counted as the board's roles.
         selected = jobs_digest.select_roles(
             eligible + [item for item in extras if not item.get("digest_excluded")],
+            open_roles=_board_counts(items, board, date_range)["open_roles"],
         )
         late = failed = 0
         fetch_details = _detail_fetcher(provider)

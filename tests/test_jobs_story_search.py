@@ -66,7 +66,7 @@ class WorkdayBoard:
     def get(self, url, headers=None, **_kwargs):
         return {"jobPostingInfo": {"jobDescription": f"<p>Own {url}.</p>", "startDate": "2026-11-03"}}
 
-    def search(self, terms):
+    def search(self, terms, *, ceiling=20):
         pools = []
         real_select = jobs_digest.select_roles
 
@@ -74,7 +74,7 @@ class WorkdayBoard:
             pools.append(list(items))
             return real_select(items, **kwargs)
 
-        with patch.object(jobs, "WORKDAY_ROW_CEILING", 20), \
+        with patch.object(jobs, "WORKDAY_ROW_CEILING", ceiling), \
                 patch.object(jobs.http, "get_text",
                              side_effect=lambda url, **_k: None if url.endswith("/robots.txt") else WORKDAY_PAGE), \
                 patch.object(jobs.http, "post", side_effect=self.post), \
@@ -103,6 +103,19 @@ def test_workday_story_term_is_sent_as_search_text_before_the_listing_and_matche
     assert artifact["story_search"] == {
         "ran": True, "terms": ["humanoid"], "matches": 2, "story_partial": False,
     }
+
+
+def test_a_story_match_past_the_read_takes_a_digest_slot_with_its_fetched_text():
+    board = WorkdayBoard()
+    board.rows = [_workday_row(index) for index in range(100)]
+    board.rows[90] = _workday_row(90, "Humanoid Hand Designer")
+    _items, artifact, _pools = board.search(["humanoid"], ceiling=60)
+
+    roles = artifact["digest"]["roles"]
+    assert len(roles) == jobs_digest.DIGEST_MAX_ROLES
+    first = roles[0]
+    assert (first["title"], first["story_term"]) == ("Humanoid Hand Designer", "humanoid")
+    assert first["text"] == "Own https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/AcmeCareers/job/Remote/Role-90_JR90."
 
 
 # --- Amazon: ``base_query`` on search.json ---

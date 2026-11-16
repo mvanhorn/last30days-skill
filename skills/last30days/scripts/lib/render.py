@@ -2558,7 +2558,8 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         (
             f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, {chosen}"
             "board by department, location and title wording. Each carries the text "
-            "no other role on the board repeats."
+            "no other role on the board repeats"
+            + _story_search_status(board.get("story_search")) + "."
         ),
     ]
     sites = [site for site in board.get("board_sites") or [] if isinstance(site, dict)]
@@ -2588,6 +2589,9 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         )
         if entry.get("posted"):
             parts.append(f"posted {entry['posted']}")
+        if entry.get("story_term"):
+            parts.append("story term: " + _format_untrusted_evidence(
+                " ".join(str(entry["story_term"]).split()), 80))
         line = "- " + " | ".join(parts)
         text = " ".join(str(entry.get("text") or "").split())
         if text:
@@ -2598,6 +2602,27 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         out.append(line)
         shown.update(url for url in (entry.get("url"), *(entry.get("urls") or [])) if url)
     return out, shown
+
+
+def _story_search_status(record: object) -> str:
+    """What a board's story search did, as the end of the Roles listed line:
+    the terms searched and roles matched, no matches, or not run. Empty when
+    the run had no story terms."""
+    if not isinstance(record, dict):
+        return ""
+    if not record.get("ran"):
+        status = "story search: not run"
+    else:
+        terms = len(record.get("terms") or [])
+        matches = int(record.get("matches") or 0)
+        status = (
+            f"story search: {terms} term{'' if terms == 1 else 's'}, "
+            f"{matches:,} match{'' if matches == 1 else 'es'}"
+            if matches else "story search: no matches"
+        )
+    if record.get("story_partial"):
+        status += " (partial)"
+    return f"; {status}"
 
 
 def _patent_digest_block(report: schema.Report) -> list[str]:
