@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.0.6] - 2026-11-15
+
+### Fixed
+
+- Reddit works again without a login or key now that Reddit's site search returns 403. A keyless web-search floor (Brave, then DuckDuckGo, then Startpage) finds threads, and the Arctic Shift archive fills in their scores and comments. A score from a post under 36 hours old shows as "score pending" instead of counting as zero. A thread found by several layers merges into one item. Report quotes include only Reddit comments that name the topic. A path that returns 403 is skipped for 6 hours. Each run reports which path served Reddit, and `doctor` shows one row per Reddit path.
+
+
 ## [4.0.5] - 2026-11-15
 
 ### Fixed
