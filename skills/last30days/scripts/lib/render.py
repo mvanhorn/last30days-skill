@@ -5108,6 +5108,46 @@ def _is_community_comment(item: schema.SourceItem, comment: dict, text: str) -> 
     return not (_author_key(author) and _author_key(author) == _author_key(item.author))
 
 
+def _comment_entities(report) -> tuple[list[str] | None, str]:
+    """The entities a Reddit comment can be about: the comparison's, or the
+    single topic's primary entity."""
+    from . import rerank
+
+    topic = report.topic or ""
+    compared = _parse_comparison_entities(topic)
+    raw = (report.query_plan.raw_topic if report.query_plan else "") or topic
+    return compared, rerank._primary_entity(raw)
+
+
+def _comment_entity_tags(
+    item: schema.SourceItem,
+    comment: dict,
+    text: str,
+    compared: list[str] | None,
+    entity: str,
+) -> list[str] | None:
+    """Whether a Reddit comment names the topic, and for a comparison which of
+    its entities.
+
+    Returns None when the comment is not quotable. A single-topic run returns
+    ``[]`` for a quotable comment: it names the entity, or it is a top-level
+    reply (``depth`` 0, or unset) to a post whose title does. A comparison has no reply
+    exemption: the comment must itself name an entity, and the result lists
+    each one it names.
+    """
+    from . import rerank
+
+    if compared:
+        tags = [name for name in compared if rerank._entity_grounded(text, name)]
+        return tags or None
+    if not entity or rerank._entity_grounded(text, entity):
+        return []
+    # A flat top-comment list (no ``depth`` field) holds top-level replies.
+    if comment.get("depth") in (0, None) and rerank._entity_grounded(item.title or "", entity):
+        return []
+    return None
+
+
 def _quotable(body: str) -> bool:
     """Long enough to quote, and words rather than a row of emoji."""
     return len(body) >= 12 and sum(ch.isalnum() for ch in body) >= 4
@@ -5158,6 +5198,7 @@ def _render_top_comments(
     """
     candidate_pool = report.ranked_candidates if candidates is None else candidates
     subject_handle = _subject_x_handle(report)
+    compared_entities, comment_entity = _comment_entities(report)
     floor_candidates = [
         cand
         for cand in candidate_pool
@@ -5206,12 +5247,20 @@ def _render_top_comments(
             # item author's own, or one with nothing quotable in it is not a
             # reaction to quote, so the next comment takes its position.
             community: list[tuple[dict, str]] = []
+            entity_tags: dict[int, list[str]] = {}
             for tc in item.metadata.get("top_comments") or []:
                 if not isinstance(tc, dict):
                     continue
                 raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
                 if not _is_community_comment(item, tc, raw):
                     continue
+                if item.source == "reddit":
+                    tags = _comment_entity_tags(
+                        item, tc, raw, compared_entities, comment_entity
+                    )
+                    if tags is None:
+                        continue
+                    entity_tags[id(tc)] = tags
                 body = _quote_text(raw, _QUOTE_TEXT_LIMIT)
                 if _quotable(body):
                     community.append((tc, body))
@@ -5242,6 +5291,7 @@ def _render_top_comments(
                     "position": position, "cand": cand, "item": item, "funny": funny,
                     "author": tc.get("author"), "score": score,
                     "vote_label": _vote_label_for(item.source), "body": body,
+                    "entities": entity_tags.get(id(tc), []),
                     # A comment with no link of its own is cited by the item it
                     # sits on. The candidate's URL is another item's whenever
                     # the candidate fused several.
@@ -5370,10 +5420,11 @@ def _render_top_comments(
             label = "post"
         else:
             label = _QUOTE_POOL_POSITION_LABELS[position]
+        about = f" (about {', '.join(row['entities'])})" if row.get("entities") else ""
         lines.append(
             f'- "{row["body"]}" '
             f"{_quote_attribution(item, row['author'], row['score'], row['vote_label'])}"
-            f"{url_part}{origin} — {label}{' — funny' if row['funny'] else ''}"
+            f"{url_part}{origin} — {label}{about}{' — funny' if row['funny'] else ''}"
         )
     return lines
 

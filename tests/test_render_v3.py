@@ -1299,10 +1299,11 @@ class TestRenderTopCommentsBlock(unittest.TestCase):
     def _cand(self, cid, source, score, body, author="u1", url=None):
         u = url or f"https://example.com/{source}/{cid}"
         item = schema.SourceItem(
-            item_id=f"i-{cid}", source=source, title=f"Post {cid}", body="b", url=u,
+            item_id=f"i-{cid}", source=source, title=f"test Post {cid}", body="b", url=u,
             container="c", published_at="2026-03-15", date_confidence="high",
             engagement={"score": 100, "num_comments": 10},
-            metadata={"top_comments": [{"score": score, "excerpt": body, "author": author}]},
+            metadata={"top_comments": [
+                {"score": score, "excerpt": body, "author": author, "depth": 0}]},
         )
         return schema.Candidate(
             candidate_id=cid, item_id=f"i-{cid}", source=source, title=f"Post {cid}", url=u,
