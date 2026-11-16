@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.1.0] - 2026-11-15
+
+### Added
+
+- Reddit can now search as your own logged-in reddit.com account, with its own consent. Setup asks once, right after the X cookie question whatever the answer (returning users are asked once too, never on a Grok Bot host), and `setup --reddit-session` finds the browser that holds your `reddit_session` cookie without saving it. Logged in, Reddit search returns more threads, comment matches and communities with live scores; the free keyless chain stays the fallback when the session is off, expired or blocked. Over-18 posts and private or quarantined communities you did not name are dropped, scheduled runs skip the session unless you opt in, and `REDDIT_BROWSER_CONSENT=false` turns it off. See CONFIGURATION.md, "Logged-in Reddit session".
+
+
 ## [4.0.6] - 2026-11-15
 
 ### Fixed
