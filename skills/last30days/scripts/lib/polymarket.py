@@ -275,6 +275,16 @@ def _match_text(text: Any) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", text).split())
 
 
+def _has_word(word: str, words: set) -> bool:
+    """Whether ``words`` holds ``word`` or its simple plural or singular form
+    ("rate" and "rates", "tax" and "taxes")."""
+    if word in words or f"{word}s" in words or f"{word}es" in words:
+        return True
+    if word.endswith("es") and word[:-2] in words:
+        return True
+    return word.endswith("s") and word[:-1] in words
+
+
 class _Term:
     """One name the matcher looks for, as a whole phrase."""
 
@@ -299,7 +309,7 @@ class _Term:
         words = set(text.split())
         if _acronym_credit(self.words, words):
             return True
-        if len(self.informative) >= 2 and all(word in words for word in self.informative):
+        if len(self.informative) >= 2 and all(_has_word(word, words) for word in self.informative):
             return True
         return _domain_word_fallback_allows(self.words, self.informative, text, words)
 
