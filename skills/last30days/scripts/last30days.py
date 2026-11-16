@@ -4404,6 +4404,16 @@ def _main(
     # Host-found Reddit thread refs: validated before any research so a bad
     # file fails closed here and the report cache binds to its digest.
     reddit_threads_envelope: reddit_envelope.Envelope | None = None
+    reddit_excluded = "reddit" in {
+        token.strip().lower() for token in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+    }
+    if args.reddit_threads is not None and (
+        reddit_excluded or (requested_sources is not None and "reddit" not in requested_sources)
+    ):
+        # Reddit is not part of this run: the file is never read, so it can
+        # neither stop the run nor change the report cache key.
+        sys.stderr.write("[last30days] --reddit-threads ignored: Reddit is not searched this run.\n")
+        args.reddit_threads = None
     if args.reddit_threads is not None:
         if not topic:
             sys.stderr.write("[last30days] --reddit-threads requires a research topic.\n")

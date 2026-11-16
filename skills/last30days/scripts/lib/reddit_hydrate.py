@@ -176,7 +176,9 @@ def _stamp_uploader(post: dict) -> None:
 
 def _finish(post: dict, ref: ThreadRef, topic: str) -> dict:
     """Canonical URL, subreddit, provenance and topic relevance on one item."""
-    subreddit = ref.subreddit or str(post.get("subreddit") or "")
+    # The subreddit Reddit or the archive reported is authoritative; a ref's
+    # URL (a host-supplied one included) can name the wrong community.
+    subreddit = str(post.get("subreddit") or "") or ref.subreddit
     canon = canonical_thread(
         f"https://www.reddit.com/r/{subreddit}/comments/{ref.post_id}/" if subreddit else ref.post_id
     )

@@ -414,9 +414,17 @@ def _read_bytes(raw_path: str, fail: Callable[[str], EnvelopeContractError]) -> 
     if info.st_size > MAX_BYTES:
         raise fail(f"exceeds the {MAX_BYTES // 1024} KiB limit")
     try:
-        return real.read_bytes()
+        # One open, one bounded read: a file that grows or is replaced after
+        # the size check still cannot load more than the limit.
+        with open(real, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise fail("is not a regular file")
+            data = handle.read(MAX_BYTES + 1)
     except OSError as exc:
         raise fail(f"cannot be read ({type(exc).__name__})") from None
+    if len(data) > MAX_BYTES:
+        raise fail(f"exceeds the {MAX_BYTES // 1024} KiB limit")
+    return data
 
 
 def read(path: str | os.PathLike[str], topic: str) -> Envelope:

@@ -207,6 +207,19 @@ class TestReader:
                 with pytest.raises(reddit_envelope.EnvelopeContractError, match="credential directory"):
                     reddit_envelope.read(path, TOPIC)
 
+    def test_a_file_that_grows_after_the_size_check_is_still_bounded(self, tmp_path):
+        path = _write(tmp_path, _envelope([{"id": "abc123"}]))
+        small = os.stat(path)
+
+        def stat_then_grow(real):
+            with open(real, "ab") as handle:
+                handle.write(b" " * (reddit_envelope.MAX_BYTES + 10))
+            return small
+
+        with mock.patch.object(reddit_envelope, "_stat", side_effect=stat_then_grow), \
+             pytest.raises(reddit_envelope.EnvelopeContractError):
+            _read(path)
+
     def test_stdin(self, tmp_path):
         data = json.dumps(_envelope([{"id": "abc123"}])).encode()
         fake_stdin = mock.Mock(buffer=io.BytesIO(data))
@@ -253,6 +266,14 @@ class TestLane:
                 items = reddit_keyless.search_and_enrich(TOPIC, FROM, TO)
         assert len(items) == 1
         assert items[0]["provenance"] == ["host", "web"]
+
+    def test_fetched_subreddit_beats_the_host_urls_community(self, tmp_path):
+        envelope = _read(_write(tmp_path, _envelope([{"url": _url("aaa111", sub="WrongSub")}])))
+        posts = [_archive("aaa111", title="Ghostty terminal ligatures finally work", sub="Ghostty")]
+        with _arctic(posts):
+            served = _serve(envelope)
+        assert [i["subreddit"] for i in served.items] == ["Ghostty"]
+        assert "/r/Ghostty/" in served.items[0]["url"]
 
     def test_no_envelope_changes_nothing(self):
         assert reddit_envelope.current() is None
@@ -429,6 +450,15 @@ class TestCli:
         envelope = store["reddit_threads"]
         assert [r.post_id for r in envelope.refs] == ["abc123"]
         assert envelope.counters["non-reddit"] == 1
+
+    def test_missing_file_is_ignored_when_reddit_is_not_searched(self, tmp_path):
+        store: dict = {}
+        missing = str(tmp_path / "nope.json")
+        rc, _, err = _cli([TOPIC, "--search", "hackernews", "--reddit-threads", missing],
+                          tmp_path, run=_capturing(store))
+        assert rc == 0, err
+        assert "ignored: Reddit is not searched" in err
+        assert store.get("reddit_threads") is None
 
     def test_wrong_schema_exits_2_with_remedy(self, tmp_path):
         path = _write(tmp_path, _envelope([{"id": "abc123"}], schema="nope"))
