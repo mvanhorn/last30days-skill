@@ -2142,6 +2142,66 @@ class GrokBotParityTable(unittest.TestCase):
                 self.assertNotIn("last30days_x_backend", x_text)
 
 
+def _grok_probe_raises():
+    """A grok probe whose filesystem scan is denied, as issue #1448 reports it."""
+    return [
+        mock.patch(
+            "lib.health._off_path_binary",
+            side_effect=PermissionError("simulated denial"),
+        ),
+    ]
+
+
+class GrokProbeThatCouldNotRun(unittest.TestCase):
+    """Issue #1448: a failed probe is not a broken credential store.
+
+    backends._run_probe records a raised probe as ERROR with a
+    "probe failed: ..." detail. Doctor read every grok ERROR as a corrupt
+    store, so it claimed a break it never observed and returned before the
+    bearer lane could be named.
+    """
+
+    def test_unchecked_probe_keeps_cookie_guidance_without_claiming_a_broken_store(self):
+        report = _build_with({}, _grok_probe_raises())
+
+        rec = report["sources"]["x"]
+        self.assertEqual("unconfigured", rec["status"])
+        self.assertEqual("off", rec["tier"])
+        self.assertIn("cookie", rec["fix"].lower())
+        self.assertIn("could not be checked", rec["note"].lower())
+        self.assertNotIn("store is broken", rec["note"].lower())
+
+    def test_unchecked_probe_does_not_hide_the_opt_in_bearer_lane(self):
+        placeholder = "dummy-x-bearer-value"
+        report = _build_with({"X_BEARER_TOKEN": placeholder}, _grok_probe_raises())
+
+        rec = report["sources"]["x"]
+        self.assertIn("LAST30DAYS_X_BACKEND=xapi", rec["note"])
+        self.assertIn("could not be checked", rec["note"].lower())
+        self.assertEqual("", rec["fix"])
+        self.assertNotIn(placeholder, json.dumps(rec))
+        text = doctor.render_text(report)
+        self.assertNotIn(placeholder, text)
+        self.assertNotIn("store is broken", text.lower())
+
+    def test_a_store_that_really_could_not_be_read_is_still_named(self):
+        patches = [
+            mock.patch(
+                "lib.backends.which",
+                lambda n: "/usr/bin/grok" if n == "grok" else None,
+            ),
+            mock.patch("lib.grok_audit.cached_status", return_value=None),
+            mock.patch(
+                "lib.grok_x.stored_auth_status",
+                return_value=(grok_x.AUTH_ERROR, "PermissionError: denied", None),
+            ),
+        ]
+        report = _build_with({}, patches)
+
+        rec = report["sources"]["x"]
+        self.assertIn("store is broken", rec["note"].lower())
+
+
 class UnsubstitutedTemplateReporting(unittest.TestCase):
     """Issue #1081 defect 2: a rejected `${user_config.*}` placeholder is named
     as unsubstituted instead of reading as "nothing configured"."""
@@ -2173,3 +2233,4 @@ class UnsubstitutedTemplateReporting(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -614,6 +614,24 @@ def _x_record(config):
             (b for b in backends_list if b.get("name") == "grok"),
             None,
         )
+        # A probe that raised is an unavailable check, not a broken credential store.
+        if (
+            grok_finding
+            and grok_finding.get("status") == health.ERROR
+            and str(grok_finding.get("detail") or "").startswith("probe failed:")
+        ):
+            xapi_ok = any(
+                b.get("name") == "xapi" and b.get("status") in (health.OK, health.DEGRADED)
+                for b in backends_list
+            )
+            record["status"], record["tier"] = "unconfigured", TIER_OFF
+            record["note"] = "X unconfigured; grok CLI availability could not be checked"
+            if xapi_ok:
+                record["note"] += "; pin LAST30DAYS_X_BACKEND=xapi to enable the X API backend"
+                record["fix"] = ""
+            else:
+                record["fix"] = _fix_text(prescriptions.for_x(config, "cookies_missing"))
+            return record
         if grok_finding and grok_finding.get("status") in (
             health.OK,
             health.DEGRADED,
