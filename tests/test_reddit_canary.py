@@ -204,6 +204,17 @@ def test_comment_tree_outage_fails_even_when_post_lookups_work(tmp_path):
     assert _states(report)["hydrate: Claude Code"] == canary.DOWN
 
 
+def test_comment_tree_slow_downs_are_challenged_not_down(tmp_path):
+    def hydrate_throttled(refs, **_kwargs):
+        return SimpleNamespace(items=[], arctic_state="ok", detail="web+arctic served 3",
+                               comment_fills=0, comment_failures=2, comment_throttles=2)
+
+    code, report = _run({
+        BRAVE: (200, BRAVE_PAGE), DDG: (202, ""), STARTPAGE: (429, ""), ARCTIC: (200, ARCTIC_OK),
+    }, tmp_path, hydrate=hydrate_throttled)
+    assert _states(report)["hydrate: Claude Code"] == canary.CHALLENGED
+
+
 def test_empty_comment_trees_are_not_an_outage(tmp_path):
     def hydrate_empty_trees(refs, **_kwargs):
         return SimpleNamespace(items=[], arctic_state="ok", detail="web+arctic served 3",

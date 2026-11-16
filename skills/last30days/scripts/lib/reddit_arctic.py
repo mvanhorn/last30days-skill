@@ -527,6 +527,11 @@ def _tree_rows(nodes: Any) -> List[Dict[str, Any]]:
     return rows
 
 
+# Whether the last fetch_comment_tree failure was the archive asking to slow
+# down (422 or 429) rather than an outage. Hydration fetches trees serially.
+last_tree_throttled = False
+
+
 def fetch_comment_tree(
     post_id: str, deadline: Optional[float] = None,
 ) -> Optional[List[Dict[str, Any]]]:
@@ -543,9 +548,12 @@ def fetch_comment_tree(
     end = deadline if deadline is not None else time.monotonic() + TIMEOUT
     if end - time.monotonic() < 1:
         return None
+    global last_tree_throttled
+    last_tree_throttled = False
     try:
         data = _archive_get(f"{COMMENTS_TREE_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}", end)
     except Exception as exc:  # network error / non-200 — degrade, never raise
+        last_tree_throttled = _is_slow_down(exc) or getattr(exc, "status_code", None) == 429
         _log(f"comment tree failed t3_{pid}: {exc}")
         return None
     nodes = (data or {}).get("data")

@@ -452,3 +452,19 @@ class TestArcticRunHealth:
         fake = FakeArctic(posts=[_post("a0002")])
         _hydrate(fake, [_ref("a0002")], monkeypatch, comments=True)
         assert fake.calls == []
+
+
+class TestCommentThrottleCounts:
+    def test_slow_down_tree_failures_are_counted_as_throttles(self, monkeypatch):
+        fake = FakeArctic(posts=[_post("p1"), _post("p2")])
+
+        def tree_422(url, headers=None, **_kwargs):
+            if "/comments/tree" in url:
+                raise _http_error(422)
+            return fake(url, headers=headers)
+
+        monkeypatch.setattr(reddit_arctic.http, "get", tree_422)
+        result = reddit_hydrate.hydrate([_ref("p1"), _ref("p2")], now=NOW, topic="ghostty")
+        assert result.comment_fills == 0
+        assert result.comment_failures >= 1
+        assert result.comment_throttles == result.comment_failures
