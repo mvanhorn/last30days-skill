@@ -1348,3 +1348,57 @@ class TestYouTubeTranscriptTargetAndBotCheck:
         assert "stale yt-dlp" in text.lower()
         assert "brew" in text.lower()
         assert "bot-checked" not in text
+
+
+class TestBonusHintYouTubeComments:
+    """The SC bonus hint must not ask for youtube_comments that is already on.
+
+    yt-dlp fetches YouTube comments keyless, and an existing INCLUDE_SOURCES
+    entry needs no hint either (issue #1437).
+    """
+
+    def _text(self, ytdlp_installed, include_sources=None, exclude_sources=None):
+        overrides = {}
+        if include_sources is not None:
+            overrides["INCLUDE_SOURCES"] = include_sources
+        if exclude_sources is not None:
+            overrides["EXCLUDE_SOURCES"] = exclude_sources
+        q = _compute(
+            config_overrides={"SCRAPECREATORS_API_KEY": "sc-key", **overrides},
+            ytdlp_installed=ytdlp_installed,
+            result_overrides={
+                "youtube_videos_count": 8,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+            },
+        )
+        assert q["nudge_text"]
+        return q["nudge_text"]
+
+    def test_ytdlp_installed_drops_youtube_comments_from_the_hint(self):
+        text = self._text(ytdlp_installed=True)
+        assert "SC key also powers" in text
+        assert "YouTube comments" not in text
+
+    def test_include_sources_entry_drops_youtube_comments_from_the_hint(self):
+        text = self._text(
+            ytdlp_installed=False, include_sources="threads,pinterest,youtube_comments"
+        )
+        assert "SC key also powers" in text
+        assert "YouTube comments" not in text
+
+    def test_missing_comments_key_still_asks_for_the_opt_in(self):
+        text = self._text(ytdlp_installed=False, include_sources="threads,pinterest")
+        assert "SC key also powers Threads, Pinterest, YouTube comments." in text
+
+    def test_excluded_comments_are_not_recommended(self):
+        """EXCLUDE_SOURCES overrides INCLUDE_SOURCES, so the hint cannot work."""
+        text = self._text(
+            ytdlp_installed=False,
+            include_sources="threads,pinterest",
+            exclude_sources="youtube_comments",
+        )
+        assert "SC key also powers Threads, Pinterest." in text
+        assert "YouTube comments" not in text
