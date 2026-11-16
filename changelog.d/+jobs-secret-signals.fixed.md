@@ -1,0 +1,1 @@
+The jobs lane now stays on for company runs under `--search` and warns when `--search` drops a source the plan named. It reads every Workday career site on a company's tenant, reads Kula boards (Nothing), searches each board for the run's own story terms and reserves digest slots for those matches, and damps rarity scoring on boards with more than 500 roles.

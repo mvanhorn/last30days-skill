@@ -93,6 +93,26 @@ def test_no_digest_means_no_section_so_unowned_boards_never_feed_it():
     assert "only for a board the company owns" in gate
     assert "`## Hiring Signals`" in gate
     assert "memory" in gate
+    assert "a board you read yourself" in gate
+
+
+def test_digest_names_story_matched_roles_and_the_story_search_status():
+    text = reference_text("hiring-signals")
+    digest = text.split("## What the engine prints\n", 1)[1].split("\n## ", 1)[0]
+    assert "tagged with the story term it matched" in digest
+    for status in ("story search: N terms, M matches", "story search: no matches", "story search: not run"):
+        assert f"`{status}`" in digest, status
+
+
+def test_story_matched_roles_are_checked_first_but_still_pass_the_bar():
+    story = _rule("**Story matches first.**")
+    assert "Check the roles the digest tags with a story term before the others" in story
+    assert "still qualifies only by two of tests 1 to 3, or by test 4" in story
+    assert "`story search: no matches`" in story
+    assert "omit the section" in story
+    section = _section()
+    assert section.index("**The bar.**") < section.index("**Story matches first.**")
+    assert section.index("**Story matches first.**") < section.index("**How many.**")
 
 
 # --- the bar and the floor -----------------------------------------------------------
