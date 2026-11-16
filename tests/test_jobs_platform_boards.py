@@ -5,7 +5,7 @@ careers page (Oracle Recruiting Cloud, Phenom, Jibe, TalentBrew, Eightfold)
 rather than from a hand-written list of companies. A board whose reader fails
 falls to the site's job sitemap and then to the web tier, and the run says
 which happened. Fixtures in ``fixtures/jobs_platforms.json`` are trimmed live
-answers recorded on 2026-11-14.
+answers recorded on 2026-11-14 (Kula's on 2026-11-16).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from lib import http, jobs, render
-from lib.job_boards import detect, google, ibm, jibe, oracle, phenom, robots, sitemap, talentbrew
+from lib.job_boards import detect, google, ibm, jibe, kula, oracle, phenom, robots, sitemap, talentbrew
 
 from tests.test_render_patents import _report
 
@@ -88,6 +88,8 @@ def _fresh_robots(monkeypatch):
          '<script>window._EF_GROUP_ID = "netflix.com";</script>',
          "https://explore.jobs.netflix.net/careers",
          ("eightfold", {"board": "explore.jobs.netflix.net", "domain": "netflix.com"})),
+        ('<a href="https://careers.kula.ai/initech">Open roles</a>', "https://initech.com/careers",
+         ("kula", {"board": "careers.kula.ai", "slug": "initech"})),
     ],
 )
 def test_a_platform_is_read_off_the_careers_page(html, url, expected):
@@ -895,3 +897,94 @@ def test_a_robots_txt_sitemap_on_a_private_address_is_not_fetched():
     _items, artifact = _run("Uber", "https://www.uber.com/", fake)
     assert not any("127.0.0.1" in url or "internal." in url for url in fake.asked)
     assert artifact["open_roles"] == 1
+
+
+# --- Kula -----------------------------------------------------------------------
+
+KULA_ENTRY = {"name": "Nothing", "provider": "kula", "board": "careers.kula.ai", "slug": "nothing"}
+KULA_ROLE_PAGE = "https://careers.kula.ai/nothing/*"
+
+
+def test_a_kula_listing_parses_every_role_with_its_team_location_and_url():
+    items, total = kula.parse_listing(FX["kula_list"], KULA_ENTRY)
+    assert total == 19 and len(items) == 19
+    assert all(item["title"] and item["department"] and item["location"] and item["url"] for item in items)
+    growth = next(item for item in items if item["title"] == "Growth Lead, Subscription Products")
+    assert growth["id"] == "KL58931" and growth["provider"] == "kula"
+    assert growth["department"] == "Labs"
+    assert growth["location"] == "London, England, United Kingdom"
+    assert growth["locations"] == [
+        "London, England, United Kingdom", "San Francisco, California, United States",
+    ]
+    assert growth["url"] == "https://careers.kula.ai/nothing/58931-growth-lead-subscription-products"
+    assert growth["date"] == "2026-07-23" and growth["posted_date_true"]
+    assert growth["company_name"] == "Nothing Technology"
+    ai_native = sorted(item["title"] for item in items if item["department"] == "AI Native")
+    assert ai_native == [
+        "Applied AI Engineer", "Head of AI Partnerships & Strategy, North America",
+        "Software Engineer, On-Device AI",
+    ]
+
+
+def test_a_kula_role_page_fills_the_role_text_and_posted_date_from_its_jobposting():
+    item = {"url": "https://careers.kula.ai/nothing/58931-growth-lead-subscription-products",
+            "description": "", "date": None, "posted_date_true": False}
+    with patch.object(kula.http, "get_text", return_value=FX["kula_job"]):
+        assert kula.fetch_details([item], deadline=jobs.time.monotonic() + 5) == (0, 0)
+    assert item["description"].startswith("About Nothing Nothing exists to make tech feel exciting again.")
+    assert item["date"] == "2026-07-23" and item["posted_date_true"]
+
+
+def test_a_kula_page_whose_payload_holds_no_role_list_is_a_shape_error():
+    with pytest.raises(jobs.BoardShapeError):
+        kula.parse_listing("<html><body><h2>Open positions</h2></body></html>", KULA_ENTRY)
+
+
+def _kula_role_page(url):
+    # Each role gets a sentence of its own, so it survives boilerplate removal.
+    ident = url.rsplit("/", 1)[1].split("-", 1)[0]
+    return FX["kula_job"].replace('"description": "', f'"description": "<p>Own role {ident}.</p>', 1)
+
+
+def _kula_site(listing):
+    return _Site(texts={
+        "https://careers.kula.ai/nothing": listing,
+        KULA_ROLE_PAGE: _kula_role_page,
+    })
+
+
+def test_nothing_s_board_is_read_from_kula_through_its_registered_careers_page():
+    fake = _kula_site(FX["kula_list"])
+    items, artifact = _run("Nothing", "https://nothing.tech/", fake)
+    assert artifact["tier"] == "ats" and artifact["provider"] == "kula"
+    assert artifact["owned"] and artifact["found_via"] == "site"
+    assert artifact["open_roles"] == 19 and len(items) == 19
+    # Roles posted 2026-10-27 through 2026-11-12, inside the window.
+    assert artifact["new_in_window"] == 7
+    roles = artifact["digest"]["roles"]
+    assert roles and all("Own role " in role["text"] for role in roles)
+    assert sum(1 for url in fake.asked if url.startswith("https://careers.kula.ai/nothing/")) == len(roles)
+    rendered = render.render_compact(_report(jobs=artifact))
+    assert "\n## Jobs Digest\n" in rendered and "💼 Jobs: 19 open roles" in rendered
+
+
+def test_a_careers_page_linking_a_kula_board_is_read_through_kula():
+    fake = _kula_site(FX["kula_list"].replace("careers.kula.ai/nothing", "careers.kula.ai/initech"))
+    fake.texts = {
+        "https://initech.com/careers": '<a href="https://careers.kula.ai/initech">Open roles</a>',
+        "https://careers.kula.ai/initech": fake.texts["https://careers.kula.ai/nothing"],
+        "https://careers.kula.ai/initech/*": _kula_role_page,
+    }
+    assert jobs.detect_ats(fake.texts["https://initech.com/careers"]) == ("kula", "initech")
+    items, artifact = _run("Initech", "https://initech.com/", fake)
+    assert artifact["provider"] == "kula" and artifact["owned"]
+    assert artifact["open_roles"] == 19 and "digest" in artifact
+    assert "https://careers.kula.ai/initech" in fake.asked
+
+
+def test_a_kula_board_whose_payload_changed_is_logged_and_the_run_goes_on(capsys):
+    changed = FX["kula_list"].replace('\\"jobs\\":', '\\"openings\\":')
+    assert changed != FX["kula_list"]
+    items, artifact = _run("Nothing", "https://nothing.tech/", _kula_site(changed))
+    assert items == [] and artifact["tier"] == "web" and "digest" not in artifact
+    assert "kula board careers.kula.ai could not be read (BoardShapeError)" in capsys.readouterr().err

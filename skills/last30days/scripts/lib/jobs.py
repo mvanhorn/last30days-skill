@@ -95,6 +95,7 @@ PLATFORM_PROVIDER_ORACLE = board_detect.PROVIDER_ORACLE
 PLATFORM_PROVIDER_JIBE = board_detect.PROVIDER_JIBE
 PLATFORM_PROVIDER_PHENOM = board_detect.PROVIDER_PHENOM
 PLATFORM_PROVIDER_TALENTBREW = board_detect.PROVIDER_TALENTBREW
+PLATFORM_PROVIDER_KULA = board_detect.PROVIDER_KULA
 SITEMAP_PROVIDER = "sitemap"
 _GOOGLE_BOARD = {"name": "Google", "provider": COMPANY_PROVIDER_GOOGLE, "board": "www.google.com"}
 # Official-site host -> the board that site's company runs. ``name`` is how
@@ -123,6 +124,9 @@ COMPANY_BOARDS: dict[str, dict[str, str]] = {
 CAREERS_PAGES: dict[str, str] = {
     "disney.com": "https://join.disneycareers.com/global/en",
     "thewaltdisneycompany.com": "https://join.disneycareers.com/global/en",
+    # join.nothing.tech is a static copy of this Kula board with no role
+    # data, and careers.nothing.tech embeds a Greenhouse board that is gone.
+    "nothing.tech": "https://careers.kula.ai/nothing",
 }
 # Official-site hosts whose job site is not read: its site prohibits
 # automated collection, or it answers every automated request (pages,
@@ -175,6 +179,8 @@ _ATS_LINK_PATTERNS: list[tuple[str, str]] = [
         ATS_PROVIDER_WORKDAY,
         r"([A-Za-z0-9_-]+)\.(wd[0-9]+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Za-z]{2}/)?([A-Za-z0-9_-]+)",
     ),
+    # Kula is read by its platform reader, under the slug the link names.
+    (PLATFORM_PROVIDER_KULA, board_detect.KULA_BOARD_LINK),
 ]
 
 # The hosts a board URL may be on: only these are read as a board's address.
@@ -184,7 +190,7 @@ _BOARD_DOMAINS = (
 )
 SUPPORTED_SYSTEMS = "Greenhouse, Ashby, Lever, Workable, SmartRecruiters and Workday"
 # Hiring platforms read off a careers page on the company's own site.
-PLATFORM_SYSTEMS = "Oracle Recruiting Cloud, Jibe, Phenom, TalentBrew and Eightfold"
+PLATFORM_SYSTEMS = "Oracle Recruiting Cloud, Jibe, Phenom, TalentBrew, Eightfold and Kula"
 
 # Tokens that show up in ATS URLs but are never real board slugs.
 _SLUG_STOPWORDS = {"embed", "job_board", "v1", "v0", "api", "posting-api", "boards", "jobs", "job-boards", "www", "wday"}
@@ -575,7 +581,14 @@ def _search_jobs(
     platform: tuple[str, dict[str, Any]] | None = None
     if careers_html:
         provider, slug = detect_ats(careers_html)
-        if provider:
+        if provider == PLATFORM_PROVIDER_KULA:
+            # A Kula board is under the slug the company chose, on Kula's own
+            # host, so a link from any careers page names it, as a hosted
+            # system's does; its platform reader reads it, and whose board it
+            # is follows from how the page was found or the name it states.
+            platform = (provider, board_detect.kula_entry(slug or ""))
+            provider = slug = None
+        elif provider:
             attempted.append(f"careers:{provider}:{slug}")
             found_via = page_via
         elif page_via == "site":
@@ -2733,6 +2746,7 @@ def _ats_item(
         PLATFORM_PROVIDER_JIBE: "JB",
         PLATFORM_PROVIDER_PHENOM: "PH",
         PLATFORM_PROVIDER_TALENTBREW: "TB",
+        PLATFORM_PROVIDER_KULA: "KL",
         SITEMAP_PROVIDER: "SM",
     }.get(provider, "AT")
     return {
@@ -3449,6 +3463,7 @@ _COMPANY_READERS: dict[str, str] = {
     PLATFORM_PROVIDER_JIBE: "jibe:read_board",
     PLATFORM_PROVIDER_PHENOM: "phenom:read_board",
     PLATFORM_PROVIDER_TALENTBREW: "talentbrew:read_board",
+    PLATFORM_PROVIDER_KULA: "kula:read_board",
 }
 _DETAIL_FETCHERS: dict[str, str] = {
     ATS_PROVIDER_WORKDAY: "fetch_workday_details",
@@ -3457,6 +3472,7 @@ _DETAIL_FETCHERS: dict[str, str] = {
     PLATFORM_PROVIDER_ORACLE: "oracle:fetch_details",
     PLATFORM_PROVIDER_PHENOM: "phenom:fetch_details",
     PLATFORM_PROVIDER_TALENTBREW: "talentbrew:fetch_details",
+    PLATFORM_PROVIDER_KULA: "kula:fetch_details",
 }
 
 

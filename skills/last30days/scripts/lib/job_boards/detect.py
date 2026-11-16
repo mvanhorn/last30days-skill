@@ -3,7 +3,8 @@
 A large company's careers site is usually one of a few hosted platforms under
 the company's own host name. The page names its platform in its markup: the
 API host and site number of Oracle Recruiting Cloud, Phenom's ``phApp`` page
-object, TalentBrew's asset host, Jibe's asset host, Eightfold's group id. The
+object, TalentBrew's asset host, Jibe's asset host, Eightfold's group id, a
+link to a Kula board (``careers.kula.ai/<slug>``). The
 detector reads that and returns the board to read, so no company is added by
 hand. Nothing here makes a request.
 
@@ -24,11 +25,16 @@ PROVIDER_JIBE = "jibe"
 PROVIDER_PHENOM = "phenom"
 PROVIDER_TALENTBREW = "talentbrew"
 PROVIDER_EIGHTFOLD = "eightfold"
+PROVIDER_KULA = "kula"
+KULA_HOST = "careers.kula.ai"
 
 # The order platforms are tried in: a page names one platform's own API
 # before another's asset (a Phenom page can link a Workday apply URL, which
 # ``lib.jobs`` reads on its own first).
-PLATFORMS = (PROVIDER_ORACLE, PROVIDER_PHENOM, PROVIDER_EIGHTFOLD, PROVIDER_JIBE, PROVIDER_TALENTBREW)
+PLATFORMS = (
+    PROVIDER_ORACLE, PROVIDER_PHENOM, PROVIDER_EIGHTFOLD, PROVIDER_JIBE, PROVIDER_TALENTBREW,
+    PROVIDER_KULA,
+)
 
 _ORACLE_HOST = r"[a-z0-9-]+\.fa(?:\.[a-z0-9-]+)?\.oraclecloud\.com"
 _ORACLE_API_ATTRS = re.compile(
@@ -40,6 +46,9 @@ _ORACLE_SITE_LINK = re.compile(
 _ORACLE_SITE_NUMBER = re.compile(r"siteNumber=(CX_\d+)")
 _PHENOM_BASE = re.compile(r'"baseUrl"\s*:\s*"(https://[^"/]+/([a-z]{2,8})/([a-z]{2})/)"')
 _EIGHTFOLD_GROUP = re.compile(r'_EF_GROUP_ID\s*=\s*"([A-Za-z0-9.-]+)"')
+# A Kula board: the company's slug on Kula's own careers host. Kula's assets
+# are on other hosts (``careers-cdn.kula.ai``), so a slug is never ``_next``.
+KULA_BOARD_LINK = r"careers\.kula\.ai/([A-Za-z0-9][A-Za-z0-9_-]*)"
 _EIGHTFOLD_CAREER_URL = re.compile(r"eightFoldCareerUrl[^>]*>\s*(https://[^<\s]+)", re.I)
 
 
@@ -143,6 +152,18 @@ def _talentbrew(html: str, host: str) -> dict[str, Any] | None:
     return {"board": host}
 
 
+def kula_entry(slug: str) -> dict[str, Any]:
+    """The board entry of the Kula board under ``slug``."""
+    return {"provider": PROVIDER_KULA, "board": KULA_HOST, "slug": slug}
+
+
+def _kula(html: str, host: str) -> dict[str, Any] | None:
+    match = re.search(KULA_BOARD_LINK, html)
+    if not match:
+        return None
+    return {"board": KULA_HOST, "slug": match.group(1)}
+
+
 def _same_site(host: str, other: str) -> bool:
     """Whether two hosts share their last two labels (``careers.adobe.com``
     and ``www.adobe.com``)."""
@@ -157,4 +178,5 @@ _DETECTORS = {
     PROVIDER_EIGHTFOLD: _eightfold,
     PROVIDER_JIBE: _jibe,
     PROVIDER_TALENTBREW: _talentbrew,
+    PROVIDER_KULA: _kula,
 }
