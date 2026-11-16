@@ -35,7 +35,7 @@ from html import unescape
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
-from . import dates, grounding, health, http, jobs_digest, log
+from . import dates, grounding, health, http, jobs_digest, jobs_story, log
 from .job_boards import detect as board_detect
 from .job_boards import robots as board_robots
 
@@ -140,6 +140,17 @@ UNREADABLE_JOB_SITES: dict[str, dict[str, str]] = {
 # role text of the roles the digest selects, so a long list never costs the
 # digest its text.
 DETAIL_SHARE = 1 / 3
+# Story search: before a board's newest-first read, the board is searched for
+# the run's story terms. A board with a keyword search is asked once per term,
+# up to this many calls per company (every site of a Workday tenant counts as
+# one company), fewer in a comparison. Eightfold answers 429 after two or
+# three calls, so it is asked once.
+STORY_CALLS_PER_COMPANY = 4
+EIGHTFOLD_STORY_CALLS = 1
+STORY_TIMEOUT_SECONDS = 10
+# Story calls share this part of the time left when they start, so the
+# newest-first read always keeps the rest.
+STORY_SHARE = 1 / 3
 # A company board is read newest first, a bounded number of pages at once,
 # to its end or its ceiling. At about half a second a page, sixteen at once
 # read Apple's 6,500 rows (20 a page) in about 20 s, inside the listing's
@@ -339,6 +350,193 @@ def _within_budget(call: Callable[[], Any], step: str, default: Any) -> Any:
         return default
 
 
+class StorySearch:
+    """The story terms one company's boards are searched for, and the calls
+    and time that search may still use.
+
+    ``calls`` is how many server-side searches are left for the company. The
+    deadline is fixed by the first story call and shared by every call after
+    it: ``STORY_SHARE`` of the lane's time left at that moment.
+    """
+
+    def __init__(self, terms: list[str], *, calls: int) -> None:
+        self.terms = list(terms)
+        self.calls = calls
+        self.deadline: float | None = None
+
+
+_STORY: ContextVar[StorySearch | None] = ContextVar("last30days_jobs_story", default=None)
+
+
+def _story_terms() -> list[str]:
+    story = _STORY.get()
+    return story.terms if story is not None else []
+
+
+def _story_search_for(config: dict[str, Any], entity_count: int = 1) -> StorySearch:
+    """The run's story terms (``_jobs_story_terms``) and its call cap,
+    scaled down by the number of entities a comparison reads."""
+    terms = [str(term) for term in config.get("_jobs_story_terms") or [] if str(term).strip()]
+    entities = max(1, entity_count, int(config.get("_comparison_entity_count") or 1))
+    return StorySearch(terms, calls=max(1, STORY_CALLS_PER_COMPANY // entities))
+
+
+# Boards whose own search is asked for each story term, by provider: given
+# the board (a Workday token, else the board's entry), the term and the
+# call's hard deadline, each returns the rows found. Named like the readers.
+_STORY_SEARCHERS: dict[str, str] = {
+    ATS_PROVIDER_WORKDAY: "search_workday_story",
+    COMPANY_PROVIDER_AMAZON: "search_amazon_story",
+    COMPANY_PROVIDER_APPLE: "search_apple_story",
+    COMPANY_PROVIDER_EIGHTFOLD: "search_eightfold_story",
+    PLATFORM_PROVIDER_JIBE: "jibe:search_story",
+}
+# Searches whose rows carry the role's full text: a row is kept only when
+# that text names the term. Rows from the others carry little or no text,
+# so their board's match is taken as it is.
+_STORY_TEXT_CHECKED = frozenset({COMPANY_PROVIDER_AMAZON, PLATFORM_PROVIDER_JIBE})
+# Boards read whole: their rows are matched against the terms where they are.
+_STORY_LOCAL = frozenset({
+    ATS_PROVIDER_GREENHOUSE, ATS_PROVIDER_ASHBY, ATS_PROVIDER_LEVER,
+    PLATFORM_PROVIDER_KULA, SITEMAP_PROVIDER,
+})
+
+
+def _story_text(item: dict[str, Any]) -> str:
+    return f"{item.get('title') or ''}\n{item.get('description_blocks') or item.get('description') or ''}"
+
+
+def _story_key(item: dict[str, Any]) -> str:
+    """What makes a story row and a board row one role: Workday's job path
+    (the same on every site of a tenant), Apple's role page (one row per
+    location shares it), else the row's ID."""
+    if item.get("provider") == ATS_PROVIDER_WORKDAY:
+        return _workday_job_key(item)
+    if item.get("provider") == COMPANY_PROVIDER_APPLE:
+        return str(item.get("url") or "")
+    return str(item.get("id") or item.get("url") or "")
+
+
+def _story_record(*, ran: bool, terms: list[str], partial: bool = False) -> dict[str, Any]:
+    """What a board's story search did: whether it ran, the terms it
+    searched, and ``story_partial`` when a 429, a timeout or the story
+    deadline stopped it before every term was searched. ``matches`` is
+    filled in once the rows are tagged."""
+    return {"ran": ran, "terms": list(terms), "matches": 0, "story_partial": partial}
+
+
+def _search_story(provider: str, targets: list[Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Ask a board's own search for each story term, before its newest-first read.
+
+    ``targets`` are what the provider's searcher is given: each site of a
+    Workday tenant, or the board's entry. Calls go one at a time, sites in
+    order and each site's terms in order, until the company's calls are used
+    (one on Eightfold) or the story deadline passes. A 429 or a timeout ends
+    the story search for the board. Every row found carries ``story_term``;
+    a role found by two calls is kept once. Returns ``(rows, record)``, the
+    record None when the run has no story terms.
+    """
+    story = _STORY.get()
+    if story is None or not story.terms:
+        return [], None
+    name = _STORY_SEARCHERS.get(provider)
+    if name is None:
+        return [], _story_record(ran=False, terms=[])
+    clock = _clock()
+    if story.deadline is None:
+        budget = _BUDGET.get()
+        left = budget.remaining() if budget is not None else JOBS_BUDGET_SECONDS
+        story.deadline = clock() + left * STORY_SHARE
+    search = _named(name)
+    allowed = min(story.calls, EIGHTFOLD_STORY_CALLS) if provider == COMPANY_PROVIDER_EIGHTFOLD else story.calls
+    pairs = [(target, term) for target in targets for term in story.terms][:max(0, allowed)]
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    searched: list[str] = []
+    ran = partial = False
+    for target, term in pairs:
+        left = story.deadline - clock()
+        if left <= 0:
+            partial = True
+            break
+        story.calls -= 1
+        ran = True
+        try:
+            # A failed story call is said by ``story_partial``, not counted
+            # among the run's failures: the board's own read still follows.
+            with http.capture_failures():
+                found = search(
+                    target, term,
+                    deadline_monotonic=time.monotonic() + min(left, STORY_TIMEOUT_SECONDS),
+                )
+        except http.HTTPError as exc:
+            if exc.status_code == 429 or exc.outcome_state == health.TIMEOUT:
+                partial = True
+                break
+            continue
+        except ValueError:  # BoardShapeError, bad JSON
+            continue
+        if term not in searched:
+            searched.append(term)
+        for row in found:
+            if provider in _STORY_TEXT_CHECKED and not jobs_story.matches(term, _story_text(row)):
+                continue
+            key = _story_key(row)
+            if key and key not in seen:
+                seen.add(key)
+                rows.append({**row, "story_term": term})
+    if partial:
+        log.source_log(
+            "Jobs", f"story search on the {provider} board stopped early "
+            f"({len(searched)} of {len(story.terms)} terms searched); its newest-first read follows",
+            tty_only=False,
+        )
+    return rows, _story_record(ran=ran, terms=searched, partial=partial)
+
+
+def _tag_story_matches(items: list[dict[str, Any]], terms: list[str]) -> None:
+    """Mark each row of a board read whole with the first story term its
+    title or description names."""
+    for item in items:
+        text = _story_text(item)
+        term = next((term for term in terms if jobs_story.matches(term, text)), None)
+        if term is not None:
+            item["story_term"] = term
+
+
+def _merge_story_rows(
+    items: list[dict[str, Any]], found: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Tag the board rows a story search also found, and return the story
+    rows the board's read did not reach. Those extras are offered to the
+    digest and never added to the board's rows or counts."""
+    by_key = {_story_key(item): item for item in items}
+    extras: list[dict[str, Any]] = []
+    for row in found:
+        board_row = by_key.get(_story_key(row))
+        if board_row is None:
+            extras.append(row)
+        elif not board_row.get("story_term"):
+            board_row["story_term"] = row["story_term"]
+    return extras
+
+
+def _local_story_record(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Match the story terms against the rows of a board read whole."""
+    terms = _story_terms()
+    if not terms:
+        return None
+    _tag_story_matches(items, terms)
+    record = _story_record(ran=True, terms=terms)
+    record["matches"] = _story_matches(items)
+    return record
+
+
+def _story_matches(items: list[dict[str, Any]]) -> int:
+    """Story-matched roles the digest may show."""
+    return sum(1 for item in items if item.get("story_term") and not item.get("digest_excluded"))
+
+
 def search_jobs(
     company: str,
     date_range: tuple[str, str],
@@ -375,12 +573,14 @@ def search_jobs(
         budget = LaneBudget(JOBS_BUDGET_SECONDS / max(1, entity_count))
     budget.limit_discovery(discovery_seconds)
     token = _BUDGET.set(budget)
+    story_token = _STORY.set(_story_search_for(config, entity_count))
     try:
         items, artifact = _search_jobs(
             company, date_range, config,
             web_backend=web_backend, explicit=explicit, site=site, budget=budget,
         )
     finally:
+        _STORY.reset(story_token)
         _BUDGET.reset(token)
         budget.limit_discovery(None)
     # A caller that tries several companies on one budget says once, for all
@@ -814,6 +1014,9 @@ def _sitemap_tier(
     notes = []
     if fallback:
         notes.append(fallback)
+    story_record = _local_story_record(items)
+    if story_record is not None:
+        artifact["story_search"] = story_record
     if items:
         eligible = [item for item in items if not item.get("digest_excluded")]
         selected = jobs_digest.select_roles(eligible)
@@ -887,6 +1090,11 @@ def _read_board(
     # Passed only when set, so the plain call stays what it always was.
     part: dict[str, Any] = {} if full else {"first_page_only": True}
     tenant_sites: list[str] = []
+    # Rows the board's own search found for the run's story terms, and what
+    # that search did; asked before the newest-first read, on a board read
+    # in full.
+    story_rows: list[dict[str, Any]] = []
+    story_record: dict[str, Any] | None = None
     try:
         if probed is not None:
             # The probe already read this board; it is not read twice.
@@ -894,6 +1102,10 @@ def _read_board(
         elif _out_of_time(f"reading the {provider} board {slug}"):
             items = []
         elif company_board is not None:
+            if full:
+                story_rows, story_record = _search_story(provider, [company_board])
+                if story_record is not None and provider in _DETAIL_FETCHERS:
+                    list_deadline = deadline - budget.remaining() * DETAIL_SHARE
             items, board = _company_reader(provider)(
                 company_board, deadline=list_deadline, date_range=date_range,
             )
@@ -905,6 +1117,8 @@ def _read_board(
                     slug, named_boards,
                     deadline_monotonic=time.monotonic() + max(0.0, budget.remaining()),
                 )
+                # Every site of the tenant is one company's, under one cap.
+                story_rows, story_record = _search_story(provider, [slug, *tenant_sites])
             items, board = search_workday_board(slug, deadline=deadline, **part)
         elif provider == ATS_PROVIDER_SMARTRECRUITERS:
             items, board = read_smartrecruiters_board(slug, deadline=deadline, **part)
@@ -964,11 +1178,26 @@ def _read_board(
         "board_company": stated,
         "owned": owned,
     })
+    extras: list[dict[str, Any]] = []
     if owned:
+        if provider in _STORY_LOCAL:
+            story_record = _local_story_record(items)
+        elif story_record is not None:
+            extras = _merge_story_rows(items, story_rows)
+            story_record["matches"] = _story_matches([*items, *extras])
+        elif _story_terms():
+            # A board this lane has no story search for, or read in part.
+            story_record = _story_record(ran=False, terms=[])
+        if story_record is not None:
+            artifact["story_search"] = story_record
         # Roles a board marks as kept out of the digest (Apple's retail store
         # roles) are counted on the board but never chosen.
         eligible = [item for item in items if not item.get("digest_excluded")]
-        selected = jobs_digest.select_roles(eligible)
+        # Story matches the newest-first read did not reach may be chosen,
+        # and are never counted as the board's roles.
+        selected = jobs_digest.select_roles(
+            eligible + [item for item in extras if not item.get("digest_excluded")],
+        )
         late = failed = 0
         fetch_details = _detail_fetcher(provider)
         if fetch_details is not None:
@@ -1069,6 +1298,7 @@ def search_board_url(
     budget = budget or LaneBudget()
     budget.limit_discovery(discovery_seconds)
     token = _BUDGET.set(budget)
+    story_token = _STORY.set(_story_search_for(config))
     known_sites = {companies[0]: site, **(sites or {})}
 
     def owner(stated: str) -> tuple[str, str]:
@@ -1136,6 +1366,7 @@ def search_board_url(
     except http.HTTPError:
         found = None
     finally:
+        _STORY.reset(story_token)
         _BUDGET.reset(token)
         budget.limit_discovery(None)
     if found is None:
@@ -2107,6 +2338,29 @@ def _workday_run(
         return [future.result() for future in futures]
 
 
+def _workday_body(offset: int, search_text: str = "") -> dict[str, Any]:
+    return {
+        "appliedFacets": {},
+        "limit": WORKDAY_PAGE_SIZE,
+        "offset": offset,
+        "searchText": search_text,
+    }
+
+
+def search_workday_story(
+    token: str, term: str, *, deadline_monotonic: float,
+) -> list[dict[str, Any]]:
+    """The roles a Workday site's own search finds for a story term."""
+    url = workday_list_url(token)
+    if not url or board_robots.disallowed(url, deadline_monotonic=deadline_monotonic):
+        return []
+    payload = http.post(
+        url, json_data=_workday_body(0, term), headers={"Accept": "application/json"},
+        timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+    )
+    return parse_workday_response(payload, token) if isinstance(payload, dict) else []
+
+
 def search_workday_board(
     token: str,
     *,
@@ -2133,12 +2387,7 @@ def search_workday_board(
     def page(offset: int) -> Callable[[float], Any]:
         return lambda http_deadline: http.post(
             url,
-            json_data={
-                "appliedFacets": {},
-                "limit": WORKDAY_PAGE_SIZE,
-                "offset": offset,
-                "searchText": "",
-            },
+            json_data=_workday_body(offset),
             headers={"Accept": "application/json"},
             timeout=API_TIMEOUT_SECONDS,
             retries=2,
@@ -3124,14 +3373,36 @@ def _amazon_date(value: Any) -> str | None:
         return None
 
 
+def _amazon_url(entry: dict[str, Any]) -> str:
+    return f"https://{entry.get('board') or 'www.amazon.jobs'}/en/search.json"
+
+
+def _amazon_params(offset: int, base_query: str = "") -> dict[str, str]:
+    params = {"sort": "recent", "result_limit": str(AMAZON_PAGE_SIZE), "offset": str(offset)}
+    if base_query:
+        params["base_query"] = base_query
+    return params
+
+
+def search_amazon_story(
+    entry: dict[str, Any], term: str, *, deadline_monotonic: float,
+) -> list[dict[str, Any]]:
+    """The roles Amazon's search finds for a story term (``base_query``)."""
+    payload = http.get(
+        _amazon_url(entry), params=_amazon_params(0, term),
+        timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+    )
+    return parse_amazon_response(payload)[0]
+
+
 def read_amazon_board(
     entry: dict[str, str], *, deadline: float, date_range: tuple[str, str],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Amazon's roles, newest first, with the board's reported total."""
-    url = f"https://{entry.get('board') or 'www.amazon.jobs'}/en/search.json"
+    url = _amazon_url(entry)
 
     def page(offset: int) -> Callable[[float], Any]:
-        params = {"sort": "recent", "result_limit": str(AMAZON_PAGE_SIZE), "offset": str(offset)}
+        params = _amazon_params(offset)
         return lambda http_deadline: http.get(
             url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
             deadline_monotonic=http_deadline,
@@ -3153,10 +3424,10 @@ _APPLE_SEARCH_URL = "https://jobs.apple.com/api/v1/search"
 _APPLE_DETAILS_URL = "https://jobs.apple.com/api/v1/jobDetails/{position}?locale=en-us"
 
 
-def _apple_search_body(page: int) -> dict[str, Any]:
+def _apple_search_body(page: int, query: str = "") -> dict[str, Any]:
     # Without the ``format`` key the API answers 200 with no results.
     return {
-        "query": "",
+        "query": query,
         "filters": {"range": {"standardWeeklyHours": {"start": None, "end": None}}},
         "page": page,
         "locale": "en-us",
@@ -3231,6 +3502,17 @@ def read_apple_board(
     # The board's total counts rows, so the rows read are counted the same way.
     info["board_rows_read"] = len(items)
     return _one_row_per_role(items), info
+
+
+def search_apple_story(
+    entry: dict[str, Any], term: str, *, deadline_monotonic: float,
+) -> list[dict[str, Any]]:
+    """The roles Apple's search finds for a story term, one row per role."""
+    payload = http.post(
+        _APPLE_SEARCH_URL, _apple_search_body(1, term), headers={"Accept": "application/json"},
+        timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+    )
+    return _one_row_per_role(parse_apple_response(payload)[0])
 
 
 def _one_row_per_role(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3398,16 +3680,10 @@ def _eightfold_listing_url(board: str, api: str) -> str:
 def _read_eightfold_generation(
     entry: dict[str, str], *, deadline: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    board, domain = entry["board"], entry["domain"]
-    if entry.get("api") == "pcsx":
-        url = f"https://{board}/api/pcsx/search"
-        base = {"domain": domain, "query": "", "location": "", "sort_by": "timestamp"}
-    else:
-        url = f"https://{board}/api/apply/v2/jobs"
-        base = {"domain": domain, "num": str(EIGHTFOLD_PAGE_SIZE), "sort_by": "timestamp"}
+    url = _eightfold_listing_url(entry["board"], str(entry.get("api") or ""))
 
     def page(offset: int) -> Callable[[float], Any]:
-        params = {**base, "start": str(offset)}
+        params = _eightfold_params(entry, offset)
         return lambda http_deadline: http.get(
             url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
             deadline_monotonic=http_deadline,
@@ -3421,6 +3697,47 @@ def _read_eightfold_generation(
     # No row carries a true posted date, so the window is never counted.
     info["board_window_covered"] = False
     return items, info
+
+
+def _eightfold_params(entry: dict[str, Any], offset: int, query: str = "") -> dict[str, str]:
+    domain = entry["domain"]
+    if entry.get("api") == "pcsx":
+        params = {"domain": domain, "query": query, "location": "", "sort_by": "timestamp"}
+    else:
+        params = {"domain": domain, "num": str(EIGHTFOLD_PAGE_SIZE), "sort_by": "timestamp"}
+        if query:
+            params["query"] = query
+    return {**params, "start": str(offset)}
+
+
+def search_eightfold_story(
+    entry: dict[str, Any], term: str, *, deadline_monotonic: float,
+) -> list[dict[str, Any]]:
+    """The roles an Eightfold board's search finds for a story term, on the
+    API generation the entry names. An entry that names none is asked on
+    ``pcsx``, then on ``v2`` when ``pcsx`` refuses (403 or 404), as
+    ``read_eightfold_board`` does; that pair counts as the board's one call."""
+    def ask(api: str) -> list[dict[str, Any]]:
+        generation = {**entry, "api": api}
+        payload = http.get(
+            _eightfold_listing_url(entry["board"], api),
+            params=_eightfold_params(generation, 0, term),
+            timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+        )
+        return parse_eightfold_response(payload, generation)[0]
+
+    if entry.get("api"):
+        return ask(str(entry["api"]))
+    try:
+        return ask("pcsx")
+    except http.HTTPError as exc:
+        if exc.status_code not in (403, 404):
+            raise
+    if board_robots.disallowed(
+        _eightfold_listing_url(entry["board"], "v2"), deadline_monotonic=deadline_monotonic,
+    ):
+        return []
+    return ask("v2")
 
 
 def fetch_eightfold_details(

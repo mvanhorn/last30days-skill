@@ -7,6 +7,7 @@ the day it was posted, and the board's total.
 from __future__ import annotations
 
 from typing import Any, Callable
+from urllib.parse import quote
 
 from .. import http, jobs
 from .detect import PROVIDER_JIBE
@@ -14,10 +15,12 @@ from .detect import PROVIDER_JIBE
 PAGE_SIZE = 100
 
 
-def listing_url(entry: dict[str, Any], page: int = 1) -> str:
+def listing_url(entry: dict[str, Any], page: int = 1, keywords: str = "") -> str:
+    """One listing call; ``keywords`` makes it a search of the board."""
     return (
         f"https://{entry['board']}/api/jobs?page={page}&limit={PAGE_SIZE}"
         "&sortBy=posted_date&descending=true&internal=false"
+        + (f"&keywords={quote(keywords)}" if keywords else "")
     )
 
 
@@ -80,3 +83,14 @@ def read_board(
         row_ceiling=jobs.COMPANY_BOARD_ROW_CEILING, window_start=date_range[0],
         deadline=deadline,
     )
+
+
+def search_story(
+    entry: dict[str, Any], term: str, *, deadline_monotonic: float,
+) -> list[dict[str, Any]]:
+    """The board's roles the site's own search finds for a story term."""
+    payload = http.get(
+        listing_url(entry, 1, term), headers={"Accept": "application/json"},
+        timeout=jobs.STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+    )
+    return parse_listing(payload, entry)[0]
