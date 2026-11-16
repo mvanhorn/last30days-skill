@@ -180,6 +180,17 @@ def test_build_drill_plan_only_uses_contributing_sources_and_cluster_terms():
     assert any("openclaw" in subquery.search_query.lower() for subquery in plan.subqueries)
 
 
+def test_build_drill_plan_keeps_the_polymarket_hints():
+    report = _report()
+    hints = {"kind": "team", "aliases": [], "related": [{"name": "Yaxel Lendeborg", "relation": "player"}]}
+    report.query_plan.polymarket_hints = hints
+
+    plan = planner.build_drill_plan(report, "cluster 1")
+
+    assert plan.polymarket_hints == hints
+    assert plan.polymarket_hints is not hints
+
+
 def test_merge_dedupes_new_results_preserves_other_clusters_and_renders_context():
     base = _report()
     merged = pipeline.merge_drill_report(
