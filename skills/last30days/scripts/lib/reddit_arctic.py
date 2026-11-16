@@ -24,7 +24,6 @@ from . import http
 
 API = "https://arctic-shift.photon-reddit.com/api/posts/ids"
 SEARCH_API = "https://arctic-shift.photon-reddit.com/api/posts/search"
-COMMENTS_API = "https://arctic-shift.photon-reddit.com/api/comments/search"
 COMMENTS_TREE_API = "https://arctic-shift.photon-reddit.com/api/comments/tree"
 BATCH = 50          # ids per request
 IDS_BATCH = 100     # ids per hydration request; the archive documents a 500-id limit
@@ -45,9 +44,14 @@ _LISTING_SUPPLEMENT_MULTIPLIER = 2  # fetch 2x posts when supplementing multi-so
 # Total deadline for listing fetches to prevent unbounded stalls when many
 # subreddits are requested and arctic is slow/unreachable.
 _LISTING_DEADLINE_SECONDS = 45  # ~3 subs at 15s timeout each
-# Comment fallback: fetch a wide recency slice, then rank by score client-side
-# (the archive's sort_type only supports created_utc).
+# Comment tree rows read by hydration (fetch_comment_tree).
 MAX_COMMENT_ROWS = 100
+# Comment fallback (fetch_post_comments) rows. The archive's comment search
+# sorts only by created_utc, so a capped search slice of a busy thread held only
+# its newest replies and missed its most upvoted ones. The fallback reads the
+# comment tree instead and ranks by score client-side; on a 628-reply thread a
+# 500-row tree kept the same top replies as an uncapped one (#1467).
+FALLBACK_COMMENT_ROWS = 500
 # In-run memo: base36 id -> {score, num_comments}. Module-level so repeated
 # fetch_scores calls within one `/last30days` run (e.g. across subqueries) reuse
 # results, but capped at CACHE_MAX entries (never reached in a normal CLI run).
@@ -593,6 +597,14 @@ def fetch_comment_tree(
     return comments
 
 
+def _row_depth(row: Dict[str, Any]) -> int:
+    """A tree row's depth; without one, a reply to the post itself is top-level."""
+    try:
+        return int(row["depth"])
+    except (KeyError, TypeError, ValueError):
+        return 0 if str(row.get("parent_id") or "t3_").startswith("t3_") else 1
+
+
 def fetch_post_comments(
     post_id: str,
     limit: int = 10,
@@ -619,7 +631,7 @@ def fetch_post_comments(
         return []
     try:
         data = _search_once(
-            f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}&sort=desc", end,
+            f"{COMMENTS_TREE_API}?link_id=t3_{pid}&limit={FALLBACK_COMMENT_ROWS}", end,
         )
     except Exception as e:  # network error / non-200 — degrade, never raise
         _log(f"comments lookup failed t3_{pid}: {e}")
@@ -632,9 +644,7 @@ def fetch_post_comments(
     from .snippet import cut_quote
 
     comments: List[Dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
+    for row in _tree_rows(rows):
         author = row.get("author") or "[deleted]"
         body = row.get("body") or ""
         if author in ("[deleted]", "[removed]") or body in ("[deleted]", "[removed]"):
@@ -654,8 +664,7 @@ def fetch_post_comments(
             "permalink": permalink,
             "date": _epoch_to_date(row.get("created_utc")),
             "url": f"https://reddit.com{permalink}" if permalink else "",
-            # A reply to the post itself is top-level; any other parent is nested.
-            "depth": 0 if str(row.get("parent_id") or "t3_").startswith("t3_") else 1,
+            "depth": _row_depth(row),
         })
     comments.sort(key=lambda c: c.get("score", 0), reverse=True)
     return comments[:limit]
