@@ -1947,7 +1947,9 @@ def is_ytdlp_available() -> bool:
     return youtube_yt.is_ytdlp_installed()
 
 
-def is_youtube_comments_available(config: dict[str, Any]) -> bool:
+def is_youtube_comments_available(
+    config: dict[str, Any], *, ytdlp_installed: bool | None = None,
+) -> bool:
     """Check if YouTube comment enrichment is available.
 
     yt-dlp fetches YouTube comments free and keyless, so when it is installed
@@ -1962,7 +1964,9 @@ def is_youtube_comments_available(config: dict[str, Any]) -> bool:
     """
     if 'youtube_comments' in _parse_exclude_sources(config):
         return False
-    if is_ytdlp_available():
+    if ytdlp_installed is None:
+        ytdlp_installed = is_ytdlp_available()
+    if ytdlp_installed:
         return True
     if not is_youtube_sc_available(config):
         return False
