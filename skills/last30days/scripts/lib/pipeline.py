@@ -46,6 +46,7 @@ from . import (
     instagram,
     jobs,
     jobs_digest,
+    jobs_story,
     linkedin,
     library,
     library_index,
@@ -2792,6 +2793,13 @@ def run(
     # lane's time budget for this topic (see ``_jobs_lane_budget``).
     # It goes into a copy, so the caller's config is left as it was.
     config = {**config, "_jobs_lane": {}}
+    if not jobs_past_window and "jobs" in available and any(
+        "jobs" in subquery.sources for subquery in plan.subqueries
+    ):
+        # The stories the jobs lane searches each board for, fixed before
+        # the first jobs stream starts because that stream settles the
+        # lane's budget.
+        config["_jobs_story_terms"] = _jobs_story_terms(plan, topic, config)
     stream_config = dict(config)
     stream_config["_research_deadline"] = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
     with _abandoning_executor(max_workers=max_workers) as executor:
@@ -4185,6 +4193,38 @@ def _jobs_lane_budget(config: dict[str, Any]) -> jobs.LaneBudget:
         if isinstance(holder, dict):
             holder["budget"] = budget
     return budget
+
+
+def _jobs_story_terms(
+    plan: schema.QueryPlan, topic: str, config: dict[str, Any],
+) -> list[str]:
+    """The run's story terms: the host plan's, else drawn from its subqueries.
+
+    Drawn terms leave out the topic (the company, or the person it names),
+    the company the topic resolved to and those the host named, and every
+    entity of a comparison.
+    """
+    if plan.jobs_queries:
+        terms, origin = list(plan.jobs_queries), "host plan"
+    else:
+        company = config.get("_company") or {}
+        excluded = [
+            topic,
+            str(company.get("company") or ""),
+            *_host_companies(company),
+            *(config.get("_comparison_entities") or []),
+            *planner._comparison_entities(topic),
+        ]
+        terms = jobs_story.derive_terms(
+            (subquery.search_query for subquery in plan.subqueries), excluded,
+        )
+        origin = "drawn from the plan's subqueries"
+    log.source_log(
+        "Jobs",
+        f"story terms ({origin}): {', '.join(terms) or 'none'}",
+        tty_only=False,
+    )
+    return terms
 
 
 def _host_companies(company: dict[str, Any]) -> list[str]:
