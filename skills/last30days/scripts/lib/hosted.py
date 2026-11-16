@@ -210,6 +210,15 @@ def _slugify(value: str) -> str:
     return slug or "last30days"
 
 
+def _sanitize_suffix(suffix: str) -> str:
+    """Sanitize --save-suffix to a path-safe token (same policy as the local
+    save path): lowercase, fold non [a-z0-9] runs to a single hyphen, strip
+    edge hyphens. Unlike _slugify there is no fallback token - a suffix that
+    sanitizes to empty simply drops, so a suffix can never contribute path
+    separators or parent references to the saved filename."""
+    return re.sub(r"[^a-z0-9]+", "-", suffix.lower()).strip("-")
+
+
 def _save_output(topic: str, content: str, emit: str, save_dir: str, suffix: str):
     """Mirror local save_output() naming: <slug>-raw[-suffix].<ext>."""
     from datetime import datetime
@@ -219,7 +228,8 @@ def _save_output(topic: str, content: str, emit: str, save_dir: str, suffix: str
     path.mkdir(parents=True, exist_ok=True)
     slug = _slugify(topic)
     extension = "json" if emit == "json" else "md"
-    suffix_part = f"-{suffix}" if suffix else ""
+    sanitized_suffix = _sanitize_suffix(suffix or "")
+    suffix_part = f"-{sanitized_suffix}" if sanitized_suffix else ""
     base = path / f"{slug}-raw{suffix_part}.{extension}"
     date_str = datetime.now().strftime('%Y-%m-%d')
     candidates = [base]

@@ -433,6 +433,74 @@ def test_save_dir_uses_unique_dated_fallback(remote_env, monkeypatch, capsys, tm
     assert TEST_KEY not in captured.err
 
 
+# ---------------------------------------------------------------------------
+# Save-suffix sanitization: --save-suffix must never shape the path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected_name"),
+    [
+        pytest.param("../../evil", "test-topic-raw-evil.md", id="parent-ref"),
+        pytest.param("/var/tmp/evil", "test-topic-raw-var-tmp-evil.md", id="abs-path"),
+        pytest.param("Report V3", "test-topic-raw-report-v3.md", id="mixed-case"),
+        pytest.param("GEMINI-DEEP", "test-topic-raw-gemini-deep.md", id="upper"),
+        pytest.param("", "test-topic-raw.md", id="empty"),
+        pytest.param("...?!..", "test-topic-raw.md", id="punct-only-drops"),
+        pytest.param("-edge-", "test-topic-raw-edge.md", id="edge-hyphens"),
+    ],
+)
+def test_save_suffix_sanitized_stays_in_save_dir(
+    remote_env, monkeypatch, capsys, tmp_path, suffix, expected_name
+):
+    """Whatever --save-suffix holds, the saved file lands directly under the
+    requested save dir with a [a-z0-9-] suffix token (or none at all)."""
+    monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(POLL_COMPLETE))
+
+    rc = hosted.run_hosted("Test Topic!", "default", emit="compact",
+                           save_dir=str(tmp_path), save_suffix=suffix)
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert [saved_path.name for saved_path in tmp_path.iterdir()] == [expected_name]
+    saved = tmp_path / expected_name
+    # Directly under the requested save directory - no separators, no `..`.
+    assert saved.is_file()
+    assert saved.resolve().parent == tmp_path.resolve()
+    assert "# Raw markdown" in saved.read_text(encoding="utf-8")
+    assert f"Saved output to {saved.resolve()}" in captured.err
+    assert TEST_KEY not in captured.err
+
+
+def test_save_suffix_collision_falls_back_to_dated_sanitized_name(
+    remote_env, monkeypatch, capsys, tmp_path
+):
+    """Collision fallback still applies once the suffix is sanitized: hostile
+    '../Report V3' -> '-report-v3', and pre-existing files keep their content."""
+    monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(POLL_COMPLETE))
+    today = datetime.now().strftime("%Y-%m-%d")
+    base = tmp_path / "test-topic-raw-report-v3.md"
+    dated = tmp_path / f"test-topic-raw-report-v3-{today}.md"
+    base.write_text("prior base", encoding="utf-8")
+    dated.write_text("prior dated", encoding="utf-8")
+
+    rc = hosted.run_hosted("Test Topic!", "default", emit="compact",
+                           save_dir=str(tmp_path), save_suffix="../Report V3")
+    captured = capsys.readouterr()
+
+    saved = tmp_path / f"test-topic-raw-report-v3-{today}-1.md"
+    assert rc == 0
+    assert saved.exists()
+    assert saved.resolve().parent == tmp_path.resolve()
+    assert "# Raw markdown" in saved.read_text(encoding="utf-8")
+    assert base.read_text(encoding="utf-8") == "prior base"
+    assert dated.read_text(encoding="utf-8") == "prior dated"
+    assert f"Saved output to {saved.resolve()}" in captured.err
+    assert TEST_KEY not in captured.err
+
+
 def test_api_base_override(remote_env, monkeypatch, capsys):
     monkeypatch.setenv("LAST30DAYS_API_BASE", "https://staging.example.dev/api/v1/")
     urls = []
