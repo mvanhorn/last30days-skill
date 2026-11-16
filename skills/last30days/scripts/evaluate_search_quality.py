@@ -13,7 +13,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -27,6 +27,7 @@ from lib.providers import GEMINI_FLASH_LITE
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EVAL_TOPICS_FILE = REPO_ROOT / "fixtures" / "eval_topics.json"
+REDDIT_COVERAGE_TOPICS_FILE = REPO_ROOT / "fixtures" / "reddit_coverage_topics.json"
 
 
 def _load_default_topics() -> list[tuple[str, str]]:
@@ -323,6 +324,236 @@ def create_eval_env() -> dict[str, str]:
     return passthrough
 
 
+# --reddit-coverage measures the keyless Reddit floor only, so runs stay
+# comparable across machines and users: no ScrapeCreators key, no Keychain
+# key, no logged-in Reddit session (its consent off and every browser read
+# vetoed), and no host --reddit-threads envelope.
+REDDIT_COVERAGE_DROPPED_ENV = ("SCRAPECREATORS_API_KEY", "REDDIT_SESSION_COOKIE")
+REDDIT_COVERAGE_ENV = {
+    "REDDIT_BROWSER_CONSENT": "false",
+    "FROM_BROWSER": "off",
+    "LAST30DAYS_SKIP_KEYCHAIN": "1",
+}
+REDDIT_COVERAGE_SEARCH = "reddit"
+NO_BASELINE = ("", "none")
+
+# Run inside the candidate tree's scripts dir: the same title check judges
+# baseline and candidate output, so an engine without a topic bar is not
+# credited for the threads it kept. Reads {"topic", "titles"} on stdin.
+_TITLE_JUDGE_SNIPPET = (
+    "import json, sys\n"
+    "from lib import rerank\n"
+    "payload = json.load(sys.stdin)\n"
+    "entity = rerank._primary_entity(payload['topic']).lower()\n"
+    "print(json.dumps([bool(rerank._entity_grounded(t, entity)) if entity else True"
+    " for t in payload['titles']]))\n"
+)
+
+TitleJudge = Callable[[str, list[str]], list[bool]]
+
+
+def create_reddit_coverage_env() -> dict[str, str]:
+    """The eval env for --reddit-coverage: the floor only (see above)."""
+    run_env = create_eval_env()
+    for key in REDDIT_COVERAGE_DROPPED_ENV:
+        run_env.pop(key, None)
+    run_env.update(REDDIT_COVERAGE_ENV)
+    return run_env
+
+
+def load_reddit_coverage_topics(path: Path) -> list[dict[str, Any]]:
+    rows = json.loads(path.read_text())
+    return [
+        {
+            "topic": str(row["topic"]),
+            "kind": str(row.get("kind") or "general"),
+            "expect_coverage": bool(row.get("expect_coverage", True)),
+        }
+        for row in rows
+    ]
+
+
+def _scripts_dir(repo_dir: Path) -> Path:
+    scripts = repo_dir / "skills" / "last30days" / "scripts"
+    return scripts if scripts.exists() else repo_dir / "scripts"
+
+
+def make_title_judge(repo_dir: Path) -> TitleJudge:
+    """On-topic verdicts for thread titles, from ``repo_dir``'s rerank check."""
+    scripts = _scripts_dir(repo_dir)
+
+    def judge(topic: str, titles: list[str]) -> list[bool]:
+        if not titles:
+            return []
+        result = subprocess.run(
+            [sys.executable, "-c", _TITLE_JUDGE_SNIPPET],
+            cwd=scripts,
+            input=json.dumps({"topic": topic, "titles": titles}),
+            env={"PATH": os.environ.get("PATH", ""), "PYTHONUTF8": "1", "LAST30DAYS_CONFIG_DIR": ""},
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"title judge failed in {scripts}: {result.stderr.strip()[-400:]}")
+        verdicts = json.loads(result.stdout)
+        if len(verdicts) != len(titles):
+            raise RuntimeError("title judge returned the wrong number of verdicts")
+        return [bool(v) for v in verdicts]
+
+    return judge
+
+
+def reddit_items(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The run's Reddit threads as ``{title, comments, pending}`` rows.
+
+    Reads the raw report's ``items_by_source`` (current engines) or the v2
+    top-level ``reddit`` list (older ones).
+    """
+    raw = (report.get("items_by_source") or {}).get("reddit")
+    if raw is None:
+        raw = report.get("reddit") or []
+    rows = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        comments = meta.get("top_comments") or item.get("top_comments") or []
+        source = meta.get("engagement_source") or item.get("engagement_source")
+        rows.append({
+            "title": str(item.get("title") or ""),
+            "comments": len(comments) if isinstance(comments, list) else 0,
+            "pending": source == "arctic-pending",
+        })
+    return rows
+
+
+def reddit_served_path(report: dict[str, Any]) -> str:
+    """The Reddit outcome detail (served path), else its state, else ``-``."""
+    outcome = (report.get("source_status") or {}).get("reddit") or {}
+    if not isinstance(outcome, dict):
+        return "-"
+    return str(outcome.get("detail") or outcome.get("state") or "-")
+
+
+def summarize_reddit_coverage(report: dict[str, Any], topic: str, judge: TitleJudge) -> dict[str, Any]:
+    rows = reddit_items(report)
+    verdicts = judge(topic, [row["title"] for row in rows])
+    on_topic = [row for row, keep in zip(rows, verdicts) if keep]
+    pending = sum(1 for row in on_topic if row["pending"])
+    return {
+        "threads": len(rows),
+        "on_topic": len(on_topic),
+        "pending_share": (pending / len(on_topic)) if on_topic else 0.0,
+        "comments": sum(row["comments"] for row in on_topic),
+        "served_path": reddit_served_path(report),
+    }
+
+
+def reddit_coverage_flag(row: dict[str, Any]) -> str:
+    """A note for a topic with no on-topic candidate thread; never a failure."""
+    if row["candidate"]["on_topic"]:
+        return ""
+    return "no coverage (expected)" if not row["expect_coverage"] else "zero on-topic"
+
+
+def write_reddit_coverage_summary(
+    output_dir: Path,
+    baseline_label: Optional[str],
+    candidate_label: str,
+    rows: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> str:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated = datetime.now().isoformat(timespec="seconds")
+    payload = {
+        "generated_at": generated,
+        "baseline": baseline_label,
+        "candidate": candidate_label,
+        "topics": rows,
+        "failures": failures,
+    }
+    (output_dir / "reddit-coverage.json").write_text(json.dumps(payload, indent=2))
+
+    def cell(summary: Optional[dict[str, Any]]) -> str:
+        if summary is None:
+            return "- | - | - | -"
+        return "{on_topic}/{threads} | {pending:.0%} | {comments} | {path}".format(
+            on_topic=summary["on_topic"], threads=summary["threads"],
+            pending=summary["pending_share"], comments=summary["comments"],
+            path=summary["served_path"].replace("|", "/"),
+        )
+
+    lines = [
+        "# Reddit Coverage Evaluation",
+        "",
+        f"- Baseline: `{baseline_label or 'none'}`",
+        f"- Candidate: `{candidate_label}`",
+        f"- Generated: {generated}",
+        "- On-topic: thread titles that pass the candidate tree's rerank entity check.",
+        "",
+        "| Topic | Kind | Base on-topic | Base pending | Base comments | Base path"
+        " | Cand on-topic | Cand pending | Cand comments | Cand path | Note |",
+        "|---|---|---:|---:|---:|---|---:|---:|---:|---|---|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row['topic']} | {row['kind']} | {cell(row['baseline'])} | {cell(row['candidate'])} | {row['flag']} |"
+        )
+    if failures:
+        lines.extend(["", "## Failures", ""])
+        lines.extend(f"- `{failure['topic']}`: {failure['error']}" for failure in failures)
+    text = "\n".join(lines) + "\n"
+    (output_dir / "reddit-coverage.md").write_text(text)
+    return text
+
+
+def run_reddit_coverage(args: argparse.Namespace) -> int:
+    """--reddit-coverage: on-topic Reddit threads per topic, floor only."""
+    topics = load_reddit_coverage_topics(Path(args.topics_file) if args.topics_file else REDDIT_COVERAGE_TOPICS_FILE)
+    if args.limit_topics:
+        topics = topics[: args.limit_topics]
+    output_dir = Path(args.output_dir).resolve()
+    run_env = create_reddit_coverage_env()
+    search = args.search or REDDIT_COVERAGE_SEARCH
+    baseline_label = None if str(args.baseline).strip().lower() in NO_BASELINE else args.baseline
+
+    baseline_dir, baseline_temp = resolve_repo_dir(baseline_label) if baseline_label else (None, False)
+    candidate_dir, candidate_temp = resolve_repo_dir(args.candidate)
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    try:
+        judge = make_title_judge(candidate_dir)
+        for spec in topics:
+            topic = spec["topic"]
+            try:
+                runs = {}
+                for label, repo_dir in (("baseline", baseline_dir), ("candidate", candidate_dir)):
+                    if repo_dir is None:
+                        runs[label] = None
+                        continue
+                    report = run_last30days(
+                        repo_dir, topic, search=search, timeout_seconds=args.timeout,
+                        quick=args.quick, mock=args.mock, env=run_env,
+                    )
+                    runs[label] = summarize_reddit_coverage(report, topic, judge)
+                row = {**spec, **runs}
+                row["flag"] = reddit_coverage_flag(row)
+                rows.append(row)
+            except Exception as exc:
+                failures.append({"topic": topic, "error": str(exc)})
+        table = write_reddit_coverage_summary(output_dir, baseline_label, args.candidate, rows, failures)
+    finally:
+        if baseline_temp and baseline_dir is not None:
+            remove_worktree(baseline_dir)
+        if candidate_temp:
+            remove_worktree(candidate_dir)
+    sys.stderr.write(table)
+    print(json.dumps({"output_dir": str(output_dir), "topics": len(topics), "failures": len(failures)}, indent=2))
+    return 1 if failures else 0
+
+
 def run_last30days(repo_dir: Path, topic: str, *, search: str, timeout_seconds: int, quick: bool, mock: bool, env: dict[str, str]) -> dict[str, Any]:
     engine = repo_dir / "skills" / "last30days" / "scripts" / "last30days.py"
     if not engine.exists():
@@ -516,11 +747,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock", action="store_true")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--topics-file")
+    parser.add_argument(
+        "--reddit-coverage", action="store_true",
+        help="count on-topic Reddit threads per topic (keyless floor only; "
+             "default topics fixtures/reddit_coverage_topics.json, default --search reddit; "
+             "--baseline none runs the candidate only)",
+    )
+    parser.add_argument("--limit-topics", type=int, default=0, help="run only the first N topics")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.reddit_coverage:
+        return run_reddit_coverage(args)
     topics = parse_topics_file(Path(args.topics_file)) if args.topics_file else DEFAULT_TOPICS
     output_dir = Path(args.output_dir).resolve()
     config = envlib.get_config()

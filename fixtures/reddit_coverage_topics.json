@@ -1,0 +1,63 @@
+[
+  {
+    "topic": "Claude Code",
+    "kind": "mainstream",
+    "rationale": "High-volume developer tool with several dedicated subreddits."
+  },
+  {
+    "topic": "Steam Deck",
+    "kind": "mainstream",
+    "rationale": "Consumer hardware with a large dedicated community."
+  },
+  {
+    "topic": "Home Assistant",
+    "kind": "mainstream",
+    "rationale": "Self-hosting project with steady daily threads."
+  },
+  {
+    "topic": "GLP-1",
+    "kind": "mainstream",
+    "rationale": "Health topic discussed across many non-tech subreddits."
+  },
+  {
+    "topic": "Premier League",
+    "kind": "mainstream",
+    "rationale": "Sports topic with match-day thread volume."
+  },
+  {
+    "topic": "2026 midterm elections",
+    "kind": "breaking",
+    "rationale": "Breaking-event topic: threads are hours old, so scores are often still pending."
+  },
+  {
+    "topic": "Rust",
+    "kind": "homonym",
+    "rationale": "Homonym: the language, the game and corrosion share one title token, so the count shows how loose a title-only bar is."
+  },
+  {
+    "topic": "Framework Laptop",
+    "kind": "niche",
+    "rationale": "Niche hardware with a small, active community."
+  },
+  {
+    "topic": "Nix flakes",
+    "kind": "niche",
+    "rationale": "Niche developer topic; low volume, high signal."
+  },
+  {
+    "topic": "mechanical keyboards",
+    "kind": "hobby",
+    "rationale": "Hobby topic with a dedicated subreddit; generic words in the title."
+  },
+  {
+    "topic": "Obsidian plugins",
+    "kind": "niche",
+    "rationale": "App-ecosystem topic; tests a two-word entity with a descriptor."
+  },
+  {
+    "topic": "Quillmark Vesperloom firmware",
+    "kind": "no_coverage",
+    "expect_coverage": false,
+    "rationale": "Invented product name: expected to have no Reddit coverage. A 0 here is correct, not a failure."
+  }
+]
