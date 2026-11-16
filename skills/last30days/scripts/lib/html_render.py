@@ -588,7 +588,8 @@ def _strip_canonical_boundary(md: str) -> str:
 def _promote_prose_labels(md: str) -> str:
     for source, normalized in PROSE_LABELS:
         md = re.sub(
-            rf"^{re.escape(source)}$",
+            # The terminal report ends the label line with a `\` hard break.
+            rf"^{re.escape(source)}[ \t]*\\?[ \t]*$",
             f"## {normalized}",
             md,
             flags=re.MULTILINE,
@@ -638,6 +639,12 @@ def _markdown_to_html(md: str) -> str:
                 code_lines.append(line)
             index += 1
             continue
+
+        # A single trailing backslash is a markdown hard break: the Claude Code
+        # terminal report ends each pseudo-list line but the last with one.
+        if stripped.endswith("\\") and not stripped.endswith("\\\\"):
+            stripped = stripped[:-1].rstrip()
+            line = stripped
 
         if stripped.startswith("```"):
             flush_paragraph()

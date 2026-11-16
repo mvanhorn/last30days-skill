@@ -34,13 +34,27 @@ Every standard report ends with a numbered KEY PATTERNS list and a bulleted invi
 
 ## Fix
 
-On Claude Code (`CLAUDECODE` set), `references/synthesis.md` tells the model to write no markdown list: numbered markers as an escaped `1\.` and bullets as a typed `• `, one per line. Claude Code draws these as `1.` and `•`, and its parser sees ordinary paragraph lines. Other hosts keep normal lists, because renderers that reflow markdown would merge the lines.
+The redraw is a terminal-only behavior, so the workaround applies only there. The engine's report checklist (`scripts/lib/report_checklist.py`) picks the list format from `CLAUDE_CODE_ENTRYPOINT`:
+
+| Surface | `CLAUDE_CODE_ENTRYPOINT` | Format |
+|---|---|---|
+| Terminal, including cmux and Ghostty | `cli` (observed), or unset on older builds | List-free lines |
+| T3 Code | `sdk-ts` (observed) | Real markdown lists |
+| Desktop app, IDE extensions | not yet observed; any value other than `cli` | Real markdown lists |
+
+List-free lines use an escaped `1\.` for numbered markers and a typed `• ` for bullets. Every line of the block except its last, the label line included, ends with a trailing `\`, and no blank line separates them. Claude Code draws these as `1.` and `•`, one per row, with no visible backslash. Its parser sees ordinary paragraph lines with hard breaks. A CommonMark viewer, such as a phone following a Remote Control session, turns each `\` into a line break, so the items stay on separate rows there too.
+
+`references/synthesis.md` defers to the checklist's list line. When the checklist is off (`LAST30DAYS_NO_REPORT_CHECKLIST`), it falls back to the terminal format. Hosts without `CLAUDECODE`, such as Grok Bot, keep normal lists.
+
+History: the first version wrote one pseudo-list line per row with plain line breaks. Markdown viewers merged those into one paragraph, so #1463 put a blank line between items. That left a large gap between every item on every Claude Code surface. The trailing `\` replaced the blank line on 2026-11-16.
 
 Keep LAW 8's hidden-link default for Claude Code. Switching to plain labels would hide the symptom by removing clickable links from every report.
 
 ## Evidence
 
 A real report was replayed through interactive Claude Code sessions in a hidden pseudo-terminal, counting hyperlink escape sequences against flattened `(https://` draws in the raw output. The list format flattened links in 2 of 9 runs; the list-free format in 0 of 15. Both failures began while the KEY PATTERNS list was streaming.
+
+On 2026-11-16 (Claude Code 2.1.325), a report fixture with trailing `\` hard breaks was replayed through 15 interactive terminal sessions in a pseudo-terminal and rendered with a terminal emulator. All 15 drew one item per row with clickable labels, no `(https://` text and no visible backslash. The same fixture through a CommonMark parser gave one `<br>` per hard break.
 
 ## Guardrails
 
