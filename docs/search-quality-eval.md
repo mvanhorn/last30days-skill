@@ -46,3 +46,18 @@ Notes:
 - It also strips `node` from the eval `PATH` and wraps `yt-dlp` with `--ignore-config`, so older revisions do not inherit local browser-cookie config either.
 - `Jaccard` and retention are regression guards, not truth metrics.
 - `Precision@5` and `nDCG@5` are only as good as the judged pool. They help compare revisions, but they are not a substitute for a larger labeled benchmark.
+
+## Reddit coverage mode
+
+`--reddit-coverage` counts on-topic Reddit threads per topic so engine versions can be compared on Reddit alone:
+
+```bash
+uv run python skills/last30days/scripts/evaluate_search_quality.py \
+  --reddit-coverage --baseline v4.0.5 --candidate WORKTREE --limit-topics 3
+```
+
+- Topics come from `fixtures/reddit_coverage_topics.json` (about 12, including one invented no-coverage topic, one homonym and one breaking-event topic). A 0 on the no-coverage topic is expected and is not a failure.
+- It measures the keyless floor only, so results stay comparable across machines: it runs `--search reddit`, drops `SCRAPECREATORS_API_KEY`, skips the Keychain, sets `REDDIT_BROWSER_CONSENT=false` and `FROM_BROWSER=off` (no logged-in session) and passes no `--reddit-threads` envelope.
+- On-topic is judged by the eval, not the engine: the candidate tree's `rerank._entity_grounded` title check is applied the same way to baseline and candidate output, so an older engine without a topic bar is not credited for off-topic threads.
+- Per topic it reports on-topic and total threads, the pending-score share and comment count of the on-topic threads, and the Reddit served path from `source_status`. Output goes to `reddit-coverage.md` and `reddit-coverage.json` in `--output-dir`.
+- `--baseline none` runs the candidate only.

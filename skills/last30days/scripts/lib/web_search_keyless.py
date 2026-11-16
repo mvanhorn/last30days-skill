@@ -286,7 +286,7 @@ def _fetch_page(rung: str, url: str) -> tuple[Optional[str], str]:
     """
     with http.tee_failures() as failures:
         text = http.get_text(url, accept="text/html", retries=2)
-    if text and any(marker in text for marker in _CHALLENGE_MARKERS.get(rung, ())):
+    if is_challenge_page(rung, text or ""):
         return None, THROTTLED
     if text:
         return text, ""
@@ -304,13 +304,17 @@ def _freshness_param(freshness: Optional[str], index: int) -> Optional[str]:
 
 
 
-def _brave_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[list[dict], str]:
-    """Rung 0 (Reddit queries): Brave Search's HTML results page, with its state."""
+def _brave_url(query: str, freshness: Optional[str] = None) -> str:
     params = {"q": query, "source": "web"}
     tf = _freshness_param(freshness, 0)
     if tf:
         params["tf"] = tf
-    text, failed = _fetch_page("brave", f"{_BRAVE_HTML_URL}?{urlencode(params)}")
+    return f"{_BRAVE_HTML_URL}?{urlencode(params)}"
+
+
+def _brave_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[list[dict], str]:
+    """Rung 0 (Reddit queries): Brave Search's HTML results page, with its state."""
+    text, failed = _fetch_page("brave", _brave_url(query, freshness))
     if text is None:
         return [], failed
     items = parse_brave(text, count)
@@ -370,14 +374,25 @@ def _search_ddg(query: str, count: int, freshness: Optional[str] = None) -> list
     return _ddg_rung(query, count, freshness)[0]
 
 
-def _ddg_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[list[dict], str]:
+def _ddg_url(query: str, freshness: Optional[str] = None) -> str:
     params = {"q": query}
     df = _freshness_param(freshness, 1)
     if df:
         params["df"] = df
-    text, failed = _fetch_page("ddg", f"{_DDG_HTML_URL}?{urlencode(params)}")
+    return f"{_DDG_HTML_URL}?{urlencode(params)}"
+
+
+def _ddg_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[list[dict], str]:
+    text, failed = _fetch_page("ddg", _ddg_url(query, freshness))
     if text is None:
         return [], failed
+    items = parse_ddg(text, count)
+    return items, OK if items else EMPTY
+
+
+def parse_ddg(text: str, count: int) -> list[dict]:
+    """Organic results from a DuckDuckGo HTML results page."""
+    text = text or ""
     items: list[dict] = []
     # Associate each result's snippet by position, not by a parallel index:
     # some result anchors (video/news modules) have no snippet, so a global
@@ -396,7 +411,7 @@ def _ddg_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[
         snippet = _strip_html(snippet_match.group("snippet")) if snippet_match else ""
         title = _strip_html(match.group("title"))
         items.append(_to_item(len(items), title, target, snippet))
-    return items, OK if items else EMPTY
+    return items
 
 
 def _search_startpage(query: str, count: int, freshness: Optional[str] = None) -> list[dict]:
@@ -410,13 +425,24 @@ def _startpage_rung(
     endpoint (which anomaly-blocks datacenter IPs with a 202 challenge page),
     Startpage returns organic results to a plain browser-UA GET, making it the
     working floor on hosts DuckDuckGo refuses. Never raises."""
+    text, failed = _fetch_page("startpage", _startpage_url(query, freshness))
+    if text is None:
+        return [], failed
+    items = parse_startpage(text, count)
+    return items, OK if items else EMPTY
+
+
+def _startpage_url(query: str, freshness: Optional[str] = None) -> str:
     params = {"query": query}
     with_date = _freshness_param(freshness, 2)
     if with_date:
         params["with_date"] = with_date
-    text, failed = _fetch_page("startpage", f"{_STARTPAGE_HTML_URL}?{urlencode(params)}")
-    if text is None:
-        return [], failed
+    return f"{_STARTPAGE_HTML_URL}?{urlencode(params)}"
+
+
+def parse_startpage(text: str, count: int) -> list[dict]:
+    """Organic results from a Startpage HTML results page."""
+    text = text or ""
     items: list[dict] = []
     result_matches = list(_SP_RESULT_RE.finditer(text))
     for idx, match in enumerate(result_matches):
@@ -433,7 +459,24 @@ def _startpage_rung(
         desc = _SP_DESC_RE.search(text, match.end(), next_start)
         snippet = _strip_html(desc.group("snippet")) if desc else ""
         items.append(_to_item(len(items), title, target, snippet))
-    return items, OK if items else EMPTY
+    return items
+
+
+def rung_url(rung: str, query: str, freshness: Optional[str] = None) -> str:
+    """The results-page address one HTML rung asks for ``query``."""
+    return {"brave": _brave_url, "ddg": _ddg_url, "startpage": _startpage_url}[rung](query, freshness)
+
+
+def parse_rung(rung: str, text: str, count: int) -> list[dict]:
+    """One HTML rung's parser applied to a results page it served."""
+    if rung == "brave":
+        return parse_brave(text, count)
+    return {"ddg": parse_ddg, "startpage": parse_startpage}[rung](text, count)
+
+
+def is_challenge_page(rung: str, text: str) -> bool:
+    """Whether ``text`` is a known challenge/anomaly page for ``rung``."""
+    return bool(text) and any(marker in text for marker in _CHALLENGE_MARKERS.get(rung, ()))
 
 
 def _search_searxng(query: str, count: int, instance_url: str) -> list[dict]:

@@ -68,6 +68,11 @@ class Hydration:
     items: list[dict]
     detail: str
     arctic_state: str
+    # Archive comment-tree requests this call: trees attached, and requests
+    # that failed (an empty tree is neither).
+    comment_fills: int = 0
+    comment_failures: int = 0
+    comment_throttles: int = 0  # failures that were a 422/429 slow-down
 
 
 def _log(msg: str) -> None:
@@ -236,7 +241,9 @@ def _attach_comments(
     items: list[dict], depth: str, deadline: Optional[float], now: float,
 ) -> tuple[int, int]:
     """Archive comment trees for the most-discussed hydrated threads that lack
-    comments, within the lane's comment budget. Returns (filled, failed)."""
+    comments, within the lane's comment budget. Returns (filled, failed,
+    throttled), where throttled counts the failures that were the archive
+    asking to slow down."""
     from . import reddit_keyless
 
     limit = reddit_shreddit.ENRICH_LIMITS.get(depth, reddit_shreddit.ENRICH_LIMITS["default"])
@@ -250,11 +257,11 @@ def _attach_comments(
         key=_discussion, reverse=True,
     )[:limit]
     if not targets:
-        return 0, 0
+        return 0, 0, 0
     end = time.monotonic() + reddit_keyless.FINAL_ENRICH_BUDGET
     if deadline is not None:
         end = min(end, deadline)
-    filled = failed = 0
+    filled = failed = throttled = 0
     for item in targets:
         if end - time.monotonic() < 1:
             _log("comment budget spent; remaining threads keep no comments")
@@ -262,6 +269,7 @@ def _attach_comments(
         rows = reddit_arctic.fetch_comment_tree(item["metadata"]["post_id"], deadline=end)
         if rows is None:
             failed += 1
+            throttled += bool(getattr(reddit_arctic, "last_tree_throttled", False))
             if failed >= 2 and not filled:
                 _log("archive comments failing; remaining threads keep no comments")
                 break
@@ -276,7 +284,7 @@ def _attach_comments(
             item["comments_source"] = ARCTIC
             _stamp_uploader(item)
             filled += 1
-    return filled, failed
+    return filled, failed, throttled
 
 
 def on_topic_count(items: Iterable[dict], topic: str) -> int:
@@ -442,8 +450,9 @@ def hydrate(
     ]
     items = [item for item in items if _in_window(item, from_date, to_date)]
 
+    filled = failed = throttled = 0
     if comments and items and not skipped and arctic_state not in ("down", "throttled"):
-        filled, _failed = _attach_comments(items, depth, deadline, now)
+        filled, failed, throttled = _attach_comments(items, depth, deadline, now)
         if filled:
             served.add("arctic")
 
@@ -458,4 +467,7 @@ def hydrate(
             if _merge_sc(items, sc_items, topic, from_date, to_date):
                 served.add("sc")
 
-    return Hydration(items=items, detail=_detail(items, served, arctic_state), arctic_state=arctic_state)
+    return Hydration(
+        items=items, detail=_detail(items, served, arctic_state), arctic_state=arctic_state,
+        comment_fills=filled, comment_failures=failed, comment_throttles=throttled,
+    )

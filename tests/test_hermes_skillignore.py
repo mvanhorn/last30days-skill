@@ -22,6 +22,7 @@ def test_hermes_skillignore_excludes_non_runtime_scan_surface() -> None:
         "scripts/build-skill.sh",
         "scripts/compare.sh",
         "scripts/evaluate_search_quality.py",
+        "scripts/reddit_canary.py",
         "scripts/test_device_auth.py",
         "scripts/test-v1-vs-v2.sh",
         "scripts/verify_v3.py",

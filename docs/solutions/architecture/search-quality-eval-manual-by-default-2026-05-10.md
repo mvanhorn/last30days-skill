@@ -70,6 +70,7 @@ The blocker is the live-API + non-determinism combination. If a future iteration
 - Don't merge PRs that wire `evaluate_search_quality.py` into the default `validate.yml` workflow.
 - Do merge PRs that add `workflow_dispatch` triggers or label-gated runs.
 - When reviewing a retrieval/ranking change, request a manual eval if the diff suggests it could regress quality — don't expect CI to catch it.
+- `--reddit-coverage` follows the same rule: a manual, local, floor-only count of on-topic Reddit threads per topic from `fixtures/reddit_coverage_topics.json`; the live daily Reddit check is the separate scheduled canary (`.github/workflows/reddit-canary.yml`), which never gates a PR.
 
 ## Links
 

@@ -38,6 +38,7 @@ CRITICAL_RULES = [
 IGNORE_DIRS = ("assets/", "agents/", "scripts/lib/vendor/")
 IGNORE_FILES = {
     "scripts/build-skill.sh", "scripts/compare.sh", "scripts/evaluate_search_quality.py",
+    "scripts/reddit_canary.py",
     "scripts/test_device_auth.py", "scripts/test-v1-vs-v2.sh", "scripts/verify_v3.py",
 }
 
