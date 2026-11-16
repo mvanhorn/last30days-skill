@@ -83,6 +83,123 @@ def test_selection_prefers_rare_departments_locations_and_founding_titles():
     items.append(role(102, title="Founding Designer"))
     selected = jobs_digest.select_roles(items, limit=3)
     assert {entry["item"]["id"] for entry in selected} == {"GH100", "GH101", "GH102"}
+    # The weights hold on a board of up to 500 open roles.
+    selected = jobs_digest.select_roles(items, limit=3, open_roles=500)
+    assert {entry["item"]["id"] for entry in selected} == {"GH100", "GH101", "GH102"}
+    # Past 500, a one-off location or title word earns nothing: the rare
+    # department and the founding title keep their places, and the third goes
+    # to the board's first role instead of the Ulaanbaatar one.
+    selected = jobs_digest.select_roles(items, limit=3, open_roles=501)
+    assert {entry["item"]["id"] for entry in selected} == {"GH100", "GH102", "GH0"}
+
+
+def _rarity_board(size, *, it_roles=12, story=()):
+    """``size`` engineering rows across five cities, the last ``it_roles`` of
+    them IT Support roles each in a place no other row names. ``story`` maps
+    a row index to its story term; those rows carry the rank story search
+    gave them."""
+    cities = ["Seattle", "Austin", "Boston", "Denver", "Chicago"]
+    items = [role(index, location=cities[index % 5]) for index in range(size - it_roles)]
+    items += [
+        role(size - it_roles + n, title=f"IT Support Technician {n}", location=f"Smalltown {n}")
+        for n in range(it_roles)
+    ]
+    for rank, (index, term) in enumerate(story):
+        items[index]["story_term"] = term
+        items[index]["story_rank"] = rank
+    return items
+
+
+def test_a_large_board_s_one_off_locations_earn_no_place_and_its_story_matches_lead():
+    items = _rarity_board(3000, story=[(1500, "kuiper"), (2200, "kuiper")])
+    selected = jobs_digest.select_roles(items)
+    ids = [entry["item"]["id"] for entry in selected]
+    assert ids[:2] == ["GH1500", "GH2200"]
+    assert not any(entry["item"]["title"].startswith("IT Support") for entry in selected)
+    digest = jobs_digest.build_digest(items, selected)
+    assert [entry.get("story_term") for entry in digest["roles"][:3]] == ["kuiper", "kuiper", None]
+
+
+def test_a_large_board_lists_a_small_team_cluster_and_its_gm_over_newer_store_roles():
+    items = [
+        role(n, title=f"Retail Assistant (Athlete) - PT {n % 40} HRS - Store {n}", department="Retail",
+             location=f"Town {n}", date="2026-11-09", true_date=True)
+        for n in range(650)
+    ]
+    items += [
+        role(700 + n, title=f"Engineer {kind}, Air Manufacturing Innovation", department="Technology",
+             location="Beaverton, Oregon", date="2026-10-20", true_date=True)
+        for n, kind in enumerate(["Automation", "Tooling", "Controls", "Design"])
+    ]
+    items += [
+        role(800 + n, title=f"Product Developer {n}, Footwear", department="Product",
+             location="Beaverton, Oregon", date="2026-10-20", true_date=True)
+        for n in range(40)
+    ]
+    items.append(role(900, title="GM, NIKE Energy DOTSWOOSH", department="Product",
+                      location="Beaverton, Oregon", date="2026-10-20", true_date=True))
+    selected = jobs_digest.select_roles(items, limit=6)
+    titles = {entry["item"]["title"] for entry in selected}
+    assert "GM, NIKE Energy DOTSWOOSH" in titles
+    assert {t for t in titles if t.endswith("Air Manufacturing Innovation")} == {
+        f"Engineer {kind}, Air Manufacturing Innovation"
+        for kind in ["Automation", "Tooling", "Controls", "Design"]
+    }
+
+
+def test_a_small_board_still_ranks_one_off_locations_first():
+    items = _rarity_board(80, it_roles=4)
+    selected = jobs_digest.select_roles(items, limit=4)
+    assert {entry["item"]["title"] for entry in selected} == {
+        f"IT Support Technician {n}" for n in range(4)
+    }
+
+
+def test_story_slots_split_across_terms_and_pass_unused_shares_on():
+    story = [(index, "humanoid") for index in range(100, 150)] + [(300, "kuiper"), (301, "kuiper")]
+    items = _rarity_board(600, story=story)
+    selected = jobs_digest.select_roles(items)
+    reserved = selected[:jobs_digest.STORY_ROLE_SLOTS]
+    terms = [entry["item"].get("story_term") for entry in reserved]
+    # Each term's share is four; kuiper has two, so humanoid takes the rest,
+    # in the order story search returned them.
+    assert terms.count("kuiper") == 2 and terms.count("humanoid") == 6
+    assert [entry["item"]["id"] for entry in reserved if entry["item"]["story_term"] == "humanoid"] == [
+        f"GH{index}" for index in range(100, 106)
+    ]
+    # Story matches past the reserved slots compete on the usual score.
+    assert len(selected) == jobs_digest.DIGEST_MAX_ROLES
+
+
+def test_story_tagged_rows_render_their_term_and_the_search_status():
+    items = _rarity_board(80, it_roles=4, story=[(10, "kuiper")])
+    digest = jobs_digest.build_digest(items, jobs_digest.select_roles(items))
+    board = {"company": "Acme", "provider": "greenhouse", "open_roles": 80, "digest": digest,
+             "story_search": {"ran": True, "terms": ["kuiper", "humanoid"], "matches": 1,
+                              "story_partial": False}}
+    block = render._render_jobs_digest(_report(board))
+    assert "story search: 2 terms, 1 match" in block[3]
+    assert "story term: kuiper" in block[4] and "Software Engineer 10" in block[4]
+    assert sum("story term:" in line for line in block) == 1
+
+
+def test_the_roles_listed_line_says_when_story_search_found_nothing_or_did_not_run():
+    items = _rarity_board(80, it_roles=4)
+    digest = jobs_digest.build_digest(items, jobs_digest.select_roles(items))
+
+    def listed(record):
+        board = {"company": "Acme", "provider": "greenhouse", "open_roles": 80, "digest": digest}
+        if record is not None:
+            board["story_search"] = record
+        return render._render_jobs_digest(_report(board))[3]
+
+    assert "story search: no matches" in listed(
+        {"ran": True, "terms": ["kuiper"], "matches": 0, "story_partial": False})
+    assert "story search: not run" in listed(
+        {"ran": False, "terms": [], "matches": 0, "story_partial": False})
+    assert "story search: 1 term, 3 matches (partial)" in listed(
+        {"ran": True, "terms": ["kuiper"], "matches": 3, "story_partial": True})
+    assert "story search" not in listed(None)
 
 
 def test_board_without_descriptions_yields_titles_and_no_passages():

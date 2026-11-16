@@ -67,7 +67,11 @@ def test_board_named_on_the_jobs_page_the_official_careers_page_links_to_is_foun
         items, artifact = jobs.search_jobs(
             "Nvidia", WINDOW, {}, web_backend="none", site="https://www.nvidia.com/",
         )
-    assert fetched == ["https://www.nvidia.com/careers", "https://jobs.nvidia.com/careers"]
+    # The board's tenant robots.txt is asked for the tenant's other career sites.
+    assert fetched == [
+        "https://www.nvidia.com/careers", "https://jobs.nvidia.com/careers",
+        "https://nvidia.wd5.myworkdayjobs.com/robots.txt",
+    ]
     assert len(items) == 6
     assert artifact["tier"] == "ats"
     assert artifact["provider"] == "workday"

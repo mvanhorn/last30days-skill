@@ -4956,6 +4956,9 @@ def _main(
                 return 2
             discovered = distinct_peers
             config["_comparison_entity_count"] = 1 + len(discovered)
+            # Each entity's jobs lane leaves every entity's name out of the
+            # story terms it searches its board for.
+            config["_comparison_entities"] = [topic, *discovered]
 
             sys.stderr.write(
                 f"[Competitors] Comparing: {topic} vs " + " vs ".join(discovered) + "\n"

@@ -9,7 +9,7 @@ import unicodedata
 from collections import Counter
 
 from . import (
-    categories, competitors, entity_extract, http, log, polymarket, providers, query, relevance,
+    categories, competitors, entity_extract, http, jobs_story, log, polymarket, providers, query, relevance,
     schema,
 )
 
@@ -702,6 +702,7 @@ def _sanitize_plan(
         + (_enablement_notes(topic) if not honor_plan_sources and intent == "how_to" and _is_enablement(topic) else []),
         person_identity_anchors=[a.strip() for a in anchors if _is_identity_anchor(a)],
         polymarket_hints=hints,
+        jobs_queries=jobs_story.clean_terms(raw.get("jobs_queries")),
     )
 
 

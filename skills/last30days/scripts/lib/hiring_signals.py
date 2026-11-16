@@ -49,13 +49,28 @@ _KEYWORD_EXCLUSIONS: dict[str, str] = {
 SENIORITY_TERMS = ("head of", "director", "vp", "principal", "staff", "lead", "founding")
 
 # Leadership markers that establish/own a function (a first-of-function hire).
-LEADERSHIP_TERMS = ("head of", "chief", "global head", "svp", "vp of", "vp,", "director of")
+LEADERSHIP_TERMS = (
+    "head of", "chief", "global head", "svp", "vp of", "vp,", "director of",
+    "general manager", "vice president",
+)
 
 # Title qualifiers that are level/logistics noise, not a specialized capability.
 _GENERIC_QUALIFIERS = {
     "senior", "staff", "principal", "lead", "junior", "mid", "sr", "jr",
     "i", "ii", "iii", "iv", "remote", "hybrid", "onsite", "on-site",
     "contract", "intern", "full-time", "part-time", "us", "uk", "emea",
+}
+# Words a title tail made only of says a level or a team, not a capability:
+# "Engineer, Entry Level", "Engineer, Multiple Teams".
+_LEVEL_AND_TEAM_WORDS = {
+    *_GENERIC_QUALIFIERS, "entry", "level", "new", "grad", "graduate", "associate",
+    "experienced", "internship", "team", "teams", "multiple", "various", "all", "any",
+    "org", "organization", "group", "department", "division", "general",
+}
+# Regions a title tail names that are places, not specialties.
+_REGION_WORDS = {
+    "apac", "latam", "americas", "north america", "europe", "global", "worldwide",
+    "usa", "united states",
 }
 
 
@@ -366,13 +381,16 @@ def _strategic_candidates(items: list[schema.SourceItem]) -> list[dict[str, Any]
     of being averaged away by count-weighting.
     """
     item_locations = [(item, _norm_location(item)) for item in items]
-    location_counts = Counter(loc for _item, loc in item_locations if loc)
-    dominant = max(location_counts.values()) if location_counts else 0
+    # A place counts once however the board spells it: "Seattle, WA" is
+    # the "Seattle" another role names.
+    place_counts = Counter(place_key(loc) for _item, loc in item_locations if place_key(loc))
+    dominant = max(place_counts.values()) if place_counts else 0
+    places = set(place_counts)
 
     scored: list[tuple[int, dict[str, Any]]] = []
     for item, location in item_locations:
-        flags = _title_flags(item.title or "")
-        if location and location_counts.get(location, 0) == 1 and dominant >= 3:
+        flags = _title_flags(item.title or "", places=places)
+        if location and place_counts.get(place_key(location), 0) == 1 and dominant >= 3:
             flags.append("new-geo")
         if not flags:
             continue
@@ -394,15 +412,19 @@ def _strategic_candidates(items: list[schema.SourceItem]) -> list[dict[str, Any]
     return [candidate for _priority, candidate in scored[:10]]
 
 
-def _title_flags(title: str) -> list[str]:
-    """Structural strategic flags derivable from a title alone (no geo)."""
+def _title_flags(title: str, *, places: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """Structural strategic flags derivable from a title alone (no geo).
+
+    ``places`` are the ``place_key`` of every location on the board, so a
+    title tail naming one of them is not taken for a specialty.
+    """
     lowered = title.lower()
     flags: list[str] = []
     if "founding" in lowered or re.search(r"\bfirst\b", lowered):
         flags.append("founding")
-    if any(term in lowered for term in LEADERSHIP_TERMS):
+    if any(term in lowered for term in LEADERSHIP_TERMS) or re.search(r"\bgm\b", lowered):
         flags.append("leadership")
-    if _specialization(title):
+    if _specialization(title, places=places):
         flags.append("specialized")
     return flags
 
@@ -411,12 +433,14 @@ def _is_strategic_title(title: str) -> bool:
     return bool(_title_flags(title))
 
 
-def _specialization(title: str) -> str:
+def _specialization(title: str, *, places: set[str] | frozenset[str] = frozenset()) -> str:
     """Return a specialized sub-domain qualifier from a title, or ''.
 
     "Research Scientist, Human Simulation" -> "Human Simulation".
     "Engineer (Forward Deployed)" -> "Forward Deployed".
     "Engineer, Senior" -> "" (generic level word, not a capability).
+    "Engineer, Multiple Teams" -> "" (team words only).
+    "Engineer, Seattle" -> "" when ``places`` holds "seattle".
     """
     tail = ""
     paren = re.search(r"\(([^)]+)\)", title)
@@ -426,9 +450,22 @@ def _specialization(title: str) -> str:
         tail = title.rsplit(",", 1)[1].strip()
     if not tail or len(tail) < 4:
         return ""
-    if tail.lower() in _GENERIC_QUALIFIERS:
+    lowered = tail.lower()
+    if lowered in _GENERIC_QUALIFIERS or lowered in _REGION_WORDS:
+        return ""
+    if place_key(lowered) in places:
+        return ""
+    words = re.findall(r"[a-z0-9]+", lowered)
+    if all(word in _LEVEL_AND_TEAM_WORDS or word.isdigit() for word in words):
         return ""
     return tail
+
+
+def place_key(location: str) -> str:
+    """The city, or the country when that is all it names, a location
+    string starts with: "Seattle, WA" and "Seattle, Washington, USA" are
+    both "seattle"."""
+    return location.split(",", 1)[0].strip().lower()
 
 
 def _norm_location(item: schema.SourceItem) -> str:

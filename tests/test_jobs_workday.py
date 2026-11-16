@@ -1,8 +1,9 @@
+import re
 import threading
 import unittest
 from unittest.mock import patch
 
-from lib import jobs, jobs_digest
+from lib import jobs, jobs_digest, render, schema
 
 TOKEN = "acme.wd5/AcmeCareers"
 SITE = "https://www.acme.com"
@@ -352,6 +353,208 @@ class WorkdayDetailTests(unittest.TestCase):
                 "Acme", ("2026-10-11", "2026-11-10"), {}, web_backend="none",
             )
         self.assertEqual(2000, artifact["open_roles"])
+        self.assertTrue(artifact["open_roles_floor"])
+
+
+def _site_row(site: str, index: int) -> dict:
+    return {
+        "title": f"{site} role {index}",
+        "externalPath": f"/job/Beaverton-Oregon/{site}-role-{index}_R-{site}{index}",
+        "locationsText": "Beaverton, Oregon",
+        "postedOn": "Posted Today",
+        "bulletFields": [f"R-{site}{index}"],
+    }
+
+
+NIKE_ROBOTS = (
+    "User-agent: *\nDisallow: /nke/\nDisallow: /nke2/\nDisallow: /nke4/\nDisallow: /refreshFacet/\n"
+)
+SALESFORCE_ROBOTS = "\n".join(
+    [f"Sitemap: https://salesforce.wd12.myworkdayjobs.com/{site}/siteMap.xml"
+     for site in ("External_Career_Site", "Tableau", "Slack")]
+    + ["", "User-agent: *"]
+    + [f"Allow: /{site}/" for site in ("External_Career_Site", "Heroku")]
+    + ["Disallow: /refreshFacet/", ""]
+)
+SHARED = {
+    "title": "Air Manufacturing Innovation Engineer",
+    "externalPath": "/job/Beaverton-Oregon/Air-Manufacturing-Innovation-Engineer_R-96484",
+    "locationsText": "Beaverton, Oregon",
+    "postedOn": "Posted Today",
+    "bulletFields": ["R-96484"],
+}
+
+
+class FakeTenant:
+    """Every career site of Workday tenants, its robots.txt and the careers page."""
+
+    def __init__(self, sites: dict[str, list[dict] | dict], *, robots: str | None, page: str):
+        # "host/site" -> rows, or a dict answered as is (not the listing shape).
+        self.sites = sites
+        self.robots = robots
+        self.page = page
+        self.list_calls: list[str] = []
+        self._lock = threading.Lock()
+
+    def get_text(self, url, **kwargs):
+        if url.endswith("/robots.txt"):
+            # ``get_text`` answers None for a file that is not there, and for
+            # one asked right after a burst of listing pages, which Workday
+            # answers with 429 for a while.
+            return None if self.list_calls else self.robots
+        return self.page
+
+    def post(self, url, json_data, headers=None, **kwargs):
+        with self._lock:
+            self.list_calls.append(url)
+        match = re.fullmatch(r"https://([^/]+)/wday/cxs/[^/]+/([^/]+)/jobs", url)
+        rows = self.sites.get(f"{match.group(1)}/{match.group(2)}") if match else None
+        if rows is None:
+            raise jobs.http.HTTPError("not found", status_code=404)
+        if isinstance(rows, dict):
+            return rows
+        offset = json_data["offset"]
+        return {
+            "total": len(rows) if offset == 0 else 0,
+            "jobPostings": rows[offset:offset + json_data["limit"]],
+        }
+
+    def get(self, url, headers=None, **kwargs):
+        return {"jobPostingInfo": {"jobDescription": "<p>Build it.</p>", "startDate": "2026-11-03"}}
+
+    def sites_read(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for url in self.list_calls:
+            match = re.fullmatch(r"https://([^/]+)/wday/cxs/[^/]+/([^/]+)/jobs", url)
+            key = f"{match.group(1)}/{match.group(2)}"
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def search(self, company: str, site: str):
+        with patch("lib.jobs.http.get_text", side_effect=self.get_text), \
+                patch("lib.jobs.http.post", side_effect=self.post), \
+                patch("lib.jobs.http.get", side_effect=self.get):
+            return jobs.search_jobs(
+                company, ("2026-10-11", "2026-11-10"), {}, web_backend="none", site=site,
+            )
+
+
+NIKE = "nike.wd1.myworkdayjobs.com"
+NIKE_PAGE = '<a href="https://nike.wd1.myworkdayjobs.com/en-US/nke2">Jobs</a>'
+
+
+class WorkdayTenantSitesTests(unittest.TestCase):
+    def test_every_site_robots_txt_disallows_is_read_and_a_shared_posting_counts_once(self):
+        tenant = FakeTenant(
+            {
+                f"{NIKE}/nke": [_site_row("nke", 0), _site_row("nke", 1), SHARED],
+                f"{NIKE}/nke2": [_site_row("nke2", 0), SHARED],
+                f"{NIKE}/nke4": [_site_row("nke4", 0)],
+            },
+            robots=NIKE_ROBOTS, page=NIKE_PAGE,
+        )
+        items, artifact = tenant.search("Nike", "https://www.nike.com")
+        self.assertEqual({f"{NIKE}/nke": 1, f"{NIKE}/nke2": 1, f"{NIKE}/nke4": 1}, tenant.sites_read())
+        self.assertEqual(5, len(items))
+        self.assertEqual(5, artifact["open_roles"])
+        self.assertTrue(artifact["owned"])
+        titles = {item["title"] for item in items}
+        self.assertIn("Air Manufacturing Innovation Engineer", titles)
+        self.assertIn("nke4 role 0", titles)
+        self.assertEqual(
+            [{"site": "nke2", "roles": 2}, {"site": "nke", "roles": 3}, {"site": "nke4", "roles": 1}],
+            artifact["board_sites"],
+        )
+        # A role from another site links to, and is detailed on, its own site.
+        nke4 = next(item for item in items if item["title"] == "nke4 role 0")
+        self.assertTrue(nke4["url"].startswith(f"https://{NIKE}/nke4/job/"))
+        # The digest's count line says which sites the roles came from.
+        report = schema.Report(
+            topic="Nike", range_from="2026-10-11", range_to="2026-11-10",
+            generated_at="2026-11-10T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("mock", "mock", "mock"),
+            query_plan=schema.QueryPlan(
+                intent="product", freshness_mode="balanced_recent", cluster_mode="none",
+                raw_topic="Nike", subqueries=[], source_weights={},
+            ),
+            clusters=[], ranked_candidates=[], items_by_source={},
+            errors_by_source={}, artifacts={"jobs": artifact},
+        )
+        roles_line = next(
+            line for line in render._render_jobs_digest(report) if line.startswith("- Roles listed:")
+        )
+        self.assertIn("Read from 3 Workday sites: nke2 (2 roles), nke (3 roles), nke4 (1 role).", roles_line)
+
+    def test_sites_listed_only_in_allow_and_sitemap_lines_are_found(self):
+        host = "salesforce.wd12.myworkdayjobs.com"
+        tenant = FakeTenant(
+            {
+                f"{host}/{site}": [_site_row(site, 0)]
+                for site in ("External_Career_Site", "Tableau", "Slack", "Heroku")
+            },
+            robots=SALESFORCE_ROBOTS, page="",
+        )
+        items, artifact = tenant.search("Salesforce", "https://www.salesforce.com")
+        self.assertEqual(
+            {f"{host}/{site}" for site in ("External_Career_Site", "Tableau", "Slack", "Heroku")},
+            set(tenant.sites_read()),
+        )
+        self.assertEqual(4, artifact["open_roles"])
+        self.assertEqual(4, len(items))
+
+    def test_a_candidate_that_does_not_answer_with_a_listing_is_dropped(self):
+        tenant = FakeTenant(
+            {
+                f"{NIKE}/nke2": [_site_row("nke2", 0)],
+                f"{NIKE}/nke": {"errorCode": "S21", "httpStatus": 404, "total": 40},
+            },
+            robots=NIKE_ROBOTS, page=NIKE_PAGE,
+        )
+        items, artifact = tenant.search("Nike", "https://www.nike.com")
+        # One call to see the shape, none to page through it.
+        self.assertEqual(1, tenant.sites_read()[f"{NIKE}/nke"])
+        self.assertEqual(1, artifact["open_roles"])
+        self.assertNotIn("board_sites", artifact)
+        self.assertEqual(["nke2 role 0"], [item["title"] for item in items])
+
+    def test_without_robots_txt_the_sites_the_page_links_are_read(self):
+        page = NIKE_PAGE + '<a href="https://nike.wd1.myworkdayjobs.com/nke4">Students</a>'
+        tenant = FakeTenant(
+            {f"{NIKE}/nke2": [_site_row("nke2", 0)], f"{NIKE}/nke4": [_site_row("nke4", 0)]},
+            robots=None, page=page,
+        )
+        _items, artifact = tenant.search("Nike", "https://www.nike.com")
+        self.assertEqual({f"{NIKE}/nke2": 1, f"{NIKE}/nke4": 1}, tenant.sites_read())
+        self.assertEqual(2, artifact["open_roles"])
+
+    def test_a_site_on_another_tenant_linked_from_the_page_is_not_read(self):
+        page = NIKE_PAGE + '<a href="https://converse.wd1.myworkdayjobs.com/careers">Converse</a>'
+        tenant = FakeTenant(
+            {
+                f"{NIKE}/nke2": [_site_row("nke2", 0)],
+                "converse.wd1.myworkdayjobs.com/careers": [_site_row("converse", 0)],
+            },
+            robots=None, page=page,
+        )
+        _items, artifact = tenant.search("Nike", "https://www.nike.com")
+        self.assertEqual({f"{NIKE}/nke2": 1}, tenant.sites_read())
+        self.assertEqual(1, artifact["open_roles"])
+
+    def test_one_site_at_its_ceiling_leaves_the_others_read_and_the_total_capped(self):
+        robots = "User-agent: *\n" + "".join(f"Disallow: /s{n}/\n" for n in range(1, 5))
+        page = '<a href="https://acme.wd5.myworkdayjobs.com/s1">Jobs</a>'
+        host = "acme.wd5.myworkdayjobs.com"
+        sites = {f"{host}/s1": [_site_row("s1", index) for index in range(2500)]}
+        sites.update({
+            f"{host}/s{n}": [_site_row(f"s{n}", index) for index in range(2000)] for n in (2, 3, 4)
+        })
+        tenant = FakeTenant(sites, robots=robots, page=page)
+        items, artifact = tenant.search("Acme", SITE)
+        read = tenant.sites_read()
+        self.assertEqual(100, read[f"{host}/s1"])
+        self.assertEqual({f"{host}/s{n}" for n in range(1, 5)}, set(read))
+        self.assertEqual(jobs.COMPANY_BOARD_ROW_CEILING, len(items))
+        self.assertEqual(jobs.COMPANY_BOARD_ROW_CEILING, artifact["open_roles"])
         self.assertTrue(artifact["open_roles_floor"])
 
 

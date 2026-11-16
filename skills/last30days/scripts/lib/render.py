@@ -2558,9 +2558,21 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         (
             f"- Roles listed: {len(entries):,} of {distinct:,} distinct roles, {chosen}"
             "board by department, location and title wording. Each carries the text "
-            "no other role on the board repeats."
+            "no other role on the board repeats"
+            + _story_search_status(board.get("story_search")) + "."
         ),
     ]
+    sites = [site for site in board.get("board_sites") or [] if isinstance(site, dict)]
+    if len(sites) > 1:
+        # A Workday tenant read across its career sites: each site's own count.
+        counts = [(str(site.get("site") or ""), int(site.get("roles") or 0)) for site in sites]
+        out[-1] += f" Read from {len(sites)} Workday sites: " + ", ".join(
+            f"{_escape_markdown_plain_text(name)} ({roles:,} role{'' if roles == 1 else 's'})"
+            for name, roles in counts
+        ) + "."
+    teams = _named_teams_line(digest.get("teams"))
+    if teams:
+        out.append(teams)
     if digest.get("note"):
         out.append(f"- Note: {digest['note']}")
     size = sum(len(line) + 1 for line in out)
@@ -2580,6 +2592,15 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         )
         if entry.get("posted"):
             parts.append(f"posted {entry['posted']}")
+        if entry.get("story_term"):
+            parts.append("story term: " + _format_untrusted_evidence(
+                " ".join(str(entry["story_term"]).split()), 80))
+        if entry.get("team_lead"):
+            parts.append("new-team lead")
+        team = entry.get("team")
+        if isinstance(team, dict) and team.get("name"):
+            parts.append("team: " + _format_untrusted_evidence(
+                " ".join(str(team["name"]).split()), 80) + f" ({int(team.get('roles') or 0):,} roles)")
         line = "- " + " | ".join(parts)
         text = " ".join(str(entry.get("text") or "").split())
         if text:
@@ -2590,6 +2611,47 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         out.append(line)
         shown.update(url for url in (entry.get("url"), *(entry.get("urls") or [])) if url)
     return out, shown
+
+
+def _named_teams_line(teams: object) -> str:
+    """The board's named teams, each with its role count and, when the board
+    gives true posted dates, how many of them were posted in the window.
+    Empty when the board names none."""
+    if not isinstance(teams, list):
+        return ""
+    named = []
+    for team in teams:
+        if not isinstance(team, dict) or not team.get("name"):
+            continue
+        roles = int(team.get("roles") or 0)
+        count = f"{roles:,} roles"
+        if isinstance(team.get("new"), int) and not isinstance(team.get("new"), bool):
+            count += f", {team['new']:,} new"
+        named.append(_format_untrusted_evidence(" ".join(str(team["name"]).split()), 80) + f" ({count})")
+    if not named:
+        return ""
+    return "- Named teams (team names repeated across this board's titles): " + "; ".join(named) + "."
+
+
+def _story_search_status(record: object) -> str:
+    """What a board's story search did, as the end of the Roles listed line:
+    the terms searched and roles matched, no matches, or not run. Empty when
+    the run had no story terms."""
+    if not isinstance(record, dict):
+        return ""
+    if not record.get("ran"):
+        status = "story search: not run"
+    else:
+        terms = len(record.get("terms") or [])
+        matches = int(record.get("matches") or 0)
+        status = (
+            f"story search: {terms} term{'' if terms == 1 else 's'}, "
+            f"{matches:,} match{'' if matches == 1 else 'es'}"
+            if matches else "story search: no matches"
+        )
+    if record.get("story_partial"):
+        status += " (partial)"
+    return f"; {status}"
 
 
 def _patent_digest_block(report: schema.Report) -> list[str]:
