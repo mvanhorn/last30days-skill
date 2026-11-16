@@ -11,7 +11,7 @@ def test_fixture_matrix_covers_required_topic_archetypes():
     fixtures = harness.load_fixtures()
     archetypes = {fixture.manifest["archetype"] for fixture in fixtures}
 
-    assert 6 <= len(fixtures) <= 8
+    assert 6 <= len(fixtures) <= 9
     assert {
         "tech-product",
         "person",
@@ -323,3 +323,28 @@ def test_digg_bar_drops_off_topic_and_leads_with_biggest_on_topic_story():
         "https://x.com/fixture_pricing/status/1940000000000000902",
     ):
         assert by_url[url].metadata.get("digg_story") is None, url
+
+
+def test_entity_markets_lead_with_the_teams_title_odds():
+    [fixture] = [f for f in harness.load_fixtures() if f.name == "entity-markets"]
+    report = harness.evaluate_fixture(fixture).report
+    markets = sorted(
+        report.items_by_source["polymarket"],
+        key=lambda item: item.metadata["selection_score"],
+        reverse=True,
+    )
+
+    # "Pro Football: 2027 Champion" never names the 49ers in its title; the
+    # 49ers are one of its 32 outcomes, and the favorite.
+    champion = markets[0]
+    assert champion.title == "Pro Football: 2027 Champion"
+    matched = champion.metadata["matched_market"]
+    assert matched["label"] == "San Francisco 49ers"
+    assert (matched["rank"], matched["race_size"]) == (1, 32)
+    assert champion.metadata["headline"]["question"] == (
+        "Will the San Francisco 49ers win the 2027 NFL league championship?"
+    )
+    # Every market shown names the 49ers in its own question or label.
+    for item in markets:
+        text = f"{item.metadata['matched_market']['question']} {item.metadata['matched_market']['label']}"
+        assert "49ers" in text, item.title
