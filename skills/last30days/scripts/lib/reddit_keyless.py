@@ -244,6 +244,10 @@ def _scored_listings(
             _log(f"arctic-shift listing supplement failed: {exc}")
             arctic_posts = []
         if arctic_posts:
+            # An archive count on a fresh post is not a settled score yet.
+            now = time.time()
+            for p in arctic_posts:
+                reddit_hydrate.label_archive_post(p, now)
             # Merge and dedupe by URL — shreddit posts take priority.
             seen = {p["url"] for p in posts}
             added = 0
@@ -462,7 +466,7 @@ def _discover(
     score_map: Dict[str, Dict[str, int]] = {}
     for p in listing_posts:
         pid = p.get("metadata", {}).get("post_id", "")
-        if pid:
+        if pid and not reddit_refs.score_pending(p):
             score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
 
     # Merge: dedicated-sub posts first (floor-exempt), then scored listing posts

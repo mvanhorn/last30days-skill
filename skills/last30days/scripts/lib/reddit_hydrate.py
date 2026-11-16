@@ -115,7 +115,8 @@ def _merge_refs(refs: Iterable[ThreadRef]) -> dict[str, ThreadRef]:
     return by_id
 
 
-def _label_archive_post(post: dict, now: float) -> None:
+def label_archive_post(post: dict, now: float) -> None:
+    """Label an archive row's score: pending under 36 h old, else archive."""
     if _fresh(post.get("created_utc"), now):
         post["score"] = None
         post.setdefault("engagement", {})["score"] = None
@@ -158,6 +159,21 @@ def _stamp_depth(comments: Any) -> list[dict]:
     return out
 
 
+def _stamp_uploader(post: dict) -> None:
+    """Mark the original poster's own comments so they never quote as community.
+
+    Set while the post author is still on the item; the normalized item drops it.
+    """
+    author = str(post.get("author") or "").strip().lower()
+    if not author or author in ("[deleted]", "[removed]"):
+        return
+    for comment in post.get("top_comments") or []:
+        if isinstance(comment, dict) and not isinstance(comment.get("is_uploader"), bool):
+            name = str(comment.get("author") or "").strip().lower()
+            if name:
+                comment["is_uploader"] = name == author
+
+
 def _finish(post: dict, ref: ThreadRef, topic: str) -> dict:
     """Canonical URL, subreddit, provenance and topic relevance on one item."""
     subreddit = ref.subreddit or str(post.get("subreddit") or "")
@@ -174,6 +190,7 @@ def _finish(post: dict, ref: ThreadRef, topic: str) -> dict:
     post.setdefault("engagement_source", LIVE)
     if post.get("top_comments"):
         post["top_comments"] = _stamp_depth(post["top_comments"])
+        _stamp_uploader(post)
     if topic and post.get("title"):
         from .relevance import token_overlap_relevance
 
@@ -238,6 +255,7 @@ def _attach_comments(
         if kept:
             item["top_comments"] = kept
             item["comments_source"] = ARCTIC
+            _stamp_uploader(item)
             filled += 1
     return filled, failed
 
@@ -372,7 +390,7 @@ def hydrate(
         found, arctic_state = reddit_arctic.fetch_posts_by_ids(missing, deadline=deadline)
         for pid, post in found.items():
             if pid in by_id:
-                _label_archive_post(post, now)
+                label_archive_post(post, now)
                 posts[pid] = post
         if found:
             served.add("arctic")

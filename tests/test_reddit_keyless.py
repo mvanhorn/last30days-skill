@@ -455,6 +455,23 @@ class TestScoredListingsFallback:
         assert arctic_post["url"] in urls
         arctic.assert_called_once()
 
+    def test_fresh_archive_listing_score_is_pending(self):
+        fresh = _scored(2, score=3)
+        fresh["created_utc"] = 1_000_000 - 3600
+        old = _scored(3, score=80)
+        old["created_utc"] = 1_000_000 - 5 * 86400
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[fresh, old]), \
+             mock.patch.object(reddit_keyless.time, "time", return_value=1_000_000):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        by_id = {p["metadata"]["post_id"]: p for p in out}
+        assert by_id["000002"]["engagement_source"] == reddit_keyless.reddit_refs.ARCTIC_PENDING
+        assert by_id["000002"]["engagement"]["score"] is None
+        assert by_id["000003"]["engagement_source"] == reddit_keyless.reddit_refs.ARCTIC
+        assert by_id["000003"]["engagement"]["score"] == 80
+
     def test_both_empty_returns_empty(self):
         with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[]), \

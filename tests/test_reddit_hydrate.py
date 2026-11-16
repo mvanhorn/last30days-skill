@@ -155,6 +155,21 @@ class TestComments:
         assert [c["id"] for c in comments] == ["c1", "c3", "c2"]  # by score
         assert result.items[0]["comments_source"] == reddit_refs.ARCTIC
 
+    def test_original_posters_comments_are_marked_uploader(self, monkeypatch):
+        own = _comment("c1", "p1", score=12)
+        own["data"]["author"] = "op"
+        tree = [own, _comment("c2", "p1", score=7)]
+        fake = FakeArctic(posts=[_post("p1")], trees={"p1": tree})
+        result = _hydrate(fake, [_ref("p1")], monkeypatch)
+        marks = {c["id"]: c["is_uploader"] for c in result.items[0]["top_comments"]}
+        assert marks == {"c1": True, "c2": False}
+        [item] = normalize.normalize_source_items(
+            "reddit", result.items, "2027-01-01", "2027-02-01",
+        )
+        quotable = [c for c in item.metadata["top_comments"]
+                    if render._is_community_comment(item, c, c.get("excerpt", ""))]
+        assert [c["id"] for c in quotable] == ["c2"]
+
     def test_fresh_arctic_comments_have_no_vote_count(self, monkeypatch):
         tree = [_comment("c1", "p1", score=1, age=5 * HOUR), _comment("c2", "p1", score=2, age=8 * HOUR)]
         fake = FakeArctic(posts=[_post("p1")], trees={"p1": tree})

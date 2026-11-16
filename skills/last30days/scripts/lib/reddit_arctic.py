@@ -646,6 +646,8 @@ def fetch_post_comments(
             "permalink": permalink,
             "date": _epoch_to_date(row.get("created_utc")),
             "url": f"https://reddit.com{permalink}" if permalink else "",
+            # A reply to the post itself is top-level; any other parent is nested.
+            "depth": 0 if str(row.get("parent_id") or "t3_").startswith("t3_") else 1,
         })
     comments.sort(key=lambda c: c.get("score", 0), reverse=True)
     return comments[:limit]

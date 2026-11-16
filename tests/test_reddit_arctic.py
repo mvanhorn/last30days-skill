@@ -410,6 +410,13 @@ class TestFetchPostComments:
         assert "link_id=t3_abc123" in g.call_args[0][0]
         assert f"limit={reddit_arctic.MAX_COMMENT_ROWS}" in g.call_args[0][0]
 
+    def test_depth_comes_from_the_parent(self):
+        top = dict(_comment_row(pid="a1", score=9), parent_id="t3_abc123")
+        nested = dict(_comment_row(pid="b2", score=5), parent_id="t1_a1")
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([top, nested])):
+            out = reddit_arctic.fetch_post_comments("abc123")
+        assert [c["depth"] for c in out] == [0, 1]
+
     def test_request_bounded_by_single_deadline(self):
         with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([])) as g, \
              mock.patch.object(reddit_arctic.time, "monotonic", return_value=100.0):
