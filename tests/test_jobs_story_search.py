@@ -15,7 +15,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from lib import http, jobs, jobs_digest
+import pytest
+
+from lib import health, http, jobs, jobs_digest, render
 
 WINDOW = ("2026-10-15", "2026-11-14")
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -245,6 +247,43 @@ def test_a_429_on_the_second_story_call_stops_story_search_and_the_board_is_stil
     assert len(items) == 9 and artifact["tier"] == "ats"
     assert not any(failure.status_code == 429 for failure in failures)
 
+
+
+@pytest.mark.parametrize("failure", [
+    http.HTTPError("HTTP 500: Internal Server Error", status_code=500),
+    ValueError("not JSON"),
+], ids=["server-error", "bad-shape"])
+def test_a_failed_story_call_skips_its_term_marks_the_search_partial_and_the_next_term_runs(failure):
+    items, artifact, asked, _failures = _amazon_search(
+        ["drone", "humanoid"], {"drone": failure, "humanoid": _hits(HUMANOID_JOB)},
+    )
+
+    assert [params["base_query"] for params in asked if "base_query" in params] == ["drone", "humanoid"]
+    assert artifact["story_search"] == {
+        "ran": True, "terms": ["humanoid"], "matches": 1, "story_partial": True,
+    }
+    assert len(items) == 9
+
+
+def test_a_story_call_that_times_out_stops_story_search():
+    timeout = http.HTTPError("timed out", outcome_state=health.TIMEOUT)
+    _items, artifact, asked, _failures = _amazon_search(
+        ["drone", "humanoid"], {"drone": timeout, "humanoid": _hits(HUMANOID_JOB)},
+    )
+
+    assert [params["base_query"] for params in asked if "base_query" in params] == ["drone"]
+    assert artifact["story_search"] == {"ran": False, "terms": [], "matches": 0, "story_partial": True}
+
+
+def test_a_board_whose_every_story_call_failed_says_not_run_not_no_matches():
+    unavailable = http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
+    items, artifact, _asked, _failures = _amazon_search(
+        ["drone", "satellite"], {"drone": unavailable, "satellite": unavailable},
+    )
+
+    assert artifact["story_search"] == {"ran": False, "terms": [], "matches": 0, "story_partial": True}
+    assert len(items) == 9
+    assert render._story_search_status(artifact["story_search"]) == "; story search: not run (partial)"
 
 # --- Eightfold: one story call, however many terms ---
 

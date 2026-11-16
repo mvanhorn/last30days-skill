@@ -419,8 +419,8 @@ def _story_key(item: dict[str, Any]) -> str:
 
 def _story_record(*, ran: bool, terms: list[str], partial: bool = False) -> dict[str, Any]:
     """What a board's story search did: whether it ran, the terms it
-    searched, and ``story_partial`` when a 429, a timeout or the story
-    deadline stopped it before every term was searched. ``matches`` is
+    searched, and ``story_partial`` when a failed call, a 429, a timeout or
+    the story deadline left a term unsearched. ``matches`` is
     filled in once the rows are tagged."""
     return {"ran": ran, "terms": list(terms), "matches": 0, "story_partial": partial}
 
@@ -453,14 +453,13 @@ def _search_story(provider: str, targets: list[Any]) -> tuple[list[dict[str, Any
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     searched: list[str] = []
-    ran = partial = False
+    partial = False
     for target, term in pairs:
         left = story.deadline - clock()
         if left <= 0:
             partial = True
             break
         story.calls -= 1
-        ran = True
         try:
             # A failed story call is said by ``story_partial``, not counted
             # among the run's failures: the board's own read still follows.
@@ -470,11 +469,12 @@ def _search_story(provider: str, targets: list[Any]) -> tuple[list[dict[str, Any
                     deadline_monotonic=time.monotonic() + min(left, STORY_TIMEOUT_SECONDS),
                 )
         except http.HTTPError as exc:
+            partial = True
             if exc.status_code == 429 or exc.outcome_state == health.TIMEOUT:
-                partial = True
                 break
             continue
         except ValueError:  # BoardShapeError, bad JSON
+            partial = True
             continue
         if term not in searched:
             searched.append(term)
@@ -493,7 +493,8 @@ def _search_story(provider: str, targets: list[Any]) -> tuple[list[dict[str, Any
             f"({len(searched)} of {len(story.terms)} terms searched); its newest-first read follows",
             tty_only=False,
         )
-    return rows, _story_record(ran=ran, terms=searched, partial=partial)
+    # A board whose every story call failed was never searched: "not run", not "no matches".
+    return rows, _story_record(ran=bool(searched), terms=searched, partial=partial)
 
 
 def _tag_story_matches(items: list[dict[str, Any]], terms: list[str]) -> None:

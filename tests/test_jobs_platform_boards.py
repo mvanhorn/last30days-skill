@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lib import http, jobs, render
+from lib import health, http, jobs, render
 from lib.job_boards import detect, google, ibm, jibe, kula, oracle, phenom, robots, sitemap, talentbrew
 
 from tests.test_render_patents import _report
@@ -988,3 +988,16 @@ def test_a_kula_board_whose_payload_changed_is_logged_and_the_run_goes_on(capsys
     items, artifact = _run("Nothing", "https://nothing.tech/", _kula_site(changed))
     assert items == [] and artifact["tier"] == "web" and "digest" not in artifact
     assert "kula board careers.kula.ai could not be read (BoardShapeError)" in capsys.readouterr().err
+
+
+def test_a_kula_board_that_times_out_raises_the_timeout_not_a_shape_error():
+    timeout = http.HTTPError("timed out", outcome_state=health.TIMEOUT)
+
+    def get_text(*_args, **_kwargs):
+        http._record_failure(timeout)
+        return None
+
+    with patch.object(kula.http, "get_text", side_effect=get_text), http.capture_failures():
+        with pytest.raises(http.HTTPError) as raised:
+            kula.read_board(KULA_ENTRY, deadline=jobs.time.monotonic() + 5, date_range=WINDOW)
+    assert raised.value.outcome_state == health.TIMEOUT

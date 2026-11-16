@@ -109,12 +109,17 @@ def read_board(
     """Every role the board lists, from its one page.
 
     A page whose payload holds no role list raises ``BoardShapeError``, so
-    the run says the board could not be read and goes on.
+    the run says the board could not be read and goes on; a failed request
+    raises its ``HTTPError``, so a timeout is noted as a slow board.
     """
-    html = http.get_text(
-        listing_url(entry), accept="text/html,*/*", timeout=jobs.API_TIMEOUT_SECONDS,
-        retries=2, deadline_monotonic=deadline,
-    )
+    with http.tee_failures() as failures:
+        html = http.get_text(
+            listing_url(entry), accept="text/html,*/*", timeout=jobs.API_TIMEOUT_SECONDS,
+            retries=2, deadline_monotonic=deadline,
+        )
+    if html is None and failures:
+        # A timeout or HTTP error is reported as one, not as a bad page.
+        raise failures[-1]
     items, total = parse_listing(html or "", entry)
     return items, {"board_total": total}
 

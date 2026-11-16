@@ -326,7 +326,8 @@ def test_runbook_describes_host_plan_backfill_honestly():
     assert "never expands a narrow list" not in runbook
     assert "is added to the primary subquery" in runbook
     assert "`EXCLUDE_SOURCES` or `--search` keeps one out" not in runbook
-    assert "exclusions win; add 2-4 story `jobs_queries`." in runbook
+    assert "exclusions win." in runbook
+    assert "plus top-level `jobs_queries`: 2-4 product or team terms" in runbook
     assert "Trustpilot when `trustpilot_can_run` is false" in runbook
 
 
