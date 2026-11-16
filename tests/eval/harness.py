@@ -16,7 +16,7 @@ SCRIPTS = ROOT / "skills" / "last30days" / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from lib import entity_extract, http, pipeline, schema  # noqa: E402
+from lib import entity_extract, fetch_memo, http, pipeline, schema  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).with_name("fixtures")
 BASELINE_PATH = Path(__file__).with_name("baseline.json")
@@ -65,6 +65,19 @@ def _http_urls(value: Any) -> set[str]:
     return urls
 
 
+def _polymarket_event_urls(request: dict[str, Any], value: Any) -> set[str]:
+    """Polymarket event URLs a Gamma response grounds. Gamma returns each
+    event's slug, not its page URL; the parser builds the URL from the slug."""
+    if not str(request.get("url") or "").startswith("https://gamma-api.polymarket.com/"):
+        return set()
+    events = value.get("events") if isinstance(value, dict) else value
+    return {
+        f"https://polymarket.com/event/{event['slug']}"
+        for event in events or []
+        if isinstance(event, dict) and event.get("slug")
+    }
+
+
 def load_fixtures(root: Path = FIXTURES_DIR) -> list[EvalFixture]:
     fixtures: list[EvalFixture] = []
     for manifest_path in sorted(root.glob("*/manifest.json")):
@@ -72,7 +85,9 @@ def load_fixtures(root: Path = FIXTURES_DIR) -> list[EvalFixture]:
         http_payload = json.loads((manifest_path.parent / "http.json").read_text(encoding="utf-8"))
         input_urls: set[str] = set()
         for exchange in http_payload.get("exchanges") or []:
-            input_urls.update(_http_urls((exchange.get("response") or {}).get("value")))
+            value = (exchange.get("response") or {}).get("value")
+            input_urls.update(_http_urls(value))
+            input_urls.update(_polymarket_event_urls(exchange.get("request") or {}, value))
         for exchange in http_payload.get("source_exchanges") or []:
             input_urls.update(_http_urls(exchange.get("value")))
         fixtures.append(
@@ -90,6 +105,9 @@ def _run_once(fixture: EvalFixture) -> schema.Report:
     manifest = fixture.manifest
     config = dict(manifest.get("config") or {})
     network_error = AssertionError(f"Network attempted while replaying {fixture.name}")
+    # Each replay is one command: a fetch memoized by an earlier run in this
+    # process would leave its recorded exchanges unused.
+    fetch_memo.reset()
     with mock.patch.object(pipeline, "datetime", _FrozenDateTime), \
          mock.patch.object(schema, "datetime", _FrozenDateTime), \
          mock.patch.object(

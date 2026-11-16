@@ -222,10 +222,13 @@ def test_market_sharing_one_word_of_the_topic_is_not_named_in_the_footer():
     assert not any("WTT" in line or "Youzheng" in line for line in lines)
 
 
-def test_footer_line_still_counts_every_market():
+def test_market_naming_one_word_of_the_topic_is_not_parsed():
+    # The table tennis match names "Huang", not "Jensen Huang", so it never
+    # becomes an item and the footer counts the two markets that do.
+    assert [item["event_id"] for item in _parsed("Jensen Huang", TABLE_TENNIS)] == []
     report = _report("Jensen Huang", JENSEN_RESIGN, JENSEN_DIVORCE, TABLE_TENNIS)
     line = next(line for line in render._render_emoji_footer(report, None) if "Polymarket" in line)
-    assert "📊 Polymarket: 3 markets │ " in line
+    assert "📊 Polymarket: 2 markets │ " in line
     assert "WTT" not in line
 
 
@@ -288,13 +291,23 @@ def test_deadline_rung_the_market_gives_almost_no_chance_is_passed_over():
     assert _footer("Anthropic", event) == ["Anthropic IPO by Dec 31, 2026 97%"]
 
 
-def test_deadline_ladder_with_only_long_shots_keeps_its_nearest_rung():
+def test_deadline_ladder_of_long_shots_headlines_its_live_rung():
+    # 2% is under the 3% floor for a yes/no market; 4% is not.
     q = "Jensen Huang arrested by {}?"
     event = _event("78", "Jensen Huang arrested by...?", [
         _market(q.format("December 31, 2026"), "December 31, 2026", 0.02, 9000, "2027-01-01"),
         _market(q.format("March 31, 2027"), "March 31, 2027", 0.04, 5000, "2027-04-01"),
     ])
-    assert _footer("Jensen Huang", event) == ["Jensen Huang arrested by Dec 31, 2026 2.0%"]
+    assert _footer("Jensen Huang", event) == ["Jensen Huang arrested by Mar 31, 2027 4.0%"]
+
+
+def test_deadline_ladder_with_no_live_rung_keeps_its_nearest_rung():
+    q = "Jensen Huang arrested by {}?"
+    event = _event("78", "Jensen Huang arrested by...?", [
+        _market(q.format("December 31, 2026"), "December 31, 2026", 0.01, 9000, "2027-01-01"),
+        _market(q.format("March 31, 2027"), "March 31, 2027", 0.02, 5000, "2027-04-01"),
+    ])
+    assert _footer("Jensen Huang", event) == ["Jensen Huang arrested by Dec 31, 2026 1.0%"]
 
 
 # --- Odds lines: one ready-to-copy line per market in compact output ---

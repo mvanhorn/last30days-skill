@@ -2544,6 +2544,11 @@ def run(
     else:
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
 
+    polymarket_hints = getattr(plan, "polymarket_hints", None)
+    if polymarket_hints:
+        config = dict(config)
+        config["_polymarket_hints"] = polymarket_hints
+
     if reddit_refs_envelope is not None:
         # Each Reddit stream receives the host threads its terms match.
         reddit_refs_envelope.bind_subqueries(
@@ -3000,6 +3005,11 @@ def run(
                     digg_bar_dropped = True
                     bundle.record_detail(source, bar_note)
             elif source != "jobs":
+                if source == "polymarket":
+                    # The parser already ranked these markets for the subject;
+                    # a related player's award race shares no words with the
+                    # topic, so token relevance would cut it first.
+                    normalized = polymarket.by_selection(normalized)
                 stream_limit = settings["per_stream_limit"]
                 host_fetched_x = source == "x" and config.get("_x_envelope") is not None
                 if host_fetched_x:
@@ -3926,6 +3936,8 @@ def _finalize_items_by_source(
     for source, items in items_by_source_raw.items():
         _check_research(config or {})
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
+        if source == "polymarket":
+            items = polymarket.by_selection(items)
         if source == "digg":
             # De-duplication keeps the earlier of two similar stories. Two
             # searches can return the same event as a prominent story and as
@@ -3969,13 +3981,15 @@ def _finalize_items_by_source(
                     entity_count=_comparison_entity_count(config),
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
-        # Post-merge topic-relevance filter for Polymarket: comparison queries
-        # fan out into per-entity subqueries ("Hermes", "OpenClaw") whose topic
-        # is too narrow for Gamma API to filter meaningfully. Re-validating the
-        # merged list against the full original topic drops off-topic markets
+        # Post-merge topic bar for Polymarket: the entity matcher, with the
+        # run's hints, over each item's matched market and event title. It
+        # stands in for the generic relevance floor, which exempts matched
+        # markets (signals.prune_low_relevance), and drops off-topic markets
         # (e.g., WTI crude oil, Elon tweet counts) before footer emission.
         if source == "polymarket" and topic:
-            items = polymarket.filter_items_against_topic(topic, items)
+            items = polymarket.filter_items_against_topic(
+                topic, items, (config or {}).get("_polymarket_hints"),
+            )
             # --polymarket-keywords (via config): additional keyword filter
             # for ambiguous single-token topics (e.g., "Warriors" → nba,gsw).
             keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
@@ -7394,23 +7408,25 @@ def _retrieve_stream_impl(
         result = truthsocial.search_truthsocial(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return truthsocial.parse_truthsocial_response(result), _result_outcome_artifact(source, result)
     if source == "polymarket":
-        # Same sharing as digg: only the search is memoized; parsing still
-        # runs per caller with its own relevance topic.
+        # Polymarket searches the stable research topic (plus the host's
+        # aliases and related names), not the per-subquery search_query, so
+        # every subquery and the thin-source retry share one search. The same
+        # topic judges relevance: a narrowed subquery would let off-topic
+        # markets through on broad passes and drop everything on narrow ones.
+        relevance_topic = raw_topic or topic or subquery.search_query
+        hints = polymarket.PolymarketHints.coerce((config or {}).get("_polymarket_hints"))
         result = fetch_memo.fetch_once(
-            ("polymarket", subquery.search_query, from_date, to_date, depth),
+            ("polymarket", relevance_topic, hints, from_date, to_date, depth),
             lambda: polymarket.search_polymarket(
-                subquery.search_query, from_date, to_date, depth=depth,
+                relevance_topic, from_date, to_date, depth=depth, hints=hints,
             ),
             timeout=_memo_wait_seconds(config),
             cacheable=_clean_search_result,
         )
-        # Relevance filtering keys off the stable original research topic, not the
-        # per-subquery search_query (which narrows differently on each fanout pass
-        # and would let off-topic markets through on broad subqueries while dropping
-        # everything on narrow ones).
-        relevance_topic = raw_topic or topic or subquery.search_query
         return (
-            polymarket.parse_polymarket_response(result, topic=relevance_topic),
+            polymarket.parse_polymarket_response(
+                result, topic=relevance_topic, hints=hints, to_date=to_date,
+            ),
             _result_outcome_artifact(source, result),
         )
     if source == "github":

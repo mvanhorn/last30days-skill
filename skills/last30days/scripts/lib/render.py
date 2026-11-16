@@ -2891,10 +2891,25 @@ def _polymarket_headline(item: schema.SourceItem) -> tuple[str, float, str] | No
     return question, float(price), " ".join(str(headline.get("label") or "").split())
 
 
+def _polymarket_names_topic(item: schema.SourceItem, topic: str) -> bool:
+    """Whether a market names the whole topic, read from the event title, its
+    question and its headline. An item carrying a matched market was already
+    judged against the topic, its aliases and related names by the entity
+    matcher, so it is kept; the word check covers items saved by older builds."""
+    if isinstance(item.metadata.get("matched_market"), dict):
+        return True
+    return polymarket.names_whole_topic(
+        topic,
+        item.title,
+        str(item.metadata.get("question") or ""),
+        (_polymarket_headline(item) or ("",))[0],
+    )
+
+
 def _polymarket_top_markets(
     items: list[schema.SourceItem], limit: int = 3, topic: str = "",
 ) -> list[str]:
-    """Build summary strings for the top Polymarket markets by volume.
+    """Build summary strings for the top Polymarket markets in selection order.
 
     Returns list like: ['Waymo launch in Denver, CO by Dec 31, 2026 74%'].
     Each market is named once, by its whole question, with the price of that
@@ -2903,21 +2918,8 @@ def _polymarket_top_markets(
     named the older way: ['UK visit 5.5%', 'blocked from entering 36%'].
     """
     if topic:
-        items = [
-            item for item in items
-            if polymarket.names_whole_topic(
-                topic,
-                item.title,
-                str(item.metadata.get("question") or ""),
-                (_polymarket_headline(item) or ("",))[0],
-            )
-        ]
-    # Sort by volume descending
-    sorted_items = sorted(
-        items,
-        key=lambda it: it.engagement.get("volume") or 0,
-        reverse=True,
-    )
+        items = [item for item in items if _polymarket_names_topic(item, topic)]
+    sorted_items = polymarket.by_selection(items)
 
     # One market per series first, a substantive question before a recurring
     # count bracket ("# tweets this week"); a count series is never repeated,
@@ -4940,6 +4942,46 @@ _POLYMARKET_MOVEMENT_PARTS = re.compile(
 )
 
 
+def _polymarket_matched_part(
+    item: schema.SourceItem, entries: list[dict],
+) -> tuple[str, dict | None] | None:
+    """The odds-line part for the market the parser matched to the subject,
+    and the odds entry it repeats (left off the rest of the line).
+
+    None when the line already says all of it: no matched market, or one
+    already listed among the outcomes that is neither a top contender nor
+    matched through a related name.
+    """
+    matched = item.metadata.get("matched_market")
+    if not isinstance(matched, dict):
+        return None
+    price = matched.get("price")
+    if isinstance(price, bool) or not isinstance(price, (int, float)):
+        return None
+    label = " ".join(str(matched.get("label") or "").split())
+    same = next(
+        (
+            entry for entry in entries
+            if (label and " ".join(str(entry.get("label") or "").split()) == label)
+            or entry.get("price") == price
+        ),
+        None,
+    )
+    relation = str(matched.get("relation") or "").strip()
+    related = bool(label and matched.get("related_name") and relation)
+    rank, size = matched.get("rank"), matched.get("race_size")
+    contender = bool(matched.get("contender")) and isinstance(rank, int) and isinstance(size, int)
+    if same is not None and not (related or contender):
+        return None
+    if related:
+        label = f"{label} ({relation})"
+    percent = f"{price * 100:.1f}".removesuffix(".0") + "%"
+    text = f"{_odds_label(label)} {percent}" if label else percent
+    if contender:
+        text += f", #{rank} of {size}"
+    return text + _odds_points((same or {}).get("move")), same
+
+
 def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
     """``📊 Polymarket · {subject}: {outcome} {price} · ...``: a market's odds
     as the report prints them on a line of their own.
@@ -4949,18 +4991,41 @@ def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
     leading outcomes of brackets under their own labels (``12-15 at 79%``),
     or a single market's one price. A movement follows the outcome it belongs
     to, in points. Never a volume.
+
+    A market the parser matched to the subject leads, by its own label and
+    price: ``San Francisco 49ers 14.5%, #1 of 32``, the rank when the subject
+    is a top contender, and the relation when a related name matched
+    (``Yaxel Lendeborg (player) 34.6%``).
     """
     odds = _polymarket_odds(item)
     if not odds:
-        return ""
+        # The race's other odds were withheld; the subject's own outcome of
+        # the race (the only kind that carries a rank) is still priced on its
+        # own book.
+        own = item.metadata.get("matched_market")
+        if not isinstance(own, dict) or not isinstance(own.get("rank"), int):
+            return ""
+        matched = _polymarket_matched_part(item, [])
+        subject = _odds_subject(str(item.title or ""))
+        if not matched or not subject:
+            return ""
+        return f"📊 Polymarket · {subject}: {matched[0]}"
+    entries = odds["parts"][:3]
     parts: list[str] = []
-    for index, entry in enumerate(odds["parts"][:3]):
+    matched = _polymarket_matched_part(
+        item, [entry for entry in odds["parts"] if isinstance(entry, dict)],
+    )
+    if matched:
+        text, repeated = matched
+        parts.append(text)
+        entries = [entry for entry in odds["parts"] if entry is not repeated][:2]
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
         price = entry.get("price")
         if isinstance(price, bool) or not isinstance(price, (int, float)):
             continue
-        if index and odds.get("kind") != "ladder" and price < _ODDS_LINE_MIN_PRICE:
+        if (index or matched) and odds.get("kind") != "ladder" and price < _ODDS_LINE_MIN_PRICE:
             continue
         percent = _polymarket_percent(price)
         by = entry.get("by")
@@ -4988,20 +5053,14 @@ def _render_polymarket_markets(
     metadata: the URL, the close date, and how many outcomes are not listed.
 
     The copyable part ends before the first `` — ``, as a quote pool entry's
-    does. Largest volume first, as in the footer, and like the footer it
+    does. In selection order, as in the footer, and like the footer it
     prints odds only, never a dollar amount.
     """
-    items = [
+    items = polymarket.by_selection([
         item
         for item in report.items_by_source.get("polymarket") or []
-        if polymarket.names_whole_topic(
-            report.topic,
-            item.title,
-            str(item.metadata.get("question") or ""),
-            (_polymarket_headline(item) or ("",))[0],
-        )
-    ]
-    items.sort(key=lambda item: -((item.engagement or {}).get("volume") or 0))
+        if _polymarket_names_topic(item, report.topic)
+    ])
     window_year = str(report.range_to or "")[:4]
     lines: list[str] = []
     for item in items:

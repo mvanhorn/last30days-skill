@@ -1,0 +1,43 @@
+{
+  "name": "entity-markets",
+  "archetype": "entity-markets",
+  "topic": "49ers",
+  "as_of_date": "2026-11-16",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "polymarket"
+  ],
+  "web_backend": "none",
+  "config": {},
+  "plan": {
+    "intent": "prediction",
+    "freshness_mode": "balanced_recent",
+    "cluster_mode": "none",
+    "raw_topic": "49ers",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "49ers",
+        "ranking_query": "What are people saying about the San Francisco 49ers this season?",
+        "sources": [
+          "polymarket"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "polymarket": 1
+    },
+    "polymarket_hints": {
+      "kind": "team",
+      "aliases": [
+        "San Francisco 49ers"
+      ]
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  },
+  "expects_clusters": false
+}

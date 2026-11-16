@@ -30,7 +30,7 @@ CI runs the pytest command in the `eval` job of `.github/workflows/validate.yml`
 | Coverage | Fraction of fixture sources represented by usable report items or an explicit `Report.source_status` outcome. |
 | Determinism | `schema.to_dict()` equality for two runs with fixed time and identical recorded inputs. |
 
-Aggregate floors live in `tests/eval/baseline.json`. The fixture matrix covers a tech product, a person, a comparison, breaking events, a niche technical topic, a non-English CJK topic, and a set of Digg stories whose sources confirm some X and Hacker News items and not others (`digg-confirmation`, hand-authored from saved Digg search answers rather than recorded).
+Aggregate floors live in `tests/eval/baseline.json`. The fixture matrix covers a tech product, a person, a comparison, breaking events, a niche technical topic, a non-English CJK topic, a set of Digg stories whose sources confirm some X and Hacker News items and not others (`digg-confirmation`, hand-authored from saved Digg search answers rather than recorded), and a team's Polymarket markets (`entity-markets`, recorded from a live `49ers` run with Polymarket alone and trimmed to the fields the parser reads).
 
 ## Add or refresh a fixture
 
@@ -67,6 +67,7 @@ The replay is fail-closed: an unrecorded request or an unused recorded exchange 
 - `expects_clusters` (bool): fixtures whose topic historically forms multi-member clusters set this true; if cluster formation regresses to singletons on such a fixture, coherence scores 0.0 instead of a vacuous 1.0. Sparse topics (niche, non-english-cjk, tech-product) set it false because singletons are their legitimate shape.
 - Post-ranking enrichment (YouTube transcripts, Digg posts) is recorded and replayed by merging recorded `metadata` onto freshly computed items by item_id, so normalization/scoring/dedupe regressions stay visible to the eval rather than being overwritten by fixture state.
 - Digg story sources are fetched before supplemental search and record their own exchange (`phase: story_sources`): a map from story UUID to its quotes and source URLs. Replay feeds that map through the same attach-and-match code as a live run, so confirmation tags and the ranking bonus are computed, not replayed.
+- Each replay is one command, so the harness resets the run-scoped fetch memo before it; otherwise a second replay would reuse the first run's Polymarket search and leave its recorded exchanges unused. A Polymarket event URL counts as grounded when the recorded Gamma response carries its slug, because Gamma returns the slug and the parser builds the URL from it.
 - Post-rerank GitHub star enrichment records its repo->stars map and replays via `github.apply_star_map`, keeping runs offline even when `GITHUB_TOKEN` is set in CI. GitHub project-mode (`--github-repo`) and person-mode (`--github-user`) runs are not yet fixture-recordable; the network guard fails loudly if a fixture attempts them.
 
 ## Known seams

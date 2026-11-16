@@ -1024,6 +1024,8 @@ def _normalize_polymarket(
 ) -> schema.SourceItem:
     title = str(item.get("title") or "").strip()
     question = str(item.get("question") or "").strip()
+    matched = item.get("matched_market") if isinstance(item.get("matched_market"), dict) else None
+    matched_question = str((matched or {}).get("question") or "").strip()
     engagement = {
         "volume": item.get("volume1mo") or item.get("volume24hr") or 0,
         "liquidity": item.get("liquidity") or 0,
@@ -1034,7 +1036,9 @@ def _normalize_polymarket(
         title=title or question or f"Polymarket event {index + 1}",
         body="\n".join(
             part
-            for part in [title, question, str(item.get("price_movement") or "")]
+            for part in dict.fromkeys(
+                [title, question, matched_question, str(item.get("price_movement") or "")]
+            )
             if part
         ),
         url=str(item.get("url") or ""),
@@ -1056,6 +1060,16 @@ def _normalize_polymarket(
             **({"headline": item["headline"]} if item.get("headline") else {}),
             # What the compact output's one-line odds summary is built from.
             **({"odds": item["odds"]} if item.get("odds") else {}),
+            # The subject's own market and the selection rule's verdict on it;
+            # render orders the Markets block and footer by them.
+            **(
+                {
+                    "matched_market": matched,
+                    "selection_score": item.get("selection_score"),
+                    "selection_tier": item.get("selection_tier"),
+                }
+                if matched else {}
+            ),
         },
     )
 

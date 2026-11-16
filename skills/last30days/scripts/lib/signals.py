@@ -509,6 +509,10 @@ def prune_low_relevance(
     exempt a same-name account on a *different* platform: username reuse
     across platforms is common, and an unrelated account would otherwise
     bypass the relevance and engagement floors.
+
+    A Polymarket item carrying ``matched_market`` passed the entity matcher
+    at parse and is exempt the same way; ``polymarket.filter_items_against_topic``
+    is its topic bar.
     """
     sources_present = {item.source for item in items}
     first_party = {
@@ -542,6 +546,12 @@ def prune_low_relevance(
         # Posts by an account this run is explicitly searching are evidence by
         # provenance, not by lexical overlap with the topic.
         if _is_first_party(item):
+            return True
+        # A Polymarket market the entity matcher kept names the subject (or a
+        # related name the host supplied), judged on the stable research
+        # topic. Its token overlap with the planner's ranking query says
+        # nothing more: "Vikings vs. 49ers" scored 0.15-0.21 by phrasing.
+        if item.source == "polymarket" and item.metadata.get("matched_market"):
             return True
         rel = item.local_relevance if item.local_relevance is not None else 0.0
         if rel < minimum:

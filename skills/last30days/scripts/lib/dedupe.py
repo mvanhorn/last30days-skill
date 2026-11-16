@@ -116,17 +116,23 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
     board share heavy boilerplate (company intro, "TL;DR", benefits) that trips
     fuzzy text similarity and collapses unrelated roles (a 26-role board fell to
     7). A unique posting URL is an unambiguous identity, so use it instead.
+
+    Polymarket events that carry a matched market are deduped by event URL for
+    the same reason: "Pro Football: 2027 Champion" and "Pro Football: 2027
+    NFC Champion" share most of their text but are different questions.
     """
     kept: list[schema.SourceItem] = []
     kept_prepared: list[_PreparedText] = []
-    seen_job_urls: set[str] = set()
+    seen_urls: set[tuple[str, str]] = set()
     for item in items:
-        if item.source == "jobs":
+        if item.source == "jobs" or (
+            item.source == "polymarket" and (item.metadata or {}).get("matched_market")
+        ):
             url = (item.url or "").strip()
-            if url and url in seen_job_urls:
+            if url and (item.source, url) in seen_urls:
                 continue
             if url:
-                seen_job_urls.add(url)
+                seen_urls.add((item.source, url))
             kept.append(item)
             continue
         text = item_text(item)
