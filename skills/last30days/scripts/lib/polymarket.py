@@ -9,6 +9,7 @@ import json
 import math
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -520,8 +521,9 @@ def filter_items_against_keywords(items: List[Any], keywords: List[str]) -> List
     return filtered
 
 
-def _search_term(term: str, limit: int) -> Dict[str, Any]:
-    """One volume-sorted public-search for one term."""
+def _search_term(term: str, limit: int, deadline: Optional[float] = None) -> Dict[str, Any]:
+    """One volume-sorted public-search for one term, retries included, ending
+    by ``deadline`` (a ``time.monotonic()`` value) when one is given."""
     params = {
         "q": term,
         "sort": "volume",
@@ -534,6 +536,7 @@ def _search_term(term: str, limit: int) -> Dict[str, Any]:
         return http.request(
             "GET", url, timeout=15,
             retries=_SEARCH_ATTEMPTS, max_429_retries=_SEARCH_ATTEMPTS,
+            deadline_monotonic=deadline,
         )
     except Exception as e:
         _log(f"Search failed for '{term}': {e}")
@@ -542,13 +545,16 @@ def _search_term(term: str, limit: int) -> Dict[str, Any]:
 
 def _run_searches(
     terms: List[str], limit: int, events: Dict[str, Dict[str, Any]], errors: List[str],
+    deadline: Optional[float] = None,
 ) -> None:
     """Search each term, adding open events to ``events`` by id. An event
     found by an earlier term keeps that term's copy."""
     if not terms:
         return
     with ThreadPoolExecutor(max_workers=min(_SEARCH_WORKERS, len(terms))) as executor:
-        futures = [http.submit_with_context(executor, _search_term, term, limit) for term in terms]
+        futures = [
+            http.submit_with_context(executor, _search_term, term, limit, deadline) for term in terms
+        ]
         for future in futures:
             try:
                 response = future.result()
@@ -570,6 +576,7 @@ def search_polymarket(
     to_date: str,
     depth: str = "default",
     hints: Any = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Search Polymarket for the subject's events, biggest money first.
 
@@ -584,9 +591,13 @@ def search_polymarket(
         to_date: End date (YYYY-MM-DD); unused for the same reason
         depth: 'quick', 'default', or 'deep'
         hints: Optional ``PolymarketHints`` (or a plan dict of the same shape)
+        deadline: Optional ``time.monotonic()`` value every search, retries
+            included, must finish by; the related-name searches are skipped
+            once it has passed.
 
     Returns:
-        Dict with 'events' list and optional 'error'.
+        Dict with 'events' list, plus 'error' when any search failed and
+        'partial' when some searches failed but others returned events.
     """
     hints = PolymarketHints.coerce(hints)
     limit = SEARCH_LIMIT.get(depth, SEARCH_LIMIT["default"])
@@ -597,7 +608,7 @@ def search_polymarket(
 
     events: Dict[str, Dict[str, Any]] = {}
     errors: List[str] = []
-    _run_searches(terms, limit, events, errors)
+    _run_searches(terms, limit, events, errors, deadline)
 
     # A related name is searched unless the pool already holds a race it is
     # an outcome of; a game prop naming the player is no award race.
@@ -610,16 +621,21 @@ def search_polymarket(
         entry.name for entry in hints.related[:_RELATED_SEARCH_CAP]
         if not _names_any([_Term(entry.name)], race_labels)
     ]
+    if related_terms and deadline is not None and time.monotonic() >= deadline:
+        errors.append(f"skipped related-name searches {related_terms}: deadline passed")
+        related_terms = []
     if related_terms:
         _log(f"Searching related names: {related_terms}")
-        _run_searches(related_terms, limit, events, errors)
+        _run_searches(related_terms, limit, events, errors, deadline)
 
     merged_events = list(events.values())
     _log(f"Found {len(merged_events)} unique events across {len(terms) + len(related_terms)} searches")
 
     result = {"events": merged_events, "_cap": cap}
-    if errors and not merged_events:
+    if errors:
         result["error"] = "; ".join(errors[:2])
+        if merged_events:
+            result["partial"] = True
     return result
 
 

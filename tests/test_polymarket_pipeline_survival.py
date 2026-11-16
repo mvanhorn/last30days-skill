@@ -346,3 +346,45 @@ def test_race_with_suppressed_odds_still_lists_the_matched_player():
     assert len(lines) == 3
     assert ": Ty Jerome (player) 34" in lines[2]
     assert ", #1 of " in lines[2]
+
+
+# --- Partial search ---
+
+
+def _retrieve_polymarket(topic):
+    subquery = schema.SubQuery(
+        label="primary", search_query=topic, ranking_query=topic, sources=["polymarket"],
+    )
+    return pipeline._retrieve_stream_impl(
+        topic=topic, subquery=subquery, source="polymarket", config={}, depth="quick",
+        date_range=(FROM_DATE, TO_DATE),
+        runtime=schema.ProviderRuntime(
+            reasoning_provider="none", planner_model="none", rerank_model="none",
+        ),
+        mock=False,
+    )
+
+
+def test_partial_search_is_reported_partial_and_not_memoized(monkeypatch):
+    from lib import fetch_memo
+
+    fetch_memo.reset()
+    calls = []
+
+    def search(topic, *_args, **kwargs):
+        calls.append(kwargs.get("deadline"))
+        return {
+            "events": [_fixture("pro_football_2027_champion")], "_cap": 5,
+            "error": "HTTP 429: Rate limit", "partial": True,
+        }
+
+    monkeypatch.setattr(polymarket, "search_polymarket", search)
+
+    items, artifact = _retrieve_polymarket("49ers")
+    _retrieve_polymarket("49ers")
+
+    assert items
+    assert artifact["_source_outcome"]["state"] == schema.PARTIAL
+    assert len(calls) == 2
+    assert all(isinstance(deadline, float) for deadline in calls)
+    fetch_memo.reset()
