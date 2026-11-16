@@ -1,1 +1,0 @@
-The ScrapeCreators YouTube search fallback now reads the fields that endpoint returns (`publishedTime`, `viewCountInt`, `lengthSeconds`, and the `channel` object), so its videos keep their dates, view counts and channel names instead of being dropped by the date window.
