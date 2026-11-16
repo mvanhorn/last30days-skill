@@ -93,10 +93,20 @@ def named_teams(
         for place in item.get("locations") or [item.get("location")]
         for word in _WORD.findall(str(place or "").lower())
     }
+    # One role posted in several places is one role: a team counts distinct
+    # (title, department) roles, each by its first row, the newest posting.
     members: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    seen_roles: dict[str, dict[tuple[str, str], dict[str, Any]]] = defaultdict(dict)
     for item, title in zip(items, titles):
+        role = (" ".join(title.lower().split()), " ".join(str(item.get("department") or "").lower().split()))
         for name in dict.fromkeys(_team_names(title, company, place_words)):
-            members[name].append(item)
+            first = seen_roles[name].get(role)
+            if first is None:
+                seen_roles[name][role] = item
+                members[name].append(item)
+            elif _posted(item) > _posted(first):
+                members[name][members[name].index(first)] = item
+                seen_roles[name][role] = item
 
     # "fauna robotics" (one role) is the "fauna" team: fold a name too small
     # to stand alone into the shorter name it starts with, keeping each role

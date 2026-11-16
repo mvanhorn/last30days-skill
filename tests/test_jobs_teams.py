@@ -87,3 +87,12 @@ def test_the_named_teams_line_shows_counts_and_new_roles_only_when_dated():
     )
     assert render._named_teams_line([]) == ""
     assert render._named_teams_line(None) == ""
+
+
+def test_one_role_posted_in_three_cities_is_one_role_not_a_team():
+    rows = _board() + [
+        _role("Program Manager, Lonely Team", location=city) for city in ("Austin, TX", "Boston, MA", "Denver, CO")
+    ]
+    result = jobs_teams.named_teams(rows, company="Example", window_start=WINDOW_START)
+
+    assert "lonely team" not in [team["name"] for team in result["teams"]]
