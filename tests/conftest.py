@@ -249,16 +249,20 @@ def _grok_audit_passes():
 def _reset_probe_caches():
     """The doctor stack memoizes probe results in module-level dicts (safe for
     the one-shot CLI process, wrong across tests). Clear them around every test
-    so a probe cached by one test can never leak into another."""
+    so a probe cached by one test can never leak into another. The jobs
+    lane's robots.txt rules are kept per host for a run the same way."""
     from lib import grok_x, health, xurl_x
+    from lib.job_boards import robots
 
     health.clear_dependency_probe_cache()
     xurl_x.clear_availability_cache()
     grok_x.clear_availability_cache()
+    robots.clear_cache()
     yield
     health.clear_dependency_probe_cache()
     xurl_x.clear_availability_cache()
     grok_x.clear_availability_cache()
+    robots.clear_cache()
 
 @pytest.fixture(autouse=True)
 def _reset_reddit_keyless_memo():

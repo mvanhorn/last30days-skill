@@ -2561,6 +2561,14 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
             "no other role on the board repeats."
         ),
     ]
+    sites = [site for site in board.get("board_sites") or [] if isinstance(site, dict)]
+    if len(sites) > 1:
+        # A Workday tenant read across its career sites: each site's own count.
+        out[-1] += f" Read from {len(sites)} Workday sites: " + ", ".join(
+            f"{_escape_markdown_plain_text(str(site.get('site') or ''))} "
+            f"({int(site.get('roles') or 0):,} role{'' if int(site.get('roles') or 0) == 1 else 's'})"
+            for site in sites
+        ) + "."
     if digest.get("note"):
         out.append(f"- Note: {digest['note']}")
     size = sum(len(line) + 1 for line in out)

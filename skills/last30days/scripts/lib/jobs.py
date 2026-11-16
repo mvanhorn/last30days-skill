@@ -637,6 +637,7 @@ def _search_jobs(
             company, provider, slug, date_range,
             attempted=attempted, explicit=explicit, budget=budget,
             found_via=found_via, probed=probed, stated_names=stated_names,
+            named_boards=_boards_named(careers_html or ""),
         )
         if found is not None:
             return found
@@ -838,6 +839,7 @@ def _read_board(
     full: bool = True,
     probed_board: dict[str, Any] | None = None,
     company_board: dict[str, str] | None = None,
+    named_boards: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     """Read a found board and build its artifact, or None when it holds nothing.
 
@@ -857,6 +859,10 @@ def _read_board(
     ``company_board`` is the registry entry of a company-run board, which is
     read by its own reader. Its listing stops early enough to leave
     ``DETAIL_SHARE`` of the time for the role text of the selected roles.
+
+    A Workday board that is the company's is read with every other career
+    site of its tenant: those its host's robots.txt lists and those of
+    ``named_boards`` (the boards the careers page names) on the same tenant.
     """
     if full:
         budget.limit_discovery(None)
@@ -867,6 +873,7 @@ def _read_board(
         list_deadline = deadline - budget.remaining() * DETAIL_SHARE
     # Passed only when set, so the plain call stays what it always was.
     part: dict[str, Any] = {} if full else {"first_page_only": True}
+    tenant_sites: list[str] = []
     try:
         if probed is not None:
             # The probe already read this board; it is not read twice.
@@ -878,6 +885,13 @@ def _read_board(
                 company_board, deadline=list_deadline, date_range=date_range,
             )
         elif provider == ATS_PROVIDER_WORKDAY:
+            if full:
+                # Asked before the listing pages: a tenant answers a burst of
+                # them with 429 to every request for a while after.
+                tenant_sites = workday_tenant_sites(
+                    slug, named_boards,
+                    deadline_monotonic=time.monotonic() + max(0.0, budget.remaining()),
+                )
             items, board = search_workday_board(slug, deadline=deadline, **part)
         elif provider == ATS_PROVIDER_SMARTRECRUITERS:
             items, board = read_smartrecruiters_board(slug, deadline=deadline, **part)
@@ -921,6 +935,13 @@ def _read_board(
                 found_via == "site-name"
                 and any(_same_company(stated, name) for name in stated_names or [])
             )
+        )
+    if owned and tenant_sites:
+        # The tenant's other career sites are the company's too. They leave
+        # the role text of the selected roles its share of the time.
+        items, board = read_workday_tenant_sites(
+            slug, items, board, tenant_sites,
+            deadline=deadline - budget.remaining() * DETAIL_SHARE,
         )
     artifact = _artifact("jobs", company, attempted, items, explicit,
                          tier="ats", provider=provider, slug=slug)
@@ -1212,7 +1233,7 @@ def _coverage_note(
         return ""
     listed = int(board.get("board_total") or 0)
     if not (board.get("board_newest_first") or board.get("board_reports_total")):
-        listed = min(listed, WORKDAY_ROW_CEILING)
+        listed = min(listed, int(board.get("board_row_ceiling") or WORKDAY_ROW_CEILING))
     rows = int(board.get("board_rows_read") or len(items))
     read = f"{rows:,} rows read" + (
         f" of the {listed:,} the board lists" if listed > rows else ""
@@ -2113,7 +2134,9 @@ def search_workday_board(
 
     # The total is reported on the first page only, so read that one first.
     first = _workday_run([page(0)], deadline, clock)[0]
-    if not isinstance(first, dict):
+    if not isinstance(first, dict) or not isinstance(first.get("jobPostings"), list):
+        # Not a listing: a site name the tenant does not have answers an
+        # error record, which is not paged through.
         return [], info
     try:
         total = int(first.get("total") or 0)
@@ -2139,6 +2162,125 @@ def search_workday_board(
         if isinstance(payload, dict):
             items.extend(parse_workday_response(payload, token))
     return items[:WORKDAY_ROW_CEILING], info
+
+
+# Paths a Workday host's robots.txt lists that are not career sites.
+_WORKDAY_NON_SITES = {"refreshfacet", "wday"}
+
+
+def workday_tenant_sites(
+    token: str,
+    named: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
+    *,
+    deadline_monotonic: float | None = None,
+) -> list[str]:
+    """The other career sites of a Workday board's tenant, as board tokens.
+
+    A tenant can run several sites (Nike: ``nke``, ``nke2``, ``nke4``). They
+    are the first path segment of every ``Allow``, ``Disallow`` and
+    ``Sitemap`` line of the tenant host's robots.txt, and the Workday boards
+    a careers page names (``named``, as ``_boards_named`` gives them) on the
+    same tenant. A site on another tenant is another company's and is left
+    out. Candidates are not checked here: a name that is not a site answers
+    its listing call with something other than a listing.
+    """
+    parts = _workday_parts(token)
+    if not parts:
+        return []
+    tenant_host, site = token.split("/", 1)
+    tenant = tenant_host.split(".", 1)[0].lower()
+    found: dict[str, str] = {site.lower(): token}
+    for provider, slug in sorted(named):
+        if provider == ATS_PROVIDER_WORKDAY and slug.split(".", 1)[0] == tenant:
+            # ``_boards_named`` lower-cases its slugs; Workday site names are
+            # not case sensitive.
+            found.setdefault(slug.split("/", 1)[1], slug)
+    rules = board_robots.rules_for(
+        urlparse(parts[0]).hostname or "", deadline_monotonic=deadline_monotonic,
+    )
+    for path in [*rules.paths, *(urlparse(url).path for url in rules.sitemaps)]:
+        first = path.strip("/").split("/", 1)[0]
+        if re.fullmatch(r"[A-Za-z0-9_-]+", first) and first.lower() not in _WORKDAY_NON_SITES:
+            found.setdefault(first.lower(), f"{tenant_host}/{first}")
+    found.pop(site.lower())
+    return list(found.values())
+
+
+def _workday_job_key(item: dict[str, Any]) -> str:
+    """A Workday role's ``externalPath``, which is the same on every site of
+    the tenant that lists the role."""
+    token = str(item.get("board_token") or "")
+    url = str(item.get("url") or "")
+    parts = _workday_parts(token)
+    prefix = f"{parts[0]}/{token.split('/', 1)[1]}" if parts else ""
+    return (url[len(prefix):] if prefix and url.startswith(prefix) else url).lower()
+
+
+def read_workday_tenant_sites(
+    token: str,
+    items: list[dict[str, Any]],
+    info: dict[str, Any],
+    others: list[str],
+    *,
+    deadline: float,
+    clock: Callable[[], float] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Add the tenant's other career sites to a Workday board already read.
+
+    ``items`` and ``info`` are what ``search_workday_board`` gave for
+    ``token``; ``others`` are the sites ``workday_tenant_sites`` found. Each
+    is read the same way, up to its own row ceiling, until
+    ``COMPANY_BOARD_ROW_CEILING`` rows are held across sites. A role listed
+    on two sites counts once. When a second site gives rows, ``board_sites``
+    holds each site's role count, and the board's total, cap and cut-short
+    flags cover every site read.
+    """
+    clock = clock or _clock()
+    merged = list(items)
+    seen = {_workday_job_key(item) for item in merged}
+    sites = [{"site": token.split("/", 1)[1], "roles": len(items)}]
+    totals = [min(int(info.get("board_total") or 0), WORKDAY_ROW_CEILING)]
+    capped, cut_short = bool(info.get("board_capped")), bool(info.get("board_cut_short"))
+    for other in others:
+        if len(merged) >= COMPANY_BOARD_ROW_CEILING:
+            capped = True
+            break
+        listing = workday_list_url(other)
+        if board_robots.disallowed(
+            listing, deadline_monotonic=time.monotonic() + max(0.0, deadline - clock()),
+        ):
+            continue
+        rows, read = search_workday_board(other, deadline=deadline, clock=clock)
+        for row in rows:
+            key = _workday_job_key(row)
+            if key not in seen:
+                seen.add(key)
+                merged.append(row)
+        if not rows:
+            continue
+        sites.append({"site": other.split("/", 1)[1], "roles": len(rows)})
+        totals.append(min(int(read.get("board_total") or 0), WORKDAY_ROW_CEILING))
+        capped = capped or bool(read.get("board_capped"))
+        cut_short = cut_short or bool(read.get("board_cut_short"))
+    if len(sites) < 2:
+        return items, info
+    if len(merged) > COMPANY_BOARD_ROW_CEILING:
+        capped = True
+    log.source_log(
+        "Jobs",
+        "Workday tenant sites read: "
+        + ", ".join(f"{site['site']} ({site['roles']:,})" for site in sites)
+        + f"; {min(len(merged), COMPANY_BOARD_ROW_CEILING):,} distinct roles",
+        tty_only=False,
+    )
+    return merged[:COMPANY_BOARD_ROW_CEILING], {
+        **info,
+        "board_total": min(sum(totals), COMPANY_BOARD_ROW_CEILING),
+        "board_capped": capped,
+        "board_cut_short": cut_short,
+        "board_row_ceiling": COMPANY_BOARD_ROW_CEILING,
+        "board_sites": sites,
+    }
 
 
 def parse_workday_response(payload: dict[str, Any], token: str = "") -> list[dict[str, Any]]:

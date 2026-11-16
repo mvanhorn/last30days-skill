@@ -35,11 +35,13 @@ def respect_robots(environ: Any = None) -> bool:
 
 
 class Rules:
-    """The ``*`` group's rules and the file's sitemaps."""
+    """The ``*`` group's rules and the file's sitemaps. ``paths`` is every
+    ``Allow`` and ``Disallow`` path in the file, whatever group it is in."""
 
     def __init__(self, text: str = "") -> None:
         self.rules: list[tuple[bool, str]] = []
         self.sitemaps: list[str] = []
+        self.paths: list[str] = []
         agents: list[str] = []
         in_rules = False
         applies = False
@@ -61,6 +63,8 @@ class Rules:
                 continue
             if field in ("allow", "disallow"):
                 in_rules = True
+                if value:
+                    self.paths.append(value)
                 if applies and value:
                     self.rules.append((field == "allow", value))
 
