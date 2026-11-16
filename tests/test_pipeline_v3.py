@@ -12,6 +12,7 @@ from lib import health
 from lib import fanout
 from lib import http
 from lib import pipeline
+from lib import polymarket
 from lib import rerank
 from lib import schema
 from lib import subproc
@@ -2961,15 +2962,21 @@ class TestSourceFetchMemo:
             self._thin_retry(source)
         assert search.call_count == 2
 
-    @pytest.mark.parametrize("source, target", [
-        ("polymarket", "lib.polymarket.search_polymarket"),
-        ("digg", "lib.digg.search_digg"),
-    ])
-    def test_different_queries_fetch_separately(self, source, target):
-        with patch(target, return_value={"events": [], "results": []}) as search:
-            for subquery in _memo_subqueries([source], labels=("price", "speed")):
-                _memo_stream(source, subquery, {})
+    def test_different_digg_queries_fetch_separately(self):
+        with patch("lib.digg.search_digg", return_value={"events": [], "results": []}) as search:
+            for subquery in _memo_subqueries(["digg"], labels=("price", "speed")):
+                _memo_stream("digg", subquery, {})
         assert search.call_count == 2
+
+    def test_polymarket_searches_the_run_topic_once_across_subqueries(self):
+        hints = {"kind": "product", "aliases": ["Ghostty"], "related": []}
+        with patch("lib.polymarket.search_polymarket", return_value={"events": []}) as search:
+            for subquery in _memo_subqueries(["polymarket"], labels=("price", "speed")):
+                _memo_stream("polymarket", subquery, {"_polymarket_hints": hints})
+        assert search.call_count == 1
+        args, kwargs = search.call_args
+        assert args[0] == _MEMO_TOPIC
+        assert kwargs["hints"] == polymarket.PolymarketHints.coerce(hints)
 
     def test_x_backend_fetched_once_and_each_subquery_judged_with_its_own_ranking_query(self):
         subqueries = _memo_subqueries(["x"], labels=("price", "speed"))

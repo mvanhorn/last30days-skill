@@ -1,5 +1,6 @@
 """Tests for polymarket.py - Polymarket prediction market search."""
 
+import copy
 import json
 from unittest.mock import Mock, patch
 
@@ -82,148 +83,14 @@ def test_extract_core_subject_multiple_prefixes():
     result = polymarket._extract_core_subject("research AI models")
     assert result == "AI models"
 
-# === Tests for _expand_queries() ===
+# === Tests for _passes_any_informative_word() ===
 
 
-def test_expand_queries_basic():
-    """Test basic query expansion."""
-    queries = polymarket._expand_queries("AI framework")
-    
-    # Should include core + individual words
-    assert "AI framework" in queries or "ai framework" in queries
-    assert len(queries) >= 2
-
-
-def test_expand_queries_single_word():
-    """Test query expansion with single word."""
-    queries = polymarket._expand_queries("AI")
-    
-    # Single word, should just return that word
-    assert len(queries) >= 1
-    assert any("ai" in q.lower() for q in queries)
-
-
-def test_expand_queries_filters_noise():
-    """Test that low-signal tokens are filtered."""
-    queries = polymarket._expand_queries("the AI framework")
-    
-    # "the" should be filtered from individual word expansions
-    # But may appear in the full phrase
-    assert len(queries) >= 1
-    assert any("ai" in q.lower() or "framework" in q.lower() for q in queries)
-
-
-def test_expand_queries_deduplication():
-    """Test that duplicate queries are removed."""
-    queries = polymarket._expand_queries("test test test")
-    
-    # Should dedupe
-    assert len(queries) == len(set(q.lower() for q in queries))
-
-
-def test_expand_queries_cap_at_six():
-    """Test that query list is capped at 6."""
-    long_topic = "one two three four five six seven eight"
-    queries = polymarket._expand_queries(long_topic)
-    
-    assert len(queries) <= 6
-
-# === Tests for _passes_topic_filter() ===
-
-
-def test_passes_topic_filter_match():
-    """Test that matching events pass the filter."""
-    assert polymarket._passes_topic_filter("AI safety", "AI Safety Conference 2026") is True
-
-
-def test_passes_topic_filter_no_match():
-    """Test that non-matching events are filtered."""
-    # "West" is a noise word, so "Kanye West" requires "Kanye" to match
-    assert polymarket._passes_topic_filter("Kanye West", "NFC West Championship") is False
-
-
-def test_passes_topic_filter_partial_match():
-    """Test that at least one informative word must match."""
-    # "AI" appears in both topic and title
-    assert polymarket._passes_topic_filter("AI safety", "New AI Safety Conference") is True
-    # LOCAL DIVERGENCE from upstream: this asserted False, on the rule that a
-    # domain word ("ai") is too broad to be the sole match signal. That rule
-    # made domain sweeps impossible — an AI-news topic matched zero AI markets
-    # ever, because real titles say "AI" and never "artificial intelligence".
-    # _passes_topic_filter now falls back to _DOMAIN_WORDS when the informative
-    # words miss, so "AI models" does match an AI market.
-    assert polymarket._passes_topic_filter("AI models", "New AI prediction") is True
-
-
-def test_passes_topic_filter_all_noise_words():
-    """Test that all-noise-word topics don't filter anything."""
-    # "the west" has no informative words, so should pass everything
-    result = polymarket._passes_topic_filter("the west", "Any title")
-    assert result is True
-
-
-def test_passes_topic_filter_empty_topic():
-    """Test empty topic always passes."""
-    assert polymarket._passes_topic_filter("", "Any title") is True
-
-
-def test_passes_topic_filter_multi_word_requires_two_matches():
-    """Topics with 3+ informative words require at least 2 to match."""
-    # "Mill food recycler" has 3 informative words. "Meek Mill YC" only matches "mill".
-    assert polymarket._passes_topic_filter(
-        "Mill food recycler", "Meek Mill gets Y Combinator funding"
-    ) is False
-
-
-def test_passes_topic_filter_multi_word_passes_with_two_matches():
-    """Topics with 3+ informative words pass when 2+ match."""
-    assert polymarket._passes_topic_filter(
-        "Sam Altman OpenAI", "Sam Altman CEO OpenAI"
-    ) is True
-
-
-def test_passes_topic_filter_two_word_still_needs_one():
-    """Topics with 2 informative words still only need 1 match (existing behavior)."""
-    assert polymarket._passes_topic_filter(
-        "Kanye West", "Kanye divorce settlement"
-    ) is True
-
-
-
-def test_domain_fallback_keeps_soft_sweep_ai_markets():
-    """Soft sweep residue may match via domain words (the #859 fix)."""
-    assert polymarket._passes_topic_filter(
-        "AI frontier developments", "Will AI models beat humans at coding?"
-    ) is True
-
-
-
-def test_domain_fallback_treats_plural_domain_terms_as_domain():
-    """Plural domain tokens (models) must not block soft AI sweeps."""
-    assert polymarket._passes_topic_filter(
-        "AI models frontier developments",
-        "Will AI beat humans at coding by 2027?",
-    ) is True
-    assert polymarket._passes_topic_filter(
-        "AI models", "New AI prediction"
-    ) is True
-
-
-def test_domain_fallback_blocked_when_hard_informative_misses():
+def test_any_word_filter_blocks_shared_domain_token_when_hard_word_misses():
     """Mixed topics must not accept unrelated markets via a shared domain token."""
-    assert polymarket._passes_topic_filter(
-        "MCP protocol benchmark", "Will the Kyoto Protocol survive?"
-    ) is False
     assert polymarket._passes_any_informative_word(
         "MCP protocol benchmark", "Will the Kyoto Protocol survive?"
     ) is False
-
-
-def test_passes_topic_filter_multi_word_edge_exactly_three():
-    """Topic with exactly 3 informative words, 1 match -> rejected."""
-    assert polymarket._passes_topic_filter(
-        "Tesla stock price", "Tesla quarterly earnings"
-    ) is False  # only "tesla" matches, needs 2
 
 # === Tests for _parse_outcome_prices() ===
 
@@ -421,24 +288,6 @@ def test_search_polymarket_result_cap():
     assert polymarket.RESULT_CAP["deep"] >= polymarket.RESULT_CAP["quick"]
 
 
-def test_search_polymarket_depth_config():
-    """Test that depth configuration exists."""
-    # Verify depth config
-    assert "quick" in polymarket.DEPTH_CONFIG
-    assert "default" in polymarket.DEPTH_CONFIG
-    assert "deep" in polymarket.DEPTH_CONFIG
-    
-    # Quick should be least pages
-    assert polymarket.DEPTH_CONFIG["quick"] <= polymarket.DEPTH_CONFIG["default"]
-
-
-def test_search_polymarket_query_expansion():
-    """Test that _expand_queries creates multiple queries."""
-    queries = polymarket._expand_queries("AI framework")
-    
-    # Should expand to multiple queries
-    assert len(queries) >= 2
-
 @patch('lib.polymarket.http.request')
 def test_search_polymarket_http_error_handling(mock_request):
     """Test graceful handling of HTTP errors."""
@@ -451,6 +300,149 @@ def test_search_polymarket_http_error_handling(mock_request):
     assert all(call.args[0] == "GET" for call in mock_request.call_args_list)
     assert result["events"] == []
     assert "HTTP 429: Rate limit" in result["error"]
+
+# Gamma public-search, answered by search term.
+def _gamma(responses):
+    """A stand-in for http.request that answers each public-search by its q."""
+    calls = []
+
+    def request(method, url, **_kwargs):
+        from urllib.parse import parse_qs, urlsplit
+        params = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+        calls.append(params)
+        return copy.deepcopy(responses.get(params["q"], {"events": []}))
+
+    return request, calls
+
+
+def _search_event(event_id, title, labels=(), closed=False):
+    markets = [create_mock_market(market_id=f"{event_id}-{n}", question=f"Will {label} win?")
+               for n, label in enumerate(labels)]
+    for market, label in zip(markets, labels):
+        market["groupItemTitle"] = label
+    return {**create_mock_event(event_id=event_id, title=title, closed=closed,
+                                markets=markets or None)}
+
+
+def test_search_issues_one_volume_sorted_call_per_term(monkeypatch):
+    request, calls = _gamma({"49ers": {"events": [_search_event("1", "49ers vs Vikings")]}})
+    monkeypatch.setattr(polymarket.http, "request", request)
+
+    result = polymarket.search_polymarket("49ers", "2026-10-17", "2026-11-16")
+
+    assert calls == [{
+        "q": "49ers", "sort": "volume", "events_status": "active",
+        "keep_closed_markets": "0", "limit_per_type": "20",
+    }]
+    assert [event["id"] for event in result["events"]] == ["1"]
+
+
+@pytest.mark.parametrize("depth, limit", [("quick", "10"), ("deep", "50")])
+def test_search_depth_sets_the_page_size(monkeypatch, depth, limit):
+    request, calls = _gamma({})
+    monkeypatch.setattr(polymarket.http, "request", request)
+    polymarket.search_polymarket("49ers", "2026-10-17", "2026-11-16", depth=depth)
+    assert [call["limit_per_type"] for call in calls] == [limit]
+
+
+def test_search_runs_each_alias_and_merges_events_by_id(monkeypatch):
+    shared = _search_event("7", "F1: Las Vegas Grand Prix Winner")
+    request, calls = _gamma({
+        "Formula 1": {"events": [shared]},
+        "F1": {"events": [copy.deepcopy(shared), _search_event("8", "F1: Action of the Year")]},
+    })
+    monkeypatch.setattr(polymarket.http, "request", request)
+
+    result = polymarket.search_polymarket(
+        "Formula 1", "2026-10-17", "2026-11-16",
+        hints=polymarket.PolymarketHints.coerce({"aliases": ["F1"]}),
+    )
+
+    assert sorted(call["q"] for call in calls) == ["F1", "Formula 1"]
+    assert [event["id"] for event in result["events"]] == ["7", "8"]
+
+
+def test_search_looks_up_a_related_name_only_when_the_pool_lacks_it(monkeypatch):
+    rookie = _search_event("2", "NBA: 2026-27 Rookie of the Year",
+                           labels=["Yaxel Lendeborg", "Cameron Boozer"])
+    request, calls = _gamma({"Warriors": {"events": [
+        _search_event("1", "NBA: 2027 Champion", labels=["Golden State Warriors"]), rookie,
+    ]}})
+    monkeypatch.setattr(polymarket.http, "request", request)
+
+    polymarket.search_polymarket(
+        "Warriors", "2026-10-17", "2026-11-16",
+        hints=polymarket.PolymarketHints.coerce({"related": [
+            {"name": "Yaxel Lendeborg", "relation": "player"},
+            {"name": "Stephen Curry", "relation": "player"},
+        ]}),
+    )
+
+    assert [call["q"] for call in calls] == ["Warriors", "Stephen Curry"]
+
+
+def test_search_drops_events_gamma_returns_closed(monkeypatch):
+    request, _calls = _gamma({"49ers": {"events": [
+        _search_event("1", "49ers open"), _search_event("2", "49ers closed", closed=True),
+    ]}})
+    monkeypatch.setattr(polymarket.http, "request", request)
+    result = polymarket.search_polymarket("49ers", "2026-10-17", "2026-11-16")
+    assert [event["id"] for event in result["events"]] == ["1"]
+
+
+class _Response:
+    status = 200
+
+    def __init__(self, body):
+        self._body = json.dumps(body).encode()
+        self.headers = {}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _rate_limited(url):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError(url, 429, "Too Many Requests", {}, io.BytesIO(b""))
+
+
+def test_search_retries_a_rate_limited_call(monkeypatch):
+    answers = [_rate_limited, lambda _url: _Response({"events": [_search_event("1", "49ers")]})]
+
+    def urlopen(req, timeout=None):
+        answer = answers.pop(0)(req.full_url)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr("lib.http.urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("lib.http.time.sleep", lambda _seconds: None)
+
+    result = polymarket.search_polymarket("49ers", "2026-10-17", "2026-11-16")
+
+    assert [event["id"] for event in result["events"]] == ["1"]
+    assert "error" not in result
+
+
+def test_search_reports_repeated_rate_limits_as_an_error(monkeypatch):
+    def urlopen(req, timeout=None):
+        raise _rate_limited(req.full_url)
+
+    monkeypatch.setattr("lib.http.urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("lib.http.time.sleep", lambda _seconds: None)
+
+    result = polymarket.search_polymarket("49ers", "2026-10-17", "2026-11-16")
+
+    assert result["events"] == []
+    assert "429" in result["error"]
+
 
 # === Tests for parse_polymarket_response() ===
 
@@ -548,8 +540,8 @@ def _claude_downtime_response():
 def test_parse_polymarket_response_filters_noise_on_full_subquery():
     """A multi-word subquery filters off-topic 'Claude downtime' noise.
 
-    'Claude Code subagents workflow' carries 3 informative words; the downtime
-    title matches only one ('claude'), so the min-2 rule drops it.
+    The downtime title names 'Claude' but not the whole phrase 'Claude Code
+    subagents workflow', so the entity matcher drops it.
     """
     items = polymarket.parse_polymarket_response(
         _claude_downtime_response(), topic="Claude Code subagents workflow"
@@ -560,11 +552,10 @@ def test_parse_polymarket_response_filters_noise_on_full_subquery():
 def test_parse_polymarket_response_narrow_subquery_leaks_noise():
     """The SAME off-topic market leaks through a single-word subquery.
 
-    'claude' has one informative word, so the min-match threshold drops to 1 and
-    the downtime market passes. Because the pipeline previously fed the per-subquery
-    search_query, filtering swung between these two outcomes across the fanout;
-    keying off the stable original topic makes it consistent. This pair pins that
-    threshold-by-word-count behavior the wiring fix depends on.
+    'claude' is named in the title, so the downtime market passes. Because the
+    pipeline previously fed the per-subquery search_query, filtering swung
+    between these two outcomes across the fanout; keying off the stable
+    original topic makes it consistent.
     """
     items = polymarket.parse_polymarket_response(
         _claude_downtime_response(), topic="claude"
@@ -591,68 +582,7 @@ def test_engagement_with_volume():
     assert items[0]["volume24hr"] == 1234.0
     assert items[0]["liquidity"] == 6789.0
 
-# === Tests for noise-word query skipping ===
-
-
-def test_expand_queries_skips_noise_words():
-    """Noise words like 'west' should not become standalone queries."""
-    queries = polymarket._expand_queries("kanye west")
-    lowered = [q.lower() for q in queries]
-    assert "kanye west" in lowered  # full phrase kept
-    assert "kanye" in lowered       # informative word kept
-    assert "west" not in lowered    # noise word skipped
-
-
-def test_expand_queries_keeps_informative_words():
-    """Non-noise words should still be expanded as standalone queries."""
-    queries = polymarket._expand_queries("arizona basketball")
-    lowered = [q.lower() for q in queries]
-    assert "arizona" in lowered
-    assert "basketball" in lowered
-
-
-def test_expand_queries_all_noise_words_keeps_phrase():
-    """If all words are noise, the full phrase is still searched."""
-    queries = polymarket._expand_queries("north west")
-    assert len(queries) >= 1
-    assert any("north west" in q.lower() for q in queries)
-    # Neither individual word should be a standalone query
-    lowered = [q.lower() for q in queries]
-    assert "north" not in lowered or "north west" in lowered  # only as part of phrase
-
 # === Tests for per-item relevance floor ===
-
-
-def test_per_item_relevance_floor_drops_zero_items():
-    """Items with relevance 0.0 should be dropped even if best item is high."""
-    events = [
-        create_mock_event(event_id="golf", title="Golf championship"),
-        create_mock_event(event_id="relevant", title="Prediction market"),
-        create_mock_event(event_id="cycling", title="Cycling championship"),
-    ]
-    # A generic topic passes the earlier title gate, leaving the score floor
-    # responsible for removing these otherwise valid events.
-    assert all(polymarket._passes_topic_filter("market", event["title"]) for event in events)
-    items = polymarket.parse_polymarket_response({"events": events}, topic="market")
-    assert [item["event_id"] for item in items] == ["relevant"]
-
-
-def test_per_item_relevance_floor_keeps_borderline(monkeypatch):
-    """Items at exactly 0.10 should be kept."""
-    scores = {"Main market": 1.0, "Borderline market": 0.13, "Below floor": 0.12}
-    monkeypatch.setattr(polymarket, "_compute_text_similarity", lambda _topic, title, _outcomes: scores[title])
-    events = [
-        create_mock_event(
-            event_id=event_id, title=title, volume24hr=0, liquidity=1,
-            markets=[create_mock_market(volume="0", liquidity="1")],
-        )
-        for event_id, title in [("below", "Below floor"), ("main", "Main market"),
-                                ("boundary", "Borderline market")]
-    ]
-    items = polymarket.parse_polymarket_response({"events": events}, topic="market")
-    assert [(item["event_id"], item["relevance"]) for item in items] == [
-        ("main", 0.75), ("boundary", 0.10),
-    ]
 
 
 def test_per_item_relevance_floor_no_drops_when_all_high():
