@@ -279,6 +279,21 @@ def _attach_comments(
     return filled, failed
 
 
+def in_window(item: dict, from_date: Optional[str], to_date: Optional[str]) -> bool:
+    """Whether a hydrated thread is in the window (see ``_in_window``)."""
+    return _in_window(item, from_date, to_date)
+
+
+def attach_comments(
+    items: list[dict], depth: str = "default", deadline: Optional[float] = None,
+    now: Optional[float] = None,
+) -> int:
+    """Archive comments for ``items`` hydrated with ``comments=False``, within
+    the lane's comment budget. Returns how many threads gained comments."""
+    filled, _failed = _attach_comments(items, depth, deadline, time.time() if now is None else now)
+    return filled
+
+
 def on_topic_count(items: Iterable[dict], topic: str) -> int:
     """Threads whose title names the topic. A pending score does not matter."""
     items = list(items)

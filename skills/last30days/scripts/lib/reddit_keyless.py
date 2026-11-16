@@ -4,6 +4,10 @@
 runs on the surfaces that still serve data without a key, then enrichment runs
 on whatever was discovered:
 
+  Host threads    thread URLs or ids the host found with its own web search
+                  (``--reddit-threads``, reddit_envelope): hydrated once per
+                  run through the same chain, held to the window and the
+                  topic bar, and routed to the subquery they match best.
   Session         with the user's consent, their logged-in reddit.com
                   session (reddit_session): post, comment and community
                   search, and thread JSON as the first hydrator for every
@@ -49,7 +53,7 @@ from typing import Any, Dict, List, Optional
 
 from . import http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
-from . import reddit_discover, reddit_health, reddit_hydrate, reddit_refs, reddit_session, web_search_keyless
+from . import reddit_discover, reddit_envelope, reddit_health, reddit_hydrate, reddit_refs, reddit_session, web_search_keyless
 # High-upvote posts from targeted-sub listings can bury on-topic search hits
 # under an engagement-first final sort. A relevance floor + relevance-first
 # final ranking keeps the section on-topic. Thresholds are shared with the
@@ -364,6 +368,43 @@ def _record_arctic(state: str) -> None:
         _mark("arctic", mapped)
 
 
+def _host_layer(
+    topic: str,
+    depth: str,
+    subreddits: Optional[List[str]],
+    dedicated_subreddits: Optional[List[str]],
+    from_date: Optional[str],
+    to_date: Optional[str],
+    deadline: Optional[float],
+) -> List[Dict[str, Any]]:
+    """The host's thread refs routed to this subquery: ``[]`` without an
+    envelope. Hydrated through the session first when one is open. Never raises."""
+    opened = reddit_envelope.current()
+    if opened is None:
+        return []
+    envelope, label = opened
+
+    def session_hydrator():
+        session = reddit_session.current()
+        if session is not None and session.alive:
+            return reddit_session.hydrator(session, depth=depth, deadline=deadline)
+        return None
+
+    try:
+        served = envelope.serve(
+            label, depth=depth, from_date=from_date, to_date=to_date,
+            subreddits=subreddits, dedicated=dedicated_subreddits,
+            session_hydrator=session_hydrator, deadline=deadline,
+        )
+    except Exception as exc:  # the host lane must never break the Reddit lane
+        _log(f"host threads failed: {type(exc).__name__}")
+        return []
+    if served.arctic_state:
+        _record_arctic(served.arctic_state)
+    _note(served.note)
+    return served.items
+
+
 def _session_layer(
     topic: str,
     depth: str,
@@ -480,7 +521,15 @@ def _discover(
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
-    # The consented logged-in session runs first (best-first, KTD12): it
+    # The host's own thread refs come first (best-first, KTD12): they cost
+    # only hydration, and every other layer merges into them by thread id.
+    host_posts = (
+        [] if _out_of_time(deadline)
+        else _host_layer(
+            topic, depth, subreddits, dedicated_subreddits, from_date, to_date, deadline,
+        )
+    )
+    # The consented logged-in session runs next (best-first, KTD12): it
     # searches the same site search logged in, so the keyless site search is
     # skipped once it served.
     session_posts = (
@@ -547,7 +596,8 @@ def _discover(
     if subreddits or dedicated_subreddits:
         _mark("listing", reddit_health.OK if listing_posts or dedicated_posts else reddit_health.EMPTY)
     _log(
-        f"Tier 1 (site search) {len(search_posts)} posts; web floor {len(web_posts)}; "
+        f"Tier 1 (site search) {len(search_posts)} posts; host {len(host_posts)}; "
+        f"web floor {len(web_posts)}; "
         f"{'listing discovery ' + str(len(listing_posts)) if subreddits else 'no listings'}"
     )
 
@@ -588,14 +638,15 @@ def _discover(
             _apply_scores(p, score_map[pid])
         seen.add(p["url"])
         merged.append(p)
-    # Web-floor threads merge by thread id: a copy another rung already holds
-    # keeps that copy's live score and gains the floor's comments.
+    # Host and web-floor threads merge by thread id: a copy another rung
+    # already holds keeps that copy's live score and gains their comments,
+    # and the provenance of every path that found it.
     by_thread = {}
     for p in merged:
         key = reddit_refs.thread_key(p.get("url", ""))
         if key:
             by_thread.setdefault(key, p)
-    for p in web_posts:
+    for p in host_posts + web_posts:
         key = reddit_refs.thread_key(p.get("url", ""))
         if key in by_thread:
             reddit_hydrate.merge_post(by_thread[key], p)

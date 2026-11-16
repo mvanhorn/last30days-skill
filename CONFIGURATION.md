@@ -683,6 +683,21 @@ Limits: 8 MiB, strict UTF-8, at most 20 calls, 500 rows per call, 1,000 rows in 
 python3 skills/last30days/scripts/last30days.py "<topic>" --x-posts /tmp/x-posts.json
 ```
 
+### `--reddit-threads` flag
+
+`--reddit-threads <path|->` hands the engine Reddit thread URLs or ids the hosting model found with its own web search (the runbook collects `reddit.com/r/<sub>/comments/<id>/` links during the pre-research search). Unlike `--x-posts`, it carries identity only: the engine rehydrates every thread itself (the logged-in session when one is open, else Arctic Shift), so a title, score or text the host wrote is never used. Host threads join the other Reddit layers by thread id, count toward the ScrapeCreators floor like web-floor threads, and show as `host` in the Reddit served-path detail. The value is a file path or `-` for stdin (inline JSON exits `2`): a regular `.json` file in the `last30days-reddit-threads/1` shape, never read from inside the config dir or a credential store.
+
+| Field | Meaning |
+| --- | --- |
+| `schema`, `topic` | `schema` must be `last30days-reddit-threads/1` and `topic` must match the run topic, or the run fails closed with exit `2`. Other top-level fields are ignored. |
+| `threads[]` | Objects with a `url` (any `www.`, `old.`, `new.`, `np.`, `m.` or `sh.` reddit.com thread or comment link, or `redd.it/<id>`) or an `id` (base36, optionally `t3_`). Any other key is ignored and counted as `extra-fields`. |
+
+Limits: 1 MiB, strict UTF-8, a non-empty `threads` list of at most 1,000 entries, of which the first 50 distinct threads are used (the rest are counted as `truncated`). Bad entries are dropped and counted, never fatal: `non-reddit`, `redirect` (Google, Vertex and other search-engine wrappers), `share-link` (`/r/<sub>/s/<code>`), `not-a-thread`, `invalid`, `duplicate`. After hydration a thread no hydrator could read (`unhydrated`), outside the research window (`out-of-window`) or whose title does not name the topic (`off-topic`, the same bar as the web floor) is dropped too. The refs serve the whole run: each kept thread goes to the planner subquery whose terms its title matches best. The report cache is bound to the file's sha256, so a different thread list never replays a cached report. The hosted backend (`LAST30DAYS_API_BASE`) rejects the flag with exit `2`, comparison runs reject it with exit `2`, and a run that excludes Reddit (`EXCLUDE_SOURCES=reddit` or a `--search` list without it) ignores the file. With `LAST30DAYS_REDDIT_BACKEND=scrapecreators` the file is not used.
+
+```bash
+python3 skills/last30days/scripts/last30days.py "<topic>" --reddit-threads /tmp/l30d-threads.json
+```
+
 ### `setup --store-key`
 
 `setup --store-key <NAME>` persists one credential to the global `.env` (mode `600`) from a single line on stdin, without echoing it: stdout shows `NAME=****` plus a JSON line `{"persisted": true, "key": "NAME"}`. `NAME` must be one of the credential names the engine loads from `.env` (for example `X_BEARER_TOKEN`, `XAI_API_KEY`, `SCRAPECREATORS_API_KEY`); an unknown name or an empty value exits `2`. Running it again with a new value replaces the stored one (rotating a rejected credential); other lines in the file are untouched.

@@ -60,6 +60,7 @@ from . import (
     providers,
     query,
     reddit,
+    reddit_envelope,
     reddit_health,
     reddit_keyless,
     reddit_listing,
@@ -2272,6 +2273,7 @@ def run(
     corpus_dirs: list[str] | None = None,
     corpus_all_time: bool = False,
     x_posts: x_envelope.Envelope | None = None,
+    reddit_threads: reddit_envelope.Envelope | None = None,
 ) -> schema.Report:
     _check_research(config)
     # ``suppress_x_host_lane`` is distinct from ``internal_subrun``: comparison
@@ -2334,6 +2336,22 @@ def run(
         config = dict(config)
         config["_x_envelope"] = envelope
         config["_x_lane_missing"] = x_lane_missing
+
+    # Host-found Reddit thread refs (--reddit-threads). They serve every
+    # Reddit stream of the run; a run that excludes Reddit ignores them.
+    reddit_refs_envelope = reddit_threads
+    if reddit_refs_envelope is not None and (
+        "reddit" in excluded_sources
+        or (requested_sources and "reddit" not in requested_sources)
+    ):
+        log.source_log(
+            "reddit", "host Reddit threads: envelope ignored (reddit is excluded from this run)",
+            tty_only=False,
+        )
+        reddit_refs_envelope = None
+    if reddit_refs_envelope is not None:
+        config = dict(config)
+        config["_reddit_envelope"] = reddit_refs_envelope
 
     # Gate StockTwits to ticker/crypto topics. Single chokepoint: when False,
     # available_sources() never registers stocktwits, so the planner can't
@@ -2525,6 +2543,13 @@ def run(
             )
     else:
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
+
+    if reddit_refs_envelope is not None:
+        # Each Reddit stream receives the host threads its terms match.
+        reddit_refs_envelope.bind_subqueries(
+            (sq.label, (sq.search_query, sq.ranking_query))
+            for sq in plan.subqueries if "reddit" in sq.sources
+        )
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
     deferred_retryable_failures: dict[str, dict[str, Any]] = {}
@@ -6597,6 +6622,12 @@ def _retrieve_stream_impl(
         )
         if sc_first:
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
+            if config.get("_reddit_envelope") is not None:
+                log.source_log(
+                    "reddit",
+                    "host Reddit threads are not used while Reddit is pinned to ScrapeCreators",
+                    tty_only=False,
+                )
             primary_failure: Exception | None = None
             try:
                 result = reddit.search_and_enrich_memo(
@@ -6675,7 +6706,8 @@ def _retrieve_stream_impl(
             with reddit_keyless.lane_deadline(lane_deadline), \
                     reddit_keyless.lane_notes() as lane_notes, \
                     reddit_keyless.lane_paths() as lane_paths, \
-                    reddit_session.lane(lane_session, raw_topic or reddit_query):
+                    reddit_session.lane(lane_session, raw_topic or reddit_query), \
+                    reddit_envelope.lane(config.get("_reddit_envelope"), subquery.label):
                 public_results = reddit_public.search_reddit_public(
                     reddit_query, from_date, to_date, depth=depth,
                     subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,

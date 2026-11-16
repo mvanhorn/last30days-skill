@@ -50,7 +50,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_discover, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
 from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -864,6 +864,18 @@ def build_parser() -> argparse.ArgumentParser:
             "model fetched through its X connector; replaces the engine's X "
             "fetch for this run. A file path only (never inline JSON); on a "
             "comparison run use the per-entity x_posts field of --competitors-plan."
+        ),
+    )
+    parser.add_argument(
+        "--reddit-threads",
+        dest="reddit_threads",
+        metavar="PATH",
+        help=(
+            "Path to a last30days-reddit-threads/1 JSON envelope of Reddit "
+            "thread URLs or ids the hosting model found with its own web "
+            "search ('-' reads stdin). Only each entry's url or id is read; "
+            "the engine rehydrates every thread and holds it to the window "
+            "and the topic. At most 50 threads; single-topic runs only."
         ),
     )
     parser.add_argument("--web-backend", default="auto",
@@ -3352,6 +3364,25 @@ def _x_envelope_digest(
     return _combine_envelope_digests(main.sha256 if main is not None else None, entity_sha256)
 
 
+def _envelope_digest(
+    x_main: x_envelope.Envelope | None,
+    comp_plan: dict[str, dict] | None,
+    reddit_threads: reddit_envelope.Envelope | None = None,
+) -> str | None:
+    """One digest binding the report cache to every host envelope of the run.
+
+    Without a --reddit-threads envelope this is the X digest unchanged; with
+    one, its file digest is folded in, so a different thread list never
+    replays a report built from another.
+    """
+    x_digest = _x_envelope_digest(x_main, comp_plan)
+    if reddit_threads is None:
+        return x_digest
+    parts = [f"x:{x_digest}"] if x_digest else []
+    parts.append(f"reddit:{reddit_threads.sha256}")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
 def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
     if not extra_argv:
         return
@@ -3752,7 +3783,7 @@ def _main(
 
     if args.cached_report and (
         args.emit != "html" or not args.synthesis_file or not args.topic or args.deep_research
-        or args.plan or args.competitors_plan or args.x_posts
+        or args.plan or args.competitors_plan or args.x_posts or args.reddit_threads
         or args.discover is not None or args.drill or args.diagnose or args.preflight
         or args.welcome or args.resolve_save_dir or args.verify_freshness is True
     ):
@@ -3780,6 +3811,12 @@ def _main(
         sys.stderr.write(
             "[last30days] --x-posts accepts a file path only (inline JSON is not "
             "accepted); write the envelope to a .json file and pass its path.\n"
+        )
+        return 2
+    if args.reddit_threads is not None and reddit_envelope.looks_inline_json(args.reddit_threads):
+        sys.stderr.write(
+            "[last30days] --reddit-threads accepts a file path or '-' only (inline "
+            "JSON is not accepted); write the envelope to a .json file and pass its path.\n"
         )
         return 2
     if args.publish and command_topic != "library feed":
@@ -4280,6 +4317,13 @@ def _main(
                 "run locally or omit --x-posts.\n"
             )
             return 2
+        if args.reddit_threads is not None:
+            # Host thread refs are a local-engine contract too.
+            sys.stderr.write(
+                "[last30days] --reddit-threads is not supported by the hosted backend; "
+                "run locally or omit --reddit-threads.\n"
+            )
+            return 2
         from lib import hosted
         depth = "deep" if args.deep else "quick" if args.quick else "default"
         try:
@@ -4357,6 +4401,24 @@ def _main(
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
             return 2
+    # Host-found Reddit thread refs: validated before any research so a bad
+    # file fails closed here and the report cache binds to its digest.
+    reddit_threads_envelope: reddit_envelope.Envelope | None = None
+    if args.reddit_threads is not None:
+        if not topic:
+            sys.stderr.write("[last30days] --reddit-threads requires a research topic.\n")
+            return 2
+        if _comparison_requested(args, topic):
+            sys.stderr.write(
+                "[last30days] --reddit-threads applies to a single-topic run; "
+                "omit it on a comparison run.\n"
+            )
+            return 2
+        try:
+            reddit_threads_envelope = reddit_envelope.read(args.reddit_threads, topic)
+        except reddit_envelope.EnvelopeContractError as exc:
+            sys.stderr.write(f"[last30days] {exc.message}\n")
+            return 2
     if args.diagnose:
         diag = pipeline.diagnose(
             config, requested_sources, safe=True,
@@ -4405,7 +4467,7 @@ def _main(
         cached = _load_last_report_cache(
             topic,
             ttl_seconds=_report_cache_ttl_seconds(config),
-            x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
+            x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
             research_options=research_options,
             requested_window=requested_window,
             use_cached_envelopes=args.cached_report,
@@ -4777,6 +4839,7 @@ def _main(
                     comp_plan.get(topic.strip().lower(), {}).get("_x_envelope")
                     if comp_enabled else x_posts_envelope
                 ),
+                reddit_threads=None if comp_enabled else reddit_threads_envelope,
             )
             patents.collect(patent_lane, r)
             r.artifacts["resolved"] = {
@@ -5050,7 +5113,7 @@ def _main(
     )
     _write_last_run(
         original_topic, report, entity_reports=entity_reports,
-        x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
+        x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
         research_options=research_options,
     )
     # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
