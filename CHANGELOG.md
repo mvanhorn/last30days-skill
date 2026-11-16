@@ -9,6 +9,18 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.2.0] - 2026-11-15
+
+### Added
+
+- A scheduled Reddit canary (daily and manual, never on pull requests) checks the keyless web rungs and the Arctic Shift hydrator against live Reddit and tells a challenge or throttle apart from a broken parser. `evaluate_search_quality.py --reddit-coverage` counts on-topic Reddit threads per topic from a fixed topic set, on the keyless floor only, so engine versions can be compared.
+- Hosts with their own web search can hand Reddit thread URLs or ids to the engine with `--reddit-threads <file>` (schema `last30days-reddit-threads/1`, at most 50 threads). The engine reads only each thread's identity, rehydrates it through the logged-in session or Arctic Shift, holds it to the research window and the topic bar, and routes it to the subquery it matches; the research runbook collects the URLs during the pre-research web search.
+
+### Fixed
+
+- Logged-in Reddit search no longer fills a report with unrelated threads that mention the topic in a single comment. A thread whose title and body never name the topic is kept only to fill a thin result.
+
+
 ## [4.1.0] - 2026-11-15
 
 ### Added
