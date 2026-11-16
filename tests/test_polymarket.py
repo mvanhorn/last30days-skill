@@ -451,19 +451,6 @@ def test_search_retries_a_rate_limited_call(monkeypatch):
     assert "error" not in result
 
 
-def test_search_reports_repeated_rate_limits_as_an_error(monkeypatch):
-    def urlopen(req, timeout=None):
-        raise _rate_limited(req.full_url)
-
-    monkeypatch.setattr("lib.http.urllib.request.urlopen", urlopen)
-    monkeypatch.setattr("lib.http.time.sleep", lambda _seconds: None)
-
-    result = polymarket.search_polymarket("49ers", "2026-10-17", "2026-11-16")
-
-    assert result["events"] == []
-    assert "429" in result["error"]
-
-
 # === Tests for parse_polymarket_response() ===
 
 

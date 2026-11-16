@@ -19,7 +19,6 @@ from . import http, log
 GAMMA_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 
-# Events per volume-sorted public-search call (``limit_per_type``).
 SEARCH_LIMIT = {
     "quick": 10,
     "default": 20,
@@ -29,7 +28,6 @@ SEARCH_LIMIT = {
 # two at a time and a rate-limited call is retried with backoff.
 _SEARCH_WORKERS = 2
 _SEARCH_ATTEMPTS = 3
-# Related names searched on their own when the pool does not hold them.
 _RELATED_SEARCH_CAP = 5
 
 # Max events to return after merge + dedup + re-ranking
@@ -303,10 +301,20 @@ class _Term:
         return _domain_word_fallback_allows(self.words, self.informative, text, words)
 
 
+def _topic_sides(topic: str) -> List[str]:
+    """Each side of a "vs" topic, or the topic's core subject alone."""
+    return re.split(r"\s+(?:vs\.?|versus)\s+", _extract_core_subject(topic), flags=re.IGNORECASE)
+
+
+def _names_any(terms: List[_Term], texts: List[str]) -> bool:
+    """Whether any of ``terms`` is found in any non-empty text of ``texts``."""
+    return any(term.found_in(text) for term in terms for text in texts if text)
+
+
 def _entity_terms(topic: str, aliases: Tuple[str, ...] = ()) -> List[str]:
     """The names that stand for the subject: each side of a "vs" topic, then
     each alias, once each."""
-    sides = re.split(r"\s+(?:vs\.?|versus)\s+", _extract_core_subject(topic or ""), flags=re.I)
+    sides = _topic_sides(topic or "")
     terms: List[str] = []
     seen: set = set()
     for term in [*sides, *aliases]:
@@ -365,39 +373,46 @@ class EntityMatcher:
         self.terms = [_Term(term) for term in _entity_terms(topic, self.hints.aliases)]
         self.related = [(entry, _Term(entry.name)) for entry in self.hints.related]
 
-    @staticmethod
-    def _names(terms: List[_Term], texts: List[str]) -> bool:
-        return any(term.found_in(text) for term in terms for text in texts if text)
-
-    def match(self, market: Dict[str, Any], event_title: str = "") -> Optional[EntityMatch]:
+    def match(
+        self, market: Dict[str, Any], event_title: str = "", *, title_text: Optional[str] = None,
+    ) -> Optional[EntityMatch]:
+        """``title_text``, when given, is ``event_title`` already through
+        ``_match_text``, so a caller matching many markets of one event
+        normalizes the title once."""
         own = [_match_text(text) for text in _market_texts(market)]
-        if self._names(self.terms, own):
+        if _names_any(self.terms, own):
             return EntityMatch("market")
-        if self._names(self.terms, [_match_text(event_title)]):
+        if title_text is None:
+            title_text = _match_text(event_title)
+        if _names_any(self.terms, [title_text]):
             return EntityMatch("title")
         for entry, term in self.related:
-            if self._names([term], own):
+            if _names_any([term], own):
                 return EntityMatch("market", entry.name, entry.relation)
         return None
 
     def outcome_kind(
         self, market: Dict[str, Any], match: EntityMatch, event_title: str = "",
+        *, title_text: Optional[str] = None,
     ) -> Optional[str]:
         """How the subject (or the related name) is an outcome of the event:
         "label" when the market's ``groupItemTitle`` names it and, for the
         subject, the event title does not; "outcome" when only a non-Yes/No
         outcome label names the subject; None when the market is about the
         subject without the subject being one of the event's outcomes (a
-        bracket of "OpenAI IPO Closing Market Cap")."""
+        bracket of "OpenAI IPO Closing Market Cap"). ``title_text`` is as for
+        ``match``."""
         label = _match_text(market.get("groupItemTitle"))
         if match.related:
             terms = [term for entry, term in self.related if entry.name == match.related]
-            return "label" if label and self._names(terms, [label]) else None
-        if self._names(self.terms, [_match_text(event_title)]):
+            return "label" if label and _names_any(terms, [label]) else None
+        if title_text is None:
+            title_text = _match_text(event_title)
+        if _names_any(self.terms, [title_text]):
             return None
-        if label and self._names(self.terms, [label]):
+        if label and _names_any(self.terms, [label]):
             return "label"
-        if self._names(self.terms, [_match_text(market.get("question"))]):
+        if _names_any(self.terms, [_match_text(market.get("question"))]):
             return None
         return "outcome" if self.matched_outcome(market, match) is not None else None
 
@@ -412,7 +427,7 @@ class EntityMatcher:
             name = str(outcome)
             if name.strip().casefold() in ("yes", "no"):
                 continue
-            if self._names(terms, [_match_text(name)]):
+            if _names_any(terms, [_match_text(name)]):
                 return name
         return None
 
@@ -575,16 +590,12 @@ def search_polymarket(
     # an outcome of; a game prop naming the player is no award race.
     race_labels = []
     for event in events.values():
-        live = [
-            market for market in event.get("markets") or []
-            if not market.get("closed") and market.get("active", True)
-            and _safe_float(market.get("liquidity")) > 0
-        ]
+        live = _live_markets(event)
         if _is_race(event, live):
             race_labels += [_match_text(market.get("groupItemTitle")) for market in live]
     related_terms = [
         entry.name for entry in hints.related[:_RELATED_SEARCH_CAP]
-        if not EntityMatcher._names([_Term(entry.name)], race_labels)
+        if not _names_any([_Term(entry.name)], race_labels)
     ]
     if related_terms:
         _log(f"Searching related names: {related_terms}")
@@ -1068,7 +1079,7 @@ def names_whole_topic(topic: str, *texts: str) -> bool:
         return [word for word in re.sub(r"[^\w\s]", " ", text).split() if len(word) > 1]
 
     found = {word for text in texts for word in words(text or "")}
-    sides = re.split(r"\s+(?:vs\.?|versus)\s+", _extract_core_subject(topic), flags=re.IGNORECASE)
+    sides = _topic_sides(topic)
     checked = False
     for side in sides:
         side_words = words(side)
@@ -1150,6 +1161,18 @@ def _yes_price(market: Dict[str, Any]) -> Optional[float]:
     return pairs[0][1] if pairs else None
 
 
+def _live_markets(event: Dict[str, Any], include_closed: bool = False) -> List[Dict[str, Any]]:
+    """An event's open, active markets with liquidity (resolved markets have
+    0 or None). ``include_closed`` keeps every market."""
+    live = []
+    for market in event.get("markets") or []:
+        if not include_closed and (market.get("closed") or not market.get("active", True)):
+            continue
+        if _safe_float(market.get("liquidity")) > 0 or include_closed:
+            live.append(market)
+    return live
+
+
 def _days_to_close(market: Dict[str, Any], event: Dict[str, Any], today: str) -> Optional[int]:
     end = str(market.get("endDate") or event.get("endDate") or "")[:10]
     try:
@@ -1190,11 +1213,17 @@ class _EventEntities:
     markets: List[_EntityMarket] = field(default_factory=list)
 
 
+def _is_exclusive(event: Dict[str, Any], markets: List[Dict[str, Any]]) -> bool:
+    """Whether an event's markets are mutually exclusive (``negRisk``): only
+    one of them can resolve Yes."""
+    return bool(event.get("negRisk")) or any(m.get("negRisk") for m in markets)
+
+
 def _is_race(event: Dict[str, Any], live_markets: List[Dict[str, Any]]) -> bool:
     """Whether an event's live markets are a race: mutually exclusive
     (``negRisk``), RACE_MIN_OUTCOMES or more of them, labelled by
     ``groupItemTitle``."""
-    exclusive = bool(event.get("negRisk")) or any(m.get("negRisk") for m in live_markets)
+    exclusive = _is_exclusive(event, live_markets)
     labelled = sum(1 for m in live_markets if str(m.get("groupItemTitle") or "").strip())
     return exclusive and len(live_markets) >= RACE_MIN_OUTCOMES and labelled >= 2
 
@@ -1216,10 +1245,11 @@ def _event_entities(
     price among the live outcomes.
     """
     title = str(event.get("title") or "")
+    title_text = _match_text(title)
     yes_prices = [_yes_price(market) for market in active_markets]
     found = _EventEntities(race=race, live_count=len(active_markets), named_by_market=False)
     for market in active_markets:
-        match = matcher.match(market, title)
+        match = matcher.match(market, title, title_text=title_text)
         if match is None:
             continue
         if match.field == "market" and not match.related:
@@ -1236,7 +1266,7 @@ def _event_entities(
             market=market, match=match, outcome=outcome, price=price,
             volume=_market_volume(market), days=_days_to_close(market, event, today),
         )
-        kind = matcher.outcome_kind(market, match, title) if race else None
+        kind = matcher.outcome_kind(market, match, title, title_text=title_text) if race else None
         entity.race_outcome = kind is not None
         if kind == "label" and price is not None:
             entity.rank = 1 + sum(1 for other in yes_prices if other is not None and other > price)
@@ -1365,33 +1395,11 @@ def parse_polymarket_response(
             if not event.get("active", True):
                 continue
 
-        markets = event.get("markets", [])
-        if not markets:
-            continue
-
-        # Filter to active, open markets with liquidity (excludes resolved markets)
-        active_markets = []
-        for m in markets:
-            if not include_closed:
-                if m.get("closed", False):
-                    continue
-                if not m.get("active", True):
-                    continue
-            # Must have liquidity (resolved markets have 0 or None)
-            try:
-                liq = float(m.get("liquidity", 0) or 0)
-            except (ValueError, TypeError):
-                liq = 0
-            if include_closed or liq > 0:
-                active_markets.append(m)
-
+        active_markets = _live_markets(event, include_closed)
         if not active_markets:
             continue
 
-        # Mutually exclusive sub-markets (one bracket of a range resolves Yes).
-        mutually_exclusive = bool(event.get("negRisk")) or any(
-            m.get("negRisk") for m in active_markets
-        )
+        mutually_exclusive = _is_exclusive(event, active_markets)
         if matcher is not None:
             found = _event_entities(
                 event, active_markets, matcher,
@@ -1477,7 +1485,6 @@ def parse_polymarket_response(
                     continue
                 pairs = _parse_outcome_prices(m)
                 yes_price = next((p for name, p in pairs if name.lower() == "yes"), None)
-                # The subject's own market is listed at any price.
                 if yes_price is not None and (yes_price > 0.005 or id(m) in chosen_ids):
                     synth_outcomes.append((q, yes_price, m))
             sibling_names = [

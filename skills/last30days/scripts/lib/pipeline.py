@@ -2546,9 +2546,6 @@ def run(
 
     polymarket_hints = getattr(plan, "polymarket_hints", None)
     if polymarket_hints:
-        # The host's subject kind, aliases and related names ride the config
-        # dict (the _polymarket_keywords idiom) to the Polymarket stream and
-        # the thin-source retry. Copy first, as for the X envelope above.
         config = dict(config)
         config["_polymarket_hints"] = polymarket_hints
 
