@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterable, Optional
@@ -169,14 +170,18 @@ def web_refs(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     search: Optional[SearchFn] = None,
+    deadline: Optional[float] = None,
+    floor: Optional[WebFloor] = None,
 ) -> WebFloor:
     """Thread refs for ``topic`` from keyless web search. Never raises.
 
     ``subreddits`` are the plan's resolved subreddits, best first; the first
     one is the second query's hint. ``search`` replaces
-    :func:`web_search_keyless.keyless_search` (tests).
+    :func:`web_search_keyless.keyless_search` (tests). No query starts after
+    ``deadline`` (``time.monotonic()``). ``floor`` is filled in place after
+    each query, so a caller that stops waiting keeps the threads found so far.
     """
-    floor = WebFloor()
+    floor = floor if floor is not None else WebFloor()
     topic = " ".join(str(topic or "").split())
     if not topic:
         return floor
@@ -186,6 +191,9 @@ def web_refs(
     by_id: dict[str, ThreadRef] = {}
     skipped_links = 0
     for query in _queries(topic, subreddits):
+        if deadline is not None and time.monotonic() >= deadline:
+            _log("web floor stopped at its deadline; later queries skipped")
+            break
         items, artifact = _ask(topic.lower(), query, search, date_range, freshness)
         if items is None:
             continue
@@ -205,7 +213,7 @@ def web_refs(
             ref.title = _clean_title(str(item.get("title") or ""))
             ref.date = item.get("date") or None
             by_id[ref.post_id] = ref
-    floor.refs = list(by_id.values())
+        floor.refs = list(by_id.values())
     if floor.queries:
         rungs = ", ".join(f"{rung} {state}" for rung, state in floor.rungs.items()) or "no rung"
         _log(

@@ -269,10 +269,17 @@ def _web_floor(
     """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
     reddit_health.seed_web_rungs()
     try:
-        floor = _within(
-            deadline, "web floor", reddit_discover.WebFloor(),
+        # Filled in place, so a floor still running at the deadline hands back
+        # the threads its earlier queries found.
+        partial = reddit_discover.WebFloor()
+        found = _within(
+            deadline, "web floor", partial,
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
+            floor=partial, **_stage_deadline(deadline),
+        )
+        floor = reddit_discover.WebFloor(
+            refs=list(found.refs), queries=list(found.queries), rungs=dict(found.rungs),
         )
         _record_web_rungs(floor)
         if not floor.refs:

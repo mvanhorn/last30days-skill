@@ -816,3 +816,23 @@ class SignalsV3Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _reddit_unscored(item_id, *, engagement_source):
+    return schema.SourceItem(
+        item_id=item_id, source="reddit", title="kanye thread", body="kanye thread",
+        url=f"https://www.reddit.com/r/x/comments/{item_id}/t/", author=None,
+        container="x", published_at="2026-11-10", date_confidence="high",
+        engagement={}, local_relevance=0.2,
+        metadata={"engagement_source": engagement_source},
+    )
+
+
+def test_pending_reddit_score_is_not_absent_engagement():
+    # 0.2 clears the 0.15 floor but not the 1.5x floor for zero-engagement
+    # social items: only the pending thread survives the on-topic count that
+    # decides whether the ScrapeCreators backfill runs.
+    pending = _reddit_unscored("p1", engagement_source="arctic-pending")
+    archived = _reddit_unscored("a1", engagement_source="arctic")
+    kept = signals.prune_low_relevance([pending, archived], minimum=0.15, passing_only=True)
+    assert [item.item_id for item in kept] == ["p1"]

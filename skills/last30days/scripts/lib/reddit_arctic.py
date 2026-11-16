@@ -477,6 +477,9 @@ def fetch_posts_by_ids(
         batch = todo[start:start + IDS_BATCH]
         if end - time.monotonic() <= 0:
             _log(f"post lookup stopped at its deadline; {len(todo) - start} ids left")
+            # Unasked ids are not an archive answer: never report them as ok.
+            if state == "ok":
+                state = "down"
             break
         try:
             data = _archive_get(f"{API}?ids={','.join(batch)}", end)

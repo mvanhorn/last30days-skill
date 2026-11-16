@@ -5971,15 +5971,35 @@ def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
     """Merge free + ScrapeCreators Reddit items, free first, deduped by post id.
 
     Used when the thinness-floor trigger backfills a thin free run with SC, so a
-    thread present in both is never double-listed.
+    thread present in both is never double-listed. A thread both hold keeps the
+    free copy, with SC's live score and comments folded in field by field, so
+    a pending or unknown archive score never hides the live one.
     """
+    from . import reddit_hydrate
+
     merged = list(free)
-    seen = {_reddit_post_key(it) for it in free}
+    by_key = {_reddit_post_key(it): it for it in free}
     for it in sc:
         key = _reddit_post_key(it)
-        if key and key not in seen:
-            seen.add(key)
+        if not key:
+            continue
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = it
             merged.append(it)
+            continue
+        if existing is it:
+            continue
+        incoming = dict(it)
+        engagement = dict(incoming.get("engagement") or {})
+        engagement.setdefault("score", incoming.get("score"))
+        engagement.setdefault("num_comments", incoming.get("num_comments"))
+        incoming["engagement"] = engagement
+        incoming.setdefault("engagement_source", reddit_hydrate.LIVE)
+        if incoming.get("top_comments"):
+            incoming["top_comments"] = reddit_hydrate._stamp_depth(incoming["top_comments"])
+            incoming.setdefault("comments_source", "sc")
+        reddit_hydrate.merge_post(existing, incoming)
     return merged
 
 

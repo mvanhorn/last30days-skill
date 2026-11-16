@@ -187,3 +187,26 @@ def test_a_rung_taken_out_keeps_its_cause_in_the_floor_rungs():
         floor = reddit_discover.web_refs("Kanye West", subreddits=["Kanye"])
     assert len(floor.queries) == 2
     assert floor.rungs["brave"] == "blocked"
+
+
+class TestWebFloorDeadline:
+    def test_threads_from_the_first_query_survive_a_spent_deadline(self):
+        import time
+
+        hits = [_hit("https://www.reddit.com/r/Kanye/comments/abc123/x/", "Kanye one")]
+        stub, calls = _search_stub({"site:reddit.com Kanye West": hits})
+        deadline = time.monotonic() + 0.05
+
+        def slow_first(query, date_range, config, count=5, **kwargs):
+            out = stub(query, date_range, config, count, **kwargs)
+            time.sleep(0.1)  # the deadline passes during the first query
+            return out
+
+        partial = reddit_discover.WebFloor()
+        floor = reddit_discover.web_refs(
+            "Kanye West", subreddits=["hiphopheads"], search=slow_first,
+            deadline=deadline, floor=partial,
+        )
+        assert floor is partial
+        assert len(calls) == 1
+        assert [r.post_id for r in partial.refs] == ["abc123"]

@@ -335,3 +335,25 @@ class TestEnvConstantParity:
         items, pub, sc = self._run(cfg, [_item("a")], [_item("z")])
         sc.assert_called_once()
         assert _ids(items) == ["a", "z"]
+
+
+class TestScBackfillFoldsIntoFreeCopies:
+    def test_live_sc_score_replaces_a_pending_free_score(self):
+        pending = {
+            "url": "https://www.reddit.com/r/x/comments/b/t/", "title": "kanye b",
+            "score": None, "engagement": {"score": None, "num_comments": 0},
+            "engagement_source": "arctic-pending", "metadata": {"post_id": "b"},
+        }
+        sc_copy = {
+            "url": "https://www.reddit.com/r/x/comments/b/t/", "title": "kanye b",
+            "engagement": {"score": 250, "num_comments": 31},
+            "top_comments": [{"author": "u1", "score": 90, "excerpt": "kanye said it first"}],
+        }
+        out = pipeline._merge_reddit_items([pending], [sc_copy, _item("c")])
+        assert _ids(out) == ["b", "c"]
+        merged = out[0]
+        assert merged["engagement"]["score"] == 250
+        assert merged["engagement_source"] == "live"
+        assert merged["engagement"]["num_comments"] == 31
+        assert [c["author"] for c in merged["top_comments"]] == ["u1"]
+        assert merged["top_comments"][0]["depth"] == 0
