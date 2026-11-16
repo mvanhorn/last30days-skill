@@ -62,6 +62,8 @@ The Judge Agent must:
 
 4. **Show ONLY % odds. NEVER mention dollar volumes, liquidity, or betting amounts.**
 
+5. **`## Polymarket Markets` lists ranked candidates.** Lead with the most interesting open question among the top entries, not automatically the first. Always mention a team's title odds when shown, even when low, and a related person leading a race.
+
 ### X Reply Cluster Weighting
 
 When you see a cluster of replies to a recommendation-request tweet (someone asking "what's the best X?" and getting multiple independent responses), call this out prominently. This is the strongest form of community endorsement - real people independently making the same recommendation without coordination. Example: "In a thread where @ecom_cork asked for Loom alternatives, every reply said Tella."

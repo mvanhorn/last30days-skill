@@ -1,7 +1,7 @@
 """Polymarket prediction market search via Gamma API (free, no auth required).
 
 Uses gamma-api.polymarket.com for event/market discovery.
-No API key needed - public read-only API with generous rate limits (15K req/10s).
+No API key needed - public read-only API.
 """
 
 import datetime
@@ -9,22 +9,27 @@ import json
 import math
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional
-from urllib.parse import quote, quote_plus, urlencode
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote, urlencode
 
 from . import http, log
-from .relevance import LOW_SIGNAL_QUERY_TOKENS, token_overlap_relevance
 
 GAMMA_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 
-# Pages to fetch per query (API returns 5 events per page, limit param is a no-op)
-DEPTH_CONFIG = {
-    "quick": 1,
-    "default": 3,
-    "deep": 4,
+SEARCH_LIMIT = {
+    "quick": 10,
+    "default": 20,
+    "deep": 50,
 }
+# Gamma answers bursts with 429s that carry no Retry-After, so searches run
+# two at a time and a rate-limited call is retried with backoff.
+_SEARCH_WORKERS = 2
+_SEARCH_ATTEMPTS = 3
+_RELATED_SEARCH_CAP = 5
 
 # Max events to return after merge + dedup + re-ranking
 RESULT_CAP = {
@@ -32,6 +37,26 @@ RESULT_CAP = {
     "default": 15,
     "deep": 25,
 }
+
+# The selection rule. A market is live ("in band") under PRICE_CEILING with
+# MIN_DAYS_TO_CLOSE or more days left and at or above its floor:
+# RACE_PRICE_FLOOR when the subject (or a related name) is itself an outcome
+# of a mutually exclusive race of RACE_MIN_OUTCOMES or more live outcomes,
+# PRICE_FLOOR for anything else, including the brackets of a race the event
+# title names the subject in ("OpenAI IPO Closing Market Cap"). An
+# event scores ln(1 + money traded on its live entity markets), plus
+# CONTENDER_BONUS when one of them is a top-CONTENDER_TOP outcome of such a
+# race with at least CONTENDER_MIN_VOLUME traded on its own market. An event
+# of more than GAME_SHEET_MARKETS markets contributes one market.
+PRICE_CEILING = 0.97
+PRICE_FLOOR = 0.03
+RACE_PRICE_FLOOR = 0.005
+RACE_MIN_OUTCOMES = 4
+MIN_DAYS_TO_CLOSE = 7
+CONTENDER_TOP = 3
+CONTENDER_MIN_VOLUME = 1000.0
+CONTENDER_BONUS = 1.0
+GAME_SHEET_MARKETS = 30
 
 
 def _log(msg: str):
@@ -56,42 +81,6 @@ def _extract_core_subject(topic: str) -> str:
         topic = re.sub(pattern, "", topic, flags=re.IGNORECASE)
     return topic.strip()
 
-
-def _expand_queries(topic: str) -> List[str]:
-    """Generate search queries to cast a wider net.
-
-    Strategy:
-    - Always include the core subject
-    - Add ALL individual words as standalone searches (not just first)
-    - Include the full topic if different from core
-    - Cap at 6 queries, dedupe
-    """
-    core = _extract_core_subject(topic)
-    queries = [core]
-
-    # Add ALL individual words as separate queries
-    words = core.split()
-    if len(words) >= 2:
-        for word in words:
-            if len(word) > 1 and word.lower() not in LOW_SIGNAL_QUERY_TOKENS and word.lower() not in _NOISE_WORDS:
-                queries.append(word)
-
-    # Add the full topic if different from core
-    if topic.lower().strip() != core.lower():
-        queries.append(topic.strip())
-
-    # Dedupe while preserving order, cap at 6
-    seen = set()
-    unique = []
-    for q in queries:
-        q_lower = q.lower().strip()
-        if q_lower and q_lower not in seen:
-            seen.add(q_lower)
-            unique.append(q.strip())
-    return unique[:6]
-
-
-_GENERIC_TAGS = frozenset({"sports", "politics", "crypto", "science", "culture", "pop culture"})
 
 # Words that are too generic to serve as the sole topic-match signal.
 # If ALL core words from the topic are in this set, we skip filtering (can't meaningfully filter).
@@ -225,118 +214,280 @@ def _acronym_credit(core_words: list[str], title_words: set[str]) -> int:
     return credit
 
 
-def _passes_topic_filter(topic: str, event_title: str) -> bool:
-    """Check if event title contains enough informative words from the topic.
+@dataclass(frozen=True)
+class RelatedName:
+    """A person or thing tied to the subject (a team's player, a company's CEO)."""
 
-    Prevents noise like "Meek Mill" matching "Mill.com food recycler" by requiring
-    proportional word overlap. For topics with 3+ informative words, at least 2 must
-    match. For shorter topics, 1 match suffices (existing behavior).
+    name: str
+    relation: str = ""
 
-    Returns True if the event should be kept, False if it should be filtered out.
+
+@dataclass(frozen=True)
+class PolymarketHints:
+    """What the host planner knows about the subject and Gamma cannot say.
+
+    ``kind`` is the subject's kind ("team", "company", "person", "product",
+    "other"); only "team" changes selection. ``aliases`` name the subject
+    itself ("F1" for "Formula 1") and are searched and matched like the topic.
+    ``related`` names count only when they lead a race. Every field is
+    optional: with none, the topic text alone drives search and matching.
     """
-    core = _extract_core_subject(topic).lower()
-    core_words = [w for w in re.sub(r"[^\w\s]", " ", core).split() if len(w) > 1]
 
-    if not core_words:
-        return True  # No words to check against
+    kind: Optional[str] = None
+    aliases: Tuple[str, ...] = ()
+    related: Tuple[RelatedName, ...] = ()
 
-    # Split into informative vs generic (domain plurals count as domain, not hard)
-    informative = _informative_words(core_words)
+    @classmethod
+    def coerce(cls, value: Any) -> "PolymarketHints":
+        """Hints from None, a ``PolymarketHints``, a plan dict, or an object
+        with ``kind``/``aliases``/``related`` attributes."""
+        if isinstance(value, cls):
+            return value
+        if value is None:
+            return cls()
 
-    # If ALL words are generic, we can't meaningfully filter — keep everything
-    if not informative:
+        def get(key: str) -> Any:
+            if isinstance(value, dict):
+                return value.get(key)
+            return getattr(value, key, None)
+
+        kind = str(get("kind") or "").strip().casefold() or None
+        aliases = tuple(
+            alias.strip() for alias in get("aliases") or []
+            if isinstance(alias, str) and alias.strip()
+        )
+        related = []
+        for entry in get("related") or []:
+            if isinstance(entry, dict):
+                name, relation = entry.get("name"), entry.get("relation")
+            else:
+                name, relation = getattr(entry, "name", None), getattr(entry, "relation", None)
+            name = str(name or "").strip()
+            if name:
+                related.append(RelatedName(name, str(relation or "").strip()))
+        return cls(kind, aliases, tuple(related))
+
+
+def _match_text(text: Any) -> str:
+    """Text as the entity matcher compares it: casefolded, possessive "'s"
+    dropped, punctuation turned to spaces."""
+    text = str(text or "").casefold().replace("’", "'")
+    text = re.sub(r"'s\b", "", text)
+    return " ".join(re.sub(r"[^\w\s]", " ", text).split())
+
+
+def _has_word(word: str, words: set) -> bool:
+    """Whether ``words`` holds ``word`` or its simple plural or singular form
+    ("rate" and "rates", "tax" and "taxes")."""
+    if word in words or f"{word}s" in words or f"{word}es" in words:
         return True
-
-    # Normalize the title for matching
-    title_lower = " ".join(re.sub(r"[^\w\s]", " ", event_title.lower()).split())
-    title_words = set(title_lower.split())
-
-    # Count how many informative words appear in the title
-    match_count = 0
-    for word in informative:
-        # Check as whole word in the title word set
-        if word in title_words:
-            match_count += 1
-            continue
-        # Also check as substring for compound words (e.g., "kanye" in "kanyewest")
-        if len(word) >= 4 and word in title_lower:
-            match_count += 1
-
-    # A title that abbreviates what the topic spells out ("AGI" for
-    # "artificial general intelligence") scores zero above; credit it here.
-    if match_count < 2:
-        match_count = max(match_count,
-                          _acronym_credit(core_words, title_words))
-
-    # For topics with 3+ informative words, require at least 2 matches.
-    # This prevents single-word false positives like "mill" in "Meek Mill"
-    # when the topic is "Mill.com food recycler" (3 informative words).
-    min_matches = 2 if len(informative) >= 3 else 1
-
-    if match_count >= min_matches:
+    if word.endswith("es") and word[:-2] in words:
         return True
-
-    # Domain-word fallback for soft domain sweeps only (see helper).
-    return _domain_word_fallback_allows(core_words, informative, title_lower, title_words)
+    return word.endswith("s") and word[:-1] in words
 
 
-def _passes_any_informative_word(topic: str, event_title: str) -> bool:
-    """Looser variant of _passes_topic_filter that keeps an item if ANY
-    informative word from the topic appears in the title.
+class _Term:
+    """One name the matcher looks for, as a whole phrase."""
 
-    Designed for post-merge validation of comparison topics (e.g., "OpenClaw vs
-    Hermes vs Paperclip"), where a market mentioning just one of the entities
-    is still on-topic. The stricter _passes_topic_filter (min_matches=2 for
-    3+ informative words) is correct for single-entity topics like "Mill.com
-    food recycler" but drops legitimate single-entity comparison results.
+    def __init__(self, name: str):
+        self.phrase = re.sub(r"^the\s+", "", _match_text(name))
+        self.pattern = (
+            re.compile(rf"(?<!\w){re.escape(self.phrase)}(?!\w)") if self.phrase else None
+        )
+        self.words = [word for word in self.phrase.split() if len(word) > 1]
+        self.informative = _informative_words(self.words)
+
+    def found_in(self, text: str) -> bool:
+        """Whether ``text`` (already through ``_match_text``) names this term:
+        the whole phrase at word boundaries, an initialism of a spelled-out
+        phrase ("AGI"), every informative word of a descriptive topic in any
+        order ("Nvidia earnings"), or, for a soft domain sweep ("AI frontier
+        developments"), its domain word."""
+        if self.pattern is None:
+            return False
+        if self.pattern.search(text):
+            return True
+        words = set(text.split())
+        if _acronym_credit(self.words, words):
+            return True
+        if len(self.informative) >= 2 and all(_has_word(word, words) for word in self.informative):
+            return True
+        return _domain_word_fallback_allows(self.words, self.informative, text, words)
+
+
+def _topic_sides(topic: str) -> List[str]:
+    """Each side of a "vs" topic, or the topic's core subject alone."""
+    return re.split(r"\s+(?:vs\.?|versus)\s+", _extract_core_subject(topic), flags=re.IGNORECASE)
+
+
+def _names_any(terms: List[_Term], texts: List[str]) -> bool:
+    """Whether any of ``terms`` is found in any non-empty text of ``texts``."""
+    return any(term.found_in(text) for term in terms for text in texts if text)
+
+
+def _entity_terms(topic: str, aliases: Tuple[str, ...] = ()) -> List[str]:
+    """The names that stand for the subject: each side of a "vs" topic, then
+    each alias, once each."""
+    sides = _topic_sides(topic or "")
+    terms: List[str] = []
+    seen: set = set()
+    for term in [*sides, *aliases]:
+        term = term.strip()
+        key = _Term(term).phrase
+        if key and key not in seen:
+            seen.add(key)
+            terms.append(term)
+    return terms
+
+
+def _json_list(value: Any) -> List[Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _market_texts(market: Dict[str, Any]) -> List[str]:
+    """A market's own text: its question, its ``groupItemTitle`` and its
+    outcome labels other than Yes and No."""
+    labels = [
+        str(outcome) for outcome in _json_list(market.get("outcomes"))
+        if str(outcome).strip().casefold() not in ("yes", "no")
+    ]
+    return [str(market.get("question") or ""), str(market.get("groupItemTitle") or ""), *labels]
+
+
+@dataclass(frozen=True)
+class EntityMatch:
+    """How a market names the subject.
+
+    ``field`` is "market" when the market's own question, label or outcome
+    names it and "title" when only its event title does. ``related`` is the
+    related name that matched, None when the subject (or an alias) did.
     """
-    core = _extract_core_subject(topic).lower()
-    core_words = [w for w in re.sub(r"[^\w\s]", " ", core).split() if len(w) > 1]
-    if not core_words:
-        return True
-    informative = _informative_words(core_words)
-    if not informative:
-        return True
 
-    title_lower = " ".join(re.sub(r"[^\w\s]", " ", event_title.lower()).split())
-    title_words = set(title_lower.split())
-
-    for word in informative:
-        if word in title_words:
-            return True
-        if len(word) >= 4 and word in title_lower:
-            return True
-
-    return _domain_word_fallback_allows(core_words, informative, title_lower, title_words)
+    field: str
+    related: Optional[str] = None
+    relation: str = ""
 
 
-def filter_items_against_topic(topic: str, items: List[Any]) -> List[Any]:
-    """Drop items whose title shares no informative word with the original topic.
+class EntityMatcher:
+    """Decides whether a market names the research subject.
 
-    Called post-merge from pipeline.py so per-entity subquery results for
-    comparison topics get re-validated against the ORIGINAL full topic before
-    landing in the footer. Prevents noise like WTI crude oil or Elon tweet
-    markets from surviving a loose "Hermes" single-entity subquery match.
+    The topic and each alias match as whole phrases, ignoring a leading "the"
+    and a possessive "'s", in a market's question, ``groupItemTitle``,
+    non-Yes/No outcome labels, or its event title. A related name matches
+    only the market's own text, and only when the subject does not.
+    """
 
-    Uses the looser _passes_any_informative_word rule (ANY entity name match
-    is sufficient) so a market mentioning just one of several compared entities
-    still counts as on-topic.
+    def __init__(self, topic: str, hints: Any = None):
+        self.hints = PolymarketHints.coerce(hints)
+        self.terms = [_Term(term) for term in _entity_terms(topic, self.hints.aliases)]
+        self.related = [(entry, _Term(entry.name)) for entry in self.hints.related]
 
-    Accepts a list of either raw dicts (with 'title') or SourceItem-like objects
-    (with .title attribute). Returns the filtered list in the same order.
+    def match(
+        self, market: Dict[str, Any], event_title: str = "", *, title_text: Optional[str] = None,
+    ) -> Optional[EntityMatch]:
+        """``title_text``, when given, is ``event_title`` already through
+        ``_match_text``, so a caller matching many markets of one event
+        normalizes the title once."""
+        own = [_match_text(text) for text in _market_texts(market)]
+        if _names_any(self.terms, own):
+            return EntityMatch("market")
+        if title_text is None:
+            title_text = _match_text(event_title)
+        if _names_any(self.terms, [title_text]):
+            return EntityMatch("title")
+        for entry, term in self.related:
+            if _names_any([term], own):
+                return EntityMatch("market", entry.name, entry.relation)
+        return None
+
+    def outcome_kind(
+        self, market: Dict[str, Any], match: EntityMatch, event_title: str = "",
+        *, title_text: Optional[str] = None,
+    ) -> Optional[str]:
+        """How the subject (or the related name) is an outcome of the event:
+        "label" when the market's ``groupItemTitle`` names it and, for the
+        subject, the event title does not; "outcome" when only a non-Yes/No
+        outcome label names the subject; None when the market is about the
+        subject without the subject being one of the event's outcomes (a
+        bracket of "OpenAI IPO Closing Market Cap"). ``title_text`` is as for
+        ``match``."""
+        label = _match_text(market.get("groupItemTitle"))
+        if match.related:
+            terms = [term for entry, term in self.related if entry.name == match.related]
+            return "label" if label and _names_any(terms, [label]) else None
+        if title_text is None:
+            title_text = _match_text(event_title)
+        if _names_any(self.terms, [title_text]):
+            return None
+        if label and _names_any(self.terms, [label]):
+            return "label"
+        if _names_any(self.terms, [_match_text(market.get("question"))]):
+            return None
+        return "outcome" if self.matched_outcome(market, match) is not None else None
+
+    def matched_outcome(self, market: Dict[str, Any], match: EntityMatch) -> Optional[str]:
+        """The non-Yes/No outcome label that names the subject (or the related
+        name that matched), for a market whose outcomes are names."""
+        terms = (
+            [term for entry, term in self.related if entry.name == match.related]
+            if match.related else self.terms
+        )
+        for outcome in _json_list(market.get("outcomes")):
+            name = str(outcome)
+            if name.strip().casefold() in ("yes", "no"):
+                continue
+            if _names_any(terms, [_match_text(name)]):
+                return name
+        return None
+
+
+def _item_matches(matcher: "EntityMatcher", item: Any) -> bool:
+    """Whether a parsed or normalized item names what ``matcher`` looks for.
+
+    Reads the event title, the matched market's question and label, the
+    headline market's question and label, and the item's own question. A raw
+    parse dict carries these at the top level, a ``SourceItem`` in metadata.
+    """
+    if isinstance(item, dict):
+        fields = {**(item.get("metadata") or {}), **item}
+    else:
+        fields = {**(getattr(item, "metadata", None) or {}), "title": getattr(item, "title", "")}
+    matched = fields.get("matched_market") if isinstance(fields.get("matched_market"), dict) else {}
+    headline = fields.get("headline") if isinstance(fields.get("headline"), dict) else {}
+    market = {
+        "question": str(matched.get("question") or fields.get("question") or ""),
+        "groupItemTitle": str(matched.get("label") or ""),
+        "outcomes": [
+            str(text) for text in (
+                headline.get("question"), headline.get("label"), fields.get("question"),
+            ) if text
+        ],
+    }
+    return matcher.match(market, str(fields.get("title") or "")) is not None
+
+
+def filter_items_against_topic(topic: str, items: List[Any], hints: Any = None) -> List[Any]:
+    """Keep the items whose market names the research topic, by ``EntityMatcher``.
+
+    The Polymarket topic bar, called post-merge from pipeline.py on the stable
+    research topic and the run's hints. The event title alone is not enough:
+    "Pro Football: 2027 Champion" names the 49ers only in its matched market,
+    and a related player's award market only through a host-supplied name.
+    Each side of a "vs" topic counts, so a market naming one compared entity
+    stays.
+
+    Accepts raw parse dicts or SourceItem-like objects and returns the kept
+    items in the same order.
     """
     if not topic:
         return items
-
-    filtered = []
-    for item in items:
-        title = getattr(item, "title", None)
-        if title is None and isinstance(item, dict):
-            title = item.get("title", "")
-        title = title or ""
-
-        if _passes_any_informative_word(topic, title):
-            filtered.append(item)
+    matcher = EntityMatcher(topic, hints)
+    filtered = [item for item in items if _item_matches(matcher, item)]
 
     dropped = len(items) - len(filtered)
     if dropped:
@@ -346,27 +497,19 @@ def filter_items_against_topic(topic: str, items: List[Any]) -> List[Any]:
 
 
 def filter_items_against_keywords(items: List[Any], keywords: List[str]) -> List[Any]:
-    """Keep only items whose title contains at least one keyword (case-insensitive).
+    """Keep only items whose market names at least one keyword, by ``EntityMatcher``.
 
     Intended for disambiguating ambiguous single-token topics like 'Warriors'
     via --polymarket-keywords (e.g., 'nba,gsw,golden-state') to filter out
     Glasgow Warriors rugby, Honor of Kings Rogue Warriors markets that share
-    the 'Warriors' token but are not the target entity.
+    the 'Warriors' token but are not the target entity. Each keyword matches
+    as a whole phrase, any case, in the same fields as the topic filter.
     """
-    if not keywords:
-        return items
-    normalized_keywords = [kw.strip().lower() for kw in keywords if kw and kw.strip()]
+    normalized_keywords = [kw.strip() for kw in keywords or [] if kw and kw.strip()]
     if not normalized_keywords:
         return items
-
-    filtered = []
-    for item in items:
-        title = getattr(item, "title", None)
-        if title is None and isinstance(item, dict):
-            title = item.get("title", "")
-        title = (title or "").lower()
-        if any(kw in title for kw in normalized_keywords):
-            filtered.append(item)
+    matcher = EntityMatcher("", PolymarketHints(aliases=tuple(normalized_keywords)))
+    filtered = [item for item in items if _item_matches(matcher, item)]
 
     dropped = len(items) - len(filtered)
     if dropped:
@@ -378,105 +521,53 @@ def filter_items_against_keywords(items: List[Any], keywords: List[str]) -> List
     return filtered
 
 
-def _extract_domain_queries(topic: str, events: List[Dict]) -> List[str]:
-    """Extract domain-indicator search terms from first-pass event tags.
-
-    Uses structured tag metadata from Gamma API events to discover broader
-    domain categories (e.g., 'NCAA CBB' from a Big 12 basketball event).
-    Falls back to frequent title bigrams if no useful tags exist.
-    """
-    query_words = set(_extract_core_subject(topic).lower().split())
-
-    # Collect tag labels from all first-pass events, count occurrences
-    tag_counts: Dict[str, int] = {}
-    for event in events:
-        tags = event.get("tags") or []
-        for tag in tags:
-            label = tag.get("label", "") if isinstance(tag, dict) else str(tag)
-            if not label:
-                continue
-            label_lower = label.lower()
-            # Skip generic category tags and tags matching existing queries
-            if label_lower in _GENERIC_TAGS:
-                continue
-            if label_lower in query_words:
-                continue
-            tag_counts[label] = tag_counts.get(label, 0) + 1
-
-    # Sort by frequency, take top 2 that appear in 2+ events
-    domain_queries = [
-        label for label, count in sorted(tag_counts.items(), key=lambda x: -x[1])
-        if count >= 2
-    ][:2]
-
-    return domain_queries
-
-
-def _infer_query_intent(topic: str) -> str:
-    """Narrower local classifier for Polymarket search tuning only.
-
-    Deliberately does NOT delegate to ``query.infer_query_intent``:
-    Polymarket only needs the prediction/non-prediction split, and the
-    broader classifier would route queries to ``how_to``, ``opinion``,
-    ``product``, etc. without any matching expansion branch downstream.
-    Keep this narrow until polymarket grows additional intents.
-    """
-    text = topic.lower().strip()
-    if re.search(r"\b(predict|prediction|odds|forecast|chance|probability|will .* win)\b", text):
-        return "prediction"
-    return "breaking_news"
-
-
-def _search_single_query(query: str, page: int = 1) -> Dict[str, Any]:
-    """Run a single search query against Gamma API."""
+def _search_term(term: str, limit: int, deadline: Optional[float] = None) -> Dict[str, Any]:
+    """One volume-sorted public-search for one term, retries included, ending
+    by ``deadline`` (a ``time.monotonic()`` value) when one is given."""
     params = {
-        "q": query,
-        "page": str(page),
+        "q": term,
+        "sort": "volume",
         "events_status": "active",
         "keep_closed_markets": "0",
+        "limit_per_type": str(limit),
     }
     url = f"{GAMMA_SEARCH_URL}?{urlencode(params)}"
-
     try:
-        response = http.request("GET", url, timeout=15, retries=2)
-        return response
-    except http.HTTPError as e:
-        _log(f"Search failed for '{query}' page {page}: {e}")
-        return {"events": [], "error": str(e)}
+        return http.request(
+            "GET", url, timeout=15,
+            retries=_SEARCH_ATTEMPTS, max_429_retries=_SEARCH_ATTEMPTS,
+            deadline_monotonic=deadline,
+        )
     except Exception as e:
-        _log(f"Search failed for '{query}' page {page}: {e}")
+        _log(f"Search failed for '{term}': {e}")
         return {"events": [], "error": str(e)}
 
 
-def _run_queries_parallel(
-    queries: List[str], pages: int, all_events: Dict, errors: List, start_idx: int = 0,
+def _run_searches(
+    terms: List[str], limit: int, events: Dict[str, Dict[str, Any]], errors: List[str],
+    deadline: Optional[float] = None,
 ) -> None:
-    """Run (query, page) combinations in parallel, merging into all_events."""
-    with ThreadPoolExecutor(max_workers=min(8, len(queries) * pages)) as executor:
-        futures = {}
-        for i, q in enumerate(queries, start=start_idx):
-            for p in range(1, pages + 1):
-                future = http.submit_with_context(executor, _search_single_query, q, p)
-                futures[future] = i
-
-        for future in as_completed(futures):
-            query_idx = futures[future]
+    """Search each term, adding open events to ``events`` by id. An event
+    found by an earlier term keeps that term's copy."""
+    if not terms:
+        return
+    with ThreadPoolExecutor(max_workers=min(_SEARCH_WORKERS, len(terms))) as executor:
+        futures = [
+            http.submit_with_context(executor, _search_term, term, limit, deadline) for term in terms
+        ]
+        for future in futures:
             try:
-                response = future.result(timeout=15)
-                if response.get("error"):
-                    errors.append(response["error"])
-
-                events = response.get("events", [])
-                for event in events:
-                    event_id = event.get("id", "")
-                    if not event_id:
-                        continue
-                    if event_id not in all_events:
-                        all_events[event_id] = (event, query_idx)
-                    elif query_idx < all_events[event_id][1]:
-                        all_events[event_id] = (event, query_idx)
+                response = future.result()
             except Exception as e:
                 errors.append(str(e))
+                continue
+            if response.get("error"):
+                errors.append(str(response["error"]))
+            for event in response.get("events") or []:
+                event_id = str(event.get("id") or "")
+                # events_status=active can still return a closed event.
+                if event_id and not event.get("closed") and event_id not in events:
+                    events[event_id] = event
 
 
 def search_polymarket(
@@ -484,50 +575,67 @@ def search_polymarket(
     from_date: str,
     to_date: str,
     depth: str = "default",
+    hints: Any = None,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Search Polymarket via Gamma API with two-pass query expansion.
+    """Search Polymarket for the subject's events, biggest money first.
 
-    Pass 1: Run expanded queries in parallel, merge and dedupe by event ID.
-    Pass 2: Extract domain-indicator terms from first-pass titles, search those.
+    One volume-sorted public-search per subject name (the topic, each side of
+    a "vs" topic, each host alias). Then each related name the merged events
+    not already an outcome of a race in the merged events is searched on its
+    own.
 
     Args:
         topic: Search topic
-        from_date: Start date (YYYY-MM-DD) - used for activity filtering
-        to_date: End date (YYYY-MM-DD)
+        from_date: Start date (YYYY-MM-DD); Gamma searches open events, so unused
+        to_date: End date (YYYY-MM-DD); unused for the same reason
         depth: 'quick', 'default', or 'deep'
+        hints: Optional ``PolymarketHints`` (or a plan dict of the same shape)
+        deadline: Optional ``time.monotonic()`` value every search, retries
+            included, must finish by; the related-name searches are skipped
+            once it has passed.
 
     Returns:
-        Dict with 'events' list and optional 'error'.
+        Dict with 'events' list, plus 'error' when any search failed and
+        'partial' when some searches failed but others returned events.
     """
-    pages = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    hints = PolymarketHints.coerce(hints)
+    limit = SEARCH_LIMIT.get(depth, SEARCH_LIMIT["default"])
     cap = RESULT_CAP.get(depth, RESULT_CAP["default"])
-    queries = _expand_queries(topic)
+    terms = _entity_terms(topic, hints.aliases)
 
-    _log(f"Searching for '{topic}' with queries: {queries} (pages={pages})")
+    _log(f"Searching for '{topic}' with terms: {terms} (limit={limit})")
 
-    # Pass 1: run expanded queries in parallel
-    all_events: Dict[str, tuple] = {}
+    events: Dict[str, Dict[str, Any]] = {}
     errors: List[str] = []
-    _run_queries_parallel(queries, pages, all_events, errors)
+    _run_searches(terms, limit, events, errors, deadline)
 
-    # Pass 2: extract domain-indicator terms from first-pass titles and search
-    first_pass_events = [ev for ev, _ in all_events.values()]
-    domain_queries = _extract_domain_queries(topic, first_pass_events)
-    # Filter out queries we already ran
-    seen_queries = {q.lower() for q in queries}
-    domain_queries = [dq for dq in domain_queries if dq.lower() not in seen_queries]
+    # A related name is searched unless the pool already holds a race it is
+    # an outcome of; a game prop naming the player is no award race.
+    race_labels = []
+    for event in events.values():
+        live = _live_markets(event)
+        if _is_race(event, live):
+            race_labels += [_match_text(market.get("groupItemTitle")) for market in live]
+    related_terms = [
+        entry.name for entry in hints.related[:_RELATED_SEARCH_CAP]
+        if not _names_any([_Term(entry.name)], race_labels)
+    ]
+    if related_terms and deadline is not None and time.monotonic() >= deadline:
+        errors.append(f"skipped related-name searches {related_terms}: deadline passed")
+        related_terms = []
+    if related_terms:
+        _log(f"Searching related names: {related_terms}")
+        _run_searches(related_terms, limit, events, errors, deadline)
 
-    if domain_queries:
-        _log(f"Domain expansion queries: {domain_queries}")
-        _run_queries_parallel(domain_queries, 1, all_events, errors, start_idx=len(queries))
-
-    merged_events = [ev for ev, _ in sorted(all_events.values(), key=lambda x: x[1])]
-    total_queries = len(queries) + len(domain_queries)
-    _log(f"Found {len(merged_events)} unique events across {total_queries} queries")
+    merged_events = list(events.values())
+    _log(f"Found {len(merged_events)} unique events across {len(terms) + len(related_terms)} searches")
 
     result = {"events": merged_events, "_cap": cap}
-    if errors and not merged_events:
+    if errors:
         result["error"] = "; ".join(errors[:2])
+        if merged_events:
+            result["partial"] = True
     return result
 
 
@@ -729,10 +837,11 @@ def _own_outcome_labels(
     ``_shorten_question`` names a sub-market by its question's subject, which
     tells teams apart ("Will Arizona win ...") but not the brackets, cities
     or prices of one subject: every "Will Waymo operate in N cities ..."
-    market came out as "Waymo". A subject that repeats within the event, or
-    is a bare article, is replaced by the label Polymarket gives that
-    sub-market (``groupItemTitle``: "12-15", "Denver, CO"), or by the whole
-    question when it has none or the label repeats too.
+    market came out as "Waymo". A subject name is replaced by the label
+    Polymarket gives that sub-market (``groupItemTitle``: "San Francisco
+    49ers", "12-15", "Denver, CO") when that label is its own. A subject that
+    repeats within the event, or is a bare article, is replaced by that label
+    even so, or by the whole question when it has none or the label repeats.
 
     ``sibling_names`` are the names of every sub-market of the event, priced
     or not, so a subject still counts as repeated when the book check leaves
@@ -754,9 +863,17 @@ def _own_outcome_labels(
         is_subject and (repeats.get(name.casefold(), 0) > 1 or name.casefold() in _ARTICLES)
         for name, is_subject in zip(names, subjects)
     ]
+    group_titles = [
+        " ".join(str(market.get("groupItemTitle") or "").split()) for market in outcome_markets
+    ]
+    title_counts: Dict[str, int] = {}
+    for title in group_titles:
+        title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
     labels = [
-        " ".join(str(market.get("groupItemTitle") or "").split()) if change else name
-        for name, change, market in zip(names, relabel, outcome_markets)
+        title
+        if change or (is_subject and title and title_counts[title.casefold()] == 1)
+        else name
+        for name, change, is_subject, title in zip(names, relabel, subjects, group_titles)
     ]
     taken: Dict[str, int] = {}
     for label in labels:
@@ -858,6 +975,7 @@ def _odds_summary(
     outcome_prices: List[tuple],
     outcome_questions: List[Optional[str]],
     outcome_markets: List[Dict[str, Any]],
+    today: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """What a one-line odds summary of the event is built from.
 
@@ -883,7 +1001,7 @@ def _odds_summary(
     if outcome_questions[0] is not None:
         prices = [price for _name, price in outcome_prices]
         ends = _ladder_ends(outcome_questions, outcome_markets)
-        start = _nearest_deadline(outcome_questions, outcome_markets, prices)
+        start = _nearest_deadline(outcome_questions, outcome_markets, prices, today)
         if ends is not None and start is not None:
             rungs = sorted(
                 (index for index in range(len(ends)) if ends[index] >= ends[start]),
@@ -924,6 +1042,7 @@ def _nearest_deadline(
     outcome_questions: List[Optional[str]],
     outcome_markets: List[Dict[str, Any]],
     prices: List[float],
+    today: Optional[str] = None,
 ) -> Optional[int]:
     """Index of the nearest deadline that has not passed, for a deadline ladder.
 
@@ -939,7 +1058,7 @@ def _nearest_deadline(
     ends = _ladder_ends(outcome_questions, outcome_markets)
     if ends is None:
         return None
-    today = _today()
+    today = today or _today()
     open_ends = [index for index, end in enumerate(ends) if end >= today]
     live = [index for index in open_ends if prices[index] >= _LIVE_RUNG_PRICE]
     return min(live or open_ends or range(len(ends)), key=lambda index: ends[index])
@@ -989,7 +1108,7 @@ def names_whole_topic(topic: str, *texts: str) -> bool:
         return [word for word in re.sub(r"[^\w\s]", " ", text).split() if len(word) > 1]
 
     found = {word for text in texts for word in words(text or "")}
-    sides = re.split(r"\s+(?:vs\.?|versus)\s+", _extract_core_subject(topic), flags=re.IGNORECASE)
+    sides = _topic_sides(topic)
     checked = False
     for side in sides:
         side_words = words(side)
@@ -1052,70 +1171,6 @@ def _legacy_shorten_question(question: str) -> str:
     return re.sub(r"^(?:a|an|the)\s+", "", q[:40], flags=re.I)
 
 
-def _compute_text_similarity(topic: str, title: str, outcomes: List[str] = None) -> float:
-    """Score how well the event title (or outcome names) match the search topic.
-
-    Returns 0.0-1.0. Exact title phrase match gets 1.0. Otherwise we reuse the
-    shared query-centric relevance scorer and take the best title/outcome match.
-    """
-    core = _extract_core_subject(topic).lower()
-    title_lower = title.lower()
-    if not core:
-        return 0.5
-
-    # Full substring match in title
-    if core in title_lower:
-        return 1.0
-
-    # Same match, abbreviated: "AGI" standing in for an informative phrase.
-    # Use the filter's matcher so modifiers and minimum acronym length cannot
-    # produce different decisions at the filtering and scoring stages.
-    core_words = [w for w in re.sub(r"[^\w\s]", " ", core).split() if len(w) > 1]
-    title_words = set(re.sub(r"[^\w\s]", " ", title_lower).split())
-    if _acronym_credit(core_words, title_words):
-        return 1.0
-
-    query_type = _infer_query_intent(topic)
-    title_score = token_overlap_relevance(core, title)
-    best_score = title_score
-
-    if outcomes:
-        for outcome_name in outcomes:
-            outcome_lower = outcome_name.lower()
-            outcome_score = token_overlap_relevance(core, outcome_name)
-            if _strong_phrase_match(core, outcome_lower):
-                outcome_score = max(outcome_score, 0.92 if len(outcome_lower.split()) >= 2 else 0.88)
-            if title_score < 0.3:
-                outcome_cap = 0.55 if query_type == "prediction" else 0.24
-                outcome_score = min(outcome_cap, outcome_score)
-            else:
-                outcome_score = max(title_score, 0.75 * title_score + 0.25 * outcome_score)
-            best_score = max(best_score, outcome_score)
-
-    return round(best_score, 2)
-
-
-def _strong_phrase_match(core: str, candidate: str) -> bool:
-    """Require real token matches, not accidental short substrings.
-
-    This prevents binary outcomes like "No" from matching "nano" or similar
-    short-string accidents.
-    """
-    candidate = " ".join(re.sub(r"[^\w\s]", " ", candidate.lower()).split())
-    core = " ".join(re.sub(r"[^\w\s]", " ", core.lower()).split())
-    if not candidate or not core:
-        return False
-
-    candidate_tokens = candidate.split()
-    core_tokens = set(core.split())
-
-    if len(candidate_tokens) >= 2:
-        return candidate in core or core in candidate
-
-    token = candidate_tokens[0]
-    return len(token) > 2 and token in core_tokens
-
-
 def _safe_float(val, default=0.0) -> float:
     """Safely convert a value to float."""
     try:
@@ -1124,10 +1179,211 @@ def _safe_float(val, default=0.0) -> float:
         return default
 
 
+def _market_volume(market: Dict[str, Any]) -> float:
+    """Money traded on one market over its life."""
+    return _safe_float(market.get("volumeNum")) or _safe_float(market.get("volume"))
+
+
+def _yes_price(market: Dict[str, Any]) -> Optional[float]:
+    """The displayed price of a market's first outcome, None when unpriced."""
+    pairs = _parse_outcome_prices(market)
+    return pairs[0][1] if pairs else None
+
+
+def _live_markets(event: Dict[str, Any], include_closed: bool = False) -> List[Dict[str, Any]]:
+    """An event's open, active markets with liquidity (resolved markets have
+    0 or None). ``include_closed`` keeps every market."""
+    live = []
+    for market in event.get("markets") or []:
+        if not include_closed and (market.get("closed") or not market.get("active", True)):
+            continue
+        if _safe_float(market.get("liquidity")) > 0 or include_closed:
+            live.append(market)
+    return live
+
+
+def _days_to_close(market: Dict[str, Any], event: Dict[str, Any], today: str) -> Optional[int]:
+    end = str(market.get("endDate") or event.get("endDate") or "")[:10]
+    try:
+        return (datetime.date.fromisoformat(end) - datetime.date.fromisoformat(today)).days
+    except ValueError:
+        return None
+
+
+@dataclass
+class _EntityMarket:
+    """One market of an event that names the subject (or a related name)."""
+
+    market: Dict[str, Any]
+    match: EntityMatch
+    outcome: Optional[str]
+    price: Optional[float]
+    volume: float
+    days: Optional[int]
+    rank: Optional[int] = None
+    race_size: Optional[int] = None
+    race_outcome: bool = False
+    in_band: bool = False
+    contender: bool = False
+
+    @property
+    def label(self) -> str:
+        title = " ".join(str(self.market.get("groupItemTitle") or "").split())
+        return title or self.outcome or _shorten_question(str(self.market.get("question") or ""))
+
+
+@dataclass
+class _EventEntities:
+    """The subject's markets in one event, before the selection rule."""
+
+    race: bool
+    live_count: int
+    named_by_market: bool
+    markets: List[_EntityMarket] = field(default_factory=list)
+
+
+def _is_exclusive(event: Dict[str, Any], markets: List[Dict[str, Any]]) -> bool:
+    """Whether an event's markets are mutually exclusive (``negRisk``): only
+    one of them can resolve Yes."""
+    return bool(event.get("negRisk")) or any(m.get("negRisk") for m in markets)
+
+
+def _is_race(event: Dict[str, Any], live_markets: List[Dict[str, Any]]) -> bool:
+    """Whether an event's live markets are a race: mutually exclusive
+    (``negRisk``), RACE_MIN_OUTCOMES or more of them, labelled by
+    ``groupItemTitle``."""
+    exclusive = _is_exclusive(event, live_markets)
+    labelled = sum(1 for m in live_markets if str(m.get("groupItemTitle") or "").strip())
+    return exclusive and len(live_markets) >= RACE_MIN_OUTCOMES and labelled >= 2
+
+
+def _event_entities(
+    event: Dict[str, Any],
+    active_markets: List[Dict[str, Any]],
+    matcher: EntityMatcher,
+    race: bool,
+    today: str,
+) -> _EventEntities:
+    """Match each live market of an event and price its entity markets.
+
+    Recurring count brackets ("# tweets") are dropped. A market with no
+    displayable price is kept but can never be live. In a race (a mutually
+    exclusive event of RACE_MIN_OUTCOMES or more live outcomes, labelled by
+    ``groupItemTitle``) a market whose outcome is the subject or a related
+    name is a race outcome, and when its label names it, it is ranked by
+    price among the live outcomes.
+    """
+    title = str(event.get("title") or "")
+    title_text = _match_text(title)
+    yes_prices = [_yes_price(market) for market in active_markets]
+    found = _EventEntities(race=race, live_count=len(active_markets), named_by_market=False)
+    for market in active_markets:
+        match = matcher.match(market, title, title_text=title_text)
+        if match is None:
+            continue
+        if match.field == "market" and not match.related:
+            found.named_by_market = True
+        if is_count_series(title, str(market.get("question") or "")):
+            continue
+        outcome = matcher.matched_outcome(market, match)
+        pairs = _parse_outcome_prices(market)
+        if outcome is not None:
+            price = next((p for name, p in pairs if str(name) == outcome), None)
+        else:
+            price = pairs[0][1] if pairs else None
+        entity = _EntityMarket(
+            market=market, match=match, outcome=outcome, price=price,
+            volume=_market_volume(market), days=_days_to_close(market, event, today),
+        )
+        kind = matcher.outcome_kind(market, match, title, title_text=title_text) if race else None
+        entity.race_outcome = kind is not None
+        if kind == "label" and price is not None:
+            entity.rank = 1 + sum(1 for other in yes_prices if other is not None and other > price)
+            entity.race_size = len(active_markets)
+        found.markets.append(entity)
+    return found
+
+
+def _teams_biggest_race(analyses: Dict[int, _EventEntities]) -> Optional[int]:
+    """The race where the team's own outcome has the most money on it, among
+    open outcomes the selection rule would otherwise floor."""
+    best: Optional[Tuple[float, int]] = None
+    for key, found in analyses.items():
+        for entity in found.markets:
+            if entity.match.related or not entity.race_outcome:
+                continue
+            if entity.price is None or not 0 < entity.price < PRICE_CEILING:
+                continue
+            if entity.days is not None and entity.days < MIN_DAYS_TO_CLOSE:
+                continue
+            if best is None or entity.volume > best[0]:
+                best = (entity.volume, key)
+    return best[1] if best else None
+
+
+def _apply_band(found: _EventEntities, exempt: bool) -> None:
+    for entity in found.markets:
+        floor = (
+            0.0 if exempt and not entity.match.related
+            else RACE_PRICE_FLOOR if entity.race_outcome else PRICE_FLOOR
+        )
+        entity.in_band = (
+            entity.price is not None
+            and entity.price < PRICE_CEILING
+            and (entity.price > 0 if floor == 0 else entity.price >= floor)
+            and (entity.days is None or entity.days >= MIN_DAYS_TO_CLOSE)
+        )
+        entity.contender = (
+            entity.rank is not None
+            and entity.rank <= CONTENDER_TOP
+            and entity.volume >= CONTENDER_MIN_VOLUME
+        )
+
+
+def _chosen_markets(found: _EventEntities) -> List[_EntityMarket]:
+    """The entity markets an event contributes.
+
+    A related name enters only as a live top contender. An event of more than
+    GAME_SHEET_MARKETS markets (a game's prop sheet, a league-wide race)
+    contributes one market: its busiest live market that names the subject on
+    its own text, or when no market does (the subject is only in the title),
+    its busiest live market.
+    """
+    entity = [m for m in found.markets if not m.match.related]
+    related = [m for m in found.markets if m.match.related and m.in_band and m.contender]
+    if found.live_count <= GAME_SHEET_MARKETS:
+        return entity + related
+    pool = [m for m in entity if m.match.field == "market"] if found.named_by_market else entity
+    for group in ([m for m in pool if m.in_band], related, pool):
+        if group:
+            return [max(group, key=lambda m: m.volume)]
+    return []
+
+
+def _headline_entity(group: List[_EntityMarket], today: str) -> _EntityMarket:
+    """The market that stands for the event: the nearest live deadline of a
+    date ladder, the rung closest to even of a value ladder ("8.5+ wins",
+    "9.5+ wins"), else the likeliest outcome."""
+    priced = [m for m in group if m.price is not None]
+    if not priced:
+        return max(group, key=lambda m: m.volume)
+    if len(priced) > 1:
+        questions: List[Optional[str]] = [str(m.market.get("question") or "") for m in priced]
+        prices = [m.price for m in priced if m.price is not None]
+        index = _nearest_deadline(questions, [m.market for m in priced], prices, today)
+        if index is not None:
+            return priced[index]
+        if len({series_key(question or "") for question in questions}) == 1:
+            return min(priced, key=lambda m: abs((m.price or 0) - 0.5))
+    return max(priced, key=lambda m: (m.price or 0, m.volume))
+
+
 def parse_polymarket_response(
     response: Dict[str, Any],
     topic: str = "",
     *,
+    hints: Any = None,
+    to_date: Optional[str] = None,
     include_all_outcomes: bool = False,
     include_closed: bool = False,
 ) -> List[Dict[str, Any]]:
@@ -1135,22 +1391,32 @@ def parse_polymarket_response(
 
     Each event becomes one item showing its title and top markets.
 
+    With a topic, an event is kept only when one of its markets names the
+    subject (``EntityMatcher``), and the item headlines the subject's own
+    market. Items are ranked by the selection rule (see PRICE_CEILING):
+    events with a live entity market first, by ``selection_score``, then the
+    rest by money on the subject. Without a topic (re-checking a saved claim)
+    every market is kept and nothing is gated.
+
     Args:
         response: Raw Gamma API response
-        topic: Original search topic (for relevance scoring)
+        topic: Original search topic
+        hints: Optional ``PolymarketHints`` (or a plan dict of the same shape)
+        to_date: The run's end date, the "now" for days to close and live
+            deadlines; today when absent
 
     Returns:
         List of item dicts ready for normalization.
     """
     events = response.get("events", [])
-    items = []
+    today = to_date or _today()
+    matcher = EntityMatcher(topic, hints) if topic else None
 
+    # Pass one: each event's live markets and, with a topic, its entity markets.
+    prepared = []
+    analyses: Dict[int, _EventEntities] = {}
     filtered_count = 0
-    for i, event in enumerate(events):
-        event_id = event.get("id", "")
-        title = event.get("title", "")
-        slug = event.get("slug", "")
-
+    for event in events:
         # Filter: skip closed/resolved events
         if not include_closed:
             if event.get("closed", False):
@@ -1158,35 +1424,55 @@ def parse_polymarket_response(
             if not event.get("active", True):
                 continue
 
-        # Filter: skip events that don't match the topic's core subject
-        # This prevents "NFC West" from matching a "Kanye West" search
-        if topic and not _passes_topic_filter(topic, title):
-            filtered_count += 1
-            continue
-
-        # Get markets for this event
-        markets = event.get("markets", [])
-        if not markets:
-            continue
-
-        # Filter to active, open markets with liquidity (excludes resolved markets)
-        active_markets = []
-        for m in markets:
-            if not include_closed:
-                if m.get("closed", False):
-                    continue
-                if not m.get("active", True):
-                    continue
-            # Must have liquidity (resolved markets have 0 or None)
-            try:
-                liq = float(m.get("liquidity", 0) or 0)
-            except (ValueError, TypeError):
-                liq = 0
-            if include_closed or liq > 0:
-                active_markets.append(m)
-
+        active_markets = _live_markets(event, include_closed)
         if not active_markets:
             continue
+
+        mutually_exclusive = _is_exclusive(event, active_markets)
+        if matcher is not None:
+            found = _event_entities(
+                event, active_markets, matcher,
+                race=_is_race(event, active_markets),
+                today=today,
+            )
+            if not found.markets:
+                filtered_count += 1
+                continue
+            analyses[len(prepared)] = found
+        prepared.append((event, active_markets, mutually_exclusive))
+
+    exempt = (
+        _teams_biggest_race(analyses)
+        if matcher is not None and matcher.hints.kind == "team" else None
+    )
+
+    items = []
+    for index, (event, active_markets, mutually_exclusive) in enumerate(prepared):
+        event_id = event.get("id", "")
+        title = event.get("title", "")
+        slug = event.get("slug", "")
+
+        chosen: List[_EntityMarket] = []
+        entity: Optional[_EntityMarket] = None
+        tier = 0
+        score = 0.0
+        found = analyses.get(index)
+        if found is not None:
+            _apply_band(found, exempt=index == exempt)
+            chosen = _chosen_markets(found)
+            if not chosen:
+                filtered_count += 1
+                continue
+            live = [m for m in chosen if m.in_band]
+            if live:
+                tier = 1
+                score = math.log1p(sum(m.volume for m in live)) + (
+                    CONTENDER_BONUS if any(m.contender for m in live) else 0.0
+                )
+            else:
+                score = math.log1p(sum(m.volume for m in chosen))
+            entity = _headline_entity(live or chosen, today)
+        chosen_ids = {id(m.market) for m in chosen}
 
         # Sort markets by volume (most liquid first)
         def market_volume(m):
@@ -1198,39 +1484,25 @@ def parse_polymarket_response(
 
         # Take top market for the event
         top_market = active_markets[0]
-
-        # Collect outcome names from ALL active markets (not just top) for similarity scoring
-        # Filter to outcomes with price > 1% to avoid noise
-        # Also extract subjects from market questions for neg-risk events (outcomes are Yes/No)
-        all_outcome_names = []
-        for m in active_markets:
-            for name, price in _parse_outcome_prices(m):
-                if price > 0.01 and name not in all_outcome_names:
-                    all_outcome_names.append(name)
-            # For neg-risk binary markets (Yes/No outcomes), the team/entity name
-            # lives in the question, e.g., "Will Arizona win the NCAA Tournament?"
-            question = m.get("question", "")
-            if question and question != title:
-                all_outcome_names.append(question)
+        # The market whose outcomes and question the odds show: the subject's
+        # own when matched, so a busier sibling with its own outcome labels
+        # ("O 11.5" for another team) never speaks for it.
+        shown_market = entity.market if entity is not None else top_market
 
         # Parse outcome prices - for multi-market events with Yes/No binary
         # sub-markets, synthesize from market questions to show actual
         # team/entity probabilities instead of a single market's Yes/No
-        outcome_prices = _parse_outcome_prices(top_market)
+        outcome_prices = _parse_outcome_prices(shown_market)
         # The market question each outcome was named from, None for a label.
         outcome_questions: List[Optional[str]] = [None] * len(outcome_prices)
         # The market each outcome is priced in.
-        outcome_markets: List[Dict[str, Any]] = [top_market] * len(outcome_prices)
+        outcome_markets: List[Dict[str, Any]] = [shown_market] * len(outcome_prices)
         # Whether the sub-markets are Yes/No is read from the served outcomes,
         # so an unpriced top market still leads to its priced siblings.
-        top_labels = _parse_outcome_prices(top_market, book_aware=False)
+        top_labels = _parse_outcome_prices(shown_market, book_aware=False)
         top_outcomes_are_binary = (
             len(top_labels) == 2
             and {n.lower() for n, _ in top_labels} == {"yes", "no"}
-        )
-        # Mutually exclusive sub-markets (one bracket of a range resolves Yes).
-        mutually_exclusive = bool(event.get("negRisk")) or any(
-            m.get("negRisk") for m in active_markets
         )
         impossible_set = False
         sibling_names: Optional[List[str]] = None
@@ -1242,7 +1514,7 @@ def parse_polymarket_response(
                     continue
                 pairs = _parse_outcome_prices(m)
                 yes_price = next((p for name, p in pairs if name.lower() == "yes"), None)
-                if yes_price is not None and yes_price > 0.005:
+                if yes_price is not None and (yes_price > 0.005 or id(m) in chosen_ids):
                     synth_outcomes.append((q, yes_price, m))
             sibling_names = [
                 _shorten_question(m["question"]) for m in active_markets if m.get("question")
@@ -1263,8 +1535,24 @@ def parse_polymarket_response(
                         f"Yes prices sum to {yes_total:.2f}"
                     )
 
+        # The subject's own markets lead the outcome list, in price order.
+        if chosen and outcome_prices:
+            rows = list(zip(outcome_prices, outcome_questions, outcome_markets))
+            if outcome_questions[0] is not None:
+                own = [row for row in rows if id(row[2]) in chosen_ids]
+            else:
+                own = [row for row in rows if entity is not None and row[0][0] == entity.outcome]
+            if own:
+                rows = own + [row for row in rows if row not in own]
+                outcome_prices = [priced for priced, _q, _m in rows]
+                outcome_questions = [q for _priced, q, _m in rows]
+                outcome_markets = [m for _priced, _q, m in rows]
+
+        # The market the item speaks for: the subject's own with a topic.
+        lead_market = entity.market if entity is not None else top_market
+
         # Format price movement
-        price_movement = _format_price_movement(top_market)
+        price_movement = _format_price_movement(lead_market)
 
         # Volume and liquidity - prefer event-level (more stable), fall back to market-level
         event_volume1mo = _safe_float(event.get("volume1mo"))
@@ -1287,16 +1575,12 @@ def parse_polymarket_response(
                 pass
 
         # End date for the market
-        end_date = top_market.get("endDate")
+        end_date = lead_market.get("endDate")
         if end_date:
             try:
                 end_date = end_date[:10]
             except (IndexError, TypeError):
                 end_date = None
-
-        # Semantic relevance should dominate. Market quality should refine
-        # relevant matches, not rescue unrelated high-liquidity events.
-        text_score = _compute_text_similarity(topic, title, all_outcome_names) if topic else 0.5
 
         # Volume signal: log-scaled monthly volume (most stable signal)
         vol_raw = event_volume1mo or event_volume1wk or volume24hr
@@ -1306,50 +1590,45 @@ def parse_polymarket_response(
         liq_score = min(1.0, math.log1p(liquidity) / 14)  # ~$1.2M = 1.0
 
         # Price movement: daily weighted more than monthly
-        day_change = abs(top_market.get("oneDayPriceChange") or 0) * 3
-        week_change = abs(top_market.get("oneWeekPriceChange") or 0) * 2
-        month_change = abs(top_market.get("oneMonthPriceChange") or 0)
+        day_change = abs(lead_market.get("oneDayPriceChange") or 0) * 3
+        week_change = abs(lead_market.get("oneWeekPriceChange") or 0) * 2
+        month_change = abs(lead_market.get("oneMonthPriceChange") or 0)
         max_change = max(day_change, week_change, month_change)
         movement_score = min(1.0, max_change * 5)  # 20% change = 1.0
-
-        # Competitive bonus: markets near 50/50 are more interesting
-        competitive_score = event_competitive
 
         market_quality = (
             0.50 * vol_score +
             0.25 * liq_score +
             0.15 * movement_score +
-            0.10 * competitive_score
+            0.10 * event_competitive
         )
-        relevance = min(1.0, text_score * (0.75 + 0.25 * market_quality))
-
-        # Surface the topic-matching outcome to the front before truncating
-        if topic and outcome_prices:
-            core = _extract_core_subject(topic).lower()
-            core_tokens = set(core.split())
-            reordered = []
-            rest = []
-            for pair in zip(outcome_prices, outcome_questions, outcome_markets):
-                name_lower = pair[0][0].lower()
-                # Match if full core is substring, or name is substring of core,
-                # or any core token appears in the name (handles long question strings)
-                if (core in name_lower or name_lower in core
-                        or any(tok in name_lower for tok in core_tokens if len(tok) > 2)):
-                    reordered.append(pair)
-                else:
-                    rest.append(pair)
-            if reordered:
-                outcome_prices = [priced for priced, _q, _m in reordered + rest]
-                outcome_questions = [q for _priced, q, _m in reordered + rest]
-                outcome_markets = [m for _priced, _q, m in reordered + rest]
+        # How firmly the event is about the subject: the subject named, then a
+        # related name leading a race; an event with no live market counts less.
+        if entity is None:
+            match_strength = 0.5
+        else:
+            match_strength = 1.0 if any(not m.match.related for m in chosen) else 0.8
+            if not tier:
+                match_strength *= 0.6
+        relevance = min(1.0, match_strength * (0.75 + 0.25 * market_quality))
 
         # After the ordering above, which reads the subject names.
         outcome_prices = _own_outcome_labels(
             outcome_prices, outcome_questions, outcome_markets, sibling_names,
         )
-        headline = _headline_market(
-            title, top_market, outcome_prices, outcome_questions, outcome_markets,
-        )
+        if entity is not None and entity.price is None:
+            headline = None
+        elif entity is not None:
+            headline = {
+                "question": str(entity.market.get("question") or title),
+                "price": entity.price,
+            }
+            if entity.outcome is not None:
+                headline["label"] = entity.outcome
+        else:
+            headline = _headline_market(
+                title, top_market, outcome_prices, outcome_questions, outcome_markets,
+            )
 
         # Normal display payloads stay compact. Verification requests the
         # complete snapshot so topic-promoted outcomes remain re-checkable.
@@ -1358,21 +1637,24 @@ def parse_polymarket_response(
         if remaining < 0:
             remaining = 0
         odds = _odds_summary(
-            title, top_market, outcome_prices, outcome_questions, outcome_markets,
+            title, shown_market, outcome_prices, outcome_questions, outcome_markets, today,
         )
         if impossible_set:
-            # The event stays as evidence, with no odds line, headline or
-            # listed outcomes. Verification still sees each market's quote.
+            # The event stays as evidence, with no odds line or listed
+            # outcomes. Verification still sees each market's quote. The
+            # subject's own outcome of the race keeps its headline: its price
+            # is that market's own quote, not read off the bogus set.
             odds = None
-            headline = None
+            if entity is None or not entity.race_outcome:
+                headline = None
             remaining = 0
             if not include_all_outcomes:
                 top_outcomes = []
 
-        items.append({
+        item = {
             "event_id": event_id,
             "title": title,
-            "question": top_market.get("question", title),
+            "question": lead_market.get("question", title),
             "url": url,
             "outcome_prices": top_outcomes,
             "outcome_questions": outcome_questions[: len(top_outcomes)],
@@ -1387,31 +1669,34 @@ def parse_polymarket_response(
             "end_date": end_date,
             "relevance": round(relevance, 2),
             "why_relevant": f"Prediction market: {title[:60]}",
-        })
+        }
+        if entity is not None:
+            item["selection_score"] = score
+            item["selection_tier"] = tier
+            item["matched_market"] = {
+                "label": entity.label,
+                "question": str(entity.market.get("question") or ""),
+                "price": entity.price,
+                "volume": entity.volume,
+                "end_date": end_date,
+                "rank": entity.rank,
+                "race_size": entity.race_size,
+                "contender": entity.contender,
+                "in_band": entity.in_band,
+                "match_field": entity.match.field,
+                "related_name": entity.match.related,
+                "relation": entity.match.relation or None,
+            }
+        items.append(item)
 
     if filtered_count:
-        _log(f"Filtered {filtered_count} noise events (topic: '{topic}')")
+        _log(f"Filtered {filtered_count} events that do not name '{topic}'")
 
-    # Sort by relevance (quality-signal ranked) and apply cap
-    items.sort(key=lambda x: x["relevance"], reverse=True)
-
-    # Drop ALL results if nothing is genuinely on-topic.
-    # If the best item's relevance is below the threshold, the Gamma API
-    # returned only tangential matches (e.g., "Anthropic best AI model"
-    # for a "CLI vs MCP" query). Better to show 0 than noise.
-    _MIN_RELEVANCE = 0.15
-    if items and items[0]["relevance"] < _MIN_RELEVANCE:
-        _log(f"All {len(items)} Polymarket results below relevance threshold "
-             f"({items[0]['relevance']:.2f} < {_MIN_RELEVANCE}), dropping all")
-        return []
-
-    # Per-item floor: drop individual noise items even if the best item passed
-    _ITEM_MIN_RELEVANCE = 0.10
-    before_count = len(items)
-    items = [i for i in items if i["relevance"] >= _ITEM_MIN_RELEVANCE]
-    dropped = before_count - len(items)
-    if dropped:
-        _log(f"Dropped {dropped} Polymarket items below per-item relevance floor ({_ITEM_MIN_RELEVANCE})")
+    if matcher is not None:
+        # The selection rule decides the order, and the cap comes after it.
+        items.sort(key=lambda x: (x["selection_tier"], x["selection_score"]), reverse=True)
+    else:
+        items.sort(key=lambda x: x["relevance"], reverse=True)
 
     cap = response.get("_cap", len(items))
     return items[:cap]
@@ -1610,3 +1895,17 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         missing.snapshot = snapshot
         raise missing
     return {"value": value, **snapshot}
+
+
+def by_selection(items: list) -> list:
+    """Markets in the parser's selection order: a live entity market first,
+    by ``selection_score``. An item saved before the parser scored markets
+    follows, by 30-day volume as before."""
+    def key(item) -> tuple:
+        volume = (item.engagement or {}).get("volume") or 0
+        score = item.metadata.get("selection_score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            return (0, 0, 0.0, volume)
+        return (1, item.metadata.get("selection_tier") or 0, score, volume)
+
+    return sorted(items, key=key, reverse=True)

@@ -1041,7 +1041,7 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
     known_fields = {
         "x_handle", "x_related", "subreddits",
         "github_user", "github_repos", "trustpilot_domain", "context",
-        "x_posts",
+        "x_posts", "polymarket_hints",
     }
     normalized: dict[str, dict] = {}
     for entity, entry in parsed.items():
@@ -1061,6 +1061,14 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
             **{k: v for k, v in entry.items() if k in known_fields},
             "_name": entity.strip(),
         }
+        if "polymarket_hints" in entry:
+            from lib import planner as _plan_validator
+            try:
+                hints = _plan_validator.polymarket_hints(entry["polymarket_hints"])
+            except ValueError as exc:
+                sys.stderr.write(f"[CompetitorsPlan] Entry for {entity!r}: {exc}\n")
+                raise SystemExit(2)
+            normalized[entity.strip().lower()]["polymarket_hints"] = hints
     return normalized
 
 
@@ -4978,7 +4986,13 @@ def _main(
                 # place it would render one brand's ads as every peer's.
                 entity_config.pop("_meta_ads_page", None)
                 entity_config.pop("_dedicated_subreddits", None)
+                # Polymarket keywords and hints name the main topic's subject;
+                # a peer searches on its own name plus its own plan entry hints.
+                entity_config.pop("_polymarket_keywords", None)
+                entity_config.pop("_polymarket_hints", None)
                 plan_entry = comp_plan.get(entity.strip().lower(), {})
+                if plan_entry.get("polymarket_hints"):
+                    entity_config["_polymarket_hints"] = plan_entry["polymarket_hints"]
                 resolved = {
                     "entity": entity,
                     "x_handle": "",

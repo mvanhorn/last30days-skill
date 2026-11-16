@@ -544,6 +544,32 @@ A `--plan`'s per-subquery `sources` stay final, with one exception: an installed
 
 On an agent-hosted run whose plan searches `x` for an entity-shaped topic (a short name such as `Jev` or `Peter Steinberger`, not a question or a theme), the engine exits 2 unless the command carries `--x-handle` or `--no-x-handle="<reason>"`. `--official-site=<domain>` lets the engine read the handle from the site's homepage links, with no API key; a handle you pass with `--x-handle` wins over the homepage. Quick runs, comparison runs, topics that already contain an `@handle`, and runs whose plan does not search X are exempt.
 
+### Polymarket hints in a plan
+
+A `--plan` (or a per-entity entry in `--competitors-plan`) may carry an optional `polymarket_hints` object that tells the Polymarket source who the subject is. Without it, the engine matches markets on the topic text alone.
+
+```json
+{
+  "intent": "general",
+  "freshness_mode": "balanced_recent",
+  "cluster_mode": "story",
+  "subqueries": [{"label": "primary", "search_query": "Warriors", "ranking_query": "Golden State Warriors this season", "sources": ["polymarket"]}],
+  "polymarket_hints": {
+    "kind": "team",
+    "aliases": ["Golden State Warriors"],
+    "related": [{"name": "Yaxel Lendeborg", "relation": "player"}]
+  }
+}
+```
+
+| Field | Values | Effect |
+|---|---|---|
+| `kind` | `team`, `company`, `person`, `product`, `other` (optional) | `team` keeps the team's biggest race (its title odds) even when its price is below the usual floor, so a 2% title chance still shows. |
+| `aliases` | up to 5 strings, 80 characters each | Other names for the same subject (`Formula 1` -> `F1`, `Claude Code` -> `Claude`). Each is searched and matched like the topic. |
+| `related` | up to 5 `{name, relation}` objects, `relation` one of `player`, `person`, `product` | People or products tied to the subject. Each is searched; its market is kept only when it is a top-3 contender in a race (for example, a team's rookie leading Rookie of the Year), and the line names the relation. |
+
+Unknown fields, a bad `kind` or `relation`, or more than 5 entries make the plan invalid and the run exits 2 with a message naming the bad part. The host-model guidance for filling these in is in [Step 0.75 of the research runbook](skills/last30days/references/research-runbook.md).
+
 ### Provider endpoint overrides
 
 Point a provider at a gateway (LiteLLM, an enterprise proxy, a self-hosted OpenAI-compatible server) without a code change:
