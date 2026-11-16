@@ -394,60 +394,48 @@ class EntityMatcher:
         return None
 
 
-def _passes_any_informative_word(topic: str, event_title: str) -> bool:
-    """Keep an item if ANY informative word from the topic appears in the title.
+def _item_matches(matcher: "EntityMatcher", item: Any) -> bool:
+    """Whether a parsed or normalized item names what ``matcher`` looks for.
 
-    Designed for post-merge validation of comparison topics (e.g., "OpenClaw vs
-    Hermes vs Paperclip"), where a market mentioning just one of the entities
-    is still on-topic.
+    Reads the event title, the matched market's question and label, the
+    headline market's question and label, and the item's own question. A raw
+    parse dict carries these at the top level, a ``SourceItem`` in metadata.
     """
-    core = _extract_core_subject(topic).lower()
-    core_words = [w for w in re.sub(r"[^\w\s]", " ", core).split() if len(w) > 1]
-    if not core_words:
-        return True
-    informative = _informative_words(core_words)
-    if not informative:
-        return True
-
-    title_lower = " ".join(re.sub(r"[^\w\s]", " ", event_title.lower()).split())
-    title_words = set(title_lower.split())
-
-    for word in informative:
-        if word in title_words:
-            return True
-        if len(word) >= 4 and word in title_lower:
-            return True
-
-    return _domain_word_fallback_allows(core_words, informative, title_lower, title_words)
+    if isinstance(item, dict):
+        fields = {**(item.get("metadata") or {}), **item}
+    else:
+        fields = {**(getattr(item, "metadata", None) or {}), "title": getattr(item, "title", "")}
+    matched = fields.get("matched_market") if isinstance(fields.get("matched_market"), dict) else {}
+    headline = fields.get("headline") if isinstance(fields.get("headline"), dict) else {}
+    market = {
+        "question": str(matched.get("question") or fields.get("question") or ""),
+        "groupItemTitle": str(matched.get("label") or ""),
+        "outcomes": [
+            str(text) for text in (
+                headline.get("question"), headline.get("label"), fields.get("question"),
+            ) if text
+        ],
+    }
+    return matcher.match(market, str(fields.get("title") or "")) is not None
 
 
-def filter_items_against_topic(topic: str, items: List[Any]) -> List[Any]:
-    """Drop items whose title shares no informative word with the original topic.
+def filter_items_against_topic(topic: str, items: List[Any], hints: Any = None) -> List[Any]:
+    """Keep the items whose market names the research topic, by ``EntityMatcher``.
 
-    Called post-merge from pipeline.py so per-entity subquery results for
-    comparison topics get re-validated against the ORIGINAL full topic before
-    landing in the footer. Prevents noise like WTI crude oil or Elon tweet
-    markets from surviving a loose "Hermes" single-entity subquery match.
+    The Polymarket topic bar, called post-merge from pipeline.py on the stable
+    research topic and the run's hints. The event title alone is not enough:
+    "Pro Football: 2027 Champion" names the 49ers only in its matched market,
+    and a related player's award market only through a host-supplied name.
+    Each side of a "vs" topic counts, so a market naming one compared entity
+    stays.
 
-    Uses the looser _passes_any_informative_word rule (ANY entity name match
-    is sufficient) so a market mentioning just one of several compared entities
-    still counts as on-topic.
-
-    Accepts a list of either raw dicts (with 'title') or SourceItem-like objects
-    (with .title attribute). Returns the filtered list in the same order.
+    Accepts raw parse dicts or SourceItem-like objects and returns the kept
+    items in the same order.
     """
     if not topic:
         return items
-
-    filtered = []
-    for item in items:
-        title = getattr(item, "title", None)
-        if title is None and isinstance(item, dict):
-            title = item.get("title", "")
-        title = title or ""
-
-        if _passes_any_informative_word(topic, title):
-            filtered.append(item)
+    matcher = EntityMatcher(topic, hints)
+    filtered = [item for item in items if _item_matches(matcher, item)]
 
     dropped = len(items) - len(filtered)
     if dropped:
@@ -457,27 +445,19 @@ def filter_items_against_topic(topic: str, items: List[Any]) -> List[Any]:
 
 
 def filter_items_against_keywords(items: List[Any], keywords: List[str]) -> List[Any]:
-    """Keep only items whose title contains at least one keyword (case-insensitive).
+    """Keep only items whose market names at least one keyword, by ``EntityMatcher``.
 
     Intended for disambiguating ambiguous single-token topics like 'Warriors'
     via --polymarket-keywords (e.g., 'nba,gsw,golden-state') to filter out
     Glasgow Warriors rugby, Honor of Kings Rogue Warriors markets that share
-    the 'Warriors' token but are not the target entity.
+    the 'Warriors' token but are not the target entity. Each keyword matches
+    as a whole phrase, any case, in the same fields as the topic filter.
     """
-    if not keywords:
-        return items
-    normalized_keywords = [kw.strip().lower() for kw in keywords if kw and kw.strip()]
+    normalized_keywords = [kw.strip() for kw in keywords or [] if kw and kw.strip()]
     if not normalized_keywords:
         return items
-
-    filtered = []
-    for item in items:
-        title = getattr(item, "title", None)
-        if title is None and isinstance(item, dict):
-            title = item.get("title", "")
-        title = (title or "").lower()
-        if any(kw in title for kw in normalized_keywords):
-            filtered.append(item)
+    matcher = EntityMatcher("", PolymarketHints(aliases=tuple(normalized_keywords)))
+    filtered = [item for item in items if _item_matches(matcher, item)]
 
     dropped = len(items) - len(filtered)
     if dropped:

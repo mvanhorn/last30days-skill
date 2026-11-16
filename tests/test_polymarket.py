@@ -83,14 +83,13 @@ def test_extract_core_subject_multiple_prefixes():
     result = polymarket._extract_core_subject("research AI models")
     assert result == "AI models"
 
-# === Tests for _passes_any_informative_word() ===
+# === Tests for filter_items_against_topic() ===
 
 
-def test_any_word_filter_blocks_shared_domain_token_when_hard_word_misses():
+def test_topic_filter_blocks_shared_domain_token_when_hard_word_misses():
     """Mixed topics must not accept unrelated markets via a shared domain token."""
-    assert polymarket._passes_any_informative_word(
-        "MCP protocol benchmark", "Will the Kyoto Protocol survive?"
-    ) is False
+    items = [{"title": "Will the Kyoto Protocol survive?"}]
+    assert polymarket.filter_items_against_topic("MCP protocol benchmark", items) == []
 
 # === Tests for _parse_outcome_prices() ===
 

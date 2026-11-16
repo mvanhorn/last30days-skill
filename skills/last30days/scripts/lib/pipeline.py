@@ -3977,13 +3977,15 @@ def _finalize_items_by_source(
                     entity_count=_comparison_entity_count(config),
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
-        # Post-merge topic-relevance filter for Polymarket: comparison queries
-        # fan out into per-entity subqueries ("Hermes", "OpenClaw") whose topic
-        # is too narrow for Gamma API to filter meaningfully. Re-validating the
-        # merged list against the full original topic drops off-topic markets
+        # Post-merge topic bar for Polymarket: the entity matcher, with the
+        # run's hints, over each item's matched market and event title. It
+        # stands in for the generic relevance floor, which exempts matched
+        # markets (signals.prune_low_relevance), and drops off-topic markets
         # (e.g., WTI crude oil, Elon tweet counts) before footer emission.
         if source == "polymarket" and topic:
-            items = polymarket.filter_items_against_topic(topic, items)
+            items = polymarket.filter_items_against_topic(
+                topic, items, (config or {}).get("_polymarket_hints"),
+            )
             # --polymarket-keywords (via config): additional keyword filter
             # for ambiguous single-token topics (e.g., "Warriors" → nba,gsw).
             keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
