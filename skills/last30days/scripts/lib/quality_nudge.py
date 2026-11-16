@@ -342,8 +342,11 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         has_ytdlp=has_ytdlp,
         core_total=scored_source_count,
         x_fix=x_fix,
-        youtube_comments_available=env.is_youtube_comments_available(
-            config, ytdlp_installed=has_ytdlp
+        suggest_youtube_comments=(
+            not env.is_youtube_comments_available(
+                config, ytdlp_installed=has_ytdlp
+            )
+            and "youtube_comments" not in env.exclude_sources(config)
         ),
     ) if (core_missing or core_degraded or bonus_errored) else None
 
@@ -369,14 +372,15 @@ def _build_nudge_text(
     has_ytdlp: bool = False,
     core_total: int | None = None,
     x_fix: Optional[prescriptions.Prescription] = None,
-    youtube_comments_available: bool = True,
+    suggest_youtube_comments: bool = False,
 ) -> str:
     """Build human-readable nudge text describing what was missed or degraded.
 
     Prioritizes free suggestions. Optionally mentions bonus sources
     (TikTok, Instagram, Threads, Pinterest) if ScrapeCreators key is configured.
-    YouTube comments are only listed when they are not already available: with
-    yt-dlp installed, or `youtube_comments` already in INCLUDE_SOURCES.
+    YouTube comments are only listed when the opt-in can actually enable them:
+    not already available through yt-dlp or INCLUDE_SOURCES, and not switched
+    off with EXCLUDE_SOURCES.
     """
     lines: List[str] = []
     core_degraded = core_degraded or []
@@ -516,7 +520,7 @@ def _build_nudge_text(
             bonus_hints.append("Threads")
         if "pinterest" not in (active_sources or []):
             bonus_hints.append("Pinterest")
-        if not youtube_comments_available:
+        if suggest_youtube_comments:
             bonus_hints.append("YouTube comments")
         if bonus_hints:
             free_suggestions.append(

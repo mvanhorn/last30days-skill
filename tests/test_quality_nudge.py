@@ -1357,10 +1357,12 @@ class TestBonusHintYouTubeComments:
     entry needs no hint either (issue #1437).
     """
 
-    def _text(self, ytdlp_installed, include_sources=None):
+    def _text(self, ytdlp_installed, include_sources=None, exclude_sources=None):
         overrides = {}
         if include_sources is not None:
             overrides["INCLUDE_SOURCES"] = include_sources
+        if exclude_sources is not None:
+            overrides["EXCLUDE_SOURCES"] = exclude_sources
         q = _compute(
             config_overrides={"SCRAPECREATORS_API_KEY": "sc-key", **overrides},
             ytdlp_installed=ytdlp_installed,
@@ -1390,3 +1392,13 @@ class TestBonusHintYouTubeComments:
     def test_missing_comments_key_still_asks_for_the_opt_in(self):
         text = self._text(ytdlp_installed=False, include_sources="threads,pinterest")
         assert "SC key also powers Threads, Pinterest, YouTube comments." in text
+
+    def test_excluded_comments_are_not_recommended(self):
+        """EXCLUDE_SOURCES overrides INCLUDE_SOURCES, so the hint cannot work."""
+        text = self._text(
+            ytdlp_installed=False,
+            include_sources="threads,pinterest",
+            exclude_sources="youtube_comments",
+        )
+        assert "SC key also powers Threads, Pinterest." in text
+        assert "YouTube comments" not in text
