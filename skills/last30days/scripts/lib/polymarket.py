@@ -29,7 +29,8 @@ SEARCH_LIMIT = {
 # two at a time and a rate-limited call is retried with backoff.
 _SEARCH_WORKERS = 2
 _SEARCH_ATTEMPTS = 3
-_RELATED_SEARCH_CAP = 5
+# Most aliases and related names a plan may give (planner.py validates it).
+HINT_CAP = 5
 
 # Max events to return after merge + dedup + re-ranking
 RESULT_CAP = {
@@ -618,7 +619,7 @@ def search_polymarket(
         if _is_race(event, live):
             race_labels += [_match_text(market.get("groupItemTitle")) for market in live]
     related_terms = [
-        entry.name for entry in hints.related[:_RELATED_SEARCH_CAP]
+        entry.name for entry in hints.related[:HINT_CAP]
         if not _names_any([_Term(entry.name)], race_labels)
     ]
     if related_terms and deadline is not None and time.monotonic() >= deadline:

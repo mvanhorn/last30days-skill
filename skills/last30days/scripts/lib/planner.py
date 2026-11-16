@@ -8,7 +8,10 @@ import re
 import unicodedata
 from collections import Counter
 
-from . import categories, competitors, entity_extract, http, jobs_story, log, providers, query, relevance, schema
+from . import (
+    categories, competitors, entity_extract, http, jobs_story, log, polymarket, providers, query, relevance,
+    schema,
+)
 
 # Hebrew Unicode block: U+0590–U+05FF
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
@@ -170,7 +173,7 @@ def _is_identity_anchor(anchor: object) -> bool:
 
 POLYMARKET_HINT_KINDS = ("team", "company", "person", "product", "other")
 POLYMARKET_HINT_RELATIONS = ("player", "person", "product")
-POLYMARKET_HINT_CAP = 5
+POLYMARKET_HINT_CAP = polymarket.HINT_CAP
 POLYMARKET_HINT_NAME_MAX = 80
 
 
