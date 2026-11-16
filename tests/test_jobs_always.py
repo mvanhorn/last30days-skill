@@ -99,13 +99,83 @@ def test_excluded_jobs_is_not_added_to_a_host_plan_about_a_company(capsys):
     assert "Added jobs" not in capsys.readouterr().err
 
 
-def test_search_list_without_jobs_keeps_jobs_out_of_a_host_plan_about_a_company():
+def test_search_list_without_jobs_still_runs_jobs_on_a_host_plan_about_a_company():
     report, fetched = _run_with_plan(
         "Lyft", plan_with(["hackernews"]), config={"_company_signal": "--official-site"},
         requested_sources=["hackernews", "reddit"],
     )
-    assert _planned(report)[0] == ["hackernews"]
+    assert _planned(report)[0] == ["hackernews", "jobs"]
+    assert "jobs" in fetched
+
+
+NIKE_SEARCH = ["reddit", "x", "youtube", "web"]
+
+
+def test_search_list_that_would_drop_the_plans_jobs_keeps_it_and_says_so(capsys):
+    report, fetched = _run_with_plan(
+        "Nike", plan_with(["reddit", "jobs"], ["x", "youtube"]),
+        config={"_company_signal": "--official-site"}, requested_sources=NIKE_SEARCH,
+    )
+    assert _planned(report) == [["reddit", "jobs"], ["x", "youtube"]]
+    assert "jobs" in fetched
+    err = capsys.readouterr().err
+    assert err.count("--search would have dropped") == 1
+    assert "names jobs" in err
+    assert "EXCLUDE_SOURCES=jobs" in err
+
+
+def test_excluded_jobs_stays_off_under_a_search_list_with_no_warning(capsys):
+    report, fetched = _run_with_plan(
+        "Nike", plan_with(["reddit", "jobs"], ["x"]),
+        config={"_company_signal": "--official-site", "EXCLUDE_SOURCES": "jobs"},
+        requested_sources=NIKE_SEARCH,
+    )
+    assert _planned(report) == [["reddit"], ["x"]]
     assert "jobs" not in fetched
+    err = capsys.readouterr().err
+    assert "--search would have dropped" not in err
+    assert "--search dropped" not in err
+
+
+def test_quick_run_under_a_search_list_does_not_gain_jobs(capsys):
+    _report, fetched = _run_with_plan(
+        "Nike", plan_with(["reddit", "jobs"]), config={"_company_signal": "--official-site"},
+        depth="quick", requested_sources=["reddit", "x"],
+    )
+    assert "jobs" not in fetched
+    # The quick run did lose the plan's jobs lane to --search, so it says so.
+    warnings = [line for line in capsys.readouterr().err.splitlines() if "--search dropped" in line]
+    assert len(warnings) == 1
+    assert "jobs" in warnings[0]
+
+
+def test_search_list_on_a_run_with_no_company_signal_keeps_jobs_off():
+    _report, fetched = _run_with_plan(
+        "Kanye West", plan_with(["reddit"], ["x"]), requested_sources=["reddit", "x"],
+    )
+    assert "jobs" not in fetched
+
+
+def test_engine_planned_company_run_under_a_search_list_runs_jobs():
+    with patch.object(pipeline, "_retrieve_stream", return_value=([], {})) as retrieve:
+        pipeline.run(
+            topic="Nike", config={"_company_signal": "--official-site"}, mock=True,
+            web_backend="none", depth="default", requested_sources=["reddit", "x"],
+        )
+    assert "jobs" in {call.kwargs["source"] for call in retrieve.call_args_list}
+
+
+def test_past_window_jobs_skip_does_not_trigger_the_search_warning(capsys):
+    report, fetched = _run_with_plan(
+        "Nike", plan_with(["reddit", "jobs"]),
+        config={"_company_signal": "--official-site"},
+        requested_sources=["reddit", "x"], as_of_date="2025-01-31",
+    )
+    assert "jobs" not in fetched
+    assert report.source_status["jobs"].detail == pipeline.JOBS_PAST_WINDOW_SKIP
+    err = capsys.readouterr().err
+    assert "--search would have dropped" not in err
+    assert "--search dropped" not in err
 
 
 def test_jobs_the_host_named_in_a_later_subquery_is_not_added_again(capsys):
