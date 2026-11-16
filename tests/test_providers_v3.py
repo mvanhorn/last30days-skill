@@ -102,6 +102,53 @@ class TestExtractJson(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             providers.extract_json("no json here at all")
 
+    def test_valid_json_that_is_not_an_object_raises_value_error(self):
+        # Gemini's JSON mode allows a top-level array; a model that answers
+        # with a bare list (or null/number/string) must raise ValueError, which
+        # the planner and reranker catch to fall back, rather than return a
+        # non-dict that later blows up on `.get(...)`.
+        for text in (
+            '[{"candidate_id": "c1", "relevance": 80}]',
+            "null",
+            "42",
+            '"just a string"',
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    providers.extract_json(text)
+
+
+class GenerateJsonNonObjectFallbackTests(unittest.TestCase):
+    """A non-object JSON reply goes through the real generate_json path and
+    lands in the callers' existing fallback, instead of crashing the run."""
+
+    class _TextStub(providers.ReasoningClient):
+        name = "stub"
+
+        def __init__(self, text):
+            super().__init__()
+            self.text = text
+
+        def generate_text(self, model, prompt, *, tools=None, response_mime_type=None):
+            return self.text
+
+    def test_planner_falls_back_on_top_level_array(self):
+        import contextlib
+        from lib import planner
+
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            plan = planner.plan_query(
+                topic="Ghostty terminal tips",
+                available_sources=["reddit", "x"],
+                requested_sources=None,
+                depth="default",
+                provider=self._TextStub('[{"intent": "how_to", "subqueries": []}]'),
+                model="m",
+            )
+        self.assertIn("LLM planning failed", buf.getvalue())
+        self.assertTrue(plan.subqueries)
+
 
 class TestExtractOpenAIText(unittest.TestCase):
     def test_output_text_field(self):

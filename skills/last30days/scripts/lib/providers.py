@@ -566,12 +566,18 @@ def extract_json(text: str) -> dict[str, Any]:
     if not text:
         raise ValueError("Expected JSON response, got empty text")
     try:
-        return json.loads(text)
+        value = json.loads(text)
     except json.JSONDecodeError:
         match = re.search(r"\{[\s\S]*\}", text)
         if not match:
             raise
-        return json.loads(match.group(0))
+        value = json.loads(match.group(0))
+    # Valid JSON is not always an object (Gemini's JSON mode allows a
+    # top-level array). Callers read it with .get(), so a list, null, or
+    # number must fail here, where their ValueError fallback catches it.
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a JSON object, got {type(value).__name__}")
+    return value
 
 
 def extract_gemini_text(payload: dict[str, Any]) -> str:
