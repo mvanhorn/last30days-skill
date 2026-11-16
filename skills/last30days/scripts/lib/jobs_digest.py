@@ -13,7 +13,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from . import hiring_signals
+from . import hiring_signals, jobs_teams
 from .job_boilerplate import BOILERPLATE_MIN_ROLES  # noqa: F401 (re-exported)
 from .job_boilerplate import key as _key
 from .job_boilerplate import role_sentences, shared_sentence_counts
@@ -102,12 +102,17 @@ def distinct_roles(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def select_roles(
     items: list[dict[str, Any]], *, limit: int = DIGEST_MAX_ROLES,
-    open_roles: int | None = None,
+    open_roles: int | None = None, teams: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Pick the story roles, then the roles rarest on this board, at most ``limit``.
+    """Pick the story roles, the named-team roles, then the roles rarest on
+    this board, at most ``limit``.
 
     Roles a story term matched (``story_term``) come first, up to
-    ``STORY_ROLE_SLOTS`` of them; see ``_story_picks``. The rest are scored:
+    ``STORY_ROLE_SLOTS`` of them; see ``_story_picks``. Then, from ``teams``
+    (``jobs_teams.named_teams``), the leads of teams no other title names
+    (tagged ``team_lead``) and each top team's newest role (tagged ``team``),
+    up to ``jobs_teams.LEAD_ROLE_SLOTS`` and ``jobs_teams.TEAM_ROLE_SLOTS``.
+    The rest are scored:
     a role scores for sitting in a department no other role is in, for a
     location no other row names, for a title word no other role uses, and for
     a founding, leadership or specialized title. On a board of more than
@@ -182,11 +187,41 @@ def select_roles(
 
     story = _story_picks(roles, min(limit, STORY_ROLE_SLOTS))
     taken = set(story)
+    named = _team_picks(roles, teams, taken)
+    taken.update(named)
     order = sorted(
         (index for index in range(len(roles)) if index not in taken),
         key=lambda index: (-score(roles[index]), _reverse(posted(roles[index])), index),
     )
-    return [roles[index] for index in [*story, *order][:limit]]
+    return [roles[index] for index in [*story, *named, *order][:limit]]
+
+
+def _team_picks(
+    roles: list[dict[str, Any]], teams: dict[str, Any] | None, taken: set[int],
+) -> list[int]:
+    """Indexes of the named-team leads, then each top team's newest role,
+    tagging each role with what it stands for. A role already taken (a story
+    match) keeps its slot and is not counted twice."""
+    if not teams:
+        return []
+    where = {_role_key(role["item"]): index for index, role in enumerate(roles)}
+    picks: list[int] = []
+
+    def take(row: dict[str, Any], tag: str, value: Any, slots: int, used: list[int]) -> None:
+        index = where.get(_role_key(row)) if _key(row.get("title")) else None
+        if index is None or index in taken or index in picks or len(used) >= slots:
+            return
+        roles[index][tag] = value
+        picks.append(index)
+        used.append(index)
+
+    leads: list[int] = []
+    for row in teams.get("lead_items") or []:
+        take(row, "team_lead", True, jobs_teams.LEAD_ROLE_SLOTS, leads)
+    members: list[int] = []
+    for team, row in zip(teams.get("teams") or [], teams.get("team_items") or []):
+        take(row, "team", {"name": team["name"], "roles": team["roles"]}, jobs_teams.TEAM_ROLE_SLOTS, members)
+    return picks
 
 
 def _story_picks(roles: list[dict[str, Any]], slots: int) -> list[int]:
@@ -335,6 +370,7 @@ def build_digest(
             "urls": list(role.get("urls") or []),
             "text": unique,
         })
-        if role.get("story_term"):
-            entries[-1]["story_term"] = role["story_term"]
+        for tag in ("story_term", "team", "team_lead"):
+            if role.get(tag):
+                entries[-1][tag] = role[tag]
     return {"distinct_roles": len(roles), "roles": entries}

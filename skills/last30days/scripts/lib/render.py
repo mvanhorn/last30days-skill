@@ -2570,6 +2570,9 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
             f"{_escape_markdown_plain_text(name)} ({roles:,} role{'' if roles == 1 else 's'})"
             for name, roles in counts
         ) + "."
+    teams = _named_teams_line(digest.get("teams"))
+    if teams:
+        out.append(teams)
     if digest.get("note"):
         out.append(f"- Note: {digest['note']}")
     size = sum(len(line) + 1 for line in out)
@@ -2592,6 +2595,12 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         if entry.get("story_term"):
             parts.append("story term: " + _format_untrusted_evidence(
                 " ".join(str(entry["story_term"]).split()), 80))
+        if entry.get("team_lead"):
+            parts.append("new-team lead")
+        team = entry.get("team")
+        if isinstance(team, dict) and team.get("name"):
+            parts.append("team: " + _format_untrusted_evidence(
+                " ".join(str(team["name"]).split()), 80) + f" ({int(team.get('roles') or 0):,} roles)")
         line = "- " + " | ".join(parts)
         text = " ".join(str(entry.get("text") or "").split())
         if text:
@@ -2602,6 +2611,26 @@ def _jobs_digest_block(report: schema.Report) -> tuple[list[str], set[str]]:
         out.append(line)
         shown.update(url for url in (entry.get("url"), *(entry.get("urls") or [])) if url)
     return out, shown
+
+
+def _named_teams_line(teams: object) -> str:
+    """The board's named teams, each with its role count and, when the board
+    gives true posted dates, how many of them were posted in the window.
+    Empty when the board names none."""
+    if not isinstance(teams, list):
+        return ""
+    named = []
+    for team in teams:
+        if not isinstance(team, dict) or not team.get("name"):
+            continue
+        roles = int(team.get("roles") or 0)
+        count = f"{roles:,} roles"
+        if isinstance(team.get("new"), int) and not isinstance(team.get("new"), bool):
+            count += f", {team['new']:,} new"
+        named.append(_format_untrusted_evidence(" ".join(str(team["name"]).split()), 80) + f" ({count})")
+    if not named:
+        return ""
+    return "- Named teams (team names repeated across this board's titles): " + "; ".join(named) + "."
 
 
 def _story_search_status(record: object) -> str:

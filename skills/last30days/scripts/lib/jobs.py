@@ -35,7 +35,7 @@ from html import unescape
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
-from . import dates, grounding, health, http, jobs_digest, jobs_story, log
+from . import dates, grounding, health, http, jobs_digest, jobs_story, jobs_teams, log
 from .job_boards import detect as board_detect
 from .job_boards import robots as board_robots
 
@@ -1023,8 +1023,10 @@ def _sitemap_tier(
         artifact["story_search"] = story_record
     if items:
         eligible = [item for item in items if not item.get("digest_excluded")]
-        selected = jobs_digest.select_roles(eligible, open_roles=total)
+        teams = jobs_teams.named_teams(eligible, company=company, window_start=date_range[0])
+        selected = jobs_digest.select_roles(eligible, open_roles=total, teams=teams)
         artifact["digest"] = jobs_digest.build_digest(eligible, selected)
+        artifact["digest"]["teams"] = teams["teams"]
         artifact["digest"]["titles_only"] = True
         notes.append(
             f"titles only: the roles come from the job sitemap of {host}, "
@@ -1199,9 +1201,12 @@ def _read_board(
         eligible = [item for item in items if not item.get("digest_excluded")]
         # Story matches the newest-first read did not reach may be chosen,
         # and are never counted as the board's roles.
+        # Named teams are read from the board's own roles, never story extras.
+        teams = jobs_teams.named_teams(eligible, company=company, window_start=date_range[0])
         selected = jobs_digest.select_roles(
             eligible + [item for item in extras if not item.get("digest_excluded")],
             open_roles=_board_counts(items, board, date_range)["open_roles"],
+            teams=teams,
         )
         late = failed = 0
         fetch_details = _detail_fetcher(provider)
@@ -1210,6 +1215,7 @@ def _read_board(
                 [role["item"] for role in selected], deadline=deadline,
             )
         artifact["digest"] = jobs_digest.build_digest(eligible, selected)
+        artifact["digest"]["teams"] = teams["teams"]
         notes = []
         coverage = _coverage_note(items, board, provider, budget)
         if coverage:
