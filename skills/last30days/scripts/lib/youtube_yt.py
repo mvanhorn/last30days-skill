@@ -2337,14 +2337,22 @@ def search_youtube_sc(
             raw.get("id") or raw.get("video_id") or raw.get("videoId") or ""
         )
         title = raw.get("title", "")
+        # SC's /v1/youtube/search returns camelCase fields (viewCountInt,
+        # publishedTime, lengthSeconds) and `channel` as an object; the
+        # snake_case names stay as fallbacks.
         channel = raw.get("channel") or raw.get("channel_name") or raw.get("uploader", "")
+        if isinstance(channel, dict):
+            channel = channel.get("title") or channel.get("handle") or ""
         description = str(raw.get("description", ""))[:500]
-        view_count = raw.get("view_count") or raw.get("views", 0)
+        view_count = raw.get("view_count") or raw.get("viewCountInt") or raw.get("views", 0)
         like_count = raw.get("like_count") or raw.get("likes", 0)
         comment_count = raw.get("comment_count") or raw.get("comments", 0)
 
         # Date: try multiple field names
-        date_str = raw.get("upload_date") or raw.get("date") or raw.get("published_at", "")
+        date_str = (
+            raw.get("upload_date") or raw.get("date") or raw.get("published_at")
+            or raw.get("publishedTime") or ""
+        )
         if date_str and len(date_str) == 8 and date_str.isdigit():
             date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
         elif date_str and "T" in date_str:
@@ -2365,7 +2373,7 @@ def search_youtube_sc(
                 "likes": like_count or 0,
                 "comments": comment_count or 0,
             },
-            "duration": raw.get("duration"),
+            "duration": raw.get("duration") or raw.get("lengthSeconds"),
             "relevance": _compute_relevance(core_topic, f"{title} {description}"),
             "why_relevant": f"YouTube: {title[:60]}" if title else f"YouTube: {core_topic}",
             "description": description,

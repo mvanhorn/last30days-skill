@@ -2334,6 +2334,48 @@ class TestYouTubeDateWindowByFreshnessMode(unittest.TestCase):
         )
         self.assertEqual({i["video_id"] for i in out["items"]}, {"s3", "s4"})
 
+    def test_sc_search_reads_documented_response_shape(self):
+        # Shape of a /v1/youtube/search video per docs.scrapecreators.com:
+        # camelCase counts/dates and `channel` as an object.
+        def video(vid, published, views):
+            return {
+                "type": "video",
+                "id": vid,
+                "url": f"https://www.youtube.com/watch?v={vid}",
+                "title": f"Ghostty terminal review {vid}",
+                "thumbnail": "https://i.ytimg.com/vi/x/hqdefault.jpg",
+                "channel": {
+                    "id": "UCx", "title": "Terminal Weekly",
+                    "handle": "@terminalweekly", "thumbnail": "https://yt3.ggpht.com/x",
+                },
+                "viewCountText": f"{views:,} views",
+                "viewCountInt": views,
+                "publishedTimeText": "3 weeks ago",
+                "publishedTime": published,
+                "lengthText": "4:14",
+                "lengthSeconds": 254,
+            }
+
+        raw = [
+            video("in1", "2026-09-20T17:08:46.499Z", 14860),
+            video("in2", "2026-10-05T09:00:00.000Z", 462705),
+            video("old", "2017-03-01T12:00:00.000Z", 999999),
+        ]
+        with mock.patch.object(youtube_yt, "_sc_youtube_search", return_value=raw), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript", return_value="transcript"):
+            out = youtube_yt.search_youtube_sc(
+                "Ghostty terminal", self.FROM, self.TO, token="dummy-key",
+                freshness_mode="balanced_recent",
+            )
+
+        items = out["items"]
+        self.assertEqual([i["video_id"] for i in items], ["in2", "in1"])
+        by_id = {i["video_id"]: i for i in items}
+        self.assertEqual(by_id["in1"]["date"], "2026-09-20")
+        self.assertEqual(by_id["in2"]["engagement"]["views"], 462705)
+        self.assertEqual(by_id["in1"]["channel_name"], "Terminal Weekly")
+        self.assertEqual(by_id["in1"]["duration"], 254)
+
 
 if __name__ == "__main__":
     unittest.main()
