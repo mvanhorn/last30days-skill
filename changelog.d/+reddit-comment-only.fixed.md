@@ -1,0 +1,1 @@
+Logged-in Reddit search no longer fills a report with unrelated threads that mention the topic in a single comment. A thread whose title and body never name the topic is kept only to fill a thin result.

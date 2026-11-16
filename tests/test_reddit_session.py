@@ -473,3 +473,29 @@ def test_limiter_sleep_is_injectable():
     limiter.acquire()
     limiter.acquire()
     assert slept and all(s > 0 for s in slept)
+
+
+class TestCommentOnlyMatches:
+    """A thread that names the topic only in one matched comment fills in a
+    thin result and is left out of a well-covered one."""
+
+    @staticmethod
+    def _item(pid, title, comment=None):
+        item = {"title": title, "selftext": "", "metadata": {"post_id": pid}, "top_comments": []}
+        if comment:
+            item["top_comments"] = [{"excerpt": comment, "matched": True}]
+        return item
+
+    def test_well_covered_topic_drops_comment_only_threads(self):
+        strong = [self._item(f"s{i}", f"Ghostty terminal tip {i}") for i in range(8)]
+        stray = self._item("x1", "SchoppenBOER", comment="unrelated, but ghostty terminal is nice")
+        kept = reddit_session.topic_bar("Ghostty terminal", strong + [stray])
+        assert [i["metadata"]["post_id"] for i in kept] == [f"s{i}" for i in range(8)]
+
+    def test_thin_topic_keeps_comment_only_threads_as_fill(self):
+        strong = [self._item("s1", "Ghostty terminal release")]
+        stray = self._item("x1", "Terminal emulators thread", comment="I switched to ghostty terminal last week")
+        off = self._item("x2", "Cats", comment="no mention here")
+        kept = reddit_session.topic_bar("Ghostty terminal", [strong[0], stray, off])
+        assert [i["metadata"]["post_id"] for i in kept] == ["s1", "x1"]
+        assert kept[1]["comment_only_match"] is True
