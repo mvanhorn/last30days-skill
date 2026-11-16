@@ -406,9 +406,31 @@ class TestFetchPostComments:
         assert first["excerpt"] == "great thread"
         assert first["date"] == "2026-07-02"
         assert first["url"] == "https://reddit.com/r/tea/comments/abc123/x/mjwb1hg/"
-        # link_id uses the t3_ prefix; wide recency slice, ranked client-side
+        # link_id uses the t3_ prefix; the whole tree, ranked client-side
         assert "link_id=t3_abc123" in g.call_args[0][0]
         assert f"limit={reddit_arctic.MAX_COMMENT_ROWS}" in g.call_args[0][0]
+
+    def test_requests_the_comment_tree_not_a_recency_slice(self):
+        # The search endpoint sorts only by created_utc, so a capped slice of a
+        # busy thread held only its newest replies and missed the top-voted ones.
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([])) as g:
+            reddit_arctic.fetch_post_comments("abc123")
+        url = urlsplit(g.call_args[0][0])
+        assert url.path == "/api/comments/tree"
+        assert "sort" not in parse_qs(url.query)
+
+    def test_nested_replies_ranked_with_top_level(self):
+        # A top-voted reply nested under a low-scored parent must still rank
+        # first; more-stubs, empty replies and non-dict children are skipped.
+        def node(score, replies="", pid="c"):
+            return {"kind": "t1", "data": dict(_comment_row(pid=pid, score=score), replies=replies)}
+        more = {"kind": "more", "data": {"count": 12, "children": ["x1", "x2"]}}
+        listing = {"kind": "Listing", "data": {"children": [node(139, pid="deep"), more, "junk"]}}
+        tree = [node(3, listing, pid="parent"), node(64, pid="sibling"), more]
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp(tree)):
+            out = reddit_arctic.fetch_post_comments("abc123", limit=10)
+        assert [c["score"] for c in out] == [139, 64, 3]
+        assert out[0]["url"].endswith("/mjwb1hg/")
 
     def test_request_bounded_by_single_deadline(self):
         with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([])) as g, \

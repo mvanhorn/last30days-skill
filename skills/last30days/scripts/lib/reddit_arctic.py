@@ -24,7 +24,7 @@ from . import http
 
 API = "https://arctic-shift.photon-reddit.com/api/posts/ids"
 SEARCH_API = "https://arctic-shift.photon-reddit.com/api/posts/search"
-COMMENTS_API = "https://arctic-shift.photon-reddit.com/api/comments/search"
+COMMENTS_API = "https://arctic-shift.photon-reddit.com/api/comments/tree"
 BATCH = 50          # ids per request
 TIMEOUT = 15
 MAX_BATCHES = 3     # cap total requests per run (bounds latency + rate-limit risk)
@@ -43,9 +43,13 @@ _LISTING_SUPPLEMENT_MULTIPLIER = 2  # fetch 2x posts when supplementing multi-so
 # Total deadline for listing fetches to prevent unbounded stalls when many
 # subreddits are requested and arctic is slow/unreachable.
 _LISTING_DEADLINE_SECONDS = 45  # ~3 subs at 15s timeout each
-# Comment fallback: fetch a wide recency slice, then rank by score client-side
-# (the archive's sort_type only supports created_utc).
-MAX_COMMENT_ROWS = 100
+# Comment fallback: the archive's comment search sorts only by created_utc, so a
+# capped slice of a busy thread held only its newest replies and missed its most
+# upvoted ones (a 146-reply thread lost its 139- and 64-point replies). The tree
+# endpoint returns the thread's replies, nested ones included, up to this many
+# rows; they are flattened and ranked by score client-side. On a 628-reply
+# thread a 500-row tree kept the same top replies as an uncapped one.
+MAX_COMMENT_ROWS = 500
 # In-run memo: base36 id -> {score, num_comments}. Module-level so repeated
 # fetch_scores calls within one `/last30days` run (e.g. across subqueries) reuse
 # results, but capped at CACHE_MAX entries (never reached in a normal CLI run).
@@ -448,6 +452,32 @@ def fetch_listings(
     return unique
 
 
+def _flatten_comment_tree(nodes: List[Any]) -> List[Dict[str, Any]]:
+    """Comment dicts from an archive comment tree, nested replies included.
+
+    Tree nodes are Reddit-style ``{"kind": "t1", "data": {..., "replies": ...}}``
+    wrappers whose ``replies`` is a listing or an empty string; a bare comment
+    dict is accepted too. ``more`` stubs carry no body and are skipped. The walk
+    is iterative, so a deep thread cannot exhaust the stack.
+    """
+    out: List[Dict[str, Any]] = []
+    stack = list(reversed(nodes))
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        row = node["data"] if isinstance(node.get("data"), dict) else node
+        if "body" in row:
+            out.append(row)
+        replies = row.get("replies")
+        if isinstance(replies, dict):
+            listing = replies.get("data")
+            replies = listing.get("children") if isinstance(listing, dict) else None
+        if isinstance(replies, list):
+            stack.extend(reversed(replies))
+    return out
+
+
 def fetch_post_comments(
     post_id: str,
     limit: int = 10,
@@ -474,7 +504,7 @@ def fetch_post_comments(
         return []
     try:
         data = _search_once(
-            f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}&sort=desc", end,
+            f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}", end,
         )
     except Exception as e:  # network error / non-200 — degrade, never raise
         _log(f"comments lookup failed t3_{pid}: {e}")
@@ -487,7 +517,7 @@ def fetch_post_comments(
     from .snippet import cut_quote
 
     comments: List[Dict[str, Any]] = []
-    for row in rows:
+    for row in _flatten_comment_tree(rows):
         if not isinstance(row, dict):
             continue
         author = row.get("author") or "[deleted]"
