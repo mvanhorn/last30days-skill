@@ -444,11 +444,14 @@ def _args(emit="compact", save_dir=None, output=None, **extra):
 
 
 def _stdout(report, monkeypatch, *, claude_code, emit="compact", save_dir=None, entity_reports=None,
-            no_checklist=False, **extra):
+            no_checklist=False, entrypoint=None, **extra):
     monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     monkeypatch.delenv("LAST30DAYS_NO_REPORT_CHECKLIST", raising=False)
     if claude_code:
         monkeypatch.setenv("CLAUDECODE", "1")
+    if entrypoint is not None:
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", entrypoint)
     if no_checklist:
         monkeypatch.setenv("LAST30DAYS_NO_REPORT_CHECKLIST", "1")
     out = io.StringIO()
@@ -689,10 +692,38 @@ def test_checklist_says_copy_through_the_count_and_that_six_is_a_ceiling(monkeyp
     assert "a ceiling, not a target" in block
 
 
-def test_checklist_names_the_marker_for_key_patterns_and_for_the_invitation(monkeypatch):
-    block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=True))
+@pytest.mark.parametrize("entrypoint", [None, "cli"])
+def test_terminal_checklist_keeps_pseudo_lists_tight_with_hard_breaks(monkeypatch, entrypoint):
+    # cmux and other terminals report `cli`; older Claude Code builds set no entrypoint.
+    block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=True,
+                               entrypoint=entrypoint))
     assert "KEY PATTERNS as `1\\.`, invitation lines as `•`" in block
-    assert "with a blank line between each" in block
+    # A trailing backslash is a hard line break: the terminal draws each item on
+    # its own row, and a markdown viewer (Remote Control, a phone) keeps them apart.
+    assert "end every line of the block except its last with `\\`" in block
+    assert "label line too" in block
+    assert "no blank line between" in block
+    assert "with a blank line between each" not in block
+
+
+@pytest.mark.parametrize("entrypoint", ["sdk-ts", "claude-desktop", "claude-vscode"])
+def test_app_checklist_asks_for_real_tight_lists(monkeypatch, entrypoint):
+    # T3 Code reports `sdk-ts`; apps render markdown themselves, so the terminal's
+    # streaming link redraw never happens there and real lists render cleanly.
+    block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=True,
+                               entrypoint=entrypoint))
+    assert "real numbered list" in block
+    assert "no blank line between items" in block
+    assert "`1\\.`" not in block
+    assert "no markdown lists anywhere" not in block
+    assert "raw `name (url)` text" not in block
+
+
+def test_no_list_line_without_claude_code_even_with_an_entrypoint(monkeypatch):
+    block = _checklist(_stdout(_mixed_pool_report(), monkeypatch, claude_code=False,
+                               entrypoint="sdk-ts"))
+    for needle in ("markdown list", "real numbered list", "`1\\.`", "`•`"):
+        assert needle not in block
 
 
 def test_posts_entry_ends_its_copyable_part_at_the_count():
