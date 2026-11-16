@@ -9,6 +9,24 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.2.1] - 2026-11-16
+
+### Security
+
+- Hosted-backend runs now sanitize `--save-suffix` the same way local saves do, so traversal fragments cannot escape the save directory in that mode either ([#736](https://github.com/mvanhorn/last30days-skill/issues/736)).
+
+### Fixed
+
+- The post-run "Free fixes" hint no longer tells you to add `youtube_comments` to `INCLUDE_SOURCES` when yt-dlp (which fetches YouTube comments keyless) is installed, when the entry is already set, or when `EXCLUDE_SOURCES=youtube_comments` overrides the opt-in. Fixes #1437. ([#1437](https://github.com/mvanhorn/last30days-skill/issues/1437))
+- `doctor` no longer reports a failed grok probe as a broken credential store. When the probe raises, X reads as unconfigured with cookie guidance, and a set `X_BEARER_TOKEN` names the opt-in X API lane instead of being masked. ([#1448](https://github.com/mvanhorn/last30days-skill/issues/1448))
+- A reasoning-model reply that is valid JSON but not an object (a top-level array, `null`, or a number) now falls back to deterministic planning and ranking instead of crashing the run.
+- Comparison runs on macOS Bash 3.2 no longer fail before the engine starts when the topic contains an apostrophe or backtick; the comparison recipe now captures its topic the same way the research runbook has since [#1240](https://github.com/mvanhorn/last30days-skill/pull/1240).
+- GitHub comment enrichment now excludes automated bot accounts and ranks human responses locally by reactions instead of relying on unsupported REST sort parameters.
+- KEY PATTERNS and the follow-up suggestions no longer have a blank line between every item on Claude Code. T3 Code, the desktop app and IDEs now get real markdown lists, and the Claude Code terminal keeps its link-safe `1\.` and `•` lines, now one per row.
+- Reddit comment enrichment on hosts where the shreddit partials are blocked now reads the arctic-shift comment tree, so busy threads keep their most-upvoted replies instead of a sample of the newest 100. Thanks to @terry-li-hm, whose #1467 found and measured this.
+- The ScrapeCreators YouTube search fallback now reads the fields that endpoint returns (`publishedTime`, `viewCountInt`, `lengthSeconds`, and the `channel` object), so its videos keep their dates, view counts and channel names instead of being dropped by the date window.
+
+
 ## [4.2.0] - 2026-11-15
 
 ### Added

@@ -1,1 +1,0 @@
-KEY PATTERNS and the follow-up suggestions no longer have a blank line between every item on Claude Code. T3 Code, the desktop app and IDEs now get real markdown lists, and the Claude Code terminal keeps its link-safe `1\.` and `•` lines, now one per row.

@@ -1,1 +1,0 @@
-Hosted-backend runs now sanitize `--save-suffix` the same way local saves do, so traversal fragments cannot escape the save directory in that mode either ([#736](https://github.com/mvanhorn/last30days-skill/issues/736)).
