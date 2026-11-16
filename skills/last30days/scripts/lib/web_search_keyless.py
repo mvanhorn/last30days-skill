@@ -118,7 +118,11 @@ _FRESHNESS = {
 }
 
 # A DuckDuckGo anomaly page answers 202 with no results; it is a throttle.
-_CHALLENGE_MARKERS = {"ddg": ("anomaly-modal",)}
+_CHALLENGE_MARKERS = {
+    "ddg": ("anomaly-modal",),
+    # Startpage answers a refused client with a proof-of-work challenge page.
+    "startpage": ('"challenge":{"issuedAt"',),
+}
 
 RUNGS = ("brave", "ddg", "startpage")
 OK = "ok"

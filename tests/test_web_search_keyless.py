@@ -281,6 +281,17 @@ class TestBraveRung:
         assert not any("duckduckgo" in url for url in calls)
         assert artifact["keyless_rungs"] == {"ddg": "skipped", "startpage": "ok"}
 
+    def test_startpage_proof_of_work_page_counts_as_throttled(self):
+        challenge = (
+            '"v1.26.4" {"rules":{"algorithm":"fast","difficulty":4},'
+            '"challenge":{"issuedAt":"2026-11-16T02:47:50Z","difficulty":4}}'
+        )
+        side_effect, _calls = _by_host(ddg=_DDG_HTML, startpage=challenge)
+        with mock.patch.object(web_search_keyless, "_ddg_rung", return_value=([], "empty")), \
+             mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            web_search_keyless.keyless_search("topic", _WINDOW, {})
+        assert web_search_keyless.rung_health()["startpage"] == "throttled"
+
     def test_rung_failures_still_reach_the_callers_sink(self):
         side_effect, _calls = _by_host(brave=_failing(429), ddg=_DDG_HTML)
         with http.capture_failures() as failures, \
