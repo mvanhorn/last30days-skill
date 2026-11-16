@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import unicodedata
@@ -167,6 +168,74 @@ def _is_identity_anchor(anchor: object) -> bool:
     return isinstance(anchor, str) and re.search(r"\w", anchor) is not None
 
 
+POLYMARKET_HINT_KINDS = ("team", "company", "person", "product", "other")
+POLYMARKET_HINT_RELATIONS = ("player", "person", "product")
+POLYMARKET_HINT_CAP = 5
+POLYMARKET_HINT_NAME_MAX = 80
+
+
+def _hint_name(value: object) -> str | None:
+    if isinstance(value, str) and value.strip() and len(value.strip()) <= POLYMARKET_HINT_NAME_MAX:
+        return value.strip()
+    return None
+
+
+def polymarket_hints(value: object) -> dict | None:
+    """Validate and normalize a plan's ``polymarket_hints``.
+
+    Returns None when absent; raises ValueError naming the bad part otherwise.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("polymarket_hints must be an object with kind, aliases, related")
+    unknown = sorted(set(value) - {"kind", "aliases", "related"})
+    if unknown:
+        raise ValueError(f"polymarket_hints has unknown fields {unknown}")
+    hints: dict = {}
+    kind = value.get("kind")
+    if kind is not None:
+        if not isinstance(kind, str) or kind.strip().casefold() not in POLYMARKET_HINT_KINDS:
+            raise ValueError(
+                f"polymarket_hints.kind must be one of {', '.join(POLYMARKET_HINT_KINDS)}"
+            )
+        hints["kind"] = kind.strip().casefold()
+    aliases = value.get("aliases", [])
+    if (
+        not isinstance(aliases, list)
+        or len(aliases) > POLYMARKET_HINT_CAP
+        or not all(_hint_name(alias) for alias in aliases)
+    ):
+        raise ValueError(
+            f"polymarket_hints.aliases must be an array of at most {POLYMARKET_HINT_CAP} "
+            f"non-empty strings of up to {POLYMARKET_HINT_NAME_MAX} characters"
+        )
+    hints["aliases"] = [_hint_name(alias) for alias in aliases]
+    related = value.get("related", [])
+    if (
+        not isinstance(related, list)
+        or len(related) > POLYMARKET_HINT_CAP
+        or not all(
+            isinstance(entry, dict)
+            and set(entry) <= {"name", "relation"}
+            and _hint_name(entry.get("name"))
+            and isinstance(entry.get("relation"), str)
+            and entry["relation"].strip().casefold() in POLYMARKET_HINT_RELATIONS
+            for entry in related
+        )
+    ):
+        raise ValueError(
+            f"polymarket_hints.related must be an array of at most {POLYMARKET_HINT_CAP} "
+            "{name, relation} objects with relation one of "
+            + ", ".join(POLYMARKET_HINT_RELATIONS)
+        )
+    hints["related"] = [
+        {"name": _hint_name(entry["name"]), "relation": entry["relation"].strip().casefold()}
+        for entry in related
+    ]
+    return hints
+
+
 def validate_external_plan(raw: dict) -> None:
     """Validate explicit-plan structure before permissive sanitization.
 
@@ -185,6 +254,7 @@ def validate_external_plan(raw: dict) -> None:
     anchors = raw.get("person_identity_anchors", [])
     if not isinstance(anchors, list) or not all(_is_identity_anchor(a) for a in anchors):
         raise ValueError("person_identity_anchors must be an array of non-empty strings")
+    polymarket_hints(raw.get("polymarket_hints"))
 
     source_weights = raw.get("source_weights")
     if source_weights is not None and not isinstance(source_weights, dict):
@@ -341,6 +411,7 @@ def build_drill_plan(
         cluster_mode=report.query_plan.cluster_mode,
         raw_topic=report.topic,
         person_identity_anchors=list(report.query_plan.person_identity_anchors),
+        polymarket_hints=copy.deepcopy(report.query_plan.polymarket_hints),
         subqueries=subqueries,
         source_weights={
             source: report.query_plan.source_weights.get(source, 1.0)
@@ -604,6 +675,10 @@ def _sanitize_plan(
     anchors = raw.get("person_identity_anchors")
     if not isinstance(anchors, list):
         anchors = []
+    try:
+        hints = polymarket_hints(raw.get("polymarket_hints"))
+    except ValueError:
+        hints = None
     return schema.QueryPlan(
         intent=intent,
         freshness_mode=freshness_mode,
@@ -623,6 +698,7 @@ def _sanitize_plan(
         notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()]
         + (_enablement_notes(topic) if not honor_plan_sources and intent == "how_to" and _is_enablement(topic) else []),
         person_identity_anchors=[a.strip() for a in anchors if _is_identity_anchor(a)],
+        polymarket_hints=hints,
     )
 
 
