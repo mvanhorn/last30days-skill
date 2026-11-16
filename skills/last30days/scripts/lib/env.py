@@ -1137,16 +1137,20 @@ def hosted_backend_configured() -> bool:
     return bool(read_secret_env("LAST30DAYS_API_KEY") and os.environ.get("LAST30DAYS_API_BASE"))
 
 
-def global_cookie_refusal(config: dict[str, Any]) -> str:
+def global_cookie_refusal(config: dict[str, Any], reddit_consent: bool = False) -> str:
     """Why every browser-cookie read is refused this run, or "".
 
     ``BROWSER_CONSENT=false``, ``FROM_BROWSER=off``, and a run that does not
     read browser cookies at all (``--no-browser-cookies``, the MCP default,
     and the plan-only ``--diagnose``/``--preflight``/``doctor`` modes).
+
+    ``reddit_consent`` marks an explicit yes to the Reddit session question.
+    That yes is its own consent, so a ``BROWSER_CONSENT=false`` saved when the
+    user skipped X does not block it. ``FROM_BROWSER=off`` still does.
     """
     if str(config.get("FROM_BROWSER") or "").strip().lower() == "off":
         return "FROM_BROWSER=off"
-    if cookie_access_denied(config):
+    if not reddit_consent and cookie_access_denied(config):
         return "BROWSER_CONSENT refuses browser reads"
     mode = config.get("_BROWSER_COOKIE_MODE") or "off"
     if mode == "plan_only":
@@ -1163,7 +1167,7 @@ def reddit_session_gate(config: dict[str, Any]) -> tuple[bool, str]:
     order is the global veto, then the contexts that never use the session,
     then the Reddit consent itself, then a recorded browser.
     """
-    refusal = global_cookie_refusal(config)
+    refusal = global_cookie_refusal(config, reddit_consent=_truthy(config.get(REDDIT_CONSENT_VAR)))
     if refusal:
         return False, refusal
     if str(config.get(X_HOST_VAR) or os.environ.get(X_HOST_VAR) or "").strip().lower() == GROK_BOT_HOST:

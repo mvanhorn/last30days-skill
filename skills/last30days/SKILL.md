@@ -130,7 +130,7 @@ For fresh research or discovery, resolve whether the agent session has a usable 
 
 ```bash
 if ! grep -q "SETUP_COMPLETE=true" ~/.config/last30days/.env 2>/dev/null; then echo "FIRST_RUN_DETECTED"
-elif [ "$LAST30DAYS_HOST" = grok-bot ] || grep -qE "^(REDDIT_SESSION_OFFERED=|REDDIT_BROWSER_CONSENT=|BROWSER_CONSENT=false|FROM_BROWSER=off)" ~/.config/last30days/.env; then echo "1"
+elif [ "$LAST30DAYS_HOST" = grok-bot ] || grep -qE "^(REDDIT_SESSION_OFFERED=|REDDIT_BROWSER_CONSENT=|FROM_BROWSER=off)" ~/.config/last30days/.env; then echo "1"
 else echo "REDDIT_OFFER"; fi
 ```
 

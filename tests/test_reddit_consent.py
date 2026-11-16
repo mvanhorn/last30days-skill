@@ -73,9 +73,19 @@ class TestAE1:
         assert _session(config) is None
         assert spy.calls == []
 
-    def test_reddit_yes_plus_browser_consent_false_reads_nothing(self, spy, monkeypatch):
+    def test_reddit_yes_outranks_an_x_refusal(self, monkeypatch):
         config = _config(monkeypatch, REDDIT_BROWSER_CONSENT="true", REDDIT_FROM_BROWSER="chrome",
                          BROWSER_CONSENT="false")
+        assert env.reddit_session_gate(config) == (True, "")
+
+    def test_browser_consent_false_without_a_reddit_yes_reads_nothing(self, spy, monkeypatch):
+        config = _config(monkeypatch, REDDIT_FROM_BROWSER="chrome", BROWSER_CONSENT="false")
+        assert _session(config) is None
+        assert spy.reddit_reads() == []
+
+    def test_from_browser_off_blocks_even_a_reddit_yes(self, spy, monkeypatch):
+        config = _config(monkeypatch, REDDIT_BROWSER_CONSENT="true", REDDIT_FROM_BROWSER="chrome",
+                         FROM_BROWSER="off")
         assert _session(config) is None
         assert spy.reddit_reads() == []
 
@@ -204,6 +214,10 @@ class TestSetup:
     def test_global_refusal_vetoes_the_setup_read(self, spy, tmp_path):
         result = setup_wizard.run_reddit_session_setup({"FROM_BROWSER": "off"}, tmp_path / ".env", consent=True)
         assert result["status"] == "vetoed" and spy.calls == []
+
+    def test_reddit_yes_after_skipping_x_still_reads(self, spy, tmp_path):
+        setup_wizard.run_reddit_session_setup({"BROWSER_CONSENT": "false"}, tmp_path / ".env", consent=True)
+        assert spy.calls
 
     def test_grok_bot_setup_reads_and_writes_nothing(self, spy, tmp_path):
         env_path = tmp_path / ".env"

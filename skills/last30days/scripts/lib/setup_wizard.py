@@ -1622,9 +1622,9 @@ def run_reddit_session_setup(
     reddit.com cookie outside a research run, and only on a yes. It reads
     browsers in order (the recorded one, then Chrome, then the rest), stops at
     the first with a ``reddit_session`` cookie, records that browser as
-    ``REDDIT_FROM_BROWSER`` and never prints or saves the cookie. A global
-    refusal (``FROM_BROWSER=off``, ``BROWSER_CONSENT=false``) and a Grok Bot
-    host read nothing. Either answer writes ``REDDIT_SESSION_OFFERED=true``
+    ``REDDIT_FROM_BROWSER`` and never prints or saves the cookie.
+    ``FROM_BROWSER=off`` and a Grok Bot host read nothing; a
+    ``BROWSER_CONSENT=false`` saved for X does not block this explicit yes. Either answer writes ``REDDIT_SESSION_OFFERED=true``
     so a returning user is asked once.
     """
     from . import env as _env
@@ -1641,7 +1641,8 @@ def run_reddit_session_setup(
     result: Dict[str, Any] = {"consent": True, "env_written": written, "note": REDDIT_SESSION_NOTE}
     probe = dict(config)
     probe["_BROWSER_COOKIE_MODE"] = "read"
-    refusal = _env.global_cookie_refusal(probe)
+    # This setup call is the Reddit yes itself, so only FROM_BROWSER=off vetoes it.
+    refusal = _env.global_cookie_refusal(probe, reddit_consent=True)
     if refusal:
         result.update(status="vetoed", reason=refusal, checked=[])
         return result

@@ -530,8 +530,9 @@ class TestOnboardingContract(unittest.TestCase):
         for answer in ("true", "false"):
             lines = ["SETUP_COMPLETE=true", "REDDIT_SESSION_OFFERED=true", f"REDDIT_BROWSER_CONSENT={answer}"]
             self.assertEqual(self._run_gate(lines), "1")
-        # A saved global refusal and a Grok Bot host never get the offer.
-        self.assertEqual(self._run_gate(["SETUP_COMPLETE=true", "BROWSER_CONSENT=false"]), "1")
+        # Skipping X saved BROWSER_CONSENT=false; that user still gets the Reddit offer once.
+        self.assertEqual(self._run_gate(["SETUP_COMPLETE=true", "BROWSER_CONSENT=false"]), "REDDIT_OFFER")
+        # FROM_BROWSER=off and a Grok Bot host never get the offer.
         self.assertEqual(self._run_gate(["SETUP_COMPLETE=true", "FROM_BROWSER=off"]), "1")
         self.assertEqual(self._run_gate(["SETUP_COMPLETE=true"], host="grok-bot"), "1")
 
