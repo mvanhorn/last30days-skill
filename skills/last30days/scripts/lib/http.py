@@ -97,7 +97,7 @@ USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 
 # urllib copies almost all headers across 3xx; strip credentials when origin changes (#1062).
 _CROSS_ORIGIN_AUTH_HEADERS = frozenset(
-    {"authorization", "x-access-token", "x-api-key", "x-csrf-token", "x-subscription-token"}
+    {"authorization", "cookie", "x-access-token", "x-api-key", "x-csrf-token", "x-subscription-token"}
 )
 
 
@@ -1396,8 +1396,15 @@ class RateLimiter:
     while sleeping so waiting threads don't serialize on each other.
     """
 
-    def __init__(self, rate_per_sec: float, burst: int | None = None):
+    def __init__(
+        self,
+        rate_per_sec: float,
+        burst: int | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ):
         self.rate = rate_per_sec
+        # Injectable so tests never sleep (#1342); None means time.sleep.
+        self._sleep = sleep
         self.capacity = burst if burst is not None else max(1, int(rate_per_sec))
         self._tokens = float(self.capacity)
         self._last = time.monotonic()
@@ -1431,7 +1438,7 @@ class RateLimiter:
                         self._waiting += 1
                         queued = True
                     wait = (1.0 - self._tokens) / self.rate
-                time.sleep(wait)
+                (self._sleep or time.sleep)(wait)
         finally:
             if queued:
                 with self._lock:
@@ -1677,6 +1684,87 @@ def reddit_keyless_get_text_retry_429(
         _record_failure(err)
     err = first[-1] if first else None
     return None, str(err) if err is not None else "no response"
+
+
+# --- Logged-in Reddit session transport ----------------------------------
+#
+# The opt-in session (lib/reddit_session.py) is kept apart from the keyless
+# family: its own limiter (so a keyless stampede never spends the account's
+# pacing, and the reverse), and its own memo, so a page fetched with the
+# cookie is never served to a logged-out caller and a logged-out page never
+# to the session. Failures stay out of the stream's failure sink: one Reddit
+# layer failing is a detail note, not the source's outcome.
+REDDIT_SESSION_RATE = 1.0
+REDDIT_SESSION_BURST = 2
+REDDIT_SESSION_LIMITER = RateLimiter(REDDIT_SESSION_RATE, burst=REDDIT_SESSION_BURST)
+REDDIT_SESSION_MEMO_MAX = 128
+_REDDIT_SESSION_MEMO: "OrderedDict[str, tuple[int, str]]" = OrderedDict()
+_REDDIT_SESSION_MEMO_LOCK = threading.Lock()
+
+
+def reset_reddit_session_memo() -> None:
+    with _REDDIT_SESSION_MEMO_LOCK:
+        _REDDIT_SESSION_MEMO.clear()
+
+
+def reddit_only_redirect(url: str) -> bool:
+    """Redirect guard for session requests: https on reddit.com or a subdomain."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and (host == "reddit.com" or host.endswith(".reddit.com"))
+
+
+def reddit_session_get(
+    url: str,
+    cookie_header: str,
+    *,
+    accept: str = "text/html",
+    timeout: float = 20,
+    deadline_monotonic: Optional[float] = None,
+    limiter: Optional[RateLimiter] = None,
+) -> tuple[Optional[int], Optional[str], bool]:
+    """GET ``url`` with the session cookie: ``(status, body, from_memo)``.
+
+    A 200 is memoized per URL in the session namespace; an error status
+    comes back with its body (a 403 page says whether Reddit logged the
+    session out) and is not memoized. ``status`` is None when no answer
+    arrived. Never raises, and never puts the cookie in a log line or an
+    error string: ``request`` logs only the URL.
+    """
+    if not reddit_only_redirect(url):
+        return None, None, False
+    with _REDDIT_SESSION_MEMO_LOCK:
+        cached = _REDDIT_SESSION_MEMO.get(url)
+        if cached is not None:
+            _REDDIT_SESSION_MEMO.move_to_end(url)
+            return cached[0], cached[1], True
+    (limiter or REDDIT_SESSION_LIMITER).acquire()
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": accept,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cookie": cookie_header,
+    }
+    bounds: Dict[str, Any] = {"redirect_guard": reddit_only_redirect}
+    if deadline_monotonic is not None:
+        bounds["deadline_monotonic"] = deadline_monotonic
+    with capture_failures():
+        try:
+            body = request(
+                "GET", url, headers=headers, timeout=timeout, retries=1,
+                max_429_retries=0, raw=True, **bounds,
+            )
+        except HTTPError as error:
+            return error.status_code, error.body, False
+        except Exception:
+            return None, None, False
+    text = body if isinstance(body, str) else ""
+    with _REDDIT_SESSION_MEMO_LOCK:
+        _REDDIT_SESSION_MEMO[url] = (200, text)
+        _REDDIT_SESSION_MEMO.move_to_end(url)
+        while len(_REDDIT_SESSION_MEMO) > REDDIT_SESSION_MEMO_MAX:
+            _REDDIT_SESSION_MEMO.popitem(last=False)
+    return 200, text, False
 
 
 def scrapecreators_headers(token: str) -> Dict[str, str]:

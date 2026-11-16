@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -230,6 +231,9 @@ def _save_briefing(data: dict, suffix: str = ""):
 
 
 def main():
+    # Briefings run on a schedule: any engine run started from here is a
+    # scheduled run, which keeps the logged-in Reddit session off.
+    os.environ.setdefault("LAST30DAYS_SCHEDULED_RUN", "1")
     parser = argparse.ArgumentParser(description="Generate last30days briefings")
     sub = parser.add_subparsers(dest="command")
 

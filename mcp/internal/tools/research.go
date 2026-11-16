@@ -22,7 +22,9 @@ type Config struct {
 
 // BrowserCookiesEnvOverride is an explicit MCP-layer opt-in. It only removes
 // the default-deny CLI flag; the engine still enforces its own recorded
-// browser-cookie consent and configuration.
+// browser-cookie consent and configuration. The logged-in Reddit session also
+// needs its own recorded Reddit consent (REDDIT_BROWSER_CONSENT), so this
+// override alone never unlocks a reddit.com cookie read.
 const BrowserCookiesEnvOverride = "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES"
 
 // allowEnginePlanEnv lets the engine use its internal planner. The research

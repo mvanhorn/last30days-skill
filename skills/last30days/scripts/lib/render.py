@@ -4105,6 +4105,10 @@ def _format_engagement(item: schema.SourceItem | None) -> str | None:
             # A fresh archive snapshot reads 0 or 1 whatever the thread's
             # real score is, so it is withheld rather than shown.
             text = ", ".join(part for part in ("score pending", text) if part)
+        matched = (item.metadata or {}).get("matched_comment_date") if item.source == "reddit" else None
+        if matched and str(matched) != str(item.published_at or "")[:10]:
+            # Kept for a comment that falls in the window on an older thread.
+            text = ", ".join(part for part in (text, f"comment {matched}") if part)
     else:
         # Generic fallback: engagement.items() yields (key, value) but
         # _fmt_pairs expects (value, label), so swap them.

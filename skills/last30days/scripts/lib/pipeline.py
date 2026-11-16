@@ -64,6 +64,7 @@ from . import (
     reddit_keyless,
     reddit_listing,
     reddit_public,
+    reddit_session,
     relevance,
     rerank,
     schema,
@@ -6667,10 +6668,14 @@ def _retrieve_stream_impl(
         )
         lane_notes: list[str] = []
         lane_paths: dict[str, str] = {}
+        # The consented logged-in session, when its gate passes (read once per
+        # run; None otherwise). Its budget is spent per entity.
+        lane_session = reddit_session.session_for(config)
         try:
             with reddit_keyless.lane_deadline(lane_deadline), \
                     reddit_keyless.lane_notes() as lane_notes, \
-                    reddit_keyless.lane_paths() as lane_paths:
+                    reddit_keyless.lane_paths() as lane_paths, \
+                    reddit_session.lane(lane_session, raw_topic or reddit_query):
                 public_results = reddit_public.search_reddit_public(
                     reddit_query, from_date, to_date, depth=depth,
                     subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,

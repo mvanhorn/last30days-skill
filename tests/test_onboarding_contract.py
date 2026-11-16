@@ -498,5 +498,90 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("non-interactive subprocess", self.step0)
 
 
+    # --- Reddit session offer (U6) ---
+
+    def _gate_script(self):
+        gate = self.text.split("**FIRST-RUN GATE", 1)[1].split("**Onboarding consent", 1)[0]
+        return gate.split("```bash\n", 1)[1].split("```", 1)[0]
+
+    def _run_gate(self, env_lines, host=None):
+        import os
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as home:
+            if env_lines is not None:
+                config = Path(home) / ".config" / "last30days"
+                config.mkdir(parents=True)
+                (config / ".env").write_text("".join(f"{line}\n" for line in env_lines))
+            env = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+            if host:
+                env["LAST30DAYS_HOST"] = host
+            out = subprocess.run(
+                ["bash", "-c", self._gate_script()], env=env, capture_output=True, text=True, check=False,
+            )
+            return out.stdout.strip()
+
+    def test_gate_offers_reddit_session_once_to_returning_users(self):
+        self.assertEqual(self._run_gate(None), "FIRST_RUN_DETECTED")
+        self.assertEqual(self._run_gate(["BROWSER_CONSENT=true"]), "FIRST_RUN_DETECTED")
+        self.assertEqual(self._run_gate(["SETUP_COMPLETE=true"]), "REDDIT_OFFER")
+        # Either answer writes the offered marker, so the offer never repeats.
+        for answer in ("true", "false"):
+            lines = ["SETUP_COMPLETE=true", "REDDIT_SESSION_OFFERED=true", f"REDDIT_BROWSER_CONSENT={answer}"]
+            self.assertEqual(self._run_gate(lines), "1")
+        # A saved global refusal and a Grok Bot host never get the offer.
+        self.assertEqual(self._run_gate(["SETUP_COMPLETE=true", "BROWSER_CONSENT=false"]), "1")
+        self.assertEqual(self._run_gate(["SETUP_COMPLETE=true", "FROM_BROWSER=off"]), "1")
+        self.assertEqual(self._run_gate(["SETUP_COMPLETE=true"], host="grok-bot"), "1")
+
+    def test_reddit_offer_records_the_answer_once(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            result = setup_wizard.run_reddit_session_setup({}, env_path, consent=False)
+            self.assertEqual(result["status"], "declined")
+            text = env_path.read_text()
+            self.assertIn("REDDIT_SESSION_OFFERED=true", text)
+            self.assertIn("REDDIT_BROWSER_CONSENT=false", text)
+
+    def test_reddit_question_is_its_own_consent_with_the_account_risk(self):
+        offer = reference_text("reddit-session")
+        question = offer.split("Question text (reproduce it verbatim):", 1)[1].split("\n- Modal hosts", 1)[0]
+        self.assertIn("Separate from any X access", question)
+        self.assertIn("reddit.com login cookie", question)
+        self.assertIn("acts as your own Reddit account", question)
+        self.assertIn("may breach Reddit's terms", question)
+        self.assertIn("REDDIT_BROWSER_CONSENT=false", question)
+        self.assertIn("never the cookie value", question)
+        self.assertIn("X consent never implies it", offer)
+        self.assertIn("A skip, an unrelated reply or no answer is a no", offer)
+        self.assertIn("setup --reddit-session", offer)
+        self.assertIn("setup --no-reddit-session", offer)
+        self.assertIn("never ask this question", offer.split("\n\n", 2)[1])
+        self.assertIn("REDDIT_SESSION_OFFERED=true", offer)
+
+    def test_reddit_offer_comes_after_the_x_answer_in_both_flows(self):
+        hook = "take the root Reddit session offer route"
+        modal_yes = self.modal.index('"Yes - X cookies + all CLIs"')
+        self.assertLess(modal_yes, self.modal.index(hook))
+        self.assertLess(self.modal.index(hook), self.modal.index('"Skip X - just the CLIs"'))
+        self.assertLess(self.modal.index(hook), self.modal.index("**Step 4"))
+        prose_yes = self.prose.index("On **yes** → run")
+        self.assertLess(prose_yes, self.prose.index(hook))
+        self.assertLess(self.prose.index(hook), self.prose.index("On **no** → run"))
+        self.assertIn("as its own step", self.prose)
+        self.assertIn("separate yes/no", self.prose)
+        # Never folded into the X question itself.
+        x_question = self.prose.split("Otherwise ask. Example:", 1)[1].split("**Wait for the answer.**", 1)[0]
+        self.assertNotIn("reddit", x_question.lower())
+
+    def test_grok_bot_flow_never_offers_the_reddit_session(self):
+        self.assertNotIn("cookie", self.grok.lower())
+        self.assertNotIn("reddit-session", self.grok)
+        self.assertNotIn("Reddit session offer", self.grok)
+
+
 if __name__ == "__main__":
     unittest.main()

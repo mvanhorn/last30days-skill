@@ -720,6 +720,16 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
         ('FROM_BROWSER', None),
         ('BROWSER_CONSENT', None),
+        # Opt-in logged-in Reddit session (lib/reddit_session.py). Its own
+        # consent, separate from BROWSER_CONSENT (which can only veto it),
+        # and its own browser, recorded by `setup --reddit-session`.
+        (REDDIT_CONSENT_VAR, None),
+        (REDDIT_FROM_BROWSER_VAR, None),
+        (REDDIT_OFFERED_VAR, None),
+        (REDDIT_SESSION_SCHEDULED_VAR, None),
+        # Process env only (see the loop below): a .env line must not make
+        # every run look scheduled.
+        (SCHEDULED_RUN_VAR, None),
         ('LAST30DAYS_X_COOKIE_ACCESS_DENIED', None),
         # agentcookie sidecar: soft-dep X cookie source (lib/agentcookie.py),
         # active only on extra hosts (Linux / Mac mini / Darwin sink) or when
@@ -779,7 +789,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     ]
 
     for key, default in keys:
-        if key == X_HOST_LANE_VAR:
+        if key in (X_HOST_LANE_VAR, SCHEDULED_RUN_VAR):
             # Process env only; the .env value never reaches config.
             config[key] = os.environ.get(key) or default
             continue
@@ -1084,7 +1094,131 @@ COOKIE_DOMAINS: dict[str, dict[str, Any]] = {
         "cookies": ["_session_id"],
         "mapping": {"_session_id": "TRUTHSOCIAL_TOKEN"},
     },
+    # The logged-in Reddit session. Its own consent gates it, and it is read
+    # from its own recorded browser, so the generic browser extract and the
+    # X-consent setup scan always skip it (``consent_key``); only
+    # read_reddit_session_cookie reads it, after reddit_session_gate passes.
+    "reddit": {
+        "domain": ".reddit.com",
+        "cookies": ["reddit_session"],
+        "mapping": {"reddit_session": "REDDIT_SESSION_COOKIE"},
+        "consent_key": "REDDIT_BROWSER_CONSENT",
+    },
 }
+
+# --- Opt-in logged-in Reddit session ----------------------------------------
+#
+# Reading the reddit.com login cookie needs its own affirmative consent,
+# separate from the X browser consent: a user may want one without the other.
+# Every global refusal still vetoes it. The cookie lives only in process
+# memory; nothing persists it.
+REDDIT_CONSENT_VAR = "REDDIT_BROWSER_CONSENT"
+REDDIT_FROM_BROWSER_VAR = "REDDIT_FROM_BROWSER"
+# Written once the returning-user offer was made, whatever the answer.
+REDDIT_OFFERED_VAR = "REDDIT_SESSION_OFFERED"
+# In-memory key for the session cookie (never a .env key). The _COOKIE
+# suffix is what fixture recording redacts.
+REDDIT_SESSION_COOKIE_VAR = "REDDIT_SESSION_COOKIE"
+# Scheduled runs (cron, watchlist, briefing) export this; process env only.
+SCHEDULED_RUN_VAR = "LAST30DAYS_SCHEDULED_RUN"
+# Lets a scheduled run use the session anyway (its Keychain prompt cannot be
+# answered unattended, so this is off by default).
+REDDIT_SESSION_SCHEDULED_VAR = "LAST30DAYS_REDDIT_SESSION_SCHEDULED"
+REDDIT_COOKIE_DOMAIN = ".reddit.com"
+REDDIT_COOKIE_NAMES = ("reddit_session",)
+# Setup's scan order for the Reddit login: Chrome first, then the rest.
+REDDIT_SETUP_BROWSERS = (
+    "chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium", "firefox", "safari",
+)
+
+
+def hosted_backend_configured() -> bool:
+    """True when research would run through the remote API backend."""
+    return bool(read_secret_env("LAST30DAYS_API_KEY") and os.environ.get("LAST30DAYS_API_BASE"))
+
+
+def global_cookie_refusal(config: dict[str, Any]) -> str:
+    """Why every browser-cookie read is refused this run, or "".
+
+    ``BROWSER_CONSENT=false``, ``FROM_BROWSER=off``, and a run that does not
+    read browser cookies at all (``--no-browser-cookies``, the MCP default,
+    and the plan-only ``--diagnose``/``--preflight``/``doctor`` modes).
+    """
+    if str(config.get("FROM_BROWSER") or "").strip().lower() == "off":
+        return "FROM_BROWSER=off"
+    if cookie_access_denied(config):
+        return "BROWSER_CONSENT refuses browser reads"
+    mode = config.get("_BROWSER_COOKIE_MODE") or "off"
+    if mode == "plan_only":
+        return "this mode reads no browser cookies"
+    if mode != "read":
+        return "browser cookies are off for this run"
+    return ""
+
+
+def reddit_session_gate(config: dict[str, Any]) -> tuple[bool, str]:
+    """Whether this run may read the Reddit login cookie: ``(allowed, why_not)``.
+
+    Pure: reads config and the process environment only, never a cookie. The
+    order is the global veto, then the contexts that never use the session,
+    then the Reddit consent itself, then a recorded browser.
+    """
+    refusal = global_cookie_refusal(config)
+    if refusal:
+        return False, refusal
+    if str(config.get(X_HOST_VAR) or os.environ.get(X_HOST_VAR) or "").strip().lower() == GROK_BOT_HOST:
+        return False, "never on a Grok Bot host"
+    if hosted_backend_configured():
+        return False, "the hosted API backend runs research remotely"
+    if _truthy(os.environ.get(SCHEDULED_RUN_VAR)) and not _truthy(
+        config.get(REDDIT_SESSION_SCHEDULED_VAR) or os.environ.get(REDDIT_SESSION_SCHEDULED_VAR)
+    ):
+        return False, "scheduled run (set LAST30DAYS_REDDIT_SESSION_SCHEDULED=1 to allow)"
+    if not _truthy(config.get(REDDIT_CONSENT_VAR)):
+        return False, "no Reddit session consent"
+    browser = str(config.get(REDDIT_FROM_BROWSER_VAR) or "").strip().lower()
+    if browser not in COOKIE_BROWSER_NAMES:
+        return False, "no browser recorded for the Reddit login (run setup --reddit-session)"
+    return True, ""
+
+
+def reddit_consent_state(config: dict[str, Any]) -> str:
+    """``granted``, ``refused``, or ``unset`` (doctor and setup; no read)."""
+    raw = config.get(REDDIT_CONSENT_VAR)
+    if raw is None or str(raw).strip() == "":
+        return "unset"
+    return "granted" if _truthy(raw) else "refused"
+
+
+def read_reddit_session_cookie(
+    config: dict[str, Any], browser: str | None = None,
+) -> tuple[str | None, str]:
+    """The ``reddit_session`` cookie from one browser: ``(value, status)``.
+
+    Reads only the recorded ``REDDIT_FROM_BROWSER`` (or ``browser``), never
+    ``FROM_BROWSER``. ``status`` is ``ok``, ``not-logged-in``,
+    ``permission-denied``, ``unsupported-encryption`` (a Windows app-bound
+    store) or ``error``. Never logs the value. Callers check
+    :func:`reddit_session_gate` first.
+    """
+    name = str(browser or config.get(REDDIT_FROM_BROWSER_VAR) or "").strip().lower()
+    if name not in COOKIE_BROWSER_NAMES:
+        return None, "error"
+    if os.name == "nt" and name != "firefox":
+        return None, "unsupported-encryption"
+    try:
+        from . import cookie_extract
+        cookies = cookie_extract.extract_cookies(name, REDDIT_COOKIE_DOMAIN, list(REDDIT_COOKIE_NAMES))
+    except PermissionError:
+        return None, "permission-denied"
+    except Exception:
+        return None, "error"
+    value = (cookies or {}).get("reddit_session")
+    if not value:
+        return None, "not-logged-in"
+    from . import http as _http
+    _http.add_fixture_redactions([value])
+    return value, "ok"
 
 COOKIE_BROWSER_NAMES = (
     "firefox", "safari", "chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium"
@@ -1183,6 +1317,9 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
         return {}
     extracted: dict[str, str] = {}
     for _service, spec in COOKIE_DOMAINS.items():
+        if spec.get("consent_key"):
+            # Its own gate and its own browser (read_reddit_session_cookie).
+            continue
         missing_cookies = [
             name for name in spec["cookies"] if not config.get(spec["mapping"][name])
         ]

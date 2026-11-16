@@ -674,6 +674,11 @@ def candidate_out_of_window(candidate: Candidate) -> bool:
                 item_date = datetime.fromisoformat(item.published_at[:10]).date()
                 if start <= item_date <= end:
                     return False
+                # A Reddit comment-search hit is in the window by the date of
+                # the comment it matched, whatever the thread's own date.
+                matched = (item.metadata or {}).get("matched_comment_date")
+                if matched and start <= datetime.fromisoformat(str(matched)[:10]).date() <= end:
+                    return False
             return True
         except (ValueError, TypeError):
             pass

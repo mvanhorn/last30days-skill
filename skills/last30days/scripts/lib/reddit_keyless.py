@@ -4,6 +4,12 @@
 runs on the surfaces that still serve data without a key, then enrichment runs
 on whatever was discovered:
 
+  Session         with the user's consent, their logged-in reddit.com
+                  session (reddit_session): post, comment and community
+                  search, and thread JSON as the first hydrator for every
+                  layer. Runs first; keyless site search is skipped when it
+                  served, and the web floor runs only when it found fewer
+                  on-topic threads than the ScrapeCreators floor.
   Dedicated lane  entity-home subreddits (e.g. r/Kanye) pulled in full via the
                   shreddit listing partials (top+hot+new, real scores), kept
                   whole (floor-exempt) because the sub IS the topic.
@@ -43,7 +49,7 @@ from typing import Any, Dict, List, Optional
 
 from . import http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
-from . import reddit_discover, reddit_health, reddit_hydrate, reddit_refs, web_search_keyless
+from . import reddit_discover, reddit_health, reddit_hydrate, reddit_refs, reddit_session, web_search_keyless
 # High-upvote posts from targeted-sub listings can bury on-topic search hits
 # under an engagement-first final sort. A relevance floor + relevance-first
 # final ranking keeps the section on-topic. Thresholds are shared with the
@@ -291,11 +297,15 @@ def _web_floor(
         if _out_of_time(deadline):
             _log("web floor hydration skipped: lane budget spent")
             return []
+        session = reddit_session.current()
+        extra: Dict[str, Any] = {}
+        if session is not None and session.alive:
+            extra["session_hydrator"] = reddit_session.hydrator(session, depth=depth, deadline=deadline)
         hydrated = _within(
             deadline, "web floor hydration", None,
             reddit_hydrate.hydrate,
             floor.refs, topic=topic, depth=depth, from_date=from_date, to_date=to_date,
-            **_stage_deadline(deadline),
+            **extra, **_stage_deadline(deadline),
         )
     except Exception as exc:  # the floor must never break the lane
         _log(f"web floor failed: {type(exc).__name__}: {exc}")
@@ -354,6 +364,66 @@ def _record_arctic(state: str) -> None:
         _mark("arctic", mapped)
 
 
+def _session_layer(
+    topic: str,
+    depth: str,
+    from_date: Optional[str],
+    to_date: Optional[str],
+    deadline: Optional[float],
+) -> List[Dict[str, Any]]:
+    """The consented logged-in session: search, then hydrate through thread
+    JSON first. ``[]`` when no session is open for this lane call. Never raises."""
+    session = reddit_session.current()
+    if session is None:
+        return []
+    if not session.alive:
+        _mark("session", session.state)
+        if session.state == reddit_session.EXPIRED:
+            _note(f"session-expired: {reddit_session.relogin_hint(session)}")
+        return []
+    try:
+        found = _within(
+            deadline, "session search", None,
+            reddit_session.discover, session, topic, depth=depth,
+            **_stage_deadline(deadline),
+        )
+        if found is None:
+            _mark("session", reddit_health.ERROR)
+            return []
+        if found.state == reddit_session.EXPIRED:
+            _mark("session", reddit_session.EXPIRED)
+            _note(f"session-expired: {reddit_session.relogin_hint(session)}")
+            return []
+        if not found.refs:
+            _mark("session", found.state or reddit_health.EMPTY)
+            return []
+        hydrated = _within(
+            deadline, "session hydration", None,
+            reddit_hydrate.hydrate,
+            found.refs, topic=topic, depth=depth, from_date=from_date, to_date=to_date,
+            session_hydrator=reddit_session.hydrator(session, found, depth=depth, deadline=deadline),
+            **_stage_deadline(deadline),
+        )
+    except Exception as exc:  # the session must never break the lane
+        _log(f"session layer failed: {type(exc).__name__}")
+        _mark("session", reddit_health.ERROR)
+        return []
+    if hydrated is None:
+        _mark("session", reddit_health.ERROR)
+        return []
+    _record_arctic(hydrated.arctic_state)
+    kept = reddit_session.topic_bar(topic, hydrated.items)
+    if session.state == reddit_session.EXPIRED:
+        _mark("session", reddit_session.EXPIRED)
+        _note(f"session-expired: {reddit_session.relogin_hint(session)}")
+    else:
+        _mark("session", reddit_health.OK if kept else reddit_health.EMPTY)
+    for post in kept:
+        post["topic_bar"] = True
+    _log(f"session: {len(kept)} threads ({session.requests} session requests this run)")
+    return kept
+
+
 def _site_search(
     topic: str,
     depth: str,
@@ -409,20 +479,38 @@ def _discover(
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
+    # The consented logged-in session runs first (best-first, KTD12): it
+    # searches the same site search logged in, so the keyless site search is
+    # skipped once it served.
+    session_posts = (
+        [] if _out_of_time(deadline)
+        else _session_layer(topic, depth, from_date, to_date, deadline)
+    )
+    session = reddit_session.current()
+    session_floor = session.sc_floor if session is not None else 0
+    session_on_topic = reddit_hydrate.on_topic_count(session_posts, topic)
+
     # search.json is permanently 403/429 keyless (no Tier 0). Discovery is
     # Reddit's site search: global, plus per-sub for targeted subreddits. The
     # dedicated subs keep their full-listing lane below and are not searched.
-    if _out_of_time(deadline):
+    if session_posts:
+        _log("site search skipped: the session served")
+        search_posts = []
+    elif _out_of_time(deadline):
         _log("site search skipped: lane budget spent")
         search_posts = []
     else:
         search_posts = _site_search(topic, depth, subreddits, from_date, to_date, deadline)
 
     # Web floor: recent threads from keyless web search, hydrated and held to
-    # the topic bar. Runs before the listings, which stay the last rung.
-    if _out_of_time(deadline):
-        _log("web floor skipped: lane budget spent")
+    # the topic bar. Runs before the listings, which stay the last rung. With
+    # a session that already found enough on-topic threads it is not needed.
+    if session_posts and session_on_topic >= max(session_floor, 1):
+        _log(f"web floor skipped: the session found {session_on_topic} on-topic threads")
         web_posts: List[Dict[str, Any]] = []
+    elif _out_of_time(deadline):
+        _log("web floor skipped: lane budget spent")
+        web_posts = []
     else:
         web_posts = _web_floor(
             topic, depth, subreddits, dedicated_subreddits, from_date, to_date, deadline,
@@ -479,6 +567,18 @@ def _discover(
         if p["url"] not in seen:
             seen.add(p["url"])
             merged.append(p)
+    # Session threads merge by thread id, so a listing copy gains the
+    # session's comments and a thread found both ways stays one item.
+    merged_by_thread = {reddit_refs.thread_key(p.get("url", "")): p for p in merged}
+    for p in session_posts:
+        key = reddit_refs.thread_key(p.get("url", ""))
+        if key and key in merged_by_thread:
+            reddit_hydrate.merge_post(merged_by_thread[key], p)
+            merged_by_thread[key]["topic_bar"] = True
+            continue
+        merged_by_thread[key] = p
+        seen.add(p["url"])
+        merged.append(p)
     for p in search_posts:
         if p["url"] in seen:
             continue
@@ -708,6 +808,7 @@ def search_and_enrich(
     posts = [
         p for p in posts
         if p.get("date") is None or (from_date <= p["date"] <= to_date)
+        or from_date <= ((p.get("matched_comment") or {}).get("date") or "") <= to_date
     ]
 
     # Relevance floor: strip zero-overlap posts (relevance exactly 0 = no

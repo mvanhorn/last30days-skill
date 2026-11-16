@@ -80,7 +80,7 @@ This is the slash-command skill, not a generic search prompt. Run the installed 
 
 ## Bootstrap and file reads
 
-Bind `SKILL_DIR` to the absolute directory containing the **root SKILL.md actually loaded by the host**. Never bind it to `references/`, the current directory, or a different installation discovered through a path search. `SKILL.md` and `scripts/` are siblings. Retain `SKILL_DIR` across shell calls; when calls do not share variables, begin each command that uses it with a quoted assignment of that absolute path.
+Bind `SKILL_DIR` to the absolute directory containing the **root SKILL.md actually loaded by the host**. Never bind it to `references/`, the current directory, or a different installation discovered through a path search. Retain `SKILL_DIR` across shell calls; when calls do not share variables, begin each command that uses it with a quoted assignment of that absolute path.
 
 Before any engine command, read the runtime reference below in full. Run its stale-clone self-check first. If the loaded root is in `/.claude/plugins/marketplaces/` and the check names a newer cached root, stop, read that replacement root in full, rebind `SKILL_DIR`, and restart dispatch. Other valid install locations do not redirect.
 
@@ -98,6 +98,7 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Library search, feed, or queue intent | Read [references/library-queue.md](references/library-queue.md) in full. | Execute the selected offline fast path, then stop. |
 | First-run setup is required | Read [references/setup-wizard.md](references/setup-wizard.md) in full. | Evaluate all credential sources; complete the applicable host flow, then resume the original request route. |
 | Source repair requested or indicated by doctor | Read [references/setup-wizard.md](references/setup-wizard.md) in full. | Use the repair entry and applicable Manual Setup Guide subsection; preserve consent and host restrictions without restarting onboarding. |
+| Reddit session offer: first-run X yes, or the gate printed `REDDIT_OFFER` | Read [references/reddit-session.md](references/reddit-session.md) in full. | Ask once, then resume. |
 | Trending/discovery intent | Read [references/discovery.md](references/discovery.md) in full. | Run the complete host-judged protocol and relay its brief; skip ordinary topic planning, supplements, and synthesis. |
 | Ordinary topic research or source-health diagnosis | Read [references/research-runbook.md](references/research-runbook.md) in full. | Diagnose sources; stop after health-check-only guidance. For research, parse intent, run query quality/resolution/planning, execute the engine, and collect supplements. |
 | Before synthesizing ordinary or comparison research | Read [references/synthesis.md](references/synthesis.md) in full. | Synthesize grounded evidence (comparison bodies use the comparison template), then apply the root output laws and final checks. |
@@ -128,17 +129,20 @@ For fresh research or discovery, resolve whether the agent session has a usable 
 **FIRST-RUN GATE - after resolving host web search, before topic research:**
 
 ```bash
-grep -q "SETUP_COMPLETE=true" ~/.config/last30days/.env 2>/dev/null && echo "1" || echo "FIRST_RUN_DETECTED"
+if ! grep -q "SETUP_COMPLETE=true" ~/.config/last30days/.env 2>/dev/null; then echo "FIRST_RUN_DETECTED"
+elif [ "$LAST30DAYS_HOST" = grok-bot ] || grep -qE "^(REDDIT_SESSION_OFFERED=|REDDIT_BROWSER_CONSENT=|BROWSER_CONSENT=false|FROM_BROWSER=off)" ~/.config/last30days/.env; then echo "1"
+else echo "REDDIT_OFFER"; fi
 ```
 
-This emits one token: `1` or `FIRST_RUN_DETECTED`. The grep sees only the global marker; it does not inspect process env, project config, Keychain, pass, or host auth.
+It prints `1`, `REDDIT_OFFER` or `FIRST_RUN_DETECTED`, reading only the global file (not process env, project config, Keychain, pass, or host auth).
 
 - `1`: setup is complete; continue to the original requested route.
+- `REDDIT_OFFER`: setup is complete; take the Reddit session offer route, then the original route.
 - `FIRST_RUN_DETECTED`: read the setup-wizard reference through its root gate immediately. That section decides first-run from **every credential source**. A missing `.env` alone is not a first run. If setup is unnecessary, continue silently. If it is required, complete the applicable flow before topic research, subject to its Research Continuation Override.
 
-**Onboarding consent is model-led and host-split.** The noninteractive setup subprocess cannot ask permission. Ask before browser-cookie reads, and preserve refusal; a skip or no answer is never consent. Modal hosts retain the guided welcome/setup/cookie/ScrapeCreators/source-tier/topic sequence. Non-modal hosts relay the engine welcome verbatim. All three host flows offer the ScrapeCreators signup on first run.
+**Onboarding consent is model-led and host-split.** The noninteractive setup subprocess cannot ask permission. Ask before browser-cookie reads, and preserve refusal; a skip or no answer is never consent. Non-modal hosts relay the engine welcome verbatim. All three host flows offer the ScrapeCreators signup on first run.
 
-If a topic is waiting and the user declines X/browser access or chooses Skip, continue immediately with the available cookie-free sources. Do not repeat the X question. After useful findings, resume the deferred ScrapeCreators offer and, if a key is saved, source opt-in **in the same run**. Do not run the first-topic picker when the original request already supplied a topic. A discovery request remains discovery after onboarding; never downgrade it to normal topic research.
+If a topic is waiting and the user declines X/browser access or chooses Skip, research it now with the cookie-free sources; never repeat the X question. After the findings, resume the deferred ScrapeCreators offer (and source opt-in if a key is saved) **in the same run**. Skip the first-topic picker when a topic was supplied. Discovery stays discovery after onboarding, never ordinary topic research.
 
 After the gate:
 - Trending, globally or in a domain: load discovery and use LAW 11. A user-typed `--trending` is intent, not an engine flag or topic. Bare global trending requires no domain question.
@@ -223,9 +227,9 @@ After the response and required citations, stop and wait unless governing instru
 ## Security & Permissions
 
 **What this skill does:**
-- Sends search queries to ScrapeCreators API (`api.scrapecreators.com`) for TikTok and Instagram search. With SCRAPECREATORS_API_KEY set, Reddit search queries also go to `api.scrapecreators.com` whenever the free Reddit path returns fewer than 5 items (the default floor; at most one backfill per distinct query, date window, and subreddit set per run, and each backfill is several API calls, roughly 10 at default depth), which spends credits. Set `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` to send Reddit queries only when the free path returns nothing (see also `LAST30DAYS_REDDIT_BACKEND`)
+- Sends search queries to ScrapeCreators API (`api.scrapecreators.com`) for TikTok and Instagram search. With SCRAPECREATORS_API_KEY set, Reddit queries also go there when the free path returns fewer than 5 items (one backfill per distinct query, window and subreddit set per run, roughly 10 calls at default depth), which spends credits; `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` limits that to empty runs (see also `LAST30DAYS_REDDIT_BACKEND`)
 - Legacy: Sends search queries to OpenAI's Responses API (`api.openai.com`) for Reddit discovery (fallback if no SCRAPECREATORS_API_KEY)
-- Sends search queries to X/Twitter via the official X API v2 (`api.x.com`, app-only bearer from `X_BEARER_TOKEN`, sent only in the Authorization header; the engine's default X path on a Grok Bot host next to xAI's API), optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated)
+- Sends search queries to X/Twitter via the official X API v2 (`api.x.com`, app-only bearer from `X_BEARER_TOKEN`, sent only in the Authorization header; the engine's default X path on a Grok Bot host next to xAI's API), optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai`), Xquik's API (`xquik.com`), or the official X API v2 via xurl CLI (when installed and authenticated)
 - Accepts a host-provided `--x-posts` envelope (a `.json` file of posts the hosting model fetched through its own X connector) as untrusted input: it replaces the engine's X fetch for that run, every row is validated and its citation URL rebuilt from the post id, and no X backend is called
 - Sends search queries to Algolia HN Search (`hn.algolia.com`) for Hacker News stories and comments (free, no auth)
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
@@ -235,6 +239,7 @@ After the response and required citations, stop and wait unless governing instru
 - Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG).
 - Optionally sends search queries to Brave Search, Parallel AI, Perplexity (`api.perplexity.ai`), or OpenRouter APIs for web search / synthesis
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
+- Reads the `reddit_session` cookie only with its own consent (`REDDIT_BROWSER_CONSENT=true`), sending it only to `reddit.com`; never on Grok Bot, hosted or scheduled runs
 - Stores research findings in local SQLite database (watchlist mode only)
 - Saves research briefings as .md files to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`)
 - Generates a local `index.html`, Atom `feed.xml`, and rendered brief pages from saved research on a library feed request
@@ -249,7 +254,7 @@ After the response and required citations, stop and wait unless governing instru
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
 - Hacker News and Polymarket are always available (no API key or binary)
-- TikTok and Instagram sources require SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG). With the key set, Reddit spends ScrapeCreators credits on search backfill when the free path returns fewer than 5 items (default); `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` limits that to empty runs, and `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes ScrapeCreators primary.
+- TikTok and Instagram sources require SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG); `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes it Reddit's primary path.
 - Agent hosts invoke the slash-command skill contract; if `--agent` appears in the user's slash-command arguments, treat it as skill-level mode guidance, not a Python CLI flag.
 
 **Bundled scripts:** `scripts/last30days.py` (main research engine), `scripts/lib/` (search, enrichment, rendering modules), `scripts/lib/vendor/bird-search/` (vendored X search client, MIT licensed)

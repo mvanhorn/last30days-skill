@@ -127,14 +127,25 @@ def search_url(
     time_filter: str = "month",
     subreddit: Optional[str] = None,
     cursor: Optional[str] = None,
+    kind: str = "posts",
+    sort: str = "relevance",
 ) -> str:
-    """Build a deterministic search URL so concurrent streams share the memo."""
+    """Build a deterministic search URL so concurrent streams share the memo.
+
+    ``kind`` is Reddit's result type: ``posts`` (the default), or
+    ``comments`` and ``communities`` for the logged-in session layer.
+    A communities search takes no time filter or sort. Reddit applies the
+    time filter to comment search only with ``sort=new``.
+    """
     if subreddit:
         sub = subreddit.strip().removeprefix("r/").strip("/")
         path = f"/svc/shreddit/r/{quote(sub, safe='')}/search/"
     else:
         path = "/svc/shreddit/search/"
-    params = [("q", query), ("type", "posts"), ("t", time_filter), ("sort", "relevance")]
+    if kind == "communities":
+        params = [("q", query), ("type", kind)]
+    else:
+        params = [("q", query), ("type", kind), ("t", time_filter), ("sort", sort)]
     if cursor:
         params.append(("cursor", cursor))
     return f"{BASE}{path}?{urlencode(params)}"
@@ -168,6 +179,11 @@ def _next_cursor(html_text: str) -> Optional[str]:
         if cursor:
             return cursor
     return None
+
+
+def next_cursor(html_text: str) -> Optional[str]:
+    """The next page's cursor in a search fragment, or None (no run state)."""
+    return _next_cursor(html_text)
 
 
 def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], Optional[str]]:

@@ -10,6 +10,7 @@ ROUTES = {
     "Library search, feed, or queue intent": ("library-queue",),
     "First-run setup is required": ("setup-wizard",),
     "Source repair requested or indicated by doctor": ("setup-wizard",),
+    "Reddit session offer: first-run X yes, or the gate printed REDDIT_OFFER": ("reddit-session",),
     "Trending/discovery intent": ("discovery",),
     "Ordinary topic research or source-health diagnosis": ("research-runbook",),
     "Before synthesizing ordinary or comparison research": ("synthesis",),
