@@ -408,3 +408,15 @@ class TestPendingCommentsInQuotes:
         )
         shown = render._top_comments_list(reddit)
         assert [c["id"] for c in shown] == ["c1"]
+
+
+class TestArcticRunHealth:
+    def test_arctic_throttled_earlier_this_run_is_not_asked_again(self, monkeypatch, _quiet):
+        from lib import reddit_health
+
+        reddit_health.record("arctic", reddit_health.THROTTLED, "posts/ids 429")
+        fake = FakeArctic(posts=[_post("a0001")])
+        result = _hydrate(fake, [_ref("a0001")], monkeypatch, comments=False)
+        assert fake.ids_calls() == []
+        assert result.arctic_state == "throttled"
+        assert len(result.items) == 1

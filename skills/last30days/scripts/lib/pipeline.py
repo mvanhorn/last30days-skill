@@ -60,10 +60,10 @@ from . import (
     providers,
     query,
     reddit,
+    reddit_health,
     reddit_keyless,
     reddit_listing,
     reddit_public,
-    reddit_search,
     relevance,
     rerank,
     schema,
@@ -4804,17 +4804,24 @@ def _run_reddit_backfill(config: dict[str, Any], call) -> Any:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _reddit_search_blocked_artifact(items: list[dict]) -> dict[str, Any]:
-    """Mark Reddit partial when its site search was refused and threads came
-    from subreddit listings alone; ``{}`` when search worked or nothing came."""
-    reason = reddit_search.failed_reason()
-    if not reason or not items:
+def _reddit_served_artifact(
+    items: list[dict], paths: dict[str, str], *, extra: tuple[str, ...] = (),
+    count: int | None = None,
+) -> dict[str, Any]:
+    """The served-path detail for a Reddit lane that delivered items.
+
+    The source stays ``ok`` whichever path served (#959, #1083): a refused
+    site search with threads from the web floor reads
+    ``web+arctic served 14; search blocked``, never partial. No detail
+    state is set, so a failed path never lands in ``rate_limited_sources``.
+    """
+    if not items and not count:
         return {}
-    return _outcome_artifact(
-        health.PARTIAL,
-        f"Reddit site search was blocked ({reason}); threads come from subreddit "
-        "listings only",
-    )
+    return {
+        "_source_outcome_detail": reddit_health.served_detail(
+            items, paths, extra=extra, count=count,
+        ),
+    }
 
 
 def _with_reddit_lane_notes(artifact: dict[str, Any], notes: list[str]) -> dict[str, Any]:
@@ -5996,6 +6003,11 @@ def _merge_youtube_items(free: list[dict], sc: list[dict]) -> list[dict]:
 def _detail_rate_limits_source(source: str, artifact: dict) -> bool:
     if artifact.get("_source_outcome_detail_state") != health.RATE_LIMITED:
         return False
+    if source == "reddit":
+        # Reddit delivered items, so some path still serves: a throttled
+        # path (site search, a web rung, a listing) skips only itself for the
+        # run (reddit_health) and is a detail note, never a source skip.
+        return False
     return source != "x" or not bool(artifact.get("_x_backup_not_rate_limited"))
 
 
@@ -6634,9 +6646,11 @@ def _retrieve_stream_impl(
             if research_deadline is not None else None
         )
         lane_notes: list[str] = []
+        lane_paths: dict[str, str] = {}
         try:
             with reddit_keyless.lane_deadline(lane_deadline), \
-                    reddit_keyless.lane_notes() as lane_notes:
+                    reddit_keyless.lane_notes() as lane_notes, \
+                    reddit_keyless.lane_paths() as lane_paths:
                 public_results = reddit_public.search_reddit_public(
                     reddit_query, from_date, to_date, depth=depth,
                     subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
@@ -6662,6 +6676,14 @@ def _retrieve_stream_impl(
                 health.TIMEOUT,
                 "Reddit had no time left in the run's budget before it found threads",
             )
+        free_failed = (
+            not public_results and public_failure is None
+            and reddit_health.every_path_failed(lane_paths)
+        )
+        if free_failed and not has_sc_key:
+            # Every path Reddit was asked through refused or failed: a
+            # transport failure, never a topic nobody posted about.
+            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
         # The floor counts the free threads that are on topic for this stream,
         # the ones its relevance prune will keep. Enough of them, or no key to
         # backfill with -> done. max(min_items, 1) keeps the default
@@ -6673,7 +6695,7 @@ def _retrieve_stream_impl(
         ) if has_sc_key and min_items > 0 else len(public_results)
         if on_topic >= max(min_items, 1) or not has_sc_key:
             return public_results, _with_reddit_lane_notes(
-                _reddit_search_blocked_artifact(public_results), lane_notes,
+                _reddit_served_artifact(public_results, lane_paths), lane_notes,
             )
         if public_results:
             sys.stderr.write(
@@ -6713,22 +6735,28 @@ def _retrieve_stream_impl(
             if public_results:
                 # The free path delivered: Reddit is working. The failed
                 # backfill is a detail note, never the source's outcome.
+                served = _reddit_served_artifact(public_results, lane_paths)
                 artifact = {
-                    "_source_outcome_detail": (
+                    "_source_outcome_detail": "; ".join(filter(None, [
+                        served.get("_source_outcome_detail"),
                         f"ScrapeCreators backfill failed after "
-                        f"{len(public_results)} free items: {exc}"
-                    ),
+                        f"{len(public_results)} free items: {exc}",
+                    ])),
                 }
                 if state != health.RATE_LIMITED:
                     # A ScrapeCreators rate limit says nothing about
                     # reddit.com (and the run memo already stops a retry).
                     artifact["_source_outcome_detail_state"] = state
                 return public_results, artifact
+            failed_paths = reddit_health.failures(lane_paths)
             return public_results, _outcome_artifact(
                 state,
-                f"Reddit backup failed after {len(public_results)} public items: {exc}",
+                f"Reddit backup failed after {len(public_results)} public items: {exc}"
+                + "".join(f"; {failed}" for failed in failed_paths),
             )
         merged = _merge_reddit_items(public_results, sc_items)
+        if not merged and free_failed:
+            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
         if public_failure is not None:
             state = reddit.classify_run_failure(str(public_failure))
             return merged, _outcome_artifact(
@@ -6746,6 +6774,12 @@ def _retrieve_stream_impl(
         if backfill_failures:
             summary = _summarize_lane_failures(backfill_failures, "reddit")
             backfill_detail = f"{backfill_detail}; ScrapeCreators backfill lost {summary}"
+        added = len(merged) - len(public_results)
+        served = _reddit_served_artifact(
+            public_results, lane_paths, extra=("sc",) if added else (), count=len(merged),
+        ).get("_source_outcome_detail")
+        if served:
+            backfill_detail = f"{served}; {backfill_detail}"
         return merged, _with_reddit_lane_notes({"_source_outcome_detail": backfill_detail}, lane_notes)
     if source == "x":
         if config.get("_x_lane_missing"):

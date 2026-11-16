@@ -54,7 +54,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, digg, env, health, http, prescriptions, reddit_search, trustpilot, x_api
+from . import backends, brightdata, digg, env, health, http, prescriptions, reddit_health, trustpilot, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -100,9 +100,12 @@ AUDIT_GROUPS = (
 )
 
 # Sources that need neither credentials nor a CLI: they always serve, so with
-# no run evidence and no probe they are WORKING, not UNVERIFIED.
+# no run evidence and no probe they are WORKING, not UNVERIFIED. Reddit is not
+# one: every anonymous Reddit route closed in 2026, and its keyless floor rides
+# third-party web search and an archive that can each refuse this network, so
+# it is WORKING only on run or probe evidence.
 KEYLESS_ALWAYS_ON = frozenset(
-    {"reddit", "hackernews", "polymarket", "github", "library"}
+    {"hackernews", "polymarket", "github", "library"}
 )
 
 # Fresh-run outcome states -> audit bucket for a tier-ok source. Anything not
@@ -1245,6 +1248,86 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"name": "X auth path", "armed": bool(source), "note": note}
 
 
+# One row per Reddit path PR1 ships (site search, each keyless web rung, the
+# Arctic Shift archive), with the last run's outcome read back from
+# last-report.json, any persisted skip, and what to do about it.
+_REDDIT_PATH_LABELS = (
+    ("search", "Reddit site search"),
+    ("brave", "Brave web search"),
+    ("ddg", "DuckDuckGo web search"),
+    ("startpage", "Startpage web search"),
+    ("arctic", "Arctic Shift archive"),
+)
+
+
+def _reddit_last_run(path: str, outcomes: Dict[str, str]) -> Optional[str]:
+    """This path's outcome in the saved run: a failure token, ``served``, or None."""
+    if path in outcomes:
+        return outcomes[path]
+    if path in reddit_health.WEB_RUNGS and outcomes.get("web") == "served":
+        return "served"
+    return None
+
+
+def _reddit_path_action(path: str, last_run: Optional[str], until: Optional[str]) -> str:
+    if until:
+        return "none needed while another path serves; the skip lifts at the time shown"
+    if last_run == reddit_health.BLOCKED:
+        if path == "search":
+            return "none: Reddit refuses its site search on this network, so the web floor serves instead"
+        return "none needed while another path serves; a refused path is skipped for 6 h"
+    if last_run == reddit_health.THROTTLED:
+        return "none: a rate limit skips this path for one run only"
+    if last_run == reddit_health.DOWN:
+        if path == "arctic":
+            return "wait for Arctic Shift to recover; threads keep their search-result data meanwhile"
+        return "none: the next run asks it again"
+    if last_run == reddit_health.SKIPPED_CACHED:
+        return "none: a recent refusal was still in force; the skip expires after 6 h"
+    return "none"
+
+
+def _reddit_path_rows(outcome: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Doctor rows for the Reddit paths. Reads the health cache and the saved
+    run only: no request, no cookie."""
+    outcomes = reddit_health.parse_detail((outcome or {}).get("detail"))
+    rows: List[Dict[str, Any]] = []
+    for path, label in _REDDIT_PATH_LABELS:
+        until_dt = reddit_health.skip_until(path)
+        until = until_dt.strftime("%Y-%m-%d %H:%M UTC") if until_dt else None
+        last_run = _reddit_last_run(path, outcomes)
+        rows.append({
+            "path": path,
+            "name": label,
+            "last_run": last_run,
+            "skip_until": until,
+            "action": _reddit_path_action(path, last_run, until),
+        })
+    return rows
+
+
+def _mark_reddit_skips_cleared(report: Dict[str, Any], cleared: List[str]) -> None:
+    """Note on each Reddit row whose skip this doctor run cleared."""
+    record = (report.get("sources") or {}).get("reddit") or {}
+    for row in record.get("paths") or []:
+        if row.get("path") in cleared:
+            row["skip_cleared"] = True
+            row["action"] = "doctor cleared this skip; the next run asks this path again"
+
+
+def _reddit_sc_last_run(outcome: Optional[Dict[str, Any]]) -> str:
+    detail = str((outcome or {}).get("detail") or "")
+    if not detail:
+        return ""
+    if "ScrapeCreators backfill failed" in detail:
+        return "; last run: backfill failed"
+    if reddit_health.parse_detail(detail).get("sc") == "served":
+        return "; last run: backfill served"
+    if "ScrapeCreators backfill ran" in detail:
+        return "; last run: backfill ran, added nothing"
+    return "; last run: not needed"
+
+
 def _sub_lanes_for(source: str, config: Dict[str, Any]):
     """Return (backups, comments) metadata for a source, or ([], None)."""
     backups: List[Dict[str, Any]] = []
@@ -1380,6 +1463,19 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
         if comments is not None:
             record["comments"] = comments
 
+    # Reddit: one row per path, from the health cache and the saved run (any
+    # age: the row says what the last run saw, the skip says what is in force).
+    reddit_record = sources.get("reddit")
+    if reddit_record is not None:
+        reddit_outcome = evidence["outcomes"].get("reddit")
+        try:
+            reddit_record["paths"] = _reddit_path_rows(reddit_outcome)
+        except Exception:
+            pass
+        for backup in reddit_record.get("backups") or []:
+            if backup.get("name") == "ScrapeCreators backfill":
+                backup["note"] = f"{backup.get('note') or ''}{_reddit_sc_last_run(reddit_outcome)}"
+
     # Sequential on purpose: the permission preflight composes pipeline
     # diagnostics and must not race the source builders.
     try:
@@ -1482,6 +1578,14 @@ def _audit_source_line(name: str, record: Dict[str, Any], state: str) -> str:
 def _sub_lane_lines(record: Dict[str, Any]) -> List[str]:
     """Indented backup/comment sub-lane lines under a source (R8, R9)."""
     lines: List[str] = []
+    for row in record.get("paths") or []:
+        seen = row.get("last_run") or "no saved run"
+        parts = [f"last run {seen}" if row.get("last_run") else seen]
+        if row.get("skip_until"):
+            parts.append(f"skipped until {row['skip_until']}")
+        lines.append(
+            f"      path: {row['name']} - {'; '.join(parts)} - action: {row.get('action') or 'none'}"
+        )
     for backup in record.get("backups") or []:
         state = "armed" if backup.get("armed") else "off"
         note = f" - {backup['note']}" if backup.get("note") else ""
@@ -1943,26 +2047,26 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
 
 # Free, keyless liveness endpoints (reachability check, tiny payload).
 _HTTP_PROBE_URLS = {
-    # The keyless engine's real discovery endpoint, built by the lane itself so
-    # the probe cannot drift from what the engine requests (hand-copied URLs
-    # kept certifying endpoints the engine had abandoned).
-    "reddit": reddit_search.search_url("test"),
+    # Reddit's keyless floor as the lane asks it, built by the lane's own
+    # module so the probe cannot drift from what the engine requests
+    # (hand-copied URLs kept certifying endpoints the engine had abandoned,
+    # last of them the anonymous site search). Brave discovery first; the
+    # Arctic Shift /posts/ids hydration step follows in _PROBE_FOLLOW_UPS.
+    "reddit": reddit_health.brave_probe_url(),
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
     "github": "https://api.github.com/rate_limit",
 }
 
 # Per-source exception to "a 4xx still means the endpoint responded". The
-# keyless Reddit lanes send no credentials, so a 403/429 there is the host
-# refusing this client — the exact failure the engine hits — not reachability.
+# keyless Reddit floor sends no credentials, so a 403/429 there is the host
+# refusing this client (the exact failure the engine hits), not reachability.
 _PROBE_BLOCKED_STATUSES = {"reddit": frozenset({403, 429})}
 
 # Blocked statuses that mean "refused this probe right now", not "the source is
-# down". Reddit answers a burst of keyless probes with 429 while the research
-# lane — which retries with backoff across several endpoints — serves the same
-# query fine. A single unretried 429 was reporting a healthy Reddit as NOT
-# WORKING, so these get one retry and, if still refused, downgrade to unverified
-# rather than a false outage. 403 stays hard: that is a real keyless block.
+# down". A single unretried 429 reported a healthy source as NOT WORKING, so
+# these get one retry and, if still refused, downgrade to unverified rather
+# than a false outage. 403 stays hard: that is a real keyless block.
 _PROBE_TRANSIENT_STATUSES = {"reddit": frozenset({429})}
 
 # One retry only: the probe budget is the per-source deadline, and a source that
@@ -1979,11 +2083,25 @@ _PROBE_HEADERS = {
 }
 
 # Per-source body validators, run on a 2xx: None means the body is the page the
-# lane parses, anything else is the reason it is not. Reddit answers a blocked
-# keyless client with a 200 challenge page, so status alone reads it as working.
+# lane parses, anything else is the reason it is not. A search engine answers a
+# refused client with a 200 challenge page, so status alone reads it as working.
 _PROBE_BODY_CHECKS: Dict[str, Callable[[str], Optional[str]]] = {
-    "reddit": reddit_search.unrecognized_body,
+    "reddit": reddit_health.brave_probe_body,
 }
+
+# Steps probed after the first URL passes: (health path, label, url, headers,
+# body check). Reddit's floor needs both discovery and hydration to serve.
+_PROBE_FOLLOW_UPS: Dict[str, tuple] = {
+    "reddit": (
+        (
+            "arctic", "Arctic Shift", reddit_health.arctic_probe_url(),
+            {"User-Agent": http.USER_AGENT, "Accept": "application/json"},
+            reddit_health.arctic_probe_body,
+        ),
+    ),
+}
+# The health path the first probe URL answers for.
+_PROBE_HEALTH_PATH = {"reddit": ("brave", "Brave")}
 
 DEFAULT_PROBE_TIMEOUT_SECONDS = 10
 
@@ -2080,6 +2198,68 @@ def _transient_probe_detail(name: str, detail: str) -> bool:
     return any(detail == f"HTTP {code}" for code in transient)
 
 
+def _probe_url(
+    name: str,
+    url: str,
+    timeout: float,
+    deadline: float,
+    *,
+    headers: Optional[Dict[str, str]],
+    body_check: Optional[Callable[[str], Optional[str]]],
+) -> Dict[str, Any]:
+    """One URL's probe verdict, with the per-source transient retry."""
+    expired = {"ok": False, "detail": "probe exceeded deadline", "probed": True}
+    probe_kwargs = {
+        "blocked_statuses": _PROBE_BLOCKED_STATUSES.get(name, frozenset()),
+        "headers": headers,
+        "body_check": body_check,
+        "deadline_monotonic": deadline,
+    }
+    ok, detail = _http_ok(url, timeout, **probe_kwargs)
+    if time.monotonic() >= deadline or detail == "probe exceeded deadline":
+        return expired
+    if not ok and _transient_probe_detail(name, detail):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return expired
+        if remaining <= _PROBE_RETRY_DELAY_SECONDS:
+            return {
+                "ok": False,
+                "transient": True,
+                "detail": f"{detail} (retry skipped: insufficient probe budget)",
+                "probed": True,
+            }
+        time.sleep(_PROBE_RETRY_DELAY_SECONDS)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return expired
+        ok, detail = _http_ok(url, remaining, **probe_kwargs)
+        if time.monotonic() >= deadline or detail == "probe exceeded deadline":
+            return expired
+        if not ok and _transient_probe_detail(name, detail):
+            return {
+                "ok": False,
+                "transient": True,
+                "detail": f"{detail} (rate-limited twice; the lane retries with backoff)",
+                "probed": True,
+            }
+    return {"ok": ok, "detail": detail, "probed": True}
+
+
+def _record_probe_health(path: str, res: Dict[str, Any]) -> None:
+    """A doctor re-probe is fresh evidence: a pass clears the path's skip and a
+    403 records one (reddit_health persists both); a 429 stays in memory."""
+    try:
+        if res.get("ok"):
+            reddit_health.record(path, reddit_health.OK, "doctor probe")
+        elif res.get("transient"):
+            reddit_health.record(path, reddit_health.THROTTLED, "doctor probe")
+        elif "HTTP 403" in str(res.get("detail") or ""):
+            reddit_health.record(path, reddit_health.BLOCKED, "doctor probe: HTTP 403")
+    except Exception:
+        pass
+
+
 def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
     deadline = time.monotonic() + timeout
     expired = {"ok": False, "detail": "probe exceeded deadline", "probed": True}
@@ -2087,43 +2267,29 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
         return expired
     url = _HTTP_PROBE_URLS.get(name)
     if url:
-        blocked = _PROBE_BLOCKED_STATUSES.get(name, frozenset())
-        headers = _PROBE_HEADERS.get(name)
-        probe_kwargs = {
-            "blocked_statuses": blocked,
-            "headers": headers,
-            "body_check": _PROBE_BODY_CHECKS.get(name),
-            "deadline_monotonic": deadline,
-        }
-        ok, detail = _http_ok(url, timeout, **probe_kwargs)
-        if time.monotonic() >= deadline or detail == "probe exceeded deadline":
-            return expired
-        if not ok and _transient_probe_detail(name, detail):
+        res = _probe_url(
+            name, url, timeout, deadline,
+            headers=_PROBE_HEADERS.get(name), body_check=_PROBE_BODY_CHECKS.get(name),
+        )
+        first = _PROBE_HEALTH_PATH.get(name)
+        if first:
+            _record_probe_health(first[0], res)
+        follow_ups = _PROBE_FOLLOW_UPS.get(name) or ()
+        if not res.get("ok") or not follow_ups:
+            return res
+        details = [f"{first[1]} {res['detail']}" if first else res["detail"]]
+        for path, label, step_url, headers, body_check in follow_ups:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return expired
-            if remaining <= _PROBE_RETRY_DELAY_SECONDS:
-                return {
-                    "ok": False,
-                    "transient": True,
-                    "detail": f"{detail} (retry skipped: insufficient probe budget)",
-                    "probed": True,
-                }
-            time.sleep(_PROBE_RETRY_DELAY_SECONDS)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return expired
-            ok, detail = _http_ok(url, remaining, **probe_kwargs)
-            if time.monotonic() >= deadline or detail == "probe exceeded deadline":
-                return expired
-            if not ok and _transient_probe_detail(name, detail):
-                return {
-                    "ok": False,
-                    "transient": True,
-                    "detail": f"{detail} (rate-limited twice; the lane retries with backoff)",
-                    "probed": True,
-                }
-        return {"ok": ok, "detail": detail, "probed": True}
+            step = _probe_url(
+                name, step_url, remaining, deadline, headers=headers, body_check=body_check,
+            )
+            _record_probe_health(path, step)
+            if not step.get("ok"):
+                return {**step, "detail": f"{label}: {step['detail']}"}
+            details.append(f"{label} {step['detail']}")
+        return {"ok": True, "detail": "; ".join(details), "probed": True}
     cli = CLI_DEPENDENCIES.get(name)
     if cli:
         try:
@@ -2239,6 +2405,12 @@ def run(
             from . import grok_audit
 
             grok_audit.clear_failed()
+        except Exception:
+            pass
+        # Same for Reddit's path skips: a doctor run is how a user says "try
+        # that path again". The rows above keep showing what was skipped.
+        try:
+            _mark_reddit_skips_cleared(report, reddit_health.clear())
         except Exception:
             pass
     report["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()

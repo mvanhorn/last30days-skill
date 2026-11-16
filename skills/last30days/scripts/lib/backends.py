@@ -21,8 +21,9 @@ Two resolution modes:
   results fall below the configured thinness floor (see the gating in
   ``lib/pipeline.py``). No probe can pick one winner, so resolution renders
   honest conditional wording instead of an ``active_backend``. Reddit's
-  internal keyless lanes (search/listing/arctic/shreddit) are sub-probe detail
-  inside the public composite, never chain entries.
+  internal keyless paths (web rungs, arctic, site search, listings) are
+  sub-probe detail inside the public composite, never chain entries; doctor
+  shows them as per-path rows.
 
 ``active_backend`` semantics: a PREDICTION — "the first backend the probes
 say the next run will try" — rendered as "will use". It is not an
@@ -473,12 +474,32 @@ def _probe_web_keyless(config: Dict[str, Any]) -> BackendFinding:
 
 
 def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
-    """Public keyless Reddit composite; internal lanes are sub-probe detail."""
+    """Reddit's keyless floor: Brave web search finds threads, Arctic Shift
+    ``/posts/ids`` hydrates them.
+
+    Side-effect-free like every probe here: it reads the persisted path health
+    (``reddit_health``) that runs and doctor's live probe write, never the
+    network and never a cookie. The floor is degraded when every web rung, or
+    the archive, is inside a recorded skip.
+    """
+    from . import reddit_health
+
+    requires = "none (keyless web search + Arctic Shift)"
+    detail = "keyless floor (paths: brave, ddg, startpage web search; arctic /posts/ids)"
+    try:
+        skipped = [p for p in (*reddit_health.WEB_RUNGS, "arctic") if reddit_health.skip_until(p)]
+    except Exception:
+        skipped = []
+    if not skipped:
+        return BackendFinding(name="public", status=health.OK, detail=detail, requires=requires)
+    web_down = all(rung in skipped for rung in reddit_health.WEB_RUNGS)
+    status = health.DEGRADED if web_down or "arctic" in skipped else health.OK
     return BackendFinding(
         name="public",
-        status=health.OK,
-        detail="public keyless composite (lanes: search, listing, arctic, shreddit)",
-        requires="none (public endpoints)",
+        status=status,
+        detail=f"{detail}; skipped after a refusal: {', '.join(skipped)}",
+        prescription="run doctor to clear the skips and re-probe" if status != health.OK else "",
+        requires=requires,
     )
 
 
@@ -584,7 +605,7 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
         backends=(
             BackendSpec(
                 name="public",
-                requires="none (public endpoints)",
+                requires="none (keyless web search + Arctic Shift)",
                 probe=_probe_reddit_public,
             ),
             _SC_SPEC,

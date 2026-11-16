@@ -232,7 +232,8 @@ class TestBackfillOutcome:
              mock.patch("lib.reddit.search_and_enrich") as sc:
             _items, artifact = _stream(self.KEY)
         sc.assert_not_called()
-        assert not artifact.get("_source_outcome_detail")
+        # Only the served-path line: no backfill note.
+        assert artifact.get("_source_outcome_detail") == "reddit served 6"
 
 
 class TestMergeHelper:

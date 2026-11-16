@@ -366,7 +366,14 @@ def hydrate(
 
     missing = [pid for pid in by_id if pid not in posts]
     arctic_state = "unused"
-    if missing:
+    # An archive already throttled or down this run is not asked again.
+    from . import reddit_health
+
+    skipped = reddit_health.skip_reason("arctic") if missing else None
+    if skipped:
+        arctic_state = "throttled" if skipped == reddit_health.THROTTLED else "down"
+        _log(f"arctic skipped ({skipped}); {len(missing)} threads keep search-result data")
+    elif missing:
         found, arctic_state = reddit_arctic.fetch_posts_by_ids(missing, deadline=deadline)
         for pid, post in found.items():
             if pid in by_id:

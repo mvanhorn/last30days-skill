@@ -348,22 +348,38 @@ def _stream(config):
     )
 
 
-class TestBlockedSearchIsReportedAsPartial:
-    def test_listing_only_threads_mark_reddit_partial(self):
-        def public(*_args, **_kwargs):
-            reddit_search._failed_reason = "HTTP 403: Blocked"
-            return [_post("a"), {**_post("b"), "top_comments": [{"author": "x"}]}]
+class TestBlockedSearchIsAServedPathDetail:
+    """A refused site search is one path failing while the others serve: the
+    source stays ok and the detail names what served (R17, R21)."""
 
-        with mock.patch("lib.reddit_public.search_reddit_public", side_effect=public):
-            items, artifact = _stream({})
+    def test_listing_threads_with_search_blocked_stay_ok(self, blocked_search):
+        listing = [_post("a"), _post("b")]
+        limited: set = set()
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=listing), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores", return_value={}), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments", return_value={}), \
+             mock.patch.object(reddit_search, "MAX_WORKERS", 1):
+            items, artifact = pipeline._retrieve_stream(
+                topic="Elon Musk",
+                subquery=schema.SubQuery(
+                    label="primary", search_query="Elon Musk", ranking_query="Elon Musk",
+                    sources=["reddit"],
+                ),
+                source="reddit", config={}, depth="quick",
+                date_range=("2026-10-12", "2026-11-11"),
+                subreddits=["elonmusk"],
+                runtime=schema.ProviderRuntime(
+                    reasoning_provider="mock", planner_model="mock", rerank_model="mock",
+                ),
+                mock=False, rate_limited_sources=limited,
+            )
 
         assert len(items) == 2
-        outcome = artifact["_source_outcome"]
-        assert outcome["state"] == health.PARTIAL
-        assert outcome["detail"] == (
-            "Reddit site search was blocked (HTTP 403: Blocked); threads come from "
-            "subreddit listings only"
-        )
+        assert "_source_outcome" not in artifact
+        assert artifact["_source_outcome_detail"] == "listing served 2; search blocked"
+        assert artifact.get("_source_outcome_detail_state") is None
+        assert "reddit" not in limited
 
     def test_working_search_leaves_reddit_ok(self):
         with mock.patch("lib.reddit_public.search_reddit_public", return_value=[_post("a")]):

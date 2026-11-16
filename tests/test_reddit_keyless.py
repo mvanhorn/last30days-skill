@@ -691,7 +691,7 @@ class TestLaneNotesReachTheSourceDetail:
             )
         assert len(items) == 1
         assert artifact["_source_outcome_detail"] == (
-            "2 of 5 threads dropped for not naming the topic (web search)")
+            "reddit served 1; 2 of 5 threads dropped for not naming the topic (web search)")
 
     def test_notes_outside_a_sink_are_ignored(self):
         reddit_keyless._note("nobody listening")  # never raises

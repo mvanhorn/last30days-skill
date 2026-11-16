@@ -542,7 +542,8 @@ def test_doctor_retry_spends_one_operation_budget(monkeypatch):
     monkeypatch.setattr(doctor.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     monkeypatch.setattr(doctor, "_http_ok", get)
     assert doctor._probe_source("reddit", {}, 10)["ok"]
-    assert timeouts == [(10, 110), (2, 110)]
+    # Brave, its one retry, then the Arctic Shift step on what is left.
+    assert timeouts == [(10, 110), (2, 110), (1.5, 110)]
 
 
 @pytest.mark.parametrize("elapsed", [8, 9])

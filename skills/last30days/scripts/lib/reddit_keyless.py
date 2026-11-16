@@ -21,6 +21,13 @@ on whatever was discovered:
   Enrichment      shreddit comment + count enrichment (reddit_shreddit) for the
                   top-ranked posts (author + score + text + permalink).
 
+Each path has a health state (``reddit_health``): a site search or web rung
+refused with a 403 or a challenge page is skipped for 6 h across runs, a 429
+for the rest of the run. Site search failures stay out of the stream's
+failure sink: one refused path is a detail note, never the source's outcome.
+A caller that opens ``lane_paths()`` gets each path's state for the call,
+which the pipeline turns into the served-path detail.
+
 Returns ``[]`` (never raises) so ``pipeline.py`` can fall through to the
 ScrapeCreators backup when every keyless lane comes up empty.
 """
@@ -36,7 +43,7 @@ from typing import Any, Dict, List, Optional
 
 from . import http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
-from . import reddit_discover, reddit_hydrate, reddit_refs
+from . import reddit_discover, reddit_health, reddit_hydrate, reddit_refs, web_search_keyless
 # High-upvote posts from targeted-sub listings can bury on-topic search hits
 # under an engagement-first final sort. A relevance floor + relevance-first
 # final ranking keeps the section on-topic. Thresholds are shared with the
@@ -89,6 +96,31 @@ def lane_notes():
         yield notes
     finally:
         _lane_notes.reset(token)
+
+
+# Each Reddit path's state for one lane call (``search``, the web rungs,
+# ``listing``, ``arctic``), in reddit_health's vocabulary. The caller opens a
+# sink with lane_paths() and turns it into the served-path detail.
+_lane_paths: contextvars.ContextVar[Optional[Dict[str, str]]] = contextvars.ContextVar(
+    "last30days_reddit_lane_paths", default=None,
+)
+
+
+@contextlib.contextmanager
+def lane_paths():
+    """Collect each Reddit path's state for lane calls in this context; yields the dict."""
+    paths: Dict[str, str] = {}
+    token = _lane_paths.set(paths)
+    try:
+        yield paths
+    finally:
+        _lane_paths.reset(token)
+
+
+def _mark(path: str, state: Optional[str]) -> None:
+    sink = _lane_paths.get()
+    if sink is not None and state:
+        sink[path] = state
 
 
 def _note(msg: Optional[str]) -> None:
@@ -235,12 +267,14 @@ def _web_floor(
     deadline: Optional[float],
 ) -> List[Dict[str, Any]]:
     """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
+    reddit_health.seed_web_rungs()
     try:
         floor = _within(
             deadline, "web floor", reddit_discover.WebFloor(),
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
         )
+        _record_web_rungs(floor)
         if not floor.refs:
             return []
         if _out_of_time(deadline):
@@ -257,6 +291,7 @@ def _web_floor(
         return []
     if hydrated is None:
         return []
+    _record_arctic(hydrated.arctic_state)
     _log(f"web floor: {hydrated.detail}")
     bar = reddit_discover.apply_bar(
         topic, hydrated.items, subreddits=subreddits, dedicated=dedicated_subreddits,
@@ -265,6 +300,93 @@ def _web_floor(
     for post in bar.kept:
         post["topic_bar"] = True
     return bar.kept
+
+
+_RUNG_STATES = {
+    web_search_keyless.OK: reddit_health.OK,
+    web_search_keyless.EMPTY: reddit_health.EMPTY,
+    web_search_keyless.ERROR: reddit_health.ERROR,
+    web_search_keyless.THROTTLED: reddit_health.THROTTLED,
+    web_search_keyless.BLOCKED: reddit_health.BLOCKED,
+}
+
+
+def _record_web_rungs(floor: "reddit_discover.WebFloor") -> None:
+    """Persist what each web rung answered and mark the lane's web paths.
+
+    Only the call that asked a query sees its rung states; a later subquery
+    served from the run memo reads the run's rung health instead."""
+    if not floor.queries:
+        return
+    for rung, state in floor.rungs.items():
+        mapped = _RUNG_STATES.get(state)
+        if rung in reddit_health.WEB_RUNGS and mapped:
+            reddit_health.record(rung, mapped, f"web search {state}")
+    for rung, state in web_search_keyless.rung_health().items():
+        if rung not in reddit_health.WEB_RUNGS:
+            continue
+        if state == web_search_keyless.SKIPPED:
+            _mark(rung, reddit_health.SKIPPED_CACHED)
+        else:
+            _mark(rung, _RUNG_STATES.get(state))
+    _mark("web", reddit_health.OK if floor.refs else reddit_health.EMPTY)
+
+
+def _record_arctic(state: str) -> None:
+    mapped = {
+        "ok": reddit_health.OK,
+        "throttled": reddit_health.THROTTLED,
+        "down": reddit_health.ERROR,
+    }.get(state)
+    if mapped:
+        reddit_health.record("arctic", mapped, f"posts/ids {state}")
+        _mark("arctic", mapped)
+
+
+def _site_search(
+    topic: str,
+    depth: str,
+    subreddits: Optional[List[str]],
+    from_date: Optional[str],
+    to_date: Optional[str],
+    deadline: Optional[float],
+) -> List[Dict[str, Any]]:
+    """Reddit's site search, gated and judged by its path health.
+
+    A search skipped earlier this run, or within a persisted skip, sends no
+    request. Its HTTP failures stay out of the stream's failure sink: a
+    refused site search is one path failing while the others still run, so
+    it is a detail note, never the Reddit source's outcome.
+    """
+    skip = reddit_health.skip_reason("search")
+    if skip:
+        _log(f"site search skipped ({skip})")
+        _mark("search", skip)
+        return []
+    with http.capture_failures() as failures:
+        posts = _within(
+            deadline, "site search", [],
+            reddit_search.search,
+            topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date,
+            **_stage_deadline(deadline),
+        )
+    blocked = reddit_search._blocked_reason
+    statuses = {getattr(f, "status_code", None) for f in list(failures)}
+    if blocked:
+        state = reddit_health.BLOCKED
+    elif posts:
+        state = reddit_health.OK
+    elif 429 in statuses:
+        state = reddit_health.THROTTLED
+    elif failures:
+        state = reddit_health.ERROR
+    else:
+        state = reddit_health.EMPTY
+    reddit_health.record("search", state, blocked or "")
+    _mark("search", state)
+    for post in posts or []:
+        post.setdefault("provenance", ["search"])
+    return posts or []
 
 
 def _discover(
@@ -283,12 +405,7 @@ def _discover(
         _log("site search skipped: lane budget spent")
         search_posts = []
     else:
-        search_posts = _within(
-            deadline, "site search", [],
-            reddit_search.search,
-            topic, depth=depth, subreddits=subreddits, from_date=from_date, to_date=to_date,
-            **_stage_deadline(deadline),
-        )
+        search_posts = _site_search(topic, depth, subreddits, from_date, to_date, deadline)
 
     # Web floor: recent threads from keyless web search, hydrated and held to
     # the topic bar. Runs before the listings, which stay the last rung.
@@ -311,6 +428,7 @@ def _discover(
         )
         for p in dedicated_posts:
             p["dedicated"] = True
+            p.setdefault("provenance", ["listing"])
         _log(f"Dedicated lane: {len(dedicated_posts)} posts from {dedicated_subreddits}")
 
     # Targeted run: the caller chose these subreddits, so their listing cards
@@ -324,6 +442,10 @@ def _discover(
         if subreddits and not _out_of_time(deadline)
         else []
     )
+    for p in listing_posts:
+        p.setdefault("provenance", ["listing"])
+    if subreddits or dedicated_subreddits:
+        _mark("listing", reddit_health.OK if listing_posts or dedicated_posts else reddit_health.EMPTY)
     _log(
         f"Tier 1 (site search) {len(search_posts)} posts; web floor {len(web_posts)}; "
         f"{'listing discovery ' + str(len(listing_posts)) if subreddits else 'no listings'}"

@@ -142,6 +142,19 @@ def _no_reddit_web_floor():
 
 
 @pytest.fixture(autouse=True)
+def _isolated_reddit_health():
+    """Reddit path health persists to reddit-health.json in the config dir,
+    which _isolated_config already points at this test's own tmp home, and
+    keeps per-run states in module memory. Start and end every test with
+    neither, so a skip one test records never steers another."""
+    from lib import reddit_health
+
+    reddit_health.reset_run_state()
+    yield
+    reddit_health.reset_run_state()
+
+
+@pytest.fixture(autouse=True)
 def _no_reddit_kept_thread_comments():
     """The post-ranking comment pass fetches reddit.com for every kept Reddit
     thread, so any in-process run that keeps one would reach the network.

@@ -692,11 +692,40 @@ class TestRedditConditional:
         assert res.pinned is False
         assert "primary" not in res.conditional.lower().split("pin ignored")[0]
 
-    def test_keyless_lanes_are_sub_probe_detail(self):
+    def test_keyless_paths_are_sub_probe_detail(self):
+        # The public finding is the keyless floor (Brave and the other web
+        # rungs, Arctic /posts/ids), not the dead anonymous search.
         res = backends.resolve("reddit", {})
         public = next(f for f in res.findings if f.name == "public")
-        assert public.detail.endswith("(lanes: search, listing, arctic, shreddit)")
+        assert public.status == health.OK
+        assert public.detail.endswith(
+            "(paths: brave, ddg, startpage web search; arctic /posts/ids)"
+        )
         assert "rss" not in public.detail
+        assert "shreddit" not in public.detail
+
+    def test_cached_skips_show_in_the_public_finding_without_a_request(self):
+        from lib import reddit_health
+
+        for rung in reddit_health.WEB_RUNGS:
+            reddit_health.record(rung, reddit_health.BLOCKED, "HTTP 403")
+        with mock.patch("lib.http.get_text") as get_text, mock.patch("lib.http.get") as get:
+            res = backends.resolve("reddit", {})
+        get_text.assert_not_called()
+        get.assert_not_called()
+        public = next(f for f in res.findings if f.name == "public")
+        assert public.status == health.DEGRADED
+        assert "skipped after a refusal: brave, ddg, startpage" in public.detail
+        assert "doctor" in public.prescription
+
+    def test_one_skipped_rung_keeps_the_floor_ok(self):
+        from lib import reddit_health
+
+        reddit_health.record("brave", reddit_health.BLOCKED, "HTTP 403")
+        res = backends.resolve("reddit", {})
+        public = next(f for f in res.findings if f.name == "public")
+        assert public.status == health.OK
+        assert "brave" in public.detail.split("skipped after a refusal:")[1]
 
 
 # ---------------------------------------------------------------------------
