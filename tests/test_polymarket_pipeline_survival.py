@@ -210,6 +210,27 @@ def test_related_player_line_names_the_player_and_relation():
     assert lines[2].count("34.6%") == 1
 
 
+def test_alias_matched_market_is_kept_in_the_markets_block():
+    event = {
+        "id": "f1", "title": "F1 Drivers Champion 2026", "slug": "f1-drivers-champion-2026",
+        "active": True, "closed": False, "negRisk": False,
+        "volume1mo": 2_000_000, "liquidity": 500_000, "endDate": "2026-12-07T00:00:00Z",
+        "markets": [{
+            "id": "f1m", "question": "Will Max Verstappen win the 2026 F1 Drivers Championship?",
+            "groupItemTitle": "Max Verstappen",
+            "outcomes": '["Yes", "No"]', "outcomePrices": '["0.40", "0.60"]',
+            "volume": "900000", "volumeNum": 900_000, "liquidity": "100000",
+            "endDate": "2026-12-07T00:00:00Z", "active": True, "closed": False,
+        }],
+    }
+    items = _normalized("Formula 1", event, hints={"aliases": ["F1"]})
+    assert items
+
+    lines = render._render_polymarket_markets(_report("Formula 1", items))
+
+    assert any("Max Verstappen" in line and "40%" in line for line in lines)
+
+
 def test_win_total_line_leads_with_the_matched_rung():
     lines = render._render_polymarket_markets(_report("49ers", _forty_niners_items()))
 

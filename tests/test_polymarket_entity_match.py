@@ -66,6 +66,16 @@ def test_single_word_collisions_do_not_match(topic, market, title):
     assert _match(topic, market, title) is None
 
 
+@pytest.mark.parametrize("topic, question, title", [
+    ("Nvidia earnings", "Will Nvidia beat quarterly earnings?", "Nvidia quarterly earnings beat?"),
+    ("2028 presidential election", "Will JD Vance win the 2028 US Presidential Election?",
+     "Presidential Election Winner 2028"),
+    ("Sam Altman OpenAI", "Sam Altman CEO OpenAI?", "Sam Altman CEO OpenAI"),
+])
+def test_descriptive_topic_matches_with_its_words_in_any_order(topic, question, title):
+    assert _match(topic, _market(question), title)
+
+
 def test_outcome_label_matches_and_yes_no_labels_do_not():
     best_model = _market(
         "Which company has best AI model end of 2026?",

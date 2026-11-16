@@ -289,7 +289,8 @@ class _Term:
     def found_in(self, text: str) -> bool:
         """Whether ``text`` (already through ``_match_text``) names this term:
         the whole phrase at word boundaries, an initialism of a spelled-out
-        phrase ("AGI"), or, for a soft domain sweep ("AI frontier
+        phrase ("AGI"), every informative word of a descriptive topic in any
+        order ("Nvidia earnings"), or, for a soft domain sweep ("AI frontier
         developments"), its domain word."""
         if self.pattern is None:
             return False
@@ -297,6 +298,8 @@ class _Term:
             return True
         words = set(text.split())
         if _acronym_credit(self.words, words):
+            return True
+        if len(self.informative) >= 2 and all(word in words for word in self.informative):
             return True
         return _domain_word_fallback_allows(self.words, self.informative, text, words)
 

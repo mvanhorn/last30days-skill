@@ -2893,20 +2893,16 @@ def _polymarket_headline(item: schema.SourceItem) -> tuple[str, float, str] | No
 
 def _polymarket_names_topic(item: schema.SourceItem, topic: str) -> bool:
     """Whether a market names the whole topic, read from the event title, its
-    question, its headline and the matched market. A market matched through
-    a related name the host supplied (a team's player) names that person,
-    not the topic, and is kept."""
-    matched = item.metadata.get("matched_market")
-    matched = matched if isinstance(matched, dict) else {}
-    if matched.get("related_name"):
+    question and its headline. An item carrying a matched market was already
+    judged against the topic, its aliases and related names by the entity
+    matcher, so it is kept; the word check covers items saved by older builds."""
+    if isinstance(item.metadata.get("matched_market"), dict):
         return True
     return polymarket.names_whole_topic(
         topic,
         item.title,
         str(item.metadata.get("question") or ""),
         (_polymarket_headline(item) or ("",))[0],
-        str(matched.get("question") or ""),
-        str(matched.get("label") or ""),
     )
 
 
