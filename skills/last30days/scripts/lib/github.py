@@ -577,21 +577,31 @@ def _fetch_item_comments(
     Returns:
         List of comment dicts with score, excerpt, author.
     """
+    if max_comments <= 0:
+        return []
+
     path = issue_url.replace("https://github.com/", "")
     path = path.replace("/pull/", "/issues/")
-    api_url = f"https://api.github.com/repos/{path}/comments?per_page={max_comments}&sort=reactions&direction=desc"
+    # GitHub's per-issue comments endpoint orders by ascending ID and does not
+    # support reaction sorting, so fetch its largest page and rank locally.
+    api_url = f"https://api.github.com/repos/{path}/comments?per_page=100"
 
     data = _fetch_json(api_url, token=token, timeout=15)
     if not data or not isinstance(data, list):
         return []
 
     comments = []
-    for c in data[:max_comments]:
+    for c in data:
+        if not isinstance(c, dict):
+            continue
+        user = c.get("user")
+        if _is_bot_user(user):
+            continue
         body = c.get("body") or ""
         excerpt = body[:300] + "..." if len(body) > 300 else body
         reactions = c.get("reactions", {})
         reaction_count = reactions.get("total_count", 0) if isinstance(reactions, dict) else 0
-        author = c.get("user", {}).get("login", "") if isinstance(c.get("user"), dict) else ""
+        author = user.get("login", "") if isinstance(user, dict) else ""
 
         comments.append({
             "score": reaction_count,
@@ -599,7 +609,28 @@ def _fetch_item_comments(
             "author": author,
         })
 
-    return comments
+    # Python's sort is stable, preserving API order for reaction-count ties.
+    comments.sort(key=lambda comment: comment["score"], reverse=True)
+    return comments[:max_comments]
+
+
+def _is_bot_user(user: Any) -> bool:
+    """Return whether a GitHub comment author is recognizably automated.
+
+    GitHub's REST payload marks bot accounts with ``user.type == "Bot"``.
+    Some compatible or partial payloads omit that field but retain the
+    conventional ``[bot]`` suffix on the login or display name. Missing user
+    metadata represents an unknown/deleted author, not evidence of automation.
+    """
+    if not isinstance(user, dict):
+        return False
+    if str(user.get("type") or "").casefold() == "bot":
+        return True
+    return any(
+        isinstance(user.get(field), str)
+        and user[field].strip().casefold().endswith("[bot]")
+        for field in ("login", "name")
+    )
 
 
 # ---------------------------------------------------------------------------
