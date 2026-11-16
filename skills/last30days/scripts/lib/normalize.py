@@ -354,6 +354,13 @@ def _normalize_reddit(
         metadata={
             "top_comments": top_comments,
             "comment_insights": item.get("comment_insights") or [],
+            # Where the score and the comments came from (reddit_refs labels),
+            # so a merge keeps the live score and render can say "score pending".
+            **{
+                key: item[key]
+                for key in ("engagement_source", "comments_source")
+                if item.get(key)
+            },
         },
     )
 

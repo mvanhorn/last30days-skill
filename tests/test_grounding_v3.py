@@ -461,49 +461,41 @@ class RedditEnrichmentGateTests(unittest.TestCase):
 
 
 class RedditEnrichItemsTests(unittest.TestCase):
-    """Direct tests for `_enrich_reddit_items` covering the selftext key path
-    and the RedditRateLimitError early-exit behavior.
+    """Direct tests for `_enrich_reddit_items`: Reddit web results are filled
+    through the Reddit hydrator (Arctic Shift), and a result the archive could
+    not fill stays as the search gave it.
     """
 
-    def test_selftext_under_submission_populates_snippet(self):
-        from lib import reddit_enrich
+    def test_selftext_from_hydrated_thread_populates_snippet(self):
+        from lib import reddit_arctic
 
         item = {
             "url": "https://www.reddit.com/r/python/comments/abc/title/",
             "snippet": "original",
         }
-        parsed = {
-            "submission": {"selftext": "thread body content"},
-            "comments": [],
-        }
-        with patch.object(reddit_enrich, "fetch_thread_data", return_value={"raw": True}), \
-             patch.object(reddit_enrich, "parse_thread_data", return_value=parsed):
+        post = reddit_arctic._normalize_listing_row({
+            "id": "abc", "title": "title", "score": 12, "num_comments": 0,
+            "created_utc": 1_700_000_000, "subreddit": "python",
+            "permalink": "/r/python/comments/abc/title/", "selftext": "thread body content",
+        })
+        with patch.object(reddit_arctic, "fetch_posts_by_ids", return_value=({"abc": post}, "ok")), \
+             patch.object(reddit_arctic, "fetch_comment_tree", return_value=[]):
             result = grounding._enrich_reddit_items([item])
         self.assertEqual("thread body content", result[0]["snippet"])
-        self.assertEqual("reddit_json_api", result[0]["enriched_via"])
+        self.assertEqual("arctic", result[0]["enriched_via"])
 
-    def test_rate_limit_error_halts_iteration(self):
-        from lib import reddit_enrich
+    def test_throttled_archive_leaves_results_unchanged(self):
+        from lib import reddit_arctic
 
-        item1 = {"url": "https://www.reddit.com/r/python/comments/aaa/x/"}
-        item2 = {"url": "https://www.reddit.com/r/python/comments/bbb/y/"}
-
-        def fake_fetch(url, *args, **kwargs):
-            raise reddit_enrich.RedditRateLimitError(f"429 for {url}")
-
-        captured_stderr: list[str] = []
-
-        with patch.object(reddit_enrich, "fetch_thread_data", side_effect=fake_fetch) as fetch_mock, \
-             patch("lib.grounding.sys.stderr.write", side_effect=lambda s: captured_stderr.append(s)):
-            grounding._enrich_reddit_items([item1, item2])
-
-        # Only the first item should have triggered a fetch attempt
-        self.assertEqual(1, fetch_mock.call_count)
-        # A stderr message about the rate-limit halt should have been emitted
-        self.assertTrue(
-            any("rate-limited" in msg.lower() or "rate limited" in msg.lower() for msg in captured_stderr),
-            msg=f"Expected a rate-limit stderr message, got: {captured_stderr!r}",
-        )
+        item1 = {"url": "https://www.reddit.com/r/python/comments/aaa/x/", "snippet": "a"}
+        item2 = {"url": "https://www.reddit.com/r/python/comments/bbb/y/", "snippet": "b"}
+        with patch.object(reddit_arctic, "fetch_posts_by_ids", return_value=({}, "throttled")) as ids, \
+             patch.object(reddit_arctic, "fetch_comment_tree") as tree:
+            result = grounding._enrich_reddit_items([item1, item2])
+        ids.assert_called_once()
+        tree.assert_not_called()
+        self.assertEqual(["a", "b"], [r["snippet"] for r in result])
+        self.assertFalse(any("enriched_via" in r for r in result))
 
 class RedditEnrichmentIsolationTests(unittest.TestCase):
     def test_enrichment_http_failure_does_not_poison_web_source(self):

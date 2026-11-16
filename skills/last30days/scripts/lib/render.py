@@ -24,6 +24,7 @@ from . import (
     meta_ads,
     patent_digest,
     polymarket,
+    reddit_refs,
     registers,
     relevance,
     rerank,
@@ -2074,6 +2075,9 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
         "ratings",
     ]:
         val = eng.get(key)
+        if key == "score" and item.source == "reddit" and reddit_refs.score_pending(item.metadata):
+            parts.append("score pending")
+            continue
         if val is not None and val != 0:
             parts.append(f"{val} {key}")
     # Same drift as the source list above: this allowlist silently blanks the
@@ -4097,6 +4101,10 @@ def _format_engagement(item: schema.SourceItem | None) -> str | None:
     fields = ENGAGEMENT_DISPLAY.get(item.source)
     if fields:
         text = _fmt_pairs([(engagement.get(field), label) for field, label in fields])
+        if item.source == "reddit" and reddit_refs.score_pending(item.metadata):
+            # A fresh archive snapshot reads 0 or 1 whatever the thread's
+            # real score is, so it is withheld rather than shown.
+            text = ", ".join(part for part in ("score pending", text) if part)
     else:
         # Generic fallback: engagement.items() yields (key, value) but
         # _fmt_pairs expects (value, label), so swap them.
@@ -4462,7 +4470,15 @@ def _top_comments_list(
         return []
     if min_score is None:
         min_score = _TOP_COMMENT_MIN_SCORE.get(item.source, 0)
-    return [c for c in comments if (c.get("score") or 0) >= min_score][:limit]
+    # A pending comment (a fresh archive snapshot, score withheld) is exempt
+    # from the vote floor; it is listed after every scored comment and printed
+    # with no vote count.
+    scored = [
+        c for c in comments
+        if isinstance(c, dict) and not c.get("score_pending") and (c.get("score") or 0) >= min_score
+    ]
+    pending = [c for c in comments if isinstance(c, dict) and c.get("score_pending")]
+    return (scored + pending)[:limit]
 
 
 def _comment_insight(item: schema.SourceItem | None) -> str | None:
@@ -5199,22 +5215,30 @@ def _render_top_comments(
                 body = _quote_text(raw, _QUOTE_TEXT_LIMIT)
                 if _quotable(body):
                     community.append((tc, body))
-            if community and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
-                top_score = community[0][0].get("score")
+            # A pending comment (a fresh archive snapshot, its score withheld)
+            # has no vote count to clear the vote floors with; it is quoted
+            # without one, after every scored line.
+            scored = [(tc, body) for tc, body in community if not tc.get("score_pending")]
+            if scored and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
+                top_score = scored[0][0].get("score")
                 if not (
                     isinstance(top_score, (int, float))
                     and not isinstance(top_score, bool)
                     and top_score >= _quote_pool_item_floor(item)
                 ):
                     # Too few voted for the item's best comment: skip the item.
-                    community = []
+                    community = [
+                        (tc, body) for tc, body in community if tc.get("score_pending")
+                    ]
             for position, (tc, body) in enumerate(
                 community[:_QUOTE_POOL_COMMENTS_PER_ITEM]
             ):
                 score = tc.get("score")
-                if not _quote_pool_has_vote(item.source, score):
+                pending = bool(tc.get("score_pending"))
+                if not pending and not _quote_pool_has_vote(item.source, score):
                     continue
                 rows.append({
+                    "pending": pending,
                     "position": position, "cand": cand, "item": item, "funny": funny,
                     "author": tc.get("author"), "score": score,
                     "vote_label": _vote_label_for(item.source), "body": body,
@@ -5305,6 +5329,11 @@ def _render_top_comments(
         *other_first,
         *other_second,
     ]
+    # Pending lines carry no vote count, so they never take a place or a
+    # printed position ahead of a scored line from any platform.
+    priority.sort(key=lambda row: bool(row.get("pending")))
+    first_order.sort(key=lambda row: bool(row.get("pending")))
+    second_order.sort(key=lambda row: bool(row.get("pending")))
 
     # Eligibility is settled above; only now are duplicates removed, and the
     # limit applied, in the order of who is covered first.

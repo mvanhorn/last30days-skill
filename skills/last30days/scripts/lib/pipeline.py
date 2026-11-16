@@ -1301,7 +1301,8 @@ def _best_community_comment(items: list[schema.SourceItem]) -> str | None:
     for item in items:
         comments = item.metadata.get("top_comments") or []
         for comment in comments:
-            if not isinstance(comment, dict):
+            # A pending comment's score is withheld, so it has no vote strength.
+            if not isinstance(comment, dict) or comment.get("score_pending"):
                 continue
             body = (comment.get("excerpt") or comment.get("text") or comment.get("body") or "").strip()
             if len(body) < 12:

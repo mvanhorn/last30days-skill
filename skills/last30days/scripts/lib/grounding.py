@@ -373,46 +373,57 @@ def _reddit_excluded(config: dict) -> bool:
 
 
 def _enrich_reddit_items(items: list[dict]) -> list[dict]:
-    """Enrich web search results that are Reddit URLs with thread body and comments.
+    """Enrich web search results that are Reddit threads with body and comments.
 
     Claude Code's WebFetch blocks reddit.com, so the model can't retrieve
-    Reddit content from web search results. This fetches it via the public
-    JSON API (reddit.com/.../.json) which bypasses that restriction.
+    Reddit content from web search results. Anonymous thread ``.json`` has
+    been refused since 2026, so the threads are filled through the Reddit
+    hydrator (Arctic Shift), which needs no key and never calls reddit.com.
+    A thread the hydrator could not fill stays as the search result gave it.
 
     Callers should gate this with EXCLUDE_SOURCES=reddit handling (see
     `_reddit_excluded`) so a user who explicitly excluded Reddit doesn't
     get Reddit content via web-search URLs.
     """
-    from . import reddit_enrich
-    from .reddit_enrich import RedditRateLimitError
+    from . import reddit_hydrate, reddit_refs
 
+    refs_by_item: list[tuple[dict, reddit_refs.ThreadRef]] = []
     for item in items:
-        url = item.get("url", "")
-        if "reddit.com" not in url or "/comments/" not in url:
+        ref = reddit_refs.canonical_thread(str(item.get("url") or ""))
+        if ref is not None:
+            ref.provenance.add("web")
+            refs_by_item.append((item, ref))
+    if not refs_by_item:
+        return items
+    try:
+        hydrated = reddit_hydrate.hydrate([ref for _item, ref in refs_by_item])
+    except Exception as exc:  # enrichment is best-effort on results already in hand
+        sys.stderr.write(f"[Web] Reddit enrichment failed: {exc}\n")
+        return items
+    by_id = {
+        thread["metadata"]["post_id"]: thread
+        for thread in hydrated.items
+        if thread.get("engagement_source") != reddit_refs.UNKNOWN
+    }
+    for item, ref in refs_by_item:
+        thread = by_id.get(ref.post_id)
+        if thread is None:
             continue
-        try:
-            thread_data = reddit_enrich.fetch_thread_data(url, timeout=8)
-            if not thread_data:
-                continue
-            parsed = reddit_enrich.parse_thread_data(thread_data)
-            # selftext lives under parsed["submission"], not at the top level
-            selftext = (parsed.get("submission") or {}).get("selftext", "")
-            if selftext:
-                item["snippet"] = selftext[:2000]
-            comments = parsed.get("comments", [])
-            top = reddit_enrich.get_top_comments(comments)
-            if top:
-                item["top_comments"] = [
-                    {"score": c.get("score", 0), "excerpt": (c.get("body") or "")[:200]}
-                    for c in top[:5]
-                ]
-            item["enriched_via"] = "reddit_json_api"
-        except RedditRateLimitError as exc:
-            # Stop iterating to avoid flooding more 429s
-            sys.stderr.write(f"[Web] Reddit rate-limited, halting enrichment: {exc}\n")
-            break
-        except Exception as exc:
-            sys.stderr.write(f"[Web] Reddit enrichment failed for {url}: {exc}\n")
+        selftext = thread.get("selftext") or ""
+        if selftext:
+            item["snippet"] = selftext[:2000]
+        top = thread.get("top_comments") or []
+        if top:
+            item["top_comments"] = [
+                {
+                    "score": c.get("score"),
+                    "excerpt": (c.get("body") or c.get("excerpt") or "")[:200],
+                    "depth": c.get("depth", 0),
+                    **({"score_pending": True} if c.get("score_pending") else {}),
+                }
+                for c in top[:5]
+            ]
+        item["enriched_via"] = "arctic"
     return items
 
 

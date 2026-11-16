@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 
-from . import dates, relevance, schema
+from . import dates, reddit_refs, relevance, schema
 
 # Editorial signal-to-noise scores. Grounding (Google Search) is 1.0 baseline;
 # social platforms discounted for noise.
@@ -549,7 +549,13 @@ def prune_low_relevance(
         # Key the stricter social gate on genuinely absent engagement (no
         # counts at all), not on a rounded score: a handful of likes is still
         # engagement even where the 0-100 scale rounds it low.
-        if item.source in _SOCIAL_SOURCES and not engagement_raw(item):
+        # A Reddit thread whose score is pending has unknown engagement, not
+        # absent engagement.
+        if (
+            item.source in _SOCIAL_SOURCES
+            and not engagement_raw(item)
+            and not reddit_refs.score_pending(item.metadata)
+        ):
             if rel < minimum * 1.5:
                 return False
         sole_source = sources_present == {item.source}
