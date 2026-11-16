@@ -451,6 +451,58 @@ def test_search_retries_a_rate_limited_call(monkeypatch):
     assert "error" not in result
 
 
+def test_search_reports_partial_when_one_term_fails_and_another_returns(monkeypatch):
+    request, _calls = _gamma({"Formula 1": {"events": [_search_event("7", "F1: Las Vegas Grand Prix")]}})
+
+    def flaky(method, url, **kwargs):
+        if "q=F1&" in url:
+            return {"events": [], "error": "HTTP 429: Rate limit"}
+        return request(method, url, **kwargs)
+
+    monkeypatch.setattr(polymarket.http, "request", flaky)
+
+    result = polymarket.search_polymarket(
+        "Formula 1", "2026-10-17", "2026-11-16",
+        hints=polymarket.PolymarketHints.coerce({"aliases": ["F1"]}),
+    )
+
+    assert [event["id"] for event in result["events"]] == ["7"]
+    assert result["partial"] is True
+    assert "429" in result["error"]
+
+
+def test_search_passes_the_deadline_to_every_call(monkeypatch):
+    seen = []
+
+    def request(method, url, **kwargs):
+        seen.append(kwargs.get("deadline_monotonic"))
+        return {"events": []}
+
+    monkeypatch.setattr(polymarket.http, "request", request)
+    polymarket.search_polymarket(
+        "Formula 1", "2026-10-17", "2026-11-16",
+        hints=polymarket.PolymarketHints.coerce({"aliases": ["F1"]}), deadline=1234.5,
+    )
+    assert seen == [1234.5, 1234.5]
+
+
+def test_search_skips_related_names_once_the_deadline_has_passed(monkeypatch):
+    request, calls = _gamma({"Warriors": {"events": [_search_event("1", "NBA: 2027 Champion")]}})
+    monkeypatch.setattr(polymarket.http, "request", request)
+
+    result = polymarket.search_polymarket(
+        "Warriors", "2026-10-17", "2026-11-16",
+        hints=polymarket.PolymarketHints.coerce({"related": [
+            {"name": "Stephen Curry", "relation": "player"},
+        ]}),
+        deadline=0.0,
+    )
+
+    assert [call["q"] for call in calls] == ["Warriors"]
+    assert result["partial"] is True
+    assert "deadline" in result["error"]
+
+
 # === Tests for parse_polymarket_response() ===
 
 

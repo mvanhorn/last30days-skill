@@ -1,0 +1,1 @@
+Polymarket now reports a partial result when some of its searches are rate-limited, instead of caching the incomplete result for the run, and every Polymarket search (retries included) stops at the stream deadline.

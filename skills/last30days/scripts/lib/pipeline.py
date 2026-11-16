@@ -7419,15 +7419,29 @@ def _retrieve_stream_impl(
             ("polymarket", relevance_topic, hints, from_date, to_date, depth),
             lambda: polymarket.search_polymarket(
                 relevance_topic, from_date, to_date, depth=depth, hints=hints,
+                deadline=_research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS),
             ),
             timeout=_memo_wait_seconds(config),
             cacheable=_clean_search_result,
         )
+        if result.get("partial"):
+            # Some term searches failed while others returned events: keep
+            # what came back, report the lane partial, and (via `error`) keep
+            # the incomplete result out of the fetch memo.
+            artifact = {
+                "_source_outcome": {
+                    "state": schema.PARTIAL,
+                    "detail": str(result.get("error") or "partial"),
+                    "attempted": True,
+                }
+            }
+        else:
+            artifact = _result_outcome_artifact(source, result)
         return (
             polymarket.parse_polymarket_response(
                 result, topic=relevance_topic, hints=hints, to_date=to_date,
             ),
-            _result_outcome_artifact(source, result),
+            artifact,
         )
     if source == "github":
         # Resolve once at the pipeline boundary so search and enrich
