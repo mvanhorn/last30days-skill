@@ -41,8 +41,10 @@ RESULT_CAP = {
 
 # The selection rule. A market is live ("in band") under PRICE_CEILING with
 # MIN_DAYS_TO_CLOSE or more days left and at or above its floor:
-# RACE_PRICE_FLOOR for an outcome of a mutually exclusive race of
-# RACE_MIN_OUTCOMES or more live outcomes, PRICE_FLOOR for anything else. An
+# RACE_PRICE_FLOOR when the subject (or a related name) is itself an outcome
+# of a mutually exclusive race of RACE_MIN_OUTCOMES or more live outcomes,
+# PRICE_FLOOR for anything else, including the brackets of a race the event
+# title names the subject in ("OpenAI IPO Closing Market Cap"). An
 # event scores ln(1 + money traded on its live entity markets), plus
 # CONTENDER_BONUS when one of them is a top-CONTENDER_TOP outcome of such a
 # race with at least CONTENDER_MIN_VOLUME traded on its own market. An event
@@ -378,6 +380,27 @@ class EntityMatcher:
                 return EntityMatch("market", entry.name, entry.relation)
         return None
 
+    def outcome_kind(
+        self, market: Dict[str, Any], match: EntityMatch, event_title: str = "",
+    ) -> Optional[str]:
+        """How the subject (or the related name) is an outcome of the event:
+        "label" when the market's ``groupItemTitle`` names it and, for the
+        subject, the event title does not; "outcome" when only a non-Yes/No
+        outcome label names the subject; None when the market is about the
+        subject without the subject being one of the event's outcomes (a
+        bracket of "OpenAI IPO Closing Market Cap")."""
+        label = _match_text(market.get("groupItemTitle"))
+        if match.related:
+            terms = [term for entry, term in self.related if entry.name == match.related]
+            return "label" if label and self._names(terms, [label]) else None
+        if self._names(self.terms, [_match_text(event_title)]):
+            return None
+        if label and self._names(self.terms, [label]):
+            return "label"
+        if self._names(self.terms, [_match_text(market.get("question"))]):
+            return None
+        return "outcome" if self.matched_outcome(market, match) is not None else None
+
     def matched_outcome(self, market: Dict[str, Any], match: EntityMatch) -> Optional[str]:
         """The non-Yes/No outcome label that names the subject (or the related
         name that matched), for a market whose outcomes are names."""
@@ -524,7 +547,8 @@ def search_polymarket(
 
     One volume-sorted public-search per subject name (the topic, each side of
     a "vs" topic, each host alias). Then each related name the merged events
-    do not already carry is searched on its own.
+    not already an outcome of a race in the merged events is searched on its
+    own.
 
     Args:
         topic: Search topic
@@ -547,15 +571,20 @@ def search_polymarket(
     errors: List[str] = []
     _run_searches(terms, limit, events, errors)
 
-    pool = [
-        _match_text(text)
-        for event in events.values()
-        for market in event.get("markets") or []
-        for text in _market_texts(market)
-    ]
+    # A related name is searched unless the pool already holds a race it is
+    # an outcome of; a game prop naming the player is no award race.
+    race_labels = []
+    for event in events.values():
+        live = [
+            market for market in event.get("markets") or []
+            if not market.get("closed") and market.get("active", True)
+            and _safe_float(market.get("liquidity")) > 0
+        ]
+        if _is_race(event, live):
+            race_labels += [_match_text(market.get("groupItemTitle")) for market in live]
     related_terms = [
         entry.name for entry in hints.related[:_RELATED_SEARCH_CAP]
-        if not EntityMatcher._names([_Term(entry.name)], pool)
+        if not EntityMatcher._names([_Term(entry.name)], race_labels)
     ]
     if related_terms:
         _log(f"Searching related names: {related_terms}")
@@ -1141,6 +1170,7 @@ class _EntityMarket:
     days: Optional[int]
     rank: Optional[int] = None
     race_size: Optional[int] = None
+    race_outcome: bool = False
     in_band: bool = False
     contender: bool = False
 
@@ -1160,6 +1190,15 @@ class _EventEntities:
     markets: List[_EntityMarket] = field(default_factory=list)
 
 
+def _is_race(event: Dict[str, Any], live_markets: List[Dict[str, Any]]) -> bool:
+    """Whether an event's live markets are a race: mutually exclusive
+    (``negRisk``), RACE_MIN_OUTCOMES or more of them, labelled by
+    ``groupItemTitle``."""
+    exclusive = bool(event.get("negRisk")) or any(m.get("negRisk") for m in live_markets)
+    labelled = sum(1 for m in live_markets if str(m.get("groupItemTitle") or "").strip())
+    return exclusive and len(live_markets) >= RACE_MIN_OUTCOMES and labelled >= 2
+
+
 def _event_entities(
     event: Dict[str, Any],
     active_markets: List[Dict[str, Any]],
@@ -1171,8 +1210,10 @@ def _event_entities(
 
     Recurring count brackets ("# tweets") are dropped. A market with no
     displayable price is kept but can never be live. In a race (a mutually
-    exclusive event of RACE_MIN_OUTCOMES or more live outcomes) each priced
-    market named on its own text is ranked by price among the live outcomes.
+    exclusive event of RACE_MIN_OUTCOMES or more live outcomes, labelled by
+    ``groupItemTitle``) a market whose outcome is the subject or a related
+    name is a race outcome, and when its label names it, it is ranked by
+    price among the live outcomes.
     """
     title = str(event.get("title") or "")
     yes_prices = [_yes_price(market) for market in active_markets]
@@ -1195,7 +1236,9 @@ def _event_entities(
             market=market, match=match, outcome=outcome, price=price,
             volume=_market_volume(market), days=_days_to_close(market, event, today),
         )
-        if race and match.field == "market" and price is not None:
+        kind = matcher.outcome_kind(market, match, title) if race else None
+        entity.race_outcome = kind is not None
+        if kind == "label" and price is not None:
             entity.rank = 1 + sum(1 for other in yes_prices if other is not None and other > price)
             entity.race_size = len(active_markets)
         found.markets.append(entity)
@@ -1207,10 +1250,8 @@ def _teams_biggest_race(analyses: Dict[int, _EventEntities]) -> Optional[int]:
     open outcomes the selection rule would otherwise floor."""
     best: Optional[Tuple[float, int]] = None
     for key, found in analyses.items():
-        if not found.race:
-            continue
         for entity in found.markets:
-            if entity.match.related or entity.match.field != "market":
+            if entity.match.related or not entity.race_outcome:
                 continue
             if entity.price is None or not 0 < entity.price < PRICE_CEILING:
                 continue
@@ -1225,7 +1266,7 @@ def _apply_band(found: _EventEntities, exempt: bool) -> None:
     for entity in found.markets:
         floor = (
             0.0 if exempt and not entity.match.related
-            else RACE_PRICE_FLOOR if found.race else PRICE_FLOOR
+            else RACE_PRICE_FLOOR if entity.race_outcome else PRICE_FLOOR
         )
         entity.in_band = (
             entity.price is not None
@@ -1354,7 +1395,7 @@ def parse_polymarket_response(
         if matcher is not None:
             found = _event_entities(
                 event, active_markets, matcher,
-                race=mutually_exclusive and len(active_markets) >= RACE_MIN_OUTCOMES,
+                race=_is_race(event, active_markets),
                 today=today,
             )
             if not found.markets:
@@ -1406,18 +1447,22 @@ def parse_polymarket_response(
 
         # Take top market for the event
         top_market = active_markets[0]
+        # The market whose outcomes and question the odds show: the subject's
+        # own when matched, so a busier sibling with its own outcome labels
+        # ("O 11.5" for another team) never speaks for it.
+        shown_market = entity.market if entity is not None else top_market
 
         # Parse outcome prices - for multi-market events with Yes/No binary
         # sub-markets, synthesize from market questions to show actual
         # team/entity probabilities instead of a single market's Yes/No
-        outcome_prices = _parse_outcome_prices(top_market)
+        outcome_prices = _parse_outcome_prices(shown_market)
         # The market question each outcome was named from, None for a label.
         outcome_questions: List[Optional[str]] = [None] * len(outcome_prices)
         # The market each outcome is priced in.
-        outcome_markets: List[Dict[str, Any]] = [top_market] * len(outcome_prices)
+        outcome_markets: List[Dict[str, Any]] = [shown_market] * len(outcome_prices)
         # Whether the sub-markets are Yes/No is read from the served outcomes,
         # so an unpriced top market still leads to its priced siblings.
-        top_labels = _parse_outcome_prices(top_market, book_aware=False)
+        top_labels = _parse_outcome_prices(shown_market, book_aware=False)
         top_outcomes_are_binary = (
             len(top_labels) == 2
             and {n.lower() for n, _ in top_labels} == {"yes", "no"}
@@ -1556,13 +1601,16 @@ def parse_polymarket_response(
         if remaining < 0:
             remaining = 0
         odds = _odds_summary(
-            title, top_market, outcome_prices, outcome_questions, outcome_markets, today,
+            title, shown_market, outcome_prices, outcome_questions, outcome_markets, today,
         )
         if impossible_set:
-            # The event stays as evidence, with no odds line, headline or
-            # listed outcomes. Verification still sees each market's quote.
+            # The event stays as evidence, with no odds line or listed
+            # outcomes. Verification still sees each market's quote. The
+            # subject's own outcome of the race keeps its headline: its price
+            # is that market's own quote, not read off the bogus set.
             odds = None
-            headline = None
+            if entity is None or not entity.race_outcome:
+                headline = None
             remaining = 0
             if not include_all_outcomes:
                 top_outcomes = []
@@ -1811,3 +1859,17 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         missing.snapshot = snapshot
         raise missing
     return {"value": value, **snapshot}
+
+
+def by_selection(items: list) -> list:
+    """Markets in the parser's selection order: a live entity market first,
+    by ``selection_score``. An item saved before the parser scored markets
+    follows, by 30-day volume as before."""
+    def key(item) -> tuple:
+        volume = (item.engagement or {}).get("volume") or 0
+        score = item.metadata.get("selection_score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            return (0, 0, 0.0, volume)
+        return (1, item.metadata.get("selection_tier") or 0, score, volume)
+
+    return sorted(items, key=key, reverse=True)

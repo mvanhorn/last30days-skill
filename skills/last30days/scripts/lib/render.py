@@ -2910,20 +2910,6 @@ def _polymarket_names_topic(item: schema.SourceItem, topic: str) -> bool:
     )
 
 
-def _polymarket_by_selection(items: list[schema.SourceItem]) -> list[schema.SourceItem]:
-    """Markets in the parser's selection order: a live entity market first,
-    by ``selection_score``. An item saved before the parser scored markets
-    follows, by 30-day volume as before."""
-    def key(item: schema.SourceItem) -> tuple:
-        volume = (item.engagement or {}).get("volume") or 0
-        score = item.metadata.get("selection_score")
-        if isinstance(score, bool) or not isinstance(score, (int, float)):
-            return (0, 0, 0.0, volume)
-        return (1, item.metadata.get("selection_tier") or 0, score, volume)
-
-    return sorted(items, key=key, reverse=True)
-
-
 def _polymarket_top_markets(
     items: list[schema.SourceItem], limit: int = 3, topic: str = "",
 ) -> list[str]:
@@ -2937,7 +2923,7 @@ def _polymarket_top_markets(
     """
     if topic:
         items = [item for item in items if _polymarket_names_topic(item, topic)]
-    sorted_items = _polymarket_by_selection(items)
+    sorted_items = polymarket.by_selection(items)
 
     # One market per series first, a substantive question before a recurring
     # count bracket ("# tweets this week"); a count series is never repeated,
@@ -5017,7 +5003,17 @@ def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
     """
     odds = _polymarket_odds(item)
     if not odds:
-        return ""
+        # The race's other odds were withheld; the subject's own outcome of
+        # the race (the only kind that carries a rank) is still priced on its
+        # own book.
+        own = item.metadata.get("matched_market")
+        if not isinstance(own, dict) or not isinstance(own.get("rank"), int):
+            return ""
+        matched = _polymarket_matched_part(item, [])
+        subject = _odds_subject(str(item.title or ""))
+        if not matched or not subject:
+            return ""
+        return f"📊 Polymarket · {subject}: {matched[0]}"
     entries = odds["parts"][:3]
     parts: list[str] = []
     matched = _polymarket_matched_part(
@@ -5064,7 +5060,7 @@ def _render_polymarket_markets(
     does. In selection order, as in the footer, and like the footer it
     prints odds only, never a dollar amount.
     """
-    items = _polymarket_by_selection([
+    items = polymarket.by_selection([
         item
         for item in report.items_by_source.get("polymarket") or []
         if _polymarket_names_topic(item, report.topic)

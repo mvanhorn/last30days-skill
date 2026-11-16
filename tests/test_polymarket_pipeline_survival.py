@@ -253,3 +253,75 @@ def test_mock_run_for_49ers_leads_the_compact_markets_block_with_the_champion():
     compact = render.render_compact(report)
     block = compact.split("## Polymarket Markets", 1)[1].strip().splitlines()
     assert block[0].startswith("- 📊 Polymarket · Pro Football: 2027 Champion: San Francisco 49ers 14.5%")
+
+
+def _small_game(index):
+    title = f"Warriors vs. Team{index}"
+    return {
+        "id": f"wg{index}", "title": title, "slug": f"nba-gsw-team{index}",
+        "active": True, "closed": False, "negRisk": False,
+        "volume1mo": 5_000_000, "liquidity": 900_000, "endDate": "2026-12-20T01:00:00Z",
+        "markets": [{
+            "id": f"wm{index}", "question": title, "outcomes": '["Warriors", "Team"]',
+            "outcomePrices": '["0.55", "0.45"]', "volume": "1500", "volumeNum": 1_500,
+            "liquidity": "1000", "endDate": "2026-12-20T01:00:00Z",
+            "active": True, "closed": False,
+        }],
+    }
+
+
+def test_related_player_race_survives_the_stream_cut_at_quick_depth():
+    hints = {"kind": "team", "related": [LENDEBORG]}
+    raw = _parse(
+        "Warriors", _fixture("nba_2026_27_rookie_of_the_year"),
+        *(_small_game(index) for index in range(8)), hints=hints,
+    )
+    plan = {
+        "intent": "general",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "story",
+        "subqueries": [{
+            "label": "primary",
+            "search_query": "Warriors",
+            "ranking_query": "What are people saying about Warriors?",
+            "sources": ["polymarket"],
+        }],
+        "source_weights": {"polymarket": 1.0},
+        "polymarket_hints": hints,
+    }
+
+    def fake_retrieve(**kwargs):
+        return (copy.deepcopy(raw), {}) if kwargs.get("source") == "polymarket" else ([], {})
+
+    with patch.object(pipeline, "_retrieve_stream", side_effect=fake_retrieve):
+        report = pipeline.run(
+            topic="Warriors", config={}, depth="quick", mock=True,
+            requested_sources=["polymarket"], web_backend="none",
+            external_plan=plan, as_of_date=TO_DATE,
+        )
+
+    titles = [item.title for item in report.items_by_source["polymarket"]]
+    assert ROOKIE in titles
+    compact = render.render_compact(report)
+    block = compact.split("## Polymarket Markets", 1)[1].strip().splitlines()
+    assert ROOKIE in block[0]
+
+
+def test_race_with_suppressed_odds_still_lists_the_matched_player():
+    """When a race's Yes prices sum well over one, the parser withholds the
+    event's odds and outcome list but keeps the subject's own market, which
+    is priced on its own book. The Markets block still lists it."""
+    hints = {"kind": "team", "related": [{"name": "Ty Jerome", "relation": "player"}]}
+    items = _normalized(
+        "Memphis Grizzlies", _fixture("nba_2026_27_most_improved_player"), hints=hints,
+    )
+    for item in items:
+        # What the parser stores for a race whose Yes prices are impossible.
+        item.metadata["odds"] = None
+        item.metadata["outcome_prices"] = []
+
+    lines = render._render_polymarket_markets(_report("Memphis Grizzlies", items))
+
+    assert len(lines) == 3
+    assert ": Ty Jerome (player) 34" in lines[2]
+    assert ", #1 of " in lines[2]

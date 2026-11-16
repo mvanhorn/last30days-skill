@@ -3008,6 +3008,11 @@ def run(
                     digg_bar_dropped = True
                     bundle.record_detail(source, bar_note)
             elif source != "jobs":
+                if source == "polymarket":
+                    # The parser already ranked these markets for the subject;
+                    # a related player's award race shares no words with the
+                    # topic, so token relevance would cut it first.
+                    normalized = polymarket.by_selection(normalized)
                 stream_limit = settings["per_stream_limit"]
                 host_fetched_x = source == "x" and config.get("_x_envelope") is not None
                 if host_fetched_x:
@@ -3934,6 +3939,8 @@ def _finalize_items_by_source(
     for source, items in items_by_source_raw.items():
         _check_research(config or {})
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
+        if source == "polymarket":
+            items = polymarket.by_selection(items)
         if source == "digg":
             # De-duplication keeps the earlier of two similar stories. Two
             # searches can return the same event as a prominent story and as

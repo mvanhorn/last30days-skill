@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from lib import polymarket
+from lib import normalize, polymarket, render
 
 FIXTURES = Path(__file__).parent / "fixtures" / "polymarket"
 TO_DATE = "2026-11-16"
@@ -240,10 +240,10 @@ def test_live_exact_score_sheet_cannot_ride_its_any_other_score_prop():
 
 def test_title_level_topic_takes_one_market_from_a_league_wide_race():
     [item] = _parse("NFL", _fixture("pro_football_2027_champion"))
-    # The busiest outcome at or above the 0.5% race floor.
-    assert item["matched_market"]["label"] == "Tampa Bay Buccaneers"
-    assert item["matched_market"]["label"] == "Tampa Bay Buccaneers"
-    assert item["selection_score"] == pytest.approx(math.log1p(4684832.49), abs=0.01)
+    # NFL is no outcome of the race, so the 3% floor applies: the Buccaneers
+    # at 0.75% ($4.7M) are out, the Jaguars at 12.55% ($2.2M) lead.
+    assert item["matched_market"]["label"] == "Jacksonville Jaguars"
+    assert item["selection_score"] == pytest.approx(math.log1p(2243591.73), abs=0.01)
 
 
 def test_best_ai_model_race_is_matched_on_the_outcome():
@@ -303,3 +303,71 @@ def test_refetch_keeps_an_outcome_that_has_since_settled(monkeypatch):
 def test_refetch_resolves_a_claim_saved_under_the_old_label(monkeypatch):
     event = _champion_with_niners_at(0.145)
     assert _refetch(monkeypatch, copy.deepcopy(event), "the San Francisco 49ers") == 0.145
+
+
+# --- Title-named brackets are not race outcomes ---
+
+
+def _ipo_brackets(*prices):
+    labels = ["<500B", "500B-750B", "750B-1T", ">1T"]
+    markets = [
+        _market(f"OpenAI IPO closing market cap {label}?", label, price, 90000)
+        for label, price in zip(labels, prices)
+    ]
+    return _event("ipo", "OpenAI IPO Closing Market Cap", markets, neg_risk=True)
+
+
+def test_title_named_bracket_takes_the_yes_no_floor():
+    # 1-2% clears the race floor but not the 3% floor of a yes/no or ladder
+    # market: the event title names the subject, no outcome does.
+    [item] = _parse("OpenAI", _ipo_brackets(0.01, 0.02, 0.01, 0.02))
+    assert item["matched_market"]["in_band"] is False
+    assert item["selection_tier"] == 0
+
+
+def test_title_named_bracket_is_never_a_contender():
+    [item] = _parse("OpenAI", _ipo_brackets(0.2, 0.35, 0.3, 0.15))
+    matched = item["matched_market"]
+    assert matched["rank"] is None
+    assert matched["contender"] is False
+    assert item["selection_score"] == pytest.approx(math.log1p(4 * 90000))
+
+
+def test_race_outcome_keeps_its_headline_when_the_race_sums_over_one():
+    # The race's Yes prices sum well over 1, so no distribution is shown,
+    # but Ty Jerome's own market has a real quote.
+    event = _fixture("nba_2026_27_most_improved_player")
+    event["markets"] += [
+        _market(f"Will Player {n} win the 2026-27 NBA Most Improved Player?", f"Player {n}",
+                0.3, 50, end="2027-07-01", negRisk=True)
+        for n in range(3)
+    ]
+    [item] = _parse("Memphis Grizzlies", event,
+                    kind="team", related=[{"name": "Ty Jerome", "relation": "player"}])
+    assert item["odds"] is None
+    assert item["headline"] is not None
+    assert "Ty Jerome" in item["headline"]["question"]
+    assert item["headline"]["price"] == item["matched_market"]["price"]
+
+
+def _win_total(team, line, over, volume):
+    return _market(
+        f"Will the {team} win more than {line} games in the 2026 NFL Regular Season?",
+        team, over, volume, outcomes=json.dumps([f"O {line}", f"U {line}"]),
+    )
+
+
+def test_matched_line_speaks_for_the_matched_market_not_the_busiest():
+    # The Ravens' over/under has the most money; the 49ers' is the match.
+    event = _event("totals", "Pro Football: 2026 Regular Season Win Totals", [
+        _win_total("Baltimore Ravens", "11.5", 0.0585, 8806.7),
+        _win_total("San Francisco 49ers", "10.5", 0.935, 3555.76),
+    ])
+    [item] = _parse("49ers", event, kind="team", aliases=["San Francisco 49ers"])
+    question = "Will the San Francisco 49ers win more than 10.5 games in the 2026 NFL Regular Season?"
+    assert item["matched_market"]["question"] == question
+    assert item["odds"]["subject"] == question
+    assert item["outcome_prices"][0] == ("O 10.5", 0.935)
+    assert "Ravens" not in render._polymarket_odds_line(
+        normalize.normalize_source_items("polymarket", [item], "2026-10-17", TO_DATE)[0], "2026",
+    )

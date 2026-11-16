@@ -314,13 +314,13 @@ def _gamma(responses):
     return request, calls
 
 
-def _search_event(event_id, title, labels=(), closed=False):
+def _search_event(event_id, title, labels=(), closed=False, neg_risk=False):
     markets = [create_mock_market(market_id=f"{event_id}-{n}", question=f"Will {label} win?")
                for n, label in enumerate(labels)]
     for market, label in zip(markets, labels):
         market["groupItemTitle"] = label
     return {**create_mock_event(event_id=event_id, title=title, closed=closed,
-                                markets=markets or None)}
+                                markets=markets or None), "negRisk": neg_risk}
 
 
 def test_search_issues_one_volume_sorted_call_per_term(monkeypatch):
@@ -361,9 +361,11 @@ def test_search_runs_each_alias_and_merges_events_by_id(monkeypatch):
     assert [event["id"] for event in result["events"]] == ["7", "8"]
 
 
+ROOKIES = ["Yaxel Lendeborg", "Cameron Boozer", "AJ Dybantsa", "Darryn Peterson"]
+
+
 def test_search_looks_up_a_related_name_only_when_the_pool_lacks_it(monkeypatch):
-    rookie = _search_event("2", "NBA: 2026-27 Rookie of the Year",
-                           labels=["Yaxel Lendeborg", "Cameron Boozer"])
+    rookie = _search_event("2", "NBA: 2026-27 Rookie of the Year", labels=ROOKIES, neg_risk=True)
     request, calls = _gamma({"Warriors": {"events": [
         _search_event("1", "NBA: 2027 Champion", labels=["Golden State Warriors"]), rookie,
     ]}})
@@ -378,6 +380,25 @@ def test_search_looks_up_a_related_name_only_when_the_pool_lacks_it(monkeypatch)
     )
 
     assert [call["q"] for call in calls] == ["Warriors", "Stephen Curry"]
+
+
+def test_search_looks_up_a_related_name_the_pool_holds_only_outside_a_race(monkeypatch):
+    # A game prop naming the player is not the award race the name leads.
+    prop = _search_event("3", "Warriors vs. Lakers: Player Props",
+                         labels=["Yaxel Lendeborg", "Stephen Curry"])
+    small = _search_event("4", "Who scores first?", labels=ROOKIES[:3], neg_risk=True)
+    request, calls = _gamma({"Warriors": {"events": [prop, small]}})
+    monkeypatch.setattr(polymarket.http, "request", request)
+
+    polymarket.search_polymarket(
+        "Warriors", "2026-10-17", "2026-11-16",
+        hints=polymarket.PolymarketHints.coerce({"related": [
+            {"name": "Yaxel Lendeborg", "relation": "player"},
+            {"name": "Cameron Boozer", "relation": "player"},
+        ]}),
+    )
+
+    assert sorted(call["q"] for call in calls) == ["Cameron Boozer", "Warriors", "Yaxel Lendeborg"]
 
 
 def test_search_drops_events_gamma_returns_closed(monkeypatch):
