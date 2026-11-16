@@ -4817,6 +4817,16 @@ def _reddit_search_blocked_artifact(items: list[dict]) -> dict[str, Any]:
     )
 
 
+def _with_reddit_lane_notes(artifact: dict[str, Any], notes: list[str]) -> dict[str, Any]:
+    """``artifact`` with the Reddit lane's notes appended to its detail."""
+    if not notes:
+        return artifact
+    artifact = dict(artifact)
+    prior = artifact.get("_source_outcome_detail")
+    artifact["_source_outcome_detail"] = "; ".join([prior, *notes] if prior else notes)
+    return artifact
+
+
 def _outcome_artifact(
     state: schema.RunOutcomeState,
     detail: str,
@@ -6623,8 +6633,10 @@ def _retrieve_stream_impl(
             - (REDDIT_SC_BACKFILL_RESERVE_SECONDS if has_sc_key else 0.0)
             if research_deadline is not None else None
         )
+        lane_notes: list[str] = []
         try:
-            with reddit_keyless.lane_deadline(lane_deadline):
+            with reddit_keyless.lane_deadline(lane_deadline), \
+                    reddit_keyless.lane_notes() as lane_notes:
                 public_results = reddit_public.search_reddit_public(
                     reddit_query, from_date, to_date, depth=depth,
                     subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
@@ -6660,7 +6672,9 @@ def _retrieve_stream_impl(
             subquery.ranking_query or reddit_query, freshness_mode,
         ) if has_sc_key and min_items > 0 else len(public_results)
         if on_topic >= max(min_items, 1) or not has_sc_key:
-            return public_results, _reddit_search_blocked_artifact(public_results)
+            return public_results, _with_reddit_lane_notes(
+                _reddit_search_blocked_artifact(public_results), lane_notes,
+            )
         if public_results:
             sys.stderr.write(
                 f"[Reddit] Free path returned {len(public_results)} "
@@ -6732,7 +6746,7 @@ def _retrieve_stream_impl(
         if backfill_failures:
             summary = _summarize_lane_failures(backfill_failures, "reddit")
             backfill_detail = f"{backfill_detail}; ScrapeCreators backfill lost {summary}"
-        return merged, {"_source_outcome_detail": backfill_detail}
+        return merged, _with_reddit_lane_notes({"_source_outcome_detail": backfill_detail}, lane_notes)
     if source == "x":
         if config.get("_x_lane_missing"):
             # The model declared the connector lane but passed no envelope.
