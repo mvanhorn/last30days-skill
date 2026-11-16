@@ -139,7 +139,7 @@ def select_roles(
 
     # On a board too large for one-offs to mean anything, a small team named
     # in several titles ("..., Air Manufacturing Innovation") is the signal.
-    tails = Counter(
+    tails = Counter() if rarity else Counter(
         tail.lower() for tail in (
             hiring_signals._specialization(title, places=places)
             for title in {title for title, _department in groups}
@@ -151,6 +151,18 @@ def select_roles(
         tail = hiring_signals._specialization(str(item.get("title") or ""), places=places)
         return bool(tail) and CLUSTER_MIN_ROLES <= tails[tail.lower()] <= cluster_max
 
+    def board_size_score(role: dict[str, Any]) -> int:
+        item = role["item"]
+        if not rarity:
+            return 3 * clustered(item)
+        return (
+            3 * any(locations[_key(location)] == 1 for location in role["locations"])
+            + 2 * any(
+                terms[term] == 1
+                for term in _TITLE_TERM.findall(_key(item.get("title")))
+            )
+        )
+
     def score(role: dict[str, Any]) -> int:
         item = role["item"]
         department = departments.get(_key(item.get("department")), 0)
@@ -158,12 +170,7 @@ def select_roles(
         return (
             3 * (department == 1)
             + 1 * (department == 2)
-            + 3 * rarity * any(locations[_key(location)] == 1 for location in role["locations"])
-            + 2 * rarity * any(
-                terms[term] == 1
-                for term in _TITLE_TERM.findall(_key(item.get("title")))
-            )
-            + 3 * (not rarity) * clustered(item)
+            + board_size_score(role)
             + 4 * ("founding" in flags)
             + 2 * ("leadership" in flags)
             + 1 * ("specialized" in flags)

@@ -4709,11 +4709,10 @@ def _warn_search_dropped_plan_sources(
     ]
     parts: list[str] = []
     if dropped:
+        them = "it" if len(dropped) == 1 else "them"
         parts.append(
-            f"--search dropped {', '.join(dropped)}: the --plan names "
-            f"{'it' if len(dropped) == 1 else 'them'} and the run could search "
-            f"{'it' if len(dropped) == 1 else 'them'}, but --search does not list "
-            f"{'it' if len(dropped) == 1 else 'them'}."
+            f"--search dropped {', '.join(dropped)}: the --plan names {them} "
+            f"and the run could search {them}, but --search does not list {them}."
         )
     if jobs_attached and not jobs_past_window and "jobs" in named:
         parts.append(
