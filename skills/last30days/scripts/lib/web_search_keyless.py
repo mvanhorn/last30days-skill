@@ -299,9 +299,6 @@ def _freshness_param(freshness: Optional[str], index: int) -> Optional[str]:
     return values[index] if values else None
 
 
-def _search_brave(query: str, count: int, freshness: Optional[str] = None) -> list[dict]:
-    return _brave_rung(query, count, freshness)[0]
-
 
 def _brave_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[list[dict], str]:
     """Rung 0 (Reddit queries): Brave Search's HTML results page, with its state."""

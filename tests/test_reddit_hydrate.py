@@ -420,3 +420,11 @@ class TestArcticRunHealth:
         assert fake.ids_calls() == []
         assert result.arctic_state == "throttled"
         assert len(result.items) == 1
+
+    def test_skipped_archive_fetches_no_comment_trees(self, monkeypatch, _quiet):
+        from lib import reddit_health
+
+        reddit_health.record("arctic", reddit_health.THROTTLED, "posts/ids 429")
+        fake = FakeArctic(posts=[_post("a0002")])
+        _hydrate(fake, [_ref("a0002")], monkeypatch, comments=True)
+        assert fake.calls == []

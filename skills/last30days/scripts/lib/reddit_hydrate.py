@@ -226,6 +226,9 @@ def _attach_comments(
         rows = reddit_arctic.fetch_comment_tree(item["metadata"]["post_id"], deadline=end)
         if rows is None:
             failed += 1
+            if failed >= 2 and not filled:
+                _log("archive comments failing; remaining threads keep no comments")
+                break
             continue
         for row in rows:
             if _fresh(row.get("created_utc"), now):
@@ -244,20 +247,12 @@ def on_topic_count(items: Iterable[dict], topic: str) -> int:
     items = list(items)
     if not topic:
         return len(items)
-    from . import relevance, rerank
+    from .reddit_discover import names_topic
 
-    entity = rerank._primary_entity(topic).lower()
-    count = 0
-    for item in items:
-        title = str(item.get("title") or "")
-        if entity:
-            count += rerank._entity_grounded(title, entity)
-        else:
-            count += relevance.token_overlap_relevance(topic, title) >= relevance.RELEVANCE_FLOOR
-    return count
+    return sum(names_topic(str(item.get("title") or ""), topic) for item in items)
 
 
-def _merge_post(existing: dict, incoming: dict) -> None:
+def merge_post(existing: dict, incoming: dict) -> None:
     """Fold another layer's copy of a thread into ``existing``, field by field."""
     mine = existing.setdefault("engagement", {})
     theirs = incoming.get("engagement") or {}
@@ -302,7 +297,7 @@ def _merge_sc(
         if not _in_window(post, from_date, to_date):
             continue
         if ref.post_id in by_id:
-            _merge_post(by_id[ref.post_id], post)
+            merge_post(by_id[ref.post_id], post)
         else:
             by_id[ref.post_id] = post
             items.append(post)
@@ -391,7 +386,7 @@ def hydrate(
     ]
     items = [item for item in items if _in_window(item, from_date, to_date)]
 
-    if comments and items:
+    if comments and items and not skipped and arctic_state not in ("down", "throttled"):
         filled, _failed = _attach_comments(items, depth, deadline, now)
         if filled:
             served.add("arctic")

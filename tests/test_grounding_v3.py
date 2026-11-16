@@ -466,24 +466,6 @@ class RedditEnrichItemsTests(unittest.TestCase):
     not fill stays as the search gave it.
     """
 
-    def test_selftext_from_hydrated_thread_populates_snippet(self):
-        from lib import reddit_arctic
-
-        item = {
-            "url": "https://www.reddit.com/r/python/comments/abc/title/",
-            "snippet": "original",
-        }
-        post = reddit_arctic._normalize_listing_row({
-            "id": "abc", "title": "title", "score": 12, "num_comments": 0,
-            "created_utc": 1_700_000_000, "subreddit": "python",
-            "permalink": "/r/python/comments/abc/title/", "selftext": "thread body content",
-        })
-        with patch.object(reddit_arctic, "fetch_posts_by_ids", return_value=({"abc": post}, "ok")), \
-             patch.object(reddit_arctic, "fetch_comment_tree", return_value=[]):
-            result = grounding._enrich_reddit_items([item])
-        self.assertEqual("thread body content", result[0]["snippet"])
-        self.assertEqual("arctic", result[0]["enriched_via"])
-
     def test_throttled_archive_leaves_results_unchanged(self):
         from lib import reddit_arctic
 

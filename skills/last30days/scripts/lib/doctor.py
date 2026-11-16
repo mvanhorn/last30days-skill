@@ -1248,7 +1248,7 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     return {"name": "X auth path", "armed": bool(source), "note": note}
 
 
-# One row per Reddit path PR1 ships (site search, each keyless web rung, the
+# One row per keyless Reddit path (site search, each keyless web rung, the
 # Arctic Shift archive), with the last run's outcome read back from
 # last-report.json, any persisted skip, and what to do about it.
 _REDDIT_PATH_LABELS = (

@@ -1,8 +1,12 @@
 """Tests for scripts/lib/web_search_keyless.py — keyless web search floor."""
 
+import datetime as _dt
+from pathlib import Path
 from unittest import mock
 
-from lib import web_search_keyless
+import pytest
+
+from lib import http, web_search_keyless
 
 _DDG_HTML = """
 <div class="result">
@@ -135,13 +139,6 @@ class TestStripHtml:
 
 
 # --- Brave HTML rung -------------------------------------------------------
-
-import datetime as _dt
-from pathlib import Path
-
-import pytest
-
-from lib import http
 
 _BRAVE_FIXTURE = (
     Path(__file__).resolve().parent.parent / "fixtures" / "brave_reddit_serp.html"

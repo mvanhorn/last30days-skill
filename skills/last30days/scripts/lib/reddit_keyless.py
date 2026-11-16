@@ -486,7 +486,7 @@ def _discover(
     for p in web_posts:
         key = reddit_refs.thread_key(p.get("url", ""))
         if key in by_thread:
-            reddit_hydrate._merge_post(by_thread[key], p)
+            reddit_hydrate.merge_post(by_thread[key], p)
             by_thread[key]["topic_bar"] = True
             continue
         if key:
