@@ -20,6 +20,7 @@ _CONFIG_ENV_NAMES = {
     "FUN_LEVEL", "ELI5_MODE", "DEGRADED_TRANSCRIPT_THRESHOLD", "TELEGRAM_SOURCES",
     "OPENAI_MODEL_PIN", "XAI_MODEL_PIN", "OPENAI_BASE_URL", "XAI_BASE_URL",
     "OPENROUTER_BASE_URL", "XIAOHONGSHU_API_BASE",
+    "REDDIT_BROWSER_CONSENT", "REDDIT_FROM_BROWSER", "REDDIT_SESSION_OFFERED",
 }
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_COOKIE")
 _system_which = shutil.which
@@ -152,6 +153,21 @@ def _isolated_reddit_health():
     reddit_health.reset_run_state()
     yield
     reddit_health.reset_run_state()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_reddit_session(monkeypatch):
+    """The logged-in Reddit session is resolved once per run in module memory,
+    and its limiter is process-global. Start every test with no session and a
+    bucket deep enough that no test waits; pacing tests build their own."""
+    from lib import http, reddit_session
+
+    reddit_session.reset_run_state()
+    monkeypatch.setattr(
+        http, "REDDIT_SESSION_LIMITER", http.RateLimiter(http.REDDIT_SESSION_RATE, burst=10_000),
+    )
+    yield
+    reddit_session.reset_run_state()
 
 
 @pytest.fixture(autouse=True)

@@ -50,7 +50,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_discover, reddit_health, reddit_search, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_discover, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
 from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -3075,6 +3075,8 @@ SETUP_PASSTHROUGH_FLAGS = {
     "--github-start",
     "--github-poll",
     "--openclaw",
+    "--reddit-session",
+    "--no-reddit-session",
     "--store-key",
 }
 
@@ -3803,7 +3805,20 @@ def _main(
     reddit_search.reset_run_state()
     reddit_discover.reset_run_state()
     reddit_health.reset_run_state()
+    reddit_session.reset_run_state()
     web_search_keyless.reset_rung_health()
+    if (
+        args.record_fixtures and topic and command_topic not in ("setup", "doctor")
+        and reddit_session.gate(config)[0]
+    ):
+        # Recorded fixtures are shared artifacts; a logged-in session's pages
+        # (and its cookie) must never reach one.
+        sys.stderr.write(
+            "[last30days] --record-fixtures refuses to run while the logged-in Reddit "
+            "session is on. Re-run with --no-browser-cookies, or set "
+            "REDDIT_BROWSER_CONSENT=false, to record without it.\n"
+        )
+        return 2
     fetch_memo.reset()
     resolved_corpus_dirs = corpus.resolve_directories(
         args.corpus, config.get("LAST30DAYS_CORPUS_DIRS")
@@ -3933,6 +3948,17 @@ def _main(
         from lib import setup_wizard
         if "--openclaw" in extra_argv:
             results = setup_wizard.run_openclaw_setup(config)
+            print(json.dumps(results))
+            return 0
+        if "--reddit-session" in extra_argv or "--no-reddit-session" in extra_argv:
+            if "--reddit-session" in extra_argv and "--no-reddit-session" in extra_argv:
+                sys.stderr.write("[last30days] pass --reddit-session or --no-reddit-session, not both.\n")
+                return 2
+            consent = "--reddit-session" in extra_argv
+            if consent and args.no_browser_cookies:
+                sys.stderr.write("[last30days] --no-browser-cookies refuses the Reddit login read.\n")
+                return 2
+            results = setup_wizard.run_reddit_session_setup(config, env.CONFIG_FILE, consent=consent)
             print(json.dumps(results))
             return 0
         if any(f in extra_argv for f in ("--github", "--device-auth", "--github-start", "--github-poll")):
@@ -4241,6 +4267,11 @@ def _main(
                 "the remote API backend only supports --json-profile=raw.\n"
             )
             return 2
+        if env.reddit_consent_state(config) == "granted":
+            sys.stderr.write(
+                "[last30days] The logged-in Reddit session is not used with the hosted "
+                "backend; no reddit.com cookie is read.\n"
+            )
         if args.x_posts is not None:
             # The envelope is a local-engine contract; the remote API has no
             # lane to receive it.

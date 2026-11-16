@@ -406,7 +406,9 @@ class TestDoctorRows:
         report = doctor.build_report({})
         rows = {row["path"]: row for row in report["sources"]["reddit"]["paths"]}
 
-        assert list(rows) == ["search", "brave", "ddg", "startpage", "arctic"]
+        assert list(rows) == ["session", "search", "brave", "ddg", "startpage", "arctic"]
+        assert rows["session"]["consent"] == "unset"
+        assert rows["session"]["would_run"] is False
         assert rows["search"]["last_run"] == "blocked"
         assert rows["search"]["skip_until"].endswith("UTC")
         assert rows["brave"]["last_run"] == "served"

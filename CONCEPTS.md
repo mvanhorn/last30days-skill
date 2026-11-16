@@ -44,6 +44,10 @@ The fused unit of evidence that ranking, clustering, and rendering operate on: e
 
 The research flow available with no API keys: source data is gathered by scraping public web pages rather than authenticated APIs, and ranking falls back to local scoring instead of LLM-based reranking. This is the free tier of the Skill; lexical quality safeguards like Entity grounding matter most here, because no LLM is available to judge relevance semantically.
 
+### Reddit session layer
+
+The optional logged-in layer of free Reddit: with its own consent (`REDDIT_BROWSER_CONSENT`), the Engine reads the user's `reddit_session` browser cookie and searches reddit.com as that account, so posts, comment matches and communities come back with live scores. It runs before the Keyless path's site search and the web floor and replaces them when it serves; when it is off, expired or blocked, the Keyless path runs unchanged. It never runs on a Grok Bot host, the hosted backend or an unattended scheduled run.
+
 ### Comment-enrichment slots
 
 The small, depth-dependent budget of Reddit posts whose comments get fetched in the Keyless path (4 / 8 / 12 per subquery at quick / default / deep). Slot selection is relevance-aware and comment-first: posts that pass Entity grounding claim slots first, and within that tier the most-commented threads go first, so the budget is not spent on high-engagement posts that final ranking will demote or on near-empty threads.

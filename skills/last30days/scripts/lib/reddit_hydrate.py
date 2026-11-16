@@ -184,6 +184,15 @@ def _finish(post: dict, ref: ThreadRef, topic: str) -> dict:
     post["subreddit"] = subreddit
     post.setdefault("metadata", {})["post_id"] = ref.post_id
     post["provenance"] = sorted(ref.provenance)
+    matched = ref.matched_comment
+    if matched is not None and matched.created_utc:
+        from . import dates
+
+        post["matched_comment"] = {
+            "id": matched.comment_id,
+            "date": dates.timestamp_to_date(matched.created_utc),
+            "url": matched.permalink,
+        }
     engagement = post.setdefault("engagement", {})
     engagement.setdefault("score", post.get("score"))
     engagement.setdefault("num_comments", post.get("num_comments"))
@@ -198,11 +207,21 @@ def _finish(post: dict, ref: ThreadRef, topic: str) -> dict:
     return post
 
 
+def _day_in_window(day: Optional[str], from_date: Optional[str], to_date: Optional[str]) -> bool:
+    return bool(day) and (not from_date or day >= from_date) and (not to_date or day <= to_date)
+
+
 def _in_window(item: dict, from_date: Optional[str], to_date: Optional[str]) -> bool:
+    """A thread is in the window by its own date, or by the date of the
+    comment a comment search matched in it (an older thread with a fresh
+    matched comment stays)."""
     day = item.get("date")
     if not day:
         return True
-    return (not from_date or day >= from_date) and (not to_date or day <= to_date)
+    if _day_in_window(day, from_date, to_date):
+        return True
+    matched = item.get("matched_comment") or {}
+    return _day_in_window(matched.get("date"), from_date, to_date)
 
 
 def _discussion(item: dict) -> float:
@@ -288,7 +307,7 @@ def merge_post(existing: dict, incoming: dict) -> None:
             existing.get("top_comments") or [], incoming["top_comments"],
         )[:COMMENTS_PER_THREAD]
         existing["comments_source"] = "+".join(sorted(sources)) or LIVE
-    for key in ("title", "date", "selftext", "author"):
+    for key in ("title", "date", "selftext", "author", "matched_comment"):
         if not existing.get(key) and incoming.get(key):
             existing[key] = incoming[key]
     existing["provenance"] = sorted(set(existing.get("provenance") or []) | set(incoming.get("provenance") or []))
@@ -360,6 +379,7 @@ def hydrate(
     by_id = _merge_refs(refs)
     posts: dict[str, dict] = {}
     served: set[str] = set()
+    dropped = 0
 
     if session_hydrator is not None and by_id:
         try:
@@ -368,6 +388,12 @@ def hydrate(
             _log(f"session hydration failed: {type(exc).__name__}: {exc}")
             got = {}
         for pid, post in got.items():
+            if pid in by_id and isinstance(post, dict) and post.get("_drop"):
+                # The session's privacy rules or a thread 403 exclude it:
+                # no other hydrator may bring it back.
+                del by_id[pid]
+                dropped += 1
+                continue
             if pid in by_id and isinstance(post, dict):
                 post = dict(post)
                 post.setdefault("engagement_source", LIVE)
@@ -398,6 +424,18 @@ def hydrate(
         if unfilled:
             _log(f"{unfilled} of {len(missing)} threads kept search-result data only (arctic {arctic_state})")
 
+    # A thread only the logged-in session found, that neither the session's
+    # thread JSON nor the public archive filled, may be from a community a
+    # logged-out reader cannot see: it is not shown on search-result data.
+    session_only = [
+        pid for pid, ref in by_id.items() if pid not in posts and ref.provenance == {"session"}
+    ]
+    for pid in session_only:
+        del by_id[pid]
+    if session_only:
+        _log(f"{len(session_only)} session-only threads had no public copy; left out")
+    if dropped:
+        _log(f"{dropped} threads left out by the session's privacy rules or a thread refusal")
     items = [
         _finish(posts.get(pid) or _from_search_result(ref), ref, topic)
         for pid, ref in by_id.items()

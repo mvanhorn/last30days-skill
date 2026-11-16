@@ -1287,11 +1287,59 @@ def _reddit_path_action(path: str, last_run: Optional[str], until: Optional[str]
     return "none"
 
 
-def _reddit_path_rows(outcome: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _reddit_session_row(config: Dict[str, Any], outcomes: Dict[str, str]) -> Dict[str, Any]:
+    """The logged-in session's row: its consent state, the browser setup
+    recorded, whether this run would use it, and its last outcome. Reads the
+    config and the health cache only, never a cookie (the gate is pure)."""
+    from datetime import datetime, timedelta, timezone
+
+    consent = env.reddit_consent_state(config)
+    browser = str(config.get(env.REDDIT_FROM_BROWSER_VAR) or "")
+    probe = dict(config)
+    probe["_BROWSER_COOKIE_MODE"] = "read"  # doctor itself is plan-only
+    allowed, why = env.reddit_session_gate(probe)
+    entry = reddit_health.entries().get("session") or {}
+    until = None
+    if entry.get("state") == reddit_health.BLOCKED:
+        try:
+            at = datetime.fromisoformat(str(entry.get("at")))
+            at = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+            lift = at + timedelta(seconds=reddit_health.SKIP_TTL_SECONDS)
+            if lift > datetime.now(timezone.utc):
+                until = lift.strftime("%Y-%m-%d %H:%M UTC")
+        except (TypeError, ValueError):
+            pass
+    last_run = outcomes.get("session")
+    if consent != "granted":
+        action = (
+            "off: you declined it" if consent == "refused"
+            else "off: opt in with setup --reddit-session (reads your reddit.com login)"
+        )
+    elif not allowed:
+        action = f"off this run: {why}"
+    elif last_run == reddit_health.SESSION_EXPIRED or str(entry.get("reason") or "").startswith("session-expired"):
+        action = f"log in to reddit.com in {browser or 'your browser'}; a new login clears the skip"
+    else:
+        action = "none"
+    return {
+        "path": "session",
+        "name": "Logged-in Reddit session",
+        "consent": consent,
+        "browser": browser or None,
+        "would_run": allowed,
+        "last_run": last_run,
+        "skip_until": until,
+        "action": action,
+    }
+
+
+def _reddit_path_rows(
+    outcome: Optional[Dict[str, Any]], config: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     """Doctor rows for the Reddit paths. Reads the health cache and the saved
     run only: no request, no cookie."""
     outcomes = reddit_health.parse_detail((outcome or {}).get("detail"))
-    rows: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = [_reddit_session_row(config or {}, outcomes)]
     for path, label in _REDDIT_PATH_LABELS:
         until_dt = reddit_health.skip_until(path)
         until = until_dt.strftime("%Y-%m-%d %H:%M UTC") if until_dt else None
@@ -1469,7 +1517,7 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
     if reddit_record is not None:
         reddit_outcome = evidence["outcomes"].get("reddit")
         try:
-            reddit_record["paths"] = _reddit_path_rows(reddit_outcome)
+            reddit_record["paths"] = _reddit_path_rows(reddit_outcome, config)
         except Exception:
             pass
         for backup in reddit_record.get("backups") or []:
@@ -1581,6 +1629,9 @@ def _sub_lane_lines(record: Dict[str, Any]) -> List[str]:
     for row in record.get("paths") or []:
         seen = row.get("last_run") or "no saved run"
         parts = [f"last run {seen}" if row.get("last_run") else seen]
+        if row.get("consent"):
+            browser = f" ({row['browser']})" if row.get("browser") else ""
+            parts.insert(0, f"consent {row['consent']}{browser}")
         if row.get("skip_until"):
             parts.append(f"skipped until {row['skip_until']}")
         lines.append(
@@ -1867,7 +1918,7 @@ DEFAULT_CACHE_TTL_SECONDS = 900
 # carries no secrets by design (key presence is booleans only); this belt-and-
 # suspenders check refuses to persist the cache if a seeded value ever leaks.
 _SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
-    "AUTH_TOKEN", "CT0", "APIFY_API_TOKEN", "GOOGLE_GENAI_API_KEY",
+    "AUTH_TOKEN", "CT0", "APIFY_API_TOKEN", "GOOGLE_GENAI_API_KEY", env.REDDIT_SESSION_COOKIE_VAR,
 )
 
 # Backend pin vars folded into the config fingerprint. Pin values are
@@ -1880,6 +1931,9 @@ _FINGERPRINT_PIN_VARS = (
     env.YOUTUBE_BACKEND_PIN_VAR,
     env.X_HOST_VAR,
     env.X_HOST_LANE_VAR,
+    # The Reddit session's consent and browser change the session row.
+    env.REDDIT_CONSENT_VAR,
+    env.REDDIT_FROM_BROWSER_VAR,
 )
 
 # Top-level report keys the renderers read unguarded; a cached report

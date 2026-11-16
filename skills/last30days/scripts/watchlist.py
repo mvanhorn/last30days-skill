@@ -182,7 +182,12 @@ def _run_topic(topic: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix="last30days-usage-") as temp_dir:
         journal = Path(temp_dir) / "usage.db"
         usage.create_journal(journal)
-        child_env = dict(os.environ, **{usage.JOURNAL_ENV: str(journal), "LAST30DAYS_STORE": "0"})
+        # A scheduled run: the logged-in Reddit session stays off (its Keychain
+        # prompt cannot be answered unattended), and --no-browser-cookies below
+        # keeps every cookie read off besides.
+        child_env = dict(os.environ, **{
+            usage.JOURNAL_ENV: str(journal), "LAST30DAYS_STORE": "0", "LAST30DAYS_SCHEDULED_RUN": "1",
+        })
         run_id = store.record_run(topic_id, source_mode="v3", status="running")
         try:
             result = _research_topic(topic, run_id, child_env)

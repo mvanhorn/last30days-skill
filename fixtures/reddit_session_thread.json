@@ -1,0 +1,150 @@
+[
+ {
+  "kind": "Listing",
+  "data": {
+   "children": [
+    {
+     "kind": "t3",
+     "data": {
+      "id": "1xk5mmz",
+      "name": "t3_1xk5mmz",
+      "title": "The Ghostty Team Just Replaced Their Own Terminal?",
+      "subreddit": "Ghostty",
+      "subreddit_type": "public",
+      "over_18": false,
+      "quarantine": false,
+      "score": 116,
+      "num_comments": 50,
+      "upvote_ratio": 0.81,
+      "created_utc": 1793438358.0,
+      "permalink": "/r/Ghostty/comments/1xk5mmz/the_ghostty_team_just_replaced_their_own_terminal/",
+      "author": "smnatale",
+      "selftext": "TLDR; Rex is awesome and the team have smashed it",
+      "url": "https://youtu.be/9U0aJ1UbQy8",
+      "is_self": false,
+      "likes": true,
+      "saved": true,
+      "user_reports": [
+       [
+        "dummy report",
+        1
+       ]
+      ],
+      "mod_reports": [],
+      "approved_by": "dummy-moderator",
+      "author_flair_text": "dummy flair"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "kind": "Listing",
+  "data": {
+   "children": [
+    {
+     "kind": "t1",
+     "data": {
+      "id": "19rxd5cr1irgh",
+      "name": "t1_19rxd5cr1irgh",
+      "author": "PatagonianCowboy",
+      "body": "Ghostty is a terminal emulator, Rex is a terminal multiplexer that uses (lib)ghostty",
+      "score": 53,
+      "created_utc": 1793444295.0,
+      "permalink": "/r/Ghostty/comments/1xk5mmz/the_ghostty_team_just_replaced_their_own_terminal/19rxd5cr1irgh/",
+      "is_submitter": false,
+      "depth": 0,
+      "parent_id": "t3_1xk5mmz",
+      "replies": "",
+      "likes": null
+     }
+    },
+    {
+     "kind": "t1",
+     "data": {
+      "id": "19rxbyq35bd6q",
+      "name": "t1_19rxbyq35bd6q",
+      "author": "8bitreboot",
+      "body": "There seems to be some confusion here. Rex is built on libghostty",
+      "score": 33,
+      "created_utc": 1793442703.0,
+      "permalink": "/r/Ghostty/comments/1xk5mmz/the_ghostty_team_just_replaced_their_own_terminal/19rxbyq35bd6q/",
+      "is_submitter": false,
+      "depth": 0,
+      "parent_id": "t3_1xk5mmz",
+      "replies": "",
+      "likes": null
+     }
+    },
+    {
+     "kind": "t1",
+     "data": {
+      "id": "19rxcaghdovwi",
+      "name": "t1_19rxcaghdovwi",
+      "author": "philosophical_lens",
+      "body": "Apparently it's invite only and not even clear if it's OSS\n\n> https://www.superlogical.com/updates/public-testing-beginning",
+      "score": 18,
+      "created_utc": 1793443141.0,
+      "permalink": "/r/Ghostty/comments/1xk5mmz/the_ghostty_team_just_replaced_their_own_terminal/19rxcaghdovwi/",
+      "is_submitter": false,
+      "depth": 0,
+      "parent_id": "t3_1xk5mmz",
+      "replies": "",
+      "likes": null
+     }
+    },
+    {
+     "kind": "t1",
+     "data": {
+      "id": "19rxhnr1moebm",
+      "name": "t1_19rxhnr1moebm",
+      "author": "girouxc",
+      "body": "Rex on Mac is the most beautiful terminal / multiplexer experience I have ever had. I can’t believe this is going to be free.",
+      "score": 17,
+      "created_utc": 1793450364.0,
+      "permalink": "/r/Ghostty/comments/1xk5mmz/the_ghostty_team_just_replaced_their_own_terminal/19rxhnr1moebm/",
+      "is_submitter": false,
+      "depth": 0,
+      "parent_id": "t3_1xk5mmz",
+      "replies": "",
+      "likes": null
+     }
+    },
+    {
+     "kind": "t1",
+     "data": {
+      "id": "19rxflyjrvypu",
+      "name": "t1_19rxflyjrvypu",
+      "author": "OldSanJuan",
+      "body": "I've personally never been a fan of multiplexers specifically because I had so many keyboard shortcuts  for Neovim, and my workflow didn't have me managing that many tabs. \n\nNow that I can be working on  5 to 10 work streams at the same time. They've become more tempting.\n\n I've switched to Tuios, and that has been amazing. \n\nhttps://tuios.dev/",
+      "score": 7,
+      "created_utc": 1793447606.0,
+      "permalink": "/r/Ghostty/comments/1xk5mmz/the_ghostty_team_just_replaced_their_own_terminal/19rxflyjrvypu/",
+      "is_submitter": false,
+      "depth": 0,
+      "parent_id": "t3_1xk5mmz",
+      "replies": "",
+      "likes": null
+     }
+    },
+    {
+     "kind": "t1",
+     "data": {
+      "id": "19rxiaidnxitf",
+      "name": "t1_19rxiaidnxitf",
+      "author": "deusmetallum",
+      "body": "I'm in the beta and I love it. Can't wait to get access to the Linux client too.",
+      "score": 5,
+      "created_utc": 1793451214.0,
+      "permalink": "/r/Ghostty/comments/1xk5mmz/the_ghostty_team_just_replaced_their_own_terminal/19rxiaidnxitf/",
+      "is_submitter": false,
+      "depth": 0,
+      "parent_id": "t3_1xk5mmz",
+      "replies": "",
+      "likes": null
+     }
+    }
+   ]
+  }
+ }
+]

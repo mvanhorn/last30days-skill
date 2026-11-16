@@ -297,6 +297,15 @@ def _reddit_item(url, *, score, source_label, comments, item_id="R1"):
     )
 
 
+class TestMergeKeepsMatchedComment:
+    def test_listing_copy_gains_the_session_copys_matched_comment(self):
+        listing = {"url": "u", "engagement": {"score": 5}, "engagement_source": reddit_refs.LIVE}
+        session_copy = {"url": "u", "engagement": {"score": 5},
+                        "matched_comment": {"date": "2026-11-10", "url": "c"}}
+        reddit_hydrate.merge_post(listing, session_copy)
+        assert listing["matched_comment"] == {"date": "2026-11-10", "url": "c"}
+
+
 class TestMergeAcrossForms:
     def test_three_forms_of_one_thread_merge_with_live_score_and_all_comments(self):
         from lib import fusion
