@@ -791,8 +791,8 @@ def topic_bar(topic: str, items: Iterable[dict]) -> list[dict]:
         if any(names_topic(t, topic) for t in matched if t):
             item["comment_only_match"] = True
             comment_only.append(item)
-    if len(strong) >= COMMENT_ONLY_FILL_BELOW:
-        if comment_only:
-            _log(f"{len(comment_only)} threads that name the topic only in a comment left out")
-        return strong
-    return strong + comment_only[: COMMENT_ONLY_FILL_BELOW - len(strong)]
+    room = max(COMMENT_ONLY_FILL_BELOW - len(strong), 0)
+    left_out = len(comment_only) - room
+    if left_out > 0:
+        _log(f"{left_out} threads that name the topic only in a comment left out")
+    return strong + comment_only[:room]

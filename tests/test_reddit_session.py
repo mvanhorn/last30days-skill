@@ -499,3 +499,12 @@ class TestCommentOnlyMatches:
         kept = reddit_session.topic_bar("Ghostty terminal", [strong[0], stray, off])
         assert [i["metadata"]["post_id"] for i in kept] == ["s1", "x1"]
         assert kept[1]["comment_only_match"] is True
+
+    def test_every_left_out_comment_only_thread_is_logged(self, monkeypatch):
+        lines = []
+        monkeypatch.setattr(reddit_session, "_log", lines.append)
+        strong = [self._item(f"s{i}", f"Ghostty terminal tip {i}") for i in range(6)]
+        strays = [self._item(f"x{i}", "Other", comment="ghostty terminal mention") for i in range(5)]
+        kept = reddit_session.topic_bar("Ghostty terminal", strong + strays)
+        assert len(kept) == 8
+        assert lines == ["3 threads that name the topic only in a comment left out"]
