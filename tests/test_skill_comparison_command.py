@@ -44,7 +44,7 @@ def test_comparison_command_preserves_stdin_plan_and_cleans_up_peer_plan(tmp_pat
     text = reference_text("comparison")
     marker = tmp_path / "must-not-execute"
     untrusted = f"people's choice $(touch {shlex.quote(str(marker))})"
-    main_topic = f"Main Widget $(touch {shlex.quote(str(marker))})"
+    main_topic = f"McDonald's `Main Widget` $(touch {shlex.quote(str(marker))})"
     quoted_context = 'The product says "zero setup" and uses C:\\docs'
     main_plan = {
         "intent": "general",
@@ -158,7 +158,7 @@ def test_no_web_search_comparison_command_uses_engine_planning(tmp_path, peers):
     text = reference_text("comparison")
     command = _command(text, "Without host web search")
     marker = tmp_path / "must-not-execute"
-    topic = f"Main $(touch {shlex.quote(str(marker))}) vs " + " vs ".join(peers)
+    topic = f"McDonald's `Main` $(touch {shlex.quote(str(marker))}) vs " + " vs ".join(peers)
     command = command.replace("{TOPIC_A} vs {TOPIC_B} vs {TOPIC_C}", topic)
 
     installed = tmp_path / "installed skill"

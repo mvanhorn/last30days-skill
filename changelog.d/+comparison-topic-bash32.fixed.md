@@ -1,0 +1,1 @@
+Comparison runs on macOS Bash 3.2 no longer fail before the engine starts when the topic contains an apostrophe or backtick; the comparison recipe now captures its topic the same way the research runbook has since [#1240](https://github.com/mvanhorn/last30days-skill/pull/1240).
