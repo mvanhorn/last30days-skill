@@ -153,7 +153,8 @@ class TestArchiveSharedAcrossSubqueries:
     def test_comment_lookup_is_shared_and_retried(self):
         comment = {"author": "reader", "body": "worth reading", "score": 7,
                    "permalink": "/r/elonmusk/comments/abc/x/c1/", "created_utc": 1794268800}
-        answers = iter([http.HTTPError(SLOW_DOWN, status_code=422), {"data": [comment]}])
+        answers = iter([http.HTTPError(SLOW_DOWN, status_code=422),
+                        {"data": [{"kind": "t1", "data": comment}]}])
 
         def get(_url, **_kwargs):
             answer = next(answers)

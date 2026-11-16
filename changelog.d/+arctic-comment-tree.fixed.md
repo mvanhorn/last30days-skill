@@ -1,0 +1,1 @@
+Reddit comment enrichment on hosts where the shreddit partials are blocked now reads the arctic-shift comment tree, so busy threads keep their most-upvoted replies instead of a sample of the newest 100. Thanks to @terry-li-hm, whose #1467 found and measured this.

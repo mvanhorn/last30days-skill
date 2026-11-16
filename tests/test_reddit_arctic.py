@@ -23,6 +23,11 @@ def _resp(rows):
     return {"data": rows}
 
 
+def _tree(rows):
+    """A /comments/tree response: each comment wrapped as a t1 node."""
+    return {"data": [{"kind": "t1", "data": row} for row in rows]}
+
+
 class TestFetchScores:
     def test_returns_scores_by_id(self):
         with mock.patch.object(reddit_arctic.http, "get",
@@ -397,7 +402,7 @@ class TestFetchPostComments:
 
     def test_returns_normalized_comments_sorted_desc(self):
         rows = [_comment_row(score=1), _comment_row(score=99), _comment_row(score=42)]
-        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp(rows)) as g:
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_tree(rows)) as g:
             out = reddit_arctic.fetch_post_comments("abc123", limit=10)
         assert [c["score"] for c in out] == [99, 42, 1]
         first = out[0]
@@ -406,14 +411,37 @@ class TestFetchPostComments:
         assert first["excerpt"] == "great thread"
         assert first["date"] == "2026-07-02"
         assert first["url"] == "https://reddit.com/r/tea/comments/abc123/x/mjwb1hg/"
-        # link_id uses the t3_ prefix; wide recency slice, ranked client-side
+        # link_id uses the t3_ prefix; the comment tree, ranked client-side
         assert "link_id=t3_abc123" in g.call_args[0][0]
-        assert f"limit={reddit_arctic.MAX_COMMENT_ROWS}" in g.call_args[0][0]
+        assert f"limit={reddit_arctic.FALLBACK_COMMENT_ROWS}" in g.call_args[0][0]
+
+    def test_requests_the_comment_tree_not_a_recency_slice(self):
+        # The search endpoint sorts only by created_utc, so a capped slice of a
+        # busy thread held only its newest replies and missed the top-voted ones.
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_tree([])) as g:
+            reddit_arctic.fetch_post_comments("abc123")
+        url = urlsplit(g.call_args[0][0])
+        assert url.path == "/api/comments/tree"
+        assert "sort" not in parse_qs(url.query)
+
+    def test_nested_replies_ranked_with_top_level(self):
+        # A top-voted reply nested under a low-scored parent must still rank
+        # first; more-stubs and non-dict children are skipped.
+        def node(score, replies="", pid="c", depth=0):
+            return {"kind": "t1", "data": dict(_comment_row(pid=pid, score=score),
+                                               replies=replies, depth=depth)}
+        more = {"kind": "more", "data": {"count": 12, "children": ["x1", "x2"]}}
+        listing = {"kind": "Listing",
+                   "data": {"children": [node(139, pid="deep", depth=1), more, "junk"]}}
+        tree = {"data": [node(3, replies=listing, pid="parent"), node(64, pid="top")]}
+        with mock.patch.object(reddit_arctic.http, "get", return_value=tree):
+            out = reddit_arctic.fetch_post_comments("abc123", limit=10)
+        assert [(c["score"], c["depth"]) for c in out] == [(139, 1), (64, 0), (3, 0)]
 
     def test_depth_comes_from_the_parent(self):
         top = dict(_comment_row(pid="a1", score=9), parent_id="t3_abc123")
         nested = dict(_comment_row(pid="b2", score=5), parent_id="t1_a1")
-        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([top, nested])):
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_tree([top, nested])):
             out = reddit_arctic.fetch_post_comments("abc123")
         assert [c["depth"] for c in out] == [0, 1]
 
@@ -439,26 +467,26 @@ class TestFetchPostComments:
         g.assert_not_called()
 
     def test_strips_t3_prefix_from_post_id(self):
-        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp([_comment_row()])) as g:
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_tree([_comment_row()])) as g:
             reddit_arctic.fetch_post_comments("t3_abc123")
         assert "link_id=t3_abc123" in g.call_args[0][0]
 
     def test_limit_capped(self):
         rows = [_comment_row(score=i) for i in range(5)]
-        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp(rows)):
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_tree(rows)):
             out = reddit_arctic.fetch_post_comments("abc123", limit=2)
         assert len(out) == 2
 
     def test_deleted_and_removed_filtered(self):
         rows = [_comment_row(author="[deleted]"), _comment_row(body="[removed]"),
                 _comment_row(score=7)]
-        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp(rows)):
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_tree(rows)):
             out = reddit_arctic.fetch_post_comments("abc123")
         assert len(out) == 1 and out[0]["score"] == 7
 
     def test_skip_author_filters_before_limit(self):
         rows = [_comment_row(author="AutoModerator", score=500), _comment_row(score=7)]
-        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp(rows)):
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_tree(rows)):
             out = reddit_arctic.fetch_post_comments(
                 "abc123", limit=1, skip_author=lambda a: a == "AutoModerator")
         assert [c["score"] for c in out] == [7]

@@ -88,7 +88,7 @@ def _no_arctic_network():
 def test_arctic_comments_are_stored_cut_cleanly(_no_arctic_network):
     row = {"author": "reader", "body": SENTENCES, "score": 7,
            "permalink": "/r/elonmusk/comments/abc/x/c1/", "created_utc": 1794268800}
-    with mock.patch.object(reddit_arctic.http, "get", return_value={"data": [row]}):
+    with mock.patch.object(reddit_arctic.http, "get", return_value={"data": [{"kind": "t1", "data": row}]}):
         comment = reddit_arctic.fetch_post_comments("abc")[0]
 
     assert comment["excerpt"].endswith("off years.")
