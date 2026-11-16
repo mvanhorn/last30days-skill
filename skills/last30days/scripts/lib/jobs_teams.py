@@ -105,11 +105,16 @@ def named_teams(
     for name in sorted(members, key=len):
         if len(members[name]) >= TEAM_MIN_ROLES:
             continue
-        base = next((other for other in members if other != name and name.startswith(other + " ")), None)
+        words = name.split(" ")
+        base = next((
+            prefix for prefix in (" ".join(words[:cut]) for cut in range(1, len(words)))
+            if prefix in members
+        ), None)
         if base is not None:
             seen = {id(row) for row in members[base]}
             members[base].extend(row for row in members[name] if id(row) not in seen)
 
+    position = {id(item): index for index, item in enumerate(items)}
     size_cap = max(TEAM_MAX_ROLES, len(items) // 50)
     scored = []
     for name, rows in members.items():
@@ -125,20 +130,28 @@ def named_teams(
     teams, team_items = [], []
     for _score, name, rows, new in scored:
         teams.append({"name": name, "roles": len(rows), "new": new})
-        team_items.append(max(rows, key=lambda row: (_posted(row), -items.index(row))))
+        team_items.append(max(rows, key=lambda row: (_posted(row), -position[id(row)])))
         if len(teams) == TEAM_LINE_LIMIT:
             break
 
     lowered = [title.lower() for title in titles]
     leads: list[tuple[tuple, str, dict[str, Any]]] = []
     for name, rows in members.items():
+        # Checked cheapest first: a name in more titles than a lead's team
+        # may be, or with no lead role, never needs the phrase count.
+        if len(rows) > LEAD_MAX_TITLES:
+            continue
+        candidates = []
+        for row in rows:
+            role = _segments(str(row.get("title") or ""))[:1]
+            if role and _LEAD.search(role[0]) and not _NOT_LEAD.search(role[0]):
+                candidates.append((row, role))
+        if not candidates:
+            continue
         phrase_titles = sum(name in title for title in lowered)
         if phrase_titles > LEAD_MAX_TITLES:
             continue
-        for row in rows:
-            role = _segments(str(row.get("title") or ""))[:1]
-            if not role or not _LEAD.search(role[0]) or _NOT_LEAD.search(role[0]):
-                continue
+        for row, role in candidates:
             posted = _posted(row)
             key = (
                 posted >= window_start if posted else False,
