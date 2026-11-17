@@ -9,6 +9,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 import last30days as cli
 from lib import dates, schema
 
@@ -73,6 +75,67 @@ def _diag() -> dict[str, object]:
         "bird_username": None,
         "native_web_backend": "brave",
     }
+
+
+@pytest.mark.parametrize("writer", ["research", "freshness"])
+def test_cache_writer_holds_exclusive_lock_during_publish(tmp_path, monkeypatch, writer):
+    cache_path = tmp_path / "last-report.json"
+    lock_path = cache_path.with_suffix(".lock")
+    lock_path.touch()
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run("Original", _report("Original"))
+    cached = cli._load_last_report_cache("Original")
+    assert cached is not None
+    probe = """
+import errno
+import os
+import sys
+
+with open(sys.argv[1], "r+b") as lock:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EAGAIN):
+            raise
+        print("contended")
+    else:
+        if os.name == "nt":
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        print("acquired")
+"""
+
+    def probe_lock():
+        return subprocess.run(
+            [sys.executable, "-I", "-c", probe, str(lock_path)],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+
+    published_paths = []
+    replace = cli.replace_private_text
+
+    def observe_publish(path, content):
+        assert probe_lock() == "contended"
+        replace(path, content)
+        published_paths.append(path)
+
+    monkeypatch.setattr(cli, "replace_private_text", observe_publish)
+    if writer == "research":
+        assert cli._write_last_run("New", _report("New"))
+        assert published_paths == [cache_path, tmp_path / "last-run.json"]
+        assert cli._load_last_report_cache("New") is not None
+    else:
+        cached.report.warnings.append("Freshness cache updated")
+        assert cli._update_cached_freshness(cached)
+        assert published_paths == [cache_path]
+        refreshed = cli._load_last_report_cache("Original")
+        assert refreshed is not None
+        assert refreshed.report.warnings == ["Freshness cache updated"]
+    assert probe_lock() == "acquired"
 
 
 class LastRunStateTests(unittest.TestCase):
