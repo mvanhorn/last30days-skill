@@ -69,7 +69,7 @@ HTML_PATH=$(
     --cached-report \
     --synthesis-file "${SYNTHESIS_FILE}" \
     >| "${HTML_TMP}" || exit "$?"
-  "${LAST30DAYS_PYTHON}" - "${HTML_TMP}" "${LAST30DAYS_MEMORY_DIR}" "${SLUG}" << 'HTML_PATH_PY'
+  "${LAST30DAYS_PYTHON}" -I - "${HTML_TMP}" "${LAST30DAYS_MEMORY_DIR}" "${SLUG}" << 'HTML_PATH_PY'
 from datetime import date
 import os
 from pathlib import Path
