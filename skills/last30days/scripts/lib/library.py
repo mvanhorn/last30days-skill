@@ -14,6 +14,11 @@ from pathlib import Path
 DEFAULT_MEMORY_DIR = Path.home() / "Documents" / "Last30Days"
 DEFAULT_BRIEFS_DIR = Path.home() / ".local" / "share" / "last30days" / "briefs"
 LIBRARY_ID_FILENAME = ".last30days-library-id"
+PUBLIC_DRILL_MARKER = "<!-- LAST30DAYS_PUBLIC_DRILL -->"
+PUBLIC_FRESHNESS_MARKER = "<!-- LAST30DAYS_PUBLIC_FRESHNESS -->"
+PUBLIC_CLUSTERS_MARKER = "<!-- LAST30DAYS_PUBLIC_CLUSTERS -->"
+PRIVATE_CORPUS_START = "<!-- LAST30DAYS_PRIVATE_CORPUS_START -->"
+PRIVATE_CORPUS_END = "<!-- LAST30DAYS_PRIVATE_CORPUS_END -->"
 
 _REPORT_TITLE = re.compile(r"^#\s+last30days(?:\s+v[^:]+)?:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _FIRST_TITLE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
@@ -30,10 +35,120 @@ _GENERATED_BRIEF_NAME = re.compile(
     r"[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}\.html"
 )
 _PRIVATE_CORPUS_BLOCK = re.compile(
-    r"<!-- LAST30DAYS_PRIVATE_CORPUS_START -->.*?"
-    r"<!-- LAST30DAYS_PRIVATE_CORPUS_END -->\s*",
+    re.escape(PRIVATE_CORPUS_START) + r".*?" + re.escape(PRIVATE_CORPUS_END) + r"\s*",
     re.DOTALL,
 )
+_DRILL_HEADING = re.compile(r"^## Drill Follow-up[ \t]*\r?$", re.MULTILINE)
+_DRILL_TRAILER = re.compile(
+    r"^### Deeper[ \t]*\r?\n[ \t]*\r?\n- [0-9]+ new items after dedupe\r?\n"
+    r"- Re-researched sources:[^\r\n]*(?:\r?\n|\Z)",
+    re.MULTILINE,
+)
+_PRIVATE_FRESHNESS_ROW = re.compile(
+    r"^\| \*\*contradicted\*\* \| [^\r\n]*"
+    r"(?:\]\(corpus://| \(Newer corpus item disagrees\))[^\r\n]*(?:\r?\n|\Z)",
+    re.MULTILINE,
+)
+_LEGACY_CORPUS_SIGNAL = re.compile(
+    r"^## From your files[ \t]*\r?$|^- (?:Sources|Re-researched sources):[^\r\n]*\bYour files\b",
+    re.MULTILINE,
+)
+_FRESHNESS_TABLE = re.compile(
+    r"^## Freshness Verification[ \t]*\r?\n[ \t]*\r?\n"
+    r"\| Verdict \| Claim \| Evidence \| Checked \|\r?\n"
+    r"\| --- \| --- \| --- \| --- \|(?:\r?\n|\Z)"
+    r".*?(?=^#{1,2}[ \t]|^```text[ \t]*\r?$|^---[ \t]*\r?$|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_RANKED_CLUSTERS = re.compile(
+    r"^## Ranked Evidence Clusters[ \t]*\r?\n.*?(?=^#{1,2}[ \t]|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_RANKED_CLUSTER = re.compile(
+    r"^(?P<prefix>### [0-9]+\. )(?P<title>[^\r\n]*)(?P<ending>\r?\n|\Z)"
+    r"(?P<body>.*?)(?=^### [0-9]+\. |\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_RANKED_CLUSTER_STATS = re.compile(r" \(score -?[0-9]+, [0-9]+ items?, sources: [^()\r\n]*\)$")
+_RANKED_REPRESENTATIVE = re.compile(
+    r"^[0-9]+\. \[(?P<sources>[^\]\r\n]+)\] (?P<title>[^\r\n]+)",
+    re.MULTILINE,
+)
+_RANKED_FRESHNESS_BADGE = re.compile(r" \[freshness:[^\]]+\]$")
+_BRIEF_CLUSTERS = re.compile(
+    r"^(?P<section>## (?P<name>Ranked Storylines|Topic Tensions|Source Clusters)[ \t]*\r?\n)"
+    r"(?P<body>.*?)(?=^#{1,2}[ \t]|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_BRIEF_STORYLINE_TITLE = re.compile(r"^### [0-9]+\. [^\r\n]*(?:\r?\n|\Z)", re.MULTILINE)
+_BRIEF_CLUSTER_LABEL = re.compile(r"^- \*\*[^\r\n]*(?:\r?\n|\Z)", re.MULTILINE)
+
+
+def _public_legacy_cluster(match: re.Match[str]) -> str:
+    body = match["body"]
+    for representative in _RANKED_REPRESENTATIVE.finditer(body):
+        sources = {source.strip().lower() for source in representative["sources"].split(",")}
+        if {"corpus", "your files"} & sources:
+            continue
+        title = _RANKED_FRESHNESS_BADGE.sub("", representative["title"]).strip()
+        if title:
+            stats = _RANKED_CLUSTER_STATS.search(match["title"])
+            return match["prefix"] + title + (stats.group() if stats else "") + match["ending"] + body
+    return body
+
+
+def _public_section_marked(match: re.Match[str], marker: str) -> bool:
+    return match.string.endswith((marker + "\n", marker + "\r\n"), 0, match.start())
+
+
+def _public_brief_clusters(match: re.Match[str]) -> str:
+    if _public_section_marked(match, PUBLIC_CLUSTERS_MARKER):
+        return match.group()
+    labels = _BRIEF_STORYLINE_TITLE if match["name"] == "Ranked Storylines" else _BRIEF_CLUSTER_LABEL
+    return match["section"] + labels.sub("", match["body"])
+
+
+def public_markdown(markdown: str) -> str:
+    corpus_document = (
+        PRIVATE_CORPUS_START in markdown
+        or _LEGACY_CORPUS_SIGNAL.search(markdown)
+        or _PRIVATE_FRESHNESS_ROW.search(markdown)
+    )
+    marker_lines = tuple(
+        marker + ending
+        for marker in (PUBLIC_DRILL_MARKER, PRIVATE_CORPUS_START)
+        for ending in ("\n", "\r\n")
+    )
+    for heading in _DRILL_HEADING.finditer(markdown):
+        preceding = markdown[:heading.start()]
+        if preceding.endswith(marker_lines):
+            continue
+        # Legacy drill summaries did not identify their sources. Use the
+        # last generated trailer so a heading inside the excerpt cannot end it.
+        end = len(markdown)
+        for trailer in _DRILL_TRAILER.finditer(markdown, heading.end()):
+            end = trailer.end()
+        markdown = preceding + markdown[end:]
+        break
+    markdown = _PRIVATE_CORPUS_BLOCK.sub("", markdown)
+    if corpus_document:
+        # The old renderer could keep a drill's local-derived cluster title
+        # after dedupe left only public representatives.
+        markdown = _RANKED_CLUSTERS.sub(
+            lambda match: match.group()
+            if _public_section_marked(match, PUBLIC_CLUSTERS_MARKER)
+            else _RANKED_CLUSTER.sub(_public_legacy_cluster, match.group()),
+            markdown,
+        )
+        if markdown.startswith("# Production Brief: "):
+            markdown = _BRIEF_CLUSTERS.sub(_public_brief_clusters, markdown)
+        # Old rendered rows do not identify the claim's source, so a row
+        # with a public evidence link can still represent a private claim.
+        markdown = _FRESHNESS_TABLE.sub(
+            lambda match: match.group() if _public_section_marked(match, PUBLIC_FRESHNESS_MARKER) else "",
+            markdown,
+        )
+    return _PRIVATE_FRESHNESS_ROW.sub("", markdown)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +260,7 @@ def _keep_preferred(entries: dict[str, LibraryEntry], entry: LibraryEntry) -> No
 
 def _parse_markdown(path: Path) -> LibraryEntry:
     content = path.read_text(encoding="utf-8")
-    public_content = _PRIVATE_CORPUS_BLOCK.sub("", content)
+    public_content = public_markdown(content)
     title_match = _REPORT_TITLE.search(public_content) or _FIRST_TITLE.search(public_content)
     if not title_match:
         raise ValueError("no Markdown title found")

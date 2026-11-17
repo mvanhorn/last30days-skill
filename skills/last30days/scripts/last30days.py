@@ -298,14 +298,12 @@ def _report_has_private_corpus(report: schema.Report) -> bool:
     items_by_source = getattr(report, "items_by_source", {})
     if isinstance(items_by_source, dict) and items_by_source.get("corpus"):
         return True
+    if isinstance(report, schema.Report) and schema.partition_freshness_verdicts(report, {"corpus"})[1]:
+        return True
     candidates = getattr(report, "ranked_candidates", ())
     if not isinstance(candidates, (list, tuple)):
         return False
-    return any(
-        candidate.source == "corpus"
-        or any(item.source == "corpus" for item in candidate.source_items)
-        for candidate in candidates
-    )
+    return any(schema.candidate_has_corpus(candidate) for candidate in candidates)
 
 
 def _ensure_output_directory(path: Path, *, private: bool) -> None:
@@ -2095,8 +2093,9 @@ def _run_drill(
         return 2
 
     sources = list(drill_plan.source_weights)
+    local_only = sources == ["corpus"]
     drill_config = _drill_config(config, sources)
-    diag = pipeline.diagnose(drill_config, sources, safe=args.mock)
+    diag = pipeline.diagnose(drill_config, sources, safe=args.mock or local_only)
     progress = ui.ProgressDisplay(
         f"{report.topic} — drill: {args.drill}",
         show_banner=True,
@@ -2171,7 +2170,7 @@ def _run_drill(
         target=args.drill,
     )
     if _freshness_enabled(args, config):
-        _verify_report_set(merged, None, allow_network=not args.mock)
+        _verify_report_set(merged, None, allow_network=not args.mock and not local_only)
     else:
         merged.freshness_verdicts = []
     if _write_last_run(report.topic, merged, research_options=_cache_research_options(args, config)):
@@ -3100,12 +3099,9 @@ def _render_save_and_print(
         sys.stderr.flush()
     if args.publish_html:
         try:
-            has_private_corpus = "corpus" in report.source_status or bool(
-                entity_reports
-                and any("corpus" in entity.source_status for _label, entity in entity_reports)
-            )
+            published_reports = [entity for _label, entity in entity_reports] if entity_reports else [report]
             publish_rendered = rendered
-            if has_private_corpus:
+            if any(schema.report_has_corpus(entity) for entity in published_reports):
                 sys.stderr.write(
                     "[last30days] Excluding local corpus evidence and synthesis from published HTML.\n"
                 )
@@ -3623,10 +3619,10 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     output_dir.mkdir(parents=True, exist_ok=True)
     library_id = library.get_or_create_library_id(output_dir)
     rendered_briefs_dir = output_dir / "briefs"
-    has_private_entries = any(
-        render.PRIVATE_CORPUS_START in entry.content for entry in entries
-    )
-    _ensure_output_directory(rendered_briefs_dir, private=has_private_entries)
+    private_entries = {
+        entry.entry_id for entry in entries if library.public_markdown(entry.content) != entry.content
+    }
+    _ensure_output_directory(rendered_briefs_dir, private=bool(private_entries))
 
     def _preserve_hand_written_page(existing_path: Path, generated_marker: str) -> None:
         """Back up any page library feed did not generate before overwriting it."""
@@ -3657,7 +3653,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         save_rendered_output(
             rendered,
             str(target),
-            private=render.PRIVATE_CORPUS_START in entry.content,
+            private=entry.entry_id in private_entries,
         )
         publishable_brief_documents[entry.entry_id] = html_render.render_library_brief(
             entry, include_private=False

@@ -29,11 +29,6 @@ _LEGACY_LIBRARY_CONTEXT = re.compile(
     r"^## From your library\s*$.*?(?=^##\s|\Z)",
     re.MULTILINE | re.DOTALL,
 )
-_PRIVATE_CORPUS_BLOCK = re.compile(
-    r"<!-- LAST30DAYS_PRIVATE_CORPUS_START -->.*?"
-    r"<!-- LAST30DAYS_PRIVATE_CORPUS_END -->\s*",
-    re.DOTALL,
-)
 
 
 def saved_report_index_path(save_dir: Path) -> Path:
@@ -291,8 +286,8 @@ def _upsert_entry(
     fingerprint: str | None = None,
 ) -> None:
     stat = entry.source_path.stat()
-    private_free_content = _PRIVATE_CORPUS_BLOCK.sub("", entry.content)
-    indexed_content = _indexable_content(private_free_content)
+    private_free_content = library.public_markdown(entry.content)
+    indexed_content = _without_library_context(private_free_content)
     headline = entry.headline
     summary = entry.summary
     if private_free_content != entry.content and entry.source_format == "markdown":
@@ -414,8 +409,11 @@ def _clean_snippet(value: object) -> str:
 
 
 def _indexable_content(content: str) -> str:
-    without_private = _PRIVATE_CORPUS_BLOCK.sub("", content)
-    without_marked = _MARKED_LIBRARY_CONTEXT.sub("", without_private)
+    return _without_library_context(library.public_markdown(content))
+
+
+def _without_library_context(content: str) -> str:
+    without_marked = _MARKED_LIBRARY_CONTEXT.sub("", content)
     return _LEGACY_LIBRARY_CONTEXT.sub("", without_marked)
 
 

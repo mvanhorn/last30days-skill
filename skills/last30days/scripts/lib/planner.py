@@ -369,25 +369,39 @@ def build_drill_plan(
             for source in schema.candidate_sources(candidate):
                 if source and source not in sources:
                     sources.append(source)
-    if not sources:
-        raise DrillTargetError(target, report.clusters)
-
-    titles: list[str] = []
-    entity_counts: Counter[str] = Counter()
+    cluster_titles: list[str] = []
+    representative_titles: list[str] = []
     for cluster in matched:
-        titles.append(cluster.title)
-        entity_counts.update(entity_extract.extract_text_entities(cluster.title))
+        cluster_titles.append(cluster.title)
         for candidate_id in cluster.representative_ids:
             candidate = candidates.get(candidate_id)
             if candidate:
-                titles.append(candidate.title)
-                entity_counts.update(entity_extract.extract_text_entities(candidate.title))
+                representative_titles.append(candidate.title)
 
+    if schema.report_has_corpus(report):
+        public_titles, public_sources = _public_drill_evidence(matched, candidates)
+        if public_titles:
+            # A cached cluster title may have come from a private representative.
+            cluster_titles = public_titles[:1]
+            representative_titles = public_titles[1:]
+            sources = list(dict.fromkeys(
+                [source for source in sources if source == "corpus" or source in public_sources]
+                + public_sources
+            ))
+        else:
+            sources = ["corpus"] if "corpus" in sources else []
+
+    if not sources:
+        raise DrillTargetError(target, report.clusters)
+
+    entity_counts: Counter[str] = Counter()
+    for title in [*cluster_titles, *representative_titles]:
+        entity_counts.update(entity_extract.extract_text_entities(title))
     queries: list[str] = []
     for query_text in [
-        " ".join(titles[: len(matched)]),
+        " ".join(cluster_titles),
         " ".join(entity for entity, _ in entity_counts.most_common(8)),
-        *titles[len(matched):],
+        *representative_titles,
     ]:
         query_text = " ".join(query_text.split()).strip()
         if query_text and query_text.lower() not in {item.lower() for item in queries}:
@@ -425,6 +439,31 @@ def build_drill_plan(
             "drill-targets:" + ",".join(cluster.cluster_id for cluster in matched),
         ],
     )
+
+
+def _public_drill_evidence(
+    clusters: list[schema.Cluster],
+    candidates: dict[str, schema.Candidate],
+) -> tuple[list[str], list[str]]:
+    titles: list[str] = []
+    sources: list[str] = []
+    for cluster in clusters:
+        for candidate_id in dict.fromkeys([*cluster.representative_ids, *cluster.candidate_ids]):
+            candidate = candidates.get(candidate_id)
+            if candidate is None:
+                continue
+            if schema.candidate_has_corpus(candidate):
+                # A fused candidate can retain public members even when its
+                # chosen title or snippet belongs to a local file.
+                for item in candidate.source_items:
+                    if item.source and item.source != "corpus" and item.title.strip():
+                        titles.append(item.title)
+                        sources.append(item.source)
+            elif candidate.title.strip() and schema.candidate_sources(candidate):
+                titles.append(candidate.title)
+                sources.extend(schema.candidate_sources(candidate))
+    return titles, list(dict.fromkeys(sources))
+
 
 def plan_query(
     *,

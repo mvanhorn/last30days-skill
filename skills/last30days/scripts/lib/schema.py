@@ -650,6 +650,31 @@ def candidate_sources(candidate: Candidate) -> list[str]:
     return [candidate.source] if candidate.source else []
 
 
+def candidate_has_corpus(candidate: Candidate) -> bool:
+    return (
+        candidate.source == "corpus"
+        or "corpus" in candidate.sources
+        or any(item.source == "corpus" for item in candidate.source_items)
+    )
+
+
+def report_has_corpus(report: Report) -> bool:
+    return (
+        "corpus" in report.source_status
+        or bool(report.items_by_source.get("corpus"))
+        or any(candidate_has_corpus(candidate) for candidate in report.ranked_candidates)
+        or any("corpus" in cluster.sources for cluster in report.clusters)
+        or bool(partition_freshness_verdicts(report, {"corpus"})[1])
+    )
+
+
+def drill_has_corpus_context(report: Report) -> bool:
+    return bool(
+        (report.drill_of or "drill_context" in report.artifacts or "drill_history" in report.artifacts)
+        and report_has_corpus(report)
+    )
+
+
 def candidate_source_label(candidate: Candidate) -> str:
     sources = candidate_sources(candidate)
     return ", ".join(sources) if sources else "unknown"
@@ -711,6 +736,38 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
 AGENT_EXPORT_SCHEMA_VERSION = "1.4"
 
 
+def partition_freshness_verdicts(
+    report: Report, excluded: set[str],
+) -> tuple[list[FreshnessVerdict], list[FreshnessVerdict]]:
+    if not report.freshness_verdicts:
+        return [], []
+    excluded_urls = {
+        item.url
+        for items in report.items_by_source.values()
+        for item in items
+        if item.url and item.source.lower() in excluded
+    }
+    excluded_urls.update(
+        item.url
+        for candidate in report.ranked_candidates
+        for item in candidate.source_items
+        if item.url and item.source.lower() in excluded
+    )
+    public, private = [], []
+    for verdict in report.freshness_verdicts:
+        urls = (verdict.source_url, verdict.evidence_url)
+        if verdict.source.lower() in excluded or any(url in excluded_urls for url in urls):
+            private.append(verdict)
+        elif "corpus" in excluded and (
+            any(url.lower().startswith("corpus://") for url in urls)
+            or verdict.detail == "Newer corpus item disagrees"
+        ):
+            private.append(verdict)
+        else:
+            public.append(verdict)
+    return public, private
+
+
 def without_sources(report: Report, excluded_sources: set[str]) -> Report:
     """Return a deep-copied report with private source evidence removed.
 
@@ -722,7 +779,9 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
     excluded = {source.lower() for source in excluded_sources}
     if not excluded:
         return copy.deepcopy(report)
+    private_drill = "corpus" in excluded and drill_has_corpus_context(report)
     clean = copy.deepcopy(report)
+    public_verdicts, _ = partition_freshness_verdicts(clean, excluded)
     clean.items_by_source = {
         source: items
         for source, items in clean.items_by_source.items()
@@ -790,19 +849,24 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
             for source in candidate_sources(candidate_by_id[candidate_id])
             if source.lower() not in excluded
         })
-        if any(candidate_id in removed_candidate_ids for candidate_id in original_ids):
+        if private_drill or any(candidate_id in removed_candidate_ids for candidate_id in original_ids):
             cluster.title = candidate_by_id[cluster.representative_ids[0]].title
         kept_clusters.append(cluster)
     clean.clusters = kept_clusters
     clean.freshness_verdicts = [
         verdict
-        for verdict in clean.freshness_verdicts
-        if verdict.source.lower() not in excluded
-        and verdict.candidate_id in candidate_by_id
+        for verdict in public_verdicts
+        if verdict.candidate_id in candidate_by_id
     ]
     for key in list(clean.artifacts):
         if any(source in key.lower() for source in excluded):
             del clean.artifacts[key]
+    if private_drill:
+        clean.drill_of = None
+        clean.artifacts.pop("drill_context", None)
+        clean.artifacts.pop("drill_history", None)
+        # Older cached drill plans can mix private titles into public queries.
+        clean.query_plan.subqueries = []
     return clean
 
 

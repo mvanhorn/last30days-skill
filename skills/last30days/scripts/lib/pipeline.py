@@ -2348,6 +2348,9 @@ def run(
         youtube_yt.reset_search_cache()
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
+    local_corpus_drill = config.get("_drill_mode") and requested_sources == ["corpus"]
+    if local_corpus_drill:
+        web_backend = "none"
     # Wall-clock origin for budget-aware enrichment lanes. Amazon review
     # enrichment starts at search time (inside _retrieve_stream_impl) so it
     # overlaps other sources instead of waiting for them all to finish.
@@ -2398,6 +2401,7 @@ def run(
     x_lane_missing = (
         envelope is None
         and not mock
+        and not local_corpus_drill
         and not suppress_x_host_lane
         and env.x_host_lane_declared(config)
     )
@@ -2435,7 +2439,11 @@ def run(
     # automatic lane only for engine-planned runs.
     host_plan = external_plan is not None
     auto_company_jobs = not host_plan and _company_topic_likely(topic)
-    if mock:
+    if local_corpus_drill:
+        runtime = schema.ProviderRuntime("local", "deterministic", "local-score")
+        reasoning_provider = None
+        available_before_search = available = ["corpus"]
+    elif mock:
         runtime = providers.mock_runtime(config, depth)
         reasoning_provider = None
         available_before_search = list(MOCK_AVAILABLE_SOURCES)
@@ -2799,7 +2807,7 @@ def run(
         primary = plan.subqueries[0]
         bundle.mark_attempted("corpus")
         result = corpus.search(
-            topic,
+            primary.search_query if local_corpus_drill else topic,
             resolved_corpus_dirs,
             from_date=from_date,
             to_date=to_date,
@@ -3382,8 +3390,7 @@ def run(
     private_candidates = [
         candidate
         for candidate in candidates
-        if candidate.source == "corpus"
-        or any(item.source == "corpus" for item in candidate.source_items)
+        if schema.candidate_has_corpus(candidate)
     ]
     private_candidate_ids = {id(candidate) for candidate in private_candidates}
     public_candidates = [

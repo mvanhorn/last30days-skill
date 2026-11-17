@@ -33,6 +33,13 @@ from . import (
     skill_meta,
     x_envelope,
 )
+from .library import (
+    PRIVATE_CORPUS_END,
+    PRIVATE_CORPUS_START,
+    PUBLIC_CLUSTERS_MARKER,
+    PUBLIC_DRILL_MARKER,
+    PUBLIC_FRESHNESS_MARKER,
+)
 
 
 def _skill_version() -> str:
@@ -252,10 +259,6 @@ SOURCE_LABELS = {
     "corpus": "Your files",
 }
 
-PRIVATE_CORPUS_START = "<!-- LAST30DAYS_PRIVATE_CORPUS_START -->"
-PRIVATE_CORPUS_END = "<!-- LAST30DAYS_PRIVATE_CORPUS_END -->"
-
-
 # vote_weight = max points a fully on-topic, max-upvoted top comment can add to
 # the LLM humor score. Tuned against real runs: typical funny comments score
 # ~52 and the best on-topic comments carry hundreds-to-thousands of votes, so
@@ -299,7 +302,7 @@ def _render_drill_context(report: schema.Report) -> list[str]:
     sources = context.get("sources") or []
     source_text = ", ".join(_source_label(source) for source in sources) or "none"
     original = context.get("original_summary") or "No cached summary was available."
-    return [
+    lines = [
         "## Drill Follow-up",
         "",
         f"- Target: {context.get('target') or report.drill_of}",
@@ -314,6 +317,9 @@ def _render_drill_context(report: schema.Report) -> list[str]:
         f"- {int(context.get('new_items') or 0)} new items after dedupe",
         f"- Re-researched sources: {source_text}",
     ]
+    if schema.drill_has_corpus_context(report):
+        return [PRIVATE_CORPUS_START, *map(_defang_corpus_sentinels, lines), PRIVATE_CORPUS_END]
+    return [PUBLIC_DRILL_MARKER, *lines]
 
 
 def _render_library_context(report: schema.Report) -> list[str]:
@@ -415,8 +421,11 @@ def _render_ranked_clusters(
     clusters: list[schema.Cluster],
     *,
     digest_urls: Collection[str] = (),
+    mark_public_clusters: bool = False,
 ) -> list[str]:
     lines = ["## Ranked Evidence Clusters", ""]
+    if mark_public_clusters:
+        lines.insert(0, PUBLIC_CLUSTERS_MARKER)
     candidate_by_id = {
         candidate.candidate_id: candidate for candidate in report.ranked_candidates
     }
@@ -672,20 +681,30 @@ def _candidate_freshness_flag(report: schema.Report, candidate_id: str) -> str:
 
 
 def _render_freshness_verdicts(report: schema.Report) -> list[str]:
-    if not report.freshness_verdicts:
-        return []
+    public, private = schema.partition_freshness_verdicts(report, {"corpus"})
+    lines = [PUBLIC_FRESHNESS_MARKER, *_freshness_table(public, "Freshness Verification")] if public else []
+    if private:
+        if lines:
+            lines.append("")
+        local = _freshness_table(private, "Local freshness verification")
+        lines.extend([PRIVATE_CORPUS_START, *map(_defang_corpus_sentinels, local), PRIVATE_CORPUS_END])
+    return lines
+
+
+def _freshness_table(verdicts: list[schema.FreshnessVerdict], heading: str) -> list[str]:
     lines = [
-        "## Freshness Verification",
+        f"## {heading}",
         "",
         "| Verdict | Claim | Evidence | Checked |",
         "| --- | --- | --- | --- |",
     ]
-    for verdict in report.freshness_verdicts:
-        claim = verdict.claim.replace("|", "\\|")
+    for verdict in verdicts:
+        claim = " ".join(verdict.claim.splitlines()).replace("|", "\\|")
         if verdict.detail:
             # The verifier's detail carries the formatted movement for stale
             # rows and the reason a claim could not be re-checked otherwise.
-            claim += f" ({verdict.detail.replace('|', chr(92) + '|')})"
+            detail = " ".join(verdict.detail.splitlines()).replace("|", "\\|")
+            claim += f" ({detail})"
         evidence_label = (
             verdict.evidence_timestamp or verdict.source_timestamp or "source"
         )
@@ -728,6 +747,7 @@ def _render_registered_sections(
     cluster_limit: int,
     *,
     include_source_diagnostics: bool = True,
+    mark_public_clusters: bool = False,
 ) -> list[str]:
     """Render one audience preset's ordered, budgeted evidence sections."""
 
@@ -792,6 +812,7 @@ def _render_registered_sections(
         "clusters": _render_ranked_clusters(
             report,
             visible_clusters,
+            mark_public_clusters=mark_public_clusters,
         ),
         "stats": _render_stats(report),
         "best_takes": best_takes,
@@ -833,6 +854,7 @@ def render_compact(
 ) -> str:
     audience = registers.get_register(register)
     evidence_report = schema.without_sources(report, {"corpus"})
+    has_corpus = schema.report_has_corpus(report)
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
         *_render_badge(report.topic, report.range_from, report.range_to),
@@ -924,6 +946,7 @@ def render_compact(
         # a synthesis-only voice change, so it intentionally takes this path.
         lines.extend(_render_ranked_clusters(
             evidence_report, visible_clusters, digest_urls=jobs_digest_urls,
+            mark_public_clusters=has_corpus,
         ))
         lines.extend(_render_stats(evidence_report))
 
@@ -956,7 +979,8 @@ def render_compact(
     else:
         lines.extend(
             _render_registered_sections(
-                evidence_report, audience, fun_params, cluster_limit
+                evidence_report, audience, fun_params, cluster_limit,
+                mark_public_clusters=has_corpus,
             )
         )
     corpus_section = _render_corpus_section(report)
@@ -1049,6 +1073,7 @@ def render_for_html(
                     fun_params,
                     8,
                     include_source_diagnostics=False,
+                    mark_public_clusters=schema.report_has_corpus(report),
                 ),
             ]
         )
@@ -1845,7 +1870,10 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         lines.append("")
 
     # ALL clusters (no limit)
-    lines.extend(_render_ranked_clusters(evidence_report, evidence_report.clusters))
+    lines.extend(_render_ranked_clusters(
+        evidence_report, evidence_report.clusters,
+        mark_public_clusters=schema.report_has_corpus(report),
+    ))
 
     fun_params = _FUN_LEVELS["medium"]
     full_clusters = _clusters_clearing_relevance_floor(
@@ -2024,7 +2052,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         lines.extend(corpus_section)
         lines.append("")
 
-    freshness_verdicts = _render_freshness_verdicts(evidence_report)
+    freshness_verdicts = _render_freshness_verdicts(report)
     if freshness_verdicts:
         lines.extend(freshness_verdicts)
         lines.append("")
@@ -2185,6 +2213,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
     is no matching data; Sections 1 and 5 always appear.
     """
     evidence_report = schema.without_sources(report, {"corpus"})
+    public_cluster_boundary = [PUBLIC_CLUSTERS_MARKER] if schema.report_has_corpus(report) else []
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
         f"# Production Brief: {report.topic}",
@@ -2203,8 +2232,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
     if library_context:
         lines.extend([*library_context, ""])
 
-    lines.append("## Ranked Storylines")
-    lines.append("")
+    lines.extend([*public_cluster_boundary, "## Ranked Storylines", ""])
     candidate_by_id = {c.candidate_id: c for c in evidence_report.ranked_candidates}
     requested_clusters = evidence_report.clusters[:cluster_limit]
     visible_clusters = _clusters_clearing_relevance_floor(
@@ -2284,8 +2312,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
 
     tensions = [c for c in visible_clusters if c.uncertainty]
     if tensions:
-        lines.append("## Topic Tensions")
-        lines.append("")
+        lines.extend([*public_cluster_boundary, "## Topic Tensions", ""])
         for cluster in tensions[:cluster_limit]:
             label = (
                 cluster.uncertainty.replace("-", " ").title()
@@ -2304,8 +2331,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
             lines.append(f"- {q}")
         lines.append("")
 
-    lines.append("## Source Clusters")
-    lines.append("")
+    lines.extend([*public_cluster_boundary, "## Source Clusters", ""])
     for cluster in visible_clusters:
         source_tags = " + ".join(_source_label(s) for s in cluster.sources)
         lines.append(f"- **{_safe_title(cluster.title)}**: {source_tags}")
