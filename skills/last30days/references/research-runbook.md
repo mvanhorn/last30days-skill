@@ -48,7 +48,9 @@ Common patterns:
 
 **Perplexity search type:** pass `--perplexity-search-type fast` (or `web`) only when the user asks for Perplexity Fast Search or a specific Perplexity search type; never add it on your own initiative or because a key is configured. It changes only direct Perplexity Search API and Agent `web_search` requests, does not enable the Perplexity source (add the source only if the user also asked for Perplexity), and needs a direct `PERPLEXITY_API_KEY`; OpenRouter Sonar ignores it.
 
-**Perplexity source:** use it only when the user asks for Perplexity, Deep Research, or paid grounded synthesis, or when `perplexity` is already enabled in `INCLUDE_SOURCES` / `--search`. Prefer `PERPLEXITY_API_KEY`: normal runs use the controlled Agent API path, `search` returns raw Search API rows, and `both` combines them. Existing `OPENROUTER_API_KEY` installs stay compatible through one synchronous Sonar call; `search` and `both` fall back to Sonar because those direct APIs need a Perplexity key. Every normal mode is capped at one whole-topic planner subquery per command, including competitor fanout, and is not repeated during thin-source retries. With a direct key, normal Agent mode supplies only `web_search`, forces it for citation-critical grounding, uses a bounded step count, and supplies a local instruction. `sonar` remains a deprecated direct-key alias for `agent`. `LAST30DAYS_PERPLEXITY_AGENT_PRESET` is an explicit direct-key choice only; never set it for the user. `--deep-research` requires a normal positional topic. A direct key starts at most one paid `high`-preset background run with a 600-second default wall timeout; OpenRouter preserves the synchronous `perplexity/sonar-deep-research` fallback. It cannot be combined with discovery, drill, cached-only, competitor, or vs-mode. A local timeout does not stop a direct remote run. Report safe model and response metadata, but never expose request headers or raw tool traces.
+**Perplexity source:** use only when requested (including Deep Research or paid grounded synthesis) or enabled in `INCLUDE_SOURCES`/`--search`. Prefer `PERPLEXITY_API_KEY`. In direct mode, `agent` (default, deprecated alias `sonar`) forces `web_search`, its only tool, for citations, with bounded steps and local instructions. `search` returns raw rows and `both` combines them. `OPENROUTER_API_KEY` uses one synchronous Sonar call in every mode. Use `LAST30DAYS_PERPLEXITY_AGENT_PRESET` only with a direct key at the user's request. Cap at one whole-topic subquery per command across competitors. Skip thin-source retries.
+
+`--deep-research` requires one normal positional topic. Exclude discovery, drill, cached-only, competitor, and vs modes. Use one paid background `high` preset with a direct key, or synchronous `perplexity/sonar-deep-research` with OpenRouter. A local timeout can leave the remote job running. Report safe model and response metadata. Keep headers and raw tool traces private.
 
 **Reddit backend pin:** Reddit defaults to the free keyless backend. With `SCRAPECREATORS_API_KEY`, ScrapeCreators Reddit **search** backfills when the free path returns **fewer than 5 items** (at most one backfill per distinct query, date window and subreddit set per run, roughly 10 API calls at default depth). To avoid that spend, suggest `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` (backfill only when the free path returns nothing; any other `<N>` backfills below N). If public Reddit is shallow, bot-gated, or missing nested comments, suggest `LAST30DAYS_REDDIT_BACKEND=scrapecreators` with the key to make ScrapeCreators primary, free path as fallback. Do not set these automatically for normal runs.
 
@@ -579,15 +581,15 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 **Grok Bot X:** on a Grok Bot host, follow the root routing gate for `grok-bot-x.md` before the engine command.
 
-**Step 1: Run the research script WITH your query plan (FOREGROUND)**
+**Step 1: Run the research script with your query plan**
 
-**CRITICAL: Run this command in the FOREGROUND with a 5-minute timeout. Do NOT use run_in_background. The full output contains Reddit, X, AND YouTube data that you need to read completely.**
+Run in the foreground with a `300000` ms timeout for ordinary research. For `--deep-research`, allow the configured `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` (default 600 seconds) plus five minutes. If foreground time is limited, start one managed background task or persistent session and wait for it to finish without resubmitting.
 
 **On hosts with web search, pass your QUERY_PLAN_JSON via the --plan flag.** This tells the Python script to use your plan instead of its internal planner. On hosts without web search, omit `--plan` and use `--auto-resolve`.
 
 **IMPORTANT: Include `--x-handle={RESOLVED_HANDLE}` in the command. For comparison mode, use the single parallel comparison invocation in `comparison.md`, with outer targeting for the main entity and per-peer targeting in `--competitors-plan`. Also include the resolved Step 0.55 flags listed below.**
 
-Fill `{TOPIC}` below with the parsed topic as literal data, excluding skill-mode controls and engine CLI flags. Choose a quoted heredoc delimiter that does not occur as a line in the topic. Map recognized CLI flags separately to the engine command. Never evaluate raw slash-command text or depend on a shell `$ARGUMENTS` variable.
+Put only the parsed topic in `{TOPIC}` and pass engine flags separately. Choose a quoted heredoc delimiter absent from the topic's lines. Never evaluate raw slash input or use shell `$ARGUMENTS`.
 
 For research topics matching administrative commands (for example `setup`), add `--research-only` to treat the topic as text. Omit it for explicitly requested administrative actions and follow their runtime flow.
 
@@ -622,7 +624,7 @@ RESEARCH_TOPIC=${RESEARCH_TOPIC%$'\n'}
 PLAN_EOF
 ```
 
-**Run this block directly in your shell tool. Do NOT wrap it in `bash -lc '...'` or `zsh -lc '...'`** - the outer single quotes terminate at the first apostrophe inside the heredoc body (a ranking string like `What did Kanye West's album do?`), which aborts the command with a `zsh: unmatched "` error before the engine ever runs. The quoted `<<'PLAN_EOF'` marker already makes the heredoc body apostrophe-safe; the `-lc '...'` wrapper is what breaks it.
+Run this block directly in the shell tool. Avoid `bash -lc '...'` and `zsh -lc '...'` wrappers. An apostrophe in the heredoc can close the wrapper's quotes and trigger `zsh: unmatched "`.
 
 Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 
@@ -643,13 +645,6 @@ Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 - `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context, then plans internally)
 
 Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
-
-Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically takes 1-3 minutes.
-
-The script will automatically:
-- Detect available API keys
-- Run Reddit/X/YouTube/TikTok/Instagram/Hacker News/Polymarket searches
-- Output ALL results including YouTube transcripts, TikTok captions, Instagram captions, HN comments, and prediction market odds
 
 **Read the ENTIRE output.** It holds the top ranked clusters (not every item), `## Stats`, `## Posts by @handle`, `## Polymarket Markets`, the quote pool `## Top Community Comments`, the footer and a format checklist. The saved raw file is the archive.
 

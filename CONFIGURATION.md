@@ -378,7 +378,7 @@ Perplexity-specific env vars:
 | `LAST30DAYS_PERPLEXITY_COUNTRY` | unset | Search API and all Agent `web_search` requests | Two-letter country code such as `US`. |
 | `LAST30DAYS_PERPLEXITY_RECENCY_FILTER` | unset | Search API and all Agent `web_search` requests | `hour`, `day`, `week`, `month`, or `year`; exact date filters take precedence. |
 | `LAST30DAYS_PERPLEXITY_REASONING_EFFORT` | unset | controlled Agent profile | `minimal`, `low`, `medium`, or `high`. |
-| `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` | `600` | direct Agent API background Deep Research | Wall-clock polling deadline; remote work can continue after a local timeout. OpenRouter fallback is synchronous. |
+| `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` | `600` | direct Agent API background Deep Research | Wall-clock deadline for submission and polling. This lane keeps its own budget alongside ordinary sources. Remote work can continue after a local timeout. OpenRouter fallback is synchronous. |
 | `LAST30DAYS_PERPLEXITY_MODEL` / `LAST30DAYS_PERPLEXITY_SEARCH_MODE` | unset | legacy Sonar config | Retained for config-file compatibility. They do not select an Agent API preset or search mode. |
 
 ### Encrypted credential sources (Keychain / pass)

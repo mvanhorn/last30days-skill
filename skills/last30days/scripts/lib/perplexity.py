@@ -676,23 +676,37 @@ def _log_deep_receipt(artifact: dict[str, Any]) -> None:
     _log(f"Deep Research receipt: {rendered or 'unavailable'}")
 
 
+def deep_timeout_seconds(config: dict[str, Any]) -> int:
+    timeout = _positive_int(
+        config.get("LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS"),
+        PERPLEXITY_DEFAULT_DEEP_TIMEOUT_SECONDS,
+        1,
+    )
+    try:
+        float(timeout)
+    except OverflowError:
+        return PERPLEXITY_DEFAULT_DEEP_TIMEOUT_SECONDS
+    return timeout
+
+
 def _poll_agent_background(
     payload: dict[str, Any],
     headers: dict[str, str],
     config: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    timeout_seconds = _positive_int(
-        config.get("LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS"),
-        PERPLEXITY_DEFAULT_DEEP_TIMEOUT_SECONDS,
-        1,
-        None,
-    )
+    timeout_seconds = deep_timeout_seconds(config)
+    deadline = config.get("_research_deadline")
+    if deadline is None:
+        deadline = time.monotonic() + timeout_seconds
+    cancel = config.get("_enrich_cancel")
     created = http.post(
         PERPLEXITY_AGENT_URL,
         payload,
         headers=headers,
         timeout=30,
         retries=1,
+        deadline_monotonic=deadline,
+        cancel=cancel,
     )
     response_id = created.get("id")
     if not isinstance(response_id, str) or not response_id:
@@ -705,10 +719,9 @@ def _poll_agent_background(
     if status:
         _log(f"Agent background status: {status}")
 
-    deadline = time.monotonic() + timeout_seconds
     delay = PERPLEXITY_DEEP_INITIAL_POLL_DELAY_SECONDS
     while status not in terminal:
-        if time.monotonic() >= deadline:
+        if (cancel is not None and cancel.is_set()) or time.monotonic() >= deadline:
             raise AgentBackgroundTimeout(
                 _background_metadata(
                     data,
@@ -725,6 +738,7 @@ def _poll_agent_background(
                 timeout=30,
                 retries=2,
                 deadline_monotonic=deadline,
+                cancel=cancel,
             )
         except http.HTTPError as exc:
             if isinstance(exc, http.DeadlineExceeded) or time.monotonic() >= deadline:
@@ -755,7 +769,7 @@ def _poll_agent_background(
             _log(f"Agent background status: {next_status}")
         status = next_status
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if remaining <= 0 or (cancel is not None and cancel.is_set()):
             raise AgentBackgroundTimeout(
                 _background_metadata(
                     data,
@@ -767,7 +781,10 @@ def _poll_agent_background(
             )
         if status in terminal:
             break
-        time.sleep(min(delay, remaining))
+        if cancel is None:
+            time.sleep(min(delay, remaining))
+        else:
+            cancel.wait(min(delay, remaining))
         delay = min(delay * 1.5, PERPLEXITY_DEEP_MAX_POLL_DELAY_SECONDS)
 
     metadata = _background_metadata(

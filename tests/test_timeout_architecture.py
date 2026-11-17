@@ -1,8 +1,11 @@
 """Timeout architecture: shared X-chain deadline and bounded stream waits."""
 
+from concurrent.futures import Future
+from contextlib import contextmanager
 import queue
 import threading
 import time
+from types import SimpleNamespace
 from unittest import mock
 from uuid import uuid4
 
@@ -20,6 +23,75 @@ def test_stream_timeouts_are_bounded():
     ):
         value = getattr(pipeline, name)
         assert 0 < value <= 600, f"{name}={value} must be a finite wall-clock bound"
+
+
+def test_background_deep_research_outlives_standard_stream_deadline(monkeypatch):
+    clock = 0.0
+    submitted = {}
+    expired = {}
+
+    class StreamFuture(Future):
+        def __init__(self, source):
+            super().__init__()
+            self.source = source
+
+        def cancel(self):
+            expired[self.source] = clock
+            return super().cancel()
+
+    class SimulatedExecutor:
+        def submit(self, fn, **kwargs):
+            source = kwargs["source"]
+            assert source not in submitted
+            submitted[source] = kwargs["config"]["_research_deadline"]
+            return StreamFuture(source)
+
+    @contextmanager
+    def executor(max_workers):
+        yield SimulatedExecutor()
+
+    def wait(futures, *, timeout, return_when):
+        nonlocal clock
+        clock += timeout
+        done = set()
+        for future in futures:
+            if future.source == "perplexity" and clock >= 200:
+                future.set_result((
+                    [{
+                        "title": "Deadline probe results",
+                        "url": "https://example.test/deadline-probe",
+                        "date": "2026-08-15",
+                        "snippet": "The deadline probe completed after 200 seconds.",
+                    }],
+                    {"label": "perplexity", "responseId": "deep-complete"},
+                ))
+                done.add(future)
+        return done, futures - done
+
+    monkeypatch.setattr(pipeline, "time", SimpleNamespace(monotonic=lambda: clock))
+    monkeypatch.setattr(pipeline, "_abandoning_executor", executor)
+    monkeypatch.setattr(pipeline, "futures_wait", wait)
+    report = pipeline.run(
+        topic="deadline probe",
+        config={"_deep_research": True, "PERPLEXITY_API_KEY": "dummy"},
+        depth="quick",
+        requested_sources=["reddit", "perplexity"],
+        mock=True,
+        web_backend="none",
+        as_of_date="2026-08-31",
+    )
+
+    assert report.source_status["reddit"].state == health.TIMEOUT
+    assert expired == {"reddit": 180}
+    assert submitted == {"reddit": 180, "perplexity": 600}
+    assert report.source_status["perplexity"].state == health.OK
+    assert [item.url for item in report.items_by_source["perplexity"]] == [
+        "https://example.test/deadline-probe",
+    ]
+    assert any(
+        item.get("responseId") == "deep-complete"
+        for item in report.artifacts["grounding"]
+    )
 
 
 def test_fetch_x_backend_forwards_deadline(monkeypatch):
