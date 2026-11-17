@@ -774,6 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-browser-cookies", action="store_true",
                         help="Disable browser-cookie extraction even when FROM_BROWSER is configured")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
+    parser.add_argument("--no-research-persistence", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--resolve-save-dir", action="store_true",
         help="Print the skill save directory from flags/config, then exit without research",
@@ -3752,6 +3753,14 @@ def main() -> int:
         action.dest for action in parser._actions
         if any(option in option_tokens for option in action.option_strings)
     }
+    if args.no_research_persistence:
+        if (
+            not args.research_only or not args.topic or args.discover is not None
+            or args.drill or args.cached_report or args.synthesis_file
+            or args.output or args.publish_html or args.record_fixtures
+        ):
+            parser.error("--no-research-persistence requires --research-only and a topic without output or cache modes")
+        args.save_dir = ""
     if args.record_fixtures:
         with http.recording_requests(Path(args.record_fixtures)):
             return _main(parser, args, extra_argv)
@@ -3853,6 +3862,8 @@ def _main(
             return _run_store_key(store_key_name)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    if args.no_research_persistence:
+        config["_no_research_persistence"] = True
     if args.perplexity_search_type is not None:
         config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
@@ -5158,27 +5169,24 @@ def _main(
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
-    _write_last_run(
-        original_topic, report, entity_reports=entity_reports,
-        x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
-        research_options=research_options,
-    )
-    # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
-    # (for shell-exported users) and config (for users who set it in
-    # ~/.config/last30days/.env, which env.py loads but does not propagate
-    # to os.environ). Mirrors the LAST30DAYS_DEBUG / LAST30DAYS_SKIP_PREFLIGHT
-    # convention; env-var or config wins, with `--store` flag still working.
-    _store_env = (
-        os.environ.get("LAST30DAYS_STORE")
-        or config.get("LAST30DAYS_STORE")
-        or ""
-    ).lower()
-    if args.store or _store_env in ("1", "true", "yes"):
-        counts = persist_report(report, store_db=_scoped_store_db(args))
-        sys.stderr.write(
-            f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"
+    if not args.no_research_persistence:
+        _write_last_run(
+            original_topic, report, entity_reports=entity_reports,
+            x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
+            research_options=research_options,
         )
-        sys.stderr.flush()
+        # env.py loads the .env setting without propagating it to os.environ.
+        _store_env = (
+            os.environ.get("LAST30DAYS_STORE")
+            or config.get("LAST30DAYS_STORE")
+            or ""
+        ).lower()
+        if args.store or _store_env in ("1", "true", "yes"):
+            counts = persist_report(report, store_db=_scoped_store_db(args))
+            sys.stderr.write(
+                f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"
+            )
+            sys.stderr.flush()
 
     # Show quality nudge if applicable. Explicit hiring-signal runs are
     # intentionally jobs-focused, so generic source setup advice is noise.
