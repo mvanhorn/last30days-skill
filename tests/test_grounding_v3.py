@@ -264,6 +264,91 @@ class ExaSearchTests(unittest.TestCase):
             self.assertEqual("POST", call_args.args[0])
             self.assertEqual("https://api.exa.ai/search", call_args.args[1])
             self.assertEqual("fake-exa-key", call_args.kwargs["headers"]["x-api-key"])
+            body = call_args.kwargs["json_data"]
+            self.assertEqual({"highlights": True}, body["contents"])
+            self.assertEqual("auto", body["type"])
+            self.assertIn("startPublishedDate", body)
+            self.assertIn("endPublishedDate", body)
+
+    def test_exa_search_prefers_highlights_and_falls_back_to_text(self):
+        mock_response = {
+            "results": [
+                {
+                    "title": "Highlighted",
+                    "url": "https://example.com/highlights",
+                    "highlights": ["First relevant passage.", "Second passage."],
+                    "text": "Unused full text",
+                    "publishedDate": "2026-03-15T00:00:00.000Z",
+                },
+                {
+                    "title": "String highlight",
+                    "url": "https://example.com/string",
+                    "highlights": "A single highlight string",
+                    "text": "Unused",
+                },
+                {
+                    "title": "Empty highlights",
+                    "url": "https://example.com/empty",
+                    "highlights": ["", None, 1],
+                    "text": "Text after empty highlights",
+                },
+                {
+                    "title": "Text only",
+                    "url": "https://example.com/text",
+                    "text": "Legacy text extract",
+                    "publishedDate": "2026-03-16T00:00:00.000Z",
+                },
+                "not a dict",
+                {"title": "No URL", "text": "dropped"},
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response):
+            items, _artifact = grounding.exa_search(
+                "test", ("2026-02-25", "2026-03-27"), "fake-exa-key",
+            )
+        snippets = [item["snippet"] for item in items]
+        self.assertEqual(
+            [
+                "First relevant passage. Second passage.",
+                "A single highlight string",
+                "Text after empty highlights",
+                "Legacy text extract",
+            ],
+            snippets,
+        )
+
+    def test_exa_company_search_omits_publication_dates(self):
+        with patch("lib.grounding.http.request", return_value={"results": []}) as mock_req:
+            grounding.exa_company_search(
+                "companies developing payments APIs", "key",
+                objective="Find competing companies",
+            )
+        body = mock_req.call_args.kwargs["json_data"]
+        self.assertEqual("company", body["category"])
+        self.assertEqual("Find competing companies", body["objective"])
+        self.assertNotIn("startPublishedDate", body)
+        self.assertNotIn("endPublishedDate", body)
+        self.assertNotIn("excludeDomains", body)
+        self.assertEqual({"highlights": True}, body["contents"])
+
+    def test_exa_people_search_omits_dates_and_exclude_domains(self):
+        with patch("lib.grounding.http.request", return_value={"results": []}) as mock_req:
+            grounding.exa_people_search("Patrick Collison Stripe", "key")
+        body = mock_req.call_args.kwargs["json_data"]
+        self.assertEqual("people", body["category"])
+        self.assertNotIn("startPublishedDate", body)
+        self.assertNotIn("endPublishedDate", body)
+        self.assertNotIn("excludeDomains", body)
+
+    def test_exa_search_drops_dates_even_if_a_range_is_passed_for_company(self):
+        """category=company must not send dates: Exa returns HTTP 400."""
+        with patch("lib.grounding.http.request", return_value={"results": []}) as mock_req:
+            grounding.exa_search(
+                "Stripe", ("2026-02-25", "2026-03-27"), "key", category="company",
+            )
+        body = mock_req.call_args.kwargs["json_data"]
+        self.assertNotIn("startPublishedDate", body)
+        self.assertNotIn("endPublishedDate", body)
 
     def test_exa_search_returns_empty_for_no_results(self):
         with patch("lib.grounding.http.request", return_value={"results": []}):
