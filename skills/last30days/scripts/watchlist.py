@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -198,6 +199,42 @@ def _run_topic(topic: dict) -> dict:
         return result
 
 
+def _validate_utf8_text(value: object, field: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"expected {field} to be text")
+    value.encode("utf-8")
+
+
+def _findings_from_output(output: str) -> list[dict]:
+    payload = json.loads(output)
+    if not isinstance(payload, dict):
+        raise ValueError("expected a research report object")
+    if payload.get("comparison") is True:
+        entries = payload.get("reports")
+        if not isinstance(entries, list) or len(entries) < 2:
+            raise ValueError("expected at least two reports in a comparison")
+        reports = []
+        for entry in entries:
+            _validate_utf8_text(entry["entity"], "comparison entity")
+            reports.append(entry["report"])
+    else:
+        reports = [payload]
+    findings = []
+    for raw_report in reports:
+        report = schema.report_from_dict(raw_report)
+        _validate_utf8_text(report.topic, "report topic")
+        findings.extend(store.findings_from_report(report, limit=25))
+    for finding in findings:
+        for field in ("source", "source_url", "source_title", "author", "content", "summary"):
+            _validate_utf8_text(finding[field], f"finding {field}")
+        for field in ("engagement_score", "relevance_score"):
+            score = finding[field]
+            if type(score) not in (int, float) or not math.isfinite(score):
+                raise ValueError(f"expected finding {field} to be a finite number")
+            finding[field] = float(score)
+    return findings
+
+
 def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
     start_time = time.time()
     topic_id = topic["id"]
@@ -212,6 +249,7 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
                 "--research-only",
                 "--emit=json",
                 "--json-profile=raw",
+                "--require-local-report",
                 "--quick",
                 "--lookback-days",
                 "90",
@@ -243,8 +281,13 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
                 "duration": duration,
             }
 
-        report = schema.report_from_dict(json.loads(result.stdout))
-        findings = store.findings_from_report(report, limit=25)
+        try:
+            findings = _findings_from_output(result.stdout)
+        except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
+            error = f"Invalid research output ({type(exc).__name__})"
+            store.update_run(run_id, status="failed", error_message=error, duration_seconds=duration)
+            return {"topic": topic["name"], "status": "failed", "error": error, "duration": duration}
+
         counts = store.store_findings(run_id, topic_id, findings)
         store.update_run(
             run_id,

@@ -682,6 +682,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["agent", "raw"],
         help="JSON export profile for --emit=json (default: agent)",
     )
+    parser.add_argument("--require-local-report", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
@@ -4311,6 +4312,12 @@ def _main(
         and not args.deep_research
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     ):
+        if args.require_local_report:
+            sys.stderr.write(
+                "[last30days] Watchlist requires structured local reports. "
+                "Unset LAST30DAYS_API_BASE in the watchlist environment to run locally.\n"
+            )
+            return 2
         if args.perplexity_search_type is not None:
             sys.stderr.write(
                 "hosted backend does not apply --perplexity-search-type and no direct "
