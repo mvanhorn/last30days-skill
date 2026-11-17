@@ -206,5 +206,28 @@ class CompetitorDiscoveryTests(unittest.TestCase):
         exa.assert_not_called()
         self.assertTrue(results)
 
+    def test_exa_strips_trailing_and_unbalanced_parentheticals(self):
+        config = {"EXA_API_KEY": "exa-key"}
+        exa_items = [
+            {"title": "xPay (YC W24", "url": "https://xpay.example/"},
+            {"title": "Adyen (payments)", "url": "https://www.adyen.com/"},
+            {"title": "(YC W24)", "url": "https://www.ycombinator.com/"},
+            {"title": "Klarna [fintech]", "url": "https://www.klarna.com/"},
+            {"title": " [stealth] ", "url": "https://example.test/empty"},
+            {"title": "Payoneer - global payments", "url": "https://www.payoneer.com/"},
+        ]
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+            return_value=(exa_items, {"label": "exa", "category": "company"}),
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search",
+        ) as web:
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Stripe", 4, config)
+        self.assertEqual(results, ["xPay", "Adyen", "Klarna", "Payoneer"])
+        self.assertFalse(any("(" in name or "[" in name for name in results))
+        exa.assert_called_once()
+        web.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
