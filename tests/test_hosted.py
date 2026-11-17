@@ -335,6 +335,90 @@ def remote_env(monkeypatch):
     monkeypatch.setattr(hosted.time, "sleep", lambda _s: None)
 
 
+@pytest.mark.parametrize(
+    ("flags", "reported_flag"),
+    [
+        (["--days=30"], "--days"),
+        (["--lookback-days=7"], "--lookback-days"),
+        (["--as-of=2026-05-13"], "--as-of"),
+        (["--search=reddit"], "--search"),
+        (["--hiring-signals"], "--hiring-signals"),
+        (["--company=Widget Co"], "--company"),
+        (["--ticker=WDGT:Widget Co"], "--ticker"),
+        (["--jobs-board=https://jobs.example.test/widget"], "--jobs-board"),
+        (["--x-handle=widget"], "--x-handle"),
+        (["--plan", json.dumps(schema.to_dict(make_report("widget").query_plan))], "--plan"),
+        (["--emit=html"], "--emit=html"),
+        (["--x-handle=widget", "--search=reddit"], "--x-handle, --search"),
+    ],
+)
+def test_hosted_cli_rejects_unapplied_options_before_submitting(
+    remote_env, monkeypatch, flags, reported_flag,
+):
+    post = mock.Mock(return_value=SUBMIT_OK)
+    get = mock.Mock(return_value=POLL_COMPLETE)
+    monkeypatch.setattr(cli.env, "get_config", lambda **kwargs: {})
+    monkeypatch.setattr(hosted.http, "post", post)
+    monkeypatch.setattr(hosted.http, "get", get)
+
+    rc, out, err = run_main(["widget", *flags])
+
+    post.assert_not_called()
+    get.assert_not_called()
+    assert rc == 2
+    assert out == ""
+    assert reported_flag in err
+    assert "hosted backend" in err
+
+
+def test_hosted_cli_submits_supported_query_once(remote_env, monkeypatch, tmp_path):
+    save_dir = tmp_path / "saved"
+    post = mock.Mock(return_value=SUBMIT_OK)
+    get = mock.Mock(return_value=POLL_COMPLETE)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr(cli.env, "get_config", lambda **kwargs: {})
+    monkeypatch.setattr(hosted.http, "post", post)
+    monkeypatch.setattr(hosted.http, "get", get)
+
+    rc, out, _err = run_main([
+        "Nvidia", "--register=exec", "--save-dir", str(save_dir),
+    ])
+
+    assert rc == 0
+    assert "Synthesized report body." in out
+    post.assert_called_once()
+    assert post.call_args.kwargs["json_data"] == {
+        "query": "Nvidia", "depth": "default", "register": "exec",
+    }
+    get.assert_called_once()
+    assert (save_dir / "nvidia-raw.md").read_text(encoding="utf-8") == POLL_COMPLETE["raw_markdown"]
+
+
+@pytest.mark.parametrize(
+    ("flags", "config", "backend"),
+    [
+        ([], {}, "hosted"),
+        (["--mock"], {}, "local"),
+        (["--deep-research"], {}, "local"),
+        (["--corpus=/local-notes"], {}, "local"),
+        ([], {"LAST30DAYS_CORPUS_DIRS": "/local-notes"}, "local"),
+        (["--perplexity-search-type=fast"], {}, "hosted"),
+        (["--perplexity-search-type=fast"], {"PERPLEXITY_API_KEY": "dummy-perplexity"}, "local"),
+    ],
+)
+def test_diagnose_identifies_research_backend(remote_env, monkeypatch, flags, config, backend):
+    monkeypatch.setattr(cli.env, "get_config", lambda **kwargs: dict(config))
+    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *args, **kwargs: {})
+    post = mock.Mock()
+    monkeypatch.setattr(hosted.http, "post", post)
+
+    rc, out, _err = run_main(["--diagnose", *flags])
+
+    assert rc == 0
+    assert json.loads(out)["research_backend"] == backend
+    post.assert_not_called()
+
+
 def test_happy_path_submit_poll_complete(remote_env, monkeypatch, capsys):
     posts, gets = [], []
 

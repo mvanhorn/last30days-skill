@@ -80,6 +80,38 @@ def test_no_host_search_uses_auto_resolve_and_leaves_native_signal_unset():
     assert "leave that signal unset" in step0
 
 
+def test_hosted_named_entity_uses_server_planning():
+    root = SKILL_MD.read_text(encoding="utf-8")
+    law7 = root.split("**LAW 7 -", 1)[1].split("**LAW 8 -", 1)[0]
+    assert "LOCAL NAMED-ENTITY TOPICS" in law7
+    assert "`research_backend=hosted`" in law7
+    assert "the API plans server-side" in law7
+    assert "On local engine paths with host WebSearch" in root
+    assert "For person topics on local engine paths" in root
+
+    runbook = reference_text("research-runbook")
+    hosted = runbook.split("### Hosted API route", 1)[1].split("### Local engine route", 1)[0]
+    assert "skip Steps 0.5 through 0.75" in hosted
+    assert "without `--plan`, `--auto-resolve`" in hosted
+    execution = runbook.split("### PRECONDITION GATE", 1)[1].split("**Step 1:", 1)[0]
+    assert "For local engine research" in execution
+
+
+def test_hosted_route_classifies_natural_language_html_before_submission():
+    root = SKILL_MD.read_text(encoding="utf-8")
+    html = root.split("## HTML and follow-up handoff", 1)[1].split("## Security", 1)[0]
+    assert "Classify this intent before submitting fresh research" in html
+    assert "a natural-language request for an HTML brief" in html
+
+    runbook = reference_text("research-runbook")
+    hosted = runbook.split("### Hosted API route", 1)[1].split("### Local engine route", 1)[0]
+    command = hosted.index("first Step 1 command")
+    assert hosted.index("Stop before submitting a hosted search") < command
+    assert hosted.index("HTML/export intent") < command
+    assert hosted.index("give me a shareable HTML brief") < command
+    assert hosted.index("Ask whether to run locally") < command
+
+
 def _law8_block() -> str:
     text = SKILL_MD.read_text(encoding="utf-8")
     start = text.find("**LAW 8 -")

@@ -3794,6 +3794,51 @@ def _quality_research_results(report, diag, yt_fetch_stats):
     }
 
 
+def _unsupported_hosted_options(args: argparse.Namespace) -> list[str]:
+    options = (
+        ("--days/--lookback-days", args.lookback_days is not None),
+        ("--as-of", args.as_of_date is not None),
+        ("--plan", args.plan is not None),
+        ("--auto-resolve", args.auto_resolve),
+        ("--official-site", args.official_site is not None),
+        ("--x-handle", args.x_handle is not None),
+        ("--no-x-handle", args.no_x_handle is not None),
+        ("--x-related", args.x_related is not None),
+        ("--search", args.search is not None),
+        ("--web-backend", args.web_backend != "auto"),
+        ("--hiring-signals", args.hiring_signals),
+        ("--company", args.company is not None),
+        ("--ticker", args.ticker is not None),
+        ("--jobs-board", args.jobs_board is not None),
+        ("--subreddits", args.subreddits is not None),
+        ("--dedicated-subreddits", args.dedicated_subreddits is not None),
+        ("--devto-tags", args.devto_tags is not None),
+        ("--tiktok-hashtags", args.tiktok_hashtags is not None),
+        ("--tiktok-creators", args.tiktok_creators is not None),
+        ("--ig-creators", args.ig_creators is not None),
+        ("--github-user", args.github_user is not None),
+        ("--github-repo", args.github_repo is not None),
+        ("--trustpilot-domain", args.trustpilot_domain is not None),
+        ("--amazon-query", args.amazon_query is not None),
+        ("--meta-ads-page", args.meta_ads_page is not None),
+        ("--telegram-sources", args.telegram_sources is not None),
+        ("--polymarket-keywords", args.polymarket_keywords is not None),
+        ("--competitors", args.competitors is not None),
+        ("--competitors-list", args.competitors_list is not None),
+        ("--competitors-plan", args.competitors_plan is not None),
+        ("--max-results", args.max_results is not None),
+        ("--max-per-source", args.max_per_source is not None),
+        ("--max-source-fetches", args.max_source_fetches is not None),
+        ("--corpus-all-time", args.corpus_all_time),
+        ("--store", args.store),
+        ("--output", args.output is not None),
+        ("--synthesis-file", args.synthesis_file is not None),
+        ("--publish-html", args.publish_html),
+        (f"--emit={args.emit}", args.emit not in {"compact", "md", "json"}),
+    )
+    return [flag for flag, requested in options if requested]
+
+
 def _main(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -4084,7 +4129,7 @@ def _main(
 
     # Bare --discover (no domain) is global trending, so the dispatch keys on
     # "flag present" (is not None), never on the domain string's truthiness.
-    if args.deep_research and not topic:
+    if args.deep_research and not topic and not args.diagnose:
         sys.stderr.write(
             "[last30days] --deep-research requires a normal positional topic; "
             "it cannot be combined with discovery, drill, or cached-only modes.\n"
@@ -4207,9 +4252,6 @@ def _main(
     if args.verify_freshness and not topic:
         return _run_cached_freshness(args, config)
 
-    if args.lookback_days is None:
-        args.lookback_days = 30
-
     if args.deep_research and not args.diagnose:
         from lib import planner as _planner
 
@@ -4288,18 +4330,23 @@ def _main(
             "[last30days] --perplexity-search-type set; bypassing the hosted backend "
             "because it does not apply the Perplexity search type.\n"
         )
-    if (
-        topic
-        and not args.diagnose
+    uses_hosted_api = (
+        env.hosted_backend_configured()
         and not args.cached_report
         and not args.mock
         and not args.record_fixtures
-        and env.read_secret_env("LAST30DAYS_API_KEY")
-        and os.environ.get("LAST30DAYS_API_BASE")
         and not resolved_corpus_dirs
         and not args.deep_research
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
-    ):
+    )
+    if topic and not args.diagnose and uses_hosted_api:
+        unsupported = _unsupported_hosted_options(args)
+        if unsupported:
+            sys.stderr.write(
+                "[last30days] The hosted backend cannot apply these options: "
+                f"{', '.join(unsupported)}. Run locally to use them.\n"
+            )
+            return 2
         if args.perplexity_search_type is not None:
             sys.stderr.write(
                 "hosted backend does not apply --perplexity-search-type and no direct "
@@ -4361,6 +4408,8 @@ def _main(
             hosted_kwargs["register"] = audience.name
         return hosted.run_hosted(topic, depth, **hosted_kwargs)
 
+    if args.lookback_days is None:
+        args.lookback_days = 30
     requested_sources = resolve_requested_sources(args.search, config)
     if args.deep_research:
         requested_sources = add_deep_research_source(requested_sources)
@@ -4455,6 +4504,7 @@ def _main(
             config, requested_sources, safe=True,
             x_envelope=x_posts_envelope is not None,
         )
+        diag["research_backend"] = "hosted" if uses_hosted_api else "local"
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
 
