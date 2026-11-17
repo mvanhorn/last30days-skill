@@ -38,7 +38,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 D'autres options d'installation (claude.ai web, OpenClaw, manuelle) dans la section [Installation](#installation) ci-dessous.
 
-Zéro configuration. Reddit, HN, Polymarket et GitHub fonctionnent immédiatement. Lancez la skill une fois : l'assistant de configuration débloque X, YouTube, TikTok, arXiv, Techmeme et d'autres sources en 30 secondes.
+Zéro configuration. Reddit, HN, Polymarket et GitHub fonctionnent immédiatement, tout comme les dépôts de brevets et les pages carrières quand votre sujet est une entreprise. Lancez la skill une fois : l'assistant de configuration débloque X, YouTube, TikTok, arXiv, Techmeme et d'autres sources en 30 secondes.
 
 ---
 
@@ -68,13 +68,13 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 
 | Source | Ce que les gens vous disent |
 |--------|--------------------------|
-| **Reddit** | L'avis brut. Les meilleurs commentaires avec leur vrai nombre d'upvotes, gratuit, sans clé API. Les vraies opinions que Google enterre. |
+| **Reddit** | L'avis brut. Les meilleurs commentaires avec leur vrai nombre d'upvotes, gratuit, sans clé API. Les vraies opinions que Google enterre. Avec votre accord, il peut aussi chercher avec votre propre compte Reddit connecté, pour plus de fils et des scores en direct. |
 | **X / Twitter** | La réaction à chaud, le fil d'expert, la première réaction à l'actualité. Premiers informés, premiers à débattre. |
 | **YouTube** | L'analyse approfondie de 45 minutes. Des transcriptions complètes, fouillées pour en extraire les 5 phrases citables qui comptent. |
 | **TikTok** | Le créateur qui touche 3,6 millions de personnes avec un angle que vous ne trouverez jamais sur Google. |
 | **Instagram Reels** | Le regard des influenceurs, avec la transcription de ce qui est dit. Le signal de la culture visuelle. |
 | **Hacker News** | Le consensus des développeurs. 825 points, 899 commentaires. Là où les gens techniques débattent vraiment. |
-| **Polymarket** | Pas des opinions. Des cotes. Adossées à de l'argent réel. 96 % de probabilité sur des ventes d'album. 4 % sur une acquisition. |
+| **Polymarket** | Pas des opinions. Des cotes. Adossées à de l'argent réel. 96 % de probabilité sur des ventes d'album. 4 % sur une acquisition. Le rapport place les cotes d'un marché sur une ligne sous l'histoire concernée, avec l'ampleur de leur variation. |
 | **GitHub** | Pour les personnes : rythme des PR, meilleurs dépôts par étoiles, notes de version. Pour les sujets : issues et discussions. |
 | **Digg** | Des groupes d'articles issus de tous les sujets de Digg (IA, tech, monde et économie, sport, science, jeux vidéo, divertissement), classés par Digg Score, avec des citations attribuables de X intégrées (sans authentification X). Activé automatiquement quand `digg-pp-cli` est présent dans le PATH. Une version plus ancienne de `digg-pp-cli` fonctionne toujours, sur l'IA et la tech uniquement et sans scores. |
 | **arXiv** | Les articles scientifiques derrière le battage médiatique. La recherche publiée dans la fenêtre, gratuit, sans clé API. Activé automatiquement quand `arxiv-pp-cli` est présent dans le PATH (la configuration initiale l'installe). |
@@ -94,8 +94,8 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 | **Trustpilot** | TrustScore de l'entreprise, nombre d'avis et résumé des retours clients par IA. Sur activation ; nécessite `trustpilot-pp-cli` dans le PATH et une session utilisable. |
 | **Amazon** | Notes, prix et avis clients sur les produits. Sur activation ; nécessite une CLI `brightdata` authentifiée et utilise vos crédits Bright Data. |
 | **DripStack** | Newsletters financières et analyses via une API publique, sans clé. Activation avec `--search dripstack` ou `INCLUDE_SOURCES=dripstack`. |
-| **Offres d'emploi / carrières** | Offres d'emploi publiques comme indices des priorités d'une entreprise. Sélection avec `--hiring-signals`, `--search jobs` ou le plan de recherche. |
-| **Brevets** | Les nouveaux dépôts de brevets américains d'une entreprise, comme indice de ce qu'elle construit avant de le lancer. Gratuit, sans clé d'API. Apparaît quand votre sujet est une entreprise. |
+| **Offres d'emploi / carrières** | Ce que recrute une entreprise, lu sur sa propre page carrières (Workday, Apple, Amazon, Google, Microsoft, Netflix, Oracle et d'autres). Un run sur une entreprise la lit automatiquement, et les postes qui laissent entrevoir quelque chose de non annoncé deviennent des Jobs Page Secret Signals. Aussi sélectionnée avec `--hiring-signals`, `--search jobs` ou le plan de recherche. |
+| **Brevets** | Les nouveaux dépôts de brevets américains d'une entreprise, comme indice de ce qu'elle construit avant de le lancer. Gratuit, sans clé d'API. Apparaît quand votre sujet est une entreprise. Un dépôt ne devient un Patent Secret Signal que s'il sort de l'ordinaire pour l'entreprise ou décrit quelque chose qu'elle n'a ni lancé ni annoncé. |
 | **Corpus local** | Vos fichiers Markdown et texte locaux, ainsi que les PDF si `pdftotext` est dans le PATH. Activation avec `--corpus` ou `LAST30DAYS_CORPUS_DIRS`. |
 | **Web** | La couverture éditoriale, les comparatifs de blogs. Un signal parmi d'autres, pas le seul. |
 
@@ -109,9 +109,7 @@ La synthèse classe selon ce avec quoi de vraies personnes ont vraiment interagi
 
 **Avant une réunion.** `/last30days Peter Steinberger` — a rejoint l'équipe Codex d'OpenAI, conteste l'interdiction des agents tiers décrétée par Anthropic, 23 PR mergées avec un taux de merge de 85 % sur GitHub, construit LobsterOS pour piloter des agents entre appareils. r/ClaudeCode : « Depuis la sortie d'OpenClaw, tout le monde savait que si vous passiez par autre chose que l'API, vous finiriez par être banni » (227 upvotes). Ça, ce n'est pas sur LinkedIn.
 
-**Pour lire les signaux de recrutement.** `/last30days Listen Labs --hiring-signals` — les offres d'emploi et les pages carrières actuelles deviennent des preuves citées de changements de priorités : recrutements en sécurité entreprise, customer success, infrastructure ou expansion produit. Le rapport dit ce que le recrutement semble signaler, pas ce que la roadmap va livrer.
-
-**Pour voir ce qu'une entreprise dépose.** `/last30days Nvidia` inclut désormais comme preuve les nouveaux dépôts de brevets américains de l'entreprise dans votre fenêtre, de sorte qu'un produit ou une direction que l'entreprise n'a pas encore annoncé peut apparaître dans le rapport.
+**Pour voir ce qu'une entreprise construit avant de le lancer.** `/last30days Apple` — le Jobs Page Secret Signal a repéré un poste de directeur testant si des requêtes déclenchent des transactions passant par des API partenaires et des systèmes financiers, ce qui ressemble à du contrôle qualité pour un assistant qui finalise des achats. Le Patent Secret Signal a repéré une demande de brevet pour changer l'état d'un appareil en le touchant sur une photo enregistrée de votre pièce. Polymarket donnait Apple à 91 % pour être la plus grande entreprise du monde en fin d'année. `/last30days Alphabet` a trouvé un poste de chef de produit pour "YouTube Ads Agentic Buyflows", et sa ligne boursière affichait -17,6 % sur 30 jours contre 3,6 % pour le S&P 500, avec la pire séance le Oct 29 (-12,6 %). Pour un rapport limité au recrutement, ajoutez `--hiring-signals`.
 
 **Pour repérer un sujet avant son pic.** Demandez `/last30days what's exploding in AI agents?` et la skill bascule en mode découverte : le moteur balaie les listings de catégories Reddit, la une et les meilleures histoires de Hacker News, les articles de Digg, et X si vous êtes authentifié ; votre agent évalue les candidats (noms, filtrage du bruit, intérêt réel) et rédige des angles pour un podcast ou un article X ; vous obtenez ensuite 5 à 10 sujets classés par vélocité. Chaque résultat comprend des chiffres multi-sources, une étiquette de momentum et une commande `/last30days "<topic>"` prête à lancer.
 
@@ -127,6 +125,17 @@ La synthèse classe selon ce avec quoi de vraies personnes ont vraiment interagi
 
 ## Nouveautés
 
+La v4 lit ce que fait une entreprise avant qu'elle ne l'annonce, et rend chaque rapport plus facile à citer :
+
+- Patent Secret Signals : un run sur une entreprise lit les dépôts de brevets américains du mois, sans clé, et ne signale que ceux qui sortent de l'ordinaire ou décrivent quelque chose de non annoncé.
+- Jobs Page Secret Signals : il lit la page carrières de l'entreprise et signale les postes qui trahissent ce qui arrive, y compris de nouvelles équipes dont personne n'a encore parlé.
+- Lignes de citation : les meilleurs commentaires Reddit, X, YouTube, TikTok et Instagram figurent sur leur propre ligne sous l'histoire qu'ils appuient, traduits si besoin, et une phrase dite dans une vidéo peut aussi être citée.
+- Ligne de cotes Polymarket : une ligne sous l'histoire concernée, avec l'ampleur de la variation des cotes.
+- Ligne Yahoo Finance : le cours d'une entreprise cotée sur les 30 derniers jours face au S&P 500, plus sa plus forte variation sur une seule séance.
+- Il sait de qui vous parlez : "Apple" renvoie de lui-même à l'entreprise, à son site et à son ticker.
+- Reddit en votre nom : avec votre accord, Reddit est interrogé avec votre propre compte connecté.
+- Digg couvre désormais tous les sujets, pas seulement l'IA et la tech.
+
 Consultez la [dernière version](https://github.com/mvanhorn/last30days-skill/releases/latest) pour connaître la version publiée actuelle et [CHANGELOG.md](CHANGELOG.md) pour les changements de chaque version. Les changements de la branche par défaut qui ne sont pas encore publiés figurent dans [changelog.d/](changelog.d/).
 
 Ce README décrit le code source actuel ; votre version installée peut être différente.
@@ -137,6 +146,7 @@ Ce README décrit le code source actuel ; votre version installée peut être di
 |---------|---------|---------|
 | **Claude Code** (recommandé) | `/plugin marketplace add mvanhorn/last30days-skill` | Automatiques via la marketplace, ou `claude plugin update last30days@last30days-skill` |
 | **Grok** (xAI Build CLI) | `grok plugin marketplace add mvanhorn/last30days-skill` puis `grok plugin install last30days` | `grok plugin update last30days` |
+| **Grok Bot** | [Ajoutez-le depuis la marketplace Grok Bot](https://x.ai/bot/marketplace/bots/last30days) | Géré par la marketplace |
 | **Codex, Cursor, Copilot, Gemini CLI, ou l'un des 50+ hôtes [Agent Skills](https://agentskills.io)** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
 | **claude.ai** (web) | [Téléchargez `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) et envoyez-le via claude.ai > Customize > Skills > + > Create skill > Upload a skill | Retélécharger et renvoyer |
 | **Claude Desktop** | [Téléchargez le `.mcpb` de votre plateforme](https://github.com/mvanhorn/last30days-skill/releases/latest) et glissez-le dans Settings > Extensions | Retélécharger et glisser le nouveau bundle |
@@ -177,7 +187,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-Ajoutez `--trust` pour sauter la confirmation d'installation. Mettez à jour avec `grok plugin update last30days`. Grok lit aussi les manifestes Claude Code par compatibilité ; la paire native `.grok-plugin/` reste la voie principale, et c'est elle que pointe une entrée officielle dans la [marketplace xAI](https://github.com/xai-org/plugin-marketplace). `npx skills add` reste une solution de repli valable, tous hôtes confondus. Sur Grok Bot, X fonctionne sans configuration grâce aux outils X intégrés du bot, puis au connecteur X du bot, avec l'API X officielle (`X_BEARER_TOKEN`) en secours.
+Ajoutez `--trust` pour sauter la confirmation d'installation. Mettez à jour avec `grok plugin update last30days`. Grok lit aussi les manifestes Claude Code par compatibilité ; la paire native `.grok-plugin/` reste la voie principale, et c'est elle que pointe une entrée officielle dans la [marketplace xAI](https://github.com/xai-org/plugin-marketplace). `npx skills add` reste une solution de repli valable, tous hôtes confondus. Sur [Grok Bot](https://x.ai/bot/marketplace/bots/last30days), où last30days s'installe depuis la marketplace, X fonctionne sans configuration grâce aux outils X intégrés du bot, puis au connecteur X du bot, avec l'API X officielle (`X_BEARER_TOKEN`) en secours.
 
 ### Codex, Cursor, Copilot, Gemini CLI et autres hôtes Agent Skills
 
@@ -262,7 +272,7 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 
 Le lien symbolique garde l'installation synchronisée avec votre copie de travail au fil de vos modifications — inutile de recopier quoi que ce soit. Pour `claude.ai`, construisez le fichier `.skill` depuis les sources : `bash skills/last30days/scripts/build-skill.sh` produit `dist/last30days.skill`.
 
-Reddit (avec les commentaires), Hacker News, Polymarket et GitHub fonctionnent immédiatement. Zéro configuration. Lancez `/last30days` une fois : l'assistant de configuration débloque d'autres sources en 30 secondes, dont les CLI gratuites arXiv et Techmeme.
+Reddit (avec les commentaires), Hacker News, Polymarket et GitHub fonctionnent immédiatement, plus les dépôts de brevets et les pages carrières pour un sujet d'entreprise. Zéro configuration. Lancez `/last30days` une fois : l'assistant de configuration débloque d'autres sources en 30 secondes, dont les CLI gratuites arXiv et Techmeme.
 
 ## Apportez vos propres clés
 
@@ -270,7 +280,7 @@ Ces plateformes n'ont aucune relation entre elles. X ignore ce que pense Reddit.
 
 | Sources | Ce qu'il vous faut | Coût |
 |---------|---------------|------|
-| Reddit (avec les commentaires) + HN + Polymarket + GitHub + StockTwits + dépôts de brevets d'entreprises | Rien | Gratuit |
+| Reddit (avec les commentaires) + HN + Polymarket + GitHub + StockTwits + dépôts de brevets et pages carrières d'entreprises | Rien | Gratuit |
 | arXiv + Techmeme + Yahoo Finance | Des CLI gratuites, installées automatiquement à la configuration initiale | Gratuit |
 | X / Twitter | Définissez `X_BEARER_TOKEN` pour l'API X officielle (posts récents, environ la dernière semaine, sauf si votre projet développeur X dispose de l'accès aux archives complètes ; en secours sur Grok Bot après les outils X intégrés du bot, en opt-in ailleurs avec `LAST30DAYS_X_BACKEND=xapi`), ou connectez-vous à x.com dans n'importe quel navigateur, ou définissez `XQUIK_API_KEY` / `XAI_API_KEY` | Les crédits de l'API X proviennent de votre projet développeur X ; les cookies de navigateur sont gratuits ; les autres clés dépendent du fournisseur |
 | YouTube | `brew install yt-dlp` | Gratuit |
