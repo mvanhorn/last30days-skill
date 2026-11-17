@@ -417,6 +417,52 @@ def windows_printing_press_bin_dir() -> Optional[Path]:
     return Path(local_app) / "Programs" / "PrintingPress" / "bin"
 
 
+def add_managed_bin_dir_to_path() -> Optional[Path]:
+    """Append the Windows Printing Press bin dir to this process's PATH.
+
+    The Printing Press installer drops its CLIs (Digg, arXiv, Techmeme,
+    Yahoo Finance, ...) in ``%LOCALAPPDATA%/Programs/PrintingPress/bin`` and
+    does not put that dir on the user PATH, so every source gated on
+    ``shutil.which`` stayed off until the user edited PATH by hand (#1434).
+    The dir holds only installer-managed binaries, so appending it (lowest
+    precedence) is safe. Returns the dir when it was added, else ``None``.
+    """
+    directory = windows_printing_press_bin_dir()
+    if directory is None or not directory.is_dir():
+        return None
+    current = os.environ.get("PATH", "")
+    entries = {os.path.normcase(os.path.normpath(p)) for p in current.split(os.pathsep) if p}
+    if os.path.normcase(os.path.normpath(str(directory))) in entries:
+        return None
+    os.environ["PATH"] = f"{current}{os.pathsep}{directory}" if current else str(directory)
+    return directory
+
+
+def path_edit_example(directory: str) -> str:
+    """A copy-pasteable command that puts ``directory`` on PATH for this OS.
+
+    POSIX gets the shell ``export``; Windows gets a PowerShell command that
+    persists the dir on the user PATH (an ``export`` line with a Windows path
+    neither runs in PowerShell nor survives a restart).
+    """
+    if os.name == "nt":
+        # PowerShell single-quoted strings escape an apostrophe by doubling it
+        # (a C:\Users\O'Brien path would otherwise end the string early).
+        quoted = directory.replace("'", "''")
+        return (
+            "[Environment]::SetEnvironmentVariable('Path', "
+            "[Environment]::GetEnvironmentVariable('Path', 'User') + "
+            f"';{quoted}', 'User')"
+        )
+    return f'export PATH="{directory}:$PATH"'
+
+
+def path_edit_prescription(directory: str, name: str) -> str:
+    """Prescription text for a binary that sits in ``directory`` off PATH."""
+    restart = " then restart your agent host" if os.name == "nt" else ""
+    return f"add {directory} to PATH (e.g. {path_edit_example(directory)}){restart} so {name} resolves"
+
+
 def installer_bin_dirs() -> List[Path]:
     """Installer-managed bin dirs shared with setup_wizard's Digg candidates.
 
@@ -507,7 +553,7 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
                 name=name,
                 status=MISSING,
                 detail=f"{name} is installed at {off_path} but that directory is not on this process's PATH",
-                prescription=f'add {hint} to PATH (e.g. export PATH="{hint}:$PATH") so {name} resolves',
+                prescription=path_edit_prescription(hint, name),
                 owner_pkg_manager="",
                 off_path=True,
             )

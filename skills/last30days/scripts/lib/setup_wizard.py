@@ -324,7 +324,27 @@ def _run_npx_install(slug: str) -> Tuple[str, str]:
         stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
         logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
         return "install_failed", stderr
+    # On a fresh Windows setup the managed Printing Press bin dir only exists
+    # now, so the engine's startup PATH append skipped it. Add it before the
+    # caller's shutil.which check, or setup asks for a PATH edit the next
+    # engine run would not need.
+    health.add_managed_bin_dir_to_path()
     return "", (proc.stderr or "")
+
+
+def _install_failed_line(name: str, install_cmd: str, stderr: str) -> str:
+    """Summary line for a failed Printing Press install.
+
+    The installer names a missing prerequisite (Go) on stderr; re-running the
+    same command fails the same way, so lead with that cause (#1434).
+    """
+    prereq = next(
+        (line.strip() for line in stderr.splitlines() if "Go is required" in line),
+        "",
+    )
+    if prereq:
+        return f"  - {name} CLI install failed: {prereq} Then run `{install_cmd}`"
+    return f"  - {name} CLI install failed — run `{install_cmd}` manually"
 
 
 def _upgrade_helper(slug: str, bin_name: str) -> Tuple[bool, str, str, str]:
@@ -906,7 +926,7 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             f"its searches fail — run `{DIGG_INSTALL_CMD}` manually"
         )
     elif digg_action == "install_failed":
-        lines.append(f"  - Digg CLI install failed — run `{DIGG_INSTALL_CMD}` manually")
+        lines.append(_install_failed_line("Digg", DIGG_INSTALL_CMD, results.get("digg_stderr", "")))
     elif digg_action == "no_npx" and results.get("digg_installed"):
         lines.append(
             "  - Digg CLI is older than the engine can call. Install Node/npx, "
@@ -963,9 +983,7 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
                     f"{name} to activate"
                 )
         elif action == "install_failed":
-            lines.append(
-                f"  - {name} CLI install failed — run `{install_cmd}` manually"
-            )
+            lines.append(_install_failed_line(name, install_cmd, entry.get("stderr", "")))
         elif action == "no_npx":
             lines.append(
                 f"  - {name} CLI not installed (free, optional). Install Node/npx, "
