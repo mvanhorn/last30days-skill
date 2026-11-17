@@ -495,14 +495,23 @@ def test_cli_preflight_requires_mcp_save_for_research_persistence(
     assert list(tmp_path.iterdir()) == [corpus_dir]
 
 
-def test_cli_preflight_matches_actual_corpus_and_library_writes(monkeypatch, capsys, tmp_path):
+@pytest.mark.parametrize("no_persistence", [False, True], ids=["normal", "no-persistence"])
+def test_cli_preflight_matches_actual_corpus_and_library_writes(
+    monkeypatch, capsys, tmp_path, no_persistence,
+):
+    import store
+    from lib import library_index
+
     notes = tmp_path / "notes"
     notes.mkdir()
     (notes / "MCP servers.txt").write_text("MCP servers use a local transport.", encoding="utf-8")
     config_dir = tmp_path / "app config"
     reports = tmp_path / "reports"
     monkeypatch.setattr(env, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "state" / "research.db")
+    monkeypatch.setattr(library_index, "DEFAULT_LIBRARY_DB", tmp_path / "state" / "library.db")
     monkeypatch.setenv("LAST30DAYS_STORE", "1")
+    monkeypatch.setenv("LAST30DAYS_LIBRARY_CONTEXT", "on")
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
     monkeypatch.setenv("LAST30DAYS_ALLOW_ENGINE_PLAN", "1")
     monkeypatch.setenv("LAST30DAYS_NO_PATENT_DIGEST", "1")
@@ -511,15 +520,29 @@ def test_cli_preflight_matches_actual_corpus_and_library_writes(monkeypatch, cap
         "--search=corpus", "--quick", "--web-backend=none", "--no-browser-cookies",
         "--corpus", str(notes), "--save-dir", str(reports),
     ]
-    monkeypatch.setattr(sys, "argv", ["last30days.py", "--preflight", "--emit=json", *flags])
+    topic = "MCP servers"
+    preflight_topic = []
+    if no_persistence:
+        flags.extend(["--research-only", "--no-research-persistence", "--store"])
+        preflight_topic.append(topic)
+    monkeypatch.setattr(
+        sys, "argv", ["last30days.py", "--preflight", "--emit=json", *flags, *preflight_topic],
+    )
 
     assert cli.main() == 0
     plan = json.loads(capsys.readouterr().out)
     assert not config_dir.exists()
     assert not reports.exists()
 
-    monkeypatch.setattr(sys, "argv", ["last30days.py", "MCP servers", *flags])
+    monkeypatch.setattr(sys, "argv", ["last30days.py", topic, *flags])
     assert cli.main() == 0
+
+    if no_persistence:
+        assert "MCP servers" in capsys.readouterr().out
+        assert list(tmp_path.iterdir()) == [notes]
+        assert plan["local_writes"] == []
+        assert plan["conditional_writes"] == []
+        return
 
     expected = {
         config_dir / "last-run.json", config_dir / "last-report.json",

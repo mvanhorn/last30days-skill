@@ -650,13 +650,12 @@ def _add_preflight_library_writes(
 def _add_preflight_research_writes(
     preflight: dict, args: argparse.Namespace, config: dict[str, object],
 ) -> None:
-    mcp_preflight = args.preflight_engine_cache_dir is not None
-    research_writes = preflight["conditional_writes" if mcp_preflight else "local_writes"]
-    kind_suffix = "_on_save" if mcp_preflight else ""
     if args.preflight_engine_cache_dir:
         preflight["conditional_writes"].append({
             "kind": "engine_cache_on_first_use", "path": args.preflight_engine_cache_dir,
         })
+    if args.no_research_persistence:
+        return
     if (
         env.hosted_backend_configured()
         and not config.get("_CORPUS_DIRS")
@@ -664,6 +663,9 @@ def _add_preflight_research_writes(
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     ):
         return
+    mcp_preflight = args.preflight_engine_cache_dir is not None
+    research_writes = preflight["conditional_writes" if mcp_preflight else "local_writes"]
+    kind_suffix = "_on_save" if mcp_preflight else ""
     if env.CONFIG_DIR is not None:
         for filename in ("last-run.json", "last-report.json"):
             research_writes.append({
@@ -4034,7 +4036,9 @@ def _main(
             config,
             diag,
             planned_save_dir=args.save_dir,
-            report_on_save_dir=args.preflight_report_on_save_dir,
+            report_on_save_dir=(
+                None if args.no_research_persistence else args.preflight_report_on_save_dir
+            ),
             requested_sources=requested_sources,
         )
         _add_preflight_research_writes(preflight, args, config)
