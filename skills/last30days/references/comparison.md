@@ -67,7 +67,7 @@ trap 'rm -f -- "$COMPETITORS_PLAN_FILE"' EXIT
 cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
 {COMPETITORS_PLAN_JSON}
 PLAN_EOF
-"${LAST30DAYS_PYTHON}" -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
+"${LAST30DAYS_PYTHON}" -I -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
 
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$COMPARISON_TOPIC" \
   --emit=compact \
@@ -116,7 +116,7 @@ RELATED_EOF
   cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
 {COMPETITORS_PLAN_JSON}
 PLAN_EOF
-  "${LAST30DAYS_PYTHON}" -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
+  "${LAST30DAYS_PYTHON}" -I -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
   COMPETITORS_PLAN_ARGS=(--competitors-plan "$COMPETITORS_PLAN_FILE")
 fi
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$COMPARISON_TOPIC" \
