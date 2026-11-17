@@ -841,6 +841,48 @@ def test_exa_official_site_rejects_directory_and_lookalike_hosts(monkeypatch):
     assert not isinstance(result, company_resolve.FailedLookup)
 
 
+def test_exa_official_site_rejects_shared_prefix_on_another_company(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Stripe", "url": "https://stripe.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("StripeCo", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {}
+    assert not company_resolve._exa_site_matches_topic("StripeCo", "https://stripe.com/")
+
+
+def test_exa_official_site_rejects_subdomain_of_unrelated_registrable_domain(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "StripeCo", "url": "https://stripeco.example.org/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("StripeCo", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {}
+    assert not company_resolve._exa_site_matches_topic(
+        "StripeCo", "https://stripeco.example.org/",
+    )
+
+
+def test_exa_official_site_accepts_anthropic_dot_com(monkeypatch):
+    monkeypatch.setattr(company_resolve, "_resolve", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Anthropic", "url": "https://www.anthropic.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Anthropic", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Anthropic",
+        "company_site": "https://anthropic.com/",
+        "company_source": "exa",
+    }
+    assert company_resolve._exa_site_matches_topic("Anthropic", "https://anthropic.com/")
+
+
 def test_exa_is_not_called_when_wikidata_already_named_the_company(monkeypatch):
     monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
     exa = mock.Mock(side_effect=AssertionError("Exa must not run after a Wikidata hit"))

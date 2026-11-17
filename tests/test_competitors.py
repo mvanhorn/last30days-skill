@@ -156,7 +156,9 @@ class CompetitorDiscoveryTests(unittest.TestCase):
             competitors.grounding, "web_search",
         ) as web:
             with redirect_stderr(io.StringIO()):
-                results = competitors.discover_competitors("OpenAI", 2, config)
+                results = competitors.discover_competitors(
+                    "OpenAI", 2, config, is_company=True,
+                )
         self.assertEqual(results, ["Anthropic", "xAI"])
         exa.assert_called_once()
         web.assert_not_called()
@@ -175,7 +177,9 @@ class CompetitorDiscoveryTests(unittest.TestCase):
             competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
         ):
             with redirect_stderr(io.StringIO()):
-                results = competitors.discover_competitors("OpenAI", 3, config)
+                results = competitors.discover_competitors(
+                    "OpenAI", 3, config, is_company=True,
+                )
         self.assertEqual(results[0], "Anthropic")
         self.assertEqual(len(results), 3)
         self.assertNotIn("OpenAI", results)
@@ -190,7 +194,9 @@ class CompetitorDiscoveryTests(unittest.TestCase):
         ):
             err = io.StringIO()
             with redirect_stderr(err):
-                results = competitors.discover_competitors("OpenAI", 2, config)
+                results = competitors.discover_competitors(
+                    "OpenAI", 2, config, is_company=True,
+                )
         self.assertTrue(results)
         self.assertIn("Exa company search failed", err.getvalue())
 
@@ -205,6 +211,22 @@ class CompetitorDiscoveryTests(unittest.TestCase):
                 results = competitors.discover_competitors("OpenAI", 2, config)
         exa.assert_not_called()
         self.assertTrue(results)
+
+    def test_non_company_topic_does_not_use_exa_company_index(self):
+        config = {"BRAVE_API_KEY": "brave-key", "EXA_API_KEY": "exa-key"}
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(KANYE_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Kanye West", 2, config)
+        exa.assert_not_called()
+        joined = " ".join(results)
+        self.assertTrue(
+            "Drake" in joined and "Kendrick Lamar" in joined,
+            f"Expected Drake and Kendrick Lamar in {results}",
+        )
 
     def test_exa_strips_trailing_and_unbalanced_parentheticals(self):
         config = {"EXA_API_KEY": "exa-key"}
@@ -223,7 +245,9 @@ class CompetitorDiscoveryTests(unittest.TestCase):
             competitors.grounding, "web_search",
         ) as web:
             with redirect_stderr(io.StringIO()):
-                results = competitors.discover_competitors("Stripe", 4, config)
+                results = competitors.discover_competitors(
+                    "Stripe", 4, config, is_company=True,
+                )
         self.assertEqual(results, ["xPay", "Adyen", "Klarna", "Payoneer"])
         self.assertFalse(any("(" in name or "[" in name for name in results))
         exa.assert_called_once()

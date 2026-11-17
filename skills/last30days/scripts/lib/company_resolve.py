@@ -206,17 +206,40 @@ def _compact_name(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.casefold())
 
 
+def _registrable_label(host: str) -> str:
+    """The registered-domain name (eTLD+1), same split as resolve.py.
+
+    ``stripe.com`` → ``stripe``; ``foo.co.uk`` → ``foo``;
+    ``stripeco.example.org`` → ``example``. Two-label ccSLDs in the last
+    two labels are ``co`` / ``com`` only; that is the repo's existing
+    conservative heuristic, not a public-suffix list.
+    """
+    labels = [part for part in host.split(".") if part]
+    if len(labels) < 2:
+        return ""
+    name = (
+        labels[-3]
+        if labels[-2] in {"co", "com"} and len(labels) >= 3
+        else labels[-2]
+    )
+    return _compact_name(name)
+
+
 def _exa_site_matches_topic(topic: str, url: str) -> bool:
-    """True when the URL's registrable label is this company, not a look-alike."""
-    compact = _compact_name(topic)
+    """True when the URL's registrable label is this company, not a look-alike.
+
+    The compact topic (legal designators stripped via ``name_key``) must
+    equal the registrable label. Shared prefixes (``StripeCo`` / ``stripe.com``)
+    and a matching first label on someone else's domain
+    (``stripeco.example.org``) do not count. ``get`` / ``try`` / ``hq``
+    affixes are not trimmed: they would reintroduce prefix matches.
+    """
+    want = _compact_name(name_key(topic)) or _compact_name(topic)
     host = _site_host(url)
-    if not compact or not host or _is_directory_host(host):
+    if not want or not host or _is_directory_host(host):
         return False
-    label = host.split(".")[0]
-    if label == compact:
-        return True
-    # "openai.com" for "Open AI"; reject short labels ("meta" vs "metaphor").
-    return len(compact) >= 4 and (label.startswith(compact) or compact.startswith(label))
+    label = _registrable_label(host)
+    return bool(label) and label == want
 
 
 def _exa_homepage(url: str) -> str:

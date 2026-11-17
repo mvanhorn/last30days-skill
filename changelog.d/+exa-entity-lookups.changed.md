@@ -1,1 +1,1 @@
-Exa web search now requests highlights instead of a 2,000-character text extract, and uses Exa for official-site fallback and competitor discovery when `EXA_API_KEY` is set even if Brave is the general web backend.
+Exa web search now requests highlights instead of a 2,000-character text extract. When `EXA_API_KEY` is set, Wikidata-empty company resolution can take an official-site lookup, and competitor discovery queries Exa's company category first for a resolved company even if Brave is the general web backend.

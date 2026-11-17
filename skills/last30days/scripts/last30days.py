@@ -4932,6 +4932,13 @@ def _main(
                     return 2
                 discovered = competitors_mod.discover_competitors(
                     topic, comp_count, config, lookback_days=args.lookback_days,
+                    is_company=(
+                        not main_company.get("company_via_person")
+                        and bool(
+                            main_company.get("company")
+                            or config.get("_company_signal")
+                        )
+                    ),
                 )
                 if not discovered:
                     sys.stderr.write(
