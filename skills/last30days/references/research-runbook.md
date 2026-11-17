@@ -624,7 +624,7 @@ RESEARCH_TOPIC=${RESEARCH_TOPIC%$'\n'}
 PLAN_EOF
 ```
 
-Run this block directly in the shell tool. Avoid `bash -lc '...'` and `zsh -lc '...'` wrappers because an apostrophe in the heredoc body closes the wrapper's quotes.
+Run this block directly in the shell tool. Avoid `bash -lc '...'` and `zsh -lc '...'` wrappers. An apostrophe in the heredoc can close the wrapper's quotes and trigger `zsh: unmatched "`.
 
 Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 
