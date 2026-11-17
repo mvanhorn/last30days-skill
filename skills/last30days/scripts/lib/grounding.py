@@ -86,20 +86,76 @@ def brave_search(
 # Exa AI Search
 # ---------------------------------------------------------------------------
 
+# Exa's company and people indexes reject publication-date filters (HTTP 400).
+# people also rejects excludeDomains. See https://exa.ai/docs/reference/search
+_EXA_UNDATED_CATEGORIES = frozenset({"company", "people"})
+_EXA_SEARCH_URL = "https://api.exa.ai/search"
+
+
+def exa_api_key(config: dict | None) -> str:
+    """Return EXA_API_KEY when the caller configured one, else ''."""
+    return str((config or {}).get("EXA_API_KEY") or "")
+
+
+def _exa_snippet(result: dict) -> str:
+    """Prefer highlights (Exa's recommended excerpt) and fall back to text."""
+    highlights = result.get("highlights")
+    if isinstance(highlights, str) and highlights.strip():
+        return highlights[:500]
+    if isinstance(highlights, list):
+        parts = [part for part in highlights if isinstance(part, str) and part.strip()]
+        if parts:
+            return " ".join(parts)[:500]
+    return (result.get("text") or "")[:500]
+
+
+def _exa_search_body(
+    query: str,
+    count: int,
+    date_range: tuple[str, str] | None = None,
+    *,
+    category: str | None = None,
+    objective: str | None = None,
+) -> dict:
+    """Build an Exa /search body.
+
+    Highlights are the recommended content shape
+    (https://exa.ai/docs/search/best-practices). Publication-date filters stay
+    on dated, uncategorized paths only: ``company`` and ``people`` reject them.
+    """
+    body: dict = {
+        "query": query,
+        "type": "auto",
+        "numResults": count,
+        "contents": {"highlights": True},
+    }
+    if objective:
+        body["objective"] = objective
+    if category:
+        body["category"] = category
+    if date_range and category not in _EXA_UNDATED_CATEGORIES:
+        body["startPublishedDate"] = f"{date_range[0]}T00:00:00.000Z"
+        body["endPublishedDate"] = f"{date_range[1]}T23:59:59.999Z"
+    return body
+
+
 def exa_search(
-    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+    query: str,
+    date_range: tuple[str, str] | None,
+    api_key: str,
+    count: int = 5,
+    *,
+    category: str | None = None,
+    objective: str | None = None,
 ) -> tuple[list[dict], dict]:
+    """Search Exa. ``date_range`` is omitted for entity lookups and for
+    ``category`` values that reject publication-date filters."""
     data = http.request(
-        "POST", "https://api.exa.ai/search",
+        "POST", _EXA_SEARCH_URL,
         headers={"x-api-key": api_key},
-        json_data={
-            "query": query,
-            "type": "auto",
-            "numResults": count,
-            "startPublishedDate": f"{date_range[0]}T00:00:00.000Z",
-            "endPublishedDate": f"{date_range[1]}T23:59:59.999Z",
-            "contents": {"text": {"maxCharacters": 2000}},
-        },
+        json_data=_exa_search_body(
+            query, count, date_range, category=category, objective=objective,
+        ),
         timeout=15,
     )
     items = []
@@ -111,21 +167,52 @@ def exa_search(
             continue
         raw_date = r.get("publishedDate") or ""
         pub_date = _normalize_date(raw_date.split("T")[0] if "T" in raw_date else raw_date[:10]) if raw_date else None
-        if _known_date_out_of_range(pub_date, date_range):
+        if date_range and _known_date_out_of_range(pub_date, date_range):
             continue
+        metadata = {}
+        if date_range and category not in _EXA_UNDATED_CATEGORIES:
+            metadata["date_window_basis"] = "server_bounds"
         items.append({
             "id": f"WE{i + 1}",
             "title": r.get("title", ""),
             "url": url,
             "source_domain": _domain(url),
-            "snippet": (r.get("text") or "")[:500],
+            "snippet": _exa_snippet(r),
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Exa web search",
-            "metadata": {"date_window_basis": "server_bounds"},
+            "metadata": metadata,
         })
     artifact = {"label": "exa", "webSearchQueries": [query], "resultCount": len(items)}
+    if category:
+        artifact["category"] = category
     return items, artifact
+
+
+def exa_company_search(
+    query: str,
+    api_key: str,
+    count: int = 8,
+    *,
+    objective: str | None = None,
+) -> tuple[list[dict], dict]:
+    """Undated ``category=company`` search. Never sends publication dates."""
+    return exa_search(
+        query, None, api_key, count, category="company", objective=objective,
+    )
+
+
+def exa_people_search(
+    query: str,
+    api_key: str,
+    count: int = 5,
+    *,
+    objective: str | None = None,
+) -> tuple[list[dict], dict]:
+    """Undated ``category=people`` search. Never sends dates or excludeDomains."""
+    return exa_search(
+        query, None, api_key, count, category="people", objective=objective,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -676,7 +676,7 @@ def test_same_page_on_the_confirmed_official_site_makes_the_board_owned():
 
 
 def test_each_host_company_gets_the_official_site_the_resolver_returns():
-    def resolve(name, *, listing=True):
+    def resolve(name, *, listing=True, **_kwargs):
         assert listing is False
         if name == "Anduril":
             return {"company": "Anduril Industries", "company_site": "https://www.anduril.com/"}
@@ -875,7 +875,7 @@ def test_company_entry_that_cannot_be_read_is_ignored_with_a_line(capsys):
 
 
 def test_site_the_host_passed_is_used_without_asking_the_resolver():
-    def resolve(name, *, listing=True):
+    def resolve(name, *, listing=True, **_kwargs):
         assert name == "SpaceX", "a company that came with its site is not looked up"
         return {"company": "SpaceX", "company_site": "https://www.spacex.com/"}
 

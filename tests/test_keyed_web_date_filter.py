@@ -224,13 +224,15 @@ class TestExaKeepsUndatedResults:
                 {"title": "U", "url": "https://u.example/", "text": "u"},
             ]
         }
-        with patch("lib.grounding.http.request", return_value=payload):
+        with patch("lib.grounding.http.request", return_value=payload) as request:
             items, artifact = grounding.exa_search(
                 "OpenAI", DATE_RANGE, "fake-key", count=5
             )
         assert _titles(items) == ["U"]
         assert artifact["resultCount"] == 1
         assert items[0]["date"] is None
+        assert request.call_args.kwargs["json_data"]["contents"] == {"highlights": True}
+        assert "startPublishedDate" in request.call_args.kwargs["json_data"]
 
     def test_drops_only_known_out_of_range_dates(self):
         payload = {
