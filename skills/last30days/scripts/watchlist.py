@@ -117,13 +117,13 @@ def cmd_remove(args):
 def cmd_list(args):
     del args
     topics = store.list_topics()
-    budget_used = store.get_daily_cost()
+    budget_used, budget_unknown_runs = store.get_daily_usage()
     budget_limit = float(store.get_setting("daily_budget", "5.00"))
     print(json.dumps({
         "topics": topics,
         "budget_used": budget_used,
         "budget_limit": budget_limit,
-        "budget_unknown_runs": store.get_daily_unknown_cost_runs(),
+        "budget_unknown_runs": budget_unknown_runs,
     }, default=str))
 
 
@@ -155,19 +155,19 @@ def cmd_run_all(args):
     for topic in topics:
         results.append(_budget_skip(topic) or _run_topic(topic))
 
+    budget_used, budget_unknown_runs = store.get_daily_usage()
     print(json.dumps({
         "action": "run_all",
         "results": results,
-        "budget_used": store.get_daily_cost(),
+        "budget_used": budget_used,
         "budget_limit": budget_limit,
-        "budget_unknown_runs": store.get_daily_unknown_cost_runs(),
+        "budget_unknown_runs": budget_unknown_runs,
     }, default=str))
 
 
 def _budget_skip(topic: dict) -> dict | None:
     limit = float(store.get_setting("daily_budget", "5.00"))
-    cost = store.get_daily_cost()
-    unknown = store.get_daily_unknown_cost_runs()
+    cost, unknown = store.get_daily_usage()
     if cost >= limit:
         reason = f"Budget exceeded: ${cost:.2f}/${limit:.2f}"
     elif unknown:

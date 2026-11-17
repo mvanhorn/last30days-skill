@@ -975,6 +975,22 @@ def test_remove_topic_cascades_findings(temp_db, sample_report):
     conn.close()
 
 
+def test_removed_run_usage_preserves_utc_day(temp_db):
+    topic = store.add_topic("Recorded topic")
+    with sqlite3.connect(temp_db) as conn:
+        conn.executemany(
+            "INSERT INTO research_runs (topic_id, run_date, token_cost, cost_unknown) VALUES (?, ?, ?, ?)",
+            [
+                (topic["id"], "2025-03-05 23:59:59", 0.5, 1),
+                (topic["id"], "2025-03-06 00:00:00", 1.25, 0),
+            ],
+        )
+    assert store.remove_topic("Recorded topic")
+    assert store.get_daily_usage("2025-03-05") == (0.5, 1)
+    assert store.get_daily_usage("2025-03-06") == (1.25, 0)
+    assert store.get_daily_usage("2025-03-07") == (0, 0)
+
+
 def test_list_topics(temp_db):
     """Test listing topics with stats."""
     # Add multiple topics
@@ -1033,8 +1049,8 @@ def test_get_new_findings_filters_by_date(temp_db, sample_report):
 # === Tests for the discovery topic queue (migration 3, U6) ===
 
 
-def test_init_db_reaches_migration_4_with_discovery_topics_table(temp_db):
-    """A fresh database lands on migration 4 with the queue table present."""
+def test_init_db_reaches_migration_5_with_discovery_topics_table(temp_db):
+    """A fresh database lands on migration 5 with the queue table present."""
     conn = sqlite3.connect(str(temp_db))
     version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     table = conn.execute(
@@ -1045,7 +1061,7 @@ def test_init_db_reaches_migration_4_with_discovery_topics_table(temp_db):
     }
     conn.close()
 
-    assert version == 4
+    assert version == 5
     assert table is not None
     assert {
         "id", "name", "normalized_name", "entity_key", "domain",
@@ -1054,7 +1070,7 @@ def test_init_db_reaches_migration_4_with_discovery_topics_table(temp_db):
     } <= columns
 
 
-def test_migration_2_db_upgrades_to_4_without_data_loss(tmp_path, monkeypatch):
+def test_migration_2_db_upgrades_to_5_without_data_loss(tmp_path, monkeypatch):
     """A database built at migration 2 gains the queue table without losing rows."""
     db_path = tmp_path / "research.db"
     monkeypatch.setattr(store, "_db_override", db_path)
@@ -1086,7 +1102,7 @@ def test_migration_2_db_upgrades_to_4_without_data_loss(tmp_path, monkeypatch):
     store.init_db()
 
     conn = sqlite3.connect(str(db_path))
-    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 4
+    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 5
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='discovery_topics'"
     ).fetchone() is not None
@@ -1114,6 +1130,10 @@ def test_cost_migration_preserves_known_spend_and_marks_legacy_zero_unknown(tmp_
     monkeypatch.setattr(store, "MIGRATIONS", full_migrations)
     store.init_db()
     store.init_db()
+    assert store.get_daily_cost() == 1.25
+    assert store.get_daily_unknown_cost_runs() == 1
+    assert store.remove_topic("Legacy")
+    assert store.get_latest_completed_runs(topic["id"]) == []
     assert store.get_daily_cost() == 1.25
     assert store.get_daily_unknown_cost_runs() == 1
 
