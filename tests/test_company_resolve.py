@@ -951,7 +951,7 @@ def test_wikidata_exposes_why_nothing_is_certain(monkeypatch):
     cases = (
         ("AcmePayments", company_resolve.WIKIDATA_NONE),
         ("Kanye West", company_resolve.WIKIDATA_HUMAN),
-        ("Rust", company_resolve.WIKIDATA_OTHER),
+        ("Rust", company_resolve.WIKIDATA_SOFTWARE),
     )
     for topic, kind in cases:
         result, fake = _resolve(monkeypatch, topic)
@@ -1006,6 +1006,56 @@ def test_exa_python_style_language_uses_keyword_peers(monkeypatch):
         "company_peer_discovery": "keyword",
     }
     assert "company_via_person" not in result
+
+
+def _p31_claim(class_id: str) -> dict:
+    return {
+        "rank": "normal",
+        "type": "statement",
+        "mainsnak": {
+            "snaktype": "value",
+            "property": "P31",
+            "datavalue": {
+                "value": {
+                    "entity-type": "item",
+                    "numeric-id": int(class_id[1:]),
+                    "id": class_id,
+                },
+                "type": "wikibase-entityid",
+            },
+        },
+    }
+
+
+def test_exa_granola_style_food_homonym_keeps_company_peers(monkeypatch):
+    granola = {
+        "type": "item",
+        "id": "Q999001",
+        "labels": {"en": {"language": "en", "value": "Granola"}},
+        "claims": {"P31": [_p31_claim("Q2095")]},
+    }
+    food = {"type": "item", "id": "Q2095", "claims": {}}
+    fake = FakeWikidata(
+        entities={"Q999001": granola, "Q2095": food},
+        search={"Granola": {
+            "search": [{"id": "Q999001", "label": "Granola"}],
+            "success": 1,
+        }},
+    )
+    monkeypatch.setattr(company_resolve.http, "get", fake)
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Granola", "url": "https://www.granola.so/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Granola", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Granola",
+        "company_site": "https://granola.so/",
+        "company_source": "exa",
+    }
+    assert "company_via_person" not in result
+    assert "company_peer_discovery" not in result
 
 
 def test_exa_modal_labs_matches_modal_com(monkeypatch):

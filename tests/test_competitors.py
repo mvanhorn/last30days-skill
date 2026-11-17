@@ -274,6 +274,31 @@ class CompetitorDiscoveryTests(unittest.TestCase):
         exa.assert_not_called()
         self.assertTrue(results)
 
+    def test_exa_food_homonym_keeps_company_competitor_index(self):
+        config = {
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Granola",
+                "company_site": "https://granola.so/",
+                "company_source": "exa",
+            },
+        }
+        exa_items = [
+            {"title": "Otter", "url": "https://otter.ai/"},
+            {"title": "Fireflies", "url": "https://fireflies.ai/"},
+        ]
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+            return_value=(exa_items, {"label": "exa", "category": "company"}),
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search",
+        ) as web:
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Granola", 2, config)
+        exa.assert_called_once()
+        web.assert_not_called()
+        self.assertEqual(results, ["Otter", "Fireflies"])
+
     def test_exa_strips_trailing_and_unbalanced_parentheticals(self):
         config = {"EXA_API_KEY": "exa-key"}
         exa_items = [
