@@ -7573,9 +7573,6 @@ def _retrieve_stream_impl(
             artifact,
         )
     if source == "github":
-        # Resolve once at the pipeline boundary so search and enrich
-        # share the result; otherwise each call would re-run the env
-        # lookup and gh-CLI subprocess fallback (up to 5s timeout each).
         token = github.resolve_token(config.get("GITHUB_TOKEN"))
         response = github.search_github(subquery.search_query, from_date, to_date, depth=depth, token=token)
         # Judge results against the stable research topic, not the narrowed
@@ -7586,7 +7583,8 @@ def _retrieve_stream_impl(
         # tokenless anon tier and returns empty here rather than raising — github
         # is now always eligible, so raising would spam "github failed" on every
         # tokenless run. The condition is logged in github.search_github.
-        items = github.enrich_with_comments(items, depth=depth, token=token)
+        if token:
+            items = github.enrich_with_comments(items, depth=depth)
         return items, _result_outcome_artifact(source, response)
     if source == "pinterest":
         result = pinterest.search_pinterest(

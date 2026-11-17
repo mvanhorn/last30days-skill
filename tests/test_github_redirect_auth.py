@@ -123,7 +123,7 @@ def test_credential_callers_handle_redirects(caller, cross_origin, monkeypatch, 
                 return Request(url, *args, **kwargs)
 
             monkeypatch.setattr(github.urllib.request, "Request", loopback_request)
-            assert github._fetch_readme_snippet("owner/repo", token) == payload.decode()
+            assert github._fetch_readme_snippet("owner/repo") == payload.decode()
         else:
             monkeypatch.setitem(transcribe._PROVIDER_ENDPOINTS, "groq", start)
             audio = tmp_path / "audio.mp3"
@@ -141,8 +141,9 @@ def test_credential_callers_handle_redirects(caller, cross_origin, monkeypatch, 
         {key.lower(): value for key, value in headers.items()}
         for _, headers in captured
     )
-    assert original_headers["authorization"] == f"Bearer {token}"
-    assert final_headers.get("authorization") == (None if cross_origin else f"Bearer {token}")
+    expected_auth = None if caller == "github_readme" else f"Bearer {token}"
+    assert original_headers.get("authorization") == expected_auth
+    assert final_headers.get("authorization") == (None if cross_origin else expected_auth)
     assert final_headers["user-agent"] == original_headers["user-agent"]
 
 
