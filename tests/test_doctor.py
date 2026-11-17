@@ -1289,7 +1289,7 @@ class LiveProbe(unittest.TestCase):
         self.assertIn("HTTP 200", res["detail"])
         self.assertIn("blocked", res["detail"])
         self.assertFalse(res.get("transient", False))
-        self.assertEqual(1, get.call_count)
+        self.assertEqual(2, get.call_count)
 
     def test_reddit_probe_arctic_failure_fails_the_floor(self):
         res, _get = self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), "<html>down</html>")
@@ -1356,6 +1356,23 @@ class LiveProbe(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertNotIn("transient", res)
 
+    def test_reddit_archive_requires_checked_success(self):
+        for code in (400, 404, 422):
+            with mock.patch("lib.doctor._probe_url", side_effect=[
+                {"ok": False, "detail": "HTTP 403", "probed": True},
+                {"ok": True, "detail": f"HTTP {code}", "probed": True},
+            ]):
+                result = doctor._probe_source("reddit", {}, 5)
+            self.assertFalse(result.get("partial", False))
+        with mock.patch("lib.doctor._probe_url", side_effect=[
+            {"ok": False, "detail": "HTTP 403", "probed": True},
+            {"ok": True, "detail": "HTTP 200", "probed": True},
+        ]):
+            result = doctor._probe_source("reddit", {}, 5)
+        self.assertTrue(result["partial"])
+        self.assertEqual(doctor.AUDIT_UNVERIFIED,
+                         doctor.audit_state("reddit", {"tier": doctor.TIER_OK}, probe_result=result))
+
     def test_reddit_probe_403_is_not_retried(self):
         # 403 is the standing keyless block, not a burst. Retrying it only
         # doubles the wait before reporting a real outage.
@@ -1366,7 +1383,7 @@ class LiveProbe(unittest.TestCase):
             mock.patch("lib.doctor.time.sleep") as sleep,
         ):
             res = doctor._probe_source("reddit", {}, 5)
-        self.assertEqual(1, http_ok.call_count)
+        self.assertEqual(2, http_ok.call_count)
         sleep.assert_not_called()
         self.assertFalse(res.get("transient", False))
 
@@ -1399,8 +1416,8 @@ class LiveProbe(unittest.TestCase):
         seen = {}
 
         def capture(req, **kwargs):
-            seen["ua"] = req.get_header("User-agent")
-            seen["accept"] = req.get_header("Accept")
+            seen.setdefault("ua", req.get_header("User-agent"))
+            seen.setdefault("accept", req.get_header("Accept"))
             return 500, None, urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
 
         with mock.patch("lib.bounded_get.get", capture):

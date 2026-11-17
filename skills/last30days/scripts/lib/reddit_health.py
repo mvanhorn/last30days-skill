@@ -378,6 +378,13 @@ def arctic_probe_url() -> str:
     return f"{reddit_arctic.API}?ids={PROBE_THREAD_ID}"
 
 
+def arctic_listing_probe_url() -> str:
+    """Probe the same subreddit listing endpoint used by the fallback lane."""
+    from . import reddit_arctic
+
+    return f"{reddit_arctic.SEARCH_API}?subreddit=python&limit=1&sort=desc"
+
+
 def brave_probe_body(text: str) -> Optional[str]:
     """None when the page is Brave results the lane can parse, else why not."""
     from . import web_search_keyless
