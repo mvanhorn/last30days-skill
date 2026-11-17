@@ -16,6 +16,7 @@ import signal
 import sqlite3
 import sys
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -762,6 +763,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--drill",
         metavar="TARGET",
         help="Deep follow-up on a cluster from the fresh last-report.json cache",
+    )
+    parser.add_argument(
+        "--followup-topic",
+        metavar="TOPIC",
+        help="Require the cached report for a drill or post-run freshness check to match TOPIC",
+    )
+    parser.add_argument(
+        "--followup-run",
+        metavar="ID",
+        help="Require the cache ID reported by the original research or most recent drill",
     )
     parser.add_argument(
         "--discover",
@@ -1710,6 +1721,7 @@ class _CachedReport(NamedTuple):
     entity_reports: list[tuple[str, schema.Report]] | None
     path: Path
     fingerprint: bytes
+    x_envelope_sha256: str | None
 
 
 def _last_report_cache_path() -> Path | None:
@@ -1763,9 +1775,9 @@ def _write_last_run(
     *,
     x_envelope_sha256: str | None = None,
     research_options: dict[str, object] | None = None,
+    expected_cache_fingerprint: bytes | None = None,
 ) -> bool:
-    # ``x_envelope_sha256`` binds the cached report to the --x-posts file it
-    # was built from; _load_last_report_cache misses on any mismatch.
+    # The stored digest binds research replay to the host evidence it used.
     try:
         if env.CONFIG_DIR is None:
             return False
@@ -1785,8 +1797,10 @@ def _write_last_run(
             "report_cache": str(target / "last-report.json"),
             "comparison": bool(entity_reports),
         }
+        run_id = uuid.uuid4().hex
         cache_payload = {
             "schema": REPORT_CACHE_VERSION,
+            "run_id": run_id,
             "topic": topic,
             "timestamp": payload["timestamp"],
             "comparison": bool(entity_reports),
@@ -1804,8 +1818,15 @@ def _write_last_run(
         report_json = json.dumps(cache_payload, indent=2)
         run_json = json.dumps(payload, indent=2)
         with _report_cache_lock(report_cache_path):
+            if (
+                expected_cache_fingerprint is not None
+                and hashlib.sha256(report_cache_path.read_bytes()).digest()
+                != expected_cache_fingerprint
+            ):
+                return False
             replace_private_text(report_cache_path, report_json)
             replace_private_text(target / "last-run.json", run_json)
+        sys.stderr.write(f"[last30days] Follow-up cache ID: {run_id}\n")
         return True
     except Exception as exc:
         # Never fatal, but never silent either (#787's lesson): callers that
@@ -1822,6 +1843,7 @@ def _load_last_report_cache(
     research_options: dict[str, object] | None = None,
     requested_window: tuple[str, str] | None = None,
     use_cached_envelopes: bool = False,
+    run_id: str | None = None,
 ) -> _CachedReport | None:
     cache_path = _last_report_cache_path()
     if cache_path is None or not cache_path.exists():
@@ -1835,11 +1857,14 @@ def _load_last_report_cache(
             return None
         if not _is_report_cache_fresh(payload.get("timestamp"), ttl_seconds):
             return None
-        # A report built from a --x-posts envelope is only reusable with the
-        # same envelope content; a digest on either side that does not match
-        # the other is a miss.
+        if run_id is not None and payload.get("run_id") != run_id:
+            return None
+        # Explicit follow-ups consume the saved snapshot without needing its
+        # original envelope files. Research replay still matches their digest.
         cached_digest = payload.get("x_envelope_sha256") or None
-        if not use_cached_envelopes and (cached_digest or x_envelope_sha256) and cached_digest != x_envelope_sha256:
+        if cached_digest is not None and not isinstance(cached_digest, str):
+            return None
+        if (not use_cached_envelopes or x_envelope_sha256 is not None) and cached_digest != x_envelope_sha256:
             return None
         cached_options = payload.get("research_options") or {}
         if not isinstance(cached_options, dict):
@@ -1869,7 +1894,7 @@ def _load_last_report_cache(
             return None
         return _CachedReport(
             entity_reports[0][1], entity_reports if comparison else None,
-            cache_path, hashlib.sha256(raw).digest(),
+            cache_path, hashlib.sha256(raw).digest(), cached_digest,
         )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         sys.stderr.write(
@@ -2011,18 +2036,34 @@ def _verify_report_set(
         )
 
 
+def _load_followup_report(
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> _CachedReport | None:
+    cached = _load_last_report_cache(
+        args.followup_topic,
+        ttl_seconds=_report_cache_ttl_seconds(config),
+        use_cached_envelopes=True,
+        run_id=args.followup_run,
+    )
+    if cached is None:
+        scope = ""
+        if args.followup_run:
+            scope = " for the requested run"
+        elif args.followup_topic:
+            scope = " for the requested topic"
+        sys.stderr.write(f"[last30days] No fresh cached report{scope}; run a research pass first.\n")
+    return cached
+
+
 def _run_cached_freshness(
     args: argparse.Namespace,
     config: dict[str, object],
 ) -> int:
-    cached = _load_last_report_cache(
-        None,
-        ttl_seconds=_report_cache_ttl_seconds(config),
-    )
+    cached = _load_followup_report(args, config)
     if cached is None:
-        sys.stderr.write("[last30days] No fresh cached report; run a research pass first.\n")
         return 2
-    report, entity_reports, cache_path, _ = cached
+    report, entity_reports, cache_path = cached.report, cached.entity_reports, cached.path
     _verify_report_set(report, entity_reports, allow_network=not args.mock)
     if _update_cached_freshness(cached):
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
@@ -2057,17 +2098,11 @@ def _run_drill(
 ) -> int:
     from lib import planner
 
-    cached = _load_last_report_cache(
-        None,
-        ttl_seconds=_report_cache_ttl_seconds(config),
-    )
+    cached = _load_followup_report(args, config)
     if cached is None:
-        sys.stderr.write(
-            "[last30days] No fresh cached report; run a research pass first.\n"
-        )
         return 2
-    report, entity_reports, cache_path, _ = cached
-    if entity_reports:
+    report = cached.report
+    if cached.entity_reports:
         sys.stderr.write(
             "[last30days] Drill mode needs a single-topic cached report; "
             "run a research pass for one entity first.\n"
@@ -2173,13 +2208,16 @@ def _run_drill(
         _verify_report_set(merged, None, allow_network=not args.mock and not local_only)
     else:
         merged.freshness_verdicts = []
-    if _write_last_run(report.topic, merged, research_options=_cache_research_options(args, config)):
-        sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
+    is_bound = args.followup_topic is not None or args.followup_run is not None
+    if _write_last_run(
+        report.topic, merged,
+        x_envelope_sha256=cached.x_envelope_sha256,
+        research_options=_cache_research_options(args, config),
+        expected_cache_fingerprint=cached.fingerprint if is_bound else None,
+    ):
+        sys.stderr.write(f"[last30days] Updated drill cache in {cached.path}\n")
     else:
-        sys.stderr.write(
-            "[last30days] warning: drill cache update failed; the next drill "
-            "will see the pre-drill report\n"
-        )
+        sys.stderr.write("[last30days] warning: drill cache update failed\n")
 
     store_default = str(
         os.environ.get("LAST30DAYS_STORE")
@@ -3981,12 +4019,28 @@ def _main(
         or args.verify_freshness is True
     ):
         parser.error("--cached-report requires a topic, --emit=html, and --synthesis-file without research input files, --verify-freshness, or other command modes")
+    topic = " ".join(args.topic).strip()
+    cached_followup = (
+        not topic and (args.drill or args.verify_freshness is True)
+        and args.discover is None
+        and not (
+            args.diagnose or args.preflight or args.welcome
+            or args.resolve_save_dir or args.resolve_browser_consent
+        )
+    )
+    if args.followup_topic is not None and (not cached_followup or not args.followup_topic.strip()):
+        parser.error("--followup-topic requires a nonempty topic and --drill or post-run --verify-freshness")
+    if args.followup_run is not None and (not cached_followup or not re.fullmatch(r"[0-9a-f]{32}", args.followup_run)):
+        parser.error("--followup-run requires a cache ID and --drill or post-run --verify-freshness")
+    if cached_followup and any(
+        value is not None for value in (args.x_posts, args.reddit_threads, args.plan, args.competitors_plan)
+    ):
+        parser.error("cached follow-ups use saved evidence and do not accept new plans or envelope files")
     if args.welcome:
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
         return 0
 
-    topic = " ".join(args.topic).strip()
     original_topic = topic
     requested_window = (
         dates.get_date_range(
@@ -4705,7 +4759,9 @@ def _main(
             use_cached_envelopes=args.cached_report,
         )
         if cached is not None:
-            cached_report, cached_entity_reports, cache_path, _ = cached
+            cached_report = cached.report
+            cached_entity_reports = cached.entity_reports
+            cache_path = cached.path
             sys.stderr.write(
                 f"[last30days] Reusing cached report data from {cache_path}\n"
             )

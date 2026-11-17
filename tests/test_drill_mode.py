@@ -621,19 +621,30 @@ def test_drill_uses_cached_financial_topic_while_plan_stays_cluster_focused(tmp_
     assert call["requested_sources"] == ["stocktwits"]
 
 
-def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("envelope_digest", "bound"),
+    [(None, False), ("a" * 64, False), ("a" * 64, True)],
+)
+def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path, envelope_digest, bound):
     config_dir = tmp_path / "config"
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
-        cli._write_last_run("OpenClaw", _report())
+        assert cli._write_last_run("OpenClaw", _report(), x_envelope_sha256=envelope_digest)
 
-    args = cli.build_parser().parse_args(["--drill", "cluster 1", "--mock"])
+    parser = cli.build_parser()
+    options = ["--drill", "cluster 1", "--mock"]
+    cache_path = config_dir / "last-report.json"
+    original_run_id = json.loads(cache_path.read_bytes())["run_id"]
+    if bound:
+        options.extend(["--followup-topic=openclaw", f"--followup-run={original_run_id}"])
+    args = parser.parse_args(options)
     drill_result = _report(drill=True)
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
+         mock.patch.object(cli.env, "get_config", return_value={}), \
          mock.patch.object(cli.pipeline, "diagnose", return_value={}), \
          mock.patch.object(cli.pipeline, "run", return_value=drill_result) as run_mock, \
          mock.patch.object(cli, "_show_runtime_ui"), \
-         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        assert cli._run_drill(args, {}) == 0
+         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:
+        assert cli._main(parser, args, []) == 0
 
     call = run_mock.call_args.kwargs
     assert call["depth"] == "deep"
@@ -641,10 +652,15 @@ def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path):
     assert set(call["external_plan"]["subqueries"][0]["sources"]) == {"reddit", "youtube"}
 
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
-        cached = cli._load_last_report_cache(None)
+        cached = cli._load_last_report_cache(None, x_envelope_sha256=envelope_digest)
     assert cached is not None
     assert len(cached[0].artifacts["drill_history"]) == 1
+    drill_run_id = json.loads(cache_path.read_bytes())["run_id"]
+    assert drill_run_id != original_run_id
+    assert f"[last30days] Follow-up cache ID: {drill_run_id}\n" in stderr.getvalue()
 
+    if bound:
+        args = parser.parse_args([*options[:-1], f"--followup-run={drill_run_id}"])
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
          mock.patch.object(cli.pipeline, "diagnose", return_value={}), \
          mock.patch.object(cli.pipeline, "run", return_value=drill_result), \
@@ -653,9 +669,154 @@ def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path):
         assert cli._run_drill(args, {}) == 0
 
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
-        chained = cli._load_last_report_cache(None)
+        chained = cli._load_last_report_cache(None, x_envelope_sha256=envelope_digest)
     assert chained is not None
     assert len(chained[0].artifacts["drill_history"]) == 2
+
+
+@pytest.mark.parametrize("concurrent_write", ["research", "freshness"])
+def test_bound_drill_preserves_a_concurrent_cache_write(tmp_path, monkeypatch, capsys, concurrent_write):
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli, "_show_runtime_ui", lambda *_args, **_kwargs: None)
+    report = _report()
+    cache_path = tmp_path / "last-report.json"
+    summary_path = tmp_path / "last-run.json"
+    digest = "a" * 64
+    assert cli._write_last_run(report.topic, report, x_envelope_sha256=digest)
+    original_cache = cache_path.read_bytes()
+    run_id = json.loads(original_cache)["run_id"]
+    capsys.readouterr()
+    published = []
+
+    def publish_concurrent_result(*_args, **_kwargs):
+        if concurrent_write == "research":
+            replacement = _report()
+            replacement.range_from = "2026-05-01"
+            replacement.range_to = "2026-05-08"
+            with redirect_stderr(io.StringIO()):
+                assert cli._write_last_run(report.topic, replacement, x_envelope_sha256="b" * 64)
+        else:
+            cached = cli._load_last_report_cache(report.topic, x_envelope_sha256=digest)
+            assert cached is not None
+            cached.report.freshness_verdicts = [
+                schema.FreshnessVerdict(
+                    claim_id="claim-1",
+                    candidate_id="cand-ban",
+                    claim="OpenClaw API ban",
+                    source="reddit",
+                    source_item_id="ban",
+                    verdict="current",
+                    checked_at="2026-05-08T12:00:00Z",
+                )
+            ]
+            assert cli._update_cached_freshness(cached)
+        published.append((cache_path.read_bytes(), summary_path.read_bytes()))
+        return _report(drill=True)
+
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "--drill=cluster 1", f"--followup-topic={report.topic}", f"--followup-run={run_id}", "--mock",
+    ])
+    with mock.patch.object(cli.pipeline, "run", side_effect=publish_concurrent_result) as run:
+        assert cli._main(parser, args, []) == 0
+
+    run.assert_called_once()
+    [(published_cache, published_summary)] = published
+    assert published_cache != original_cache
+    replacement_id = json.loads(published_cache)["run_id"]
+    if concurrent_write == "research":
+        assert replacement_id != run_id
+    else:
+        assert replacement_id == run_id
+    assert cache_path.read_bytes() == published_cache
+    assert summary_path.read_bytes() == published_summary
+    captured = capsys.readouterr()
+    assert "Original" in captured.out and "Deeper" in captured.out
+    assert "Follow-up cache ID:" not in captured.err
+
+
+@pytest.mark.parametrize("option", [["--drill", "cluster 1"], ["--verify-freshness"]])
+def test_bound_cached_followup_rejects_another_topic(tmp_path, monkeypatch, capsys, option):
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    report = _report()
+    assert cli._write_last_run(report.topic, report)
+    cache = tmp_path / "last-report.json"
+    before = cache.read_bytes()
+
+    parser = cli.build_parser()
+    args = parser.parse_args([*option, "--followup-topic=Another topic", "--mock"])
+    with mock.patch.object(cli.pipeline, "run") as run, \
+         mock.patch.object(cli, "_verify_report_set") as verify:
+        assert cli._main(parser, args, []) == 2
+
+    run.assert_not_called()
+    verify.assert_not_called()
+    assert cache.read_bytes() == before
+    assert "No fresh cached report for the requested topic" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("option", [["--drill", "cluster 1"], ["--verify-freshness"]])
+def test_bound_cached_followup_rejects_a_replacement_for_the_same_topic(tmp_path, monkeypatch, capsys, option):
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    report = _report()
+    cache = tmp_path / "last-report.json"
+    assert cli._write_last_run(report.topic, report)
+    run_id = json.loads(cache.read_bytes())["run_id"]
+    assert f"[last30days] Follow-up cache ID: {run_id}\n" in capsys.readouterr().err
+
+    replacement = copy.deepcopy(report)
+    replacement.range_from = "2026-05-01"
+    replacement.range_to = "2026-05-08"
+    assert cli._write_last_run(replacement.topic, replacement)
+    before = cache.read_bytes()
+    assert json.loads(before)["run_id"] != run_id
+
+    parser = cli.build_parser()
+    args = parser.parse_args([*option, f"--followup-topic={report.topic}", f"--followup-run={run_id}", "--mock"])
+    with mock.patch.object(cli.pipeline, "run") as run, \
+         mock.patch.object(cli, "_verify_report_set") as verify:
+        assert cli._main(parser, args, []) == 2
+
+    run.assert_not_called()
+    verify.assert_not_called()
+    assert cache.read_bytes() == before
+    assert "No fresh cached report for the requested run" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("option", ["--drill=cluster 1", "--verify-freshness"])
+@pytest.mark.parametrize(
+    "new_input", ["--x-posts=x.json", "--reddit-threads=-", "--competitors-plan=plan.json", "--plan=-"],
+)
+def test_cached_followup_rejects_new_evidence_inputs(option, new_input, capsys):
+    parser = cli.build_parser()
+    args = parser.parse_args([option, new_input])
+    with mock.patch.object(cli.env, "get_config") as config, pytest.raises(SystemExit) as error:
+        cli._main(parser, args, [])
+    assert error.value.code == 2
+    config.assert_not_called()
+    assert "do not accept new plans or envelope files" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["topic", "--verify-freshness"],
+        ["--welcome"],
+        ["--drill=cluster 1", "--preflight"],
+        ["--verify-freshness", "--resolve-browser-consent"],
+    ],
+)
+@pytest.mark.parametrize(("flag", "value"), [("--followup-topic", "topic"), ("--followup-run", "a" * 32)])
+def test_followup_selectors_are_only_for_a_cached_action(options, flag, value, capsys):
+    parser = cli.build_parser()
+    args = parser.parse_args([*options, f"{flag}={value}"])
+    with mock.patch.object(cli.env, "get_config") as config, pytest.raises(SystemExit) as error:
+        cli._main(parser, args, [])
+    assert error.value.code == 2
+    config.assert_not_called()
+    assert f"{flag} requires" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("drill", [True, False])
@@ -751,7 +912,7 @@ def test_drill_gates_subreddit_context_on_source_allowlist(monkeypatch):
         return _report(drill=True)
 
     args = cli.build_parser().parse_args(["--drill", "cluster 1"])
-    snapshot = cli._CachedReport(report, None, Path("/tmp/last-report.json"), b"")
+    snapshot = cli._CachedReport(report, None, Path("/tmp/last-report.json"), b"", None)
     with mock.patch.object(cli, "_load_last_report_cache", return_value=snapshot), \
          mock.patch.object(cli.pipeline, "diagnose", return_value={}), \
          mock.patch.object(cli.pipeline, "run", side_effect=lambda **k: fake_run(**k)), \

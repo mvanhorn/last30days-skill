@@ -977,26 +977,35 @@ def test_render_surfaces_inline_flag_and_freshness_footer_table():
     assert "## Freshness Verification" in render.render_brief(report)
 
 
-def test_post_hoc_path_loads_updates_and_rewrites_cache(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("envelope_digest", "bound"),
+    [(None, False), ("b" * 64, False), ("b" * 64, True)],
+)
+def test_post_hoc_path_loads_updates_and_rewrites_cache(tmp_path, monkeypatch, capsys, envelope_digest, bound):
     item = _item("reddit", title="Widget API is open")
     report = _report(item)
     monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
-    assert cli._write_last_run(report.topic, report)
+    assert cli._write_last_run(report.topic, report, x_envelope_sha256=envelope_digest)
     cache_path = tmp_path / "last-report.json"
-    before = cache_path.read_bytes()
+    before_bytes = cache_path.read_bytes()
+    before = json.loads(before_bytes)
     real_replace = os.replace
     published = []
 
     def observe_publish(staged, target):
         assert target == cache_path
-        assert target.read_bytes() == before
+        assert target.read_bytes() == before_bytes
         published.append(Path(staged).read_bytes())
         real_replace(staged, target)
 
     monkeypatch.setattr(os, "replace", observe_publish)
-    args = cli.build_parser().parse_args(["--verify-freshness", "--mock", "--emit=json"])
+    parser = cli.build_parser()
+    options = ["--verify-freshness", "--mock", "--emit=json"]
+    if bound:
+        options.extend([f"--followup-topic={report.topic}", f"--followup-run={before['run_id']}"])
+    args = parser.parse_args(options)
 
-    rc = cli._run_cached_freshness(args, {})
+    rc = cli._main(parser, args, [])
 
     assert rc == 0
     updated = cache_path.read_bytes()
@@ -1004,7 +1013,9 @@ def test_post_hoc_path_loads_updates_and_rewrites_cache(tmp_path, monkeypatch, c
     payload = json.loads(updated)
     cached_verdicts = payload["reports"][0]["report"]["freshness_verdicts"]
     assert cached_verdicts[0]["verdict"] == "unsupported"
-    assert payload["timestamp"] == json.loads(before)["timestamp"]
+    assert payload["timestamp"] == before["timestamp"]
+    assert payload["run_id"] == before["run_id"]
+    assert payload["x_envelope_sha256"] == envelope_digest
     assert "Updated freshness verdicts" in capsys.readouterr().err
 
 
@@ -1015,12 +1026,14 @@ def test_post_hoc_freshness_preserves_concurrent_research(tmp_path, monkeypatch,
     replacement = _report(_item("reddit", title="Widget API is closed"))
     replacement.topic = new_topic
     monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
-    assert cli._write_last_run(original.topic, original)
+    assert cli._write_last_run(original.topic, original, x_envelope_sha256="2" * 64)
     cache_path = tmp_path / "last-report.json"
+    original_run_id = json.loads(cache_path.read_bytes())["run_id"]
     newest = []
     verify = cli._verify_report_set
 
     def verify_during_research(report, entity_reports, *, allow_network):
+        assert report.ranked_candidates[0].title == "Widget API is open"
         verify(report, entity_reports, allow_network=allow_network)
         assert cli._write_last_run(
             replacement.topic,
@@ -1031,13 +1044,18 @@ def test_post_hoc_freshness_preserves_concurrent_research(tmp_path, monkeypatch,
         newest.append(cache_path.read_bytes())
 
     monkeypatch.setattr(cli, "_verify_report_set", verify_during_research)
-    args = cli.build_parser().parse_args(["--verify-freshness", "--mock", "--emit=json"])
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "--verify-freshness", "--mock", "--emit=json",
+        f"--followup-topic={original.topic}", f"--followup-run={original_run_id}",
+    ])
 
-    assert cli._run_cached_freshness(args, {}) == 0
+    assert cli._main(parser, args, []) == 0
     output = capsys.readouterr()
     assert "freshness_verdicts" in output.out
     assert len(newest) == 1
     assert cache_path.read_bytes() == newest[0]
+    assert json.loads(newest[0])["run_id"] != original_run_id
 
 
 def test_opt_in_gating_accepts_flag_or_truthy_config():

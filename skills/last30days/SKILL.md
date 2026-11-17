@@ -118,7 +118,7 @@ Preserve the user's original request while handling setup. Classify library/feed
 
 For library search/feed/queue, run the selected offline procedure and relay its result. Never fall through to fresh research because the library is empty, SQLite lacks FTS5, or a queue name is unknown. An unknown queue-cover name requires listing exact queued names.
 
-For a follow-up, use existing findings unless the user requests a different topic or an explicit drill/freshness action. Do not rerun setup to answer a follow-up.
+Use existing findings for follow-ups unless asked for a new topic, drill, or freshness check. Skip setup. Retain each run's `Follow-up cache ID` in context.
 
 For fresh research or discovery, resolve whether the agent session has a usable web-search tool, including a deferred or connector-provided tool. If the host requires loading, selecting, or enabling that tool, do so through the host's mechanism before use. Use the available capability rather than requiring one particular tool name or schema.
 - When host web search is available, use it for applicable pre-research and supplements. Export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine.
