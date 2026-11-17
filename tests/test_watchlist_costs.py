@@ -120,6 +120,50 @@ def test_run_one_respects_spend_from_previous_failure(isolated_store, tmp_path, 
     assert store.get_daily_cost() == pytest.approx(1.25)
 
 
+@pytest.mark.parametrize(
+    ("cost", "unknown", "reason"),
+    [(1.25, 0, "Budget exceeded"), (0.4, 1, "Budget unknown")],
+)
+def test_removing_topic_preserves_budget_gate(isolated_store, cost, unknown, reason, capsys):
+    first = store.get_topic("First")
+    run_id = store.record_run(first["id"], status="failed", token_cost=cost)
+    store.update_run(run_id, cost_unknown=unknown)
+    watchlist.cmd_remove(SimpleNamespace(topic="First"))
+    assert json.loads(capsys.readouterr().out)["action"] == "removed"
+
+    watchlist.cmd_list(None)
+    listing = json.loads(capsys.readouterr().out)
+    assert [topic["name"] for topic in listing["topics"]] == ["Second", "Third"]
+    assert listing["budget_used"] == pytest.approx(cost)
+    assert listing["budget_unknown_runs"] == unknown
+    watchlist.cmd_run_one(SimpleNamespace(topic="Second"))
+    skipped = json.loads(capsys.readouterr().out)
+    assert skipped["status"] == "skipped"
+    assert skipped["reason"].startswith(reason)
+
+
+def test_late_usage_for_removed_run_does_not_overwrite_a_new_run(isolated_store):
+    third = store.get_topic("Third")
+    removed_run = store.record_run(third["id"], status="running")
+    store.update_run(removed_run, status="completed")
+    assert store.remove_topic("Third")
+    assert store.get_daily_unknown_cost_runs() == 1
+
+    replacement = store.add_topic("Replacement")
+    assert replacement["id"] == third["id"]
+    current_run = store.record_run(replacement["id"], token_cost=0.25)
+    assert current_run != removed_run
+    assert store.store_findings(
+        removed_run, third["id"], [{"source_url": "https://example.invalid/discarded"}],
+    ) == {"new": 0, "updated": 0}
+    store.update_run(removed_run, token_cost=1.25, cost_unknown=0)
+    assert store.get_daily_cost() == pytest.approx(1.50)
+    assert store.get_daily_unknown_cost_runs() == 0
+    assert store.get_latest_completed_runs(replacement["id"])[0]["token_cost"] == 0.25
+    assert store.get_stats()["runs_7d"] == 1
+    assert not store.search_findings("discarded")
+
+
 @pytest.mark.parametrize("failure", ["directory", "journal"])
 def test_prelaunch_setup_failure_does_not_block_later_research(
     isolated_store, tmp_path, monkeypatch, capsys, failure,
