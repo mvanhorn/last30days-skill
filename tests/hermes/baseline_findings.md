@@ -24,3 +24,15 @@ Totals: 14 CRITICAL, 36 HIGH, 25 MEDIUM, 1 LOW (76 findings).
   ~500KB of core runtime .py (evasive; contradicts R5) or shrinking the skill below 1MB (infeasible).
 - CAUTION (zero CRITICAL) is cleanly reachable and honest; --force then installs.
 - Structural limits: too_many_files 101>50 (MEDIUM, irrelevant); oversized_skill 1615KB>1024KB (HIGH).
+
+## Re-measure 2026-11-17: skills-guard-v16 (hermes-agent 27e38935), issue #1502
+
+v16 no longer honors a skill's own `.skillignore`, so it scans the whole skill directory.
+
+- Before (origin/main @ 4.3.0): **dangerous**, 117 findings, 7 CRITICAL:
+  - 6 `curl_pipe_shell` (supply_chain): the Grok CLI install hint `curl -fsSL https://x.ai/cli/install.sh | bash`
+    in references/setup-wizard.md, lib/prescriptions.py, lib/health.py (x2), lib/backends.py, lib/grok_x.py.
+  - 1 `prompt_injection_ignore` (injection): grok_x.py's defensive prompt quoted the phrase it was defending against.
+- After (hint names `npm install -g @xai-official/grok` and links the installer; prompt says "instruction-override"):
+  **caution**, 0 CRITICAL; `should_allow_install(force=True)` allows it.
+- `test_no_critical_scan_findings.py` now carries all 50 v16 CRITICAL rules and scans with no ignore list.

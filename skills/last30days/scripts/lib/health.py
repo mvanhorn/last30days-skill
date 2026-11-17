@@ -239,8 +239,8 @@ _FALLBACK_PRESCRIPTIONS: Dict[str, Tuple[str, str]] = {
         "reinstall ffmpeg (https://ffmpeg.org/download.html); the current binary won't run",
     ),
     "grok": (
-        "install the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash, then run `grok login`",
-        "reinstall the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash; the current binary won't run",
+        "install the Grok CLI: npm install -g @xai-official/grok (or the installer at https://x.ai/cli/install.sh), then run `grok login`",
+        "reinstall the Grok CLI: npm install -g @xai-official/grok@latest (or the installer at https://x.ai/cli/install.sh); the current binary won't run",
     ),
 }
 

@@ -304,7 +304,7 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
             requires=requires,
             detail="grok CLI not found on PATH",
             prescription=(
-                "install the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash, "
+                "install the Grok CLI: npm install -g @xai-official/grok (or the installer at https://x.ai/cli/install.sh), "
                 "then run `grok login`"
             ),
         )
