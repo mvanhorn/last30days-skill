@@ -2338,11 +2338,12 @@ def _discovery_strict_exit_code(
     )
     if not degraded:
         return 0
+    sys.stdout.flush()
     sys.stderr.write(
-        f"[last30days] strict-exit: degraded sources: {', '.join(degraded)}\n"
+        f"{health.STRICT_EXIT_PREFIX}{', '.join(degraded)}\n"
     )
     sys.stderr.flush()
-    return 3
+    return health.STRICT_EXIT_CODE
 
 
 def _require_discover_mock_parity(
@@ -2856,11 +2857,12 @@ def _strict_exit_code(
     })
     if not degraded:
         return 0
+    sys.stdout.flush()
     sys.stderr.write(
-        f"[last30days] strict-exit: degraded sources: {', '.join(degraded)}\n"
+        f"{health.STRICT_EXIT_PREFIX}{', '.join(degraded)}\n"
     )
     sys.stderr.flush()
-    return 3
+    return health.STRICT_EXIT_CODE
 
 
 def _audience_register_for_run(
