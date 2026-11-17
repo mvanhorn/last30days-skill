@@ -1163,7 +1163,9 @@ def _resolved_company(
 
     When the Wikidata lookup failed (not when it answered with nothing),
     Yahoo's symbol search is asked for the topic instead, and
-    ``company_lookup`` says how that went.
+    ``company_lookup`` says how that went. When Wikidata answered with
+    nothing and ``EXA_API_KEY`` is set, an official-site search can still
+    fill ``company`` and ``company_site``.
 
     With ``host_ticker`` the host passed ``--ticker``, which is then the only
     ticker source: Wikidata is asked for the company and its site but not for
@@ -1173,9 +1175,13 @@ def _resolved_company(
         return {}
     if host_ticker:
         return dict(
-            company_resolve.resolve_company(entity, listing=False, names=patent_lane)
+            company_resolve.resolve_company(
+                entity, listing=False, names=patent_lane, config=config,
+            )
         )
-    company = company_resolve.resolve_company(entity, names=patent_lane)
+    company = company_resolve.resolve_company(
+        entity, names=patent_lane, config=config,
+    )
     if isinstance(company, company_resolve.FailedLookup):
         backup = yahoo_finance.backup_company(entity, config)
         if backup is None:
@@ -1187,6 +1193,8 @@ def _resolved_company(
         ticker = f", ticker {company['ticker']}" if company.get("ticker") else ""
         if company.get("company_source") == yahoo_finance.BACKUP_SOURCE:
             ticker += " (Yahoo match)"
+        elif company.get("company_source") == company_resolve.EXA_COMPANY_SOURCE:
+            ticker += " (Exa site)"
         sys.stderr.write(f"[Resolve] {entity}: company {company['company']}{ticker}\n")
     if company.get("ticker") or company.get("ticker_candidates"):
         company["ticker_source"] = company.get("company_source") or "wikidata"
@@ -1305,8 +1313,9 @@ def _host_company_sites(
 
     The site the host passed with the name (``Name:site``) is used as it is:
     the host's web search found it, as it finds ``--official-site``. A name
-    passed alone is asked of the company resolver (Wikidata, no key), which
-    answers only for the names it is certain about.
+    passed alone is asked of the company resolver (Wikidata, no key; Exa
+    official-site fallback when ``EXA_API_KEY`` is set and Wikidata names
+    none), which answers only for the names it is certain about.
 
     The jobs lane reads that site's careers page instead of guessing a
     domain from the name, and only such a confirmed site can tie a board to
@@ -1322,7 +1331,9 @@ def _host_company_sites(
         name, site = company["name"], company.get("site") or ""
         if not site and lookups:
             site = str(
-                company_resolve.resolve_company(name, listing=False).get("company_site") or ""
+                company_resolve.resolve_company(
+                    name, listing=False, config=config,
+                ).get("company_site") or ""
             )
             if site:
                 sys.stderr.write(f"[Resolve] --company {name}: official site {site}\n")
@@ -4923,6 +4934,13 @@ def _main(
                     return 2
                 discovered = competitors_mod.discover_competitors(
                     topic, comp_count, config, lookback_days=args.lookback_days,
+                    is_company=(
+                        not main_company.get("company_via_person")
+                        and bool(
+                            main_company.get("company")
+                            or config.get("_company_signal")
+                        )
+                    ),
                 )
                 if not discovered:
                     sys.stderr.write(

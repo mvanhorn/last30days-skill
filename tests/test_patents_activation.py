@@ -231,7 +231,7 @@ def test_a_company_run_reads_the_company_names_for_the_patent_lane(monkeypatch, 
 
     observed = _run(monkeypatch, tmp_path, topic="Alphabet", wikidata=wikidata)
 
-    observed.company_resolver.assert_called_once_with("Alphabet", names=True)
+    observed.company_resolver.assert_called_once_with("Alphabet", names=True, config=mock.ANY)
     assert len(_subsidiary_label_requests(wikidata)) == 1
     (call,) = observed.lane.calls
     assert {"Google", "Waymo"} <= set(call["company"]["company_names"])
@@ -240,7 +240,9 @@ def test_a_company_run_reads_the_company_names_for_the_patent_lane(monkeypatch, 
 def test_a_company_run_with_a_host_ticker_reads_the_company_names_too(monkeypatch, tmp_path):
     observed = _run(monkeypatch, tmp_path, args=["--ticker", "MAIN:MainBrand"])
 
-    observed.company_resolver.assert_called_once_with("MainBrand", listing=False, names=True)
+    observed.company_resolver.assert_called_once_with(
+        "MainBrand", listing=False, names=True, config=mock.ANY,
+    )
 
 
 def test_hosted_run_never_asks_for_patents(monkeypatch):
@@ -409,7 +411,7 @@ def test_company_lookup_is_skipped_only_with_every_company_lane_excluded(monkeyp
     assert "company" not in every.report.artifacts["resolved"]
 
     two = _run(monkeypatch, tmp_path, config={"EXCLUDE_SOURCES": "jobs, yahoo_finance"})
-    two.company_resolver.assert_called_once_with("MainBrand", names=True)
+    two.company_resolver.assert_called_once_with("MainBrand", names=True, config=mock.ANY)
     assert [call["company"] for call in two.lane.calls] == [COMPANY]
     assert two.report.artifacts["patents"] == ARTIFACT
 

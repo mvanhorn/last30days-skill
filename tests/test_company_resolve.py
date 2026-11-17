@@ -781,3 +781,163 @@ def test_wikidata_requests_send_a_contact_user_agent(monkeypatch):
     for call in fake.calls:
         agent = (call.get("headers") or {}).get("User-Agent", "")
         assert "https://github.com/mvanhorn/last30days-skill" in agent
+
+
+def test_exa_fills_an_official_site_when_wikidata_names_nothing(monkeypatch):
+    fake = FakeWikidata()
+    monkeypatch.setattr(company_resolve.http, "get", fake)
+    exa = mock.Mock(return_value=([
+        {
+            "title": "AcmePayments | Billing APIs",
+            "url": "https://acmepayments.com/",
+            "snippet": "Billing infrastructure",
+        },
+        {
+            "title": "AcmePayments - Crunchbase",
+            "url": "https://www.crunchbase.com/organization/acmepayments",
+        },
+    ], {}))
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", exa)
+
+    result = company_resolve.resolve_company("AcmePayments", config={"EXA_API_KEY": "exa-key"})
+
+    # AcmePayments is company-shaped but not in the Wikidata fixture.
+    assert fake.calls
+    assert result == {
+        "company": "AcmePayments",
+        "company_site": "https://acmepayments.com/",
+        "company_source": "exa",
+    }
+    query, date_range, key = exa.call_args.args[:3]
+    assert "AcmePayments" in query
+    assert date_range is None
+    assert key == "exa-key"
+    # Only Exa's company index: a person or project with a matching domain
+    # (kanyewest.com, python.org) must not become a company, which would turn
+    # on the jobs and patents lanes and the company competitor index.
+    assert exa.call_args.kwargs.get("category") == "company"
+    assert "startPublishedDate" not in (exa.call_args.kwargs or {})
+
+
+def test_exa_official_site_uses_host_root_when_the_hit_is_not_the_homepage(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "AcmePayments blog", "url": "https://www.acmepayments.com/blog/hello"},
+    ], {})))
+
+    result = company_resolve.resolve_company("AcmePayments", config={"EXA_API_KEY": "exa-key"})
+
+    assert result["company_site"] == "https://acmepayments.com/"
+
+
+def test_exa_official_site_rejects_directory_and_lookalike_hosts(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Crunchbase", "url": "https://www.crunchbase.com/organization/stripe"},
+        {"title": "Stripe-like", "url": "https://stripes.com/"},
+        {"title": "Wikipedia", "url": "https://en.wikipedia.org/wiki/Stripe,_Inc."},
+    ], {})))
+
+    result = company_resolve.resolve_company("StripeCo", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {}
+    assert not isinstance(result, company_resolve.FailedLookup)
+
+
+def test_exa_official_site_rejects_shared_prefix_on_another_company(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Stripe", "url": "https://stripe.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("StripeCo", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {}
+    assert not company_resolve._exa_site_matches_topic("StripeCo", "https://stripe.com/")
+
+
+def test_exa_official_site_rejects_subdomain_of_unrelated_registrable_domain(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "StripeCo", "url": "https://stripeco.example.org/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("StripeCo", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {}
+    assert not company_resolve._exa_site_matches_topic(
+        "StripeCo", "https://stripeco.example.org/",
+    )
+
+
+def test_exa_official_site_accepts_anthropic_dot_com(monkeypatch):
+    monkeypatch.setattr(company_resolve, "_resolve", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Anthropic", "url": "https://www.anthropic.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Anthropic", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Anthropic",
+        "company_site": "https://anthropic.com/",
+        "company_source": "exa",
+    }
+    assert company_resolve._exa_site_matches_topic("Anthropic", "https://anthropic.com/")
+
+
+def test_exa_is_not_called_when_wikidata_already_named_the_company(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    exa = mock.Mock(side_effect=AssertionError("Exa must not run after a Wikidata hit"))
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", exa)
+
+    result = company_resolve.resolve_company("Stripe", config={"EXA_API_KEY": "exa-key"})
+
+    assert result["company"] == "Stripe"
+    assert result["company_site"] == "https://stripe.com/"
+    assert "company_source" not in result
+    exa.assert_not_called()
+
+
+def test_exa_is_not_called_after_a_failed_wikidata_lookup(monkeypatch):
+    monkeypatch.setattr(company_resolve.log, "source_log", mock.Mock())
+    monkeypatch.setattr(
+        company_resolve.http, "get",
+        FakeWikidata(error=http.HTTPError("Request timed out")),
+    )
+    exa = mock.Mock(side_effect=AssertionError("Failed Wikidata lookups keep the Yahoo path"))
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", exa)
+
+    result = company_resolve.resolve_company("Nvidia", config={"EXA_API_KEY": "exa-key"})
+
+    assert isinstance(result, company_resolve.FailedLookup)
+    exa.assert_not_called()
+
+
+def test_exa_is_not_called_without_a_key(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    exa = mock.Mock(side_effect=AssertionError("No Exa call without EXA_API_KEY"))
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", exa)
+
+    result = company_resolve.resolve_company("AcmePayments")
+
+    assert result == {}
+    exa.assert_not_called()
+
+
+def test_exa_failure_leaves_wikidata_nothing_certain(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    logged = mock.Mock()
+    monkeypatch.setattr(company_resolve.log, "source_log", logged)
+    monkeypatch.setattr(
+        company_resolve.grounding, "exa_search",
+        mock.Mock(side_effect=http.HTTPError("HTTP 400: INVALID_REQUEST_BODY", status_code=400)),
+    )
+
+    result = company_resolve.resolve_company("AcmePayments", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {}
+    assert not isinstance(result, company_resolve.FailedLookup)
+    assert logged.call_count >= 1
+    assert logged.call_args.kwargs == {"tty_only": False}
+    assert "AcmePayments" in logged.call_args.args[1]

@@ -1,7 +1,10 @@
 """Resolve a research topic to the company it names, through Wikidata.
 
 One conservative lookup, keyless. A wrong company or a wrong ticker is far
-worse than none, so every step that is not certain returns nothing:
+worse than none, so every step that is not certain returns nothing. When
+Wikidata names nothing and ``EXA_API_KEY`` is in the caller's config, an
+undated Exa official-site search is the only extra step: it can fill
+``company`` and ``company_site``, never a ticker.
 
 - The company is certain when Wikidata's top search hit for the topic carries
   the topic as its label or an alias and is a business, or is a person who is
@@ -51,8 +54,9 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
-from . import http, log
+from . import grounding, http, log
 from .company_names import name_key
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
@@ -100,6 +104,18 @@ _COMMON_TECH_TERMS = frozenset({
     "postgres", "mysql", "redis", "kubernetes", "docker",
 })
 
+# Directories, news, and social profiles that Exa often ranks near a named
+# company's own site. A hit on one of these is not an official homepage.
+_EXA_DIRECTORY_HOSTS = frozenset({
+    "wikipedia.org", "crunchbase.com", "linkedin.com", "bloomberg.com",
+    "pitchbook.com", "facebook.com", "twitter.com", "x.com", "youtube.com",
+    "instagram.com", "tiktok.com", "reddit.com", "glassdoor.com", "indeed.com",
+    "owler.com", "zoominfo.com", "cbinsights.com", "similarweb.com",
+    "google.com", "bing.com", "yahoo.com", "tracxn.com", "craft.co",
+})
+_EXA_HOMEPAGE_PATHS = frozenset({"", "/en", "/en-us", "/home"})
+EXA_COMPANY_SOURCE = "exa"
+
 
 class FailedLookup(dict):
     """The empty result of a lookup that failed, as opposed to one Wikidata
@@ -140,6 +156,7 @@ def _comparison_side_company_like(side: str) -> bool:
 
 def resolve_company(
     topic: str, *, listing: bool = True, names: bool = False,
+    config: dict | None = None,
 ) -> dict[str, Any]:
     """Return what is certain about the company a topic names.
 
@@ -158,11 +175,17 @@ def resolve_company(
     Without ``names`` the company's other names are not read: there is no
     ``company_names`` and no request for the subsidiaries' labels. Only a
     caller that searches filings under those names needs them.
+
+    ``config`` is optional. When Wikidata answers with nothing certain and
+    ``EXA_API_KEY`` is set, an undated official-site search can fill
+    ``company`` and ``company_site`` (``company_source`` is ``exa``). A
+    failed Wikidata lookup is not retried on Exa, so the Yahoo ticker
+    backup still runs.
     """
     if not company_topic_likely(topic):
         return {}
     try:
-        return _resolve(" ".join(topic.split()), listing, names)
+        found = _resolve(" ".join(topic.split()), listing, names)
     except Exception as exc:
         log.source_log(
             "Company",
@@ -170,6 +193,123 @@ def resolve_company(
             tty_only=False,
         )
         return FailedLookup()
+    if found:
+        return found
+    return _exa_site_fallback(topic, config)
+
+
+def _is_directory_host(host: str) -> bool:
+    return any(host == domain or host.endswith("." + domain) for domain in _EXA_DIRECTORY_HOSTS)
+
+
+def _compact_name(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.casefold())
+
+
+def _registrable_label(host: str) -> str:
+    """The registered-domain name (eTLD+1), same split as resolve.py.
+
+    ``stripe.com`` → ``stripe``; ``foo.co.uk`` → ``foo``;
+    ``stripeco.example.org`` → ``example``. Two-label ccSLDs in the last
+    two labels are ``co`` / ``com`` only; that is the repo's existing
+    conservative heuristic, not a public-suffix list.
+    """
+    labels = [part for part in host.split(".") if part]
+    if len(labels) < 2:
+        return ""
+    name = (
+        labels[-3]
+        if labels[-2] in {"co", "com"} and len(labels) >= 3
+        else labels[-2]
+    )
+    return _compact_name(name)
+
+
+def _exa_site_matches_topic(topic: str, url: str) -> bool:
+    """True when the URL's registrable label is this company, not a look-alike.
+
+    The compact topic (legal designators stripped via ``name_key``) must
+    equal the registrable label. Shared prefixes (``StripeCo`` / ``stripe.com``)
+    and a matching first label on someone else's domain
+    (``stripeco.example.org``) do not count. ``get`` / ``try`` / ``hq``
+    affixes are not trimmed: they would reintroduce prefix matches.
+    """
+    want = _compact_name(name_key(topic)) or _compact_name(topic)
+    host = _site_host(url)
+    if not want or not host or _is_directory_host(host):
+        return False
+    label = _registrable_label(host)
+    return bool(label) and label == want
+
+
+def _exa_homepage(url: str) -> str:
+    """The site root when the path is a homepage, else ''."""
+    parsed = urlparse(str(url).strip())
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+    host = _site_host(url)
+    if not host:
+        return ""
+    path = (parsed.path or "").rstrip("/").lower()
+    if path not in _EXA_HOMEPAGE_PATHS:
+        return ""
+    return f"https://{host}/"
+
+
+def _pick_exa_official_site(topic: str, items: list[dict]) -> str:
+    """The first Exa hit that looks like this company's own homepage."""
+    fallback = ""
+    for item in items:
+        url = str(item.get("url") or "")
+        if not _exa_site_matches_topic(topic, url):
+            continue
+        homepage = _exa_homepage(url)
+        if homepage:
+            return homepage
+        if not fallback:
+            host = _site_host(url)
+            fallback = f"https://{host}/" if host else ""
+    return fallback
+
+
+def _exa_site_fallback(topic: str, config: dict | None) -> dict[str, Any]:
+    """Official-site search when Wikidata named nothing.
+
+    Searches Exa's company index only (undated). An uncategorized search
+    would also match people and projects that own an exact-name domain
+    (kanyewest.com, python.org) and mark them as companies.
+    """
+    api_key = grounding.exa_api_key(config)
+    if not api_key:
+        return {}
+    try:
+        items, _artifact = grounding.exa_company_search(
+            f"official website of {topic}; exclude similarly named firms",
+            api_key,
+            count=5,
+            objective=(
+                f"Find the official homepage of {topic}. Rank that company's own "
+                "site first. Exclude similarly named firms, directories, news "
+                "articles, and social profiles."
+            ),
+        )
+    except Exception as exc:
+        log.source_log(
+            "Company",
+            f"Exa official-site lookup failed for {topic!r}: "
+            f"{type(exc).__name__}: {exc}",
+            tty_only=False,
+        )
+        return {}
+    site = _pick_exa_official_site(topic, items)
+    if not site:
+        return {}
+    log.source_log(
+        "Company",
+        f"Exa official site for {topic!r}: {site}",
+        tty_only=False,
+    )
+    return {"company": topic, "company_site": site, "company_source": EXA_COMPANY_SOURCE}
 
 
 def _resolve(topic: str, listing: bool = True, names: bool = False) -> dict[str, Any]:
