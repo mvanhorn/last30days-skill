@@ -1628,6 +1628,8 @@ def _audit_source_line(name: str, record: Dict[str, Any], state: str) -> str:
         descriptors.append(record["detail"])
     if descriptors:
         parts.append(" — " + "; ".join(descriptors))
+    if (record.get("probe") or {}).get("partial"):
+        parts.append("; " + str(record["probe"].get("detail") or "partial probe"))
     evidence = _run_evidence_suffix(record, state)
     if evidence:
         parts.append(evidence)
