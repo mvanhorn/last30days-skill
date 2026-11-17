@@ -13,6 +13,7 @@ READMES = {
     "简体中文": ROOT / "README.zh-CN.md",
     "العربية": ROOT / "README.ar.md",
     "فارسی": ROOT / "README.fa.md",
+    "Türkçe": ROOT / "README.tr.md",
 }
 
 
