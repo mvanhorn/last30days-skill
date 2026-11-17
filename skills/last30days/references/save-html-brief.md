@@ -17,6 +17,10 @@ The contract has two modes:
 ## How to fire it
 
 ```bash
+SYNTHESIS_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-synthesis.XXXXXXXX") || exit "$?"
+KEEP_SYNTHESIS=false
+trap 'if [ "$KEEP_SYNTHESIS" = false ]; then rm -f -- "$SYNTHESIS_FILE"; fi' EXIT
+
 # 1. Write your synthesis prose VERBATIM to a temp file. The synthesis is the
 #    "What I learned:" prose label, the bold-lead-in paragraphs with their
 #    inline citations, and the "KEY PATTERNS from the research:" numbered list.
@@ -28,10 +32,7 @@ The contract has two modes:
 #      wrote in chat.
 #    In both modes, do not paraphrase, summarize, or reorder. The HTML must read
 #    identically to the intended report in voice and citations.
-SYNTHESIS_FILE="/tmp/last30days-synthesis-${CLAUDE_SESSION_ID}.md"
-# >| not >: fixed path may already exist on a same-session re-run; a plain >
-# is refused under `set -o noclobber`.
-cat >| "${SYNTHESIS_FILE}" << 'SYNTHESIS_EOF'
+cat >| "${SYNTHESIS_FILE}" << 'SYNTHESIS_EOF' || exit "$?"
 What I learned:
 
 **{First headline}** - {body with [name](url) inline citations}
@@ -63,7 +64,7 @@ SLUG=$(printf '%s\n' "${TOPIC}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '
 # link refuses existing paths even when another exporter wins the same name.
 HTML_PATH=$(
   HTML_TMP=$(mktemp "${LAST30DAYS_MEMORY_DIR}/.last30days-html.XXXXXXXX") || exit "$?"
-  trap 'rm -f -- "${HTML_TMP}"' EXIT
+  trap 'rm -f -- "$HTML_TMP"' EXIT
   "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
     --emit=html \
     --cached-report \
@@ -93,10 +94,12 @@ HTML_PATH_PY
 ) || exit "$?"
 #    The cached report preserves hiring scope and comparison targeting.
 
-# 3. Finish with the artifact handoff described below. Do not print the saved
-#    path from the shell block; the chat handoff is the single user-visible
-#    completion message.
+# Retain both assignments for the publishing decision, even across shell calls.
+printf 'HTML_PATH=%q\nSYNTHESIS_FILE=%q\n' "$HTML_PATH" "$SYNTHESIS_FILE" || exit "$?"
+KEEP_SYNTHESIS=true
 ```
+
+Show only the finished HTML path in the chat handoff. Keep the owner-only draft until the access decision so the publisher can use the exact synthesis. If the user opens the local file, chooses Done, cancels, or uses a publisher that reads the HTML directly, remove the draft with `rm -f -- "$SYNTHESIS_FILE"`. Use the exact path from the save command. The tool output carries the saved paths between shell calls, and the chat handoff is the single user-visible completion message.
 
 ## Optional hosted publishing
 
@@ -123,17 +126,21 @@ Before the `ht-ml.app` choice, tell the user that public pages may be crawled or
 
 Agents should discover the current publishing mechanics for the selected service when needed, including by visiting the service site, rather than hard-coding detailed service-specific instructions in chat. For the built-in `ht-ml.app` path, the engine supports `--publish-html`; on the password-protected branch, pass the shared password through `LAST30DAYS_PUBLISH_PASSWORD` rather than command-line arguments.
 
-When the user chooses the built-in `ht-ml.app` path, add `--publish-html` to the same `--emit=html` command. Use `--output "$HTML_PATH"` rather than shell redirection so the engine can write the `.publish.json` companion metadata next to the local HTML file. On the password-protected branch, set `LAST30DAYS_PUBLISH_PASSWORD` in the subprocess environment instead of passing `--publish-password` in the shell command.
+When the user chooses the built-in `ht-ml.app` path, restore the saved `HTML_PATH` and `SYNTHESIS_FILE` assignments if the shell changed. Pass the saved HTML path as `--output "$HTML_PATH"` so the engine can write the `.publish.json` companion metadata next to it. On the password-protected branch, pass `LAST30DAYS_PUBLISH_PASSWORD` through the subprocess environment. If the draft is missing, stop before calling the engine and explain that the original synthesis is unavailable.
 
 ```bash
-LAST30DAYS_PUBLISH_PASSWORD="${PUBLISH_PASSWORD:-}" \
-"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
-  --emit=html \
-  --cached-report \
-  --synthesis-file "$SYNTHESIS_FILE" \
-  --output "$HTML_PATH" \
-  --publish-html \
-  >/dev/null
+(
+  [ -f "${SYNTHESIS_FILE:-}" ] || { printf '%s\n' 'The original synthesis draft is unavailable.' >&2; exit 1; }
+  trap 'rm -f -- "$SYNTHESIS_FILE"' EXIT
+  LAST30DAYS_PUBLISH_PASSWORD="${PUBLISH_PASSWORD:-}" \
+  "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
+    --emit=html \
+    --cached-report \
+    --synthesis-file "$SYNTHESIS_FILE" \
+    --output "$HTML_PATH" \
+    --publish-html \
+    >/dev/null
+)
 ```
 
 The hosted URL appears on stderr as `[last30days] Published HTML to https://...`. Confirm the result with the hosted URL. If the user chose password protection, also repeat the shared password they selected so they can send the URL and password together. The engine writes URL metadata to `<HTML_PATH>.publish.json`. The provider may return an `update_key`; treat it as secret. The engine deliberately does not write the update key to stdout, the HTML artifact, or `.publish.json` companion metadata.
@@ -215,7 +222,7 @@ The engine reuses `~/.config/last30days/last-report.json` when it is still withi
 
 ## Edge cases
 
-- **Topic with shell-special characters** (quotes, ampersands): the temp filename uses a slugified version, but the engine receives the raw topic. The `cat <<'SYNTHESIS_EOF'` quoted heredoc form handles arbitrary content without expansion. Your synthesis text can include any character.
+- **Topic with shell-special characters** (quotes, ampersands): the file name for the finished brief uses a slug, and the engine receives the raw topic. The quoted `SYNTHESIS_EOF` heredoc preserves synthesis text without expanding it. Pick a delimiter that does not occur on a line by itself in the synthesis.
 - **Very long synthesis**: no upper bound. The engine handles long markdown bodies. Just paste verbatim.
 - **Synthesis with images or non-ASCII**: emoji and Unicode pass through. Image tags pass through as raw HTML; the renderer doesn't transform them. If you didn't include images in chat, don't add them here.
 - **No `${LAST30DAYS_MEMORY_DIR}` set**: defaults to `~/Documents/Last30Days/` per the `Configuration` section of `references/runtime.md`.
