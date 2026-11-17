@@ -3814,6 +3814,7 @@ def _main(
 ) -> int:
     if command_started is None:
         command_started = time.monotonic()
+    finalization_deadline = command_started + pipeline.FINALIZATION_WORK_CUTOFF_SECONDS
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
@@ -3870,7 +3871,6 @@ def _main(
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
     if args.no_research_persistence:
         config["_no_research_persistence"] = True
-    config["_finalization_deadline"] = command_started + pipeline.FINALIZATION_WORK_CUTOFF_SECONDS
     if args.perplexity_search_type is not None:
         config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
@@ -4165,6 +4165,7 @@ def _main(
                 "config dir.\n"
             )
             return 2
+        config = {**config, "_finalization_deadline": finalization_deadline}
         if protocol_leg:
             return _run_discover_protocol_leg(args, config)
         return _run_discover(args, config)
@@ -4220,7 +4221,7 @@ def _main(
                 for value in args.polymarket_keywords.split(",")
                 if value.strip()
             ]
-        return _run_drill(args, config)
+        return _run_drill(args, {**config, "_finalization_deadline": finalization_deadline})
 
     if args.verify_freshness and not topic:
         return _run_cached_freshness(args, config)
@@ -4560,6 +4561,7 @@ def _main(
         config, requested_sources, safe=False,
         x_envelope=x_posts_envelope is not None,
     )
+    config = {**config, "_finalization_deadline": finalization_deadline}
 
     # Competitor sub-runs shallow-copy this config. The shared object makes the
     # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
