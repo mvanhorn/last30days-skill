@@ -36,22 +36,20 @@ def _deliver_findings(topic_name: str, counts: dict) -> None:
     # substring test ran before any scheme check, so a channel like
     # http://evil.example/hooks.slack.com was treated as Slack and POSTed in
     # cleartext to the wrong host. Match Slack on the exact hostname instead.
-    parsed = urllib.parse.urlparse(channel)
-    if parsed.scheme != "https":
-        print(
-            f"Delivery skipped: delivery_channel must be an https:// URL, got {channel!r}",
-            file=sys.stderr,
-        )
-        return
-
     try:
+        parsed = urllib.parse.urlparse(channel)
+        if parsed.scheme != "https":
+            print("Delivery skipped: delivery_channel must be an https:// URL", file=sys.stderr)
+            return
         if parsed.hostname == "hooks.slack.com":
             _send_slack_webhook(channel, message)
         else:
             _send_generic_webhook(channel, message)
-    except Exception as e:
-        # Don't fail the research run if delivery fails
-        print(f"Delivery failed: {e}", file=sys.stderr)
+    except http.HTTPError as error:
+        detail = f"HTTP {error.status_code}" if error.status_code is not None else error.outcome_state
+        print(f"Delivery failed: {detail}", file=sys.stderr)
+    except Exception as error:
+        print(f"Delivery failed: {type(error).__name__}", file=sys.stderr)
 
 
 def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
@@ -69,7 +67,7 @@ def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
 
 def _send_slack_webhook(url: str, text: str) -> None:
     """POST to Slack incoming webhook."""
-    http.post(url, json_data={"text": text}, timeout=10, retries=1)
+    http.post(url, json_data={"text": text}, timeout=10, retries=1, sensitive_url=True)
 
 
 def _send_generic_webhook(url: str, text: str) -> None:
@@ -83,6 +81,7 @@ def _send_generic_webhook(url: str, text: str) -> None:
         },
         timeout=10,
         retries=1,
+        sensitive_url=True,
     )
 
 
@@ -336,10 +335,14 @@ def cmd_config(args):
         # immediate feedback, rather than discovering it via a stderr line
         # buried in a research run hours later. Matches the delivery-time guard
         # in _deliver_findings.
-        if value and urllib.parse.urlparse(value).scheme != "https":
-            raise SystemExit(f"delivery_channel must be an https:// URL, got {value!r}")
+        try:
+            valid = not value or urllib.parse.urlparse(value).scheme == "https"
+        except ValueError:
+            valid = False
+        if not valid:
+            raise SystemExit("delivery_channel must be an https:// URL")
         store.set_setting("delivery_channel", value)
-        print(json.dumps({"action": "config", "key": "delivery_channel", "value": value}))
+        print(json.dumps({"action": "config", "key": "delivery_channel", "configured": bool(value)}))
         return
     raise SystemExit(f"Unknown config key: {args.key}")
 
