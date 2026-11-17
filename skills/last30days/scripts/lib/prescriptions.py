@@ -223,20 +223,6 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="bluesky-app-password-format-and-search-host",
     ),
     _entry(
-        "youtube", "transcription_key_missing",
-        cause=(
-            "no transcription provider key for the caption-free transcript "
-            "backstop (GROQ_API_KEY or OPENAI_API_KEY)"
-        ),
-        fix_nl=(
-            "add a free Groq key from console.groq.com to "
-            "~/.config/last30days/.env so caption-free videos still get "
-            "transcripts (OPENAI_API_KEY also works as the paid backstop)"
-        ),
-        fix_cli="GROQ_API_KEY=<your-groq-key>",
-        anchor="api-keys-env",
-    ),
-    _entry(
         "digg", "pp_cli_missing",
         cause="digg-pp-cli is not installed",
         fix_nl=(
