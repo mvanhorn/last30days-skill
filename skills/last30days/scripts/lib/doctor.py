@@ -2349,7 +2349,9 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
         if first:
             _record_probe_health(first[0], res)
         follow_ups = _PROBE_FOLLOW_UPS.get(name) or ()
-        if name == "reddit" and not res.get("ok"):
+        if (name == "reddit" and not res.get("ok")
+                and not res.get("transient")
+                and res.get("detail") != "probe exceeded deadline"):
             remaining = deadline - time.monotonic()
             if remaining > 0:
                 listing = _probe_url(
@@ -2357,7 +2359,7 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
                     headers={"User-Agent": http.USER_AGENT, "Accept": "application/json"},
                     body_check=reddit_health.arctic_probe_body,
                 )
-                if listing.get("ok"):
+                if listing.get("ok") and listing.get("detail") == "HTTP 200":
                     return {
                         "ok": False,
                         "partial": True,

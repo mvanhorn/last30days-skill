@@ -1289,7 +1289,7 @@ class LiveProbe(unittest.TestCase):
         self.assertIn("HTTP 200", res["detail"])
         self.assertIn("blocked", res["detail"])
         self.assertFalse(res.get("transient", False))
-        self.assertEqual(1, get.call_count)
+        self.assertEqual(2, get.call_count)
 
     def test_reddit_probe_arctic_failure_fails_the_floor(self):
         res, _get = self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), "<html>down</html>")
@@ -1366,7 +1366,7 @@ class LiveProbe(unittest.TestCase):
             mock.patch("lib.doctor.time.sleep") as sleep,
         ):
             res = doctor._probe_source("reddit", {}, 5)
-        self.assertEqual(1, http_ok.call_count)
+        self.assertEqual(2, http_ok.call_count)
         sleep.assert_not_called()
         self.assertFalse(res.get("transient", False))
 
@@ -1399,8 +1399,8 @@ class LiveProbe(unittest.TestCase):
         seen = {}
 
         def capture(req, **kwargs):
-            seen["ua"] = req.get_header("User-agent")
-            seen["accept"] = req.get_header("Accept")
+            seen.setdefault("ua", req.get_header("User-agent"))
+            seen.setdefault("accept", req.get_header("Accept"))
             return 500, None, urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
 
         with mock.patch("lib.bounded_get.get", capture):
