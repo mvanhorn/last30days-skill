@@ -1,0 +1,1 @@
+Added Outcrawl (https://outcrawl.ai) as a web search backend: set `OUTCRAWL_API_KEY` or pass `--web-backend=outcrawl`. It is auto-detected after Brave, Exa, Serper, and Parallel, works with `--auto-resolve`, and is listed in the Keychain/`pass` setup helpers, `doctor`, and the MCP manifest.

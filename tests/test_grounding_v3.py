@@ -321,6 +321,67 @@ class ParallelSearchTests(unittest.TestCase):
             self.assertEqual(0, artifact["resultCount"])
 
 
+class OutcrawlSearchTests(unittest.TestCase):
+    WINDOW = ("2026-03-01", "2026-03-27")
+    NOON = datetime(2026, 3, 27, 12, 0)
+
+    def test_outcrawl_search_posts_query_with_bearer_key(self):
+        with patch("lib.grounding.http.request", return_value={"hits": []}) as mock_req:
+            items, artifact = grounding.outcrawl_search("agent frameworks", self.WINDOW, "fake-oc-key")
+        self.assertEqual([], items)
+        self.assertEqual("outcrawl", artifact["label"])
+        self.assertEqual(0, artifact["resultCount"])
+        call = mock_req.call_args
+        self.assertEqual("POST", call.args[0])
+        self.assertEqual("https://api.outcrawl.ai/v1/search", call.args[1])
+        self.assertEqual("Bearer fake-oc-key", call.kwargs["headers"]["Authorization"])
+        self.assertEqual({"query": "agent frameworks", "limit": 5}, call.kwargs["json_data"])
+
+    def test_outcrawl_search_reads_age_prefix_and_filters_to_window(self):
+        response = {"hits": [
+            {"rank": 1, "title": "Fresh", "url": "https://example.com/fresh",
+             "snippet": "2 days ago - Fresh snippet text"},
+            {"rank": 2, "title": "Stale", "url": "https://example.com/stale",
+             "snippet": "2 months ago - Stale snippet text"},
+            {"rank": 3, "title": "Huge", "url": "https://example.com/huge",
+             "snippet": "9999 years ago - Unresolvable age"},
+            {"rank": 4, "title": "No URL", "url": "", "snippet": "dropped"},
+        ]}
+        with patch("lib.grounding.http.request", return_value=response), \
+             patch("lib.grounding._now", return_value=self.NOON):
+            items, artifact = grounding.outcrawl_search("test", self.WINDOW, "fake-key")
+        self.assertEqual(["Fresh"], [i["title"] for i in items])
+        self.assertEqual("2026-03-25", items[0]["date"])
+        self.assertEqual("Fresh snippet text", items[0]["snippet"])
+        self.assertEqual("https://example.com/fresh", items[0]["url"])
+        self.assertEqual("example.com", items[0]["source_domain"])
+        self.assertTrue(items[0]["id"].startswith("WO"))
+        self.assertEqual(1, artifact["resultCount"])
+
+    def test_outcrawl_search_keeps_undated_only_for_current_window(self):
+        response = {"hits": [
+            {"rank": 1, "title": "Undated", "url": "https://example.com/undated",
+             "snippet": "Plain snippet with no age"},
+        ]}
+        today = datetime.now(timezone.utc).date()
+        current = ((today - timedelta(days=30)).isoformat(), today.isoformat())
+        with patch("lib.grounding.http.request", return_value=response):
+            kept, _ = grounding.outcrawl_search("test", current, "fake-key")
+            dropped, artifact = grounding.outcrawl_search("test", self.WINDOW, "fake-key")
+        self.assertEqual(1, len(kept))
+        self.assertIsNone(kept[0]["date"])
+        self.assertEqual("undated_current", kept[0]["metadata"]["date_window_basis"])
+        self.assertEqual("Plain snippet with no age", kept[0]["snippet"])
+        self.assertEqual([], dropped)
+        self.assertEqual(0, artifact["resultCount"])
+
+    def test_outcrawl_search_tolerates_missing_hits(self):
+        with patch("lib.grounding.http.request", return_value={"usage": {}}):
+            items, artifact = grounding.outcrawl_search("test", self.WINDOW, "fake-key")
+        self.assertEqual([], items)
+        self.assertEqual(0, artifact["resultCount"])
+
+
 class WebSearchDispatchTests(unittest.TestCase):
     def test_auto_selects_brave_when_key_present(self):
         config = {"BRAVE_API_KEY": "test-key"}
@@ -345,6 +406,31 @@ class WebSearchDispatchTests(unittest.TestCase):
         with patch("lib.grounding.parallel_search", return_value=([], {})) as mock:
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
             mock.assert_called_once()
+
+    def test_auto_selects_outcrawl_when_only_outcrawl_key(self):
+        config = {"OUTCRAWL_API_KEY": "test-key"}
+        with patch("lib.grounding.outcrawl_search", return_value=([], {})) as mock:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock.assert_called_once()
+            self.assertEqual("test-key", mock.call_args.args[2])
+
+    def test_auto_prefers_parallel_over_outcrawl(self):
+        config = {"PARALLEL_API_KEY": "parallel-key", "OUTCRAWL_API_KEY": "outcrawl-key"}
+        with patch("lib.grounding.parallel_search", return_value=([], {})) as mock_parallel, \
+             patch("lib.grounding.outcrawl_search", return_value=([], {})) as mock_outcrawl:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock_parallel.assert_called_once()
+            mock_outcrawl.assert_not_called()
+
+    def test_explicit_outcrawl_dispatches_with_key(self):
+        config = {"OUTCRAWL_API_KEY": "test-key"}
+        with patch("lib.grounding.outcrawl_search", return_value=([], {})) as mock:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="outcrawl")
+            mock.assert_called_once()
+
+    def test_explicit_outcrawl_without_key_raises(self):
+        with self.assertRaises(RuntimeError):
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="outcrawl")
 
     def test_auto_returns_empty_when_no_keys_and_native_search(self):
         # On a native-search host (signal set) with no paid key, the engine

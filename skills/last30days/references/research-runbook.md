@@ -116,7 +116,7 @@ Known keyword-trap classes and how to handle each:
 - Pattern: Any non-Latin character, including mixed-script queries.
 - Risk: English-dominant Reddit, Hacker News, GitHub, and Polymarket may miss entity matches.
 - Required steps:
-  1. **Leave `--web-backend` unset unless the user requested a backend.** Configured API priority: Brave, Exa, Serper, Parallel. Without a search API key, use the host's native web search when available; otherwise retain the engine's keyless floor. Never force `--web-backend brave` for non-Latin text; explicit Brave requires a resolved `BRAVE_API_KEY`.
+  1. **Leave `--web-backend` unset unless the user requested a backend.** Configured API priority: Brave, Exa, Serper, Parallel, Outcrawl. Without a search API key, use the host's native web search when available; otherwise retain the engine's keyless floor. Never force `--web-backend brave` for non-Latin text; explicit Brave requires a resolved `BRAVE_API_KEY`.
   2. Skip `--subreddits` unless a known English-speaking or bilingual community covers the topic. Avoid generic communities.
   3. In Resolved, state the language, web search in that language, and possible English-source coverage gaps. Name a backend only if the engine or host reports it available.
   4. Flag missing X/Twitter and YouTube as the highest-value sources for deeper coverage.
