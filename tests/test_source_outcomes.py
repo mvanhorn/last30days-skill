@@ -1,6 +1,7 @@
 import socket
 import urllib.error
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -514,6 +515,21 @@ def test_strict_exit_returns_3_for_degraded_run(capsys):
     rc = cli._strict_exit_code(report, None, {"LAST30DAYS_STRICT_EXIT": "1"})
     assert rc == 3
     assert "strict-exit: degraded sources: x" in capsys.readouterr().err
+
+
+def test_strict_discovery_flushes_report_before_degraded_receipt(monkeypatch):
+    streams = MagicMock()
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=streams.stdout, stderr=streams.stderr))
+    source_status = {"x": _outcome("x", schema.AUTH_FAILED)}
+    assert cli._discovery_strict_exit_code(source_status, {}) == 0
+    assert streams.mock_calls == []
+
+    assert cli._discovery_strict_exit_code(source_status, {"LAST30DAYS_STRICT_EXIT": "1"}) == 3
+    assert streams.mock_calls == [
+        call.stdout.flush(),
+        call.stderr.write("[last30days] strict-exit: degraded sources: x\n"),
+        call.stderr.flush(),
+    ]
 
 
 def test_strict_exit_treats_payment_required_as_degraded(capsys):

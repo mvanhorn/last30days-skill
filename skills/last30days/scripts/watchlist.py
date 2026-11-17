@@ -18,12 +18,12 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
-from lib import env as envlib, http, schema, usage
+from lib import env as envlib, health, http, schema, usage
 
 
 # --- Webhook Delivery Functions ---
 
-def _deliver_findings(topic_name: str, counts: dict) -> None:
+def _deliver_findings(topic_name: str, counts: dict, *, degraded: bool = False) -> None:
     """Send webhook notification if delivery is configured and there are new findings."""
     channel = store.get_setting("delivery_channel", "")
     if not channel or counts.get("new", 0) == 0:
@@ -31,6 +31,8 @@ def _deliver_findings(topic_name: str, counts: dict) -> None:
     
     mode = store.get_setting("delivery_mode", "announce")
     message = _format_delivery_message(topic_name, counts, mode)
+    if degraded:
+        message += "\nResearch completed with degraded coverage."
     
     # Require https before routing. The old "hooks.slack.com" in channel
     # substring test ran before any scheme check, so a channel like
@@ -265,47 +267,6 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             timeout=300,
             env={**child_env, envlib.ALLOW_ENGINE_PLAN_VAR: "1"},
         )
-        duration = time.time() - start_time
-        if result.returncode != 0:
-            store.update_run(
-                run_id,
-                status="failed",
-                error_message=result.stderr[:500],
-                duration_seconds=duration,
-            )
-            return {
-                "topic": topic["name"],
-                "status": "failed",
-                "error": result.stderr[:200],
-                "duration": duration,
-            }
-
-        try:
-            findings = _findings_from_output(result.stdout)
-        except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
-            error = f"Invalid research output ({type(exc).__name__})"
-            store.update_run(run_id, status="failed", error_message=error, duration_seconds=duration)
-            return {"topic": topic["name"], "status": "failed", "error": error, "duration": duration}
-
-        counts = store.store_findings(run_id, topic_id, findings)
-        store.update_run(
-            run_id,
-            status="completed",
-            duration_seconds=duration,
-            findings_new=counts["new"],
-            findings_updated=counts["updated"],
-        )
-        
-        # Deliver webhook notification if configured
-        _deliver_findings(topic["name"], counts)
-        
-        return {
-            "topic": topic["name"],
-            "status": "completed",
-            "new": counts["new"],
-            "updated": counts["updated"],
-            "duration": duration,
-        }
     except subprocess.TimeoutExpired:
         duration = time.time() - start_time
         store.update_run(
@@ -316,14 +277,62 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
         )
         return {"topic": topic["name"], "status": "failed", "error": "timeout"}
     except json.JSONDecodeError as exc:
-        duration = time.time() - start_time
         store.update_run(
             run_id,
             status="failed",
-            error_message=f"Invalid JSON output: {exc}",
-            duration_seconds=duration,
+            error_message=f"Invalid saved search queries: {exc}",
+            duration_seconds=time.time() - start_time,
         )
         return {"topic": topic["name"], "status": "failed", "error": f"parse error: {exc}"}
+
+    duration = time.time() - start_time
+    degraded = result.returncode == health.STRICT_EXIT_CODE and any(
+        line.startswith(health.STRICT_EXIT_PREFIX) and line.removeprefix(health.STRICT_EXIT_PREFIX).strip()
+        for line in result.stderr.split("\n")
+    )
+    if result.returncode != 0 and not degraded:
+        store.update_run(
+            run_id,
+            status="failed",
+            error_message=result.stderr[:500],
+            duration_seconds=duration,
+        )
+        return {
+            "topic": topic["name"],
+            "status": "failed",
+            "error": result.stderr[:200],
+            "duration": duration,
+        }
+
+    try:
+        findings = _findings_from_output(result.stdout)
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
+        error = f"Invalid research output ({type(exc).__name__})"
+        store.update_run(run_id, status="failed", error_message=error, duration_seconds=duration)
+        return {"topic": topic["name"], "status": "failed", "error": error, "duration": duration}
+
+    counts = store.store_findings(run_id, topic_id, findings)
+    status = health.DEGRADED if degraded else "completed"
+    store.update_run(
+        run_id,
+        status=status,
+        duration_seconds=duration,
+        findings_new=counts["new"],
+        findings_updated=counts["updated"],
+    )
+
+    # Deliver webhook notification if configured
+    _deliver_findings(topic["name"], counts, degraded=degraded)
+
+    return {
+        "topic": topic["name"],
+        "status": status,
+        "new": counts["new"],
+        "updated": counts["updated"],
+        "duration": duration,
+    }
+
+
 def cmd_config(args):
     if args.key == "budget":
         store.set_setting("daily_budget", str(args.value))

@@ -16,7 +16,8 @@ func registerPreflightTool(s *server.MCPServer, cfg Config) {
 		mcplib.NewTool("preflight",
 			mcplib.WithDescription(
 				"Safely summarize what last30days would read, write, execute, and contact "+
-					"without running research, saving files, or reading browser cookies.",
+					"without running research, saving research files, or reading browser cookies. "+
+					"First use may initialize the local engine cache.",
 			),
 			mcplib.WithString("format", mcplib.Description("Output shape: 'text' (default) for a concise summary or 'json' for structured details.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
@@ -52,7 +53,8 @@ func makePreflightHandler(cfg Config) server.ToolHandlerFunc {
 		}
 		res, runErr := engine.Run(ctx, engine.RunOptions{
 			CacheDir: cacheDir,
-			Args:     preflightRunArgs(format, saveDir),
+			Args:     append(preflightRunArgs(format, saveDir), "--preflight-engine-cache-dir", cacheDir),
+			ExtraEnv: researchExtraEnv(),
 		})
 		if runErr != nil {
 			return mcplib.NewToolResultError(formatRunError(runErr, res)), nil
@@ -66,7 +68,7 @@ func preflightRunArgs(format, saveDir string) []string {
 	if format == "json" {
 		runArgs = append(runArgs, "--emit=json")
 	}
-	return runArgs
+	return withBrowserCookiePolicy(runArgs)
 }
 
 func preflightFormatArgument(args map[string]any) (string, error) {

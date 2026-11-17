@@ -22,6 +22,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
+from lib.private_files import write_private_text
 
 BRIEFS_DIR = Path.home() / ".local" / "share" / "last30days" / "briefs"
 
@@ -226,8 +227,7 @@ def _save_briefing(data: dict, suffix: str = ""):
     BRIEFS_DIR.mkdir(parents=True, exist_ok=True)
     date = datetime.now().strftime("%Y-%m-%d")
     path = BRIEFS_DIR / f"{date}{suffix}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+    write_private_text(path, json.dumps(data, indent=2, default=str), encoding="utf-8")
 
 
 def main():

@@ -53,6 +53,8 @@ const noReportChecklistEnv = "LAST30DAYS_NO_REPORT_CHECKLIST=1"
 const (
 	canonicalOutputEnd     = "# END OF last30days CANONICAL OUTPUT"
 	reportChecklistHeading = "## Before you write the report"
+	strictExitCode         = 3
+	strictExitPrefix       = "[last30days] strict-exit: degraded sources: "
 )
 
 // Register adds every tool this server exposes to s. The caller supplies a
@@ -127,10 +129,40 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 			ExtraEnv: researchExtraEnv(),
 		})
 		if runErr != nil {
+			if isDegradedReport(res, runErr, emit) {
+				output := withoutReportChecklist(withoutJobsDigest(string(res.Stdout)))
+				return mcplib.NewToolResultStructured(
+					map[string]string{"status": "degraded", "report": output},
+					"Research completed with degraded coverage.\n\n"+output,
+				), nil
+			}
 			return mcplib.NewToolResultError(formatRunError(runErr, res)), nil
 		}
 		return mcplib.NewToolResultText(withoutReportChecklist(withoutJobsDigest(string(res.Stdout)))), nil
 	}
+}
+
+// The engine emits the strict-exit receipt only after rendering. Hosted
+// clarification uses the same exit code without producing a report.
+func isDegradedReport(res *engine.RunResult, runErr error, emit string) bool {
+	if res == nil || res.ExitCode != strictExitCode || res.TimedOut || errors.Is(runErr, context.Canceled) {
+		return false
+	}
+	output := strings.TrimSpace(withoutReportChecklist(string(res.Stdout)))
+	if emit == "html" {
+		if !strings.HasPrefix(output, "<!DOCTYPE html>") || !strings.HasSuffix(output, "</html>") {
+			return false
+		}
+	} else if !strings.HasSuffix(strings.ReplaceAll(output, "\r\n", "\n"), "\n---\n"+canonicalOutputEnd) {
+		return false
+	}
+	for line := range strings.SplitSeq(string(res.Stderr), "\n") {
+		sources, matched := strings.CutPrefix(line, strictExitPrefix)
+		if matched && strings.TrimSpace(sources) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // withoutJobsDigest drops the engine's "## Jobs Digest" evidence section. The
@@ -181,15 +213,21 @@ func withoutReportChecklist(output string) string {
 func researchRunArgs(topic, emit, saveDir string, save bool) []string {
 	// Options first, positional topic last behind a `--` separator: a
 	// dash-prefixed topic must never be parsed as engine flags.
-	runArgs := []string{"--research-only", "--emit=" + emit}
-	if !browserCookiesAllowed() {
-		runArgs = append(runArgs, "--no-browser-cookies")
-	}
+	runArgs := withBrowserCookiePolicy([]string{"--research-only", "--emit=" + emit})
+	// Always pass --save-dir explicitly. An empty value skips the engine's
+	// LAST30DAYS_MEMORY_DIR fallback and disables report export.
 	runArgs = append(runArgs, "--save-dir", saveDir)
 	if !save {
 		runArgs = append(runArgs, "--no-research-persistence")
 	}
 	return append(runArgs, "--", topic)
+}
+
+func withBrowserCookiePolicy(args []string) []string {
+	if !browserCookiesAllowed() {
+		return append(args, "--no-browser-cookies")
+	}
+	return args
 }
 
 func researchExtraEnv() []string {

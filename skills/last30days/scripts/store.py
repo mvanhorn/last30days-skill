@@ -12,7 +12,6 @@ Database location: ~/.local/share/last30days/research.db
 
 import argparse
 import json
-import os
 import re
 import sqlite3
 import sys
@@ -25,6 +24,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import dedupe, entity_extract, schema
+from lib.private_files import prepare_private_sqlite_files
 
 DB_DIR = Path.home() / ".local" / "share" / "last30days"
 DB_PATH = DB_DIR / "research.db"
@@ -61,19 +61,7 @@ def ensure_private_db_files(db_path: Optional[Path] = None) -> Path:
     """Create/harden the research database and SQLite sidecars owner-only."""
     path = db_path or _get_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            pass
-        else:
-            os.close(fd)
-    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
-        try:
-            candidate.chmod(0o600)
-        except FileNotFoundError:
-            pass
-    return path
+    return prepare_private_sqlite_files(path, create=True)
 
 
 SCHEMA_V1 = """
@@ -262,7 +250,7 @@ CREATE INDEX IF NOT EXISTS idx_removed_run_usage_day ON removed_run_usage(run_da
 
 def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Open a connection with WAL mode and row factory."""
-    path = db_path or _get_db_path()
+    path = ensure_private_db_files(db_path)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -278,8 +266,6 @@ def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
 def init_db(db_path: Optional[Path] = None) -> Path:
     """Create database and tables if they don't exist. Returns the DB path."""
     path = db_path or _get_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
     conn = _connect(path)
     try:
         conn.executescript(SCHEMA_V1)

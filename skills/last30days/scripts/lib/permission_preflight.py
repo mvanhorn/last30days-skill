@@ -58,22 +58,52 @@ def _dedupe_writes(writes: list[dict[str, str]]) -> list[dict[str, str]]:
     return deduped
 
 
+def _conditional_x_cookie_routes(config: dict[str, Any]) -> list[str]:
+    if (
+        not env.x_policy(config).cookie_discovery
+        or env.cookie_access_denied(config)
+        or (config.get("AUTH_TOKEN") and config.get("CT0"))
+    ):
+        return []
+    from . import agentcookie, chrome_cdp
+
+    routes = []
+    if agentcookie.is_available(config):
+        routes.append("agentcookie (if available)")
+    if chrome_cdp.cookie_access_allowed(config) and any(
+        not endpoint.startswith(("https://", "wss://"))
+        for endpoint in chrome_cdp.candidate_endpoints(config)
+    ):
+        routes.append("Chrome CDP (if available)")
+    return routes if routes and env.x_extras_enabled(config) else []
+
+
 def build(
     config: dict[str, Any],
     diagnose: dict[str, Any],
     *,
     planned_save_dir: str | None = None,
     report_on_save_dir: str | None = None,
+    requested_sources: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a stable, secret-free permission preflight object."""
     browser = dict(diagnose.get("browser_cookies") or {})
     browser_mode = str(browser.get("mode") or "off")
-    browser_browsers = list(browser.get("browsers") or [])
-    browser_enabled = browser_mode in {"read", "plan_only"} and bool(browser_browsers)
-    if browser_enabled:
-        browser_status = "enabled_by_config"
-    else:
-        browser_status = "off"
+    browser_browsers = []
+    if browser_mode in {"read", "plan_only"}:
+        browser_browsers = list(browser.get("browsers") or [])
+        if (
+            (not requested_sources or "reddit" in requested_sources)
+            and "reddit" not in env.exclude_sources(config)
+            and not env.reddit_scrapecreators_primary(config)
+        ):
+            allowed, _ = env.reddit_session_gate({**config, "_BROWSER_COOKIE_MODE": "read"})
+            if allowed:
+                reddit_browser = str(config[env.REDDIT_FROM_BROWSER_VAR]).strip().lower()
+                if reddit_browser not in browser_browsers:
+                    browser_browsers.append(reddit_browser)
+        browser_browsers.extend(_conditional_x_cookie_routes(config))
+    browser_status = "enabled_by_config" if browser_browsers else "off"
 
     ignored_project_config = diagnose.get("ignored_project_config")
     config_source = str(diagnose.get("config_source") or "env_only")
@@ -86,8 +116,10 @@ def build(
         project_status = "not_active"
 
     local_writes = list(diagnose.get("local_writes") or [])
-    if planned_save_dir:
-        local_writes = [{"kind": "report", "path": str(planned_save_dir)}]
+    if planned_save_dir is not None:
+        local_writes = [write for write in local_writes if write.get("kind") != "report"]
+        if planned_save_dir:
+            local_writes.append({"kind": "report", "path": str(planned_save_dir)})
     local_writes = _dedupe_writes([dict(write) for write in local_writes])
     local_write_paths = {str(write.get("path") or "") for write in local_writes}
     conditional_writes: list[dict[str, str]] = []
@@ -235,10 +267,14 @@ def render_text(preflight: dict[str, Any]) -> str:
     else:
         lines.append("- none planned")
     for write in conditional_writes:
-        if write.get("kind") == "report_on_save":
-            lines.append(f"- Report (if saved): {write.get('path')}")
+        kind = write.get("kind", "file")
+        if kind == "engine_cache_on_first_use":
+            lines.append(f"- MCP engine cache (first use may initialize it): {write.get('path')}")
+        elif kind.endswith("_on_save"):
+            label = kind.removesuffix("_on_save").replace("_", " ").capitalize()
+            lines.append(f"- {label} (if saved): {write.get('path')}")
         else:
-            lines.append(f"- {write.get('kind', 'file')} (conditional): {write.get('path')}")
+            lines.append(f"- {kind} (conditional): {write.get('path')}")
 
     present_credentials = [
         str(info.get("label") or name)
