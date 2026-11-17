@@ -250,6 +250,8 @@ def test_cmd_config_delivery(temp_db, capsys):
     
     assert output["action"] == "config"
     assert output["key"] == "delivery_channel"
+    assert output["configured"] is True
+    assert args.value not in captured.out
 
 
 def test_cmd_config_delivery_rejects_non_https(temp_db):
@@ -258,9 +260,10 @@ def test_cmd_config_delivery_rejects_non_https(temp_db):
     args.key = "delivery"
     args.value = "http://evil.example/hooks.slack.com"
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as failure:
         watchlist.cmd_config(args)
 
+    assert args.value not in str(failure.value)
     assert not store.get_setting("delivery_channel")
 
 
