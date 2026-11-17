@@ -676,16 +676,9 @@ def _youtube_record(config):
     if record["status"] != health.OK:
         return record
     notes: List[str] = []
-    # yt-dlp already provides search + transcripts. A transcription key only
-    # backfills captions for the occasional caption-free video - an enhancement,
-    # not a sign YouTube is broken.
-    if not env.transcription_providers(config):
-        entry = prescriptions.get("youtube", "transcription_key_missing")
-        notes.append(
-            "search + transcripts work; a transcription key only adds "
-            "captions for caption-free videos"
-        )
-        record["fix"] = _fix_text(entry)
+    # No transcription-key advice here: the caption-free transcription module
+    # (lib/transcribe.py) is not called by any source yet, so a GROQ_API_KEY or
+    # OPENAI_API_KEY would change nothing.
     # Comment *text* is free via yt-dlp, so this caveat only fires when yt-dlp
     # is absent and the legacy ScrapeCreators path is the only one left. Never
     # prescribe a paid key for something the installed toolchain already does.
@@ -694,8 +687,7 @@ def _youtube_record(config):
             "comment text needs yt-dlp (free) or a ScrapeCreators key "
             "+ youtube_comments opt-in"
         )
-        # Actionable fix, matching the transcription branch. The transcription
-        # fix takes precedence when both caveats fire (one fix line per record).
+        # Actionable fix for the comment-text caveat.
         if not record["fix"]:
             if not config.get("SCRAPECREATORS_API_KEY"):
                 record["fix"] = _sc_fix()
