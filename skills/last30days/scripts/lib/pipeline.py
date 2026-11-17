@@ -360,6 +360,14 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
     return normalized
 
 
+def _excluded_sources(config: dict[str, Any]) -> set[str]:
+    return {
+        source.strip().lower()
+        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if source.strip()
+    }
+
+
 class NoRequestedSourceAvailable(RuntimeError):
     """None of the sources the user asked for with --search is configured."""
 
@@ -543,7 +551,7 @@ def available_sources(
             available.append("telegram")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.
-    exclude = {s.strip().lower() for s in (config.get("EXCLUDE_SOURCES") or "").split(",") if s.strip()}
+    exclude = _excluded_sources(config)
     if exclude:
         available = [s for s in available if s not in exclude]
     return available
@@ -2047,16 +2055,23 @@ def diagnose(
     *,
     safe: bool = False,
     x_envelope: bool = False,
+    probe_x: bool = True,
 ) -> dict[str, Any]:
     # ``x_envelope`` is True when a validated --x-posts envelope is present for
     # this invocation, so available_sources lists x even without a backend
     # and the optional-source omission note does not fire.
     requested_sources = normalize_requested_sources(requested_sources)
+    probe_x = (
+        probe_x and not safe and not x_envelope
+        and not env.x_host_lane_declared(config)
+        and (requested_sources is None or "x" in requested_sources)
+        and "x" not in _excluded_sources(config)
+    )
     google_key = _google_key(config)
-    x_status = env.get_x_source_status(config, probe=not safe)
+    x_status = env.get_x_source_status(config, probe=probe_x)
     # Compute once and reuse for both the diag flag and available_sources below.
     # safe=True (doctor/--diagnose/--preflight) must stay network-free.
-    x_pending = env.x_pending_browser_auth(config, local_only=safe)
+    x_pending = env.x_pending_browser_auth(config, local_only=not probe_x)
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"
@@ -2133,7 +2148,7 @@ def diagnose(
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
         "available_sources": available_sources(
-            config, requested_sources, x_pending=x_pending, local_only=safe,
+            config, requested_sources, x_pending=x_pending, local_only=not probe_x,
             x_envelope=x_envelope,
         ),
         "safe": safe,
@@ -2299,11 +2314,7 @@ def run(
         corpus_dirs or config.get("_CORPUS_DIRS"),
         config.get("LAST30DAYS_CORPUS_DIRS"),
     )
-    excluded_sources = {
-        source.strip().lower()
-        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
-        if source.strip()
-    }
+    excluded_sources = _excluded_sources(config)
     corpus_enabled = bool(resolved_corpus_dirs) and "corpus" not in excluded_sources
     corpus_requested = bool(requested_sources and "corpus" in requested_sources)
     if corpus_enabled and requested_sources and "corpus" not in requested_sources:

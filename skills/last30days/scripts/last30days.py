@@ -1996,7 +1996,7 @@ def _run_drill(
 
     sources = list(drill_plan.source_weights)
     drill_config = _drill_config(config, sources)
-    diag = pipeline.diagnose(drill_config, sources, safe=False)
+    diag = pipeline.diagnose(drill_config, sources, safe=args.mock)
     progress = ui.ProgressDisplay(
         f"{report.topic} — drill: {args.drill}",
         show_banner=True,
@@ -4550,8 +4550,13 @@ def _main(
         return law7_exit
 
     diag = pipeline.diagnose(
-        config, requested_sources, safe=False,
+        config, requested_sources, safe=args.mock,
         x_envelope=x_posts_envelope is not None,
+        probe_x=(
+            (external_plan is None or pipeline._external_plan_names_source(external_plan, "x"))
+            and not (args.hiring_signals and requested_sources is None)
+            and not any(entry.get("_x_envelope") for entry in comp_plan.values())
+        ),
     )
 
     # Competitor sub-runs shallow-copy this config. The shared object makes the
