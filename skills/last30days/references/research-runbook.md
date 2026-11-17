@@ -37,8 +37,20 @@ Common patterns:
 **Confirm the topic with a branded, truthful message. Build ACTIVE_SOURCES_LIST from the engine's own source diagnostic — do NOT infer availability by checking env vars or `.env`.** The engine resolves credentials at runtime from several places (process environment, `.env`, macOS Keychain, etc.), so a config-file check under-reports sources whose key is not written literally in `.env`. Run the engine's `--diagnose` and read its result:
 
 ```bash
-"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --diagnose
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --diagnose --include-research-backend
 ```
+
+`--include-research-backend` adds `research_backend` (`hosted` or `local`) to the diagnostic JSON. Include any requested `--corpus`, `--deep-research`, and `--perplexity-search-type` flags to account for local routing.
+
+### Hosted API route
+
+When `research_backend=hosted`, check the root's HTML/export intent before submitting research. Stop before submitting a hosted search when the user asked for HTML as the main output or an additional copy. Natural-language requests such as "give me a shareable HTML brief" also require this gate. Ask whether to run locally to produce the HTML.
+
+Ask whether to run locally for an explicit comparison or competitor request before peer discovery or submitting a hosted search. Per-entity research, peer discovery, and comparison synthesis use the local route. Wait for the user's choice. If the user chooses local research for any of these requests, leave `LAST30DAYS_API_BASE` unset for this run, repeat diagnosis, and follow the local route.
+
+For a supported hosted request, announce the hosted backend without listing local sources. Run Step 0.45, skip Steps 0.5 through 0.75, and use the first Step 1 command without `--plan`, `--auto-resolve`, host-generated targeting flags, or host X/Reddit envelopes. This applies to named entities as well. Preserve explicit user scope and output requests. Surface any unsupported-option error before offering a local run. Relay the server's finished report and its citations.
+
+### Local engine route
 
 `--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `meta_ads`→Meta Ads, `corpus`→Your files, `dripstack`→DripStack.
 
@@ -95,7 +107,7 @@ Known keyword-trap classes and how to handle each:
 - If the user declines to narrow ("just run it"), reframe to generic-demographic and scope to gift subreddits:
   - Drop the literal age (age 42 reads identically to 41 or 43 in social content; the number causes keyword collisions like Jackie Robinson #42)
   - Rewrite as `gifts for men in their 40s` or `gifts for men who [hobby]`
-  - Scope `--subreddits=GiftIdeas,BuyItForLife,AskMen,malefashionadvice,Dads` (plus hobby-specific subs when known)
+  - For local engine research, scope `--subreddits=GiftIdeas,BuyItForLife,AskMen,malefashionadvice,Dads` (plus hobby-specific subs when known)
   - Note in the Resolved block: "Reframed demographic shopping query. Dropping literal age; scoping to gift communities."
 
 **Class 2: Numeric / age keyword trap**
@@ -128,7 +140,7 @@ Known keyword-trap classes and how to handle each:
 2. If the topic matches a class, ALWAYS emit a visible pre-flight note before the Resolved block:
    - `Pre-Flight: topic matches {Class N} ({class name}). {Action: clarifying question / reframe / specificity ask}.`
 3. If the action is a clarifying question, STOP after emitting it. Wait for the user response before any engine work.
-4. If the topic does NOT match any class, emit a one-liner: `Pre-Flight: topic is a {named-entity / comparison / concept} - proceeding to Step 0.5.` Then proceed.
+4. If the topic does NOT match any class, give one line naming the topic class and proceed on the selected backend. Continue at Step 0.5 for local engine research.
 
 **One-turn gate rule:** do NOT run the engine on a keyword-trap topic without either (a) explicit user confirmation to "just run it anyway", or (b) a concrete reframed query.
 
@@ -566,28 +578,24 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 ### PRECONDITION GATE - read before running the script
 
-**STOP. Before invoking `last30days.py`, verify ALL of the following are true for this turn:**
+**For local engine research, verify all of the following before submitting the command. Hosted API research follows its separate route above.**
 
-1. **Platform branch chosen.** You know whether this session has WebSearch (Claude Code) or does not (OpenClaw, raw CLI, Codex without web tools).
-2. **If WebSearch IS available:** you MUST have run Step 0.55 (Pre-Research Intelligence - resolved subreddits, X handles, TikTok hashtags/creators, Instagram creators, GitHub user/repo where applicable) AND Step 0.75 (Query Planner - produced `QUERY_PLAN_JSON` according to its schema and guidance). These are NOT optional. If either was skipped, return to that step now.
-3. **If WebSearch is NOT available:** you MUST add `--auto-resolve` to the command instead. Do not attempt Steps 0.55 / 0.75 without WebSearch.
-4. **The command you are about to run uses `--emit=compact`.** `--emit md` is a debugging/inspection mode and is DISALLOWED as the primary user-facing flow. If you find yourself about to run `--emit md`, stop and switch to `--emit=compact`.
-5. **On WebSearch platforms the command MUST include `--plan -`** with the quoted JSON heredoc from Step 1, plus every resolved handle/subreddit/hashtag/creator flag from Step 0.55. Omit only flags whose value was not resolvable.
-
-**Degraded path (missing any of the above on a WebSearch platform) is a known regression shape. It produces bland 4-bullet summaries instead of rich synthesis. Do not take it.**
+1. With host WebSearch, complete Steps 0.55 and 0.75 before running the engine. Pass `--plan -` with the quoted JSON heredoc and every targeting flag resolved in Step 0.55. Return to either step if it was skipped.
+2. Without host WebSearch, skip Steps 0.55 and 0.75 and pass `--auto-resolve`.
+3. Use `--emit=compact` for the standard research flow. Reserve `--emit md` for inspection.
 
 ---
 
 
-**Grok Bot X:** on a Grok Bot host, follow the root routing gate for `grok-bot-x.md` before the engine command.
+**Grok Bot X:** for local engine research on a Grok Bot host, follow the root routing gate for `grok-bot-x.md` before the engine command.
 
-**Step 1: Run the research script with your query plan**
+**Step 1: Run the research script in the foreground**
 
 Run in the foreground with a `300000` ms timeout for ordinary research. For `--deep-research`, allow the configured `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` (default 600 seconds) plus five minutes. If foreground time is limited, start one managed background task or persistent session and wait for it to finish without resubmitting.
 
-**On hosts with web search, pass your QUERY_PLAN_JSON via the --plan flag.** This tells the Python script to use your plan instead of its internal planner. On hosts without web search, omit `--plan` and use `--auto-resolve`.
+**For local engine research on hosts with web search, pass your QUERY_PLAN_JSON via the --plan flag.** This tells the Python script to use your plan instead of its internal planner. For local research without host web search, omit `--plan` and use `--auto-resolve`.
 
-**IMPORTANT: Include `--x-handle={RESOLVED_HANDLE}` in the command. For comparison mode, use the single parallel comparison invocation in `comparison.md`, with outer targeting for the main entity and per-peer targeting in `--competitors-plan`. Also include the resolved Step 0.55 flags listed below.**
+**For local engine research, include `--x-handle={RESOLVED_HANDLE}` in the command. For comparison mode, use the single parallel comparison invocation in `comparison.md`, with outer targeting for the main entity and per-peer targeting in `--competitors-plan`. Also include the resolved Step 0.55 flags listed below.**
 
 Put only the parsed topic in `{TOPIC}` and pass engine flags separately. Choose a quoted heredoc delimiter absent from the topic's lines. Never evaluate raw slash input or use shell `$ARGUMENTS`.
 
@@ -641,10 +649,10 @@ Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 - `--trustpilot-domain={RESOLVED_TRUSTPILOT_DOMAIN}` (from Step 0.5d, only when `trustpilot_can_run`; the flag also activates Trustpilot)
 - Omit any flag where the value was not resolved (empty).
 
-**If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
+**For local engine research, if you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
 - `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context, then plans internally)
 
-Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
+Under a detected agent host, a local engine research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
 
 **Read the ENTIRE output.** It holds the top ranked clusters (not every item), `## Stats`, `## Posts by @handle`, `## Polymarket Markets`, the quote pool `## Top Community Comments`, the footer and a format checklist. The saved raw file is the archive.
 

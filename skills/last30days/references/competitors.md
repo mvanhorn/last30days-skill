@@ -2,6 +2,8 @@
 
 Read when competitor mode is selected. The root also requires `comparison.md`; retain each entity's own targeting and plan.
 
+Competitor mode uses the local engine only. Follow the research runbook's backend diagnosis before discovering peers. If it selects the hosted API, ask whether to run locally and wait for the user's choice before searching or planning.
+
 ### Competitor mode (`--competitors`)
 
 `--competitors` is a SKILL.md-level shortcut for vs-mode with auto-discovery. When host web search is available, YOU (the hosting reasoning model) do the discovery and Step 0.55, then invoke the web-search vs-topic path in `comparison.md`.

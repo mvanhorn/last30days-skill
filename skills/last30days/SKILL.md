@@ -102,8 +102,8 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Trending/discovery intent | Read [references/discovery.md](references/discovery.md) in full. | Run the complete host-judged protocol and relay its brief; skip ordinary topic planning, supplements, and synthesis. |
 | Ordinary topic research or source-health diagnosis | Read [references/research-runbook.md](references/research-runbook.md) in full. | Diagnose sources; stop after health-check-only guidance. For research, parse intent, run query quality/resolution/planning, execute the engine, and collect supplements. |
 | Before synthesizing ordinary or comparison research | Read [references/synthesis.md](references/synthesis.md) in full. | Synthesize grounded evidence (comparison bodies use the comparison template), then apply the root output laws and final checks. |
-| Explicit comparison intent | Read [references/comparison.md](references/comparison.md) in full. | Use comparison execution and its output exceptions before writing the comparison body. |
-| `--competitors` mode | Read [references/competitors.md](references/competitors.md) and [references/comparison.md](references/comparison.md) in full. | Use comparison execution and synthesis; preserve per-entity targeting. |
+| Explicit comparison intent | Read [references/comparison.md](references/comparison.md) in full. | Apply the backend gate, then use local comparison execution and synthesis. |
+| `--competitors` mode | Read [references/competitors.md](references/competitors.md) and [references/comparison.md](references/comparison.md) in full. | Apply the backend gate before discovering peers. Preserve per-entity targeting on the local route. |
 | Hiring intent or an engine `## Hiring Signals`, `## Jobs Digest` or `## Patent Digest` block | Read [references/hiring-signals.md](references/hiring-signals.md) and [references/patent-signals.md](references/patent-signals.md) in full. | Apply the jobs lane and its scoped planning exception; in standard runs, apply each file's section rules. |
 | `--agent` mode or explicit machine-readable JSON | Read [references/agent-mode.md](references/agent-mode.md) in full. | Apply structured output without treating absent consent as permission. |
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
@@ -122,9 +122,9 @@ For a follow-up, use existing findings unless the user requests a different topi
 
 For fresh research or discovery, resolve whether the agent session has a usable web-search tool, including a deferred or connector-provided tool. If the host requires loading, selecting, or enabling that tool, do so through the host's mechanism before use. Use the available capability rather than requiring one particular tool name or schema.
 - When host web search is available, use it for applicable pre-research and supplements. Export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine.
-- When no host web search is available, leave that signal unset. Skip Steps 0.55 and 0.75, and add `--auto-resolve`; the engine uses configured backends or its keyless floor.
+- When no host web search is available, leave that signal unset. For local engine research, skip Steps 0.55 and 0.75 and add `--auto-resolve`. The local engine uses configured backends or its keyless floor.
 
-**GROK BOT HOST RULE (every invocation, including `SETUP_COMPLETE=true`).** On an actual Grok Bot host, export `LAST30DAYS_HOST=grok-bot` in every engine shell. Do not infer this host from `CURSOR_AGENT` alone; Cursor also sets it. Load the Grok Bot X lane reference through the gate above and fetch X yourself first: the built-in X tools (namespace `x`), else the "X for Grok Bot" plugin. Export `LAST30DAYS_X_HOST_LANE=1` with its `--x-posts` envelope only when posts came back. Never read a browser session on a Grok Bot. Never place post text unquoted in a shell command; write envelopes only with a single-quoted heredoc delimiter or tool file output. First-run Grok Bot uses the Grok Bot Prose Flow; Cursor uses the Non-Modal Prose Flow.
+**GROK BOT HOST RULE (every invocation, including `SETUP_COMPLETE=true`).** On Grok Bot, export `LAST30DAYS_HOST=grok-bot` in every engine shell. Do not infer Grok Bot from `CURSOR_AGENT` alone. For local research, read the Grok Bot X reference and try built-in X tools (namespace `x`), then "X for Grok Bot". Set `LAST30DAYS_X_HOST_LANE=1` with `--x-posts` only when posts came back. Never read a browser session on a Grok Bot. Never place post text unquoted in a shell command. Write envelopes with a single-quoted heredoc delimiter or tool file output. Grok Bot uses Grok Bot Prose Flow. Cursor uses Non-Modal Prose Flow.
 
 **FIRST-RUN GATE - after resolving host web search, before topic research:**
 
@@ -146,10 +146,10 @@ If a topic is waiting and the user declines X/browser access or chooses Skip, re
 
 After the gate:
 - Trending, globally or in a domain: load discovery and use LAW 11. A user-typed `--trending` is intent, not an engine flag or topic. Bare global trending requires no domain question.
-- Topic supplied: load the topic runbook. Run Step 0.45 query quality before resolution, then all applicable Steps 0.5/0.55/0.75 before execution. Do not ask about an unspecified target tool before research.
+- Topic supplied: load the topic runbook and follow its backend diagnosis and Step 0.45. Run applicable resolution and planning steps locally. Do not ask about an unspecified target tool before research.
 - No topic supplied: ask one short topic question and wait; do not research or WebSearch.
 
-Use the engine's `--diagnose` `available_sources` for source announcements, never credential-file guesses. Before research relying on login-backed sources, consult `doctor --cached --json` as the runbook specifies. A health-check request uses the runbook's doctor procedure, not a topic report.
+Use the engine's `--diagnose` `available_sources` for local source announcements, never credential-file guesses. Before research relying on login-backed sources, consult `doctor --cached --json` as the runbook specifies. A health-check request uses the runbook's doctor procedure, not a topic report.
 
 **Save-directory resolution:** Query trusted engine configuration with `--resolve-save-dir`; never source a `.env` file. A one-off user directory belongs on that resolver command. Resolve once per research/discovery run and carry the exact value, including an empty string, into every later command and every discovery leg. Restore it in later shell calls rather than resolving again. An absent setting defaults to `~/Documents/Last30Days`; explicitly empty disables saves and the saved appendix.
 
@@ -157,7 +157,7 @@ Historical `## From your library` findings may inform synthesis as dated context
 
 ## Output contract
 
-Apply these presentation defaults only where compatible with governing host/tool requirements and user instructions. User formatting preferences, including host memory, take precedence. The paragraph headline phrase is report structure, not a formatting default: a general style preference alone does not remove it. Only an instruction naming this report or arriving with the request, a host or operator requirement, or a channel that does not render markdown does. The laws resolve conflicts within this skill. LAWs 1, 3, 5, 6, 7, and 8 apply to every query type; LAWs 2 and 4 have explicit comparison exceptions. Selected modes keep scoped exceptions: discovery relays its brief; hiring uses its scoped title; agent mode omits the invitation/wait and uses its report structure. Explicit machine-readable JSON uses `--emit=json` and verbatim engine stdout, with no prose badge, synthesis, footer, or invitation added.
+Follow governing host/tool and user instructions. User formatting preferences, including host memory, take precedence. The paragraph headline phrase is report structure, not a formatting default: a general style preference alone does not remove it. Only an instruction naming this report or arriving with the request, a host or operator requirement, or a channel that does not render markdown can override it. Use the local template below for local output. Comparisons, discovery, hiring, and agent mode follow scoped templates. Agent mode omits the invitation and wait. Explicit machine-readable JSON uses `--emit=json` and verbatim engine stdout, with no prose badge, synthesis, footer, or invitation added. On the hosted API route, relay the server's report and citations using the runbook.
 
 **BADGE (MANDATORY, FIRST LINE OF OUTPUT):** Copy the engine's first line (`🌐 last30days · ...`) verbatim as line 1. Put no other text on that line. Follow with one blank line.
 
@@ -179,9 +179,7 @@ GENERAL / NEWS / PROMPTING / RECOMMENDATIONS use `What I learned:` on line 3 and
 
 **Per-run source outcomes (doctor-aligned):** Read `## Partial Coverage` and `Report.source_status`. `no-results` means clean completion with zero matches. `partial`, `rate-limited`, `auth-failed`, `unreachable`, `timeout`, `schema-drift`, `skipped-unconfigured`, and `error` do not establish that a source was quiet. Never say "nothing on X/Reddit/YouTube" for those states; qualify partial coverage and use only returned evidence. The footer has counts, not outcomes. Do not invent repair prescriptions or add outcome text to it. Plain doctor predicts configuration health; `source_status` reports this run, and `doctor --postmortem` reads those outcomes from the last-run cache.
 
-**LAW 7 - YOU ARE THE PLANNER. `--plan` IS MANDATORY ON NAMED-ENTITY TOPICS.** The hosting reasoning model generates the JSON query plan without an external provider key. Internal planning/fallback is a headless/cron path. Named entities include proper nouns, products, people, projects, and topics benefiting from handle resolution. Before the research command, verify it contains `--plan -` with the quoted JSON heredoc from Research Execution; otherwise stop and generate the plan (with any `polymarket_hints`) through Step 0.75. "Provider" in an engine message does not mean you need credentials to write your own plan. The explicit no-host-WebSearch and jobs-only exceptions remain scoped to their runbook/mode procedures.
-
-Agent research without `--plan` exits 2 before live probes unless exempt.
+**LAW 7 - YOU ARE THE PLANNER. `--plan` IS MANDATORY ON LOCAL NAMED-ENTITY TOPICS.** With `research_backend=hosted`, the API plans server-side. For local research on proper nouns, people, products, projects, and topics needing handle resolution, write the Step 0.75 JSON plan yourself, including applicable `polymarket_hints`. This needs no provider key. Verify the command passes `--plan -` before running it. The engine exits 2 before live probes if a required plan is absent. Internal planning is for headless/cron or the explicit no-host-WebSearch and jobs-only routes.
 
 Pass plans on stdin using `--plan -` and a quoted heredoc delimiter that does not occur as a line in the JSON, with no temporary file or cleanup trap. Run the heredoc directly in the shell tool. Never wrap the invocation in `bash -lc '...'` or `zsh -lc '...'`; apostrophes in search/ranking strings must remain data.
 
@@ -211,14 +209,14 @@ Check governing formatting/citation instructions first. Skip a conflicting prese
 5. If Polymarket markets bear on a story, give odds and movement on odds lines (at most three) or inline; never dollar volume.
 6. Preserve every required citation. Omit only unnecessary duplicate trailing source lists.
 7. Engagement counts select evidence; outside COUNTS IN PROSE exceptions, print one only when its size is the finding.
-8. On host-WebSearch paths, verify `--emit=compact --plan -` with a quoted JSON heredoc and every applicable resolved handle/subreddit/hashtag/creator flag. If protocol was skipped, return to resolution/planning and run it; do not hide the engine's pre-research warning.
-9. For person topics, resolve at least `--x-handle`, `--github-user`, and `--subreddits`, typically `--x-related`, unless resolution explicitly established no account. A lone X handle is insufficient.
+8. On local engine paths with host WebSearch, verify `--emit=compact --plan -` with a quoted JSON heredoc and every applicable resolved handle/subreddit/hashtag/creator flag. If protocol was skipped, return to resolution/planning and run it; do not hide the engine's pre-research warning.
+9. For person topics on local engine paths, resolve at least `--x-handle`, `--github-user`, and `--subreddits`, typically `--x-related`, unless resolution explicitly established no account. A lone X handle is insufficient.
 
 If one regeneration cannot satisfy a data-backed check, display the best supported result and name the unsatisfied check. Never fabricate missing evidence.
 
 ## HTML and follow-up handoff
 
-HTML/export intent includes `--emit=html`, `--emit:html`, `--html`, or a natural-language request for an HTML brief, shareable document, or file for sharing. These are skill intent signals, not the full Python CLI contract. If triggered, read the HTML reference through the root gate before finishing. Otherwise skip that read and save flow.
+HTML/export intent includes `--emit=html`, `--emit:html`, `--html`, or a natural-language request for an HTML brief or shareable file. These are skill intent signals, not the full Python CLI contract. Classify this intent before submitting fresh research. Apply the runbook's hosted API gate and read the HTML reference through the root gate before finishing.
 
 Follow the HTML reference exactly: local file first, absolute path, open locally when supported and implied, and its concise handoff for an HTML deliverable. Never re-research to render cached findings. Never upload/publish without an explicit hosted-sharing request and disclosure that the link may be public/indexed unless protected. Never add debug/data-quality warnings to a shareable artifact or improvise a save path.
 
