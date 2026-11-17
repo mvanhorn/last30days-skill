@@ -228,6 +228,52 @@ class CompetitorDiscoveryTests(unittest.TestCase):
             f"Expected Drake and Kendrick Lamar in {results}",
         )
 
+    def test_exa_human_site_keeps_keyword_competitor_path(self):
+        config = {
+            "BRAVE_API_KEY": "brave-key",
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Kanye West",
+                "company_site": "https://kanyewest.com/",
+                "company_source": "exa",
+                "company_via_person": True,
+            },
+        }
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(KANYE_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Kanye West", 2, config)
+        exa.assert_not_called()
+        joined = " ".join(results)
+        self.assertTrue(
+            "Drake" in joined and "Kendrick Lamar" in joined,
+            f"Expected Drake and Kendrick Lamar in {results}",
+        )
+
+    def test_exa_non_business_site_keeps_keyword_competitor_path(self):
+        config = {
+            "BRAVE_API_KEY": "brave-key",
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Python",
+                "company_site": "https://python.org/",
+                "company_source": "exa",
+                "company_peer_discovery": "keyword",
+            },
+        }
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Python", 2, config)
+        exa.assert_not_called()
+        self.assertTrue(results)
+
     def test_exa_strips_trailing_and_unbalanced_parentheticals(self):
         config = {"EXA_API_KEY": "exa-key"}
         exa_items = [

@@ -35,8 +35,12 @@ GOOGLE = "Q95"
 class FakeWikidata:
     """Stands in for ``http.get`` and answers from the recorded fixture."""
 
-    def __init__(self, entities: dict | None = None, error: Exception | None = None):
+    def __init__(
+        self, entities: dict | None = None, error: Exception | None = None,
+        search: dict | None = None,
+    ):
         self.entities = {**FIXTURE["entities"], **(entities or {})}
+        self.search = {**FIXTURE["search"], **(search or {})}
         self.error = error
         self.calls: list[dict] = []
 
@@ -47,7 +51,7 @@ class FakeWikidata:
             raise self.error
         action = params.get("action")
         if action == "wbsearchentities":
-            return FIXTURE["search"].get(params["search"], {"search": [], "success": 1})
+            return self.search.get(params["search"], {"search": [], "success": 1})
         if action == "wbgetentities":
             return {
                 "entities": {
@@ -941,3 +945,101 @@ def test_exa_failure_leaves_wikidata_nothing_certain(monkeypatch):
     assert logged.call_count >= 1
     assert logged.call_args.kwargs == {"tty_only": False}
     assert "AcmePayments" in logged.call_args.args[1]
+
+
+def test_wikidata_exposes_why_nothing_is_certain(monkeypatch):
+    cases = (
+        ("AcmePayments", company_resolve.WIKIDATA_NONE),
+        ("Kanye West", company_resolve.WIKIDATA_HUMAN),
+        ("Rust", company_resolve.WIKIDATA_OTHER),
+    )
+    for topic, kind in cases:
+        result, fake = _resolve(monkeypatch, topic)
+        assert result == {}
+        assert isinstance(result, company_resolve.UncertainLookup)
+        assert result.kind == kind
+        assert fake.calls
+        assert not isinstance(result, company_resolve.FailedLookup)
+
+
+def test_exa_keeps_a_human_site_and_marks_via_person(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Kanye West", "url": "https://www.kanyewest.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Kanye West", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Kanye West",
+        "company_site": "https://kanyewest.com/",
+        "company_source": "exa",
+        "company_via_person": True,
+    }
+
+
+def test_exa_python_style_language_uses_keyword_peers(monkeypatch):
+    python = copy.deepcopy(FIXTURE["entities"]["Q575650"])
+    python["id"] = "Q28865"
+    python["labels"] = {
+        "en": {"language": "en", "value": "Python"},
+        "mul": {"language": "mul", "value": "Python"},
+    }
+    fake = FakeWikidata(
+        entities={"Q28865": python},
+        search={"Python": {
+            "search": [{"id": "Q28865", "label": "Python"}],
+            "success": 1,
+        }},
+    )
+    monkeypatch.setattr(company_resolve.http, "get", fake)
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Python", "url": "https://www.python.org/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Python", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Python",
+        "company_site": "https://python.org/",
+        "company_source": "exa",
+        "company_peer_discovery": "keyword",
+    }
+    assert "company_via_person" not in result
+
+
+def test_exa_modal_labs_matches_modal_com(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Modal", "url": "https://modal.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Modal Labs", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Modal Labs",
+        "company_site": "https://modal.com/",
+        "company_source": "exa",
+    }
+    assert company_resolve._exa_site_matches_topic("Modal Labs", "https://modal.com/")
+    assert not company_resolve._exa_site_matches_topic("StripeCo", "https://stripe.com/")
+    assert not company_resolve._exa_site_matches_topic(
+        "StripeCo", "https://stripeco.example.org/",
+    )
+
+
+def test_exa_browserbase_is_an_unresolved_company(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Browserbase", "url": "https://www.browserbase.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Browserbase", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Browserbase",
+        "company_site": "https://browserbase.com/",
+        "company_source": "exa",
+    }
+    assert "company_via_person" not in result
+    assert "company_peer_discovery" not in result

@@ -1,0 +1,1 @@
+Exa official-site fallback still fills a person's or project's own domain, but Wikidata humans keep `company_via_person` and non-business hits skip the company competitor index. A trailing generic word such as Labs is trimmed once so Modal Labs matches modal.com without reopening prefix matches.
