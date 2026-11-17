@@ -194,6 +194,7 @@ def test_source_refetch_helpers_use_shared_http_wrapper(monkeypatch):
         "request",
         lambda *_args, **_kwargs: {
             "stargazers_count": 123,
+            "visibility": "public",
             "html_url": github_item.url,
             "updated_at": "2026-07-10T12:00:00Z",
         },
@@ -841,9 +842,9 @@ def test_polymarket_refetch_marks_resolved_market_movement_stale(monkeypatch):
 def test_github_refetch_reuses_resolved_gh_cli_token(monkeypatch):
     item = _item(
         "github",
-        title="owner/private",
-        url="https://github.com/owner/private",
-        container="owner/private",
+        title="owner/public",
+        url="https://github.com/owner/public",
+        container="owner/public",
     )
     seen_headers = []
     monkeypatch.setattr(github, "_resolve_token", lambda: "gh-cli-token")
@@ -852,6 +853,7 @@ def test_github_refetch_reuses_resolved_gh_cli_token(monkeypatch):
         "request",
         lambda *_args, **kwargs: seen_headers.append(kwargs["headers"]) or {
             "stargazers_count": 7,
+            "visibility": "public",
             "html_url": item.url,
         },
     )
@@ -1292,6 +1294,7 @@ def test_refetch_datum_accepts_repo_slug_datum_key(monkeypatch):
         "request",
         lambda _method, url, **_kwargs: seen_urls.append(url) or {
             "stargazers_count": 42,
+            "visibility": "public",
             "html_url": "https://github.com/a/b",
         },
     )
