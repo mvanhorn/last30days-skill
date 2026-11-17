@@ -2750,7 +2750,7 @@ def run(
             to_date=to_date,
             all_time=corpus_all_time,
             limit=settings["per_stream_limit"],
-            cache_dir=env.CONFIG_DIR,
+            cache_dir=None if config.get("_no_research_persistence") else env.CONFIG_DIR,
         )
         prepared_query = relevance.PreparedQuery(primary.ranking_query)
         lookback_window_days = (

@@ -80,6 +80,8 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 
 ### Local files
 
+MCP research defaults to `save=false`. It returns the report to the client and skips the report export, last-run and report caches, corpus text cache, and SQLite findings. Engine installation and source diagnostics can still use local caches.
+
 | Path | Contents | Created when |
 |---|---|---|
 | `LAST30DAYS_MEMORY_DIR` (default `~/Documents/Last30Days`) | Saved reports | Every run, unless the setting is empty |

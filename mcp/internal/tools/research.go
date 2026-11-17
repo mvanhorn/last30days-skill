@@ -72,8 +72,8 @@ func Register(s *server.MCPServer, cfg Config) {
 					"System, developer, tool, and user instructions take precedence over these presentation defaults.",
 			),
 			mcplib.WithString("topic", mcplib.Required(), mcplib.Description("The subject to research (a person, company, product, event, or general topic).")),
-			mcplib.WithString("emit", mcplib.Description("Output shape: 'compact' (default) for inline synthesis or 'html' to save a shareable brief alongside the response.")),
-			mcplib.WithBoolean("save", mcplib.Description("Persist the synthesis as a markdown report under ~/Documents/Last30Days/ (or LAST30DAYS_MEMORY_DIR if set).")),
+			mcplib.WithString("emit", mcplib.Description("Output shape: 'compact' (default) for inline synthesis or 'html' for an HTML response.")),
+			mcplib.WithBoolean("save", mcplib.Description("Enable local research persistence, including export to the configured save directory. Defaults to false.")),
 			mcplib.WithReadOnlyHintAnnotation(false),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -119,7 +119,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 				return mcplib.NewToolResultError(err.Error()), nil
 			}
 		}
-		runArgs := researchRunArgs(topic, emit, saveDir)
+		runArgs := researchRunArgs(topic, emit, saveDir, save)
 
 		res, runErr := engine.Run(ctx, engine.RunOptions{
 			CacheDir: cacheDir,
@@ -178,17 +178,17 @@ func withoutReportChecklist(output string) string {
 	return output[:end] + "\n"
 }
 
-func researchRunArgs(topic, emit, saveDir string) []string {
+func researchRunArgs(topic, emit, saveDir string, save bool) []string {
 	// Options first, positional topic last behind a `--` separator: a
 	// dash-prefixed topic must never be parsed as engine flags.
 	runArgs := []string{"--research-only", "--emit=" + emit}
 	if !browserCookiesAllowed() {
 		runArgs = append(runArgs, "--no-browser-cookies")
 	}
-	// Always pass --save-dir explicitly. An empty value skips the engine's
-	// `is None` LAST30DAYS_MEMORY_DIR fallback and is falsy at the save
-	// gate, so declining to save writes nothing even when the env var set.
 	runArgs = append(runArgs, "--save-dir", saveDir)
+	if !save {
+		runArgs = append(runArgs, "--no-research-persistence")
+	}
 	return append(runArgs, "--", topic)
 }
 

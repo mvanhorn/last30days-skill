@@ -47,6 +47,7 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--resolve-save-dir` - print the absolute save directory selected for the skill and exit without research, browser-cookie reads, credential-store lookups, or file writes. It honors `--save-dir`, process environment, and trusted config files, preserving empty values. For memory directories, whole unresolved host placeholders such as `${user_config.memory_dir}` are absent at each configuration layer: a process placeholder falls back to trusted project then global configuration, and a project placeholder preserves the global value, including an empty value that disables saving. The bare engine uses the same placeholder precedence. Explicit `--save-dir` values remain literal paths. Only this query supplies the skill's `~/Documents/Last30Days` fallback; it does not change the bare research engine's no-save default. Shell wrappers capture this output without sourcing `.env` files.
 - `--output <file>` - write the rendered output to an exact file path, using the format selected by `--emit`.
 - `--research-only` - treat the positional topic as research text, including reserved names such as `setup`, `doctor`, `library`, and `queue`. Programmatic wrappers such as MCP use this flag to prevent topics from invoking administrative commands. Omit it when you intend to run an administrative command.
+- `--no-research-persistence` - internal flag used by MCP with `--research-only` when you omit `save` or set `save=false`. It suppresses the report export, last-run state, cached report, corpus text cache, and SQLite findings even with a configured save directory or `LAST30DAYS_STORE=1`.
 - `--cached-report` - render a saved research result with `--emit=html --synthesis-file <file>` without repeating retrieval or reopening temporary research plans. The topic and any explicit research flags must match the cached report. Omitted research flags use the saved provenance. If no compatible cache exists, the command fails so you can run research again explicitly.
 - `--json-profile {agent,raw}` - select the research JSON shape used with `--emit=json`. `agent` is the default, versioned workflow contract; `raw` preserves the full internal `Report` dump for debugging and power users. See the [JSON export reference](docs/reference/json-export.md).
 - `--corpus <dir>` - add a local `.md`/`.txt` directory as a private ranked source; repeat the flag for multiple directories. PDFs are extracted only when `pdftotext` is on PATH and otherwise skip with a note. File modification time supplies recency, so the normal research window applies.
@@ -101,6 +102,8 @@ To revisit setup, ask the skill to set up a source; deleting the global `.env` a
 ---
 
 ## MCP host controls
+
+MCP research defaults to `save=false`. The tool returns the report to your client and skips the local report export, last-run and report caches, corpus text cache, and SQLite findings. Set `save=true` to enable the engine's configured persistence. Engine installation and source diagnostics can still use local caches.
 
 These variables configure the local Go MCP server and are read from its process environment, not from the engine's `.env` files:
 
