@@ -174,6 +174,9 @@ REDDIT_SC_BACKFILL_RESERVE_SECONDS = 45.0
 REDDIT_SC_BACKFILL_MIN_SECONDS = 8.0
 REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS = 5.0
 THIN_RETRY_FUTURE_TIMEOUT_SECONDS = 120.0
+# Leave 20 seconds of the five-minute foreground window for report output.
+FINALIZATION_WORK_CUTOFF_SECONDS = 280.0
+DISCOVERY_FINALIZATION_RESERVE_SECONDS = 10.0
 # One X source, ordered backends: grok (up to 240s/call) + xai (90-180s) would
 # stack sequentially inside one unbounded future under MCP's kill. The chain
 # owns a shared monotonic deadline (x_api's TIMEOUT 30/RETRIES 2/DEADLINE 90
@@ -194,6 +197,15 @@ def _research_deadline(config: dict[str, Any], seconds: float) -> float:
     deadline = time.monotonic() + seconds
     inherited = config.get("_research_deadline")
     return min(deadline, inherited) if inherited is not None else deadline
+
+
+def _finalization_deadline(config: dict[str, Any], run_started: float) -> float:
+    deadline = run_started + FINALIZATION_WORK_CUTOFF_SECONDS
+    deadline = min(deadline, config.get("_finalization_deadline", deadline))
+    inherited = config.get("_research_deadline")
+    if inherited is not None:
+        deadline = min(deadline, inherited - DISCOVERY_FINALIZATION_RESERVE_SECONDS)
+    return deadline
 
 
 def _check_research(config: dict[str, Any]) -> None:
@@ -3262,9 +3274,11 @@ def run(
 
     # Finalize after the deferred floor so the report's per-source view and the
     # source_status counts describe the same post-floor evidence set fusion sees.
+    finalization_deadline = _finalization_deadline(config, run_started)
     items_by_source = _finalize_items_by_source(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
         elapsed=time.monotonic() - run_started, out_of_time=out_of_time_sources,
+        finalization_deadline=finalization_deadline,
     )
     # Fusion gates on identity too, but the footer counts and Top voices read
     # this per-source view, so a namesake left here still reaches the report.
@@ -3324,6 +3338,8 @@ def run(
         candidate for candidate in candidates if id(candidate) not in private_candidate_ids
     ]
     _check_research(config)
+    if reasoning_provider is not None:
+        reasoning_provider.set_request_budget(finalization_deadline, config.get("_enrich_cancel"))
     ranked_public = rerank.rerank_candidates(
         topic=topic,
         plan=plan,
@@ -3971,10 +3987,15 @@ def _finalize_items_by_source(
     mock: bool = False,
     elapsed: float = 0.0,
     out_of_time: set[str] | None = None,
+    finalization_deadline: float | None = None,
 ) -> dict[str, list[schema.SourceItem]]:
+    config = config or {}
+    if finalization_deadline is None:
+        finalization_deadline = _finalization_deadline(config, time.monotonic() - elapsed)
+    cancel = config.get("_enrich_cancel")
     finalized = {}
     for source, items in items_by_source_raw.items():
-        _check_research(config or {})
+        _check_research(config)
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
         if source == "polymarket":
             items = polymarket.by_selection(items)
@@ -4011,15 +4032,21 @@ def _finalize_items_by_source(
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
-            else:
+            elif time.monotonic() < finalization_deadline:
                 sc_token = (
                     config.get("SCRAPECREATORS_API_KEY")
                     if config and env.is_youtube_sc_available(config) else None
                 )
-                youtube_yt.backfill_transcripts(
-                    items, topic=topic, depth=depth, token=sc_token,
-                    entity_count=_comparison_entity_count(config),
-                )
+                with youtube_yt.sc_spend_until(
+                    lambda: _research_stopped(config),
+                    cancel=cancel,
+                    deadline=finalization_deadline,
+                    return_deadline=finalization_deadline,
+                ):
+                    youtube_yt.backfill_transcripts(
+                        items, topic=topic, depth=depth, token=sc_token,
+                        entity_count=_comparison_entity_count(config),
+                    )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         # Post-merge topic bar for Polymarket: the entity matcher, with the
         # run's hints, over each item's matched market and event title. It

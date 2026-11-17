@@ -15,6 +15,7 @@ import re
 import signal
 import sqlite3
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -3738,6 +3739,7 @@ def _looks_like_entity_topic(topic: str) -> bool:
 
 
 def main() -> int:
+    command_started = time.monotonic()
     # Windows: Printing Press CLIs install off PATH; resolve them before any gate runs (#1434).
     health.add_managed_bin_dir_to_path()
     parser = build_parser()
@@ -3763,8 +3765,8 @@ def main() -> int:
         args.save_dir = ""
     if args.record_fixtures:
         with http.recording_requests(Path(args.record_fixtures)):
-            return _main(parser, args, extra_argv)
-    return _main(parser, args, extra_argv)
+            return _main(parser, args, extra_argv, command_started=command_started)
+    return _main(parser, args, extra_argv, command_started=command_started)
 
 
 def _quality_research_results(report, diag, yt_fetch_stats):
@@ -3807,7 +3809,11 @@ def _main(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
     extra_argv: list[str],
+    *,
+    command_started: float | None = None,
 ) -> int:
+    if command_started is None:
+        command_started = time.monotonic()
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
@@ -3864,6 +3870,7 @@ def _main(
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
     if args.no_research_persistence:
         config["_no_research_persistence"] = True
+    config["_finalization_deadline"] = command_started + pipeline.FINALIZATION_WORK_CUTOFF_SECONDS
     if args.perplexity_search_type is not None:
         config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
