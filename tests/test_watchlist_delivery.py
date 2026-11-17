@@ -213,13 +213,29 @@ def test_deliver_findings_handles_failure_gracefully(mock_post, mock_get_setting
         "delivery_mode": "announce",
     }.get(key, default)
 
-    mock_post.side_effect = HTTPError("HTTP 500", 500)
+    credential = "dummy-webhook-failure-credential"
+    mock_post.side_effect = HTTPError(f"HTTP 500 {credential}", 500)
 
     # Should not raise, just log to stderr
     watchlist._deliver_findings("Test Topic", {"new": 5, "updated": 2})
 
     captured = capsys.readouterr()
-    assert "Delivery failed" in captured.err
+    assert "Delivery failed: HTTP 500" in captured.err
+    assert credential not in captured.err
+
+
+def test_webhook_transport_keeps_url_out_of_diagnostics():
+    url = "https://hooks.slack.com/services/dummy-webhook-credential"
+    with patch("watchlist.http._open_request") as open_request, patch("watchlist.http.log") as log:
+        response = open_request.return_value.__enter__.return_value
+        response.status = 200
+        response.read.return_value = b"{}"
+
+        watchlist._send_slack_webhook(url, "Test message")
+
+    request, _timeout = open_request.call_args.args
+    assert request.full_url == url
+    assert log.call_args_list == []
 
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')

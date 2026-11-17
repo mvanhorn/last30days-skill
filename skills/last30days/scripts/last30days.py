@@ -15,8 +15,10 @@ import re
 import signal
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 MIN_PYTHON = (3, 12)
 
@@ -51,7 +53,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
-from lib.private_files import write_private_text
+from lib.private_files import replace_private_text
 
 atexit.register(subproc.cleanup_children)
 
@@ -682,6 +684,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["agent", "raw"],
         help="JSON export profile for --emit=json (default: agent)",
     )
+    parser.add_argument("--require-local-report", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
@@ -774,9 +777,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-browser-cookies", action="store_true",
                         help="Disable browser-cookie extraction even when FROM_BROWSER is configured")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
+    parser.add_argument("--no-research-persistence", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--resolve-save-dir", action="store_true",
         help="Print the skill save directory from flags/config, then exit without research",
+    )
+    parser.add_argument(
+        "--resolve-browser-consent", action="store_true",
+        help="Print whether an explicit browser-cookie grant is active, without reading cookies",
     )
     parser.add_argument(
         "--corpus",
@@ -1635,10 +1643,39 @@ REPORT_CACHE_VERSION = "last30days-report-cache/v2"
 DEFAULT_REPORT_CACHE_TTL_SECONDS = 3600
 
 
+class _CachedReport(NamedTuple):
+    report: schema.Report
+    entity_reports: list[tuple[str, schema.Report]] | None
+    path: Path
+    fingerprint: bytes
+
+
 def _last_report_cache_path() -> Path | None:
     if env.CONFIG_DIR is None:
         return None
     return env.CONFIG_DIR / "last-report.json"
+
+
+@contextmanager
+def _report_cache_lock(cache_path: Path) -> Iterator[None]:
+    # The lock file stays in place so replacing the report cannot split writers across different inodes.
+    fd = os.open(cache_path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+    finally:
+        os.close(fd)
 
 
 def _report_cache_ttl_seconds(config: dict[str, object]) -> int:
@@ -1686,7 +1723,6 @@ def _write_last_run(
             "report_cache": str(target / "last-report.json"),
             "comparison": bool(entity_reports),
         }
-        write_private_text(target / "last-run.json", json.dumps(payload, indent=2))
         cache_payload = {
             "schema": REPORT_CACHE_VERSION,
             "topic": topic,
@@ -1703,9 +1739,11 @@ def _write_last_run(
             ],
         }
         report_cache_path = target / "last-report.json"
-        write_private_text(report_cache_path, json.dumps(cache_payload, indent=2))
-        if has_private_corpus and os.name != "posix":
-            report_cache_path.chmod(0o600)
+        report_json = json.dumps(cache_payload, indent=2)
+        run_json = json.dumps(payload, indent=2)
+        with _report_cache_lock(report_cache_path):
+            replace_private_text(report_cache_path, report_json)
+            replace_private_text(target / "last-run.json", run_json)
         return True
     except Exception as exc:
         # Never fatal, but never silent either (#787's lesson): callers that
@@ -1722,12 +1760,13 @@ def _load_last_report_cache(
     research_options: dict[str, object] | None = None,
     requested_window: tuple[str, str] | None = None,
     use_cached_envelopes: bool = False,
-) -> tuple[schema.Report, list[tuple[str, schema.Report]] | None, Path] | None:
+) -> _CachedReport | None:
     cache_path = _last_report_cache_path()
     if cache_path is None or not cache_path.exists():
         return None
     try:
-        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = cache_path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("report cache payload must be a JSON object")
         if payload.get("schema") != REPORT_CACHE_VERSION:
@@ -1763,13 +1802,13 @@ def _load_last_report_cache(
             for _, report in entity_reports
         ):
             return None
-        if payload.get("comparison"):
-            if len(entity_reports) < 2:
-                return None
-            if len(entity_reports) != len(reports_payload):
-                return None
-            return entity_reports[0][1], entity_reports, cache_path
-        return entity_reports[0][1], None, cache_path
+        comparison = payload.get("comparison")
+        if comparison and (len(entity_reports) < 2 or len(entity_reports) != len(reports_payload)):
+            return None
+        return _CachedReport(
+            entity_reports[0][1], entity_reports if comparison else None,
+            cache_path, hashlib.sha256(raw).digest(),
+        )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         sys.stderr.write(
             f"[last30days] Could not read report cache {cache_path}: "
@@ -1861,31 +1900,29 @@ def _freshness_enabled(args: argparse.Namespace, config: dict[str, object]) -> b
     return _config_truthy(config.get("LAST30DAYS_VERIFY_FRESHNESS"))
 
 
-def _update_cached_freshness(
-    cache_path: Path,
-    report: schema.Report,
-    entity_reports: list[tuple[str, schema.Report]] | None,
-) -> bool:
+def _update_cached_freshness(cached: _CachedReport) -> bool:
     """Rewrite cached report bodies without extending the research-cache TTL."""
     try:
-        payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or payload.get("schema") != REPORT_CACHE_VERSION:
-            return False
-        existing = payload.get("reports") or []
-        if entity_reports:
-            cached_reports = entity_reports
-        else:
-            label = (
-                str(existing[0].get("entity") or report.topic)
-                if existing and isinstance(existing[0], dict)
-                else report.topic
-            )
-            cached_reports = [(label, report)]
-        payload["reports"] = [
-            {"entity": label, "report": schema.to_dict(cached_report)}
-            for label, cached_report in cached_reports
-        ]
-        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with _report_cache_lock(cached.path):
+            raw = cached.path.read_bytes()
+            if hashlib.sha256(raw).digest() != cached.fingerprint:
+                return False
+            payload = json.loads(raw.decode("utf-8"))
+            existing = payload.get("reports") or []
+            if cached.entity_reports:
+                cached_reports = cached.entity_reports
+            else:
+                label = (
+                    str(existing[0].get("entity") or cached.report.topic)
+                    if existing and isinstance(existing[0], dict)
+                    else cached.report.topic
+                )
+                cached_reports = [(label, cached.report)]
+            payload["reports"] = [
+                {"entity": label, "report": schema.to_dict(report)}
+                for label, report in cached_reports
+            ]
+            replace_private_text(cached.path, json.dumps(payload, indent=2))
         return True
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         sys.stderr.write(
@@ -1923,9 +1960,9 @@ def _run_cached_freshness(
     if cached is None:
         sys.stderr.write("[last30days] No fresh cached report; run a research pass first.\n")
         return 2
-    report, entity_reports, cache_path = cached
+    report, entity_reports, cache_path, _ = cached
     _verify_report_set(report, entity_reports, allow_network=not args.mock)
-    if _update_cached_freshness(cache_path, report, entity_reports):
+    if _update_cached_freshness(cached):
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
     else:
         sys.stderr.write("[last30days] warning: freshness cache update failed\n")
@@ -1967,7 +2004,7 @@ def _run_drill(
             "[last30days] No fresh cached report; run a research pass first.\n"
         )
         return 2
-    report, entity_reports, cache_path = cached
+    report, entity_reports, cache_path, _ = cached
     if entity_reports:
         sys.stderr.write(
             "[last30days] Drill mode needs a single-topic cached report; "
@@ -1995,7 +2032,7 @@ def _run_drill(
 
     sources = list(drill_plan.source_weights)
     drill_config = _drill_config(config, sources)
-    diag = pipeline.diagnose(drill_config, sources, safe=False)
+    diag = pipeline.diagnose(drill_config, sources, safe=args.mock)
     progress = ui.ProgressDisplay(
         f"{report.topic} — drill: {args.drill}",
         show_banner=True,
@@ -3090,7 +3127,7 @@ def _propagate_config_to_environ(config: dict[str, object]) -> None:
             os.environ[key] = val
 
 
-def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str]) -> bool:
+def _setup_has_fresh_browser_consent(args: argparse.Namespace, extra_argv: list[str]) -> bool:
     return (
         not args.no_browser_cookies
         and not args.diagnose
@@ -3099,8 +3136,11 @@ def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str
     )
 
 
+USE_RECORDED_BROWSER_CONSENT_FLAG = "--use-recorded-browser-consent"
+
 SETUP_PASSTHROUGH_FLAGS = {
     "--allow-browser-cookies",
+    USE_RECORDED_BROWSER_CONSENT_FLAG,
     "--device-auth",
     "--github",
     "--github-start",
@@ -3406,6 +3446,8 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
     if not extra_argv:
         return
     if topic.lower() == "setup":
+        if USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv and len(extra_argv) > 1:
+            parser.error(f"{USE_RECORDED_BROWSER_CONSENT_FLAG} must be the only setup option")
         # --store-key carries a value token; the name itself is allowlisted
         # later in _run_store_key, not here.
         _, _, extra_argv = _split_store_key(extra_argv)
@@ -3442,6 +3484,7 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
 
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
     normalized_topic = "" if args.research_only or args.cached_report else topic.lower()
+    reuse_browser_consent = normalized_topic == "setup" and USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv
     is_library_command = (
         normalized_topic == "library feed"
         or normalized_topic == "library search"
@@ -3466,7 +3509,10 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         # GitHub, StockTwits) - no cookie-backed source, so no Keychain prompt.
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
-        browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+        browser_mode = (
+            "read" if reuse_browser_consent or _setup_has_fresh_browser_consent(args, extra_argv)
+            else "off"
+        )
     elif _law7_host_plan_signal(args, topic):
         # Hosted and cached paths need config before dispatch, but no browser read.
         browser_mode = "plan_only"
@@ -3475,6 +3521,7 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
     return env.ConfigLoadPolicy(
         browser_cookies=browser_mode,
         inspect_ignored_project_config=args.diagnose or args.preflight or normalized_topic == "doctor",
+        require_recorded_browser_consent=reuse_browser_consent,
     )
 
 
@@ -3752,6 +3799,14 @@ def main() -> int:
         action.dest for action in parser._actions
         if any(option in option_tokens for option in action.option_strings)
     }
+    if args.no_research_persistence:
+        if (
+            not args.research_only or not args.topic or args.discover is not None
+            or args.drill or args.cached_report or args.synthesis_file
+            or args.output or args.publish_html or args.record_fixtures
+        ):
+            parser.error("--no-research-persistence requires --research-only and a topic without output or cache modes")
+        args.save_dir = ""
     if args.record_fixtures:
         with http.recording_requests(Path(args.record_fixtures)):
             return _main(parser, args, extra_argv)
@@ -3806,7 +3861,8 @@ def _main(
         args.emit != "html" or not args.synthesis_file or not args.topic or args.deep_research
         or args.plan or args.competitors_plan or args.x_posts or args.reddit_threads
         or args.discover is not None or args.drill or args.diagnose or args.preflight
-        or args.welcome or args.resolve_save_dir or args.verify_freshness is True
+        or args.welcome or args.resolve_save_dir or args.resolve_browser_consent
+        or args.verify_freshness is True
     ):
         parser.error("--cached-report requires a topic, --emit=html, and --synthesis-file without research input files, --verify-freshness, or other command modes")
     if args.welcome:
@@ -3827,6 +3883,10 @@ def _main(
     _validate_extra_argv(parser, command_topic, extra_argv)
     if args.resolve_save_dir:
         print(env.resolve_memory_dir(args.save_dir))
+        return 0
+    if args.resolve_browser_consent:
+        granted = not args.no_browser_cookies and env.has_recorded_browser_consent()
+        print("granted" if granted else "not-granted")
         return 0
     if args.x_posts is not None and _looks_inline_json(args.x_posts):
         sys.stderr.write(
@@ -3853,6 +3913,8 @@ def _main(
             return _run_store_key(store_key_name)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    if args.no_research_persistence:
+        config["_no_research_persistence"] = True
     if args.perplexity_search_type is not None:
         config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
@@ -4047,10 +4109,15 @@ def _main(
                 results["persisted"] = False
             print(json.dumps(results))
             return 0
+        reuse_browser_consent = USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv
+        if reuse_browser_consent and config.get("_BROWSER_COOKIE_MODE") != "read":
+            print("not-granted")
+            return 0
+        fresh_browser_consent = _setup_has_fresh_browser_consent(args, extra_argv)
         sys.stderr.write("Running auto-setup...\n")
         results = setup_wizard.run_auto_setup(
             config,
-            allow_browser_cookies=_setup_allows_browser_cookies(args, extra_argv),
+            allow_browser_cookies=reuse_browser_consent or fresh_browser_consent,
         )
         # Keep only successful browsers, including distinct service winners;
         # "auto" would also probe browsers that did not supply any cookies.
@@ -4072,9 +4139,7 @@ def _main(
             env.CONFIG_FILE,
             from_browser=from_browser,
             x_cookie_access_denied=denial_marker,
-            browser_consent=(
-                None if args.diagnose else _setup_allows_browser_cookies(args, extra_argv)
-            ),
+            browser_consent=None if args.diagnose or reuse_browser_consent else fresh_browser_consent,
         )
         if not results["env_written"]:
             sys.stderr.write("Setup configuration could not be fully saved; some settings may already be saved.\n")
@@ -4300,6 +4365,12 @@ def _main(
         and not args.deep_research
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     ):
+        if args.require_local_report:
+            sys.stderr.write(
+                "[last30days] Watchlist requires structured local reports. "
+                "Unset LAST30DAYS_API_BASE in the watchlist environment to run locally.\n"
+            )
+            return 2
         if args.perplexity_search_type is not None:
             sys.stderr.write(
                 "hosted backend does not apply --perplexity-search-type and no direct "
@@ -4504,7 +4575,7 @@ def _main(
             use_cached_envelopes=args.cached_report,
         )
         if cached is not None:
-            cached_report, cached_entity_reports, cache_path = cached
+            cached_report, cached_entity_reports, cache_path, _ = cached
             sys.stderr.write(
                 f"[last30days] Reusing cached report data from {cache_path}\n"
             )
@@ -4515,11 +4586,7 @@ def _main(
                     cached_entity_reports,
                     allow_network=not args.mock,
                 )
-                _update_cached_freshness(
-                    cache_path,
-                    cached_report,
-                    cached_entity_reports,
-                )
+                _update_cached_freshness(cached)
             return _render_save_and_print(
                 args, cached_report, cached_entity_reports, synthesis_md, config
             )
@@ -4539,8 +4606,13 @@ def _main(
         return law7_exit
 
     diag = pipeline.diagnose(
-        config, requested_sources, safe=False,
+        config, requested_sources, safe=args.mock,
         x_envelope=x_posts_envelope is not None,
+        probe_x=(
+            (external_plan is None or pipeline._external_plan_names_source(external_plan, "x"))
+            and not (args.hiring_signals and requested_sources is None)
+            and not any(entry.get("_x_envelope") for entry in comp_plan.values())
+        ),
     )
 
     # Competitor sub-runs shallow-copy this config. The shared object makes the
@@ -5158,27 +5230,24 @@ def _main(
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
-    _write_last_run(
-        original_topic, report, entity_reports=entity_reports,
-        x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
-        research_options=research_options,
-    )
-    # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
-    # (for shell-exported users) and config (for users who set it in
-    # ~/.config/last30days/.env, which env.py loads but does not propagate
-    # to os.environ). Mirrors the LAST30DAYS_DEBUG / LAST30DAYS_SKIP_PREFLIGHT
-    # convention; env-var or config wins, with `--store` flag still working.
-    _store_env = (
-        os.environ.get("LAST30DAYS_STORE")
-        or config.get("LAST30DAYS_STORE")
-        or ""
-    ).lower()
-    if args.store or _store_env in ("1", "true", "yes"):
-        counts = persist_report(report, store_db=_scoped_store_db(args))
-        sys.stderr.write(
-            f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"
+    if not args.no_research_persistence:
+        _write_last_run(
+            original_topic, report, entity_reports=entity_reports,
+            x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
+            research_options=research_options,
         )
-        sys.stderr.flush()
+        # env.py loads the .env setting without propagating it to os.environ.
+        _store_env = (
+            os.environ.get("LAST30DAYS_STORE")
+            or config.get("LAST30DAYS_STORE")
+            or ""
+        ).lower()
+        if args.store or _store_env in ("1", "true", "yes"):
+            counts = persist_report(report, store_db=_scoped_store_db(args))
+            sys.stderr.write(
+                f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"
+            )
+            sys.stderr.flush()
 
     # Show quality nudge if applicable. Explicit hiring-signal runs are
     # intentionally jobs-focused, so generic source setup advice is noise.

@@ -348,7 +348,6 @@ class TestFetchItemComments(unittest.TestCase):
         self.assertEqual(
             github._fetch_item_comments(
                 "https://github.com/example/project/issues/9",
-                "test-token",
                 max_comments=0,
             ),
             [],
@@ -361,7 +360,6 @@ class TestFetchItemComments(unittest.TestCase):
 
         github._fetch_item_comments(
             "https://github.com/example/project/issues/9",
-            "test-token",
         )
 
         self.assertEqual(
@@ -370,6 +368,7 @@ class TestFetchItemComments(unittest.TestCase):
         )
         self.assertNotIn("sort=", mock_fetch.call_args.args[0])
         self.assertNotIn("direction=", mock_fetch.call_args.args[0])
+        self.assertIsNone(mock_fetch.call_args.kwargs.get("token"))
 
     @patch.object(github, "_fetch_json")
     def test_filters_bots_and_stably_ranks_humans_by_reactions(self, mock_fetch):
@@ -418,7 +417,6 @@ class TestFetchItemComments(unittest.TestCase):
 
         comments = github._fetch_item_comments(
             "https://github.com/example/project/issues/9",
-            "test-token",
             max_comments=3,
         )
 
@@ -868,7 +866,7 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         # rather than against a single exact string.
         self.assertEqual(len(queries), 2)
         for q in queries:
-            self.assertTrue(q.startswith("open source ai created:2026-07-01..2026-07-31"))
+            self.assertTrue(q.startswith("is:public open source ai created:2026-07-01..2026-07-31"))
             self.assertEqual(q.count("created:"), 1)
             self.assertNotIn("stars:", q)
         self.assertEqual(
@@ -1015,7 +1013,7 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         queries = [self._query(u) for u in captured["urls"]]
         self.assertEqual(len(queries), 2)
         for q in queries:
-            self.assertTrue(q.startswith("open source ai created:2026-07-01..2026-07-31"))
+            self.assertTrue(q.startswith("is:public open source ai created:2026-07-01..2026-07-31"))
             self.assertEqual(q.count("created:"), 1)
             self.assertIn("created:2026-07-01..2026-07-31", q)
             self.assertNotIn("created:>2025-03-20", q)

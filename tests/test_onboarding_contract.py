@@ -17,7 +17,10 @@ wizard in PR #659 and flattened it before this restoration).
 import unittest
 from pathlib import Path
 
-from lib import setup_wizard
+import pytest
+
+import last30days
+from lib import env, setup_wizard
 from tests.skill_contract import contract_documents, reference_text
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +83,20 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertNotIn("--preflight", self.grok)
         self.assertIn("Do not run it as a required first-run step", self.step0)
         self.assertIn("Do not print `.env` contents or credential values", self.step0)
+
+    def test_auto_setup_requires_effective_consent_before_skipping_the_prompt(self):
+        gates = (
+            (self.modal, "**If the user picks Auto setup:**", "Otherwise **call AskUserQuestion:**"),
+            (self.prose, "**2. Cookie consent (ask BEFORE reading anything).**", "Otherwise ask. Example:"),
+        )
+        for flow, start, prompt in gates:
+            with self.subTest(prompt=prompt):
+                gate = flow.split(start, 1)[1].split(prompt, 1)[0]
+                self.assertIn("--resolve-browser-consent", gate)
+                self.assertIn("command succeeds and stdout is exactly `granted`", gate)
+                self.assertIn("setup --use-recorded-browser-consent", gate)
+                self.assertNotIn("--allow-browser-cookies", gate)
+                self.assertNotIn("~/.config/last30days/.env", gate)
 
     def test_first_run_gate_defers_to_step0_credential_sources(self):
         """The cheap SETUP_COMPLETE grep is not itself a first-run verdict."""
@@ -214,10 +231,10 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_modal_cookie_consent_before_setup(self):
         consent = self.modal.find("your browser's x.com cookies")
-        setup = self.modal.find('last30days.py" setup')
+        setup = self.modal.find('last30days.py" setup --allow-browser-cookies')
         self.assertGreater(consent, -1, "no cookie-consent modal in modal flow")
-        self.assertGreater(setup, -1, "no setup invocation in modal flow")
-        self.assertLess(consent, setup, "cookie consent must precede setup in modal flow")
+        self.assertGreater(setup, -1, "no setup invocation after a fresh yes")
+        self.assertLess(consent, setup, "consent question must precede the fresh-consent invocation")
 
     def test_topic_picker_skips_when_topic_supplied(self):
         """The picker documents skipping when the user already gave a topic."""
@@ -566,12 +583,12 @@ class TestOnboardingContract(unittest.TestCase):
     def test_reddit_offer_comes_after_the_x_answer_in_both_flows(self):
         hook = "take the root Reddit session offer route"
         modal_yes = self.modal.index('"Yes - X cookies + all CLIs"')
-        self.assertLess(modal_yes, self.modal.index(hook))
-        self.assertLess(self.modal.index(hook), self.modal.index('"Skip X - just the CLIs"'))
-        self.assertLess(self.modal.index(hook), self.modal.index("**Step 4"))
+        modal_reddit = self.modal.index(hook, modal_yes)
+        self.assertLess(modal_reddit, self.modal.index('"Skip X - just the CLIs"'))
+        self.assertLess(modal_reddit, self.modal.index("**Step 4"))
         prose_yes = self.prose.index("On **yes** → run")
-        self.assertLess(prose_yes, self.prose.index(hook))
-        self.assertLess(self.prose.index(hook), self.prose.index("On **no** → run"))
+        prose_reddit = self.prose.index(hook, prose_yes)
+        self.assertLess(prose_reddit, self.prose.index("On **no** → run"))
         self.assertIn("as its own step", self.prose)
         self.assertIn("separate yes/no", self.prose)
         # Never folded into the X question itself.
@@ -582,6 +599,79 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertNotIn("cookie", self.grok.lower())
         self.assertNotIn("reddit-session", self.grok)
         self.assertNotIn("Reddit session offer", self.grok)
+
+
+@pytest.mark.parametrize(
+    ("global_settings", "project_settings", "process_settings", "expected"),
+    [
+        pytest.param("BROWSER_CONSENT=false", "", {}, "not-granted", id="custom-global-refusal"),
+        pytest.param("BROWSER_CONSENT=YES", "", {}, "granted", id="prior-affirmative"),
+        pytest.param("", "", {}, "not-granted", id="no-recorded-consent"),
+        pytest.param(
+            "BROWSER_CONSENT=true\nLAST30DAYS_TRUST_PROJECT_CONFIG=1",
+            "BROWSER_CONSENT=false",
+            {},
+            "not-granted",
+            id="trusted-project-refusal",
+        ),
+        pytest.param(
+            "BROWSER_CONSENT=true",
+            "BROWSER_CONSENT=false\nLAST30DAYS_TRUST_PROJECT_CONFIG=1",
+            {},
+            "granted",
+            id="untrusted-project-refusal-is-ignored",
+        ),
+        pytest.param(
+            "BROWSER_CONSENT=true",
+            "",
+            {"BROWSER_CONSENT": "false"},
+            "not-granted",
+            id="process-refusal",
+        ),
+        pytest.param(
+            "BROWSER_CONSENT=true",
+            "",
+            {"FROM_BROWSER": "off"},
+            "not-granted",
+            id="browser-access-veto",
+        ),
+        pytest.param(
+            "BROWSER_CONSENT=true",
+            "",
+            {"BROWSER_CONSENT": "${user_config.consent}"},
+            "granted",
+            id="placeholder-falls-back",
+        ),
+    ],
+)
+def test_resolve_browser_consent_reads_only_configuration(
+    monkeypatch, tmp_path, capsys, global_settings, project_settings, process_settings, expected,
+):
+    default_config = Path.home() / ".config" / "last30days" / ".env"
+    default_config.write_text("BROWSER_CONSENT=true\n", encoding="utf-8")
+    config_dir = tmp_path / "active"
+    config_dir.mkdir()
+    global_file = config_dir / ".env"
+    global_file.write_text(global_settings, encoding="utf-8")
+    global_file.chmod(0o600)
+    monkeypatch.setenv("LAST30DAYS_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(env, "CONFIG_FILE", global_file)
+    project_dir = tmp_path / "project" / ".claude"
+    project_dir.mkdir(parents=True)
+    project_file = project_dir / "last30days.env"
+    project_file.write_text(project_settings, encoding="utf-8")
+    project_file.chmod(0o600)
+    monkeypatch.chdir(project_dir.parent)
+    for name, value in process_settings.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(env, "get_config", lambda **_: pytest.fail("loaded provider credentials"))
+
+    parser = last30days.build_parser()
+    args, extra = parser.parse_known_args(["--resolve-browser-consent"])
+    assert last30days._main(parser, args, extra) == 0
+    assert capsys.readouterr().out == f"{expected}\n"
+    assert global_file.read_text(encoding="utf-8") == global_settings
+    assert project_file.read_text(encoding="utf-8") == project_settings
 
 
 if __name__ == "__main__":

@@ -159,6 +159,8 @@ STREAM_ARTIFACT_LIFT_KEYS: tuple[str, ...] = ("meta_ads_page", "meta_ads_tally")
 # Worst case per stream is one timeout ceiling (+ one inline 5xx retry in the
 # main fan-out, itself bounded by the lane's own timeouts); no new config knobs.
 STREAM_FUTURE_TIMEOUT_SECONDS = 180.0
+# Leave time for the background adapter to return its final poll receipt.
+DEEP_RESEARCH_RECEIPT_SECONDS = 1.0
 # A job board lists the roles open today, so it cannot answer a window that
 # ended in the past.
 JOBS_PAST_WINDOW_SKIP = "skipped: a job board shows the roles open today, not those of a past window"
@@ -211,6 +213,28 @@ def _wait_for_research(futures, config: dict[str, Any]):
         )
         done.update(completed)
     return done, pending
+
+
+def _completed_streams(batches, bundle: schema.RetrievalBundle):
+    for futures, wait_config, timeout_seconds, keep_ready in batches:
+        done, pending = _wait_for_research(futures, wait_config)
+        timed_out = False
+        for future in pending:
+            if keep_ready and future.done():
+                # A shorter background budget can elapse while the ordinary
+                # batch is still being collected. Its adapter enforces its
+                # own deadline, so keep any completed receipt.
+                done.add(future)
+                continue
+            timed_out = True
+            _subquery, source = futures[future]
+            future.cancel()
+            detail = f"{source} timed out after {timeout_seconds:g}s"
+            bundle.errors_by_source[source] = detail
+            bundle.record_failure(source, health.TIMEOUT, detail, attempted=True)
+        for future in done:
+            subquery, source = futures[future]
+            yield future, subquery, source, timed_out
 
 
 @contextlib.contextmanager
@@ -358,6 +382,14 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
         if key not in normalized:
             normalized.append(key)
     return normalized
+
+
+def _excluded_sources(config: dict[str, Any]) -> set[str]:
+    return {
+        source.strip().lower()
+        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if source.strip()
+    }
 
 
 class NoRequestedSourceAvailable(RuntimeError):
@@ -543,7 +575,7 @@ def available_sources(
             available.append("telegram")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.
-    exclude = {s.strip().lower() for s in (config.get("EXCLUDE_SOURCES") or "").split(",") if s.strip()}
+    exclude = _excluded_sources(config)
     if exclude:
         available = [s for s in available if s not in exclude]
     return available
@@ -2047,16 +2079,23 @@ def diagnose(
     *,
     safe: bool = False,
     x_envelope: bool = False,
+    probe_x: bool = True,
 ) -> dict[str, Any]:
     # ``x_envelope`` is True when a validated --x-posts envelope is present for
     # this invocation, so available_sources lists x even without a backend
     # and the optional-source omission note does not fire.
     requested_sources = normalize_requested_sources(requested_sources)
+    probe_x = (
+        probe_x and not safe and not x_envelope
+        and not env.x_host_lane_declared(config)
+        and (requested_sources is None or "x" in requested_sources)
+        and "x" not in _excluded_sources(config)
+    )
     google_key = _google_key(config)
-    x_status = env.get_x_source_status(config, probe=not safe)
+    x_status = env.get_x_source_status(config, probe=probe_x)
     # Compute once and reuse for both the diag flag and available_sources below.
     # safe=True (doctor/--diagnose/--preflight) must stay network-free.
-    x_pending = env.x_pending_browser_auth(config, local_only=safe)
+    x_pending = env.x_pending_browser_auth(config, local_only=not probe_x)
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"
@@ -2133,7 +2172,7 @@ def diagnose(
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
         "available_sources": available_sources(
-            config, requested_sources, x_pending=x_pending, local_only=safe,
+            config, requested_sources, x_pending=x_pending, local_only=not probe_x,
             x_envelope=x_envelope,
         ),
         "safe": safe,
@@ -2299,11 +2338,7 @@ def run(
         corpus_dirs or config.get("_CORPUS_DIRS"),
         config.get("LAST30DAYS_CORPUS_DIRS"),
     )
-    excluded_sources = {
-        source.strip().lower()
-        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
-        if source.strip()
-    }
+    excluded_sources = _excluded_sources(config)
     corpus_enabled = bool(resolved_corpus_dirs) and "corpus" not in excluded_sources
     corpus_requested = bool(requested_sources and "corpus" in requested_sources)
     if corpus_enabled and requested_sources and "corpus" not in requested_sources:
@@ -2750,7 +2785,7 @@ def run(
             to_date=to_date,
             all_time=corpus_all_time,
             limit=settings["per_stream_limit"],
-            cache_dir=env.CONFIG_DIR,
+            cache_dir=None if config.get("_no_research_persistence") else env.CONFIG_DIR,
         )
         prepared_query = relevance.PreparedQuery(primary.ranking_query)
         lookback_window_days = (
@@ -2807,7 +2842,10 @@ def run(
         config["_jobs_story_terms"] = _jobs_story_terms(plan, topic, config)
     stream_config = dict(config)
     stream_config["_research_deadline"] = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
-    with _abandoning_executor(max_workers=max_workers) as executor:
+    batches = [(futures, stream_config, STREAM_FUTURE_TIMEOUT_SECONDS, False)]
+    background_futures = {}
+    with contextlib.ExitStack() as stack:
+        executor = stack.enter_context(_abandoning_executor(max_workers=max_workers))
         for subquery in plan.subqueries:
             for source in subquery.sources:
                 if source not in available:
@@ -2855,13 +2893,33 @@ def run(
                         continue
                     source_fetch_count[source] = current + 1
                 bundle.mark_attempted(source)
-                futures[
-                    executor.submit(
+                active_futures, active_executor, active_config = futures, executor, stream_config
+                if (
+                    source == "perplexity"
+                    and config.get("_deep_research")
+                    and str(config.get("PERPLEXITY_API_KEY") or "").strip()
+                ):
+                    background_timeout = perplexity.deep_timeout_seconds(config)
+                    active_config = {
+                        **config,
+                        "_research_deadline": _research_deadline(config, background_timeout),
+                    }
+                    background_wait_config = {
+                        **active_config,
+                        "_research_deadline": _research_deadline(
+                            config, background_timeout + DEEP_RESEARCH_RECEIPT_SECONDS,
+                        ),
+                    }
+                    active_executor = stack.enter_context(_abandoning_executor(max_workers=1))
+                    active_futures = background_futures
+                    batches.append((background_futures, background_wait_config, background_timeout, True))
+                active_futures[
+                    active_executor.submit(
                         _retrieve_stream,
                         topic=topic,
                         subquery=subquery,
                         source=source,
-                        config=stream_config,
+                        config=active_config,
                         depth=depth,
                         date_range=(from_date, to_date),
                         runtime=runtime,
@@ -2881,23 +2939,9 @@ def run(
                     )
                 ] = (subquery, source)
 
-        # Bounded fan-out (reddit-lane futures_wait pattern): the whole Phase 1
-        # waits at most STREAM_FUTURE_TIMEOUT_SECONDS, so a hung lane degrades
-        # to a TIMEOUT partial instead of stalling run() forever. Worst case
-        # per stream is the wait ceiling plus, for a stream that failed fast
-        # with a 5xx while budget remained, one inline retry bounded by that
-        # lane's own timeouts. No retry starts after the wait timed out or
-        # the enrichment cancel fired.
-        done, not_done = _wait_for_research(futures, stream_config)
-        budget_expired = bool(not_done)
-        for future in not_done:
-            subquery, source = futures[future]
-            future.cancel()
-            detail = f"{source} timed out after {STREAM_FUTURE_TIMEOUT_SECONDS:g}s"
-            bundle.errors_by_source[source] = detail
-            bundle.record_failure(source, health.TIMEOUT, detail, attempted=True)
-        for future in done:
-            subquery, source = futures[future]
+        # Collect ordinary streams and any inline retries before waiting on
+        # the longer background request.
+        for future, subquery, source, budget_expired in _completed_streams(batches, bundle):
             try:
                 raw_items, artifact = future.result(timeout=0)
             except Exception as exc:
@@ -2913,7 +2957,7 @@ def run(
                 # wait already timed out or cancel fired: the retry's lane
                 # timeouts plus the blocking sleep would run past the budget
                 # that just expired.
-                if _is_transient_error(exc):
+                if future not in background_futures and _is_transient_error(exc):
                     if budget_expired or _research_stopped(stream_config):
                         bundle.errors_by_source[source] = str(exc)
                         state, attempted = _classify_source_failure(exc)
@@ -7573,9 +7617,6 @@ def _retrieve_stream_impl(
             artifact,
         )
     if source == "github":
-        # Resolve once at the pipeline boundary so search and enrich
-        # share the result; otherwise each call would re-run the env
-        # lookup and gh-CLI subprocess fallback (up to 5s timeout each).
         token = github.resolve_token(config.get("GITHUB_TOKEN"))
         response = github.search_github(subquery.search_query, from_date, to_date, depth=depth, token=token)
         # Judge results against the stable research topic, not the narrowed
@@ -7586,7 +7627,8 @@ def _retrieve_stream_impl(
         # tokenless anon tier and returns empty here rather than raising — github
         # is now always eligible, so raising would spam "github failed" on every
         # tokenless run. The condition is logged in github.search_github.
-        items = github.enrich_with_comments(items, depth=depth, token=token)
+        if token:
+            items = github.enrich_with_comments(items, depth=depth)
         return items, _result_outcome_artifact(source, response)
     if source == "pinterest":
         result = pinterest.search_pinterest(

@@ -932,6 +932,7 @@ def request(
     retry_dns: bool = True,
     return_headers: bool = False,
     redirect_guard: Callable[[str], bool] | None = None,
+    sensitive_url: bool = False,
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
@@ -958,6 +959,8 @@ def request(
         return_headers: Also return the response headers, for a host that
             answers in a header (a session token) rather than the body. Not
             available with owned_get, whose child process reports no headers.
+        sensitive_url: Exclude credential-bearing URLs and their responses
+            from request diagnostics and fixture capture.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True. With
@@ -996,9 +999,12 @@ def request(
         quote(parts.fragment, safe=safe),
     ))
 
-    fixture_request = _fixture_request(method, url, json_data, raw)
+    fixture_request = None if sensitive_url else _fixture_request(method, url, json_data, raw)
     fixture_redactions = _fixture_redactions(url, headers, json_data)
-    replayed = _fixture_replay(fixture_request, return_headers=return_headers)
+    replayed = _fixture_replay(
+        fixture_request if fixture_request is not None else {"method": method, "url": "<redacted>"},
+        return_headers=return_headers,
+    )
     if replayed is not _NO_FIXTURE:
         return replayed
 
@@ -1012,7 +1018,8 @@ def request(
         setattr(req, _REDIRECT_GUARD_ATTR, redirect_guard)
 
     def log_request(message: str) -> None:
-        log(_scrub_fixture_value(message, redactions=fixture_redactions))
+        if not sensitive_url:
+            log(_scrub_fixture_value(message, redactions=fixture_redactions))
 
     safe_url = re.sub(r'([?&])(key|api_key|token|secret)=[^&]*', r'\1\2=***', url)
     log_request(f"{method} {safe_url}")
@@ -1028,7 +1035,8 @@ def request(
     response_headers: Optional[ResponseHeaders] = None
 
     def raise_recorded(error: HTTPError) -> None:
-        _fixture_record(fixture_request, error=error, redactions=fixture_redactions)
+        if fixture_request is not None:
+            _fixture_record(fixture_request, error=error, redactions=fixture_redactions)
         _raise(error)
 
     def deadline_error() -> HTTPError:
@@ -1167,12 +1175,13 @@ def request(
             body = body or ""
             log_request(f"Response: {response_status} ({len(body)} bytes)")
             value = body if raw else (json.loads(body) if body else {})
-            _fixture_record(
-                fixture_request,
-                value=value,
-                redactions=fixture_redactions,
-                headers=response_headers,
-            )
+            if fixture_request is not None:
+                _fixture_record(
+                    fixture_request,
+                    value=value,
+                    redactions=fixture_redactions,
+                    headers=response_headers,
+                )
             if return_headers:
                 return value, response_headers
             return value

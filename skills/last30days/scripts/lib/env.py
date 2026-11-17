@@ -124,6 +124,7 @@ class ConfigLoadPolicy:
     browser_cookies: BrowserCookieMode = "off"
     allow_project_config: bool = False
     inspect_ignored_project_config: bool = False
+    require_recorded_browser_consent: bool = False
 
 
 def _truthy(value: Any) -> bool:
@@ -516,6 +517,30 @@ def _find_project_env() -> Path | None:
     return None
 
 
+def _load_config_files(
+    policy: ConfigLoadPolicy,
+) -> tuple[dict[str, str], dict[str, str], Path | None]:
+    file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
+    project_path = _find_project_env() if _project_config_trusted(policy, file_env) else None
+    project_env = load_env_file(project_path) if project_path else {}
+    return file_env, project_env, project_path
+
+
+def has_recorded_browser_consent() -> bool:
+    """Check whether setup can reuse explicit consent without opening credential stores."""
+    file_env, project_env, _ = _load_config_files(ConfigLoadPolicy())
+    file_settings = {**file_env, **project_env}
+    config = {}
+    for key in ("BROWSER_CONSENT", "FROM_BROWSER"):
+        value = os.environ.get(key)
+        config[key] = (
+            file_settings.get(key)
+            if not value or is_unsubstituted_template(value)
+            else value
+        )
+    return browser_consent_granted(config)
+
+
 def _configured_memory_dir(*values: str | None) -> str | None:
     for value in values:
         if value is not None and not is_unsubstituted_template(value):
@@ -529,12 +554,7 @@ def resolve_memory_dir(save_dir: str | None = None) -> str:
     if value is None:
         value = _configured_memory_dir(os.environ.get("LAST30DAYS_MEMORY_DIR"))
     if value is None:
-        file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
-        project_env = {}
-        if _project_config_trusted(ConfigLoadPolicy(), file_env):
-            project_path = _find_project_env()
-            if project_path:
-                project_env = load_env_file(project_path)
+        file_env, project_env, _ = _load_config_files(ConfigLoadPolicy())
         value = _configured_memory_dir(
             project_env.get("LAST30DAYS_MEMORY_DIR"),
             file_env.get("LAST30DAYS_MEMORY_DIR"),
@@ -554,18 +574,13 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
       4. macOS Keychain items prefixed ``last30days-`` (Darwin only)
     """
     policy = policy or ConfigLoadPolicy()
-    # Load from global config file
-    file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
-
     # Load per-project config only when trust comes from process env, global
     # user config, or an explicit policy. A project file cannot grant trust to
     # itself because it is not parsed until after this decision.
-    project_config_trusted = _project_config_trusted(policy, file_env)
-    project_env_path = _find_project_env() if project_config_trusted else None
-    project_env = load_env_file(project_env_path) if project_env_path else {}
+    file_env, project_env, project_env_path = _load_config_files(policy)
     ignored_project_env_path = None
     ignored_project_keys: list[str] = []
-    if not project_config_trusted and policy.inspect_ignored_project_config:
+    if policy.inspect_ignored_project_config and not _project_config_trusted(policy, file_env):
         ignored_project_env_path = _find_project_env()
         if ignored_project_env_path:
             ignored_project_keys = sorted(load_env_file(ignored_project_env_path).keys())
@@ -920,7 +935,10 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         config['OPENAI_AUTH_STATUS'] = AUTH_STATUS_MISSING
 
     if policy.browser_cookies == "read":
-        _discover_and_apply_x_credentials(config)
+        if policy.require_recorded_browser_consent and not browser_consent_granted(config):
+            config['_BROWSER_COOKIE_MODE'] = "off"
+        else:
+            _discover_and_apply_x_credentials(config)
 
     # Fixture recording (--record-fixtures) must redact a credential that
     # came from a file, Keychain, or pass, not only one exported in the
@@ -1242,6 +1260,10 @@ def cookie_access_denied(config: dict[str, Any]) -> bool:
     return consent is not None and str(consent).strip().lower() not in {
         "1", "true", "yes", "on",
     }
+
+
+def browser_consent_granted(config: dict[str, Any]) -> bool:
+    return _truthy(config.get("BROWSER_CONSENT")) and not cookie_access_denied(config)
 
 
 def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:

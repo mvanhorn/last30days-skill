@@ -2,7 +2,36 @@
 
 import os
 import stat
+import tempfile
+import time
 from pathlib import Path
+
+_WINDOWS_SHARING_VIOLATION = 32
+
+
+def replace_private_text(path: Path, content: str) -> None:
+    """Publish UTF-8 text atomically from an owner-only temporary file."""
+    staged = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False,
+    )
+    try:
+        with staged:
+            staged.write(content)
+        # On Windows, a reader without delete sharing can briefly block atomic replacement.
+        for retries_left in range(3, -1, -1):
+            try:
+                os.replace(staged.name, path)
+                break
+            except OSError as exc:
+                if (
+                    not retries_left
+                    or os.name != "nt"
+                    or getattr(exc, "winerror", None) != _WINDOWS_SHARING_VIOLATION
+                ):
+                    raise
+                time.sleep(0.05)
+    finally:
+        Path(staged.name).unlink(missing_ok=True)
 
 
 def prepare_private_sqlite_files(path: Path, *, create: bool = False) -> Path:
