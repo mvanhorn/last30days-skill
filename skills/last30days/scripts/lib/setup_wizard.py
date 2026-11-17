@@ -324,6 +324,11 @@ def _run_npx_install(slug: str) -> Tuple[str, str]:
         stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
         logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
         return "install_failed", stderr
+    # On a fresh Windows setup the managed Printing Press bin dir only exists
+    # now, so the engine's startup PATH append skipped it. Add it before the
+    # caller's shutil.which check, or setup asks for a PATH edit the next
+    # engine run would not need.
+    health.add_managed_bin_dir_to_path()
     return "", (proc.stderr or "")
 
 

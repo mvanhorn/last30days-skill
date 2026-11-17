@@ -296,7 +296,7 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
                 status=health.MISSING,
                 requires=requires,
                 detail=f"grok is installed at {off_path} but that directory is not on this process's PATH",
-                prescription=f"add {off_path.parent} to PATH (e.g. {health.path_edit_example(str(off_path.parent))})",
+                prescription=health.path_edit_prescription(str(off_path.parent), "grok"),
             )
         return BackendFinding(
             name="grok",

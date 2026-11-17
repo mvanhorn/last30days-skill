@@ -446,10 +446,13 @@ def path_edit_example(directory: str) -> str:
     neither runs in PowerShell nor survives a restart).
     """
     if os.name == "nt":
+        # PowerShell single-quoted strings escape an apostrophe by doubling it
+        # (a C:\Users\O'Brien path would otherwise end the string early).
+        quoted = directory.replace("'", "''")
         return (
             "[Environment]::SetEnvironmentVariable('Path', "
             "[Environment]::GetEnvironmentVariable('Path', 'User') + "
-            f"';{directory}', 'User')"
+            f"';{quoted}', 'User')"
         )
     return f'export PATH="{directory}:$PATH"'
 

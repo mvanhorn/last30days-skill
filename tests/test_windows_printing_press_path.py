@@ -118,3 +118,35 @@ class TestSetupSummaryNamesGo:
             {"digg_action": "install_failed", "digg_stderr": "network unreachable"}
         )
         assert f"Digg CLI install failed — run `{setup_wizard.DIGG_INSTALL_CMD}` manually" in text
+
+
+def test_windows_path_command_escapes_apostrophes():
+    """A user folder like O'Brien must not close the PowerShell string early."""
+    with _nt():
+        text = health.path_edit_example(r"C:\Users\O'Brien\go\bin")
+    assert r"';C:\Users\O''Brien\go\bin'" in text
+
+
+def test_successful_install_puts_the_managed_dir_on_path(tmp_path, monkeypatch):
+    """Fresh Windows setup: the managed dir only exists after the install, so
+    the install itself must put it on PATH before callers check shutil.which,
+    or setup tells the user to edit PATH for no reason."""
+    monkeypatch.setattr(setup_wizard.shutil, "which", lambda name: "npx")
+    monkeypatch.setattr(
+        setup_wizard.subprocess, "run",
+        lambda *a, **k: mock.Mock(returncode=0, stderr=""),
+    )
+    with mock.patch.object(setup_wizard.health, "add_managed_bin_dir_to_path") as add:
+        action, _ = setup_wizard._run_npx_install("digg")
+    assert action == ""
+    add.assert_called_once()
+
+
+def test_grok_off_path_finding_tells_windows_users_to_restart(tmp_path):
+    from lib import backends
+
+    off = tmp_path / "grok.exe"
+    with _nt(), mock.patch.object(backends, "which", return_value=None), \
+         mock.patch.object(health, "_off_path_binary", return_value=off):
+        finding = backends._probe_grok({})
+    assert "restart your agent host" in finding.prescription
