@@ -952,17 +952,20 @@ class TestGetSetupStatusText:
         assert "X/Twitter" not in text
         assert "Install Homebrew first" in text
 
-    def test_consented_scan_with_no_match_stays_non_promotional(self):
-        results = {
-            "cookies_found": {},
-            "browser_cookie_scan_attempted": True,
-            "ytdlp_installed": True,
-            "ytdlp_action": "already_installed",
-            "env_written": False,
-        }
-        text = setup_wizard.get_setup_status_text(results)
-        assert "browser cookies" not in text.lower()
-        assert "X/Twitter" not in text
+    def test_consented_scan_with_no_match_shows_manual_alternative(self):
+        for firefox in (False, True):
+            results = {"cookies_found": {}, "browser_cookie_scan_attempted": True,
+                       "firefox_scanned": firefox, "ytdlp_action": "already_installed"}
+            text = setup_wizard.get_setup_status_text(results)
+            assert "No complete X login" in text
+            assert "AUTH_TOKEN and CT0" in text
+            assert ("Firefox permanent private browsing" in text) == firefox
+            for changes in ({"browser_cookie_scan_attempted": False},
+                            {"cookies_found": {"x": "firefox"}}):
+                other = setup_wizard.get_setup_status_text({**results, **changes})
+                assert "No complete X login" not in other
+                assert "AUTH_TOKEN and CT0" not in other
+                assert "Firefox permanent private browsing" not in other
 
     def test_consented_permission_denial_reports_x_and_safe_alternatives(self):
         with patch(
