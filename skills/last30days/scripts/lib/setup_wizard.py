@@ -196,6 +196,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
             if scan_attempted and "x" not in cookies_found else []
         ),
         "browser_cookie_scan_attempted": scan_attempted,
+        "firefox_scanned": scan_attempted and "firefox" in browsers,
         "ytdlp_installed": ytdlp_installed,
         "ytdlp_action": ytdlp_action,
         "digg_installed": digg_installed,
@@ -842,6 +843,19 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         lines.append(
             "  - X cookie access was permission denied in "
             f"{', '.join(denied_browsers)}. {X_COOKIE_ACCESS_FIX}"
+        )
+
+    if (results.get("browser_cookie_scan_attempted")
+            and "x" not in cookies_found and not denied_browsers):
+        lines.append("  - No complete X login was found in the scanned browser profiles.")
+        if results.get("firefox_scanned"):
+            lines.append(
+                "    Firefox permanent private browsing or clearing cookies on exit can "
+                "prevent saved cookies from being found."
+            )
+        lines.append(
+            "    Sign in with persistent browser cookies, or set AUTH_TOKEN and CT0 "
+            "manually in ~/.config/last30days/.env."
         )
 
     ytdlp_action = results.get("ytdlp_action", "")

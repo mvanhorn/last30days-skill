@@ -78,8 +78,9 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         cause="X browser cookies (AUTH_TOKEN/CT0) are not configured",
         fix_nl=(
             "log into x.com in your browser and re-run (cookies detected "
-            "automatically), or add XAI_API_KEY to your .env (get key at "
-            "api.x.ai), or add XQUIK_API_KEY to your .env (get key at xquik.com)"
+            "automatically), or set AUTH_TOKEN and CT0 manually in your .env "
+            "if browser cookies cannot be read, or add XAI_API_KEY to your .env "
+            "(get key at api.x.ai), or add XQUIK_API_KEY to your .env (get key at xquik.com)"
         ),
         fix_cli=SETUP_BROWSER_COOKIES_CLI,
         anchor="api-keys-env",
