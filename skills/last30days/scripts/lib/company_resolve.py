@@ -85,18 +85,11 @@ _HUMAN = "Q5"
 # business, enterprise, company, public company, corporation. "organization"
 # is left out on purpose: bands, parties and constituencies sit under it.
 _BUSINESS_CLASSES = frozenset({"Q4830453", "Q6881511", "Q783794", "Q891723", "Q167037"})
-# Programming languages, operating systems, and software projects. A food,
-# occupation, or SI prefix that shares a startup's name is not one of these.
-_SOFTWARE_PROJECT_CLASSES = frozenset({
-    "Q9143",     # programming language
-    "Q9135",     # operating system
-    "Q7397",     # software
-    "Q341",      # free software
-    "Q1130645",  # open-source software
-    "Q271680",   # software framework
-    "Q188860",   # software library
-    "Q4295316",  # programming language family
-    "Q14656",    # Unix-like
+# Direct P31 only: a product company named after its app is often
+# "software" / "application" and must still get company peers.
+_LANGUAGE_OR_OS_CLASSES = frozenset({
+    "Q9143",  # programming language
+    "Q9135",  # operating system
 })
 # A person recorded as chief executive of more organizations than this is not
 # checked further; the answer would be "more than one" or a very large fetch.
@@ -150,8 +143,8 @@ class UncertainLookup(dict):
     """Wikidata answered and nothing is certain.
 
     Empty to every caller that does not ask. ``kind`` is ``none`` (no matching
-    entity, or a non-business that is not a software project), ``human``, or
-    ``software`` (a programming language, OS, or software project).
+    entity, or a non-business that is not a language or OS), ``human``, or
+    ``software`` (a programming language or operating system, direct P31).
     """
 
     def __init__(self, kind: str = WIKIDATA_NONE):
@@ -206,10 +199,11 @@ def resolve_company(
     strings and never ``company`` itself), and
     ``company_via_person`` (True) when the topic is the person who leads the
     company, or when Wikidata's top hit is a human and Exa filled their site.
-    ``company_peer_discovery`` is ``keyword`` when Wikidata's top hit is a
-    programming language, OS, or software project, so competitor discovery
-    keeps keyword SERPs. A food, occupation, or other homonym is treated
-    like no entity: Exa may still fill the site and company peers stay on.
+    ``company_peer_discovery`` is ``keyword`` when Wikidata's top hit is
+    directly a programming language or operating system, so competitor
+    discovery keeps keyword SERPs. A food, occupation, application, or
+    other homonym is treated like no entity: Exa may still fill the site
+    and company peers stay on.
     An empty dict means nothing is certain; it
     is a ``FailedLookup`` when the lookup itself failed, and an
     ``UncertainLookup`` when Wikidata answered with nothing certain and Exa
@@ -347,7 +341,7 @@ def _exa_site_fallback(
 ) -> dict[str, Any]:
     """Official-site search when Wikidata named nothing certain.
 
-    Searches Exa's company index only (undated). A person or software-project
+    Searches Exa's company index only (undated). A person, language, or OS
     site is kept; ``wikidata_kind`` decides whether peer discovery may use
     that company index (``none``) or must stay on keyword SERPs (``human``,
     ``software``).
@@ -408,10 +402,10 @@ def _resolve(topic: str, listing: bool = True, names: bool = False) -> dict[str,
         if company is None:
             return UncertainLookup(WIKIDATA_HUMAN)
         return {**_company_fields(company, listing, names), "company_via_person": True}
+    if _is_language_or_os(entity):
+        return UncertainLookup(WIKIDATA_SOFTWARE)
     if _is_business(entity):
         return _company_fields(entity, listing, names)
-    if _is_software_project(entity):
-        return UncertainLookup(WIKIDATA_SOFTWARE)
     return UncertainLookup(WIKIDATA_NONE)
 
 
@@ -499,9 +493,9 @@ def _is_business(entity: dict[str, Any]) -> bool:
     return _is_instance_of(entity, _BUSINESS_CLASSES)
 
 
-def _is_software_project(entity: dict[str, Any]) -> bool:
-    """True when the entity is a programming language, OS, or software project."""
-    return _is_instance_of(entity, _SOFTWARE_PROJECT_CLASSES)
+def _is_language_or_os(entity: dict[str, Any]) -> bool:
+    """True when P31 is a programming language or OS. No P279 hop."""
+    return bool(_item_ids(_statements(entity, _INSTANCE_OF)) & _LANGUAGE_OR_OS_CLASSES)
 
 
 def _company_led_by(person_id: str) -> dict[str, Any] | None:

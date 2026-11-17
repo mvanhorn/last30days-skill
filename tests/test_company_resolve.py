@@ -1058,6 +1058,91 @@ def test_exa_granola_style_food_homonym_keeps_company_peers(monkeypatch):
     assert "company_peer_discovery" not in result
 
 
+def _p279_claim(class_id: str) -> dict:
+    claim = _p31_claim(class_id)
+    claim["mainsnak"]["property"] = "P279"
+    return claim
+
+
+def _homonym_fake(
+    topic: str, entity_id: str, class_id: str, *, parent_id: str | None = None,
+) -> FakeWikidata:
+    entity = {
+        "type": "item",
+        "id": entity_id,
+        "labels": {"en": {"language": "en", "value": topic}},
+        "claims": {"P31": [_p31_claim(class_id)]},
+    }
+    klass: dict = {"type": "item", "id": class_id, "claims": {}}
+    entities = {entity_id: entity, class_id: klass}
+    if parent_id:
+        klass["claims"]["P279"] = [_p279_claim(parent_id)]
+        entities[parent_id] = {"type": "item", "id": parent_id, "claims": {}}
+    return FakeWikidata(
+        entities=entities,
+        search={topic: {
+            "search": [{"id": entity_id, "label": topic}],
+            "success": 1,
+        }},
+    )
+
+
+def test_exa_linux_style_os_uses_keyword_peers(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", _homonym_fake("Linux", "Q388", "Q9135"))
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Linux", "url": "https://www.linux.org/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Linux", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Linux",
+        "company_site": "https://linux.org/",
+        "company_source": "exa",
+        "company_peer_discovery": "keyword",
+    }
+
+
+def test_exa_raycast_style_software_product_keeps_company_peers(monkeypatch):
+    monkeypatch.setattr(
+        company_resolve.http, "get",
+        _homonym_fake("Raycast", "Q124372806", "Q7397"),
+    )
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Raycast", "url": "https://www.raycast.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Raycast", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Raycast",
+        "company_site": "https://raycast.com/",
+        "company_source": "exa",
+    }
+    assert "company_peer_discovery" not in result
+    assert "company_via_person" not in result
+
+
+def test_exa_application_homonym_keeps_company_peers(monkeypatch):
+    monkeypatch.setattr(
+        company_resolve.http, "get",
+        _homonym_fake("Exa", "Q57838499", "Q166142", parent_id="Q7397"),
+    )
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Exa", "url": "https://exa.ai/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Exa", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Exa",
+        "company_site": "https://exa.ai/",
+        "company_source": "exa",
+    }
+    assert "company_peer_discovery" not in result
+    assert "company_via_person" not in result
+
+
 def test_exa_modal_labs_matches_modal_com(monkeypatch):
     monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
     monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
