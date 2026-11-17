@@ -391,20 +391,17 @@ def save_output(
             raise
         if candidate.suffix.lower() == ".md":
             try:
-                from lib import library, library_index
+                from lib import library_index
 
                 save_root = candidate.parent.resolve()
-                if save_root == Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve():
+                db_path = library_index.saved_report_index_path(save_root)
+                # A scoped save must sync a per-directory index with the
+                # same paths scoped search uses; syncing the shared DB
+                # from one scope's scan would prune other scopes' rows.
+                if db_path == library_index.DEFAULT_LIBRARY_DB:
                     library_index.sync_library(save_root)
                 else:
-                    # A scoped save must sync a per-directory index with the
-                    # same paths scoped search uses; syncing the shared DB
-                    # from one scope's scan would prune other scopes' rows.
-                    library_index.sync_library(
-                        save_root,
-                        save_root / "briefings",
-                        db_path=save_root / ".last30days-library.db",
-                    )
+                    library_index.sync_library(save_root, save_root / "briefings", db_path=db_path)
             except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
                 # Saving research must not depend on the optional local index;
                 # `library search` reports a clear capability error on demand.
@@ -630,6 +627,67 @@ def _scoped_store_db(args: argparse.Namespace) -> Path | None:
     return None
 
 
+def _research_store_enabled(args: argparse.Namespace, config: dict[str, object]) -> bool:
+    store_setting = os.environ.get("LAST30DAYS_STORE") or config.get("LAST30DAYS_STORE") or ""
+    return args.store or str(store_setting).lower() in {"1", "true", "yes"}
+
+
+def _add_preflight_library_writes(
+    preflight: dict, args: argparse.Namespace, config: dict[str, object],
+) -> None:
+    from lib import library_index
+
+    on_save = bool(args.preflight_report_on_save_dir and not args.save_dir)
+    save_dir = args.preflight_report_on_save_dir if on_save else args.save_dir
+    local, conditional = preflight["local_writes"], preflight["conditional_writes"]
+    context_db = None if args.mock else pipeline.library_context_index_path(config, save_dir)
+    if context_db is not None:
+        write = {"kind": "library_index_on_save" if on_save else "library_index", "path": str(context_db)}
+        (conditional if on_save else local).append(write)
+    if save_dir and args.emit != "html":
+        markdown_db = library_index.saved_report_index_path(Path(save_dir).expanduser().resolve())
+        if markdown_db != context_db:
+            conditional.append({"kind": "library_index_on_markdown_save", "path": str(markdown_db)})
+
+
+def _add_preflight_research_writes(
+    preflight: dict, args: argparse.Namespace, config: dict[str, object],
+) -> None:
+    if args.preflight_engine_cache_dir:
+        preflight["conditional_writes"].append({
+            "kind": "engine_cache_on_first_use", "path": args.preflight_engine_cache_dir,
+        })
+    if args.no_research_persistence:
+        return
+    if (
+        env.hosted_backend_configured()
+        and not config.get("_CORPUS_DIRS")
+        and not args.mock and not args.record_fixtures and not args.deep_research
+        and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
+    ):
+        return
+    mcp_preflight = args.preflight_engine_cache_dir is not None
+    research_writes = preflight["conditional_writes" if mcp_preflight else "local_writes"]
+    kind_suffix = "_on_save" if mcp_preflight else ""
+    if env.CONFIG_DIR is not None:
+        for filename in ("last-run.json", "last-report.json"):
+            research_writes.append({
+                "kind": "research_cache" + kind_suffix, "path": str(env.CONFIG_DIR / filename),
+            })
+        if config.get("_CORPUS_DIRS"):
+            research_writes.append({
+                "kind": "corpus_cache" + kind_suffix, "path": str(env.CONFIG_DIR / corpus.CACHE_FILENAME),
+            })
+    _add_preflight_library_writes(preflight, args, config)
+    if not _research_store_enabled(args, config):
+        return
+    import store
+
+    store_args = argparse.Namespace(save_dir=args.preflight_report_on_save_dir) if mcp_preflight else args
+    db_path = _scoped_store_db(store_args) or store.DB_PATH
+    research_writes.append({"kind": "research_store" + kind_suffix, "path": str(db_path)})
+
+
 def persist_report(report: schema.Report, store_db: Path | None = None) -> dict[str, int]:
     import store
 
@@ -775,6 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--welcome", action="store_true",
                         help="Print the first-run welcome text (engine-owned; relay verbatim)")
     parser.add_argument("--preflight-report-on-save-dir", help=argparse.SUPPRESS)
+    parser.add_argument("--preflight-engine-cache-dir", help=argparse.SUPPRESS)
     parser.add_argument("--no-browser-cookies", action="store_true",
                         help="Disable browser-cookie extraction even when FROM_BROWSER is configured")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
@@ -4033,15 +4092,16 @@ def _main(
     if args.preflight:
         requested_sources = resolve_requested_sources(args.search, config)
         diag = pipeline.diagnose(config, requested_sources, safe=True)
-        if args.save_dir or args.preflight_report_on_save_dir:
-            preflight = permission_preflight.build(
-                config,
-                diag,
-                planned_save_dir=args.save_dir,
-                report_on_save_dir=args.preflight_report_on_save_dir,
-            )
-        else:
-            preflight = diag["permission_preflight"]
+        preflight = permission_preflight.build(
+            config,
+            diag,
+            planned_save_dir=args.save_dir,
+            report_on_save_dir=(
+                None if args.no_research_persistence else args.preflight_report_on_save_dir
+            ),
+            requested_sources=requested_sources,
+        )
+        _add_preflight_research_writes(preflight, args, config)
         if args.emit == "json":
             print(json.dumps(preflight, indent=2, sort_keys=True))
         else:
@@ -5247,13 +5307,7 @@ def _main(
             x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
             research_options=research_options,
         )
-        # env.py loads the .env setting without propagating it to os.environ.
-        _store_env = (
-            os.environ.get("LAST30DAYS_STORE")
-            or config.get("LAST30DAYS_STORE")
-            or ""
-        ).lower()
-        if args.store or _store_env in ("1", "true", "yes"):
+        if _research_store_enabled(args, config):
             counts = persist_report(report, store_db=_scoped_store_db(args))
             sys.stderr.write(
                 f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"

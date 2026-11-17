@@ -213,15 +213,21 @@ func withoutReportChecklist(output string) string {
 func researchRunArgs(topic, emit, saveDir string, save bool) []string {
 	// Options first, positional topic last behind a `--` separator: a
 	// dash-prefixed topic must never be parsed as engine flags.
-	runArgs := []string{"--research-only", "--emit=" + emit}
-	if !browserCookiesAllowed() {
-		runArgs = append(runArgs, "--no-browser-cookies")
-	}
+	runArgs := withBrowserCookiePolicy([]string{"--research-only", "--emit=" + emit})
+	// Always pass --save-dir explicitly. An empty value skips the engine's
+	// LAST30DAYS_MEMORY_DIR fallback and disables report export.
 	runArgs = append(runArgs, "--save-dir", saveDir)
 	if !save {
 		runArgs = append(runArgs, "--no-research-persistence")
 	}
 	return append(runArgs, "--", topic)
+}
+
+func withBrowserCookiePolicy(args []string) []string {
+	if !browserCookiesAllowed() {
+		return append(args, "--no-browser-cookies")
+	}
+	return args
 }
 
 func researchExtraEnv() []string {

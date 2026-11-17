@@ -2197,7 +2197,9 @@ def diagnose(
         "credential_destinations": credential_destinations,
         "local_writes": local_writes,
     }
-    diag["permission_preflight"] = permission_preflight.build(config, diag)
+    diag["permission_preflight"] = permission_preflight.build(
+        config, diag, requested_sources=requested_sources,
+    )
     return diag
 
 
@@ -2213,6 +2215,19 @@ def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
     return max(4, min(16, stream_count or 1))
 
 
+def library_context_index_path(
+    config: dict[str, Any], save_dir: Path | str | None,
+) -> Path | None:
+    setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
+    if setting in {"0", "false", "no", "off"} or save_dir == "":
+        return None
+    if path := config.get("_LAST30DAYS_LIBRARY_DB"):
+        return Path(path).expanduser()
+    if save_dir is not None:
+        return Path(save_dir).expanduser().resolve() / ".last30days-library.db"
+    return library_index.DEFAULT_LIBRARY_DB
+
+
 def _load_library_context(
     *,
     topic: str,
@@ -2225,10 +2240,10 @@ def _load_library_context(
     save_dir: Path | str | None = None,
 ) -> tuple[list[schema.LibraryContext], str | None]:
     """Resolve compact prior-run context without making a research run depend on it."""
-    setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
-    if mock or internal_subrun or setting in {"0", "false", "no", "off"}:
+    if mock or internal_subrun:
         return [], None
-    if save_dir == "":
+    db_path = library_context_index_path(config, save_dir)
+    if db_path is None:
         return [], None
 
     memory_dir = (
@@ -2241,13 +2256,6 @@ def _load_library_context(
         if save_dir is not None
         else library.DEFAULT_BRIEFS_DIR
     )
-    db_path = config.get("_LAST30DAYS_LIBRARY_DB")
-    if not db_path:
-        db_path = (
-            Path(memory_dir).expanduser().resolve() / ".last30days-library.db"
-            if save_dir is not None
-            else library_index.DEFAULT_LIBRARY_DB
-        )
     store_db = config.get("_LAST30DAYS_STORE_DB")
     if not store_db:
         # Scoped runs read only a store inside the save dir (usually absent);
@@ -6829,12 +6837,7 @@ def _retrieve_stream_impl(
         reddit_query = raw_topic or subquery.search_query
         dedicated_subreddits = config.get("_dedicated_subreddits") or None
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
-        sc_first = (
-            has_sc_key
-            and (config.get(env.REDDIT_BACKEND_PIN_VAR) or "").lower()
-            == "scrapecreators"
-        )
-        if sc_first:
+        if env.reddit_scrapecreators_primary(config):
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             if config.get("_reddit_envelope") is not None:
                 log.source_log(

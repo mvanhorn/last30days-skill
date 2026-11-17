@@ -36,6 +36,12 @@ _PRIVATE_CORPUS_BLOCK = re.compile(
 )
 
 
+def saved_report_index_path(save_dir: Path) -> Path:
+    if save_dir == Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve():
+        return DEFAULT_LIBRARY_DB
+    return save_dir / ".last30days-library.db"
+
+
 class LibrarySearchUnavailable(RuntimeError):
     """Raised when this Python SQLite build cannot provide FTS5."""
 

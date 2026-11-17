@@ -1204,6 +1204,13 @@ def reddit_session_gate(config: dict[str, Any]) -> tuple[bool, str]:
     return True, ""
 
 
+def reddit_scrapecreators_primary(config: dict[str, Any]) -> bool:
+    return bool(
+        config.get("SCRAPECREATORS_API_KEY")
+        and (config.get(REDDIT_BACKEND_PIN_VAR) or "").lower() == "scrapecreators"
+    )
+
+
 def reddit_consent_state(config: dict[str, Any]) -> str:
     """``granted``, ``refused``, or ``unset`` (doctor and setup; no read)."""
     raw = config.get(REDDIT_CONSENT_VAR)
@@ -1938,7 +1945,7 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
         return False
     # Only meaningful in inspection modes that skip extraction; a real ``read``
     # run has already attempted extraction and must report its true state.
-    if config.get('_BROWSER_COOKIE_MODE') == 'read':
+    if config.get('_BROWSER_COOKIE_MODE') in {'read', 'off'}:
         return False
     # Cookie-only predicate: on an official-only host no run-time cookie
     # source exists unless bird is pinned (x_policy), so nothing is pending.
