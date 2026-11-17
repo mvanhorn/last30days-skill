@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 import last30days as cli
-from lib import cookie_extract, env
+from lib import cookie_extract, env, setup_wizard
 
 
 @pytest.fixture
@@ -193,3 +193,45 @@ def test_explicit_browser_off_is_preserved(run_setup):
     assert env.cookie_extraction_browsers(config) == []
     assert not config["AUTH_TOKEN"]
     assert reads == []
+
+
+@pytest.mark.parametrize(
+    ("recorded", "allowed"),
+    [
+        pytest.param("BROWSER_CONSENT=false\nFROM_BROWSER=firefox\n", False, id="revoked"),
+        pytest.param("BROWSER_CONSENT=true\nFROM_BROWSER=off\n", False, id="browser-veto"),
+        pytest.param("BROWSER_CONSENT=yes\nFROM_BROWSER=firefox\n", True, id="still-granted"),
+    ],
+)
+def test_recorded_setup_uses_current_consent(monkeypatch, capsys, recorded, allowed):
+    config_path = env.CONFIG_FILE
+    config_path.write_text("BROWSER_CONSENT=true\nFROM_BROWSER=firefox\n", encoding="utf-8")
+    config_path.chmod(0o600)
+    discovered = []
+    scanned = []
+    monkeypatch.setattr(env, "_discover_and_apply_x_credentials", discovered.append)
+
+    def scan_stub(config, *, allow_browser_cookies):
+        assert allow_browser_cookies
+        scanned.append(config)
+        config_path.write_text("BROWSER_CONSENT=false\nFROM_BROWSER=firefox\n", encoding="utf-8")
+        return {}
+
+    monkeypatch.setattr(setup_wizard, "run_auto_setup", scan_stub)
+    monkeypatch.setattr(setup_wizard, "get_setup_status_text", lambda _: "")
+    monkeypatch.setattr(sys, "argv", ["last30days", "--resolve-browser-consent"])
+    assert cli.main() == 0
+    assert capsys.readouterr().out == "granted\n"
+
+    config_path.write_text(recorded, encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["last30days", "setup", "--use-recorded-browser-consent"])
+    assert cli.main() == 0
+    if allowed:
+        assert len(discovered) == len(scanned) == 1
+        assert discovered[0] is scanned[0]
+        assert env.load_env_file(config_path)["BROWSER_CONSENT"] == "false"
+        assert env.load_env_file(config_path)["SETUP_COMPLETE"] == "true"
+    else:
+        assert capsys.readouterr().out == "not-granted\n"
+        assert discovered == scanned == []
+        assert config_path.read_text(encoding="utf-8") == recorded
