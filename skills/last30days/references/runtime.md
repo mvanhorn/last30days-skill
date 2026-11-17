@@ -45,7 +45,7 @@ try_last30days_python() {
   else
     return 1
   fi
-  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || return 1
+  "$candidate" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || return 1
   LAST30DAYS_PYTHON="$candidate"
   return 0
 }
@@ -103,7 +103,7 @@ if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
   exit 1
 fi
 
-"${LAST30DAYS_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || {
+"${LAST30DAYS_PYTHON}" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || {
   echo "ERROR: LAST30DAYS_PYTHON must point to Python 3.12+." >&2
   exit 1
 }
@@ -116,7 +116,7 @@ case "$last30days_python_path" in
   *) echo "ERROR: selected Python must resolve to an executable path." >&2; exit 1 ;;
 esac
 export LAST30DAYS_PYTHON
-"${LAST30DAYS_PYTHON}" -c 'import os, shlex; print("LAST30DAYS_PYTHON=" + shlex.quote(os.environ["LAST30DAYS_PYTHON"]))'
+"${LAST30DAYS_PYTHON}" -I -c 'import os, shlex; print("LAST30DAYS_PYTHON=" + shlex.quote(os.environ["LAST30DAYS_PYTHON"]))'
 
 ```
 

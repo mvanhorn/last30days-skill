@@ -21,9 +21,12 @@ def _command_environment(tmp_path):
     synthesis = tmp_path / "research synthesis.md"
     synthesis.write_text("What I learned:\n\n**Path regression** works offline.\n")
     output = tmp_path / "saved brief.html"
+    scratch = tmp_path / "synthesis drafts"
+    scratch.mkdir()
     return {
         "PATH": os.defpath,
         "HOME": str(tmp_path / "home"),
+        "TMPDIR": str(scratch),
         "LAST30DAYS_CONFIG_DIR": str(tmp_path / "config"),
         "LAST30DAYS_CACHE_DIR": str(tmp_path / "cache"),
         "LAST30DAYS_PYTHON": sys.executable,
@@ -90,3 +93,4 @@ def test_documented_publish_command_reaches_engine_parser(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
+    assert not list(Path(env["TMPDIR"]).iterdir())

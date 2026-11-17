@@ -1128,7 +1128,7 @@ _DIAG = {
 }
 
 
-def _cli(argv, tmp_path, *, config=None, run=None, environ=None, real_run=False):
+def _cli(argv, tmp_path, *, config=None, run=None, environ=None, real_run=False, real_diagnose=False):
     out, err = io.StringIO(), io.StringIO()
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir(exist_ok=True)
@@ -1145,7 +1145,8 @@ def _cli(argv, tmp_path, *, config=None, run=None, environ=None, real_run=False)
         if real_run:
             stack.enter_context(_no_backend())
         else:
-            stack.enter_context(mock.patch.object(cli.pipeline, "diagnose", return_value=dict(_DIAG)))
+            if not real_diagnose:
+                stack.enter_context(mock.patch.object(cli.pipeline, "diagnose", return_value=dict(_DIAG)))
             stack.enter_context(mock.patch.object(
                 cli.pipeline, "run", side_effect=run or AssertionError("pipeline.run must not run"),
             ))
@@ -1173,6 +1174,50 @@ def _fake_report(topic: str) -> schema.Report:
 
 
 class TestCli:
+    @pytest.mark.parametrize(
+        ("args", "config", "live"),
+        [
+            pytest.param(["--search", "X"], {}, True, id="local-x"),
+            pytest.param(["--search", "reddit"], {}, False, id="explicit-scope"),
+            pytest.param([], {"LAST30DAYS_DEFAULT_SEARCH": "reddit"}, False, id="configured-scope"),
+            pytest.param(["--search", "reddit,x"], {"EXCLUDE_SOURCES": " YouTube, X "}, False, id="hard-exclusion"),
+            pytest.param(["--search", "x", "--mock"], {}, False, id="mock"),
+            pytest.param(["--search", "x"], {"LAST30DAYS_X_HOST_LANE": "1"}, False, id="missing-envelope"),
+            pytest.param(["--x-posts", "{envelope}", "--x-handle", SUBJECT], {}, False, id="host-envelope"),
+            pytest.param(["--competitors-list", "peer", "--competitors-plan", "{comparison_plan}"], {},
+                         False, id="comparison-envelopes"),
+            pytest.param(["--plan", "{reddit_plan}"], {}, False, id="host-plan-excludes-x"),
+            pytest.param(["--hiring-signals"], {}, False, id="default-jobs-only"),
+        ],
+    )
+    def test_live_x_diagnostics_follow_cli_scope(self, tmp_path, args, config, live):
+        files = {
+            "envelope": _basic(tmp_path),
+            "reddit_plan": _write(tmp_path, _plan(("reddit",)), "plan.json"),
+        }
+        peer = _write(tmp_path, _envelope([_call("topic", posts=[_row(0)])], topic="peer"), "peer.json")
+        files["comparison_plan"] = _write(
+            tmp_path, {TOPIC: {"x_posts": files["envelope"], "x_handle": SUBJECT}, "peer": {"x_posts": peer}},
+            "competitors.json",
+        )
+        argv = [TOPIC, *(arg.format_map(files) for arg in args)]
+        config = {"AUTH_TOKEN": "test-token", "CT0": "test-ct0", "XQUIK_API_KEY": "test-key", **config}
+        with (
+            mock.patch("lib.bird_x.get_bird_status", return_value={
+                "installed": True, "authenticated": True, "username": None, "can_install": True,
+            }),
+            mock.patch("lib.bird_x.set_credentials"),
+            mock.patch("lib.bird_x.probe_works", return_value=True) as bird_probe,
+            mock.patch("lib.xquik.probe_works", return_value=True) as xquik_probe,
+            mock.patch("lib.xurl_x.is_available", return_value=False) as xurl_status,
+            mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
+        ):
+            rc, _, err = _cli(argv, tmp_path, config=config, run=_fake_run_capturing({}), real_diagnose=True)
+        assert rc == 0, err
+        assert bird_probe.call_count == int(live)
+        assert xquik_probe.call_count == int(live)
+        assert xurl_status.called is live
+
     def test_flag_is_documented_in_argparse_help(self):
         flags = {opt for action in cli.build_parser()._actions for opt in action.option_strings}
         assert "--x-posts" in flags

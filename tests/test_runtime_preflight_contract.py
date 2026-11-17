@@ -39,6 +39,24 @@ class RuntimePreflightContractTests(unittest.TestCase):
         self.assertIn('if [ -z "${LAST30DAYS_PYTHON:-}" ]; then', self.skill_md)
         self.assertIn('ERROR: LAST30DAYS_PYTHON must point to Python 3.12+.', self.skill_md)
 
+    def test_inline_python_helpers_use_isolated_mode(self) -> None:
+        command = re.compile(
+            r'^[ \t]*(?:"?\$(?:candidate|LAST30DAYS_PYTHON|\{(?:candidate|LAST30DAYS_PYTHON)\})"?'
+            r'|python(?:3(?:\.\d+)?)?)[ \t]+'
+            r'(?P<flags>(?:-[A-Za-z]+[ \t]+)*)(?:-[cm]|-)(?=[ \t]|$)',
+            re.M,
+        )
+        found_in = set()
+        unisolated = []
+        for name, document in contract_documents().items():
+            for block in re.findall(r"```bash\n(.*?)\n```", document, re.S):
+                for match in command.finditer(block):
+                    found_in.add(name)
+                    if "-I" not in match["flags"].split():
+                        unisolated.append((name, match[0].strip()))
+        self.assertTrue({"runtime", "comparison", "save-html-brief"} <= found_in)
+        self.assertEqual(unisolated, [])
+
     def test_code_has_no_bare_positional_parameters(self) -> None:
         # Claude Code replaces $<digit> in a skill body with words from the
         # invocation arguments before the model reads it (anthropics/claude-code#94709),
@@ -86,8 +104,8 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         version_probe = f"import sys; sys.version_info = {version!r}; exec(sys.argv[1])"
         candidate.write_text(
             "#!/bin/sh\n"
-            'if [ "$1" = "-c" ]; then\n'
-            f"  exec {shlex.quote(sys.executable)} -c {shlex.quote(version_probe)} \"$2\"\n"
+            'if [ "$1" = "-I" ] && [ "$2" = "-c" ]; then\n'
+            f"  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(version_probe)} \"$3\"\n"
             "fi\n"
             f'exec {shlex.quote(sys.executable)} "$@"\n',
             encoding="utf-8",
