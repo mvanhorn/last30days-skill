@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+import last30days as cli
 import store
 import watchlist
 from lib import schema
@@ -287,6 +288,39 @@ def test_cmd_config_unknown_key(temp_db):
         watchlist.cmd_config(args)
 
 # === Tests for _run_topic() ===
+
+@pytest.mark.parametrize(
+    ("name", "queries"),
+    [
+        pytest.param("search trends", None, id="ordinary"),
+        pytest.param("setup", None, id="reserved"),
+        pytest.param("option names", ["--quick"], id="option-shaped-query"),
+    ],
+)
+def test_run_topic_passes_literal_research_topic(temp_db, name, queries):
+    topic = store.add_topic(name, search_queries=queries)
+    expected_topic = queries[0] if queries else name
+    with patch(
+        "watchlist.subprocess.run",
+        autospec=True,
+        return_value=subprocess.CompletedProcess([], 1, "", "offline"),
+    ) as run:
+        watchlist._run_topic(topic)
+
+    run.assert_called_once()
+    argv = run.call_args.args[0]
+    parsed, extra = cli.build_parser().parse_known_args(argv[2:])
+    assert parsed.topic == [expected_topic]
+    assert parsed.research_only is True
+    assert argv[-2:] == ["--", expected_topic]
+    assert not extra
+    assert parsed.emit == "json"
+    assert parsed.json_profile == "raw"
+    assert parsed.quick is True
+    assert parsed.lookback_days == 90
+    assert parsed.no_browser_cookies is True
+    assert run.call_args.kwargs["env"]["LAST30DAYS_STORE"] == "0"
+
 
 @patch('watchlist.subprocess.run')
 

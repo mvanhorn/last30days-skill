@@ -209,7 +209,7 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             [
                 sys.executable,
                 str(SCRIPT_DIR / "last30days.py"),
-                search_term,
+                "--research-only",
                 "--emit=json",
                 "--json-profile=raw",
                 "--quick",
@@ -220,6 +220,8 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
                 # read / unattended macOS Keychain prompt when a user has set
                 # FROM_BROWSER=auto for interactive use.
                 "--no-browser-cookies",
+                "--",
+                search_term,
             ],
             capture_output=True,
             text=True,
