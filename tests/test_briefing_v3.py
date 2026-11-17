@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -92,18 +93,15 @@ class BriefingV3Tests(unittest.TestCase):
             try:
                 briefing.BRIEFS_DIR = Path(tmpdir) / "briefs"
                 payload = {"status": "ok", "message": "emoji 💬 and accents café"}
-                with mock.patch("briefing.open", create=True) as mock_open:
-                    handle = mock.Mock()
-                    handle.__enter__ = mock.Mock(return_value=handle)
-                    handle.__exit__ = mock.Mock(return_value=False)
-                    mock_open.return_value = handle
-
+                with mock.patch(
+                    "briefing.write_private_text", wraps=briefing.write_private_text
+                ) as write:
                     briefing._save_briefing(payload)
 
-                mock_open.assert_called_once()
-                _, kwargs = mock_open.call_args
-                self.assertEqual("w", kwargs["mode"] if "mode" in kwargs else mock_open.call_args.args[1])
-                self.assertEqual("utf-8", kwargs["encoding"])
+                write.assert_called_once()
+                self.assertEqual("utf-8", write.call_args.kwargs["encoding"])
+                path = next(briefing.BRIEFS_DIR.glob("*.json"))
+                self.assertEqual(payload, json.loads(path.read_text(encoding="utf-8")))
             finally:
                 briefing.BRIEFS_DIR = old_briefs_dir
 

@@ -622,18 +622,14 @@ def test_cmd_run_all_multiple_topics(mock_run, temp_db, capsys):
     assert len(output["results"]) == 2
 
 @patch('watchlist._run_topic')
-@patch('watchlist.store.get_daily_cost')
-
-
-def test_cmd_run_all_respects_budget(mock_cost, mock_run, temp_db, capsys):
+def test_cmd_run_all_respects_budget(mock_run, temp_db, capsys):
     """Test that run-all respects daily budget."""
     # Add topics
-    store.add_topic("Topic 1")
+    first = store.add_topic("Topic 1")
     store.add_topic("Topic 2")
     store.add_topic("Topic 3")
     
-    # Mock budget exceeded (budget limit is 5.0)
-    mock_cost.return_value = 6.0  # Over budget
+    store.record_run(first["id"], token_cost=6.0)
     
     mock_run.return_value = {
         "topic": "Test",
@@ -656,6 +652,7 @@ def test_cmd_run_all_respects_budget(mock_cost, mock_run, temp_db, capsys):
     skipped = [r for r in results if r["status"] == "skipped"]
     
     assert len(skipped) == 3  # All 3 topics skipped
+    mock_run.assert_not_called()
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -67,6 +67,14 @@ class TestXPendingBrowserAuth:
              mock.patch("lib.bird_x.is_bird_installed", return_value=True):
             assert env.x_pending_browser_auth(cfg) is False
 
+    def test_false_with_explicit_cookie_denial(self):
+        cfg = _cfg(FROM_BROWSER="chrome", _BROWSER_COOKIE_MODE="off")
+        with mock.patch("lib.env.get_x_source", return_value=None), \
+             mock.patch("lib.bird_x.is_bird_installed", return_value=True):
+            diag = pipeline.diagnose(cfg, safe=True)
+        assert "x" not in diag["available_sources"]
+        assert diag["x_pending_browser_auth"] is False
+
     def test_reads_no_cookies(self):
         # R3: the predicate must never read cookie values or hit Keychain.
         cfg = _cfg(FROM_BROWSER="chrome")

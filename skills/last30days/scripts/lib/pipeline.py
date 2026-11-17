@@ -159,6 +159,8 @@ STREAM_ARTIFACT_LIFT_KEYS: tuple[str, ...] = ("meta_ads_page", "meta_ads_tally")
 # Worst case per stream is one timeout ceiling (+ one inline 5xx retry in the
 # main fan-out, itself bounded by the lane's own timeouts); no new config knobs.
 STREAM_FUTURE_TIMEOUT_SECONDS = 180.0
+# Leave time for the background adapter to return its final poll receipt.
+DEEP_RESEARCH_RECEIPT_SECONDS = 1.0
 # A job board lists the roles open today, so it cannot answer a window that
 # ended in the past.
 JOBS_PAST_WINDOW_SKIP = "skipped: a job board shows the roles open today, not those of a past window"
@@ -174,6 +176,9 @@ REDDIT_SC_BACKFILL_RESERVE_SECONDS = 45.0
 REDDIT_SC_BACKFILL_MIN_SECONDS = 8.0
 REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS = 5.0
 THIN_RETRY_FUTURE_TIMEOUT_SECONDS = 120.0
+# Leave 20 seconds of the five-minute foreground window for report output.
+FINALIZATION_WORK_CUTOFF_SECONDS = 280.0
+DISCOVERY_FINALIZATION_RESERVE_SECONDS = 10.0
 # One X source, ordered backends: grok (up to 240s/call) + xai (90-180s) would
 # stack sequentially inside one unbounded future under MCP's kill. The chain
 # owns a shared monotonic deadline (x_api's TIMEOUT 30/RETRIES 2/DEADLINE 90
@@ -196,6 +201,15 @@ def _research_deadline(config: dict[str, Any], seconds: float) -> float:
     return min(deadline, inherited) if inherited is not None else deadline
 
 
+def _finalization_deadline(config: dict[str, Any], run_started: float) -> float:
+    deadline = run_started + FINALIZATION_WORK_CUTOFF_SECONDS
+    deadline = min(deadline, config.get("_finalization_deadline", deadline))
+    inherited = config.get("_research_deadline")
+    if inherited is not None:
+        deadline = min(deadline, inherited - DISCOVERY_FINALIZATION_RESERVE_SECONDS)
+    return deadline
+
+
 def _check_research(config: dict[str, Any]) -> None:
     if _research_stopped(config):
         raise TimeoutError("research budget exhausted or cancelled")
@@ -211,6 +225,28 @@ def _wait_for_research(futures, config: dict[str, Any]):
         )
         done.update(completed)
     return done, pending
+
+
+def _completed_streams(batches, bundle: schema.RetrievalBundle):
+    for futures, wait_config, timeout_seconds, keep_ready in batches:
+        done, pending = _wait_for_research(futures, wait_config)
+        timed_out = False
+        for future in pending:
+            if keep_ready and future.done():
+                # A shorter background budget can elapse while the ordinary
+                # batch is still being collected. Its adapter enforces its
+                # own deadline, so keep any completed receipt.
+                done.add(future)
+                continue
+            timed_out = True
+            _subquery, source = futures[future]
+            future.cancel()
+            detail = f"{source} timed out after {timeout_seconds:g}s"
+            bundle.errors_by_source[source] = detail
+            bundle.record_failure(source, health.TIMEOUT, detail, attempted=True)
+        for future in done:
+            subquery, source = futures[future]
+            yield future, subquery, source, timed_out
 
 
 @contextlib.contextmanager
@@ -2161,7 +2197,9 @@ def diagnose(
         "credential_destinations": credential_destinations,
         "local_writes": local_writes,
     }
-    diag["permission_preflight"] = permission_preflight.build(config, diag)
+    diag["permission_preflight"] = permission_preflight.build(
+        config, diag, requested_sources=requested_sources,
+    )
     return diag
 
 
@@ -2177,6 +2215,19 @@ def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
     return max(4, min(16, stream_count or 1))
 
 
+def library_context_index_path(
+    config: dict[str, Any], save_dir: Path | str | None,
+) -> Path | None:
+    setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
+    if setting in {"0", "false", "no", "off"} or save_dir == "":
+        return None
+    if path := config.get("_LAST30DAYS_LIBRARY_DB"):
+        return Path(path).expanduser()
+    if save_dir is not None:
+        return Path(save_dir).expanduser().resolve() / ".last30days-library.db"
+    return library_index.DEFAULT_LIBRARY_DB
+
+
 def _load_library_context(
     *,
     topic: str,
@@ -2189,10 +2240,10 @@ def _load_library_context(
     save_dir: Path | str | None = None,
 ) -> tuple[list[schema.LibraryContext], str | None]:
     """Resolve compact prior-run context without making a research run depend on it."""
-    setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
-    if mock or internal_subrun or setting in {"0", "false", "no", "off"}:
+    if mock or internal_subrun:
         return [], None
-    if save_dir == "":
+    db_path = library_context_index_path(config, save_dir)
+    if db_path is None:
         return [], None
 
     memory_dir = (
@@ -2205,13 +2256,6 @@ def _load_library_context(
         if save_dir is not None
         else library.DEFAULT_BRIEFS_DIR
     )
-    db_path = config.get("_LAST30DAYS_LIBRARY_DB")
-    if not db_path:
-        db_path = (
-            Path(memory_dir).expanduser().resolve() / ".last30days-library.db"
-            if save_dir is not None
-            else library_index.DEFAULT_LIBRARY_DB
-        )
     store_db = config.get("_LAST30DAYS_STORE_DB")
     if not store_db:
         # Scoped runs read only a store inside the save dir (usually absent);
@@ -2818,7 +2862,10 @@ def run(
         config["_jobs_story_terms"] = _jobs_story_terms(plan, topic, config)
     stream_config = dict(config)
     stream_config["_research_deadline"] = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
-    with _abandoning_executor(max_workers=max_workers) as executor:
+    batches = [(futures, stream_config, STREAM_FUTURE_TIMEOUT_SECONDS, False)]
+    background_futures = {}
+    with contextlib.ExitStack() as stack:
+        executor = stack.enter_context(_abandoning_executor(max_workers=max_workers))
         for subquery in plan.subqueries:
             for source in subquery.sources:
                 if source not in available:
@@ -2866,13 +2913,33 @@ def run(
                         continue
                     source_fetch_count[source] = current + 1
                 bundle.mark_attempted(source)
-                futures[
-                    executor.submit(
+                active_futures, active_executor, active_config = futures, executor, stream_config
+                if (
+                    source == "perplexity"
+                    and config.get("_deep_research")
+                    and str(config.get("PERPLEXITY_API_KEY") or "").strip()
+                ):
+                    background_timeout = perplexity.deep_timeout_seconds(config)
+                    active_config = {
+                        **config,
+                        "_research_deadline": _research_deadline(config, background_timeout),
+                    }
+                    background_wait_config = {
+                        **active_config,
+                        "_research_deadline": _research_deadline(
+                            config, background_timeout + DEEP_RESEARCH_RECEIPT_SECONDS,
+                        ),
+                    }
+                    active_executor = stack.enter_context(_abandoning_executor(max_workers=1))
+                    active_futures = background_futures
+                    batches.append((background_futures, background_wait_config, background_timeout, True))
+                active_futures[
+                    active_executor.submit(
                         _retrieve_stream,
                         topic=topic,
                         subquery=subquery,
                         source=source,
-                        config=stream_config,
+                        config=active_config,
                         depth=depth,
                         date_range=(from_date, to_date),
                         runtime=runtime,
@@ -2892,23 +2959,9 @@ def run(
                     )
                 ] = (subquery, source)
 
-        # Bounded fan-out (reddit-lane futures_wait pattern): the whole Phase 1
-        # waits at most STREAM_FUTURE_TIMEOUT_SECONDS, so a hung lane degrades
-        # to a TIMEOUT partial instead of stalling run() forever. Worst case
-        # per stream is the wait ceiling plus, for a stream that failed fast
-        # with a 5xx while budget remained, one inline retry bounded by that
-        # lane's own timeouts. No retry starts after the wait timed out or
-        # the enrichment cancel fired.
-        done, not_done = _wait_for_research(futures, stream_config)
-        budget_expired = bool(not_done)
-        for future in not_done:
-            subquery, source = futures[future]
-            future.cancel()
-            detail = f"{source} timed out after {STREAM_FUTURE_TIMEOUT_SECONDS:g}s"
-            bundle.errors_by_source[source] = detail
-            bundle.record_failure(source, health.TIMEOUT, detail, attempted=True)
-        for future in done:
-            subquery, source = futures[future]
+        # Collect ordinary streams and any inline retries before waiting on
+        # the longer background request.
+        for future, subquery, source, budget_expired in _completed_streams(batches, bundle):
             try:
                 raw_items, artifact = future.result(timeout=0)
             except Exception as exc:
@@ -2924,7 +2977,7 @@ def run(
                 # wait already timed out or cancel fired: the retry's lane
                 # timeouts plus the blocking sleep would run past the budget
                 # that just expired.
-                if _is_transient_error(exc):
+                if future not in background_futures and _is_transient_error(exc):
                     if budget_expired or _research_stopped(stream_config):
                         bundle.errors_by_source[source] = str(exc)
                         state, attempted = _classify_source_failure(exc)
@@ -3273,9 +3326,11 @@ def run(
 
     # Finalize after the deferred floor so the report's per-source view and the
     # source_status counts describe the same post-floor evidence set fusion sees.
+    finalization_deadline = _finalization_deadline(config, run_started)
     items_by_source = _finalize_items_by_source(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
         elapsed=time.monotonic() - run_started, out_of_time=out_of_time_sources,
+        finalization_deadline=finalization_deadline,
     )
     # Fusion gates on identity too, but the footer counts and Top voices read
     # this per-source view, so a namesake left here still reaches the report.
@@ -3335,6 +3390,8 @@ def run(
         candidate for candidate in candidates if id(candidate) not in private_candidate_ids
     ]
     _check_research(config)
+    if reasoning_provider is not None:
+        reasoning_provider.set_request_budget(finalization_deadline, config.get("_enrich_cancel"))
     ranked_public = rerank.rerank_candidates(
         topic=topic,
         plan=plan,
@@ -3982,10 +4039,15 @@ def _finalize_items_by_source(
     mock: bool = False,
     elapsed: float = 0.0,
     out_of_time: set[str] | None = None,
+    finalization_deadline: float | None = None,
 ) -> dict[str, list[schema.SourceItem]]:
+    config = config or {}
+    if finalization_deadline is None:
+        finalization_deadline = _finalization_deadline(config, time.monotonic() - elapsed)
+    cancel = config.get("_enrich_cancel")
     finalized = {}
     for source, items in items_by_source_raw.items():
-        _check_research(config or {})
+        _check_research(config)
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
         if source == "polymarket":
             items = polymarket.by_selection(items)
@@ -4022,15 +4084,21 @@ def _finalize_items_by_source(
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
-            else:
+            elif time.monotonic() < finalization_deadline:
                 sc_token = (
                     config.get("SCRAPECREATORS_API_KEY")
                     if config and env.is_youtube_sc_available(config) else None
                 )
-                youtube_yt.backfill_transcripts(
-                    items, topic=topic, depth=depth, token=sc_token,
-                    entity_count=_comparison_entity_count(config),
-                )
+                with youtube_yt.sc_spend_until(
+                    lambda: _research_stopped(config),
+                    cancel=cancel,
+                    deadline=finalization_deadline,
+                    return_deadline=finalization_deadline,
+                ):
+                    youtube_yt.backfill_transcripts(
+                        items, topic=topic, depth=depth, token=sc_token,
+                        entity_count=_comparison_entity_count(config),
+                    )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         # Post-merge topic bar for Polymarket: the entity matcher, with the
         # run's hints, over each item's matched market and event title. It
@@ -6769,12 +6837,7 @@ def _retrieve_stream_impl(
         reddit_query = raw_topic or subquery.search_query
         dedicated_subreddits = config.get("_dedicated_subreddits") or None
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
-        sc_first = (
-            has_sc_key
-            and (config.get(env.REDDIT_BACKEND_PIN_VAR) or "").lower()
-            == "scrapecreators"
-        )
-        if sc_first:
+        if env.reddit_scrapecreators_primary(config):
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             if config.get("_reddit_envelope") is not None:
                 log.source_log(
