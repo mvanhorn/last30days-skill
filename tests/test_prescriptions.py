@@ -33,7 +33,6 @@ SEED_INVENTORY = {
     ("x", "cookies_expired"),
     ("scrapecreators", "key_missing"),
     ("bluesky", "app_password_missing"),
-    ("youtube", "transcription_key_missing"),
     ("digg", "pp_cli_missing"),
     ("digg", "pp_cli_off_path"),
     ("digg", "pp_cli_broken"),

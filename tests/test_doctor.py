@@ -776,49 +776,29 @@ class IncludeSourcesTokenParsing(unittest.TestCase):
 
 
 class YoutubeTranscriptionNote(unittest.TestCase):
-    """F7: yt-dlp probes OK but no GROQ_API_KEY/OPENAI_API_KEY -> the ok
-    youtube record carries the caption-free note plus the
-    transcription_key_missing fix, and (F14) the text renderer surfaces
-    that fix even though the record's tier is ok."""
+    """The caption-free transcription module is not called by any source yet,
+    so doctor must not prescribe a GROQ_API_KEY/OPENAI_API_KEY for it: the key
+    would change nothing. A healthy yt-dlp YouTube record carries no
+    transcription note and no fix."""
 
     def setUp(self):
         self.report = _build({}, probe_map={"yt-dlp": health.OK})
-        self.entry = prescriptions.get("youtube", "transcription_key_missing")
 
-    def test_ok_record_carries_note_and_fix(self):
+    def test_ok_record_prescribes_no_transcription_key(self):
         record = self.report["sources"]["youtube"]
         self.assertEqual("ok", record["tier"])
         self.assertEqual("ok", record["status"])
-        note = record["note"].lower()
-        # Honest note: affirms the working path, scopes the key to caption-free.
-        self.assertIn("search + transcripts work", note)
-        self.assertIn("caption-free", note)
-        # Does not read as broken and does not attribute comment text to yt-dlp.
-        self.assertNotIn("no transcription key for caption-free videos", note)
-        self.assertIn(self.entry.fix_nl, record["fix"])
-        self.assertIn(self.entry.fix_cli, record["fix"])
+        self.assertNotIn("caption-free", (record.get("note") or "").lower())
+        self.assertNotIn("GROQ_API_KEY", record.get("fix") or "")
+        self.assertNotIn("GROQ_API_KEY", doctor.render_text(self.report))
 
     def test_no_paid_comment_prescription_when_ytdlp_is_installed(self):
         # yt-dlp fetches comment text free. With it installed, doctor must NOT
-        # tell the user to buy a ScrapeCreators key for comments — that would
+        # tell the user to buy a ScrapeCreators key for comments, which would
         # be selling a fix for a problem they do not have.
-        note = self.report["sources"]["youtube"]["note"].lower()
+        note = (self.report["sources"]["youtube"].get("note") or "").lower()
         self.assertNotIn("comment text needs", note)
         self.assertNotIn("scrapecreators", note)
-
-    def test_text_line_includes_the_fix_on_the_ok_line(self):
-        text = doctor.render_text(self.report)
-        # Located by source name, not glyph: the four-state audit sorts a
-        # no-run-evidence ok source to UNVERIFIED, but the transcription fix
-        # must still ride the youtube line.
-        line = next(
-            l
-            for l in text.splitlines()
-            if " youtube" in l and "search + transcripts work" in l
-        )
-        self.assertIn("search + transcripts work", line)
-        self.assertIn(f"fix: {self.entry.fix_nl}", line)
-        self.assertIn(self.entry.fix_cli, line)
 
 
 class YoutubeCommentsFixLine(unittest.TestCase):
@@ -855,11 +835,6 @@ class YoutubeCommentsFixLine(unittest.TestCase):
         self.assertIn("comment text needs", note)
         self.assertIn("yt-dlp (free)", note)
         self.assertTrue(record["fix"], "comment-text caveat must carry a fix")
-
-    def test_transcription_fix_takes_precedence_when_both_fire(self):
-        record = _build({}, probe_map={"yt-dlp": health.OK})["sources"]["youtube"]
-        entry = prescriptions.get("youtube", "transcription_key_missing")
-        self.assertIn(entry.fix_nl, record["fix"])
 
 
 class YoutubeHealthyWhenFullyConfigured(unittest.TestCase):
