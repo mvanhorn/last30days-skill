@@ -43,6 +43,10 @@ UNREACHABLE = "unreachable"
 SCHEMA_DRIFT = "schema-drift"
 SKIPPED_UNCONFIGURED = "skipped-unconfigured"
 
+# The exit code alone also means clarification in hosted mode.
+STRICT_EXIT_CODE = 3
+STRICT_EXIT_PREFIX = "[last30days] strict-exit: degraded sources: "
+
 # Prefer the failure whose remediation matters most when several requests fail.
 FAILURE_SPECIFICITY = {
     AUTH_FAILED: 0,

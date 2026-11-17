@@ -1,0 +1,1 @@
+GitHub research uses public repositories for search, project snapshots, and star counts. Search and repository metadata keep authenticated rate limits when configured. Comments, READMEs, and releases use the anonymous rate limit to keep enrichment public.

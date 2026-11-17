@@ -53,6 +53,8 @@ const noReportChecklistEnv = "LAST30DAYS_NO_REPORT_CHECKLIST=1"
 const (
 	canonicalOutputEnd     = "# END OF last30days CANONICAL OUTPUT"
 	reportChecklistHeading = "## Before you write the report"
+	strictExitCode         = 3
+	strictExitPrefix       = "[last30days] strict-exit: degraded sources: "
 )
 
 // Register adds every tool this server exposes to s. The caller supplies a
@@ -72,8 +74,8 @@ func Register(s *server.MCPServer, cfg Config) {
 					"System, developer, tool, and user instructions take precedence over these presentation defaults.",
 			),
 			mcplib.WithString("topic", mcplib.Required(), mcplib.Description("The subject to research (a person, company, product, event, or general topic).")),
-			mcplib.WithString("emit", mcplib.Description("Output shape: 'compact' (default) for inline synthesis or 'html' to save a shareable brief alongside the response.")),
-			mcplib.WithBoolean("save", mcplib.Description("Persist the synthesis as a markdown report under ~/Documents/Last30Days/ (or LAST30DAYS_MEMORY_DIR if set).")),
+			mcplib.WithString("emit", mcplib.Description("Output shape: 'compact' (default) for inline synthesis or 'html' for an HTML response.")),
+			mcplib.WithBoolean("save", mcplib.Description("Enable local research persistence, including export to the configured save directory. Defaults to false.")),
 			mcplib.WithReadOnlyHintAnnotation(false),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -119,7 +121,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 				return mcplib.NewToolResultError(err.Error()), nil
 			}
 		}
-		runArgs := researchRunArgs(topic, emit, saveDir)
+		runArgs := researchRunArgs(topic, emit, saveDir, save)
 
 		res, runErr := engine.Run(ctx, engine.RunOptions{
 			CacheDir: cacheDir,
@@ -127,10 +129,40 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 			ExtraEnv: researchExtraEnv(),
 		})
 		if runErr != nil {
+			if isDegradedReport(res, runErr, emit) {
+				output := withoutReportChecklist(withoutJobsDigest(string(res.Stdout)))
+				return mcplib.NewToolResultStructured(
+					map[string]string{"status": "degraded", "report": output},
+					"Research completed with degraded coverage.\n\n"+output,
+				), nil
+			}
 			return mcplib.NewToolResultError(formatRunError(runErr, res)), nil
 		}
 		return mcplib.NewToolResultText(withoutReportChecklist(withoutJobsDigest(string(res.Stdout)))), nil
 	}
+}
+
+// The engine emits the strict-exit receipt only after rendering. Hosted
+// clarification uses the same exit code without producing a report.
+func isDegradedReport(res *engine.RunResult, runErr error, emit string) bool {
+	if res == nil || res.ExitCode != strictExitCode || res.TimedOut || errors.Is(runErr, context.Canceled) {
+		return false
+	}
+	output := strings.TrimSpace(withoutReportChecklist(string(res.Stdout)))
+	if emit == "html" {
+		if !strings.HasPrefix(output, "<!DOCTYPE html>") || !strings.HasSuffix(output, "</html>") {
+			return false
+		}
+	} else if !strings.HasSuffix(strings.ReplaceAll(output, "\r\n", "\n"), "\n---\n"+canonicalOutputEnd) {
+		return false
+	}
+	for line := range strings.SplitSeq(string(res.Stderr), "\n") {
+		sources, matched := strings.CutPrefix(line, strictExitPrefix)
+		if matched && strings.TrimSpace(sources) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // withoutJobsDigest drops the engine's "## Jobs Digest" evidence section. The
@@ -178,17 +210,17 @@ func withoutReportChecklist(output string) string {
 	return output[:end] + "\n"
 }
 
-func researchRunArgs(topic, emit, saveDir string) []string {
+func researchRunArgs(topic, emit, saveDir string, save bool) []string {
 	// Options first, positional topic last behind a `--` separator: a
 	// dash-prefixed topic must never be parsed as engine flags.
 	runArgs := []string{"--research-only", "--emit=" + emit}
 	if !browserCookiesAllowed() {
 		runArgs = append(runArgs, "--no-browser-cookies")
 	}
-	// Always pass --save-dir explicitly. An empty value skips the engine's
-	// `is None` LAST30DAYS_MEMORY_DIR fallback and is falsy at the save
-	// gate, so declining to save writes nothing even when the env var set.
 	runArgs = append(runArgs, "--save-dir", saveDir)
+	if !save {
+		runArgs = append(runArgs, "--no-research-persistence")
+	}
 	return append(runArgs, "--", topic)
 }
 

@@ -80,13 +80,16 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 
 ### Local files
 
+MCP research defaults to `save=false`. It returns the report to the client and skips the report export, last-run and report caches, corpus text cache, and SQLite findings. Engine installation and source diagnostics can still use local caches.
+
 | Path | Contents | Created when |
 |---|---|---|
 | `LAST30DAYS_MEMORY_DIR` (default `~/Documents/Last30Days`) | Saved reports | Every run, unless the setting is empty |
 | `~/.config/last30days/.env` | Your settings and keys (`0600`) | Setup, or when you create it |
 | `~/.config/last30days/last-report.json`, `last-run.json` | The latest report, including evidence text | Every run |
 | `~/.config/last30days/corpus-cache.json` | Text extracted from your corpus files (`0600`) | Corpus runs |
-| `research.db` in the save directory, or `~/.local/share/last30days/research.db` when a run has no `--save-dir` | Research findings and the discovery topic queue (`0600`) | Runs with `--store` or `LAST30DAYS_STORE=1`, and every `--discover` run unless `LAST30DAYS_DISCOVERY_QUEUE=off` |
+| `research.db` and its SQLite sidecars in the save directory, or in `~/.local/share/last30days/` when a run has no `--save-dir` | Research findings and the discovery topic queue (`0600` on POSIX) | Watchlist, runs with `--store` or `LAST30DAYS_STORE=1`, and every `--discover` run unless `LAST30DAYS_DISCOVERY_QUEUE=off` |
+| `~/.local/share/last30days/briefs/*.json` | Daily and weekly briefing data (`0600` on POSIX) | Briefing generation |
 | `~/.local/share/last30days/library.db`, `briefs/` | Search index of saved reports and briefs | Every Markdown report saved to the default directory, and library commands |
 | `.last30days-library.db` in a nondefault save directory | Search index of the reports saved there | Every Markdown report saved to that directory |
 

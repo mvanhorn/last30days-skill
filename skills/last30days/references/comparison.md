@@ -2,6 +2,8 @@
 
 Read for explicit comparison intent before engine execution and synthesis. The root output laws define the comparison exceptions.
 
+Comparison execution uses the local engine only. Follow the research runbook's backend diagnosis first. If it selects the hosted API, ask whether to run locally and wait for the user's choice before resolving entities, planning, or submitting research.
+
 ## If QUERY_TYPE = COMPARISON
 
 When the user asks "X vs Y" (or "X vs Y vs Z"), the engine fans out N full `pipeline.run()` calls in parallel — one per entity. This restored the old N-pass architecture (reverted the one-pass latency optimization that removed per-entity depth); parallel execution keeps wall clock ≈ a single pass.
@@ -67,7 +69,7 @@ trap 'rm -f -- "$COMPETITORS_PLAN_FILE"' EXIT
 cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
 {COMPETITORS_PLAN_JSON}
 PLAN_EOF
-"${LAST30DAYS_PYTHON}" -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
+"${LAST30DAYS_PYTHON}" -I -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
 
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$COMPARISON_TOPIC" \
   --emit=compact \
@@ -116,7 +118,7 @@ RELATED_EOF
   cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
 {COMPETITORS_PLAN_JSON}
 PLAN_EOF
-  "${LAST30DAYS_PYTHON}" -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
+  "${LAST30DAYS_PYTHON}" -I -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
   COMPETITORS_PLAN_ARGS=(--competitors-plan "$COMPETITORS_PLAN_FILE")
 fi
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$COMPARISON_TOPIC" \

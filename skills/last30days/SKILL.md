@@ -102,8 +102,8 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Trending/discovery intent | Read [references/discovery.md](references/discovery.md) in full. | Run the complete host-judged protocol and relay its brief; skip ordinary topic planning, supplements, and synthesis. |
 | Ordinary topic research or source-health diagnosis | Read [references/research-runbook.md](references/research-runbook.md) in full. | Diagnose sources; stop after health-check-only guidance. For research, parse intent, run query quality/resolution/planning, execute the engine, and collect supplements. |
 | Before synthesizing ordinary or comparison research | Read [references/synthesis.md](references/synthesis.md) in full. | Synthesize grounded evidence (comparison bodies use the comparison template), then apply the root output laws and final checks. |
-| Explicit comparison intent | Read [references/comparison.md](references/comparison.md) in full. | Use comparison execution and its output exceptions before writing the comparison body. |
-| `--competitors` mode | Read [references/competitors.md](references/competitors.md) and [references/comparison.md](references/comparison.md) in full. | Use comparison execution and synthesis; preserve per-entity targeting. |
+| Explicit comparison intent | Read [references/comparison.md](references/comparison.md) in full. | Apply the backend gate, then use local comparison execution and synthesis. |
+| `--competitors` mode | Read [references/competitors.md](references/competitors.md) and [references/comparison.md](references/comparison.md) in full. | Apply the backend gate before discovering peers. Preserve per-entity targeting on the local route. |
 | Hiring intent or an engine `## Hiring Signals`, `## Jobs Digest` or `## Patent Digest` block | Read [references/hiring-signals.md](references/hiring-signals.md) and [references/patent-signals.md](references/patent-signals.md) in full. | Apply the jobs lane and its scoped planning exception; in standard runs, apply each file's section rules. |
 | `--agent` mode or explicit machine-readable JSON | Read [references/agent-mode.md](references/agent-mode.md) in full. | Apply structured output without treating absent consent as permission. |
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
@@ -146,7 +146,7 @@ If a topic is waiting and the user declines X/browser access or chooses Skip, re
 
 After the gate:
 - Trending, globally or in a domain: load discovery and use LAW 11. A user-typed `--trending` is intent, not an engine flag or topic. Bare global trending requires no domain question.
-- Topic supplied: use the runbook's backend diagnosis and Step 0.45. Run applicable resolution and planning steps on the local route. Do not ask about an unspecified target tool before research.
+- Topic supplied: load the topic runbook and follow its backend diagnosis and Step 0.45. Run applicable resolution and planning steps locally. Do not ask about an unspecified target tool before research.
 - No topic supplied: ask one short topic question and wait; do not research or WebSearch.
 
 Use the engine's `--diagnose` `available_sources` for local source announcements, never credential-file guesses. Before research relying on login-backed sources, consult `doctor --cached --json` as the runbook specifies. A health-check request uses the runbook's doctor procedure, not a topic report.

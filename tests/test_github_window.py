@@ -22,7 +22,7 @@ def test_search_preserves_both_window_bounds_in_every_query(depth, count, token)
     assert fetch.call_count == len(expected_qualifiers)
     for call, qualifier in zip(fetch.call_args_list, expected_qualifiers):
         params = parse_qs(urlparse(call.args[0]).query)
-        expected_query = "react created:2024-02-01..2024-02-29"
+        expected_query = "is:public react created:2024-02-01..2024-02-29"
         if qualifier:
             expected_query += f" {qualifier}"
         assert params["q"] == [expected_query]

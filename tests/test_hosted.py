@@ -13,7 +13,7 @@ import io
 import json
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
@@ -348,6 +348,9 @@ def remote_env(monkeypatch):
         (["--jobs-board=https://jobs.example.test/widget"], "--jobs-board"),
         (["--x-handle=widget"], "--x-handle"),
         (["--plan", json.dumps(schema.to_dict(make_report("widget").query_plan))], "--plan"),
+        (["--competitors"], "--competitors"),
+        (["--competitors-list=Peer A,Peer B"], "--competitors-list"),
+        (["--competitors-plan", "{}"], "--competitors-plan"),
         (["--emit=html"], "--emit=html"),
         (["--x-handle=widget", "--search=reddit"], "--x-handle, --search"),
     ],
@@ -369,6 +372,40 @@ def test_hosted_cli_rejects_unapplied_options_before_submitting(
     assert out == ""
     assert reported_flag in err
     assert "hosted backend" in err
+
+
+@pytest.mark.parametrize("form", [("--as-of=2026-11-13",), ("--as-of", "2026-11-14")])
+def test_hosted_cli_rejects_explicit_today_before_submitting(remote_env, monkeypatch, form):
+    local_now = datetime(2026, 11, 13, 17, tzinfo=timezone(timedelta(hours=-8)))
+    monkeypatch.setattr(cli.dates, "_local_now", lambda: local_now)
+    monkeypatch.setattr(cli.env, "get_config", lambda **kwargs: {})
+    post = mock.Mock(return_value=SUBMIT_OK)
+    monkeypatch.setattr(hosted.http, "post", post)
+    monkeypatch.setattr(hosted.http, "get", mock.Mock(return_value=POLL_COMPLETE))
+
+    rc, out, err = run_main(["Nvidia", *form])
+
+    post.assert_not_called()
+    assert rc == 2
+    assert out == ""
+    assert "--as-of" in err
+    assert "hosted backend" in err
+
+
+@pytest.mark.parametrize("topic", ["Nvidia vs AMD", "Nvidia compared to AMD"])
+def test_hosted_cli_rejects_comparison_before_submitting(remote_env, monkeypatch, topic):
+    monkeypatch.setattr(cli.env, "get_config", lambda **kwargs: {})
+    post = mock.Mock(return_value=SUBMIT_OK)
+    monkeypatch.setattr(hosted.http, "post", post)
+    monkeypatch.setattr(hosted.http, "get", mock.Mock(return_value=POLL_COMPLETE))
+
+    rc, out, err = run_main([topic])
+
+    post.assert_not_called()
+    assert rc == 2
+    assert out == ""
+    assert "hosted backend cannot run comparisons" in err
+    assert "Run locally" in err
 
 
 def test_hosted_cli_submits_supported_query_once(remote_env, monkeypatch, tmp_path):
@@ -408,14 +445,29 @@ def test_hosted_cli_submits_supported_query_once(remote_env, monkeypatch, tmp_pa
 )
 def test_diagnose_identifies_research_backend(remote_env, monkeypatch, flags, config, backend):
     monkeypatch.setattr(cli.env, "get_config", lambda **kwargs: dict(config))
-    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *args, **kwargs: {})
+    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *args, **kwargs: {"available_sources": []})
     post = mock.Mock()
     monkeypatch.setattr(hosted.http, "post", post)
 
-    rc, out, _err = run_main(["--diagnose", *flags])
+    rc, out, _err = run_main(["--diagnose", "--include-research-backend", *flags])
 
     assert rc == 0
-    assert json.loads(out)["research_backend"] == backend
+    assert json.loads(out) == {"available_sources": [], "research_backend": backend}
+    post.assert_not_called()
+
+
+def test_include_research_backend_requires_diagnose(remote_env, monkeypatch, capsys):
+    post = mock.Mock()
+    monkeypatch.setattr(hosted.http, "post", post)
+    monkeypatch.setattr(sys, "argv", ["last30days.py", "Nvidia", "--include-research-backend"])
+
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+
+    captured = capsys.readouterr()
+    assert error.value.code == 2
+    assert captured.out == ""
+    assert "--include-research-backend requires --diagnose" in captured.err
     post.assert_not_called()
 
 

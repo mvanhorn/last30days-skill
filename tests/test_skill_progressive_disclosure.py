@@ -151,6 +151,102 @@ def packaged_skill(tmp_path_factory):
     return checkout, checkout / "installed skills" / "last30days", env
 
 
+def test_skill_archive_keeps_runtime_without_development_assets(packaged_skill):
+    checkout, _, _ = packaged_skill
+    with zipfile.ZipFile(checkout / "dist" / "last30days.skill") as archive:
+        files = {entry.filename for entry in archive.infolist() if not entry.is_dir()}
+        assert {path.split("/", 1)[0] for path in files} == {"last30days"}
+        assert sum(path.endswith("/SKILL.md") for path in files) == 1
+        assert len(files) <= 200
+        assert "last30days/scripts/lib/vendor/bird-search/bird-search.mjs" in files
+        assert "last30days/scripts/watchlist.py" in files
+        assert not any(path.startswith("last30days/assets/") for path in files)
+        assert files.isdisjoint(
+            f"last30days/scripts/{name}"
+            for name in ("compare.sh", "verify_v3.py", "test_device_auth.py", "test-v1-vs-v2.sh")
+        )
+
+
+@pytest.fixture
+def minimal_package_source(tmp_path):
+    skill = tmp_path / "skills" / "last30days"
+    scripts = skill / "scripts"
+    library = scripts / "lib"
+    library.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# Test skill\n", encoding="utf-8")
+    shutil.copy2(SKILL_ROOT / "scripts" / "build-skill.sh", scripts)
+
+    def run(*command, check=True):
+        return subprocess.run(
+            command, cwd=tmp_path, text=True, capture_output=True, check=check, timeout=30,
+            env={
+                "PATH": os.pathsep.join((str(Path(sys.executable).parent), os.defpath)),
+                "HOME": str(tmp_path),
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+        )
+
+    def commit_and_build():
+        run("git", "add", "--", "skills/last30days")
+        run(
+            "git", "-c", "user.name=Package test", "-c", "user.email=package@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm", "Package skill files",
+        )
+        return run("bash", "skills/last30days/scripts/build-skill.sh", check=False)
+
+    run("git", "-c", "init.templateDir=", "init", "-q")
+    return library, commit_and_build
+
+
+def test_skill_archive_accepts_200_files_and_preserves_last_build_when_over_limit(
+    tmp_path, minimal_package_source,
+):
+    library, commit_and_build = minimal_package_source
+    for index in range(197):
+        (library / f"module_{index}.py").touch()
+    (library / "additional_runtime.py").write_text("PACKAGED = True\n", encoding="utf-8")
+
+    result = commit_and_build()
+    assert result.returncode == 0, result.stdout + result.stderr
+    artifact = tmp_path / "dist" / "last30days.skill"
+    with zipfile.ZipFile(artifact) as archive:
+        assert sum(not entry.is_dir() for entry in archive.infolist()) == 200
+        assert archive.read("last30days/scripts/lib/additional_runtime.py") == b"PACKAGED = True\n"
+
+    (library / "additional_runtime.py").write_text("PACKAGED = 2\n", encoding="utf-8")
+    result = commit_and_build()
+    assert result.returncode == 0, result.stdout + result.stderr
+    with zipfile.ZipFile(artifact) as archive:
+        assert archive.read("last30days/scripts/lib/additional_runtime.py") == b"PACKAGED = 2\n"
+    built = artifact.read_bytes()
+
+    (library / "over_capacity.py").touch()
+    result = commit_and_build()
+    assert result.returncode == 1
+    assert "201 files in zip" in result.stderr
+    assert artifact.read_bytes() == built
+
+
+@pytest.mark.parametrize("use_symlink", [False, True], ids=["directory", "symlink"])
+def test_skill_archive_rejects_directory_output(tmp_path, minimal_package_source, use_symlink):
+    _, commit_and_build = minimal_package_source
+    artifact = tmp_path / "dist" / "last30days.skill"
+    target = tmp_path / "output directory" if use_symlink else artifact
+    artifact.parent.mkdir()
+    target.mkdir()
+    if use_symlink:
+        artifact.symlink_to(target, target_is_directory=True)
+
+    result = commit_and_build()
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "error: cannot replace dist/last30days.skill: destination is a directory" in result.stderr
+    assert artifact.is_dir()
+    assert artifact.is_symlink() == use_symlink
+    assert list(target.iterdir()) == []
+    assert list(artifact.parent.iterdir()) == [artifact]
+
+
 def test_skill_archive_contains_the_actual_routed_reference_bytes(packaged_skill):
     checkout, installed, env = packaged_skill
     assert (installed / "SKILL.md").read_bytes() == (SKILL_ROOT / "SKILL.md").read_bytes()

@@ -1,5 +1,6 @@
 import os
 import unittest
+from threading import Event
 from unittest.mock import patch
 
 from lib import perplexity
@@ -644,6 +645,42 @@ class PerplexityAgentTests(unittest.TestCase):
         self.assertEqual(1, artifact["backgroundTimeoutSeconds"])
         self.assertEqual(0, artifact["backgroundPollCount"])
         self.assertEqual("PENDING_REMOTE", artifact["backgroundLocalStatus"])
+
+    def test_deep_research_uses_shared_deadline_for_submit_and_poll(self):
+        cancel = Event()
+
+        def complete_after_cancellation(*_args, **_kwargs):
+            cancel.set()
+            return _agent_response(response_id="agent-deep-1")
+
+        with patch(
+            "lib.perplexity.http.post",
+            return_value={"id": "agent-deep-1", "status": "queued"},
+        ) as post, patch(
+            "lib.perplexity.http.get",
+            side_effect=complete_after_cancellation,
+        ) as get, patch(
+            "lib.perplexity.time.monotonic", return_value=200.0,
+        ):
+            items, artifact = perplexity.search(
+                "test topic",
+                ("2026-05-01", "2026-06-01"),
+                {
+                    "PERPLEXITY_API_KEY": "pplx-test",
+                    "_research_deadline": 220.0,
+                    "_enrich_cancel": cancel,
+                },
+                deep=True,
+            )
+
+        post.assert_called_once()
+        get.assert_called_once()
+        for request in (post, get):
+            self.assertEqual(220.0, request.call_args.kwargs["deadline_monotonic"])
+            self.assertIs(cancel, request.call_args.kwargs["cancel"])
+        self.assertEqual([], items)
+        self.assertEqual("timeout", artifact["error"])
+        self.assertEqual("agent-deep-1", artifact["responseId"])
 
     def test_deep_research_nonterminal_poll_after_deadline_is_timeout(self):
         with patch(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -17,12 +18,12 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
-from lib import env as envlib, http, schema, usage
+from lib import env as envlib, health, http, schema, usage
 
 
 # --- Webhook Delivery Functions ---
 
-def _deliver_findings(topic_name: str, counts: dict) -> None:
+def _deliver_findings(topic_name: str, counts: dict, *, degraded: bool = False) -> None:
     """Send webhook notification if delivery is configured and there are new findings."""
     channel = store.get_setting("delivery_channel", "")
     if not channel or counts.get("new", 0) == 0:
@@ -30,27 +31,27 @@ def _deliver_findings(topic_name: str, counts: dict) -> None:
     
     mode = store.get_setting("delivery_mode", "announce")
     message = _format_delivery_message(topic_name, counts, mode)
+    if degraded:
+        message += "\nResearch completed with degraded coverage."
     
     # Require https before routing. The old "hooks.slack.com" in channel
     # substring test ran before any scheme check, so a channel like
     # http://evil.example/hooks.slack.com was treated as Slack and POSTed in
     # cleartext to the wrong host. Match Slack on the exact hostname instead.
-    parsed = urllib.parse.urlparse(channel)
-    if parsed.scheme != "https":
-        print(
-            f"Delivery skipped: delivery_channel must be an https:// URL, got {channel!r}",
-            file=sys.stderr,
-        )
-        return
-
     try:
+        parsed = urllib.parse.urlparse(channel)
+        if parsed.scheme != "https":
+            print("Delivery skipped: delivery_channel must be an https:// URL", file=sys.stderr)
+            return
         if parsed.hostname == "hooks.slack.com":
             _send_slack_webhook(channel, message)
         else:
             _send_generic_webhook(channel, message)
-    except Exception as e:
-        # Don't fail the research run if delivery fails
-        print(f"Delivery failed: {e}", file=sys.stderr)
+    except http.HTTPError as error:
+        detail = f"HTTP {error.status_code}" if error.status_code is not None else error.outcome_state
+        print(f"Delivery failed: {detail}", file=sys.stderr)
+    except Exception as error:
+        print(f"Delivery failed: {type(error).__name__}", file=sys.stderr)
 
 
 def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
@@ -68,7 +69,7 @@ def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
 
 def _send_slack_webhook(url: str, text: str) -> None:
     """POST to Slack incoming webhook."""
-    http.post(url, json_data={"text": text}, timeout=10, retries=1)
+    http.post(url, json_data={"text": text}, timeout=10, retries=1, sensitive_url=True)
 
 
 def _send_generic_webhook(url: str, text: str) -> None:
@@ -82,6 +83,7 @@ def _send_generic_webhook(url: str, text: str) -> None:
         },
         timeout=10,
         retries=1,
+        sensitive_url=True,
     )
 
 
@@ -117,13 +119,13 @@ def cmd_remove(args):
 def cmd_list(args):
     del args
     topics = store.list_topics()
-    budget_used = store.get_daily_cost()
+    budget_used, budget_unknown_runs = store.get_daily_usage()
     budget_limit = float(store.get_setting("daily_budget", "5.00"))
     print(json.dumps({
         "topics": topics,
         "budget_used": budget_used,
         "budget_limit": budget_limit,
-        "budget_unknown_runs": store.get_daily_unknown_cost_runs(),
+        "budget_unknown_runs": budget_unknown_runs,
     }, default=str))
 
 
@@ -155,19 +157,19 @@ def cmd_run_all(args):
     for topic in topics:
         results.append(_budget_skip(topic) or _run_topic(topic))
 
+    budget_used, budget_unknown_runs = store.get_daily_usage()
     print(json.dumps({
         "action": "run_all",
         "results": results,
-        "budget_used": store.get_daily_cost(),
+        "budget_used": budget_used,
         "budget_limit": budget_limit,
-        "budget_unknown_runs": store.get_daily_unknown_cost_runs(),
+        "budget_unknown_runs": budget_unknown_runs,
     }, default=str))
 
 
 def _budget_skip(topic: dict) -> dict | None:
     limit = float(store.get_setting("daily_budget", "5.00"))
-    cost = store.get_daily_cost()
-    unknown = store.get_daily_unknown_cost_runs()
+    cost, unknown = store.get_daily_usage()
     if cost >= limit:
         reason = f"Budget exceeded: ${cost:.2f}/${limit:.2f}"
     elif unknown:
@@ -198,6 +200,42 @@ def _run_topic(topic: dict) -> dict:
         return result
 
 
+def _validate_utf8_text(value: object, field: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"expected {field} to be text")
+    value.encode("utf-8")
+
+
+def _findings_from_output(output: str) -> list[dict]:
+    payload = json.loads(output)
+    if not isinstance(payload, dict):
+        raise ValueError("expected a research report object")
+    if payload.get("comparison") is True:
+        entries = payload.get("reports")
+        if not isinstance(entries, list) or len(entries) < 2:
+            raise ValueError("expected at least two reports in a comparison")
+        reports = []
+        for entry in entries:
+            _validate_utf8_text(entry["entity"], "comparison entity")
+            reports.append(entry["report"])
+    else:
+        reports = [payload]
+    findings = []
+    for raw_report in reports:
+        report = schema.report_from_dict(raw_report)
+        _validate_utf8_text(report.topic, "report topic")
+        findings.extend(store.findings_from_report(report, limit=25))
+    for finding in findings:
+        for field in ("source", "source_url", "source_title", "author", "content", "summary"):
+            _validate_utf8_text(finding[field], f"finding {field}")
+        for field in ("engagement_score", "relevance_score"):
+            score = finding[field]
+            if type(score) not in (int, float) or not math.isfinite(score):
+                raise ValueError(f"expected finding {field} to be a finite number")
+            finding[field] = float(score)
+    return findings
+
+
 def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
     start_time = time.time()
     topic_id = topic["id"]
@@ -209,9 +247,10 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             [
                 sys.executable,
                 str(SCRIPT_DIR / "last30days.py"),
-                search_term,
+                "--research-only",
                 "--emit=json",
                 "--json-profile=raw",
+                "--require-local-report",
                 "--quick",
                 "--lookback-days",
                 "90",
@@ -220,48 +259,14 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
                 # read / unattended macOS Keychain prompt when a user has set
                 # FROM_BROWSER=auto for interactive use.
                 "--no-browser-cookies",
+                "--",
+                search_term,
             ],
             capture_output=True,
             text=True,
             timeout=300,
             env={**child_env, envlib.ALLOW_ENGINE_PLAN_VAR: "1"},
         )
-        duration = time.time() - start_time
-        if result.returncode != 0:
-            store.update_run(
-                run_id,
-                status="failed",
-                error_message=result.stderr[:500],
-                duration_seconds=duration,
-            )
-            return {
-                "topic": topic["name"],
-                "status": "failed",
-                "error": result.stderr[:200],
-                "duration": duration,
-            }
-
-        report = schema.report_from_dict(json.loads(result.stdout))
-        findings = store.findings_from_report(report, limit=25)
-        counts = store.store_findings(run_id, topic_id, findings)
-        store.update_run(
-            run_id,
-            status="completed",
-            duration_seconds=duration,
-            findings_new=counts["new"],
-            findings_updated=counts["updated"],
-        )
-        
-        # Deliver webhook notification if configured
-        _deliver_findings(topic["name"], counts)
-        
-        return {
-            "topic": topic["name"],
-            "status": "completed",
-            "new": counts["new"],
-            "updated": counts["updated"],
-            "duration": duration,
-        }
     except subprocess.TimeoutExpired:
         duration = time.time() - start_time
         store.update_run(
@@ -272,14 +277,62 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
         )
         return {"topic": topic["name"], "status": "failed", "error": "timeout"}
     except json.JSONDecodeError as exc:
-        duration = time.time() - start_time
         store.update_run(
             run_id,
             status="failed",
-            error_message=f"Invalid JSON output: {exc}",
-            duration_seconds=duration,
+            error_message=f"Invalid saved search queries: {exc}",
+            duration_seconds=time.time() - start_time,
         )
         return {"topic": topic["name"], "status": "failed", "error": f"parse error: {exc}"}
+
+    duration = time.time() - start_time
+    degraded = result.returncode == health.STRICT_EXIT_CODE and any(
+        line.startswith(health.STRICT_EXIT_PREFIX) and line.removeprefix(health.STRICT_EXIT_PREFIX).strip()
+        for line in result.stderr.split("\n")
+    )
+    if result.returncode != 0 and not degraded:
+        store.update_run(
+            run_id,
+            status="failed",
+            error_message=result.stderr[:500],
+            duration_seconds=duration,
+        )
+        return {
+            "topic": topic["name"],
+            "status": "failed",
+            "error": result.stderr[:200],
+            "duration": duration,
+        }
+
+    try:
+        findings = _findings_from_output(result.stdout)
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
+        error = f"Invalid research output ({type(exc).__name__})"
+        store.update_run(run_id, status="failed", error_message=error, duration_seconds=duration)
+        return {"topic": topic["name"], "status": "failed", "error": error, "duration": duration}
+
+    counts = store.store_findings(run_id, topic_id, findings)
+    status = health.DEGRADED if degraded else "completed"
+    store.update_run(
+        run_id,
+        status=status,
+        duration_seconds=duration,
+        findings_new=counts["new"],
+        findings_updated=counts["updated"],
+    )
+
+    # Deliver webhook notification if configured
+    _deliver_findings(topic["name"], counts, degraded=degraded)
+
+    return {
+        "topic": topic["name"],
+        "status": status,
+        "new": counts["new"],
+        "updated": counts["updated"],
+        "duration": duration,
+    }
+
+
 def cmd_config(args):
     if args.key == "budget":
         store.set_setting("daily_budget", str(args.value))
@@ -291,10 +344,14 @@ def cmd_config(args):
         # immediate feedback, rather than discovering it via a stderr line
         # buried in a research run hours later. Matches the delivery-time guard
         # in _deliver_findings.
-        if value and urllib.parse.urlparse(value).scheme != "https":
-            raise SystemExit(f"delivery_channel must be an https:// URL, got {value!r}")
+        try:
+            valid = not value or urllib.parse.urlparse(value).scheme == "https"
+        except ValueError:
+            valid = False
+        if not valid:
+            raise SystemExit("delivery_channel must be an https:// URL")
         store.set_setting("delivery_channel", value)
-        print(json.dumps({"action": "config", "key": "delivery_channel", "value": value}))
+        print(json.dumps({"action": "config", "key": "delivery_channel", "configured": bool(value)}))
         return
     raise SystemExit(f"Unknown config key: {args.key}")
 

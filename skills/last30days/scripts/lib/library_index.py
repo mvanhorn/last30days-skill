@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from . import library
+from .private_files import prepare_private_sqlite_files
 
 
 DEFAULT_LIBRARY_DB = library.DEFAULT_BRIEFS_DIR.parent / "library.db"
@@ -343,7 +344,11 @@ def _search_store_sightings(
     if not store_db_path.is_file():
         return []
     try:
-        with sqlite3.connect(str(store_db_path)) as conn:
+        path = prepare_private_sqlite_files(store_db_path)
+        # Standard SQLite builds reject a UNC server name in a URI authority.
+        use_uri = os.name == "posix"
+        database = f"{path.as_uri()}?mode=ro" if use_uri else str(path)
+        with sqlite3.connect(database, uri=use_uri) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """SELECT t.name AS topic, rr.run_date,
@@ -355,7 +360,7 @@ def _search_store_sightings(
                    JOIN finding_sightings fs ON fs.finding_id = f.id
                    JOIN research_runs rr ON rr.id = fs.run_id
                    JOIN topics t ON t.id = fs.topic_id
-                   WHERE findings_fts MATCH ? AND rr.status = 'completed'
+                   WHERE findings_fts MATCH ? AND rr.status IN ('completed', 'degraded')
                          AND fs.source != 'corpus'
                    ORDER BY rank, rr.run_date DESC
                    LIMIT ?""",
