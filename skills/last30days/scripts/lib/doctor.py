@@ -143,6 +143,8 @@ def audit_state(
             return AUDIT_UNVERIFIED
         return AUDIT_NOT_WORKING
     if probe_result is not None:
+        if probe_result.get("partial"):
+            return AUDIT_UNVERIFIED
         if probe_result.get("ok"):
             return AUDIT_WORKING
         # A transient refusal (host rate-limited THIS probe) is not evidence the
@@ -2347,6 +2349,21 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
         if first:
             _record_probe_health(first[0], res)
         follow_ups = _PROBE_FOLLOW_UPS.get(name) or ()
+        if name == "reddit" and not res.get("ok"):
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                listing = _probe_url(
+                    name, reddit_health.arctic_listing_probe_url(), remaining, deadline,
+                    headers={"User-Agent": http.USER_AGENT, "Accept": "application/json"},
+                    body_check=reddit_health.arctic_probe_body,
+                )
+                if listing.get("ok"):
+                    return {
+                        "ok": False,
+                        "partial": True,
+                        "detail": f"Brave: {res['detail']}; Arctic Shift listings reachable",
+                        "probed": True,
+                    }
         if not res.get("ok") or not follow_ups:
             return res
         details = [f"{first[1]} {res['detail']}" if first else res["detail"]]
