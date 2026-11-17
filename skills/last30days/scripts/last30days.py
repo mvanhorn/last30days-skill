@@ -781,6 +781,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the skill save directory from flags/config, then exit without research",
     )
     parser.add_argument(
+        "--resolve-browser-consent", action="store_true",
+        help="Print whether an explicit browser-cookie grant is active, without reading cookies",
+    )
+    parser.add_argument(
         "--corpus",
         action="append",
         default=[],
@@ -3092,7 +3096,7 @@ def _propagate_config_to_environ(config: dict[str, object]) -> None:
             os.environ[key] = val
 
 
-def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str]) -> bool:
+def _setup_has_fresh_browser_consent(args: argparse.Namespace, extra_argv: list[str]) -> bool:
     return (
         not args.no_browser_cookies
         and not args.diagnose
@@ -3101,8 +3105,11 @@ def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str
     )
 
 
+USE_RECORDED_BROWSER_CONSENT_FLAG = "--use-recorded-browser-consent"
+
 SETUP_PASSTHROUGH_FLAGS = {
     "--allow-browser-cookies",
+    USE_RECORDED_BROWSER_CONSENT_FLAG,
     "--device-auth",
     "--github",
     "--github-start",
@@ -3408,6 +3415,8 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
     if not extra_argv:
         return
     if topic.lower() == "setup":
+        if USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv and len(extra_argv) > 1:
+            parser.error(f"{USE_RECORDED_BROWSER_CONSENT_FLAG} must be the only setup option")
         # --store-key carries a value token; the name itself is allowlisted
         # later in _run_store_key, not here.
         _, _, extra_argv = _split_store_key(extra_argv)
@@ -3444,6 +3453,7 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
 
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
     normalized_topic = "" if args.research_only or args.cached_report else topic.lower()
+    reuse_browser_consent = normalized_topic == "setup" and USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv
     is_library_command = (
         normalized_topic == "library feed"
         or normalized_topic == "library search"
@@ -3468,7 +3478,10 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         # GitHub, StockTwits) - no cookie-backed source, so no Keychain prompt.
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
-        browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+        browser_mode = (
+            "read" if reuse_browser_consent or _setup_has_fresh_browser_consent(args, extra_argv)
+            else "off"
+        )
     elif _law7_host_plan_signal(args, topic):
         # Hosted and cached paths need config before dispatch, but no browser read.
         browser_mode = "plan_only"
@@ -3477,6 +3490,7 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
     return env.ConfigLoadPolicy(
         browser_cookies=browser_mode,
         inspect_ignored_project_config=args.diagnose or args.preflight or normalized_topic == "doctor",
+        require_recorded_browser_consent=reuse_browser_consent,
     )
 
 
@@ -3816,7 +3830,8 @@ def _main(
         args.emit != "html" or not args.synthesis_file or not args.topic or args.deep_research
         or args.plan or args.competitors_plan or args.x_posts or args.reddit_threads
         or args.discover is not None or args.drill or args.diagnose or args.preflight
-        or args.welcome or args.resolve_save_dir or args.verify_freshness is True
+        or args.welcome or args.resolve_save_dir or args.resolve_browser_consent
+        or args.verify_freshness is True
     ):
         parser.error("--cached-report requires a topic, --emit=html, and --synthesis-file without research input files, --verify-freshness, or other command modes")
     if args.welcome:
@@ -3837,6 +3852,10 @@ def _main(
     _validate_extra_argv(parser, command_topic, extra_argv)
     if args.resolve_save_dir:
         print(env.resolve_memory_dir(args.save_dir))
+        return 0
+    if args.resolve_browser_consent:
+        granted = not args.no_browser_cookies and env.has_recorded_browser_consent()
+        print("granted" if granted else "not-granted")
         return 0
     if args.x_posts is not None and _looks_inline_json(args.x_posts):
         sys.stderr.write(
@@ -4059,10 +4078,15 @@ def _main(
                 results["persisted"] = False
             print(json.dumps(results))
             return 0
+        reuse_browser_consent = USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv
+        if reuse_browser_consent and config.get("_BROWSER_COOKIE_MODE") != "read":
+            print("not-granted")
+            return 0
+        fresh_browser_consent = _setup_has_fresh_browser_consent(args, extra_argv)
         sys.stderr.write("Running auto-setup...\n")
         results = setup_wizard.run_auto_setup(
             config,
-            allow_browser_cookies=_setup_allows_browser_cookies(args, extra_argv),
+            allow_browser_cookies=reuse_browser_consent or fresh_browser_consent,
         )
         # Keep only successful browsers, including distinct service winners;
         # "auto" would also probe browsers that did not supply any cookies.
@@ -4084,9 +4108,7 @@ def _main(
             env.CONFIG_FILE,
             from_browser=from_browser,
             x_cookie_access_denied=denial_marker,
-            browser_consent=(
-                None if args.diagnose else _setup_allows_browser_cookies(args, extra_argv)
-            ),
+            browser_consent=None if args.diagnose or reuse_browser_consent else fresh_browser_consent,
         )
         if not results["env_written"]:
             sys.stderr.write("Setup configuration could not be fully saved; some settings may already be saved.\n")
