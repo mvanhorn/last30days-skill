@@ -145,12 +145,25 @@ def _queries_for(topic: str) -> dict[str, str]:
     }
 
 
+_TRAILING_QUALIFIER = re.compile(r"\s*[\(\[][^)\]]*[\)\]]?\s*$")
+
+
+def _strip_trailing_qualifiers(name: str) -> str:
+    """Drop trailing '(YC W24)' / '[stealth]' tags, including unbalanced leftovers."""
+    cleaned = name
+    while True:
+        next_name = _TRAILING_QUALIFIER.sub("", cleaned)
+        if next_name == cleaned:
+            return cleaned.strip()
+        cleaned = next_name
+
+
 def _company_name_from_title(title: str) -> str:
     """Strip listicle suffixes ('Anthropic | Building…', 'Adyen - payments')."""
     title = title.split("|")[0]
     for sep in (" — ", " – ", " - "):
         title = title.split(sep, 1)[0]
-    return _normalize_candidate(title)
+    return _normalize_candidate(_strip_trailing_qualifiers(title))
 
 
 def _exa_competitors(topic: str, count: int, api_key: str) -> list[str]:
