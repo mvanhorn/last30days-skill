@@ -1374,6 +1374,10 @@ class TestCli:
             assert cli._load_last_report_cache(TOPIC, x_envelope_sha256=envelope.sha256) is not None
             assert cli._load_last_report_cache(TOPIC, x_envelope_sha256="0" * 64) is None
             assert cli._load_last_report_cache(TOPIC) is None
+            assert cli._load_last_report_cache(TOPIC, use_cached_envelopes=True) is not None
+            assert cli._load_last_report_cache(
+                TOPIC, x_envelope_sha256="0" * 64, use_cached_envelopes=True,
+            ) is None
             assert cli._write_last_run(TOPIC, report)
             assert cli._load_last_report_cache(TOPIC) is not None
             assert cli._load_last_report_cache(TOPIC, x_envelope_sha256=envelope.sha256) is None

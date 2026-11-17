@@ -165,7 +165,8 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(payload["topic"], "custom config query")
             self.assertGreaterEqual(payload["total"], 0)
             self.assertEqual(str(config_dir / "last-report.json"), payload["report_cache"])
-            self.assertTrue((config_dir / "last-report.json").exists())
+            report = json.loads((config_dir / "last-report.json").read_text(encoding="utf-8"))
+            self.assertIn(f"[last30days] Follow-up cache ID: {report['run_id']}\n", result.stderr)
 
     def test_last_report_cache_round_trips_single_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -176,10 +177,23 @@ class LastRunStateTests(unittest.TestCase):
                 loaded = cli._load_last_report_cache("OpenClaw")
 
             self.assertIsNotNone(loaded)
-            cached_report, entity_reports, cache_path, _ = loaded
+            cached_report, entity_reports, cache_path = loaded.report, loaded.entity_reports, loaded.path
             self.assertEqual("OpenClaw", cached_report.topic)
             self.assertIsNone(entity_reports)
             self.assertEqual(config_dir / "last-report.json", cache_path)
+
+    def test_legacy_report_cache_remains_usable_without_run_selector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            cache_path = config_dir / "last-report.json"
+            with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
+                self.assertTrue(cli._write_last_run("OpenClaw", _report("OpenClaw")))
+                payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                run_id = payload.pop("run_id")
+                cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+                self.assertIsNotNone(cli._load_last_report_cache("OpenClaw"))
+                self.assertIsNone(cli._load_last_report_cache("OpenClaw", run_id=run_id))
 
     @unittest.skipUnless(os.name == "posix", "POSIX file permissions")
     def test_run_cache_files_are_private_before_writing(self):
