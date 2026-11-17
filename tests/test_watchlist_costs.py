@@ -41,10 +41,11 @@ def install_child(tmp_path, monkeypatch, *, cost=0.6, fail=False, free=False, af
         )
         + ("raise SystemExit(1)\n" if fail else "")
         + after
-        + "print(json.dumps({'topic': sys.argv[1], 'range_from': '2026-01-01', 'range_to': '2026-04-01', "
+        + "\ntopic = sys.argv[sys.argv.index('--') + 1]\n"
+        "print(json.dumps({'topic': topic, 'range_from': '2026-01-01', 'range_to': '2026-04-01', "
         "'generated_at': '2026-04-01T00:00:00Z', 'provider_runtime': {'reasoning_provider': 'local', "
         "'planner_model': 'local', 'rerank_model': 'local'}, 'query_plan': {'intent': 'test', "
-        "'freshness_mode': 'recent', 'cluster_mode': 'standard', 'raw_topic': sys.argv[1]}}))\n"
+        "'freshness_mode': 'recent', 'cluster_mode': 'standard', 'raw_topic': topic}}))\n"
     )
     monkeypatch.setattr(watchlist, "SCRIPT_DIR", tmp_path)
 
