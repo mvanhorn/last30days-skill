@@ -113,7 +113,7 @@ class LastRunStateTests(unittest.TestCase):
                 loaded = cli._load_last_report_cache("OpenClaw")
 
             self.assertIsNotNone(loaded)
-            cached_report, entity_reports, cache_path = loaded
+            cached_report, entity_reports, cache_path, _ = loaded
             self.assertEqual("OpenClaw", cached_report.topic)
             self.assertIsNone(entity_reports)
             self.assertEqual(config_dir / "last-report.json", cache_path)

@@ -15,8 +15,10 @@ import re
 import signal
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 MIN_PYTHON = (3, 12)
 
@@ -51,7 +53,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
-from lib.private_files import write_private_text
+from lib.private_files import replace_private_text
 
 atexit.register(subproc.cleanup_children)
 
@@ -1635,10 +1637,39 @@ REPORT_CACHE_VERSION = "last30days-report-cache/v2"
 DEFAULT_REPORT_CACHE_TTL_SECONDS = 3600
 
 
+class _CachedReport(NamedTuple):
+    report: schema.Report
+    entity_reports: list[tuple[str, schema.Report]] | None
+    path: Path
+    fingerprint: bytes
+
+
 def _last_report_cache_path() -> Path | None:
     if env.CONFIG_DIR is None:
         return None
     return env.CONFIG_DIR / "last-report.json"
+
+
+@contextmanager
+def _report_cache_lock(cache_path: Path) -> Iterator[None]:
+    # The lock file stays in place so replacing the report cannot split writers across different inodes.
+    fd = os.open(cache_path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+    finally:
+        os.close(fd)
 
 
 def _report_cache_ttl_seconds(config: dict[str, object]) -> int:
@@ -1686,7 +1717,6 @@ def _write_last_run(
             "report_cache": str(target / "last-report.json"),
             "comparison": bool(entity_reports),
         }
-        write_private_text(target / "last-run.json", json.dumps(payload, indent=2))
         cache_payload = {
             "schema": REPORT_CACHE_VERSION,
             "topic": topic,
@@ -1703,9 +1733,11 @@ def _write_last_run(
             ],
         }
         report_cache_path = target / "last-report.json"
-        write_private_text(report_cache_path, json.dumps(cache_payload, indent=2))
-        if has_private_corpus and os.name != "posix":
-            report_cache_path.chmod(0o600)
+        report_json = json.dumps(cache_payload, indent=2)
+        run_json = json.dumps(payload, indent=2)
+        with _report_cache_lock(report_cache_path):
+            replace_private_text(report_cache_path, report_json)
+            replace_private_text(target / "last-run.json", run_json)
         return True
     except Exception as exc:
         # Never fatal, but never silent either (#787's lesson): callers that
@@ -1722,12 +1754,13 @@ def _load_last_report_cache(
     research_options: dict[str, object] | None = None,
     requested_window: tuple[str, str] | None = None,
     use_cached_envelopes: bool = False,
-) -> tuple[schema.Report, list[tuple[str, schema.Report]] | None, Path] | None:
+) -> _CachedReport | None:
     cache_path = _last_report_cache_path()
     if cache_path is None or not cache_path.exists():
         return None
     try:
-        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = cache_path.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("report cache payload must be a JSON object")
         if payload.get("schema") != REPORT_CACHE_VERSION:
@@ -1763,13 +1796,13 @@ def _load_last_report_cache(
             for _, report in entity_reports
         ):
             return None
-        if payload.get("comparison"):
-            if len(entity_reports) < 2:
-                return None
-            if len(entity_reports) != len(reports_payload):
-                return None
-            return entity_reports[0][1], entity_reports, cache_path
-        return entity_reports[0][1], None, cache_path
+        comparison = payload.get("comparison")
+        if comparison and (len(entity_reports) < 2 or len(entity_reports) != len(reports_payload)):
+            return None
+        return _CachedReport(
+            entity_reports[0][1], entity_reports if comparison else None,
+            cache_path, hashlib.sha256(raw).digest(),
+        )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         sys.stderr.write(
             f"[last30days] Could not read report cache {cache_path}: "
@@ -1861,31 +1894,29 @@ def _freshness_enabled(args: argparse.Namespace, config: dict[str, object]) -> b
     return _config_truthy(config.get("LAST30DAYS_VERIFY_FRESHNESS"))
 
 
-def _update_cached_freshness(
-    cache_path: Path,
-    report: schema.Report,
-    entity_reports: list[tuple[str, schema.Report]] | None,
-) -> bool:
+def _update_cached_freshness(cached: _CachedReport) -> bool:
     """Rewrite cached report bodies without extending the research-cache TTL."""
     try:
-        payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or payload.get("schema") != REPORT_CACHE_VERSION:
-            return False
-        existing = payload.get("reports") or []
-        if entity_reports:
-            cached_reports = entity_reports
-        else:
-            label = (
-                str(existing[0].get("entity") or report.topic)
-                if existing and isinstance(existing[0], dict)
-                else report.topic
-            )
-            cached_reports = [(label, report)]
-        payload["reports"] = [
-            {"entity": label, "report": schema.to_dict(cached_report)}
-            for label, cached_report in cached_reports
-        ]
-        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with _report_cache_lock(cached.path):
+            raw = cached.path.read_bytes()
+            if hashlib.sha256(raw).digest() != cached.fingerprint:
+                return False
+            payload = json.loads(raw.decode("utf-8"))
+            existing = payload.get("reports") or []
+            if cached.entity_reports:
+                cached_reports = cached.entity_reports
+            else:
+                label = (
+                    str(existing[0].get("entity") or cached.report.topic)
+                    if existing and isinstance(existing[0], dict)
+                    else cached.report.topic
+                )
+                cached_reports = [(label, cached.report)]
+            payload["reports"] = [
+                {"entity": label, "report": schema.to_dict(report)}
+                for label, report in cached_reports
+            ]
+            replace_private_text(cached.path, json.dumps(payload, indent=2))
         return True
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         sys.stderr.write(
@@ -1923,9 +1954,9 @@ def _run_cached_freshness(
     if cached is None:
         sys.stderr.write("[last30days] No fresh cached report; run a research pass first.\n")
         return 2
-    report, entity_reports, cache_path = cached
+    report, entity_reports, cache_path, _ = cached
     _verify_report_set(report, entity_reports, allow_network=not args.mock)
-    if _update_cached_freshness(cache_path, report, entity_reports):
+    if _update_cached_freshness(cached):
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
     else:
         sys.stderr.write("[last30days] warning: freshness cache update failed\n")
@@ -1967,7 +1998,7 @@ def _run_drill(
             "[last30days] No fresh cached report; run a research pass first.\n"
         )
         return 2
-    report, entity_reports, cache_path = cached
+    report, entity_reports, cache_path, _ = cached
     if entity_reports:
         sys.stderr.write(
             "[last30days] Drill mode needs a single-topic cached report; "
@@ -4504,7 +4535,7 @@ def _main(
             use_cached_envelopes=args.cached_report,
         )
         if cached is not None:
-            cached_report, cached_entity_reports, cache_path = cached
+            cached_report, cached_entity_reports, cache_path, _ = cached
             sys.stderr.write(
                 f"[last30days] Reusing cached report data from {cache_path}\n"
             )
@@ -4515,11 +4546,7 @@ def _main(
                     cached_entity_reports,
                     allow_network=not args.mock,
                 )
-                _update_cached_freshness(
-                    cache_path,
-                    cached_report,
-                    cached_entity_reports,
-                )
+                _update_cached_freshness(cached)
             return _render_save_and_print(
                 args, cached_report, cached_entity_reports, synthesis_md, config
             )

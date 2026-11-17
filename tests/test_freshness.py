@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -748,7 +750,8 @@ def test_unverified_drill_clears_inherited_freshness_verdicts(tmp_path, monkeypa
     merged = _report(_item("reddit", title="Widget API is open"))
     merged.freshness_verdicts = list(cached.freshness_verdicts)
     drill_report = _report(_item("reddit", title="Widget API is closed"))
-    monkeypatch.setattr(cli, "_load_last_report_cache", lambda *_args, **_kwargs: (cached, None, tmp_path / "last-report.json"))
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run(cached.topic, cached)
     monkeypatch.setattr(planner, "resolve_drill_clusters", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(planner, "build_drill_plan", lambda *_args, **_kwargs: cached.query_plan)
     monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {})
@@ -882,15 +885,19 @@ def test_early_return_paths_do_not_ignore_freshness_verification(tmp_path, monke
     report = _report(_item("reddit", title="Widget API is open"))
     calls = []
     monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(cli, "_load_last_report_cache", lambda *_args, **_kwargs: (report, None, tmp_path / "last-report.json"))
+    monkeypatch.setattr(cli.pipeline, "run", lambda **_kwargs: pytest.fail("expected cached report reuse"))
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run("topic", report)
     monkeypatch.setattr(cli, "_verify_report_set", lambda *_args, **_kwargs: calls.append("verified"))
     monkeypatch.setattr(cli, "_render_save_and_print", lambda *_args, **_kwargs: calls.append("rendered") or 0)
     cached_args = parser.parse_args([
         "topic", "--emit=html", f"--synthesis-file={synthesis}", "--verify-freshness",
+        "--as-of=2026-07-10",
     ])
 
     assert cli._main(parser, cached_args, []) == 0
     assert calls == ["verified", "rendered"]
+    assert "Reusing cached report data" in capsys.readouterr().err
 
 
 def test_hosted_configured_freshness_skips_unless_cli_explicitly_enables(monkeypatch, capsys):
@@ -973,17 +980,62 @@ def test_post_hoc_path_loads_updates_and_rewrites_cache(tmp_path, monkeypatch, c
     report = _report(item)
     monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
     assert cli._write_last_run(report.topic, report)
-    before = json.loads((tmp_path / "last-report.json").read_text(encoding="utf-8"))
+    cache_path = tmp_path / "last-report.json"
+    before = cache_path.read_bytes()
+    real_replace = os.replace
+    published = []
+
+    def observe_publish(staged, target):
+        assert target == cache_path
+        assert target.read_bytes() == before
+        published.append(Path(staged).read_bytes())
+        real_replace(staged, target)
+
+    monkeypatch.setattr(os, "replace", observe_publish)
     args = cli.build_parser().parse_args(["--verify-freshness", "--mock", "--emit=json"])
 
     rc = cli._run_cached_freshness(args, {})
 
     assert rc == 0
-    payload = json.loads((tmp_path / "last-report.json").read_text(encoding="utf-8"))
+    updated = cache_path.read_bytes()
+    assert published == [updated]
+    payload = json.loads(updated)
     cached_verdicts = payload["reports"][0]["report"]["freshness_verdicts"]
     assert cached_verdicts[0]["verdict"] == "unsupported"
-    assert payload["timestamp"] == before["timestamp"]
+    assert payload["timestamp"] == json.loads(before)["timestamp"]
     assert "Updated freshness verdicts" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("new_topic", ["Another topic", "Widget API"])
+def test_post_hoc_freshness_preserves_concurrent_research(tmp_path, monkeypatch, capsys, new_topic):
+    original = _report(_item("reddit", title="Widget API is open"))
+    original.topic = "Widget API"
+    replacement = _report(_item("reddit", title="Widget API is closed"))
+    replacement.topic = new_topic
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run(original.topic, original)
+    cache_path = tmp_path / "last-report.json"
+    newest = []
+    verify = cli._verify_report_set
+
+    def verify_during_research(report, entity_reports, *, allow_network):
+        verify(report, entity_reports, allow_network=allow_network)
+        assert cli._write_last_run(
+            replacement.topic,
+            replacement,
+            x_envelope_sha256="1" * 64,
+            research_options={"quick": True},
+        )
+        newest.append(cache_path.read_bytes())
+
+    monkeypatch.setattr(cli, "_verify_report_set", verify_during_research)
+    args = cli.build_parser().parse_args(["--verify-freshness", "--mock", "--emit=json"])
+
+    assert cli._run_cached_freshness(args, {}) == 0
+    output = capsys.readouterr()
+    assert "freshness_verdicts" in output.out
+    assert len(newest) == 1
+    assert cache_path.read_bytes() == newest[0]
 
 
 def test_opt_in_gating_accepts_flag_or_truthy_config():
