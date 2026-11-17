@@ -120,8 +120,6 @@ export LAST30DAYS_PYTHON
 
 ```
 
-Keep `-I` on inline Python helpers and standard-library module commands. It isolates their imports from the working directory and Python environment.
-
 **PYTHON VERSION GATE — when the Runtime Preflight Bash block above exits with a Python version error:**
 
 If the preflight script (including the uv fallback above) emits `ERROR: last30days v4 requires Python 3.12+` (or `LAST30DAYS_PYTHON must point to Python 3.12+`) and exits, you MUST:
