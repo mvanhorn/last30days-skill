@@ -1356,6 +1356,23 @@ class LiveProbe(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertNotIn("transient", res)
 
+    def test_reddit_archive_requires_checked_success(self):
+        for code in (400, 404, 422):
+            with mock.patch("lib.doctor._probe_url", side_effect=[
+                {"ok": False, "detail": "HTTP 403", "probed": True},
+                {"ok": True, "detail": f"HTTP {code}", "probed": True},
+            ]):
+                result = doctor._probe_source("reddit", {}, 5)
+            self.assertFalse(result.get("partial", False))
+        with mock.patch("lib.doctor._probe_url", side_effect=[
+            {"ok": False, "detail": "HTTP 403", "probed": True},
+            {"ok": True, "detail": "HTTP 200", "probed": True},
+        ]):
+            result = doctor._probe_source("reddit", {}, 5)
+        self.assertTrue(result["partial"])
+        self.assertEqual(doctor.AUDIT_UNVERIFIED,
+                         doctor.audit_state("reddit", {"tier": doctor.TIER_OK}, probe_result=result))
+
     def test_reddit_probe_403_is_not_retried(self):
         # 403 is the standing keyless block, not a burst. Retrying it only
         # doubles the wait before reporting a real outage.
