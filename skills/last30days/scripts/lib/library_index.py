@@ -355,7 +355,7 @@ def _search_store_sightings(
                    JOIN finding_sightings fs ON fs.finding_id = f.id
                    JOIN research_runs rr ON rr.id = fs.run_id
                    JOIN topics t ON t.id = fs.topic_id
-                   WHERE findings_fts MATCH ? AND rr.status = 'completed'
+                   WHERE findings_fts MATCH ? AND rr.status IN ('completed', 'degraded')
                          AND fs.source != 'corpus'
                    ORDER BY rank, rr.run_date DESC
                    LIMIT ?""",

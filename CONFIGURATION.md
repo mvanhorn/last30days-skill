@@ -793,7 +793,9 @@ By default a research run exits `0` even when a source failed mid-run (rate-limi
 | --- | --- |
 | `LAST30DAYS_STRICT_EXIT` | Truthy (`1`/`true`/`yes`/`on`): the engine exits `3` when any source outcome is neither `ok`, `no-results`, nor `skipped-unconfigured` (so `partial`, `auth-failed`, `payment-required` for exhausted credits, `rate-limited`, and the other failure states all count as degraded). A one-line `strict-exit: degraded sources: ...` note goes to stderr. Default (unset): exit `0`, unchanged behavior. |
 
-Exit codes with the flag on: `0` clean run, `3` completed-but-degraded (report was produced), non-zero others unchanged (hard failures). Same hybrid pattern as `LAST30DAYS_DEBUG` — works shell-exported or in `.env`.
+A clean run exits `0`. A completed report with degraded coverage exits `3` and writes the strict-exit note after the report. Hosted requests that need clarification also exit `3` and print the question to stderr. Set the variable in the shell or in `.env`.
+
+MCP returns the completed report with `status: "degraded"` and a visible coverage notice. The watchlist stores available findings and labels the run `degraded`. Its new-finding notification includes a coverage notice when delivery is configured. Deltas continue to use clean completed runs.
 
 ---
 
