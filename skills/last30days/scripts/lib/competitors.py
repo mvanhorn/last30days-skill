@@ -215,18 +215,35 @@ def _merge_peer_names(*groups: list[str], limit: int) -> list[str]:
     return merged
 
 
+def _topic_is_company(config: dict, is_company: bool | None) -> bool:
+    """True when the topic is already established as a company, not a person."""
+    if is_company is False:
+        return False
+    if is_company is True:
+        return True
+    company = config.get("_company")
+    if isinstance(company, dict) and company.get("company_via_person"):
+        return False
+    if isinstance(company, dict) and company.get("company"):
+        return True
+    return bool(config.get("_company_signal"))
+
+
 def discover_competitors(
     topic: str,
     count: int,
     config: dict,
     *,
     lookback_days: int = 30,
+    is_company: bool | None = None,
 ) -> list[str]:
     """Discover `count` peer entities for `topic` via web search.
 
-    When ``EXA_API_KEY`` is set, Exa's ``company`` category runs first even
-    if Brave (or another backend) is the general web search. Keyword SERP
-    mining fills any remaining slots and is the only path without that key.
+    When ``EXA_API_KEY`` is set and the topic is a resolved company, Exa's
+    ``company`` category runs first even if Brave (or another backend) is
+    the general web search. Artist and person topics keep keyword SERP
+    mining only. Keyword SERPs fill any remaining slots and are the only
+    path without that key or without a company signal.
 
     Args:
         topic: The primary research topic.
@@ -234,6 +251,10 @@ def discover_competitors(
         config: Runtime config dict — expects the same shape as the engine
             config (BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / etc.).
         lookback_days: Date range for freshness. Defaults to 30.
+        is_company: True when company resolution (or a host company
+            signal) already established this topic as a company. False
+            skips the company index. None reads ``config["_company"]`` /
+            ``config["_company_signal"]``.
 
     Returns:
         A list of up to `count` entity names, deduped and ordered by score.
@@ -248,7 +269,7 @@ def discover_competitors(
 
     exa_names: list[str] = []
     exa_key = grounding.exa_api_key(config)
-    if exa_key:
+    if exa_key and _topic_is_company(config, is_company):
         exa_names = _exa_competitors(topic, count, exa_key)
         if len(exa_names) >= count:
             _log(
