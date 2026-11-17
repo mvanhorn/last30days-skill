@@ -16,7 +16,7 @@ hermes skills install mvanhorn/last30days-skill/skills/last30days --force
 
 Hermes's install-time scanner rates this skill `caution`, not `dangerous`: it flags ordinary things a research tool does, such as reading its own config from environment variables and running `yt-dlp` with `subprocess`. Hermes blocks a `caution` community skill unless you pass `--force`. Run `hermes skills list` to confirm it shows up. A session that is already open needs `/reload-skills` (or a new session) to pick it up.
 
-Use the full `owner/repo/skills/last30days` path shown above. The shorter `hermes skills install mvanhorn/last30days-skill` goes through the skills.sh index, which has served stale snapshots of this repo before ([vercel-labs/skills#1602](https://github.com/vercel-labs/skills/issues/1602)).
+Use the full `owner/repo/skills/last30days` path shown above. Do not install from a raw `SKILL.md` URL: that route copies only the files `SKILL.md` names directly and leaves out most of `scripts/lib/`, so research runs fail. The shorter `hermes skills install mvanhorn/last30days-skill` goes through the skills.sh index, which has served stale snapshots of this repo before ([vercel-labs/skills#1602](https://github.com/vercel-labs/skills/issues/1602)).
 
 If the install is ever blocked again (`dangerous` verdict, "--force does not override a dangerous verdict"), please open an issue with the scan output, and copy the skill in by hand meanwhile:
 
