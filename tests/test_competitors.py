@@ -236,7 +236,7 @@ class CompetitorDiscoveryTests(unittest.TestCase):
                 "company": "Kanye West",
                 "company_site": "https://kanyewest.com/",
                 "company_source": "exa",
-                "company_via_person": True,
+                "company_peer_discovery": "keyword",
             },
         }
         with mock.patch.object(
@@ -252,6 +252,26 @@ class CompetitorDiscoveryTests(unittest.TestCase):
             "Drake" in joined and "Kendrick Lamar" in joined,
             f"Expected Drake and Kendrick Lamar in {results}",
         )
+
+    def test_company_led_by_person_skips_exa_company_index(self):
+        config = {
+            "BRAVE_API_KEY": "brave-key",
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Nvidia",
+                "company_site": "https://www.nvidia.com/",
+                "company_via_person": True,
+            },
+        }
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Jensen Huang", 2, config)
+        exa.assert_not_called()
+        self.assertTrue(results)
 
     def test_exa_non_business_site_keeps_keyword_competitor_path(self):
         config = {

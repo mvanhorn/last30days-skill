@@ -962,7 +962,7 @@ def test_wikidata_exposes_why_nothing_is_certain(monkeypatch):
         assert not isinstance(result, company_resolve.FailedLookup)
 
 
-def test_exa_keeps_a_human_site_and_marks_via_person(monkeypatch):
+def test_exa_keeps_a_human_site_and_uses_keyword_peers(monkeypatch):
     monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
     monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
         {"title": "Kanye West", "url": "https://www.kanyewest.com/"},
@@ -974,8 +974,9 @@ def test_exa_keeps_a_human_site_and_marks_via_person(monkeypatch):
         "company": "Kanye West",
         "company_site": "https://kanyewest.com/",
         "company_source": "exa",
-        "company_via_person": True,
+        "company_peer_discovery": "keyword",
     }
+    assert "company_via_person" not in result
 
 
 def test_exa_python_style_language_uses_keyword_peers(monkeypatch):
@@ -1161,6 +1162,22 @@ def test_exa_modal_labs_matches_modal_com(monkeypatch):
     assert not company_resolve._exa_site_matches_topic(
         "StripeCo", "https://stripeco.example.org/",
     )
+
+
+def test_exa_prefers_exact_label_over_trimmed_generic(monkeypatch):
+    monkeypatch.setattr(company_resolve.http, "get", FakeWikidata())
+    monkeypatch.setattr(company_resolve.grounding, "exa_search", mock.Mock(return_value=([
+        {"title": "Acme", "url": "https://acme.com/"},
+        {"title": "Acme Labs", "url": "https://acmelabs.com/"},
+    ], {})))
+
+    result = company_resolve.resolve_company("Acme Labs", config={"EXA_API_KEY": "exa-key"})
+
+    assert result == {
+        "company": "Acme Labs",
+        "company_site": "https://acmelabs.com/",
+        "company_source": "exa",
+    }
 
 
 def test_exa_browserbase_is_an_unresolved_company(monkeypatch):

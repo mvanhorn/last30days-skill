@@ -197,13 +197,12 @@ def resolve_company(
     to the company: its official names and aliases that could be a legal
     filing name, then its subsidiaries, at most ``MAX_COMPANY_NAMES`` distinct
     strings and never ``company`` itself), and
-    ``company_via_person`` (True) when the topic is the person who leads the
-    company, or when Wikidata's top hit is a human and Exa filled their site.
-    ``company_peer_discovery`` is ``keyword`` when Wikidata's top hit is
-    directly a programming language or operating system, so competitor
-    discovery keeps keyword SERPs. A food, occupation, application, or
-    other homonym is treated like no entity: Exa may still fill the site
-    and company peers stay on.
+    ``company_via_person`` (True) when the topic is the person who leads
+    the company. ``company_peer_discovery`` is ``keyword`` when Wikidata's
+    top hit is a human with no unique company, or directly a programming
+    language or operating system, so competitor discovery keeps keyword
+    SERPs. A food, occupation, application, or other homonym is treated
+    like no entity: Exa may still fill the site and company peers stay on.
     An empty dict means nothing is certain; it
     is a ``FailedLookup`` when the lookup itself failed, and an
     ``UncertainLookup`` when Wikidata answered with nothing certain and Exa
@@ -290,6 +289,17 @@ def _compact_topic_keys(topic: str) -> tuple[str, ...]:
     return tuple(keys)
 
 
+def _exa_hit_site(url: str) -> tuple[str, str, str] | None:
+    """Registrable label, homepage (or ''), and host root, or None if unusable."""
+    host = _site_host(url)
+    if not host or _is_directory_host(host):
+        return None
+    label = _registrable_label(host)
+    if not label:
+        return None
+    return label, _exa_homepage(url), f"https://{host}/"
+
+
 def _exa_site_matches_topic(topic: str, url: str) -> bool:
     """True when the URL's registrable label is this company, not a look-alike.
 
@@ -299,11 +309,8 @@ def _exa_site_matches_topic(topic: str, url: str) -> bool:
     prefixes (``StripeCo`` / ``stripe.com``) and a matching first label on
     someone else's domain (``stripeco.example.org``) do not count.
     """
-    host = _site_host(url)
-    if not host or _is_directory_host(host):
-        return False
-    label = _registrable_label(host)
-    return bool(label) and label in _compact_topic_keys(topic)
+    hit = _exa_hit_site(url)
+    return bool(hit) and hit[0] in _compact_topic_keys(topic)
 
 
 def _exa_homepage(url: str) -> str:
@@ -321,19 +328,34 @@ def _exa_homepage(url: str) -> str:
 
 
 def _pick_exa_official_site(topic: str, items: list[dict]) -> str:
-    """The first Exa hit that looks like this company's own homepage."""
-    fallback = ""
-    for item in items:
-        url = str(item.get("url") or "")
-        if not _exa_site_matches_topic(topic, url):
-            continue
-        homepage = _exa_homepage(url)
-        if homepage:
-            return homepage
-        if not fallback:
-            host = _site_host(url)
-            fallback = f"https://{host}/" if host else ""
-    return fallback
+    """The Exa hit that looks like this company's own homepage.
+
+    An exact registrable-label match against the full compact topic
+    (``Acme Labs`` → ``acmelabs.com``) wins over a match that needed a
+    trailing generic word trimmed (``acme.com``), regardless of result
+    order. Homepages beat a host-root fallback within each of those
+    tiers.
+    """
+    keys = _compact_topic_keys(topic)
+    if not keys:
+        return ""
+    exact, *rest = keys
+    trimmed = rest[0] if rest else ""
+
+    def first_site(want: str) -> str:
+        fallback = ""
+        for item in items:
+            hit = _exa_hit_site(str(item.get("url") or ""))
+            if not hit or hit[0] != want:
+                continue
+            homepage, host_root = hit[1], hit[2]
+            if homepage:
+                return homepage
+            if not fallback:
+                fallback = host_root
+        return fallback
+
+    return first_site(exact) or (first_site(trimmed) if trimmed else "")
 
 
 def _exa_site_fallback(
@@ -379,9 +401,7 @@ def _exa_site_fallback(
     found: dict[str, Any] = {
         "company": topic, "company_site": site, "company_source": EXA_COMPANY_SOURCE,
     }
-    if wikidata_kind == WIKIDATA_HUMAN:
-        found["company_via_person"] = True
-    elif wikidata_kind == WIKIDATA_SOFTWARE:
+    if wikidata_kind in {WIKIDATA_HUMAN, WIKIDATA_SOFTWARE}:
         found["company_peer_discovery"] = COMPANY_PEER_KEYWORD
     return found
 
