@@ -112,7 +112,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 **开会之前。** `/last30days Peter Steinberger`——加入 OpenAI Codex 团队、反对 Anthropic 禁止第三方智能体、GitHub 上合并了 23 个 PR 且合并率达 85%、正在开发跨设备智能体控制系统 LobsterOS。r/ClaudeCode 上的一条评论说：“自从 OpenClaw 发布之后，大家就知道，只要你不是通过 API 运行它，迟早会被封。”（227 个赞同票）。这些不会出现在 LinkedIn 上。
 
-**在公司发布之前看清它在做什么。** `/last30days Apple`——Jobs Page Secret Signal 标出了一个新的总监职位，负责测试请求是否会触发经由合作伙伴 API 和金融系统完成的交易，这像是在为能完成购买的助手做质量控制。Patent Secret Signal 标出了一项申请：在保存的房间照片中点按某个设备，即可改变该设备的状态。Polymarket 给出 Apple 在年底成为全球最大公司的概率为 91%。`/last30days Alphabet` 找到了一个“YouTube Ads Agentic Buyflows”产品经理职位，其股价行显示 30 天内下跌 17.6%，而同期标普 500 为 3.6%，最差的一天是 Oct 29（-12.6%）。如果只想要招聘报告，请加上 `--hiring-signals`。
+**在公司发布之前看清它在做什么。** `/last30days Apple`——Jobs Page Secret Signal 标出了一个新的总监职位，负责测试请求是否会触发经由合作伙伴 API 和金融系统完成的交易，这像是在为能完成购买的助手做质量控制。Patent Secret Signal 标出了一项申请：在保存的房间照片中点按某个设备，即可改变该设备的状态。Polymarket 给出 Apple 在年底成为全球最大公司的概率为 91%。`/last30days Alphabet` 找到了一个“YouTube Ads Agentic Buyflows”产品经理职位，其股价行显示 30 天内下跌 17.6%，而同期标普 500 下跌 3.6%，最差的一天是 Oct 29（-12.6%）。如果只想要招聘报告，请加上 `--hiring-signals`。
 
 **在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg 的话题，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
 
