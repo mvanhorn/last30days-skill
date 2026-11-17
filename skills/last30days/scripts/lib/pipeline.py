@@ -159,6 +159,8 @@ STREAM_ARTIFACT_LIFT_KEYS: tuple[str, ...] = ("meta_ads_page", "meta_ads_tally")
 # Worst case per stream is one timeout ceiling (+ one inline 5xx retry in the
 # main fan-out, itself bounded by the lane's own timeouts); no new config knobs.
 STREAM_FUTURE_TIMEOUT_SECONDS = 180.0
+# Leave time for the background adapter to return its final poll receipt.
+DEEP_RESEARCH_RECEIPT_SECONDS = 1.0
 # A job board lists the roles open today, so it cannot answer a window that
 # ended in the past.
 JOBS_PAST_WINDOW_SKIP = "skipped: a job board shows the roles open today, not those of a past window"
@@ -211,6 +213,28 @@ def _wait_for_research(futures, config: dict[str, Any]):
         )
         done.update(completed)
     return done, pending
+
+
+def _completed_streams(batches, bundle: schema.RetrievalBundle):
+    for futures, wait_config, timeout_seconds, keep_ready in batches:
+        done, pending = _wait_for_research(futures, wait_config)
+        timed_out = False
+        for future in pending:
+            if keep_ready and future.done():
+                # A shorter background budget can elapse while the ordinary
+                # batch is still being collected. Its adapter enforces its
+                # own deadline, so keep any completed receipt.
+                done.add(future)
+                continue
+            timed_out = True
+            _subquery, source = futures[future]
+            future.cancel()
+            detail = f"{source} timed out after {timeout_seconds:g}s"
+            bundle.errors_by_source[source] = detail
+            bundle.record_failure(source, health.TIMEOUT, detail, attempted=True)
+        for future in done:
+            subquery, source = futures[future]
+            yield future, subquery, source, timed_out
 
 
 @contextlib.contextmanager
@@ -2807,7 +2831,10 @@ def run(
         config["_jobs_story_terms"] = _jobs_story_terms(plan, topic, config)
     stream_config = dict(config)
     stream_config["_research_deadline"] = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
-    with _abandoning_executor(max_workers=max_workers) as executor:
+    batches = [(futures, stream_config, STREAM_FUTURE_TIMEOUT_SECONDS, False)]
+    background_futures = {}
+    with contextlib.ExitStack() as stack:
+        executor = stack.enter_context(_abandoning_executor(max_workers=max_workers))
         for subquery in plan.subqueries:
             for source in subquery.sources:
                 if source not in available:
@@ -2855,13 +2882,33 @@ def run(
                         continue
                     source_fetch_count[source] = current + 1
                 bundle.mark_attempted(source)
-                futures[
-                    executor.submit(
+                active_futures, active_executor, active_config = futures, executor, stream_config
+                if (
+                    source == "perplexity"
+                    and config.get("_deep_research")
+                    and str(config.get("PERPLEXITY_API_KEY") or "").strip()
+                ):
+                    background_timeout = perplexity.deep_timeout_seconds(config)
+                    active_config = {
+                        **config,
+                        "_research_deadline": _research_deadline(config, background_timeout),
+                    }
+                    background_wait_config = {
+                        **active_config,
+                        "_research_deadline": _research_deadline(
+                            config, background_timeout + DEEP_RESEARCH_RECEIPT_SECONDS,
+                        ),
+                    }
+                    active_executor = stack.enter_context(_abandoning_executor(max_workers=1))
+                    active_futures = background_futures
+                    batches.append((background_futures, background_wait_config, background_timeout, True))
+                active_futures[
+                    active_executor.submit(
                         _retrieve_stream,
                         topic=topic,
                         subquery=subquery,
                         source=source,
-                        config=stream_config,
+                        config=active_config,
                         depth=depth,
                         date_range=(from_date, to_date),
                         runtime=runtime,
@@ -2881,23 +2928,9 @@ def run(
                     )
                 ] = (subquery, source)
 
-        # Bounded fan-out (reddit-lane futures_wait pattern): the whole Phase 1
-        # waits at most STREAM_FUTURE_TIMEOUT_SECONDS, so a hung lane degrades
-        # to a TIMEOUT partial instead of stalling run() forever. Worst case
-        # per stream is the wait ceiling plus, for a stream that failed fast
-        # with a 5xx while budget remained, one inline retry bounded by that
-        # lane's own timeouts. No retry starts after the wait timed out or
-        # the enrichment cancel fired.
-        done, not_done = _wait_for_research(futures, stream_config)
-        budget_expired = bool(not_done)
-        for future in not_done:
-            subquery, source = futures[future]
-            future.cancel()
-            detail = f"{source} timed out after {STREAM_FUTURE_TIMEOUT_SECONDS:g}s"
-            bundle.errors_by_source[source] = detail
-            bundle.record_failure(source, health.TIMEOUT, detail, attempted=True)
-        for future in done:
-            subquery, source = futures[future]
+        # Collect ordinary streams and any inline retries before waiting on
+        # the longer background request.
+        for future, subquery, source, budget_expired in _completed_streams(batches, bundle):
             try:
                 raw_items, artifact = future.result(timeout=0)
             except Exception as exc:
@@ -2913,7 +2946,7 @@ def run(
                 # wait already timed out or cancel fired: the retry's lane
                 # timeouts plus the blocking sleep would run past the budget
                 # that just expired.
-                if _is_transient_error(exc):
+                if future not in background_futures and _is_transient_error(exc):
                     if budget_expired or _research_stopped(stream_config):
                         bundle.errors_by_source[source] = str(exc)
                         state, attempted = _classify_source_failure(exc)

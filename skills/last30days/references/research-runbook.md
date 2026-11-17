@@ -579,9 +579,11 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 **Grok Bot X:** on a Grok Bot host, follow the root routing gate for `grok-bot-x.md` before the engine command.
 
-**Step 1: Run the research script WITH your query plan (FOREGROUND)**
+**Step 1: Run the research script with your query plan**
 
-**CRITICAL: Run this command in the FOREGROUND with a 5-minute timeout. Do NOT use run_in_background. The full output contains Reddit, X, AND YouTube data that you need to read completely.**
+For ordinary research, run the command in the foreground with a five-minute timeout. Read the entire output before writing the report.
+
+For `--deep-research`, give the command the configured `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` budget (600 seconds by default) plus five minutes for the rest of the run. If your shell tool cannot wait that long in the foreground, start one managed background task or persistent shell session, then wait for that same task and read its complete output. A running task is not a reason to launch another paid search.
 
 **On hosts with web search, pass your QUERY_PLAN_JSON via the --plan flag.** This tells the Python script to use your plan instead of its internal planner. On hosts without web search, omit `--plan` and use `--auto-resolve`.
 
@@ -644,7 +646,7 @@ Add these targeting flags to that engine command before `<<'PLAN_EOF'`:
 
 Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
 
-Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically takes 1-3 minutes.
+Use a **timeout of 300000** (five minutes) for ordinary research. For Deep Research, follow the timeout and task instructions above.
 
 The script will automatically:
 - Detect available API keys
