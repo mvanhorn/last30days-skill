@@ -257,6 +257,6 @@ After the response and required citations, stop and wait unless governing instru
 - TikTok and Instagram sources require SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG); `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes it Reddit's primary path.
 - Agent hosts invoke the slash-command skill contract; if `--agent` appears in the user's slash-command arguments, treat it as skill-level mode guidance, not a Python CLI flag.
 
-**Bundled scripts:** `scripts/last30days.py` (main research engine), `scripts/lib/` (search, enrichment, rendering modules), `scripts/lib/vendor/bird-search/` (vendored X search client, MIT licensed)
+**Bundled scripts:** `scripts/last30days.py` (main research engine), the search, enrichment, and rendering modules in its `lib` folder, and the vendored X search client in `lib/vendor/bird-search` (MIT licensed)
 
 Review scripts before first use to verify behavior.
