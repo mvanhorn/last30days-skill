@@ -273,14 +273,18 @@ def _pick_exa_official_site(topic: str, items: list[dict]) -> str:
 
 
 def _exa_site_fallback(topic: str, config: dict | None) -> dict[str, Any]:
-    """Official-site search when Wikidata named nothing. No category, no dates."""
+    """Official-site search when Wikidata named nothing.
+
+    Searches Exa's company index only (undated). An uncategorized search
+    would also match people and projects that own an exact-name domain
+    (kanyewest.com, python.org) and mark them as companies.
+    """
     api_key = grounding.exa_api_key(config)
     if not api_key:
         return {}
     try:
-        items, _artifact = grounding.exa_search(
+        items, _artifact = grounding.exa_company_search(
             f"official website of {topic}; exclude similarly named firms",
-            None,
             api_key,
             count=5,
             objective=(

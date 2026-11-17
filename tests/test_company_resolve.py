@@ -812,7 +812,10 @@ def test_exa_fills_an_official_site_when_wikidata_names_nothing(monkeypatch):
     assert "AcmePayments" in query
     assert date_range is None
     assert key == "exa-key"
-    assert exa.call_args.kwargs.get("category") is None
+    # Only Exa's company index: a person or project with a matching domain
+    # (kanyewest.com, python.org) must not become a company, which would turn
+    # on the jobs and patents lanes and the company competitor index.
+    assert exa.call_args.kwargs.get("category") == "company"
     assert "startPublishedDate" not in (exa.call_args.kwargs or {})
 
 
