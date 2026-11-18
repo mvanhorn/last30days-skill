@@ -2120,17 +2120,35 @@ def is_polymarket_available() -> bool:
     return True
 
 
-def is_tiktok_available(config: dict[str, Any]) -> bool:
-    """Check if TikTok source is available (ScrapeCreators or legacy Apify).
+def is_shortform_oss_available(config: dict[str, Any] | None = None) -> bool:
+    """yt-dlp extract + a discovery backend (SearXNG / Serper / Exa / Brave / keyless)."""
+    from . import youtube_yt
+    if not youtube_yt.is_ytdlp_installed():
+        return False
+    cfg = config or {}
+    return bool(
+        (cfg.get('LAST30DAYS_SEARXNG_URL') or '').strip()
+        or cfg.get('SERPER_API_KEY')
+        or cfg.get('EXA_API_KEY')
+        or cfg.get('BRAVE_API_KEY')
+        or keyless_web_allowed(cfg)
+    )
 
-    Returns True if SCRAPECREATORS_API_KEY or APIFY_API_TOKEN is set.
+
+def is_tiktok_available(config: dict[str, Any]) -> bool:
+    """Check if TikTok source is available (ScrapeCreators or OSS fallback).
+
+    Returns True if SCRAPECREATORS_API_KEY is set, or if yt-dlp plus a
+    web-discovery backend can serve the keyless fallback. APIFY_API_TOKEN is
+    not a TikTok search backend (legacy alias only; it was never wired to an
+    Apify actor).
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN'))
+    return bool(config.get('SCRAPECREATORS_API_KEY') or is_shortform_oss_available(config))
 
 
 def get_tiktok_token(config: dict[str, Any]) -> str:
-    """Get TikTok API token, preferring ScrapeCreators over legacy Apify."""
-    return config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN') or ''
+    """ScrapeCreators key for TikTok. Empty means the OSS fallback may run."""
+    return config.get('SCRAPECREATORS_API_KEY') or ''
 
 
 def _parse_include_sources(config: dict[str, Any]) -> set[str]:
@@ -2180,12 +2198,12 @@ def is_threads_available(config: dict[str, Any]) -> bool:
 
 
 def is_instagram_available(config: dict[str, Any]) -> bool:
-    """Check if Instagram source is available (ScrapeCreators).
+    """Check if Instagram source is available (ScrapeCreators or OSS fallback).
 
-    Returns True if SCRAPECREATORS_API_KEY is set.
-    Instagram uses the same key as TikTok.
+    Returns True if SCRAPECREATORS_API_KEY is set, or if yt-dlp plus a
+    web-discovery backend can serve the keyless fallback.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY'))
+    return bool(config.get('SCRAPECREATORS_API_KEY') or is_shortform_oss_available(config))
 
 
 def get_instagram_token(config: dict[str, Any]) -> str:

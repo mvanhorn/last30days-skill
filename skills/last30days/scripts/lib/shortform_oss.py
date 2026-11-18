@@ -1,0 +1,429 @@
+"""TikTok / Instagram keyless-ish fallback: web discovery + yt-dlp extract.
+
+ScrapeCreators owns keyword search. When that key is missing or 402s, this
+module finds public post URLs via the already-configured web backends, then
+extracts metadata with yt-dlp (already on PATH for YouTube).
+
+Discovery never uses Google ``site:`` — Serper's free tier 400s that pattern.
+Date filtering happens after yt-dlp, not at the search engine.
+
+ponytail: no hashtag/user listing for IG (yt-dlp extractors are broken);
+TikTok ``@user`` listing still works and is used for ``creators=``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote
+
+from . import dates, http, log, subproc, web_search_keyless, youtube_yt
+from .relevance import token_overlap_relevance as _compute_relevance
+
+_TT_RE = re.compile(
+    r"https?://(?:www\.)?tiktok\.com/@([\w.\-]+)/video/(\d+)", re.I
+)
+_IG_RE = re.compile(
+    r"https?://(?:www\.)?instagram\.com/(?:reel|p|reels)/([\w\-]+)", re.I
+)
+_HASHTAG_RE = re.compile(r"#(\w+)")
+
+_DEPTH_URLS = {"quick": 8, "default": 12, "deep": 20}
+_ENRICH_TIMEOUT = 180
+
+
+def _log(kind: str, msg: str) -> None:
+    log.source_log("TikTok" if kind == "tiktok" else "Instagram", msg, tty_only=False)
+
+
+def _proxy() -> Optional[str]:
+    """yt-dlp proxy: YOUTUBE_PROXY/YT_PROXY, else the process HTTPS/HTTP proxy."""
+    return (
+        youtube_yt._ytdlp_proxy()
+        or os.environ.get("HTTPS_PROXY", "").strip()
+        or os.environ.get("HTTP_PROXY", "").strip()
+        or None
+    )
+
+
+def normalize_post_url(kind: str, url: str) -> Optional[str]:
+    """Canonicalize a TikTok video / IG reel URL, or None if not a post."""
+    if not url:
+        return None
+    url = unquote(url.split("#")[0].split("?")[0]).replace("%40", "@")
+    if kind == "tiktok":
+        m = _TT_RE.search(url)
+        if not m:
+            return None
+        return f"https://www.tiktok.com/@{m.group(1)}/video/{m.group(2)}"
+    m = _IG_RE.search(url)
+    if not m:
+        return None
+    return f"https://www.instagram.com/reel/{m.group(1)}/"
+
+
+def discovery_query(kind: str, topic: str) -> str:
+    """Plain-language query. Do not add ``site:`` — Serper free accounts reject it."""
+    topic = (topic or "").strip()
+    if kind == "tiktok":
+        return f"{topic} tiktok video"
+    return f"{topic} instagram reel"
+
+
+def _collect(kind: str, raw_urls, dest: List[str], limit: int) -> bool:
+    for raw in raw_urls:
+        n = normalize_post_url(kind, raw or "")
+        if n and n not in dest:
+            dest.append(n)
+            if len(dest) >= limit:
+                return True
+    return False
+
+
+def _serper_links(query: str, api_key: str, count: int) -> List[str]:
+    data = http.request(
+        "POST",
+        "https://google.serper.dev/search",
+        headers={"X-API-KEY": api_key},
+        json_data={"q": query, "num": min(20, max(count, 10))},
+        timeout=15,
+        retries=1,
+    )
+    return [r.get("link", "") for r in (data.get("organic") or []) if isinstance(r, dict)]
+
+
+def _exa_links(query: str, api_key: str, domain: str, count: int) -> List[str]:
+    data = http.request(
+        "POST",
+        "https://api.exa.ai/search",
+        headers={"x-api-key": api_key},
+        json_data={
+            "query": query,
+            "numResults": count,
+            "includeDomains": [domain],
+            "contents": {"text": False},
+        },
+        timeout=20,
+        retries=1,
+    )
+    return [r.get("url", "") for r in (data.get("results") or []) if isinstance(r, dict)]
+
+
+def _brave_links(query: str, api_key: str, count: int) -> List[str]:
+    from . import grounding
+
+    # Wide date window: social cards often lack page_age and would otherwise drop.
+    items, _art = grounding.brave_search(
+        query, ("1970-01-01", "2099-12-31"), api_key, count=count
+    )
+    return [i.get("url", "") for i in items]
+
+
+def discover_urls(
+    kind: str,
+    query: str,
+    config: Dict[str, Any],
+    count: int,
+) -> Tuple[List[str], str]:
+    """Return (post_urls, backend_name). Never raises."""
+    urls: List[str] = []
+    used = "none"
+    q = discovery_query(kind, query)
+
+    searxng = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
+    if searxng:
+        try:
+            items = web_search_keyless._search_searxng(q, count, searxng)
+            if _collect(kind, (i.get("url", "") for i in items), urls, count):
+                return urls, "searxng"
+            if urls:
+                used = "searxng"
+        except Exception as e:
+            _log(kind, f"SearXNG discovery error: {e}")
+
+    # Serper/Exa/Brave are paid rungs here, not the first choice: Serper's
+    # free tier rejects ``site:`` filters, Exa returns 0 Instagram posts, and
+    # Brave HTML 429s under load. They run only when the rungs above returned
+    # nothing.
+
+    if not urls and config.get("SERPER_API_KEY"):
+        try:
+            if _collect(kind, _serper_links(q, config["SERPER_API_KEY"], count), urls, count):
+                return urls, "serper"
+            if urls:
+                used = "serper"
+        except Exception as e:
+            _log(kind, f"Serper discovery error: {e}")
+
+    if not urls and kind == "tiktok" and config.get("EXA_API_KEY"):
+        try:
+            if _collect(
+                kind,
+                _exa_links(q, config["EXA_API_KEY"], "tiktok.com", count),
+                urls,
+                count,
+            ):
+                return urls, "exa"
+            if urls:
+                used = "exa"
+        except Exception as e:
+            _log(kind, f"Exa discovery error: {e}")
+
+    if not urls and config.get("BRAVE_API_KEY"):
+        try:
+            if _collect(kind, _brave_links(q, config["BRAVE_API_KEY"], count), urls, count):
+                return urls, "brave"
+            if urls:
+                used = "brave"
+        except Exception as e:
+            _log(kind, f"Brave discovery error: {e}")
+
+    if not urls:
+        try:
+            items, art = web_search_keyless.keyless_search(
+                q, ("1970-01-01", "2099-12-31"), config, count
+            )
+            _collect(kind, (i.get("url", "") for i in items), urls, count)
+            if urls and used == "none":
+                used = art.get("keyless_backend") or "keyless"
+        except Exception as e:
+            _log(kind, f"Keyless discovery error: {e}")
+
+    return urls[:count], used if urls else "none"
+
+
+def creator_urls(kind: str, handle: str, count: int) -> List[str]:
+    """List recent TikTok posts for ``@handle``. IG user listing is broken — skip."""
+    if kind != "tiktok" or not handle:
+        return []
+    handle = handle.lstrip("@").strip()
+    if not handle:
+        return []
+    cmd = [
+        "yt-dlp",
+        "--ignore-config",
+        "--no-warnings",
+        "--flat-playlist",
+        "--playlist-end",
+        str(count),
+        "--print",
+        "%(id)s",
+        f"https://www.tiktok.com/@{handle}",
+    ]
+    proxy = _proxy()
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    try:
+        result = subproc.run_with_timeout(cmd, timeout=60)
+    except (subproc.SubprocTimeout, FileNotFoundError, OSError) as e:
+        _log(kind, f"creator list @{handle} failed: {e}")
+        return []
+    out: List[str] = []
+    for line in (result.stdout or "").splitlines():
+        vid = line.strip()
+        if vid.isdigit():
+            out.append(f"https://www.tiktok.com/@{handle}/video/{vid}")
+    return out[:count]
+
+
+def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optional[Dict[str, Any]]:
+    video_id = str(raw.get("id") or "")
+    if not video_id:
+        return None
+    author = raw.get("uploader") or raw.get("channel") or raw.get("creator") or ""
+    text = (raw.get("description") or raw.get("title") or "").strip()
+    ts = raw.get("timestamp")
+    date_str = dates.timestamp_to_date(ts) if ts else None
+    hashtags = _HASHTAG_RE.findall(text)
+    if kind == "tiktok":
+        url = (
+            normalize_post_url(kind, raw.get("webpage_url") or "")
+            or (f"https://www.tiktok.com/@{author}/video/{video_id}" if author else "")
+        )
+        label = "TikTok"
+        engagement = {
+            "views": raw.get("view_count") or 0,
+            "likes": raw.get("like_count") or 0,
+            "comments": raw.get("comment_count") or 0,
+            "shares": raw.get("repost_count") or 0,
+        }
+    else:
+        url = normalize_post_url(kind, raw.get("webpage_url") or "") or (
+            f"https://www.instagram.com/reel/{video_id}/"
+        )
+        label = "Instagram"
+        engagement = {
+            "views": raw.get("view_count") or 0,
+            "likes": raw.get("like_count") or 0,
+            "comments": raw.get("comment_count") or 0,
+        }
+    if not url:
+        return None
+    snippet = text
+    words = snippet.split()
+    if len(words) > 500:
+        snippet = " ".join(words[:500]) + "..."
+    return {
+        "video_id": video_id,
+        "text": text,
+        "url": url,
+        "author_name": author,
+        "date": date_str,
+        "engagement": engagement,
+        "hashtags": hashtags,
+        "duration": raw.get("duration"),
+        "relevance": _compute_relevance(core_topic, text, hashtags),
+        "why_relevant": f"{label}: {text[:60]}" if text else f"{label}: {core_topic}",
+        "caption_snippet": snippet,
+        "_oss_backend": "yt-dlp",
+    }
+
+
+def enrich_urls(
+    kind: str,
+    urls: List[str],
+    core_topic: str,
+) -> List[Dict[str, Any]]:
+    """yt-dlp --dump-json over a URL list. Never raises."""
+    if not urls:
+        return []
+    if not youtube_yt.is_ytdlp_installed():
+        _log(kind, "yt-dlp not installed; skip OSS enrich")
+        return []
+    cmd = [
+        "yt-dlp",
+        "--ignore-config",
+        "--skip-download",
+        "--ignore-errors",
+        "--no-warnings",
+        "--dump-json",
+        "--socket-timeout",
+        "25",
+        "-a",
+        "-",
+    ]
+    proxy = _proxy()
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    try:
+        result = subproc.run_with_timeout(
+            cmd, timeout=_ENRICH_TIMEOUT, input_text="\n".join(urls) + "\n"
+        )
+    except subproc.SubprocTimeout:
+        _log(kind, f"yt-dlp enrich timed out ({_ENRICH_TIMEOUT}s)")
+        return []
+    except (FileNotFoundError, OSError) as e:
+        _log(kind, f"yt-dlp enrich failed: {e}")
+        return []
+    items: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = _item_from_ytdlp(kind, raw, core_topic)
+        if not item:
+            continue
+        vid = item["video_id"]
+        if vid in seen:
+            continue
+        seen.add(vid)
+        items.append(item)
+    _log(kind, f"yt-dlp enriched {len(items)}/{len(urls)} posts")
+    return items
+
+
+def search(
+    kind: str,
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    config: Dict[str, Any],
+    creators: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Discover + enrich. Returns the same ``{items, error}`` shape as SC search."""
+    if kind not in ("tiktok", "instagram"):
+        return {"items": [], "error": f"unsupported kind {kind!r}"}
+    if not youtube_yt.is_ytdlp_installed():
+        return {"items": [], "error": "yt-dlp not installed"}
+
+    cap = _DEPTH_URLS.get(depth, _DEPTH_URLS["default"])
+    urls: List[str] = []
+    if kind == "tiktok" and creators:
+        per = max(3, cap // max(len(creators), 1))
+        for handle in creators:
+            for u in creator_urls(kind, handle, per):
+                if u not in urls:
+                    urls.append(u)
+
+    found, backend = discover_urls(kind, topic, config, cap)
+    for u in found:
+        if u not in urls:
+            urls.append(u)
+    urls = urls[:cap]
+    _log(kind, f"OSS discovery via {backend}: {len(urls)} urls (depth={depth})")
+    if not urls:
+        return {"items": [], "error": "oss discovery empty"}
+
+    items = enrich_urls(kind, urls, topic)
+    if not items:
+        return {"items": [], "error": "yt-dlp extracted 0 posts"}
+
+    in_range = [i for i in items if i.get("date") and from_date <= i["date"] <= to_date]
+    if in_range:
+        dropped = len(items) - len(in_range)
+        items = in_range
+        if dropped:
+            _log(kind, f"OSS filtered {dropped} posts outside date range")
+    else:
+        _log(kind, f"OSS: no posts in date range, keeping all {len(items)}")
+
+    items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
+    return {"items": items, "backend": backend}
+
+
+def credits_exhausted(error: Optional[str]) -> bool:
+    """True when ScrapeCreators (or similar) refused the call for quota."""
+    if not error:
+        return False
+    text = str(error).lower()
+    return "402" in text or "payment required" in text or "out of credits" in text
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    tt = normalize_post_url(
+        "tiktok", "https://www.tiktok.com/%40pris.cesa/video/7692631242264595743?foo=1"
+    )
+    assert tt == "https://www.tiktok.com/@pris.cesa/video/7692631242264595743", tt
+    ig = normalize_post_url("instagram", "https://www.instagram.com/reel/Dem0getP8Js/")
+    assert ig == "https://www.instagram.com/reel/Dem0getP8Js/", ig
+    assert normalize_post_url("tiktok", "https://www.tiktok.com/discover/foo") is None
+    item = _item_from_ytdlp(
+        "tiktok",
+        {
+            "id": "1",
+            "uploader": "u",
+            "timestamp": 1728000000,
+            "view_count": 10,
+            "like_count": 2,
+            "comment_count": 1,
+            "description": "hello #cozy",
+            "webpage_url": "https://www.tiktok.com/@u/video/1",
+        },
+        "cozy",
+    )
+    assert item and item["engagement"]["likes"] == 2 and item["date"]
+    assert credits_exhausted("HTTPError: HTTP 402: Payment Required")
+    assert not credits_exhausted(None)
+    assert discovery_query("instagram", "cozy game") == "cozy game instagram reel"
+    print("ok")
