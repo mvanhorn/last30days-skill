@@ -397,7 +397,8 @@ def configured_backend(config: dict) -> str | None:
         if config.get(key) and not proxy.is_sentinel(config.get(key)):
             return backend
     for backend, key in backends:
-        if config.get(key):
+        # A proxy lane the service said it cannot serve is skipped for the run.
+        if config.get(key) and not proxy.provider_unavailable(backend):
             return backend
     return None
 
@@ -409,10 +410,29 @@ def web_search(
     backend: str = "auto",
 ) -> tuple[list[dict], dict]:
     """Run web search with the specified or auto-detected backend."""
-    if backend == "auto":
-        backend = configured_backend(config) or (
+    if backend != "auto":
+        return _web_search_with(backend, query, date_range, config)
+    tried: set[str] = set()
+    while True:
+        chosen = configured_backend(config) or (
             "keyless" if env.keyless_web_allowed(config) else "none"
         )
+        try:
+            return _web_search_with(chosen, query, date_range, config)
+        except Exception:
+            # The service has no key for this proxied provider: try the next
+            # backend instead of failing the web source.
+            if chosen in tried or not proxy.provider_unavailable(chosen):
+                raise
+            tried.add(chosen)
+
+
+def _web_search_with(
+    backend: str,
+    query: str,
+    date_range: tuple[str, str],
+    config: dict,
+) -> tuple[list[dict], dict]:
     items: list[dict] = []
     artifact: dict = {}
     if backend == "brave":

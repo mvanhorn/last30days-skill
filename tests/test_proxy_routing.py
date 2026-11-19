@@ -519,3 +519,37 @@ def test_doctor_chain_order_unchanged_outside_proxy_mode():
     resolution = backends.resolve("web", config)
     assert resolution.chain == list(backends.WEB_BACKEND_ORDER)
     assert resolution.active_backend == "serper"
+
+
+def test_web_falls_back_to_parallel_when_the_service_cannot_serve_serper(proxy_env, monkeypatch):
+    """The hosted service may hold no Serper key; web search moves on to Parallel."""
+    def answer(req):
+        if "/proxy/serper/" in req.full_url:
+            return _http_error(req.full_url, 503, {"error": "not available", "code": "provider_unavailable"})
+        return Response(
+            {"results": [{"url": "https://example.com/a", "title": "A", "excerpts": ["x"], "publish_date": "2026-11-10"}]},
+            headers={"x-l30d-charge-credits": "0.500000"},
+        )
+
+    transport = Transport(answer)
+    monkeypatch.setattr(http, "_open_request", transport)
+    config = _config()
+    config["EXCLUDE_SOURCES"] = "reddit"
+
+    items, artifact = grounding.web_search("claude", ("2026-10-20", "2026-11-19"), config)
+
+    urls = [req.full_url for req in transport.requests]
+    assert any("/proxy/serper/" in url for url in urls)
+    assert any("/proxy/parallel/" in url for url in urls)
+    assert artifact.get("label") == "parallel"
+    assert proxy.provider_unavailable("serper")
+    assert grounding.configured_backend(config) == "parallel"
+
+
+def test_web_failure_on_an_available_backend_still_raises(proxy_env, monkeypatch):
+    transport = Transport(_http_error("https://x", 500, {"error": "boom"}))
+    monkeypatch.setattr(http, "_open_request", transport)
+    config = _config()
+    with pytest.raises(Exception):
+        grounding.web_search("claude", ("2026-10-20", "2026-11-19"), config)
+    assert not any("/proxy/parallel/" in req.full_url for req in transport.requests)

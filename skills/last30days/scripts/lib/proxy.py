@@ -358,6 +358,12 @@ def observe_error(
     return code in {"unsupported_endpoint", "in_flight", "idempotency_conflict", "already_settled"}
 
 
+def provider_unavailable(provider: str) -> bool:
+    """True once the service has said it cannot serve this provider this run."""
+    with _lock:
+        return provider in _unavailable
+
+
 def exhausted() -> bool:
     with _lock:
         return _exhausted is not None
