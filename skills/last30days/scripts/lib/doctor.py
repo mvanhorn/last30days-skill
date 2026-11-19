@@ -54,7 +54,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, digg, env, health, http, prescriptions, reddit_health, trustpilot, x_api
+from . import backends, brightdata, digg, env, health, http, prescriptions, proxy, reddit_health, trustpilot, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -401,10 +401,17 @@ def _sc_fix() -> str:
     return _fix_text(prescriptions.get("scrapecreators", "key_missing"))
 
 
+def _sc_key_detail(config: Dict[str, Any]) -> str:
+    """How the ScrapeCreators lane is keyed: the user's key or the API key proxy."""
+    if proxy.is_sentinel(config.get("SCRAPECREATORS_API_KEY")):
+        return "ScrapeCreators via API key"
+    return "SCRAPECREATORS_API_KEY present"
+
+
 def _sc_gated_record(config: Dict[str, Any], purpose: str) -> Dict[str, Any]:
     if config.get("SCRAPECREATORS_API_KEY"):
         return _record(status=health.OK, requires="SCRAPECREATORS_API_KEY",
-                       detail=f"SCRAPECREATORS_API_KEY present ({purpose})")
+                       detail=f"{_sc_key_detail(config)} ({purpose})")
     if purpose in ("tiktok", "instagram") and env.is_shortform_oss_available(config):
         return _record(
             status=health.OK,
@@ -429,7 +436,7 @@ def _sc_optin_record(config: Dict[str, Any], source: str, purpose: str) -> Dict[
         return _record(status="unconfigured", requires=requires, fix=_sc_fix())
     if source in env.include_sources(config):
         return _record(status=health.OK, requires=requires,
-                       detail=f"SCRAPECREATORS_API_KEY present ({purpose})")
+                       detail=f"{_sc_key_detail(config)} ({purpose})")
     return _record(
         status="opt-in", requires=requires,
         fix=f"add {source} to INCLUDE_SOURCES (or request it via --search {source})",
@@ -898,7 +905,7 @@ def _telegram_record(config):
             return _record(
                 status=health.OK,
                 requires=requires,
-                detail=f"SCRAPECREATORS_API_KEY present, {len(channels)} channel(s) configured",
+                detail=f"{_sc_key_detail(config)}, {len(channels)} channel(s) configured",
             )
         return _record(
             status="unconfigured",
@@ -1237,7 +1244,9 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     if not policy.official_only:
         has_key = bool(config.get("XAI_API_KEY") or config.get("XQUIK_API_KEY"))
         cookie = bool(env.x_pending_browser_auth(config, local_only=True))
-        if has_key:
+        if has_key and proxy.is_sentinel(config.get("XAI_API_KEY")) and not config.get("XQUIK_API_KEY"):
+            note = "xAI via API key (verified, cookie-free; paid per call)"
+        elif has_key:
             note = "XAI_API_KEY key-backed path (verified, cookie-free)"
         elif cookie:
             note = (
@@ -1252,6 +1261,8 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     source = env.get_x_source(config, local_only=True)
     if source == "xapi":
         note = f"X_BEARER_TOKEN path ({X_BEARER_CAVEAT})"
+    elif source == "xai" and proxy.is_sentinel(config.get("XAI_API_KEY")):
+        note = "xAI licensed path via API key"
     elif source == "xai":
         note = "XAI_API_KEY licensed path (console.x.ai)"
     elif source == "xurl":
@@ -1450,7 +1461,11 @@ def _engine_version() -> str:
 
 
 def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
-    keys_present = {var: bool(config.get(var)) for var in KEY_PRESENCE_VARS}
+    # A lane served by the API-key proxy is not a key the user holds.
+    keys_present = {
+        var: bool(config.get(var)) and not proxy.is_sentinel(config.get(var))
+        for var in KEY_PRESENCE_VARS
+    }
     keys_present["x_browser_cookies"] = bool(
         config.get("AUTH_TOKEN") and config.get("CT0")
     )
@@ -1460,6 +1475,8 @@ def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "setup_complete": env.is_setup_complete(config),
         "keys_present": keys_present,
+        # Paid lanes served through LAST30DAYS_API_MODE=proxy (names only).
+        "via_api_key": proxy.via_api_key(config),
         # get_config() rejected these before any presence check ran, so
         # keys_present already reads them as absent. Carrying the names here is
         # what lets the text renderer say *why* they are absent instead of
@@ -1737,6 +1754,11 @@ def render_text(report: Dict[str, Any]) -> str:
         + (", ".join(present) if present else "none")
         + " (values never shown)"
     )
+    via_key = setup.get("via_api_key") or []
+    if via_key:
+        lines.append(
+            "paid lanes via API key (LAST30DAYS_API_MODE=proxy): " + ", ".join(via_key)
+        )
     templated = setup.get("unsubstituted_templates") or []
     if templated:
         lines.append(
@@ -2008,6 +2030,7 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
     config = config or {}
     signals = {
         "keys_present": _setup_block(config)["keys_present"],
+        "via_api_key": proxy.via_api_key(config),
         "pins": {var: str(config.get(var) or "") for var in _FINGERPRINT_PIN_VARS},
         "include_sources": str(config.get("INCLUDE_SOURCES") or ""),
         "x_cookie_access_denied": str(config.get("LAST30DAYS_X_COOKIE_ACCESS_DENIED") or ""),
@@ -2015,6 +2038,11 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
         "from_browser": str(config.get("FROM_BROWSER") or ""),
         "agentcookie": str(config.get("AGENTCOOKIE") or env.read_secret_env("AGENTCOOKIE") or ""),
     }
+    # Proxy mode moves lanes on and off without a key changing; only present
+    # when used, so every other fingerprint stays what it was.
+    via_key = proxy.via_api_key(config)
+    if via_key:
+        signals["via_api_key"] = via_key
     canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from . import dates, env, http, parallel_mcp, schema, web_search_keyless
+from . import dates, env, http, parallel_mcp, proxy, schema, web_search_keyless
 
 
 @dataclass(frozen=True)
@@ -382,14 +382,23 @@ def _parse_serper_date(raw: str, now: datetime | None = None) -> str | None:
 # ---------------------------------------------------------------------------
 
 def configured_backend(config: dict) -> str | None:
-    """Return the first configured search API backend, excluding keyless search."""
-    for backend, key in (
+    """Return the first configured search API backend, excluding keyless search.
+
+    A backend the user holds a key for wins over one served by the API-key
+    proxy (lib/proxy.py), whatever their order below.
+    """
+    backends = (
         ("brave", "BRAVE_API_KEY"),
         ("exa", "EXA_API_KEY"),
         ("serper", "SERPER_API_KEY"),
         ("parallel", "PARALLEL_API_KEY"),
-    ):
-        if config.get(key):
+    )
+    for backend, key in backends:
+        if config.get(key) and not proxy.is_sentinel(config.get(key)):
+            return backend
+    for backend, key in backends:
+        # A proxy lane the service said it cannot serve is skipped for the run.
+        if config.get(key) and not proxy.provider_unavailable(backend):
             return backend
     return None
 
@@ -401,10 +410,29 @@ def web_search(
     backend: str = "auto",
 ) -> tuple[list[dict], dict]:
     """Run web search with the specified or auto-detected backend."""
-    if backend == "auto":
-        backend = configured_backend(config) or (
+    if backend != "auto":
+        return _web_search_with(backend, query, date_range, config)
+    tried: set[str] = set()
+    while True:
+        chosen = configured_backend(config) or (
             "keyless" if env.keyless_web_allowed(config) else "none"
         )
+        try:
+            return _web_search_with(chosen, query, date_range, config)
+        except Exception:
+            # The service has no key for this proxied provider: try the next
+            # backend instead of failing the web source.
+            if chosen in tried or not proxy.provider_unavailable(chosen):
+                raise
+            tried.add(chosen)
+
+
+def _web_search_with(
+    backend: str,
+    query: str,
+    date_range: tuple[str, str],
+    config: dict,
+) -> tuple[list[dict], dict]:
     items: list[dict] = []
     artifact: dict = {}
     if backend == "brave":
@@ -428,8 +456,10 @@ def web_search(
             raise RuntimeError("PARALLEL_API_KEY is required when web_backend='parallel'")
         items, artifact = parallel_search(query, date_range, key)
     elif backend == "parallel-mcp":
+        # The MCP client is not behind the http.request proxy seam, so it
+        # never receives the proxy-lane placeholder.
         items, artifact = parallel_mcp.search(
-            query, date_range, config.get("PARALLEL_API_KEY")
+            query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY"))
         )
     elif backend == "keyless":
         items, artifact = web_search_keyless.keyless_search(query, date_range, config)

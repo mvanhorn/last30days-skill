@@ -68,7 +68,13 @@ def get(
     cancel: threading.Event | None = None,
     read_body: bool = True,
     read_error_body: bool = True,
+    with_headers: bool = False,
 ):
+    """Run one GET in a child process killed at the deadline.
+
+    Returns ``(status, body, error)``, or ``(status, body, error, headers)``
+    with ``with_headers`` (the response headers as name/value pairs).
+    """
     if req.get_method() != "GET":
         raise ValueError("bounded transport supports GET only")
     payload = {
@@ -111,6 +117,8 @@ def get(
             record["url"], record["status"], record["http_error"],
             headers, io.BytesIO(body or b""),
         )
+    if with_headers:
+        return record["status"], body, error, list(record.get("headers") or [])
     return record["status"], body, error
 
 

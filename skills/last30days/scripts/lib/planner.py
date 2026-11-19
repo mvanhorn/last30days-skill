@@ -958,7 +958,7 @@ _HOST_FILLER = frozenset(
 _GENERIC_HOST = frozenset("ai agent agents bot bots tool tools app apps assistant llm model".split())
 
 _DEVICE = r"(?:my|the|your|our)\s+(?:own\s+)?(?:computer|mac|pc|desktop|laptop|browser|screen|phone|terminal)s?\b"
-# Mirrors the hosted worker's detect_enablement_intent (last30days-com).
+# Mirrors the hosted service worker's detect_enablement_intent.
 # A tool acting on a device the person owns: "grok bot control my computer",
 # "agent that automates the browser". Plain "use the browser" is ordinary use.
 _ENABLEMENT_TARGET_RE = re.compile(
