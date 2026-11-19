@@ -14,7 +14,6 @@ TikTok ``@user`` listing still works and is used for ``creators=``.
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
@@ -52,16 +51,6 @@ def _bounded_timeout(base: float, deadline: float | None) -> float:
 
 def _log(kind: str, msg: str) -> None:
     log.source_log("TikTok" if kind == "tiktok" else "Instagram", msg, tty_only=False)
-
-
-def _proxy() -> Optional[str]:
-    """yt-dlp proxy: YOUTUBE_PROXY/YT_PROXY, else the process HTTPS/HTTP proxy."""
-    return (
-        youtube_yt._ytdlp_proxy()
-        or os.environ.get("HTTPS_PROXY", "").strip()
-        or os.environ.get("HTTP_PROXY", "").strip()
-        or None
-    )
 
 
 def normalize_post_url(kind: str, url: str) -> Optional[str]:
@@ -252,9 +241,9 @@ def creator_urls(
         "%(id)s",
         f"https://www.tiktok.com/@{handle}",
     ]
-    proxy = _proxy()
-    if proxy:
-        cmd.extend(["--proxy", proxy])
+    # Same routing as the YouTube source: local yt-dlp, or the SSH host when
+    # LAST30DAYS_YOUTUBE_SSH_HOST is set (proxy flag folds in too).
+    cmd = youtube_yt.wrap_ytdlp_cmd(cmd)
     try:
         result = subproc.run_with_timeout(cmd, timeout=_bounded_timeout(60.0, deadline))
     except (subproc.SubprocTimeout, FileNotFoundError, OSError) as e:
@@ -346,9 +335,8 @@ def enrich_urls(
         "-a",
         "-",
     ]
-    proxy = _proxy()
-    if proxy:
-        cmd.extend(["--proxy", proxy])
+    # Same routing as the YouTube source (see creator_urls).
+    cmd = youtube_yt.wrap_ytdlp_cmd(cmd)
     budget = _bounded_timeout(_ENRICH_TIMEOUT, deadline)
     try:
         result = subproc.run_with_timeout(

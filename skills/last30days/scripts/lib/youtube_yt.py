@@ -694,7 +694,7 @@ def _ytdlp_proxy() -> Optional[str]:
     return proxy or None
 
 
-def _wrap_ytdlp_cmd(cmd: List[str]) -> List[str]:
+def wrap_ytdlp_cmd(cmd: List[str]) -> List[str]:
     """Wrap a yt-dlp command list with `ssh <host>` when SSH routing is set.
 
     Args are shell-quoted to survive the remote shell. Uses BatchMode=yes so
@@ -2579,3 +2579,7 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
         transcript = " ".join(words[:TRANSCRIPT_MAX_WORDS]) + "..."
 
     return transcript if transcript else None
+
+
+# Backward-compat alias: internal call sites predate the public name.
+_wrap_ytdlp_cmd = wrap_ytdlp_cmd

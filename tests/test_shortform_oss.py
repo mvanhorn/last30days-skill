@@ -13,8 +13,10 @@ through the env.is_ytdlp_available() wrapper, so that is the symbol patched
 below -- same reason tests/test_doctor.py::_Hermetic pins it.
 """
 
+import os
 import threading
 import time
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -228,3 +230,77 @@ class TestInstagramFallbackErrorSurfaces:
                 "topic", "2026-01-01", "2026-12-31", "default", None, config={},
             )
         assert result["error"] == "oss discovery empty"
+
+
+class TestSshRoutedExtraction:
+    """SSH-routed hosts (LAST30DAYS_YOUTUBE_SSH_HOST) extract remotely.
+
+    The availability gate follows youtube_yt.is_ytdlp_installed(), which is
+    True on SSH-routed hosts without a local binary — so extraction must run
+    through the same SSH wrapper instead of a local FileNotFoundError.
+    """
+
+    SSH_ENV = {"LAST30DAYS_YOUTUBE_SSH_HOST": "macmini"}
+
+    def test_gate_opens_on_ssh_routed_host_without_local_binary(self):
+        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True) as inst, \
+             mock.patch.dict(os.environ, self.SSH_ENV):
+            # is_ytdlp_installed is what the gate reads; on SSH hosts it
+            # returns True without a local binary, and extraction must
+            # therefore route over ssh (pinned below).
+            assert env.is_shortform_oss_available({"SERPER_API_KEY": "sp"}) is True
+        inst.assert_called_once()
+
+    def test_enrich_urls_wrap_the_command_with_ssh(self):
+        from lib import subproc as subproc_mod
+
+        captured = {}
+
+        def fake_run(cmd, timeout=None, input_text=None):
+            captured["cmd"] = cmd
+            captured["input"] = input_text
+            return SimpleNamespace(stdout="")
+
+        url = "https://www.tiktok.com/@u/video/1"
+        with mock.patch.dict(os.environ, self.SSH_ENV), \
+             mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True), \
+             mock.patch.object(subproc_mod, "run_with_timeout", side_effect=fake_run):
+            items = shortform_oss.enrich_urls("tiktok", [url], "topic")
+        assert items == []
+        cmd = captured["cmd"]
+        assert cmd[0] == "ssh"
+        assert "macmini" in cmd
+        assert "yt-dlp" in " ".join(cmd)
+        assert "--dump-json" in " ".join(cmd)
+        assert url in (captured["input"] or "")
+
+    def test_creator_urls_wrap_the_command_with_ssh(self):
+        from lib import subproc as subproc_mod
+
+        captured = {}
+
+        def fake_run(cmd, timeout=None, input_text=None):
+            captured["cmd"] = cmd
+            return SimpleNamespace(stdout="1234567890")
+
+        with mock.patch.dict(os.environ, self.SSH_ENV), \
+             mock.patch.object(subproc_mod, "run_with_timeout", side_effect=fake_run):
+            urls = shortform_oss.creator_urls("tiktok", "creator", 3)
+        assert urls == ["https://www.tiktok.com/@creator/video/1234567890"]
+        assert captured["cmd"][0] == "ssh"
+
+    def test_local_hosts_still_run_yt_dlp_directly(self):
+        from lib import subproc as subproc_mod
+
+        captured = {}
+
+        def fake_run(cmd, timeout=None, input_text=None):
+            captured["cmd"] = cmd
+            return SimpleNamespace(stdout="")
+
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YOUTUBE_SSH_HOST": ""}), \
+             mock.patch.object(subproc_mod, "run_with_timeout", side_effect=fake_run):
+            shortform_oss.enrich_urls(
+                "tiktok", ["https://www.tiktok.com/@u/video/1"], "topic",
+            )
+        assert captured["cmd"][0] == "yt-dlp"

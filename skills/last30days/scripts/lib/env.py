@@ -2154,7 +2154,9 @@ def is_shortform_oss_available(
 
     kind is the short-form source ("tiktok" or "instagram"). Exa only counts
     for TikTok: its API returns 0 Instagram posts, so an EXA_API_KEY alone
-    must not advertise Instagram as ready.
+    must not advertise Instagram as ready. yt-dlp presence follows the
+    YouTube source's routing: local binary, or LAST30DAYS_YOUTUBE_SSH_HOST
+    with yt-dlp on the remote end.
     """
     from . import youtube_yt
     if not youtube_yt.is_ytdlp_installed():
