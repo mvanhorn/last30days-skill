@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from shutil import which
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import env, health, prescriptions
+from . import env, health, prescriptions, proxy
 
 # Resolution modes.
 MODE_ALTERNATIVE = "alternative"  # probe-ordered chain, first-usable wins
@@ -200,7 +200,7 @@ def _key_probe(name: str, key_var: str, requires: str, note: str = "") -> Callab
             return BackendFinding(
                 name=name,
                 status=health.OK,
-                detail=f"{key_var} present",
+                detail="via API key" if proxy.is_sentinel(config.get(key_var)) else f"{key_var} present",
                 requires=requires,
             )
         prescription = note or f"set {key_var} in ~/.config/last30days/.env"

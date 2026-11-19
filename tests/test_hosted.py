@@ -947,3 +947,23 @@ def test_engine_version_skew_prints_one_notice(remote_env, monkeypatch, capsys, 
     assert rc == 0
     assert err.count("on the hosted backend; this skill is v4.3.2") == notices
 
+
+def test_proxy_mode_keeps_the_run_local(monkeypatch):
+    monkeypatch.setenv("LAST30DAYS_API_KEY", TEST_KEY)
+    monkeypatch.setenv("LAST30DAYS_API_BASE", TEST_BASE)
+    monkeypatch.setenv("LAST30DAYS_API_MODE", "proxy")
+    monkeypatch.setattr(
+        hosted, "run_hosted",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("hosted path must not run")),
+    )
+    fake_progress = mock.Mock()
+    with mock.patch.object(cli.env, "get_config", return_value={}), \
+         mock.patch.object(cli.pipeline, "diagnose", return_value=DIAG), \
+         mock.patch.object(cli.pipeline, "run", return_value=make_report()) as pipeline_run, \
+         mock.patch.object(cli.ui, "ProgressDisplay", return_value=fake_progress), \
+         mock.patch.object(cli, "emit_output", return_value="# local rendered"):
+        rc, out, _err = run_main(["test", "topic", "--days=7"])
+
+    assert rc == 0
+    pipeline_run.assert_called_once()
+    assert "# local rendered" in out

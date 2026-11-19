@@ -136,6 +136,12 @@ One full research run for one entity of an "X vs Y" comparison; the Engine runs 
 
 Sub-runs share the process's limits (the YouTube fetch gate, paid-call budgets), so any per-run budget for work behind one of those limits is split across the sub-runs rather than granted to each in full. Otherwise the comparison multiplies the work and every sub-run misses the wait a single run fits inside.
 
+## Paid lanes
+
+### Proxy lane
+
+A paid provider lane (ScrapeCreators, xAI, Serper, Parallel) that, in proxy mode (`LAST30DAYS_API_MODE=proxy` with an API key and base), runs on the local Engine but is billed to the API key: the user holds no key for that provider, so its calls go through the hosted service's metered proxy. A key the user set always keeps its provider's lane direct, and a backend the user holds a key for ranks ahead of a Proxy lane serving the same need. Only calls made through the Engine's shared HTTP layer can be Proxy lanes; CLI-based backends and raw-socket clients never are. Free sources are never Proxy lanes. Once the key runs out of credits or hits its spend ceiling, every Proxy lane is off for the rest of the run. *Avoid: hosted mode (that hands the whole run to the service).*
+
 ## Flagged ambiguities
 
 - "Enrichment" is used for two distinct things: Comment-enrichment slots (fetching comments for already-ranked Reddit posts in the Keyless path) and Discovery's Enrichment pass (a full research run per Nomination). Context disambiguates; prefer the full term when writing.

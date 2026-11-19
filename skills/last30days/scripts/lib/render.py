@@ -24,6 +24,7 @@ from . import (
     meta_ads,
     patent_digest,
     polymarket,
+    proxy,
     reddit_refs,
     registers,
     relevance,
@@ -4004,6 +4005,8 @@ def _render_emoji_footer(
     freshness_warning = _assess_data_freshness(report)
     freshness_line = f"🕒 {freshness_warning}" if freshness_warning else None
     raw_line = f"📎 Raw results saved to {save_path}" if save_path else None
+    # Proxy mode only: what the API key's metered proxy charged this run.
+    proxy_line = proxy.footer_line()
 
     body: list[str] = []
     body.extend(source_lines)
@@ -4015,6 +4018,8 @@ def _render_emoji_footer(
     # its own emptiness.
     if freshness_line and (body or raw_line):
         body.append(freshness_line)
+    if proxy_line:
+        body.append(proxy_line)
     if raw_line:
         body.append(raw_line)
 

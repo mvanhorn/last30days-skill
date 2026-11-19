@@ -940,6 +940,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         else:
             _discover_and_apply_x_credentials(config)
 
+    # Proxy mode (LAST30DAYS_API_MODE=proxy): each paid lane the user has no
+    # key for is served through the metered proxy. Filled last, so a user's
+    # own key from any source always wins for its provider.
+    from . import proxy as _proxy
+    _proxy.fill_config(config)
+
     # Fixture recording (--record-fixtures) must redact a credential that
     # came from a file, Keychain, or pass, not only one exported in the
     # shell. No-op outside a recording session.
@@ -1150,9 +1156,26 @@ REDDIT_SETUP_BROWSERS = (
 )
 
 
+# Placeholder for a provider key served by the API-key proxy (lib/proxy.py
+# owns the routing; it is defined here because proxy imports this module).
+PROXY_SENTINEL = "last30days-proxy-lane"
+
+
+def proxy_mode_requested() -> bool:
+    """True when LAST30DAYS_API_MODE selects the metered proxy (lib/proxy.py)."""
+    return (os.environ.get("LAST30DAYS_API_MODE") or "").strip().lower() == "proxy"
+
+
 def hosted_backend_configured() -> bool:
-    """True when research would run through the remote API backend."""
-    return bool(read_secret_env("LAST30DAYS_API_KEY") and os.environ.get("LAST30DAYS_API_BASE"))
+    """True when research would run through the remote API backend.
+
+    Proxy mode keeps research on the local engine, so it is never hosted.
+    """
+    return bool(
+        read_secret_env("LAST30DAYS_API_KEY")
+        and os.environ.get("LAST30DAYS_API_BASE")
+        and not proxy_mode_requested()
+    )
 
 
 def global_cookie_refusal(config: dict[str, Any], reddit_consent: bool = False) -> str:
@@ -1898,6 +1921,10 @@ def x_backend_chain(config: dict[str, Any], local_only: bool = False) -> list[st
             b for b in x_policy(config).auto_chain
             if _x_backend_available(b, config, has_bird_creds, local_only)
         ]
+        # An xAI lane served by the API-key proxy (lib/proxy.py) is paid per
+        # call, so every backend the user set up themselves goes first.
+        if 'xai' in chain and config.get('XAI_API_KEY') == PROXY_SENTINEL:
+            chain = [b for b in chain if b != 'xai'] + ['xai']
 
     if 'bird' in chain:
         _inject_bird_credentials(config)
