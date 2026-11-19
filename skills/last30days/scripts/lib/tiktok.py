@@ -519,9 +519,8 @@ def search_and_enrich(
     # Sort merged results by views descending
     items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
 
-    # OSS fallback (local): web discovery + yt-dlp when the key is missing or
-    # credits are exhausted. OSS backends do not share the ScrapeCreators
-    # deadline, so they still run after a budget stop.
+    # OSS fallback: web discovery + yt-dlp when the key is missing or credits
+    # are exhausted. Bounded by the same deadline/cancel as the paid path.
     from_oss = False
     if not items and (not token or shortform_oss.credits_exhausted(last_error)):
         cfg = config
@@ -530,6 +529,7 @@ def search_and_enrich(
             cfg = envmod.get_config()
         oss = shortform_oss.search(
             "tiktok", topic, from_date, to_date, depth, cfg, creators=creators,
+            deadline=deadline, cancel=cancel,
         )
         items = oss.get("items") or []
         from_oss = bool(items)

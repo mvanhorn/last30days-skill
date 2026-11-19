@@ -2147,16 +2147,24 @@ def is_polymarket_available() -> bool:
     return True
 
 
-def is_shortform_oss_available(config: dict[str, Any] | None = None) -> bool:
-    """yt-dlp extract + a discovery backend (SearXNG / Serper / Exa / Brave / keyless)."""
+def is_shortform_oss_available(
+    config: dict[str, Any] | None = None, kind: str = "tiktok",
+) -> bool:
+    """yt-dlp extract + a discovery backend (SearXNG / Serper / Exa / Brave / keyless).
+
+    kind is the short-form source ("tiktok" or "instagram"). Exa only counts
+    for TikTok: its API returns 0 Instagram posts, so an EXA_API_KEY alone
+    must not advertise Instagram as ready.
+    """
     from . import youtube_yt
     if not youtube_yt.is_ytdlp_installed():
         return False
     cfg = config or {}
+    exa_armed = cfg.get('EXA_API_KEY') if kind == 'tiktok' else None
     return bool(
         (cfg.get('LAST30DAYS_SEARXNG_URL') or '').strip()
         or cfg.get('SERPER_API_KEY')
-        or cfg.get('EXA_API_KEY')
+        or exa_armed
         or cfg.get('BRAVE_API_KEY')
         or keyless_web_allowed(cfg)
     )
@@ -2230,7 +2238,10 @@ def is_instagram_available(config: dict[str, Any]) -> bool:
     Returns True if SCRAPECREATORS_API_KEY is set, or if yt-dlp plus a
     web-discovery backend can serve the keyless fallback.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY') or is_shortform_oss_available(config))
+    return bool(
+        config.get('SCRAPECREATORS_API_KEY')
+        or is_shortform_oss_available(config, "instagram")
+    )
 
 
 def get_instagram_token(config: dict[str, Any]) -> str:

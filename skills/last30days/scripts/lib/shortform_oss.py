@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
@@ -32,6 +34,20 @@ _HASHTAG_RE = re.compile(r"#(\w+)")
 
 _DEPTH_URLS = {"quick": 8, "default": 12, "deep": 20}
 _ENRICH_TIMEOUT = 180
+
+
+def _stopped(deadline: float | None, cancel: threading.Event | None) -> bool:
+    """True once the run is cancelled or past its shared monotonic deadline."""
+    if cancel is not None and cancel.is_set():
+        return True
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _bounded_timeout(base: float, deadline: float | None) -> float:
+    """Per-call timeout, never longer than the deadline's remaining time."""
+    if deadline is None:
+        return base
+    return max(1.0, min(base, deadline - time.monotonic()))
 
 
 def _log(kind: str, msg: str) -> None:
@@ -82,19 +98,23 @@ def _collect(kind: str, raw_urls, dest: List[str], limit: int) -> bool:
     return False
 
 
-def _serper_links(query: str, api_key: str, count: int) -> List[str]:
+def _serper_links(
+    query: str, api_key: str, count: int, deadline: float | None = None,
+) -> List[str]:
     data = http.request(
         "POST",
         "https://google.serper.dev/search",
         headers={"X-API-KEY": api_key},
         json_data={"q": query, "num": min(20, max(count, 10))},
-        timeout=15,
+        timeout=_bounded_timeout(15.0, deadline),
         retries=1,
     )
     return [r.get("link", "") for r in (data.get("organic") or []) if isinstance(r, dict)]
 
 
-def _exa_links(query: str, api_key: str, domain: str, count: int) -> List[str]:
+def _exa_links(
+    query: str, api_key: str, domain: str, count: int, deadline: float | None = None,
+) -> List[str]:
     data = http.request(
         "POST",
         "https://api.exa.ai/search",
@@ -105,7 +125,7 @@ def _exa_links(query: str, api_key: str, domain: str, count: int) -> List[str]:
             "includeDomains": [domain],
             "contents": {"text": False},
         },
-        timeout=20,
+        timeout=_bounded_timeout(20.0, deadline),
         retries=1,
     )
     return [r.get("url", "") for r in (data.get("results") or []) if isinstance(r, dict)]
@@ -126,14 +146,16 @@ def discover_urls(
     query: str,
     config: Dict[str, Any],
     count: int,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> Tuple[List[str], str]:
-    """Return (post_urls, backend_name). Never raises."""
+    """Return (post_urls, backend_name). Never raises; stops at deadline/cancel."""
     urls: List[str] = []
     used = "none"
     q = discovery_query(kind, query)
 
     searxng = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
-    if searxng:
+    if searxng and not _stopped(deadline, cancel):
         try:
             items = web_search_keyless._search_searxng(q, count, searxng)
             if _collect(kind, (i.get("url", "") for i in items), urls, count):
@@ -148,20 +170,25 @@ def discover_urls(
     # Brave HTML 429s under load. They run only when the rungs above returned
     # nothing.
 
-    if not urls and config.get("SERPER_API_KEY"):
+    if not urls and not _stopped(deadline, cancel) and config.get("SERPER_API_KEY"):
         try:
-            if _collect(kind, _serper_links(q, config["SERPER_API_KEY"], count), urls, count):
+            if _collect(
+                kind,
+                _serper_links(q, config["SERPER_API_KEY"], count, deadline=deadline),
+                urls,
+                count,
+            ):
                 return urls, "serper"
             if urls:
                 used = "serper"
         except Exception as e:
             _log(kind, f"Serper discovery error: {e}")
 
-    if not urls and kind == "tiktok" and config.get("EXA_API_KEY"):
+    if not urls and not _stopped(deadline, cancel) and kind == "tiktok" and config.get("EXA_API_KEY"):
         try:
             if _collect(
                 kind,
-                _exa_links(q, config["EXA_API_KEY"], "tiktok.com", count),
+                _exa_links(q, config["EXA_API_KEY"], "tiktok.com", count, deadline=deadline),
                 urls,
                 count,
             ):
@@ -171,30 +198,43 @@ def discover_urls(
         except Exception as e:
             _log(kind, f"Exa discovery error: {e}")
 
-    if not urls and config.get("BRAVE_API_KEY"):
+    if not urls and not _stopped(deadline, cancel) and config.get("BRAVE_API_KEY"):
         try:
-            if _collect(kind, _brave_links(q, config["BRAVE_API_KEY"], count), urls, count):
+            if _collect(
+                kind,
+                _brave_links(q, config["BRAVE_API_KEY"], count),
+                urls,
+                count,
+            ):
                 return urls, "brave"
             if urls:
                 used = "brave"
         except Exception as e:
             _log(kind, f"Brave discovery error: {e}")
 
-    if not urls:
-        try:
-            items, art = web_search_keyless.keyless_search(
-                q, ("1970-01-01", "2099-12-31"), config, count
-            )
-            _collect(kind, (i.get("url", "") for i in items), urls, count)
-            if urls and used == "none":
-                used = art.get("keyless_backend") or "keyless"
-        except Exception as e:
-            _log(kind, f"Keyless discovery error: {e}")
+    # The keyless floor follows the same policy the availability gate used:
+    # when the host has native search (LAST30DAYS_NATIVE_SEARCH), the floor is
+    # off, so a failed paid rung must not fall through to it either.
+    if not urls and not _stopped(deadline, cancel):
+        from .env import keyless_web_allowed
+
+        if keyless_web_allowed(config):
+            try:
+                items, art = web_search_keyless.keyless_search(
+                    q, ("1970-01-01", "2099-12-31"), config, count,
+                )
+                _collect(kind, (i.get("url", "") for i in items), urls, count)
+                if urls and used == "none":
+                    used = art.get("keyless_backend") or "keyless"
+            except Exception as e:
+                _log(kind, f"Keyless discovery error: {e}")
 
     return urls[:count], used if urls else "none"
 
 
-def creator_urls(kind: str, handle: str, count: int) -> List[str]:
+def creator_urls(
+    kind: str, handle: str, count: int, deadline: float | None = None,
+) -> List[str]:
     """List recent TikTok posts for ``@handle``. IG user listing is broken — skip."""
     if kind != "tiktok" or not handle:
         return []
@@ -216,7 +256,7 @@ def creator_urls(kind: str, handle: str, count: int) -> List[str]:
     if proxy:
         cmd.extend(["--proxy", proxy])
     try:
-        result = subproc.run_with_timeout(cmd, timeout=60)
+        result = subproc.run_with_timeout(cmd, timeout=_bounded_timeout(60.0, deadline))
     except (subproc.SubprocTimeout, FileNotFoundError, OSError) as e:
         _log(kind, f"creator list @{handle} failed: {e}")
         return []
@@ -285,9 +325,11 @@ def enrich_urls(
     kind: str,
     urls: List[str],
     core_topic: str,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
-    """yt-dlp --dump-json over a URL list. Never raises."""
-    if not urls:
+    """yt-dlp --dump-json over a URL list. Never raises; stops at deadline/cancel."""
+    if not urls or _stopped(deadline, cancel):
         return []
     if not youtube_yt.is_ytdlp_installed():
         _log(kind, "yt-dlp not installed; skip OSS enrich")
@@ -307,12 +349,13 @@ def enrich_urls(
     proxy = _proxy()
     if proxy:
         cmd.extend(["--proxy", proxy])
+    budget = _bounded_timeout(_ENRICH_TIMEOUT, deadline)
     try:
         result = subproc.run_with_timeout(
-            cmd, timeout=_ENRICH_TIMEOUT, input_text="\n".join(urls) + "\n"
+            cmd, timeout=budget, input_text="\n".join(urls) + "\n"
         )
     except subproc.SubprocTimeout:
-        _log(kind, f"yt-dlp enrich timed out ({_ENRICH_TIMEOUT}s)")
+        _log(kind, f"yt-dlp enrich timed out ({budget:.0f}s)")
         return []
     except (FileNotFoundError, OSError) as e:
         _log(kind, f"yt-dlp enrich failed: {e}")
@@ -347,23 +390,35 @@ def search(
     depth: str,
     config: Dict[str, Any],
     creators: Optional[List[str]] = None,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> Dict[str, Any]:
-    """Discover + enrich. Returns the same ``{items, error}`` shape as SC search."""
+    """Discover + enrich. Returns the same ``{items, error}`` shape as SC search.
+
+    Honors the run's shared monotonic deadline and cancellation event: each
+    phase checks both before starting, and per-call timeouts are bounded by
+    the remaining time, so a cancelled run does not keep a 180s yt-dlp
+    extraction alive past exit.
+    """
     if kind not in ("tiktok", "instagram"):
         return {"items": [], "error": f"unsupported kind {kind!r}"}
     if not youtube_yt.is_ytdlp_installed():
         return {"items": [], "error": "yt-dlp not installed"}
+    if _stopped(deadline, cancel):
+        return {"items": [], "error": "research deadline passed before OSS fallback"}
 
     cap = _DEPTH_URLS.get(depth, _DEPTH_URLS["default"])
     urls: List[str] = []
     if kind == "tiktok" and creators:
         per = max(3, cap // max(len(creators), 1))
         for handle in creators:
-            for u in creator_urls(kind, handle, per):
+            if _stopped(deadline, cancel):
+                return {"items": [], "error": "research deadline passed before OSS discovery"}
+            for u in creator_urls(kind, handle, per, deadline=deadline):
                 if u not in urls:
                     urls.append(u)
 
-    found, backend = discover_urls(kind, topic, config, cap)
+    found, backend = discover_urls(kind, topic, config, cap, deadline=deadline, cancel=cancel)
     for u in found:
         if u not in urls:
             urls.append(u)
@@ -372,7 +427,7 @@ def search(
     if not urls:
         return {"items": [], "error": "oss discovery empty"}
 
-    items = enrich_urls(kind, urls, topic)
+    items = enrich_urls(kind, urls, topic, deadline=deadline, cancel=cancel)
     if not items:
         return {"items": [], "error": "yt-dlp extracted 0 posts"}
 

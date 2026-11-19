@@ -850,38 +850,42 @@ def search_and_enrich(
                     seen_ids.add(vid)
                     items.append(item)
 
-    # Step 1: Multi-query keyword search — run ScrapeCreators for each expanded query
-    queries = expand_instagram_queries(topic, depth)
-    fallback_pages, fallback_posts = GOOGLE_FALLBACK_BUDGETS.get(
-        depth, GOOGLE_FALLBACK_BUDGETS["default"]
-    )
-    fallback_cache: dict[str, dict[str, Any]] = {}
-    for index, q in enumerate(queries):
-        if _budget_expired(deadline, cancel):
-            break
-        query_count = len(queries)
-        query_budget = {
-            "pages": fallback_pages // query_count
-            + (1 if index < fallback_pages % query_count else 0),
-            "posts": fallback_posts // query_count
-            + (1 if index < fallback_posts % query_count else 0),
-        }
-        search_result = search_instagram(
-            q, from_date, to_date, depth, token,
-            _fallback_budget=query_budget, _fallback_cache=fallback_cache,
-            deadline=deadline, cancel=cancel,
+    # Step 1: Multi-query keyword search — run ScrapeCreators for each expanded
+    # query. Without a token every call would just fail with "No
+    # SCRAPECREATORS_API_KEY configured", so skip straight to the OSS fallback
+    # (mirrors tiktok.search_and_enrich's ``if token:`` guard).
+    if token:
+        queries = expand_instagram_queries(topic, depth)
+        fallback_pages, fallback_posts = GOOGLE_FALLBACK_BUDGETS.get(
+            depth, GOOGLE_FALLBACK_BUDGETS["default"]
         )
-        if search_result.get("error"):
-            error = search_result["error"]
-            state = search_result.get("_error_state") or http.classify_failure(message=error)
-            query_errors.append((error, state))
-            if not search_result.get("_discovery_only_error"):
-                last_error = error
-        for item in search_result.get("items", []):
-            vid = item.get("video_id", "")
-            if vid and vid not in seen_ids:
-                seen_ids.add(vid)
-                items.append(item)
+        fallback_cache: dict[str, dict[str, Any]] = {}
+        for index, q in enumerate(queries):
+            if _budget_expired(deadline, cancel):
+                break
+            query_count = len(queries)
+            query_budget = {
+                "pages": fallback_pages // query_count
+                + (1 if index < fallback_pages % query_count else 0),
+                "posts": fallback_posts // query_count
+                + (1 if index < fallback_posts % query_count else 0),
+            }
+            search_result = search_instagram(
+                q, from_date, to_date, depth, token,
+                _fallback_budget=query_budget, _fallback_cache=fallback_cache,
+                deadline=deadline, cancel=cancel,
+            )
+            if search_result.get("error"):
+                error = search_result["error"]
+                state = search_result.get("_error_state") or http.classify_failure(message=error)
+                query_errors.append((error, state))
+                if not search_result.get("_discovery_only_error"):
+                    last_error = error
+            for item in search_result.get("items", []):
+                vid = item.get("video_id", "")
+                if vid and vid not in seen_ids:
+                    seen_ids.add(vid)
+                    items.append(item)
 
     # Sort merged results by views descending
     items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
@@ -894,9 +898,8 @@ def search_and_enrich(
     if _budget_expired(deadline, cancel):
         last_error = RESEARCH_TIMEOUT
 
-    # OSS fallback (local): keyless web discovery + yt-dlp when the key is
-    # missing or credits are exhausted. Independent of the ScrapeCreators
-    # deadline, so it still runs after a budget stop.
+    # OSS fallback: web discovery + yt-dlp when the key is missing or credits
+    # are exhausted. Bounded by the same deadline/cancel as the paid path.
     from_oss = False
     if not items and (not token or shortform_oss.credits_exhausted(last_error)):
         cfg = config
@@ -905,13 +908,18 @@ def search_and_enrich(
             cfg = envmod.get_config()
         oss = shortform_oss.search(
             "instagram", topic, from_date, to_date, depth, cfg,
+            deadline=deadline, cancel=cancel,
         )
         items = oss.get("items") or []
         from_oss = bool(items)
         if from_oss:
             last_error = None
-        elif not last_error:
-            last_error = oss.get("error")
+        elif not token or not last_error:
+            # No paid loop ran (or produced nothing to say): a fallback
+            # failure must surface, not hide behind a budget-stop message.
+            # With a token, the ScrapeCreators error keeps priority — it is
+            # the root cause the fallback just failed to rescue.
+            last_error = oss.get("error") or last_error
 
     if not items:
         return {"items": [], "error": last_error}

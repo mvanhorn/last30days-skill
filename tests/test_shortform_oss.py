@@ -13,11 +13,13 @@ through the env.is_ytdlp_available() wrapper, so that is the symbol patched
 below -- same reason tests/test_doctor.py::_Hermetic pins it.
 """
 
+import threading
+import time
 from unittest import mock
 
 import pytest
 
-from lib import env, health
+from lib import env, health, shortform_oss
 
 from tests.test_doctor import _build
 
@@ -70,6 +72,19 @@ class TestShortformGate:
 
     def test_keyless_floor_is_suppressed_on_a_native_search_host(self):
         assert _gate(dict(NATIVE_SEARCH_HOST), True) is False
+
+    def test_exa_key_arms_only_tiktok_not_instagram(self):
+        # Exa returns 0 Instagram posts; its key must not advertise Instagram.
+        cfg = {"EXA_API_KEY": "ex", **NATIVE_SEARCH_HOST}
+        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True):
+            assert env.is_shortform_oss_available(cfg, "tiktok") is True
+            assert env.is_shortform_oss_available(cfg, "instagram") is False
+            assert env.is_instagram_available(cfg) is False
+
+    def test_instagram_gate_still_accepts_its_own_backends(self):
+        cfg = {"BRAVE_API_KEY": "br", **NATIVE_SEARCH_HOST}
+        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True):
+            assert env.is_shortform_oss_available(cfg, "instagram") is True
 
 
 class TestSourceAvailability:
@@ -127,3 +142,89 @@ class TestDoctorSurface:
             record = report["sources"][name]
             assert record["tier"] == "off", name
             assert record["requires"] == "SCRAPECREATORS_API_KEY", name
+
+class TestDeadlineAndCancel:
+    """The fallback must stop starting work once the run is cancelled."""
+
+    def _no_work(self):
+        return mock.patch.multiple(
+            "lib.shortform_oss",
+            discover_urls=mock.DEFAULT,
+            enrich_urls=mock.DEFAULT,
+            creator_urls=mock.DEFAULT,
+        )
+
+    def test_past_deadline_returns_error_without_discovery(self):
+        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True), \
+             mock.patch("lib.shortform_oss.discover_urls") as disc, \
+             mock.patch("lib.shortform_oss.enrich_urls") as enrich:
+            result = shortform_oss.search(
+                "tiktok", "topic", "2026-01-01", "2026-12-31", "default", {},
+                deadline=time.monotonic() - 1.0,
+            )
+        assert result["items"] == []
+        assert "deadline" in result["error"]
+        disc.assert_not_called()
+        enrich.assert_not_called()
+
+    def test_cancelled_event_returns_error_without_discovery(self):
+        cancel = threading.Event()
+        cancel.set()
+        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True), \
+             mock.patch("lib.shortform_oss.discover_urls") as disc, \
+             mock.patch("lib.shortform_oss.enrich_urls") as enrich:
+            result = shortform_oss.search(
+                "instagram", "topic", "2026-01-01", "2026-12-31", "default", {},
+                cancel=cancel,
+            )
+        assert result["items"] == []
+        assert result["error"]
+        disc.assert_not_called()
+        enrich.assert_not_called()
+
+    def test_enrich_skips_when_deadline_passes_during_discovery(self):
+        with mock.patch("lib.shortform_oss.discover_urls",
+                        return_value=(["https://www.tiktok.com/@u/video/1"], "searxng")), \
+             mock.patch("lib.shortform_oss.enrich_urls") as enrich:
+            result = shortform_oss.search(
+                "tiktok", "topic", "2026-01-01", "2026-12-31", "default", {},
+                deadline=time.monotonic() - 1.0,
+            )
+        enrich.assert_not_called()
+        assert result["items"] == []
+
+
+class TestKeylessRungPolicy:
+    """Discovery must follow the same keyless policy the availability gate used."""
+
+    def test_keyless_rung_is_skipped_on_native_search_hosts(self):
+        with mock.patch("lib.web_search_keyless.keyless_search",
+                        side_effect=AssertionError("keyless ran on a native-search host")):
+            urls, backend = shortform_oss.discover_urls(
+                "tiktok", "topic", {"LAST30DAYS_NATIVE_SEARCH": "1"}, 5,
+            )
+        assert urls == []
+        assert backend == "none"
+
+    def test_keyless_rung_runs_when_policy_allows_it(self):
+        canned = ({"url": "https://www.tiktok.com/@u/video/1"},)
+        with mock.patch("lib.web_search_keyless.keyless_search",
+                        return_value=(list(canned), {"keyless_backend": "ddg"})) as ks:
+            urls, backend = shortform_oss.discover_urls("tiktok", "topic", {}, 5)
+        ks.assert_called_once()
+        assert urls == ["https://www.tiktok.com/@u/video/1"]
+        assert backend == "ddg"
+
+
+class TestInstagramFallbackErrorSurfaces:
+    """Without a token the paid loop never runs, so the OSS error must surface."""
+
+    def test_no_token_oss_error_is_returned(self):
+        from lib import instagram as ig
+
+        with mock.patch("lib.shortform_oss.search",
+                        return_value={"items": [], "error": "oss discovery empty"}):
+            result = ig.search_and_enrich(
+                "topic", "2026-01-01", "2026-12-31", "default", None, config={},
+            )
+        assert result["error"] == "oss discovery empty"
