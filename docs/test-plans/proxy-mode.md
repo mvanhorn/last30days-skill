@@ -72,26 +72,26 @@ Fill in after the run.
 
 | Field | Quick run | Default run |
 | --- | --- | --- |
-| Date and skill commit | | |
-| Topic | | |
-| Session id | | |
-| Footer `💳 API key:` line | | |
-| Activity entry credits and calls | | |
-| Credits before / after | | |
-| Reserved before / after | | |
-| Carry before / after | | |
-| Balance delta + carry change | | |
-| Free-source items (HN / Reddit / GitHub / Polymarket) | | |
-| Free-source proxy calls | | |
-| Paid-lane items (X / TikTok / Instagram / YouTube / web) | | |
-| Planner and rerank provider | | |
-| Hosted-mode comparison (items, charge) | | |
-| Key found in any output file | | |
-| Check 1 pass | | |
-| Check 2 pass | | |
-| Check 3 pass | | |
-| Check 4 pass | | |
-| Notes | | |
+| Date and skill commit | 2026-11-19, web fallback fix on top of `6526abbf` | same |
+| Topic | OpenAI Codex | Claude Code skills |
+| Session id | `skill-16c060a58fbd4c38b87c55b536b0a277` | `skill-4f44ef1ae6c749b79a1cba065146ea1c` |
+| Footer `💳 API key:` line | 9.383246 credits across 17 paid calls | 50.030618 credits across 25 paid calls |
+| Activity entry credits and calls | 9.38 credits, 17 calls (`skill_sessions`, rounded to cents) | 50.03 credits, 25 calls |
+| Credits before / after | 71907 / 71897 | 71897 / 71847 |
+| Reserved before / after | 0 / 0 | 0 / 0 |
+| Carry before / after | 0.820316 / 0.203562 (derived from the debits; not read from the row) | 0.203562 / 0.234180 (derived) |
+| Balance delta + carry change | 10 + (0.203562 - 0.820316) = 9.383246 | 50 + (0.234180 - 0.203562) = 50.030618 |
+| Free-source items (HN / Reddit / GitHub / Polymarket) | HN 3, Reddit 6 | HN 16, Reddit 29, arXiv 13, Techmeme 10 |
+| Free-source proxy calls | 0 (HN, Arctic Shift, keyless site search went direct) | 0 |
+| Paid-lane items (X / TikTok / Instagram / YouTube / web) | planner picked Reddit, HN, web, jobs; Web 5 | X 13, TikTok 25, Instagram 7, YouTube 2 (2/2 transcripts), Web 21 |
+| Planner and rerank provider | xAI through the proxy (3 calls) | xAI through the proxy (4 calls) |
+| Hosted-mode comparison (items, charge) | not run | not run |
+| Key found in any output file | no (0 matches in stdout and stderr) | no |
+| Check 1 pass | yes | yes |
+| Check 2 pass | yes | yes |
+| Check 3 pass | yes | yes |
+| Check 4 pass | yes (lanes the planner chose) | yes |
+| Notes | A first run on `6526abbf` found the service holds no Serper key: every proxied web search failed with `provider_unavailable`. Fixed in this PR: web search now moves to the next backend (Parallel). Each run still makes up to 3 free 503 Serper calls before the lane is marked off. | Reddit search and comments also went through the ScrapeCreators lane, as R5 expects; Reddit's keyless path still ran locally. |
 
 Out-of-credits check:
 
