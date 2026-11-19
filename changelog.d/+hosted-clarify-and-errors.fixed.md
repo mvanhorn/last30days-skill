@@ -1,0 +1,1 @@
+Hosted mode: answer a clarification with `--clarify-angle` or `--clarify-broadly` instead of rewriting the topic, see the server's reason when a run fails instead of "unknown server error", and get a one-line notice when the hosted engine's major version differs from the local skill.

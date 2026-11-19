@@ -54,7 +54,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, pipeline, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, pipeline, proxy, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
 from lib.private_files import replace_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -735,6 +735,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=registers.REGISTER_NAMES,
         default=None,
         help="Audience synthesis preset for the standard brief (default, exec, dev, creator, eli5)",
+    )
+    clarify_group = parser.add_mutually_exclusive_group()
+    clarify_group.add_argument(
+        "--clarify-angle",
+        default=None,
+        help="Hosted backend only: answer its clarification with this angle (an option's query)",
+    )
+    clarify_group.add_argument(
+        "--clarify-broadly",
+        action="store_true",
+        help="Hosted backend only: answer its clarification by running the topic as asked",
     )
     parser.add_argument(
         "--json-profile",
@@ -3908,10 +3919,25 @@ def main() -> int:
         ):
             parser.error("--no-research-persistence requires --research-only and a topic without output or cache modes")
         args.save_dir = ""
-    if args.record_fixtures:
-        with http.recording_requests(Path(args.record_fixtures)):
-            return _main(parser, args, extra_argv, command_started=command_started)
-    return _main(parser, args, extra_argv, command_started=command_started)
+    try:
+        if args.record_fixtures:
+            with http.recording_requests(Path(args.record_fixtures)):
+                return _main(parser, args, extra_argv, command_started=command_started)
+        return _main(parser, args, extra_argv, command_started=command_started)
+    finally:
+        _report_proxy_session()
+
+
+def _report_proxy_session() -> None:
+    """One stderr line with what the API-key proxy charged this run, if used."""
+    session = proxy.session_id()
+    if session:
+        calls, credits = proxy.session_summary()
+        sys.stderr.write(
+            f"[last30days] API key session {session}: {proxy.format_credits(credits)} "
+            f"credits across {calls} paid call{'' if calls == 1 else 's'}\n"
+        )
+        sys.stderr.flush()
 
 
 def _quality_research_results(report, diag, yt_fetch_stats):
@@ -4492,12 +4518,18 @@ def _main(
     # set (and --mock is not), the search runs through the configured remote API
     # instead of local sources; no local provider keys are needed (see
     # lib/hosted.py). With either env var unset, behavior below is byte-identical
-    # to local-only runs - there is no built-in endpoint.
+    # to local-only runs - there is no built-in endpoint. LAST30DAYS_API_MODE=proxy
+    # keeps the run local and sends only paid provider calls through the API
+    # key's metered proxy (lib/proxy.py).
+    if topic and env.proxy_mode_requested() and not proxy.configured():
+        sys.stderr.write(
+            "[last30days] LAST30DAYS_API_MODE=proxy needs LAST30DAYS_API_KEY and an https "
+            "LAST30DAYS_API_BASE; paid sources without their own key stay off.\n"
+        )
     if (
         topic
         and resolved_corpus_dirs
-        and env.read_secret_env("LAST30DAYS_API_KEY")
-        and os.environ.get("LAST30DAYS_API_BASE")
+        and env.hosted_backend_configured()
     ):
         sys.stderr.write(
             "[last30days] Local corpus configured; bypassing the hosted backend so files stay on this machine.\n"
@@ -4515,8 +4547,7 @@ def _main(
         and not args.mock
         and not args.record_fixtures
         and not args.deep_research
-        and env.read_secret_env("LAST30DAYS_API_KEY")
-        and os.environ.get("LAST30DAYS_API_BASE")
+        and env.hosted_backend_configured()
     ):
         sys.stderr.write(
             "[last30days] --perplexity-search-type set; bypassing the hosted backend "
@@ -4531,6 +4562,14 @@ def _main(
         and not args.deep_research
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     )
+    if (args.clarify_angle is not None or args.clarify_broadly) and not (
+        topic and not args.diagnose and uses_hosted_api
+    ):
+        sys.stderr.write(
+            "[last30days] --clarify-angle and --clarify-broadly answer a hosted backend "
+            "clarification, so they apply only to a hosted run.\n"
+        )
+        return 2
     if topic and not args.diagnose and uses_hosted_api:
         if args.require_local_report:
             sys.stderr.write(
@@ -4610,6 +4649,10 @@ def _main(
         }
         if audience.name != "default":
             hosted_kwargs["register"] = audience.name
+        if args.clarify_angle is not None:
+            hosted_kwargs["clarify"] = {"angle": args.clarify_angle}
+        elif args.clarify_broadly:
+            hosted_kwargs["clarify"] = {"run_broadly": True}
         return hosted.run_hosted(topic, depth, **hosted_kwargs)
 
     if args.lookback_days is None:

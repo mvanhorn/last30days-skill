@@ -666,7 +666,7 @@ class FallbackDefaultsTests(unittest.TestCase):
 
 
 class EnablementIntentTests(unittest.TestCase):
-    """Issue Esper-Labs/last30days-com#616: "best Grok AI bot to control my
+    """A hosted service report: "best Grok AI bot to control my
     computer agent" was planned as a strict-recent comparison about Grok, so
     retrieval never looked for the tools that give Grok that capability."""
 

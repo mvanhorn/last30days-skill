@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit, quote
 
-from . import bounded_get, health, usage
+from . import bounded_get, health, proxy, usage
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
@@ -999,6 +999,22 @@ def request(
         quote(parts.fragment, safe=safe),
     ))
 
+    # Proxy mode: a paid call backed by the proxy sentinel goes to the metered
+    # proxy instead (lib/proxy.py). Rewritten before fixture capture so the
+    # recorded request carries the proxy URL and the bearer key is redacted.
+    usage_url = url
+    try:
+        routed = proxy.route(method, url, headers)
+    except proxy.ProxyUnavailable as exc:
+        unavailable = HTTPError(f"API key proxy: {exc}", exc.status_code)
+        _raise(unavailable)
+    call_key = None
+    if routed is not None:
+        url = routed.url
+        headers = routed.headers
+        call_key = proxy.new_idempotency_key()
+        headers[proxy.IDEMPOTENCY_HEADER] = call_key
+
     fixture_request = None if sensitive_url else _fixture_request(method, url, json_data, raw)
     fixture_redactions = _fixture_redactions(url, headers, json_data)
     replayed = _fixture_replay(
@@ -1068,6 +1084,8 @@ def request(
                 if bypass_proxy else _open_request(req, request_timeout)
             )
             with transport as response:
+                if routed is not None:
+                    proxy.record_charge(getattr(response, "headers", None), call_key=call_key)
                 if return_headers:
                     response_headers = ResponseHeaders(response.headers.items())
                     final = response.geturl() if hasattr(response, "geturl") else ""
@@ -1089,9 +1107,11 @@ def request(
         """Stop waiting at the wall deadline, even during DNS or body reads."""
         if owned_get:
             try:
-                status, body, error = bounded_get.get(
+                owned = bounded_get.get(
                     req, timeout=request_timeout,
                     deadline_monotonic=deadline_monotonic, cancel=cancel,
+                    # Only a proxied call needs the charge header back.
+                    **({"with_headers": True} if routed is not None else {}),
                 )
             except bounded_get.GetLaunchError:
                 usage.cancel(charge)
@@ -1100,6 +1120,12 @@ def request(
                 if not exc.started:
                     usage.cancel(charge)
                 raise deadline_error() from exc
+            if routed is not None:
+                status, body, error, owned_headers = owned
+                if error is None:
+                    proxy.record_charge(dict(owned_headers), call_key=call_key)
+            else:
+                status, body, error = owned
             try:
                 decoded = body.decode("utf-8") if body is not None else None
             except UnicodeDecodeError:
@@ -1158,7 +1184,14 @@ def request(
         try:
             if attempt > 0 and on_retry is not None:
                 on_retry()
-            charge = usage.begin_http(url, method)
+            if routed is not None:
+                # Another call may have turned this lane off while we waited.
+                try:
+                    proxy.ensure_open(routed.provider)
+                except proxy.ProxyUnavailable as exc:
+                    raise_recorded(HTTPError(f"API key proxy: {exc}", exc.status_code))
+                req.add_header(proxy.DEADLINE_HEADER, proxy.deadline_value(request_timeout))
+            charge = usage.begin_http(usage_url, method)
             response_status, body, response_error = open_and_read_before_deadline(request_timeout)
             if body:
                 try:
@@ -1193,6 +1226,13 @@ def request(
                 snippet = _scrub_fixture_value(" ".join(body.split()), redactions=fixture_redactions)
                 log_request(f"Error body: {snippet[:200]}")
             last_error = HTTPError(f"HTTP {e.code}: {e.reason}", e.code, body)
+
+            # A proxy error that ends the lane (out of credits, spend ceiling,
+            # provider off, duplicate call) is never retried.
+            if routed is not None and proxy.observe_error(
+                routed.provider, e.code, body, getattr(e, "headers", None), call_key,
+            ):
+                raise_recorded(last_error)
 
             # Don't retry client errors (4xx) except rate limits
             if 400 <= e.code < 500 and e.code != 429:
