@@ -2210,15 +2210,27 @@ def get_scrapecreators_base_url(config: dict[str, Any] | None = None) -> str:
     Defaults to https://api.scrapecreators.com. Can be overridden via
     SCRAPECREATORS_BASE_URL (or SCRAPE_CREATORS_BASE_URL) in environment
     or config to point at a local mock server, caching proxy, or
-    compatible alternative provider. Trailing slashes are stripped.
+    compatible alternative provider.
+
+    Remote overrides must be https:// (http:// is allowed only on loopback)
+    to protect API keys from cleartext transmission. Trailing slashes are stripped.
     """
     raw = None
     if config:
-        raw = config.get("SCRAPECREATORS_BASE_URL")
+        raw = config.get("SCRAPECREATORS_BASE_URL") or config.get("SCRAPE_CREATORS_BASE_URL")
     if not raw:
         raw = os.environ.get("SCRAPECREATORS_BASE_URL") or os.environ.get("SCRAPE_CREATORS_BASE_URL")
     if raw and str(raw).strip():
-        return str(raw).strip().rstrip("/")
+        val = str(raw).strip().rstrip("/")
+        from . import providers
+        if providers.allowed_base_url_override(val):
+            return val
+        sys.stderr.write(
+            f"[last30days] WARNING: ignoring SCRAPECREATORS_BASE_URL - a provider endpoint override "
+            "must be https:// (http:// is allowed only on localhost), otherwise the API "
+            f"key would be sent in cleartext. Using {DEFAULT_SCRAPECREATORS_BASE_URL} instead.\n"
+        )
+        sys.stderr.flush()
     return DEFAULT_SCRAPECREATORS_BASE_URL
 
 

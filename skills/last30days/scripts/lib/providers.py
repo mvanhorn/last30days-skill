@@ -28,7 +28,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # constant is suffix-free. If GEMINI_FLASH_LITE moves to a non-preview stable ID,
 # double-check that OpenRouter's slug still maps to the same upstream model.
 OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
-PROVIDER_BASE_URL_KEYS = frozenset({"OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"})
+PROVIDER_BASE_URL_KEYS = frozenset({"OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL", "SCRAPECREATORS_BASE_URL"})
 
 
 def _is_loopback(host: str) -> bool:

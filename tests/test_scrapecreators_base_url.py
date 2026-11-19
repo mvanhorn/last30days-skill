@@ -59,8 +59,37 @@ class TestScrapeCreatorsBaseUrlResolution:
         monkeypatch.setenv("SCRAPE_CREATORS_BASE_URL", "https://legacy.example.com/")
         assert env.get_scrapecreators_base_url() == "https://legacy.example.com"
 
+    def test_remote_http_override_is_refused_with_warning(self, monkeypatch, capsys):
+        monkeypatch.setenv("SCRAPECREATORS_BASE_URL", "http://proxy.example.com/v1")
+        assert env.get_scrapecreators_base_url() == "https://api.scrapecreators.com"
+        assert "SCRAPECREATORS_BASE_URL" in capsys.readouterr().err
+
+    def test_remote_http_legacy_alias_is_refused_with_warning(self, monkeypatch, capsys):
+        monkeypatch.delenv("SCRAPECREATORS_BASE_URL", raising=False)
+        monkeypatch.setenv("SCRAPE_CREATORS_BASE_URL", "http://proxy.example.com")
+        assert env.get_scrapecreators_base_url() == "https://api.scrapecreators.com"
+        assert "SCRAPECREATORS_BASE_URL" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("loopback", [
+        "http://localhost:8080",
+        "http://127.0.0.1:9000",
+        "http://[::1]:8080",
+    ])
+    def test_loopback_http_override_is_allowed(self, loopback, monkeypatch):
+        monkeypatch.setenv("SCRAPECREATORS_BASE_URL", loopback)
+        assert env.get_scrapecreators_base_url() == loopback
+
     def test_permission_preflight_endpoint_override_key(self):
         assert "SCRAPECREATORS_BASE_URL" in permission_preflight.ENDPOINT_OVERRIDE_KEYS
+
+    def test_permission_preflight_rejects_remote_http_override(self):
+        preflight = permission_preflight.build(
+            {"SCRAPECREATORS_BASE_URL": "http://proxy.example.com"},
+            {"has_scrapecreators": True},
+        )
+        assert "SCRAPECREATORS_BASE_URL" in preflight["network"]["ignored_endpoint_overrides"]
+        assert "SCRAPECREATORS_BASE_URL" not in preflight["network"]["endpoint_overrides"]
+        assert preflight["status"] == "action_needed"
 
 
 class TestModuleUrlConstructionWithOverride:
