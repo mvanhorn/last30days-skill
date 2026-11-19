@@ -298,9 +298,19 @@ class TestSshRoutedExtraction:
             captured["cmd"] = cmd
             return SimpleNamespace(stdout="")
 
-        with mock.patch.dict(os.environ, {"LAST30DAYS_YOUTUBE_SSH_HOST": ""}), \
-             mock.patch.object(subproc_mod, "run_with_timeout", side_effect=fake_run):
-            shortform_oss.enrich_urls(
-                "tiktok", ["https://www.tiktok.com/@u/video/1"], "topic",
-            )
+        # Pin yt-dlp presence: CI runners do not have yt-dlp on PATH, and
+        # enrich_urls gates on is_ytdlp_installed() before building the
+        # command — unpinned, the fake never runs there. The SSH var is also
+        # unset (not empty-string-set) so _ytdlp_ssh_host() cannot wrap.
+        saved = os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
+        try:
+            with mock.patch.dict(os.environ, {}, clear=False), \
+                 mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(subproc_mod, "run_with_timeout", side_effect=fake_run):
+                shortform_oss.enrich_urls(
+                    "tiktok", ["https://www.tiktok.com/@u/video/1"], "topic",
+                )
+        finally:
+            if saved is not None:
+                os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = saved
         assert captured["cmd"][0] == "yt-dlp"
