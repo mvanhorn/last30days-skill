@@ -123,6 +123,9 @@ _charged = Decimal(0)
 _calls = 0
 _exhausted: Optional[str] = None
 _unavailable: set[str] = set()
+# Idempotency keys whose charge is already in the session total, so a retry
+# that comes back already_settled never counts the same call twice.
+_counted_keys: set[str] = set()
 
 
 def reset() -> None:
@@ -134,6 +137,7 @@ def reset() -> None:
         _calls = 0
         _exhausted = None
         _unavailable.clear()
+        _counted_keys.clear()
 
 
 def _api_base() -> str:
@@ -197,6 +201,22 @@ def new_idempotency_key() -> str:
     return uuid.uuid4().hex
 
 
+def ensure_open(provider: str) -> None:
+    """Raise ProxyUnavailable once this run has turned the lane off.
+
+    Checked before every attempt, so a call waiting to retry stops as soon
+    as another call hits insufficient_credits, spend_ceiling, or
+    provider_unavailable.
+    """
+    with _lock:
+        exhausted = _exhausted
+        unavailable = provider in _unavailable
+    if exhausted:
+        raise ProxyUnavailable(exhausted, status_code=402)
+    if unavailable:
+        raise ProxyUnavailable(f"{provider} is not available through the API key", status_code=503)
+
+
 def route(method: str, url: str, headers: Mapping[str, str]) -> Optional[Routed]:
     """Rewrite a sentinel-backed provider call to the proxy.
 
@@ -213,13 +233,7 @@ def route(method: str, url: str, headers: Mapping[str, str]) -> Optional[Routed]
     provider = _PROVIDER_HOSTS.get((parts.hostname or "").lower())
     if provider is None or parts.scheme != "https" or parts.port not in (None, 443):
         raise ProxyUnavailable("this endpoint is not available through the API key")
-    with _lock:
-        exhausted = _exhausted
-        unavailable = provider in _unavailable
-    if exhausted:
-        raise ProxyUnavailable(exhausted, status_code=402)
-    if unavailable:
-        raise ProxyUnavailable(f"{provider} is not available through the API key", status_code=503)
+    ensure_open(provider)
     allowed_method, paths = _ROUTES[provider]
     if method.upper() != allowed_method or parts.path not in paths:
         raise ProxyUnavailable("this endpoint is not available through the API key", status_code=404)
@@ -263,12 +277,14 @@ def _header(headers: Any, name: str) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
-def record_charge(headers: Any, *, settled: bool = True) -> None:
+def record_charge(headers: Any, *, settled: bool = True, call_key: Optional[str] = None) -> None:
     """Add one call's reported charge to the session total.
 
     ``settled`` counts the call: a successful response, or the replay of a
     call already charged. A passed-through upstream error reports a zero
-    charge and is not a charged call.
+    charge and is not a charged call. ``call_key`` (the Idempotency-Key)
+    makes a settled charge count once per logical call, however many
+    attempts report it.
     """
     global _charged, _calls
     raw = _header(headers, CHARGE_HEADER)
@@ -281,6 +297,10 @@ def record_charge(headers: Any, *, settled: bool = True) -> None:
     if not amount.is_finite() or amount < 0:
         return
     with _lock:
+        if settled and call_key is not None:
+            if call_key in _counted_keys:
+                return
+            _counted_keys.add(call_key)
         _charged += amount
         if settled:
             _calls += 1
@@ -304,7 +324,9 @@ def _billing_hint() -> str:
     return f"Add credits at {root}/dashboard/billing" if root else "Add credits to keep using paid sources."
 
 
-def observe_error(provider: str, status: int, body: Optional[str], headers: Any) -> bool:
+def observe_error(
+    provider: str, status: int, body: Optional[str], headers: Any, call_key: Optional[str] = None,
+) -> bool:
     """Note a proxied error response. True when the caller must not retry.
 
     Only proxy-originated errors carry a ``code``; an upstream provider's own
@@ -312,7 +334,7 @@ def observe_error(provider: str, status: int, body: Optional[str], headers: Any)
     """
     global _exhausted
     code = _error_code(body)
-    record_charge(headers, settled=code == "already_settled")
+    record_charge(headers, settled=code == "already_settled", call_key=call_key)
     if code is None:
         return False
     if code in _EXHAUSTING_CODES:

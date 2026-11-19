@@ -15,7 +15,7 @@ from unittest import mock
 
 import pytest
 
-from lib import doctor, env, grounding, http, parallel_mcp, providers, proxy, render, tiktok
+from lib import backends, doctor, env, grounding, http, parallel_mcp, providers, proxy, render, tiktok
 
 TEST_KEY = "sk_live_DUMMY_PROXY_KEY_00000"
 TEST_BASE = "https://api.example.test/api/v1"
@@ -440,3 +440,82 @@ def test_run_end_prints_the_session_total_on_stderr(proxy_env, monkeypatch, caps
     err = capsys.readouterr().err
     assert err == f"[last30days] API key session {proxy.session_id()}: 1.5 credits across 1 paid call\n"
     assert TEST_KEY not in err
+
+
+# ---------------------------------------------------------------------------
+# Review regressions
+# ---------------------------------------------------------------------------
+
+
+class _BrokenBody(Response):
+    """A charged response whose body read fails after the headers arrived."""
+
+    def read(self, *args):
+        raise ConnectionResetError("connection reset mid-body")
+
+
+def test_charge_counts_once_when_a_body_read_fails_and_the_retry_is_already_settled(proxy_env, monkeypatch):
+    transport = Transport(
+        _BrokenBody({"ok": True}, headers={"x-l30d-charge-credits": "2.000000"}),
+        _http_error(
+            SC_KEYWORD, 409, {"error": "already charged", "code": "already_settled"},
+            headers={"x-l30d-charge-credits": "2.000000"},
+        ),
+    )
+    monkeypatch.setattr(http, "_open_request", transport)
+    token = _config()["SCRAPECREATORS_API_KEY"]
+
+    with pytest.raises(http.HTTPError) as exc:
+        http.get(SC_KEYWORD, headers=http.scrapecreators_headers(token), params={"query": "a"}, retries=3)
+
+    assert exc.value.status_code == 409
+    first, retried = transport.requests
+    assert first.get_header("Idempotency-key") == retried.get_header("Idempotency-key")
+    assert proxy.session_summary() == (1, Decimal("2"))
+
+
+def test_pending_retry_stops_once_another_call_exhausts_the_key(proxy_env, monkeypatch):
+    transport = Transport(_http_error(SC_KEYWORD, 503, {"message": "upstream busy"}))
+    monkeypatch.setattr(http, "_open_request", transport)
+
+    def another_call_hits_402(_delay):
+        proxy.observe_error(
+            "xai", 402, json.dumps({"error": "Not enough credits", "code": "insufficient_credits"}), None,
+        )
+
+    monkeypatch.setattr(http.time, "sleep", another_call_hits_402)
+    token = _config()["SCRAPECREATORS_API_KEY"]
+
+    with pytest.raises(http.HTTPError) as exc:
+        http.get(SC_KEYWORD, headers=http.scrapecreators_headers(token), params={"query": "a"}, retries=3)
+
+    assert len(transport.requests) == 1
+    assert exc.value.status_code == 402
+
+
+def test_doctor_predicts_the_same_web_backend_as_the_runtime(proxy_env):
+    own_parallel = _config(PARALLEL_API_KEY="user-parallel")
+    resolution = backends.resolve("web", own_parallel)
+    assert resolution.active_backend == grounding.configured_backend(own_parallel) == "parallel"
+    assert resolution.chain == ["brave", "exa", "parallel", "serper", "keyless"]
+
+    proxied_only = _config()
+    resolution = backends.resolve("web", proxied_only)
+    assert resolution.active_backend == grounding.configured_backend(proxied_only) == "serper"
+
+    # An explicit pin still wins over the preference.
+    assert backends.resolve("web", own_parallel, pin="serper").active_backend == "serper"
+
+
+def test_doctor_x_chain_ranks_proxied_xai_last_like_the_runtime(proxy_env):
+    config = _config(XQUIK_API_KEY="user-xquik")
+    resolution = backends.resolve("x", config)
+    assert resolution.chain[-1] == "xai"
+    assert resolution.chain.index("xquik") < resolution.chain.index("xai")
+
+
+def test_doctor_chain_order_unchanged_outside_proxy_mode():
+    config = {"PARALLEL_API_KEY": "user-parallel", "SERPER_API_KEY": "user-serper"}
+    resolution = backends.resolve("web", config)
+    assert resolution.chain == list(backends.WEB_BACKEND_ORDER)
+    assert resolution.active_backend == "serper"

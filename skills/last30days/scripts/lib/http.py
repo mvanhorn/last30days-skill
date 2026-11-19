@@ -1008,10 +1008,12 @@ def request(
     except proxy.ProxyUnavailable as exc:
         unavailable = HTTPError(f"API key proxy: {exc}", exc.status_code)
         _raise(unavailable)
+    call_key = None
     if routed is not None:
         url = routed.url
         headers = routed.headers
-        headers[proxy.IDEMPOTENCY_HEADER] = proxy.new_idempotency_key()
+        call_key = proxy.new_idempotency_key()
+        headers[proxy.IDEMPOTENCY_HEADER] = call_key
 
     fixture_request = None if sensitive_url else _fixture_request(method, url, json_data, raw)
     fixture_redactions = _fixture_redactions(url, headers, json_data)
@@ -1083,7 +1085,7 @@ def request(
             )
             with transport as response:
                 if routed is not None:
-                    proxy.record_charge(getattr(response, "headers", None))
+                    proxy.record_charge(getattr(response, "headers", None), call_key=call_key)
                 if return_headers:
                     response_headers = ResponseHeaders(response.headers.items())
                     final = response.geturl() if hasattr(response, "geturl") else ""
@@ -1121,7 +1123,7 @@ def request(
             if routed is not None:
                 status, body, error, owned_headers = owned
                 if error is None:
-                    proxy.record_charge(dict(owned_headers))
+                    proxy.record_charge(dict(owned_headers), call_key=call_key)
             else:
                 status, body, error = owned
             try:
@@ -1183,6 +1185,11 @@ def request(
             if attempt > 0 and on_retry is not None:
                 on_retry()
             if routed is not None:
+                # Another call may have turned this lane off while we waited.
+                try:
+                    proxy.ensure_open(routed.provider)
+                except proxy.ProxyUnavailable as exc:
+                    raise_recorded(HTTPError(f"API key proxy: {exc}", exc.status_code))
                 req.add_header(proxy.DEADLINE_HEADER, proxy.deadline_value(request_timeout))
             charge = usage.begin_http(usage_url, method)
             response_status, body, response_error = open_and_read_before_deadline(request_timeout)
@@ -1223,7 +1230,7 @@ def request(
             # A proxy error that ends the lane (out of credits, spend ceiling,
             # provider off, duplicate call) is never retried.
             if routed is not None and proxy.observe_error(
-                routed.provider, e.code, body, getattr(e, "headers", None),
+                routed.provider, e.code, body, getattr(e, "headers", None), call_key,
             ):
                 raise_recorded(last_error)
 

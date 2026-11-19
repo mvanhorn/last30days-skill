@@ -697,6 +697,39 @@ def _run_probe(spec: BackendSpec, config: Dict[str, Any]) -> BackendFinding:
     return finding
 
 
+# Key behind each backend the API-key proxy can serve (lib/proxy.py).
+_PROXY_KEY_VARS = {
+    "xai": "XAI_API_KEY",
+    "serper": "SERPER_API_KEY",
+    "parallel": "PARALLEL_API_KEY",
+    "scrapecreators": "SCRAPECREATORS_API_KEY",
+}
+
+
+def _demote_proxied(
+    source: str, findings: List[BackendFinding], config: Dict[str, Any],
+) -> List[BackendFinding]:
+    """Order findings the way the runtime ranks proxy-served backends.
+
+    A backend served by the API-key proxy ranks after every backend the user
+    holds a key for: last in the X chain (env.x_backend_chain), and after the
+    keyed web backends but ahead of the keyless floor
+    (grounding.configured_backend). Without proxy lanes the order is unchanged.
+    """
+    proxied = [
+        f for f in findings
+        if proxy.is_sentinel(config.get(_PROXY_KEY_VARS.get(f.name, "")))
+    ]
+    if not proxied:
+        return findings
+    proxied_ids = {id(f) for f in proxied}
+    rest = [f for f in findings if id(f) not in proxied_ids]
+    if source == "web":
+        cut = next((i for i, f in enumerate(rest) if f.name not in _WEB_KEYED), len(rest))
+        return rest[:cut] + proxied + rest[cut:]
+    return rest + proxied
+
+
 def _resolve_alternative(
     descriptor: ChainDescriptor,
     config: Dict[str, Any],
@@ -753,7 +786,10 @@ def _resolve_alternative(
     # Collect-then-pick: first fully-usable wins; else best degraded; else
     # error carrying the highest-priority backend's prescription.
     # Opt-in backends are NEVER auto-selected; skip them entirely.
-    auto_findings = [f for f in findings if f.name not in opt_in_names]
+    auto_findings = _demote_proxied(
+        descriptor.source, [f for f in findings if f.name not in opt_in_names], config,
+    )
+    res.chain = [f.name for f in _demote_proxied(descriptor.source, findings, config)]
     for finding in auto_findings:
         if finding.status == health.OK:
             res.active_backend = finding.name
