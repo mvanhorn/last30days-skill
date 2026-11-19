@@ -402,7 +402,7 @@ Label conservatively: only a sub clearly named for / dedicated to the entity goe
 
 **Category peers:** when the product eligibility rule above applies, follow the root routing gate for `category-peers.md` before continuing.
 
-**2b. Host Reddit threads.** Keep each `reddit.com/r/<sub>/comments/<id>/` URL found (no `/s/` share or redirect links; max 50). The engine reads only `url`, rehydrates each thread, drops off-topic or stale ones. Only if any were found, write them with a single-quoted heredoc and add `--reddit-threads=/tmp/l30d-threads.json` (single-topic runs):
+**2b. Host Reddit threads.** Keep each `reddit.com/r/<sub>/comments/<id>/` URL found (no `/s/` share or redirect links; max 50). The engine reads only `url`, rehydrates each thread, drops off-topic or stale ones. On an OpenCode host with a paired `browse` MCP, thread links found in the user's logged-in browser use this same envelope - see `opencode-browse-lane.md`. Only if any were found, write them with a single-quoted heredoc and add `--reddit-threads=/tmp/l30d-threads.json` (single-topic runs):
 
 ```bash
 cat > /tmp/l30d-threads.json <<'THREADS_EOF'
@@ -588,6 +588,8 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 
 **Grok Bot X:** for local engine research on a Grok Bot host, follow the root routing gate for `grok-bot-x.md` before the engine command.
+
+**OpenCode browse lane:** for local engine research on an OpenCode host with a paired `browse` MCP, follow the root routing gate for `opencode-browse-lane.md` before the engine command. It supplies the same `--x-posts` / `--reddit-threads` envelopes and does not replace web search or planning.
 
 **Step 1: Run the research script in the foreground**
 

@@ -109,6 +109,7 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
 | Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers during Step 0.55 before planning. |
 | Grok Bot X lane | Read [references/grok-bot-x.md](references/grok-bot-x.md) in full. | Fetch and validate the X envelope before the research engine command. |
+| OpenCode browse lane | Read [references/opencode-browse-lane.md](references/opencode-browse-lane.md) in full. | Collect X / Reddit data with the paired browser before Step 1. |
 | Follow-up on existing research | Read [references/followups.md](references/followups.md) in full. | Answer or re-render existing research; use the explicit cached drill/freshness/queue routes when requested. |
 | HTML/export intent | Read [references/save-html-brief.md](references/save-html-brief.md) in full. | Create the local artifact, then follow its access and explicit publishing choices. |
 
@@ -125,6 +126,8 @@ For fresh research or discovery, resolve whether the agent session has a usable 
 - When no host web search is available, leave that signal unset. For local engine research, skip Steps 0.55 and 0.75 and add `--auto-resolve`. The local engine uses configured backends or its keyless floor.
 
 **GROK BOT HOST RULE (every invocation, including `SETUP_COMPLETE=true`).** On Grok Bot, export `LAST30DAYS_HOST=grok-bot` in every engine shell. Do not infer Grok Bot from `CURSOR_AGENT` alone. For local research, read the Grok Bot X reference and try built-in X tools (namespace `x`), then "X for Grok Bot". Set `LAST30DAYS_X_HOST_LANE=1` with `--x-posts` only when posts came back. Never read a browser session on a Grok Bot. Never place post text unquoted in a shell command. Write envelopes with a single-quoted heredoc delimiter or tool file output. Grok Bot uses Grok Bot Prose Flow. Cursor uses Non-Modal Prose Flow.
+
+**OPENCODE HOST RULE (every invocation).** On OpenCode, follow the routed browse-lane reference when a `browse` MCP is paired; never place post text unquoted in a shell command.
 
 **FIRST-RUN GATE - after resolving host web search, before topic research:**
 

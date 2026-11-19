@@ -714,7 +714,7 @@ One accepted ticker gives the usual line, with the company named beside the tick
 
 | Field | Meaning |
 | --- | --- |
-| `schema`, `generated_at`, `topic`, `window {from, to}`, `provider`, `status` | Envelope header. `status` is `ok`, `partial`, or `error`; `error` is a short category (`credits`, `not-connected`, `unavailable`, `window-unsupported`), never raw tool output. `topic` must match the run topic and `generated_at` must be under 6 hours old, or the run fails closed with exit `2`. `provider` `x-native` (Grok Bot's built-in X tools) makes the footer read "via Grok Bot X"; any other value reads "via X connector". |
+| `schema`, `generated_at`, `topic`, `window {from, to}`, `provider`, `status` | Envelope header. `status` is `ok`, `partial`, or `error`; `error` is a short category (`credits`, `not-connected`, `unavailable`, `window-unsupported`), never raw tool output. `topic` must match the run topic and `generated_at` must be under 6 hours old, or the run fails closed with exit `2`. `provider` `x-native` (Grok Bot's built-in X tools) makes the footer read "via Grok Bot X"; `opencode-browse` (OpenCode's paired browse MCP) reads "via OpenCode Browse"; any other value reads "via X connector". |
 | `calls[]` | One entry per query (merge a query's pages into one entry): `lane` (`topic`, `from`, `mention`, `related`), `handles` (a subset of the run's `--x-handle` / `--x-related` handles), and `posts`. |
 | `posts[]` | Flat rows with exactly eight fields: `id`, `author_handle`, `created_at`, `text`, `likes`, `reposts`, `replies`, `quotes`. Any other key is ignored and counted. |
 
@@ -1009,6 +1009,12 @@ printf '%s\n' "$TOKEN" | python3 skills/last30days/scripts/last30days.py setup -
 ```
 
 Browser sessions are not read on this host, and no login window is opened; `setup` still installs the free CLIs. Doctor prints the resolved host value, so a missing `LAST30DAYS_HOST` export is visible at a glance.
+
+### OpenCode browse MCP
+
+On OpenCode, install the browse Chrome extension and pair the device with the browser agent. When the session exposes the paired `browse` MCP, `browse status` reports the relay and browser; if none is connected, its `nextStep` is shown to the user and research continues with the normal sources. The agent can then read public X posts and Reddit thread links in the user's logged-in browser and pass them to the engine as `last30days-x-posts/1` and `last30days-reddit-threads/1` files (`--x-posts` and `--reddit-threads`). Use `"provider": "opencode-browse"` in the X envelope so the footer reads "via OpenCode Browse"; export `LAST30DAYS_X_HOST_LANE=1` only in the shell where posts came back.
+
+The lane is read-only: no posting, liking, or reading private areas; `browse handoff` handles login and captcha. It is not a web-search replacement, so the runbook's `--plan` / `--auto-resolve` rules still apply. Reddit links are identity only - the engine rehydrates them itself, so a network that blocks Reddit hydration cannot be rescued by this lane. No API key or new environment variable is required. See `skills/last30days/references/opencode-browse-lane.md`.
 
 ---
 

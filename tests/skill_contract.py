@@ -23,6 +23,7 @@ ROUTES = {
     "Recommendation intent": ("recommendations",),
     "Identifiable product requires category peers": ("category-peers",),
     "Grok Bot X lane": ("grok-bot-x",),
+    "OpenCode browse lane": ("opencode-browse-lane",),
     "Follow-up on existing research": ("followups",),
     "HTML/export intent": ("save-html-brief",),
 }

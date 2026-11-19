@@ -1053,7 +1053,7 @@ class TestPipelineWiring:
         assert "via Grok Bot X" in md
         assert "via X connector" not in md
 
-    @pytest.mark.parametrize(("provider", "label"), [("x-native", "via Grok Bot X"), ("x-connector", "via X connector")])
+    @pytest.mark.parametrize(("provider", "label"), [("x-native", "via Grok Bot X"), ("x-connector", "via X connector"), ("opencode-browse", "via OpenCode Browse")])
     def test_user_facing_footer_x_line_names_the_host_lane(self, tmp_path, provider, label):
         envelope = _read(_basic(tmp_path, provider=provider))
         report = _run(envelope, x_handle=SUBJECT)
@@ -1083,6 +1083,13 @@ class TestPipelineWiring:
         assert detail.startswith("Grok Bot X returned partial results")
         connector = _read(_basic(tmp_path, status="partial", error="window-unsupported"))
         assert connector.outcome()[1].startswith("X connector returned partial results")
+
+    def test_opencode_browse_partial_outcome_names_the_lane(self, tmp_path):
+        envelope = _read(_basic(tmp_path, provider="opencode-browse", status="partial", error="window-unsupported"))
+        state, detail = envelope.outcome()
+        assert state == schema.PARTIAL
+        assert detail.startswith("OpenCode Browse returned partial results")
+        assert "X connector" not in detail
 
     def test_env_file_lane_line_without_process_env_leaves_x_absent(self, tmp_path, monkeypatch):
         monkeypatch.delenv("LAST30DAYS_X_HOST_LANE", raising=False)
