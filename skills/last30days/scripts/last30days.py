@@ -736,6 +736,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Audience synthesis preset for the standard brief (default, exec, dev, creator, eli5)",
     )
+    clarify_group = parser.add_mutually_exclusive_group()
+    clarify_group.add_argument(
+        "--clarify-angle",
+        default=None,
+        help="Hosted backend only: answer its clarification with this angle (an option's query)",
+    )
+    clarify_group.add_argument(
+        "--clarify-broadly",
+        action="store_true",
+        help="Hosted backend only: answer its clarification by running the topic as asked",
+    )
     parser.add_argument(
         "--json-profile",
         default="agent",
@@ -4531,6 +4542,14 @@ def _main(
         and not args.deep_research
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     )
+    if (args.clarify_angle is not None or args.clarify_broadly) and not (
+        topic and not args.diagnose and uses_hosted_api
+    ):
+        sys.stderr.write(
+            "[last30days] --clarify-angle and --clarify-broadly answer a hosted backend "
+            "clarification, so they apply only to a hosted run.\n"
+        )
+        return 2
     if topic and not args.diagnose and uses_hosted_api:
         if args.require_local_report:
             sys.stderr.write(
@@ -4610,6 +4629,10 @@ def _main(
         }
         if audience.name != "default":
             hosted_kwargs["register"] = audience.name
+        if args.clarify_angle is not None:
+            hosted_kwargs["clarify"] = {"angle": args.clarify_angle}
+        elif args.clarify_broadly:
+            hosted_kwargs["clarify"] = {"run_broadly": True}
         return hosted.run_hosted(topic, depth, **hosted_kwargs)
 
     if args.lookback_days is None:

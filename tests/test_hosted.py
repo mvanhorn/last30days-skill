@@ -108,6 +108,7 @@ def run_main(argv):
 def _clean_env(monkeypatch):
     monkeypatch.delenv("LAST30DAYS_API_KEY", raising=False)
     monkeypatch.delenv("LAST30DAYS_API_BASE", raising=False)
+    monkeypatch.delenv("LAST30DAYS_API_MODE", raising=False)
     monkeypatch.delenv("LAST30DAYS_MEMORY_DIR", raising=False)
 
 
@@ -853,3 +854,96 @@ def test_emit_json_prints_terminal_row_without_stderr(remote_env, monkeypatch, c
     assert terminal["internal_trace"] not in captured.out
     assert terminal["internal_trace"] not in captured.err
     assert TEST_KEY not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Clarify round trip, failure reasons, engine version, proxy mode
+# ---------------------------------------------------------------------------
+
+
+CLARIFY_WITH_ANGLES = {
+    **CLARIFY_RESPONSE,
+    "angles": [
+        {"label": "Mercury the planet", "query": "mercury planet news"},
+        {"label": "Mercury the element", "query": "mercury element research"},
+        {"label": "Mercury the band", "query": "mercury band tour"},
+    ],
+}
+
+
+def test_clarify_prints_each_options_angle_query(remote_env, monkeypatch, capsys):
+    monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(CLARIFY_WITH_ANGLES))
+    rc = hosted.run_hosted("mercury", "default", emit="compact", save_dir=None, save_suffix="")
+    err = capsys.readouterr().err
+    assert rc == hosted.EXIT_CLARIFY
+    assert '1. Mercury the planet (--clarify-angle "mercury planet news")' in err
+    assert "--clarify-broadly" in err
+
+
+@pytest.mark.parametrize(
+    ("flags", "clarify"),
+    [
+        (["--clarify-angle", "mercury planet news"], {"angle": "mercury planet news"}),
+        (["--clarify-broadly"], {"run_broadly": True}),
+    ],
+)
+def test_clarify_rerun_sends_structured_clarify_without_default_register(
+    remote_env, monkeypatch, flags, clarify,
+):
+    payloads = []
+    monkeypatch.setattr(
+        hosted.http, "post",
+        lambda _url, *, json_data, **_kwargs: payloads.append(json_data) or dict(SUBMIT_OK),
+    )
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(POLL_COMPLETE))
+    with mock.patch.object(cli.env, "get_config", return_value={}):
+        rc, out, _err = run_main(["mercury", *flags])
+
+    assert rc == 0
+    assert payloads == [{"query": "mercury", "depth": "default", "clarify": clarify}]
+    assert "Synthesized report body." in out
+
+
+def test_clarify_flags_are_rejected_outside_hosted_runs(monkeypatch):
+    with mock.patch.object(cli.env, "get_config", return_value={}), \
+         mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("must not run")):
+        rc, _out, err = run_main(["mercury", "--clarify-broadly"])
+    assert rc == 2
+    assert "apply only to a hosted run" in err
+
+
+def test_clarify_flags_are_mutually_exclusive(remote_env, monkeypatch):
+    with pytest.raises(SystemExit) as exc:
+        run_main(["mercury", "--clarify-broadly", "--clarify-angle", "x"])
+    assert exc.value.code == 2
+
+
+def test_error_row_prints_synthesis_text_when_no_error_field(remote_env, monkeypatch, capsys):
+    monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
+    error_row = {"id": SEARCH_ID, "status": "error",
+                 "synthesis_text": "Every source timed out; no credits were charged."}
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(error_row))
+    rc = hosted.run_hosted("test topic", "default", emit="compact", save_dir=None, save_suffix="")
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "Every source timed out; no credits were charged." in err
+    assert "unknown server error" not in err
+
+
+@pytest.mark.parametrize(
+    ("remote", "notices"),
+    [("3.38.1", 1), ("4.0.9", 0), (None, 0), ("unknown", 0)],
+)
+def test_engine_version_skew_prints_one_notice(remote_env, monkeypatch, capsys, remote, notices):
+    monkeypatch.setattr(hosted, "_local_engine_version", lambda: "4.3.2")
+    monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
+    row = dict(POLL_COMPLETE)
+    if remote is not None:
+        row["engine_version"] = remote
+    poll_rows = [dict(POLL_RUNNING, engine_version=remote), row]
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: poll_rows.pop(0))
+    rc = hosted.run_hosted("test topic", "default", emit="compact", save_dir=None, save_suffix="")
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert err.count("on the hosted backend; this skill is v4.3.2") == notices
+
