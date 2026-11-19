@@ -15,6 +15,13 @@ from . import dates, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/pinterest"
 
+
+def _sc_base() -> str:
+    if SCRAPECREATORS_BASE != "https://api.scrapecreators.com/v1/pinterest":
+        return SCRAPECREATORS_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/pinterest"
+
 # Depth configurations: how many results to fetch
 DEPTH_CONFIG = {
     "quick":   {"results_per_page": 10},
@@ -128,7 +135,7 @@ def search_pinterest(
 
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/search",
+            f"{_sc_base()}/search",
             params={"query": core_topic},
             headers=http.scrapecreators_headers(token),
             timeout=30,

@@ -19,6 +19,13 @@ from . import http, log
 
 SC_BASE = "https://api.scrapecreators.com/v1/linkedin"
 
+
+def _sc_base() -> str:
+    if SC_BASE != "https://api.scrapecreators.com/v1/linkedin":
+        return SC_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/linkedin"
+
 DEPTH_CONFIG: dict[str, dict[str, Any]] = {
     "quick": {"date_posted": "last-week", "max_results": 10},
     "default": {"date_posted": "last-month", "max_results": 20},
@@ -235,7 +242,7 @@ def search_linkedin(
                 params["cursor"] = cursor
             try:
                 response = http.get(
-                    f"{SC_BASE}/search/posts",
+                    f"{_sc_base()}/search/posts",
                     params=params,
                     headers=http.scrapecreators_headers(token),
                     timeout=page_timeout,
@@ -531,7 +538,7 @@ def search_profile(profile_url: str, token: str) -> Dict[str, Any]:
         return {}
     try:
         response = http.get(
-            f"{SC_BASE}/profile",
+            f"{_sc_base()}/profile",
             params={"url": profile_url},
             headers=http.scrapecreators_headers(token),
             timeout=30,

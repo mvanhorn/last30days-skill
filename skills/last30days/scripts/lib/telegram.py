@@ -19,6 +19,13 @@ from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/telegram"
 
+
+def _sc_base() -> str:
+    if SCRAPECREATORS_BASE != "https://api.scrapecreators.com/v1/telegram":
+        return SCRAPECREATORS_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/telegram"
+
 DEPTH_PAGE_CAPS = {
     "quick": 1,
     "default": 3,
@@ -194,7 +201,7 @@ def _fetch_channel_posts(
 
         try:
             data = http.get(
-                f"{SCRAPECREATORS_BASE}/channel/posts",
+                f"{_sc_base()}/channel/posts",
                 params=params,
                 headers=http.scrapecreators_headers(token),
                 timeout=30,
