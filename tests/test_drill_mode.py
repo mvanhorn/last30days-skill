@@ -933,3 +933,9 @@ def test_drill_preserves_person_identity_anchors_without_aliasing():
     assert drill_plan.person_identity_anchors == report.query_plan.person_identity_anchors
     drill_plan.person_identity_anchors.append('Another Organization')
     assert report.query_plan.person_identity_anchors == ['Northstar Labs', 'Cedar Ventures']
+
+
+def test_drill_keeps_a_person_run_gate():
+    report = _report()
+    report.query_plan.person_run = True
+    assert planner.build_drill_plan(report, 'cluster 1').person_run is True

@@ -245,6 +245,7 @@ SOURCE_LABELS = {
     "devto": "dev.to",
     "truthsocial": "Truth Social",
     "linkedin": "LinkedIn",
+    "linkedin_profile": "LinkedIn",
     "xiaohongshu": "Xiaohongshu",
     "x": "X",
     "github": "GitHub",
@@ -3543,6 +3544,13 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
         [("likes", "likes"), ("comments", "comments")],
     ),
     (
+        "linkedin_profile",
+        "👔",
+        "LinkedIn (their posts)",
+        "post",
+        [("likes", "likes"), ("comments", "comments")],
+    ),
+    (
         "github",
         "🐙",
         "GitHub",
@@ -4360,6 +4368,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "bluesky": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
+    "linkedin_profile": [("likes", "likes"), ("comments", "cmt")],
     "polymarket": [],
     "github": [
         ("stars", "stars"),

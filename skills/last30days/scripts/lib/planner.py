@@ -428,6 +428,7 @@ def build_drill_plan(
         cluster_mode=report.query_plan.cluster_mode,
         raw_topic=report.topic,
         person_identity_anchors=list(report.query_plan.person_identity_anchors),
+        person_run=report.query_plan.person_run,
         polymarket_hints=copy.deepcopy(report.query_plan.polymarket_hints),
         subqueries=subqueries,
         source_weights={

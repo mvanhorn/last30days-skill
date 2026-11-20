@@ -30,6 +30,7 @@ from . import (
     corpus,
     dates,
     dedupe,
+    deepline,
     devto,
     digg,
     dripstack,
@@ -529,6 +530,10 @@ def available_sources(
         "linkedin" in include_sources or (requested_sources and "linkedin" in requested_sources)
     ):
         available.append("linkedin")
+    # The person's own LinkedIn posts: a person run only, with a profile read
+    # from an anchored URL. Never a keyword search, so no other run gets it.
+    if _person_posts_mode(config):
+        available.append(PERSON_POSTS_SOURCE)
     # Trustpilot: opt-in additive source via INCLUDE_SOURCES=trustpilot (same
     # consent pattern as Perplexity/LinkedIn). Off by default -- unlike arXiv and
     # Techmeme, which are zero-auth, it can spawn a one-time headless-Chrome WAF
@@ -2507,6 +2512,14 @@ def run(
                 + ". Run `last30days.py doctor` to see what each one needs."
             )
         raise RuntimeError("No sources are available for this run.")
+    # A person run's own posts are not a source the host names in --search:
+    # keep the lane whatever the list says. EXCLUDE_SOURCES still opts out.
+    if (
+        PERSON_POSTS_SOURCE in available_before_search
+        and PERSON_POSTS_SOURCE not in available
+        and PERSON_POSTS_SOURCE not in excluded_sources
+    ):
+        available.append(PERSON_POSTS_SOURCE)
 
     planner_requested_sources = (
         [source for source in requested_sources if source not in excluded_sources]
@@ -2575,6 +2588,15 @@ def run(
             plan_source = "llm"
         else:
             plan_source = "deterministic"
+
+    # A person run: the person's anchors join any the plan supplied, and the
+    # identity gate fails closed even when no anchor is known.
+    person_ctx = config.get("_person")
+    if person_ctx is not None:
+        plan.person_identity_anchors = _merged_person_anchors(
+            plan.person_identity_anchors, person_ctx.anchors,
+        )
+        plan.person_run = True
 
     _check_research(config)
     # Safety net: ensure grounding appears in all subqueries even if the planner
@@ -2682,6 +2704,10 @@ def run(
     # on one platform, and an unrelated same-name account elsewhere must not
     # bypass the floors.
     creator_first_party = _creator_first_party_by_source(tiktok_creators, ig_creators)
+    if person_ctx is not None and person_ctx.full_name:
+        # The person's own posts rarely repeat their name; scoped to the
+        # posts lane, so no same-name account elsewhere is exempted.
+        creator_first_party[PERSON_POSTS_SOURCE] = {person_ctx.full_name.lower()}
     # Real X handles: --x-handle, --x-related, or @mentions in the topic. These
     # determine whether the deferred X floor applies. Topic words like "peter"
     # are NOT real handles and should not trigger the floor — when no real
@@ -2773,6 +2799,10 @@ def run(
                     freshness_mode=plan.freshness_mode,
                     ranking_query=f"What is @{github_user} doing on GitHub?",
                 )
+                if person_ctx is not None:
+                    # Authored by the person's resolved account.
+                    for item in normalized:
+                        item.metadata["identity_anchor"] = True
                 # Use the first subquery's label so RRF can look up the weight
                 primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                 bundle.add_items(primary_label, "github", normalized)
@@ -2883,6 +2913,9 @@ def run(
                 # Skip GitHub keyword search if person-mode already ran
                 if source == "github" and (_github_person_done or _github_custom_done):
                     continue
+                # The person's posts run once, below, never per subquery.
+                if source == PERSON_POSTS_SOURCE:
+                    continue
                 if source == "jobs" and jobs_past_window:
                     bundle.source_status["jobs"] = schema.SourceOutcome(
                         source="jobs",
@@ -2967,6 +3000,29 @@ def run(
                     )
                 ] = (subquery, source)
 
+        # The person's own LinkedIn posts: one read, in the same executor and
+        # under the same deadline as every other stream.
+        person_posts_mode = _person_posts_mode(config)
+        if (
+            person_posts_mode
+            and not mock
+            and plan.subqueries
+            and PERSON_POSTS_SOURCE in available
+        ):
+            bundle.mark_attempted(PERSON_POSTS_SOURCE)
+            futures[
+                executor.submit(
+                    _fetch_person_posts,
+                    mode=person_posts_mode,
+                    profile_url=person_ctx.linkedin_url,
+                    stored_posts=list((person_ctx.profile or {}).get("posts") or []),
+                    author=person_ctx.full_name,
+                    config=stream_config,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+            ] = (plan.subqueries[0], PERSON_POSTS_SOURCE)
+
         # Collect ordinary streams and any inline retries before waiting on
         # the longer background request.
         for future, subquery, source, budget_expired in _completed_streams(batches, bundle):
@@ -3033,6 +3089,9 @@ def run(
                     state, attempted = _classify_source_failure(exc)
                     bundle.record_failure(source, state, str(exc), attempted=attempted)
                     continue
+            if source == PERSON_POSTS_SOURCE and isinstance(artifact, dict):
+                artifact = dict(artifact)
+                person_ctx.older_posts = list(artifact.pop("_person_older_posts", None) or [])
             if isinstance(artifact, dict) and artifact.get("_source_skipped"):
                 # The lane chose not to run (jobs' past-window skip is the
                 # precedent): not attempted, so it is no failure, no degraded
@@ -3343,13 +3402,28 @@ def run(
     # Fusion gates on identity too, but the footer counts and Top voices read
     # this per-source view, so a namesake left here still reaches the report.
     # Gated after enrichment so a backfilled transcript can supply the anchor.
-    items_by_source = {
-        source: [
+    gated_items_by_source: dict[str, list[schema.SourceItem]] = {}
+    dropped_by_identity: dict[str, int] = {}
+    for source, items in items_by_source.items():
+        kept = [
             item for item in items
-            if entity_extract.matches_person_identity(item, plan.person_identity_anchors, x_handle)
+            if entity_extract.matches_person_identity(
+                item, plan.person_identity_anchors, x_handle,
+                person_run=getattr(plan, "person_run", False),
+            )
         ]
-        for source, items in items_by_source.items()
-    }
+        if len(kept) < len(items):
+            dropped_by_identity[source] = len(items) - len(kept)
+        gated_items_by_source[source] = kept
+    items_by_source = gated_items_by_source
+    if person_ctx is not None:
+        person_ctx.dropped_counts = dropped_by_identity
+        person_ctx.in_window_posts = len(items_by_source.get(PERSON_POSTS_SOURCE, []))
+        person_ctx.first_party_in_window = _first_party_in_window(
+            items_by_source, x_handle=x_handle, github_person=_github_person_done,
+            from_date=from_date, to_date=to_date,
+        )
+        bundle.artifacts["person_profile"] = person_ctx.to_dict()
     retained_markets = {
         source_item_key(item) for item in items_by_source.get("polymarket", [])
     }
@@ -4478,6 +4552,213 @@ def _jobs_board_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     return artifact
 
 
+# -- person runs ----------------------------------------------------------------
+
+# The person's own LinkedIn posts, read once per person run.
+PERSON_POSTS_SOURCE = "linkedin_profile"
+# Older posts kept for the Person Profile, and each one's text cap.
+PERSON_OLDER_POSTS_MAX = 6
+PERSON_OLDER_POST_CHARS = 300
+# How far back older posts reach.
+PERSON_POSTS_LOOKBACK_DAYS = 365
+# Paid post pages per run (the Deepline client enforces the same cap).
+PERSON_POSTS_PAGES = 2
+
+_PERSON_POSTS_FAILURE_STATES: dict[str, str] = {
+    deepline.AUTH_FAILED: schema.AUTH_FAILED,
+    deepline.OUT_OF_CREDITS: schema.PAYMENT_REQUIRED,
+    deepline.RATE_LIMITED: schema.RATE_LIMITED,
+    deepline.TIMEOUT: health.TIMEOUT,
+}
+
+
+def _person_posts_mode(config: dict[str, Any]) -> str | None:
+    """How this run reads the person's posts: "stored", "deepline", or None.
+
+    Only a person run whose LinkedIn profile was read from an anchored URL
+    qualifies. A ScrapeCreators profile read already returned the posts
+    ("stored"); otherwise a Deepline key reads them ("deepline").
+    """
+    ctx = config.get("_person")
+    if ctx is None or ctx.linkedin_status != "checked" or not ctx.linkedin_url:
+        return None
+    profile = ctx.profile or {}
+    if profile.get("source") == "scrapecreators" and profile.get("posts"):
+        return "stored"
+    if deepline.is_available(config):
+        return "deepline"
+    return None
+
+
+def _read_person_posts(
+    profile_url: str, config: dict[str, Any], from_date: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Up to two pages of the person's posts from Deepline, and the failure that
+    ended the read before any post arrived (None when the read worked)."""
+    import uuid
+
+    client = deepline.from_config(config, uuid.uuid4().hex)
+    if client is None:
+        return [], {"state": schema.SKIPPED_UNCONFIGURED, "detail": "No Deepline key", "attempted": False}
+    cutoff = (
+        date.fromisoformat(from_date) - timedelta(days=PERSON_POSTS_LOOKBACK_DAYS)
+    ).isoformat()
+    posts: list[dict[str, Any]] = []
+    token = None
+    for _page in range(PERSON_POSTS_PAGES):
+        result = client.get_posts(
+            profile_url,
+            deadline_monotonic=config.get("_research_deadline"),
+            posted_limit="year",
+            pagination_token=token,
+        )
+        if result["status"] != deepline.OK:
+            if posts:
+                break
+            state = _PERSON_POSTS_FAILURE_STATES.get(result["status"], "error")
+            detail = f"LinkedIn posts read failed: {result['status']}"
+            if result.get("detail"):
+                detail += f" ({result['detail']})"
+            return [], {"state": state, "detail": detail}
+        page = result["data"] or {}
+        posts.extend(page.get("posts") or [])
+        token = page.get("next_token")
+        days = [post.get("date") for post in posts if post.get("date")]
+        # A second page only helps while this one still reaches inside the
+        # year and the older-activity list is not yet full.
+        older = [day for day in days if day < from_date]
+        if not token or (days and min(days) < cutoff) or len(older) >= PERSON_OLDER_POSTS_MAX:
+            break
+    return posts, None
+
+
+def _split_person_posts(
+    posts: list[dict[str, Any]], *, author: str, from_date: str, to_date: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(in-window raw items, older-activity entries newest first).
+
+    Undated posts are dropped: older activity is shown by its real date, and
+    the window cannot be checked without one. The upstream's own date limit is
+    not trusted, so the year cutoff is applied here.
+    """
+    cutoff = (
+        date.fromisoformat(from_date) - timedelta(days=PERSON_POSTS_LOOKBACK_DAYS)
+    ).isoformat()
+    in_window: list[dict[str, Any]] = []
+    older: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for post in posts:
+        day = str(post.get("date") or "")
+        key = str(post.get("url") or post.get("id") or "")
+        if not day or (key and key in seen):
+            continue
+        if key:
+            seen.add(key)
+        text = str(post.get("text") or "").strip()
+        is_reshare = bool(post.get("is_reshare"))
+        if from_date <= day <= to_date:
+            in_window.append({
+                "id": post.get("id"),
+                "url": post.get("url"),
+                "text": text,
+                "date": day,
+                "is_reshare": is_reshare,
+                "author": author,
+                "engagement": dict(post.get("engagement") or {}),
+            })
+        elif cutoff <= day < from_date:
+            if len(text) > PERSON_OLDER_POST_CHARS:
+                text = text[: PERSON_OLDER_POST_CHARS - 1].rstrip() + "\u2026"
+            older.append({"date": day, "url": post.get("url"), "text": text, "is_reshare": is_reshare})
+    older.sort(key=lambda entry: entry["date"], reverse=True)
+    return in_window, older[:PERSON_OLDER_POSTS_MAX]
+
+
+def _fetch_person_posts(
+    *,
+    mode: str,
+    profile_url: str,
+    stored_posts: list[dict[str, Any]],
+    author: str,
+    config: dict[str, Any],
+    from_date: str,
+    to_date: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The posts lane's stream result: in-window raw items, plus an artifact
+    carrying the older posts and, on failure or an empty window, the outcome.
+
+    Never raises: a failure is an outcome, and the generic transient retry
+    must not re-run this lane through the keyword-search path.
+    """
+    try:
+        if mode == "stored":
+            posts, failure = list(stored_posts), None
+        else:
+            posts, failure = _read_person_posts(profile_url, config, from_date)
+        in_window, older = _split_person_posts(
+            posts, author=author, from_date=from_date, to_date=to_date,
+        )
+    except Exception as exc:  # noqa: BLE001 - a lane failure is an outcome
+        return [], {
+            "_person_older_posts": [],
+            "_source_outcome": {"state": "error", "detail": f"LinkedIn posts lane failed: {type(exc).__name__}"},
+        }
+    artifact: dict[str, Any] = {"_person_older_posts": older}
+    if failure is not None:
+        artifact["_source_outcome"] = failure
+    elif not in_window:
+        # Like a pinned GitHub user with no activity: recorded, never
+        # backfilled with a keyword search for the name.
+        artifact["_source_outcome"] = {
+            "state": schema.NO_RESULTS,
+            "detail": "No LinkedIn posts by the person in the window",
+        }
+    log.source_log(
+        "LinkedIn profile",
+        f"{len(in_window)} post(s) in the window, {len(older)} older",
+        tty_only=False,
+    )
+    return in_window, artifact
+
+
+def _merged_person_anchors(plan_anchors: list[str], person_anchors: list[str]) -> list[str]:
+    """The plan's anchors followed by the person's, each once, ignoring case."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for anchor in [*plan_anchors, *person_anchors]:
+        text = " ".join(str(anchor or "").split())
+        if text and text.casefold() not in seen:
+            seen.add(text.casefold())
+            merged.append(text)
+    return merged
+
+
+def _first_party_in_window(
+    items_by_source: dict[str, list[schema.SourceItem]],
+    *,
+    x_handle: str | None,
+    github_person: bool,
+    from_date: str,
+    to_date: str,
+) -> int:
+    """Dated in-window items from the person's own accounts: their LinkedIn
+    posts, posts by the resolved X handle, and GitHub person-mode activity."""
+
+    def in_window(item: schema.SourceItem) -> bool:
+        return bool(item.published_at) and from_date <= item.published_at[:10] <= to_date
+
+    handle = (x_handle or "").lstrip("@").lower()
+    count = sum(in_window(item) for item in items_by_source.get(PERSON_POSTS_SOURCE, []))
+    if handle:
+        count += sum(
+            in_window(item) for item in items_by_source.get("x", [])
+            if (item.author or "").lstrip("@").lower() == handle
+        )
+    if github_person:
+        count += sum(in_window(item) for item in items_by_source.get("github", []))
+    return count
+
+
 def _rejected_job_keys(
     candidates: list[schema.Candidate],
     ranked: list[schema.Candidate],
@@ -5440,7 +5721,10 @@ def _run_supplemental_searches(
     x_dicts = [
         {"author_handle": item.author or "", "text": item.body or ""}
         for item in bundle.items_by_source.get("x", [])
-        if entity_extract.matches_person_identity(item, plan.person_identity_anchors, x_handle)
+        if entity_extract.matches_person_identity(
+            item, plan.person_identity_anchors, x_handle,
+            person_run=getattr(plan, "person_run", False),
+        )
     ]
     reddit_dicts = [
         {
