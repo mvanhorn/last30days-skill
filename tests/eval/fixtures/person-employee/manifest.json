@@ -1,0 +1,47 @@
+{
+  "name": "person-employee",
+  "archetype": "person-employee",
+  "topic": "Dana Okafor",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "grounding",
+    "linkedin_profile"
+  ],
+  "web_backend": "brave",
+  "config": {
+    "BRAVE_API_KEY": "fixture-key",
+    "DEEPLINE_API_KEY": "fixture-key"
+  },
+  "person": {
+    "employer": "Northwind Freight:northwind.example"
+  },
+  "public_hosts": [
+    "northwind.example"
+  ],
+  "plan": {
+    "intent": "general",
+    "freshness_mode": "balanced_recent",
+    "cluster_mode": "none",
+    "raw_topic": "Dana Okafor",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "Dana Okafor",
+        "ranking_query": "What has Dana Okafor done lately?",
+        "sources": [
+          "grounding"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "grounding": 1
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  },
+  "expects_clusters": false
+}
