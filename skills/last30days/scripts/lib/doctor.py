@@ -54,7 +54,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, digg, env, health, http, prescriptions, proxy, reddit_health, trustpilot, x_api
+from . import backends, brightdata, deepline, digg, env, health, http, prescriptions, proxy, reddit_health, trustpilot, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -182,6 +182,7 @@ SOURCE_ORDER = (
     "truthsocial",
     "perplexity",
     "linkedin",
+    "deepline",
     "pinterest",
     "xiaohongshu",
     "jobs",
@@ -214,6 +215,7 @@ KEY_PRESENCE_VARS = (
     "XAI_API_KEY",
     "XQUIK_API_KEY",
     "X_BEARER_TOKEN",
+    "DEEPLINE_API_KEY",
     "BRAVE_API_KEY",
     "EXA_API_KEY",
     "SERPER_API_KEY",
@@ -986,6 +988,23 @@ def _linkedin_record(config):
     )
 
 
+def _deepline_record(config):
+    """Person-run lanes (LinkedIn profile and posts, name lookup).
+
+    Uses the run's own availability check, so doctor and a person run agree.
+    """
+    requires = "DEEPLINE_API_KEY; used by person runs only"
+    if not deepline.is_available(config):
+        return _record(
+            status="unconfigured", requires=requires,
+            fix="set DEEPLINE_API_KEY to read LinkedIn profiles and posts in person runs",
+        )
+    return _record(
+        status=health.OK, requires=requires,
+        note="key present; paid calls run only for a person run",
+    )
+
+
 def _pinterest_record(config):
     requires = "SCRAPECREATORS_API_KEY; requested-only (--search pinterest)"
     if not config.get("SCRAPECREATORS_API_KEY"):
@@ -1121,6 +1140,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "truthsocial": _truthsocial_record,
     "perplexity": _perplexity_record,
     "linkedin": _linkedin_record,
+    "deepline": _deepline_record,
     "pinterest": _pinterest_record,
     "xiaohongshu": _xiaohongshu_record,
     "jobs": _jobs_record,

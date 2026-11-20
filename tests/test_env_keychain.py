@@ -277,7 +277,7 @@ def clean_env(monkeypatch, tmp_path):
         "SCRAPECREATORS_API_KEY", "APIFY_API_TOKEN", "BSKY_HANDLE",
         "BSKY_APP_PASSWORD", "TRUTHSOCIAL_TOKEN", "EXA_API_KEY",
         "SERPER_API_KEY", "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY",
-        "XQUIK_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        "XQUIK_API_KEY", "DEEPLINE_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
         "GOOGLE_GENAI_API_KEY", "INCLUDE_SOURCES", "FROM_BROWSER",
     ]:
         monkeypatch.delenv(var, raising=False)
@@ -397,3 +397,16 @@ def test_x_bearer_token_is_a_keychain_key():
     the setup-keychain.sh helper (parity is enforced above)."""
     assert "X_BEARER_TOKEN" in env.KEYCHAIN_KEYS
     assert _parse_all_keys_from_shell(SETUP_KEYCHAIN_SH).count("X_BEARER_TOKEN") == 1
+
+
+def test_deepline_key_is_a_keychain_key():
+    """The person-run Deepline key loads from the Keychain and is listed by
+    the setup-keychain.sh helper (parity is enforced above)."""
+    assert "DEEPLINE_API_KEY" in env.KEYCHAIN_KEYS
+    assert _parse_all_keys_from_shell(SETUP_KEYCHAIN_SH).count("DEEPLINE_API_KEY") == 1
+
+
+def test_get_config_deepline_key_can_come_from_keychain(clean_env):
+    with mock.patch.object(env, "_load_keychain", return_value={"DEEPLINE_API_KEY": "dl-from-kc"}):
+        cfg = env.get_config()
+    assert cfg["DEEPLINE_API_KEY"] == "dl-from-kc"
