@@ -54,7 +54,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, pipeline, proxy, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, person, pipeline, proxy, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
 from lib.private_files import replace_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -1020,6 +1020,31 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Use web search to discover subreddits/handles before planning (for platforms without WebSearch)")
     parser.add_argument("--github-user", help="GitHub username for person-mode search (e.g., steipete)")
     parser.add_argument("--github-repo", help="Comma-separated owner/repo for project-mode search (e.g., openclaw/openclaw,paperclipai/paperclip)")
+    parser.add_argument(
+        "--employer",
+        metavar="NAME[:DOMAIN]",
+        help=(
+            "Person run: the person's current employer, as \"Name\" or \"Name:domain\" "
+            "(e.g., \"Northwind Freight:northwind.example\"). Its name and domain become "
+            "identity anchors. Not --company, which researches a company the person leads."
+        ),
+    )
+    parser.add_argument(
+        "--linkedin",
+        metavar="URL",
+        help=(
+            "Person run: the person's LinkedIn profile URL "
+            "(https://www.linkedin.com/in/<name>), trusted as an identity anchor."
+        ),
+    )
+    parser.add_argument(
+        "--email",
+        metavar="ADDR",
+        help=(
+            "Person run: the person's email address. A work domain becomes an identity "
+            "anchor; a personal-mail domain (gmail and similar) does not. Never logged."
+        ),
+    )
     parser.add_argument(
         "--trustpilot-domain",
         help=(
@@ -3370,6 +3395,38 @@ def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
     ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
 
 
+PERSON_FLAGS = (("--employer", "employer"), ("--linkedin", "linkedin"), ("--email", "email"))
+
+
+def _person_inputs_gate(args: argparse.Namespace, topic: str) -> int | None:
+    """Reject person flags that cannot define a person run; exit 2 or None.
+
+    A person run needs a single topic: comparison runs would split the
+    run's lookup caps across entities, so they take no person flags.
+    Malformed values fail here, before any config probe or paid call.
+    """
+    passed = [flag for flag, dest in PERSON_FLAGS if getattr(args, dest) is not None]
+    if not passed:
+        return None
+    if not topic:
+        sys.stderr.write(f"[last30days] {', '.join(passed)} requires a person topic.\n")
+        return 2
+    if _comparison_requested(args, topic):
+        sys.stderr.write(
+            f"[last30days] {', '.join(passed)} applies to a single-person run, not a "
+            "comparison run. Research each person separately.\n"
+        )
+        return 2
+    try:
+        person.build_person_context(
+            topic, employer=args.employer, linkedin=args.linkedin, email=args.email,
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+    return None
+
+
 LAW7_HOST_PLAN_EXIT = 2
 X_HANDLE_DECISION_EXIT = 2
 
@@ -4001,6 +4058,9 @@ def _unsupported_hosted_options(args: argparse.Namespace) -> list[str]:
         ("--ig-creators", args.ig_creators is not None),
         ("--github-user", args.github_user is not None),
         ("--github-repo", args.github_repo is not None),
+        ("--employer", args.employer is not None),
+        ("--linkedin", args.linkedin is not None),
+        ("--email", args.email is not None),
         ("--trustpilot-domain", args.trustpilot_domain is not None),
         ("--amazon-query", args.amazon_query is not None),
         ("--meta-ads-page", args.meta_ads_page is not None),
@@ -4066,6 +4126,9 @@ def _main(
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
         return 0
+    person_exit = _person_inputs_gate(args, topic)
+    if person_exit is not None:
+        return person_exit
 
     original_topic = topic
     requested_window = (
