@@ -243,6 +243,24 @@ def _is_operator_token(token: str) -> bool:
     return ":" in token or token.startswith("-") or token.upper() in ("OR", "AND")
 
 
+def _fit_query(tokens: list[str], filters: str) -> str:
+    """Assemble the query, dropping trailing tokens until it fits the cap.
+
+    Trimming can cut the closing quote of a quoted phrase, leaving an
+    unterminated phrase that X matches nothing against -- the same failure the
+    caller's unbalanced-quote check prevents. When that happens, fall back to
+    bare tokens rather than emit a broken phrase.
+    """
+    def assemble(words: list[str]) -> str:
+        return " ".join(part for part in (" ".join(words).strip(), filters) if part)
+
+    while tokens and len(assemble(tokens)) > MAX_QUERY_CHARS:
+        tokens.pop()
+    if " ".join(tokens).count('"') % 2:
+        tokens = [bare for token in tokens if (bare := token.replace('"', ""))]
+    return assemble(tokens)
+
+
 def _date_filters(from_date: str, to_date: Optional[str] = None) -> str:
     filters = f"since:{from_date}"
     if to_date is not None:
@@ -299,12 +317,7 @@ def build_topic_query(
             continue
         tokens.append(clean)
     filters = _date_filters(from_date, to_date)
-    if len(" ".join(tokens)) + 1 + len(filters) > MAX_QUERY_CHARS:
-        # Drop trailing tokens until the whole query, window included, fits.
-        while tokens and len(" ".join(tokens)) + 1 + len(filters) > MAX_QUERY_CHARS:
-            tokens.pop()
-    core = " ".join(tokens).strip()
-    return " ".join(part for part in (core, filters) if part)
+    return _fit_query(tokens, filters)
 
 
 def is_bird_installed() -> bool:

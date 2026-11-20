@@ -55,3 +55,16 @@ def test_query_is_bounded_before_it_reaches_x():
     )
     # The window filter must survive the trim; it is not optional.
     assert "since:2026-11-01" in built
+
+
+def test_trim_never_leaves_an_unterminated_phrase():
+    """Trimming a long quoted topic must not cut the closing quote.
+
+    An orphan quote is read by X as an unterminated phrase and matches nothing,
+    so the length bound has to degrade to bare tokens instead.
+    """
+    phrase = " ".join(f"w{i}" for i in range(200))
+    built = bird_x.build_topic_query(f'"{phrase}" extra', "2026-11-01", "2026-11-20")
+    assert len(built) <= bird_x.MAX_QUERY_CHARS, f"over budget: {len(built)}"
+    assert built.count('"') % 2 == 0, f"unterminated phrase reached X: {built!r}"
+    assert "since:2026-11-01" in built
