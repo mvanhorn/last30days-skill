@@ -314,6 +314,13 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertGreater(len(sources), 2,
                            f"how_to should include >2 sources, got {len(sources)}: {sources}")
 
+    def test_how_to_sources_includes_linkedin(self):
+        """LinkedIn has discussion capability and should be retained for how_to intent (#1543)."""
+        sources = planner._default_sources_for_intent(
+            "how_to", ["reddit", "linkedin", "x", "youtube", "hackernews"]
+        )
+        self.assertIn("linkedin", sources)
+
     def test_ncaa_tournament_is_breaking_news(self):
         intent = planner._infer_intent("NCAA tournament brackets")
         self.assertEqual("breaking_news", intent)

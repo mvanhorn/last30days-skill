@@ -148,6 +148,7 @@ SOURCE_CAPABILITIES = {
     "devto": {"discussion", "link", "reference"},
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
+    "linkedin": {"discussion", "social"},
     "polymarket": {"market"},
     "stocktwits": {"social", "market", "finance_social"},
     "dripstack": {"reference", "analysis", "link"},
