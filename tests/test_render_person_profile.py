@@ -293,3 +293,8 @@ def test_a_posts_read_that_did_not_finish_leaves_the_count_unknown():
     block = _block(render.render_compact(_report(_profile(posts_read=False))))
     assert "LinkedIn posts in the window: unknown, the posts read did not finish." in block
     assert "LinkedIn posts in the window: 0" not in block
+
+
+def test_an_incomplete_posts_read_shows_the_count_as_a_floor():
+    block = _block(render.render_compact(_report(_profile(posts_read=False, in_window_posts=2))))
+    assert "LinkedIn posts in the window: at least 2, the posts read did not finish." in block

@@ -4614,12 +4614,14 @@ def _read_person_posts(
             pagination_token=token,
         )
         if result["status"] != deepline.OK:
-            if posts:
-                break
             state = _PERSON_POSTS_FAILURE_STATES.get(result["status"], "error")
             detail = f"LinkedIn posts read failed: {result['status']}"
             if result.get("detail"):
                 detail += f" ({result['detail']})"
+            if posts:
+                # A later page failed: keep the posts already read, but the
+                # read is incomplete, so the count is a floor, not a total.
+                return posts, {"state": state, "detail": detail, "partial": True}
             return [], {"state": state, "detail": detail}
         page = result["data"] or {}
         posts.extend(page.get("posts") or [])
@@ -4712,7 +4714,10 @@ def _fetch_person_posts(
             "_source_outcome": {"state": "error", "detail": f"LinkedIn posts lane failed: {type(exc).__name__}"},
         }
     artifact: dict[str, Any] = {"_person_older_posts": older, "_person_posts_read": failure is None}
-    if failure is not None:
+    if failure is not None and failure.get("partial"):
+        # The posts that arrived still count; only the total is unknown.
+        log.source_log("LinkedIn profile", f"posts read incomplete: {failure['detail']}", tty_only=False)
+    elif failure is not None:
         artifact["_source_outcome"] = failure
     elif not in_window:
         # Like a pinned GitHub user with no activity: recorded, never

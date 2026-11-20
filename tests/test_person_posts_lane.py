@@ -247,3 +247,24 @@ def test_person_run_without_a_linkedin_check_still_carries_the_person_profile():
     assert profile["linkedin_status"] == "no key"
     assert profile["in_window_posts"] == 0
     assert "linkedin_profile" not in report.source_status
+
+
+def test_a_failed_second_page_keeps_page_one_and_marks_the_read_incomplete():
+    ctx = _context()
+    calls: list[str] = []
+
+    def request(method, url, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            page = _posts_response([_element(1, 3, "Kicking off the winter peak plan.")])
+            page["result"]["data"]["pagination"] = {"paginationToken": "page-2"}
+            return page
+        raise http.HTTPError("server error", status_code=500)
+
+    report = _run({"DEEPLINE_API_KEY": "test-key", "_person": ctx}, request=request)
+
+    assert len(calls) >= 2
+    assert len(report.items_by_source["linkedin_profile"]) == 1
+    profile = report.artifacts["person_profile"]
+    assert profile["posts_read"] is False
+    assert profile["in_window_posts"] == 1
