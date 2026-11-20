@@ -229,9 +229,9 @@ After the response and required citations, stop and wait unless governing instru
 - Legacy: Sends search queries to OpenAI's Responses API (`api.openai.com`) for Reddit discovery (fallback if no SCRAPECREATORS_API_KEY)
 - Sends search queries to X/Twitter via the official X API v2 (`api.x.com`, app-only bearer from `X_BEARER_TOKEN`, sent only in the Authorization header; the engine's default X path on a Grok Bot host next to xAI's API), optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai`), Xquik's API (`xquik.com`), or the official X API v2 via xurl CLI (when installed and authenticated)
 - Accepts host `.json` envelopes as untrusted input: `--x-posts` (posts from the host's X connector; rows validated, citation URLs rebuilt from post ids; no X backend is called) and `--reddit-threads` (thread URLs or ids only; the engine rehydrates each)
-- Sends search queries to Algolia HN Search (`hn.algolia.com`) for Hacker News stories and comments (free, no auth)
+- Sends search queries, free and without auth, to Algolia HN Search (`hn.algolia.com`) and Polymarket Gamma (`gamma-api.polymarket.com`)
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
-- Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction markets (free, no auth)
+- Person runs (`--employer`, `--linkedin`, `--email`) fetch the employer's public pages; with `DEEPLINE_API_KEY` they send the name, employer, and any supplied LinkedIn URL or email to Deepline (`code.deepline.com`), which spends credits
 - Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name; company runs send USPTO patent search (`ppubs.uspto.gov`, no key) the company name
 - Runs `yt-dlp` locally for YouTube search and transcripts (no API key, public data)
 - Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG).

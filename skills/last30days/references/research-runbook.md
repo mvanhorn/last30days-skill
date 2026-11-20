@@ -176,9 +176,9 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--ticker="{SYMBOL}:{Company}"` | Section B | Topic is a listed company, a person who leads one, or a product or subsidiary of one |
 | `--company="{Name}:{site}"` | Section B | A person's company or a product's maker, listed or not |
 | `--jobs-board={URL}` | Section B | A search showed its job board |
-| `--employer="{Name}[:{domain}]"` | User's words | Topic is a working person and the user named where they work ("Dana Okafor at Northwind Freight"). Starts a person run: name-only evidence is dropped, and the engine looks for the person's bio on the employer's site (and their LinkedIn with `DEEPLINE_API_KEY`). Use this, not `--company`, for an employee; `--company` is for a company the person leads |
-| `--linkedin={URL}` | User's words | The user supplied the person's LinkedIn profile URL. Trusted as the person's identity |
-| `--email={address}` | User's words | The user supplied the person's email address. A work domain becomes an identity anchor; a personal address only drives the LinkedIn lookup. Never ask for one |
+| `--employer="{Name}[:{domain}]"` | User's words | The user named a working person's employer. Starts a person run: name-only evidence is dropped; the engine reads the employer's bio page (and LinkedIn with `DEEPLINE_API_KEY`). For a company the person leads, use `--company` |
+| `--linkedin={URL}` | User's words | The user supplied the person's LinkedIn URL; trusted as their identity |
+| `--email={address}` | User's words | The user supplied an email. A work domain anchors identity; a personal one only drives the LinkedIn lookup. Never ask for one |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
 | `--github-repo={owner/repo}` | Step 0.5c | Topic is a product / project / open-source tool |
 | `--trustpilot-domain={domain}` | Step 0.5d | Topic is a company / brand / service and `--diagnose` reports `trustpilot_can_run` (the flag also activates the opt-in Trustpilot source) |
