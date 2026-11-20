@@ -1,1 +1,0 @@
-Permission preflight now follows the MCP browser-cookie policy, accounts for consented Reddit and conditional X cookie routes, and forecasts local research caches, library indexes, SQLite stores, and report exports.

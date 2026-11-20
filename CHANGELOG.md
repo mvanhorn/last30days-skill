@@ -9,6 +9,42 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.4.0] - 2026-11-20
+
+### Security
+
+- Auto setup reuses browser-cookie consent only when the active configuration grants it.
+- Drill follow-ups keep local file titles out of remote queries and private drill context out of published briefs.
+- GitHub research uses public repositories for search, project snapshots, and star counts. Search and repository metadata keep authenticated rate limits when configured. Comments, READMEs, and releases use the anonymous rate limit to keep enrichment public.
+- HTML briefs stage synthesis in a unique owner-only file and remove it when the sharing workflow finishes.
+- Interpreter selection, comparison JSON validation, and HTML export helpers now run in Python isolated mode.
+- Research databases, SQLite sidecars, and generated briefing archives now use owner-only permissions on POSIX.
+- Watchlist delivery hides webhook credentials from setup output, error logs, and HTTP diagnostics.
+
+### Added
+
+- Add a Turkish README with reciprocal language navigation and translation contract coverage.
+- Person runs: `--employer "Name[:domain]"`, `--linkedin URL`, or `--email ADDR` research a working professional who may have no X or GitHub presence. The run reads a bio from the employer's own site, keeps only results that name the person plus an anchor such as the employer, and adds a Person Profile section that says what was checked and why identity was accepted. With `DEEPLINE_API_KEY` it also reads the LinkedIn profile and recent posts (paid, capped per run) and shows up to a year of older posts when the last 30 days are quiet.
+- Proxy mode: with `LAST30DAYS_API_MODE=proxy`, `LAST30DAYS_API_KEY`, and `LAST30DAYS_API_BASE`, the local engine runs every source and flag while paid provider calls without a key of your own (ScrapeCreators, xAI, Serper, Parallel) go through the API key's metered proxy. The footer reports the credits each run charged, `doctor` shows those lanes as "via API key", and running out of credits skips paid sources for the rest of the run instead of failing it.
+
+### Fixed
+
+- Claude.ai skill packages now exclude development assets and apply the 200-file limit to files. Pull request validation builds the same package used for releases.
+- Direct Perplexity Deep Research uses its configured deadline alongside the ordinary source deadline, so answers can arrive after the ordinary search window closes.
+- Drill and freshness follow-ups reuse cached host evidence. Slash-command follow-ups stay bound to the original research or its latest drill.
+- Freshness verification now keeps newer cached research intact when another run finishes during the check. Cache updates publish complete files atomically.
+- Hosted mode: answer a clarification with `--clarify-angle` or `--clarify-broadly` instead of rewriting the topic, see the server's reason when a run fails instead of "unknown server error", and get a one-line notice when the hosted engine's major version differs from the local skill.
+- Hosted research rejects unsupported date windows, source filters, targeting, and output formats before submitting a search.
+- MCP and watchlist runs keep completed research when strict exit reports degraded coverage. The watchlist still delivers new findings and labels the run degraded.
+- MCP research with saving disabled leaves the report export, research caches, and SQLite findings untouched.
+- Permission preflight now follows the MCP browser-cookie policy, accounts for consented Reddit and conditional X cookie routes, and forecasts local research caches, library indexes, SQLite stores, and report exports.
+- Removing a watchlist topic preserves its recorded spending and unknown charges in the daily budget.
+- Research skips live X authentication checks when X is outside the requested source scope, the host supplies X evidence, or the run uses mock data.
+- Scheduled watchlist runs treat topic names and custom search queries as literal research text.
+- Watchlists save findings from every entity in a local comparison. Malformed output fails only the affected run, and watchlists reject unsupported hosted research before making a paid request.
+- YouTube transcript backfill and remote ranking now stop before the foreground report deadline, so a slow enrichment request can leave a useful partial report.
+
+
 ## [4.3.2] - 2026-11-17
 
 ### Changed
