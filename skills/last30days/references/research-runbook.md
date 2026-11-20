@@ -195,6 +195,8 @@ Before running the engine, determine every applicable targeting flag and resolve
 
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.
 
+**Working person:** pass `--employer` when the user names their company, and `--linkedin`/`--email` only as supplied, never asked for. Given a name alone, tell the user an employer would sharpen the result.
+
 ---
 
 ### Section A: Resolve X Handles (only when X is active and the topic could have X accounts)
