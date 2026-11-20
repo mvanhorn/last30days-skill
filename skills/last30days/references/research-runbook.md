@@ -176,7 +176,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--ticker="{SYMBOL}:{Company}"` | Section B | Topic is a listed company, a person who leads one, or a product or subsidiary of one |
 | `--company="{Name}:{site}"` | Section B | A person's company or a product's maker, listed or not |
 | `--jobs-board={URL}` | Section B | A search showed its job board |
-| `--employer="{Name}[:{domain}]"` | User's words | The user named a working person's employer. Starts a person run: name-only evidence is dropped; the engine reads the employer's bio page (and LinkedIn with `DEEPLINE_API_KEY`). For a company the person leads, use `--company` |
+| `--employer="{Name}[:{domain}]"` | User's words | The user named a working person's employer. Never for a famous figure (paid LinkedIn reads add nothing). Starts a person run: drops name-only evidence; reads the employer's bio (and LinkedIn with `DEEPLINE_API_KEY`). For a company the person leads, use `--company` |
 | `--linkedin={URL}` | User's words | The user supplied the person's LinkedIn URL; trusted as their identity |
 | `--email={address}` | User's words | The user supplied an email. A work domain anchors identity; a personal one only drives the LinkedIn lookup. Never ask for one |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |

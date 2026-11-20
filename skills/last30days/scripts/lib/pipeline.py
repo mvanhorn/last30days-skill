@@ -3093,6 +3093,7 @@ def run(
             if source == PERSON_POSTS_SOURCE and isinstance(artifact, dict):
                 artifact = dict(artifact)
                 person_ctx.older_posts = list(artifact.pop("_person_older_posts", None) or [])
+                person_ctx.posts_read = bool(artifact.pop("_person_posts_read", False))
             if isinstance(artifact, dict) and artifact.get("_source_skipped"):
                 # The lane chose not to run (jobs' past-window skip is the
                 # precedent): not attempted, so it is no failure, no degraded
@@ -4710,7 +4711,7 @@ def _fetch_person_posts(
             "_person_older_posts": [],
             "_source_outcome": {"state": "error", "detail": f"LinkedIn posts lane failed: {type(exc).__name__}"},
         }
-    artifact: dict[str, Any] = {"_person_older_posts": older}
+    artifact: dict[str, Any] = {"_person_older_posts": older, "_person_posts_read": failure is None}
     if failure is not None:
         artifact["_source_outcome"] = failure
     elif not in_window:

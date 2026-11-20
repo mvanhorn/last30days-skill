@@ -2673,10 +2673,15 @@ def _person_profile_block(report: schema.Report) -> list[str]:
     out.append(line + ".")
 
     first_party = int(profile_artifact.get("first_party_in_window") or 0)
-    if checked:
+    if checked and profile_artifact.get("posts_read"):
         out.append(
             f"- LinkedIn posts in the window: {int(profile_artifact.get('in_window_posts') or 0):,}. "
             f"First-party items in the window (LinkedIn, resolved X and GitHub): {first_party:,}."
+        )
+    elif checked:
+        out.append(
+            "- LinkedIn posts in the window: unknown, the posts read did not finish. "
+            f"First-party items in the window (resolved X and GitHub): {first_party:,}."
         )
     else:
         out.append(

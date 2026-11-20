@@ -205,7 +205,8 @@ def build(
             # Shares the digest line: the checklist stays a few lines long.
             digests += (
                 f" This output has a `{_PERSON_PROFILE_HEADING}` block: call the person quiet "
-                "only when it says `LinkedIn: checked` with no posts in the window; otherwise "
+                "only when it says `LinkedIn: checked` and gives a count of zero LinkedIn posts in "
+                "the window (not `unknown`); otherwise "
                 "name the sources that were not checked. Use no fact from an item that does not "
                 "match the person's identity, and say so when identity is uncertain."
             )

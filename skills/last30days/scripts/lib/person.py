@@ -159,6 +159,9 @@ class PersonContext:
     # second count is thin.
     in_window_posts: int = 0
     first_party_in_window: int = 0
+    # True only when the posts read finished; a failed or timed-out read
+    # leaves the post count unknown, not zero.
+    posts_read: bool = False
 
     def add_anchor(self, anchor: str) -> None:
         """Add a text anchor once, ignoring case."""
@@ -193,6 +196,7 @@ class PersonContext:
             "timed_out": self.timed_out,
             "in_window_posts": self.in_window_posts,
             "first_party_in_window": self.first_party_in_window,
+            "posts_read": self.posts_read,
         }
 
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import date
 from typing import Iterable
 from urllib.parse import urlsplit
 
@@ -41,6 +42,8 @@ EXA_RESULT_COUNT = 5
 EXA_SECONDS = 15.0
 # History entries, newest first, that count as a recent position.
 RECENT_POSITIONS = 3
+# A past position counts only when it ended within this many years.
+RECENT_POSITION_YEARS = 2
 # Current-role employers added as anchors from an anchored profile.
 MAX_EMPLOYER_ANCHORS = 3
 
@@ -120,6 +123,20 @@ def _role_match(role: dict, ctx: PersonContext) -> str:
     return ""
 
 
+def _ended_recently(role: dict, today: date | None = None) -> bool:
+    """True when the role is ongoing or ended within RECENT_POSITION_YEARS. A
+    role whose end cannot be dated does not count: an old job at the same
+    employer must not confirm a namesake."""
+    end = str(role.get("end_date") or "").strip().lower()
+    if end in ("present", "current", "now"):
+        return True
+    years = [int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", end)]
+    if not years:
+        return False
+    today = today or date.today()
+    return max(years) >= today.year - RECENT_POSITION_YEARS
+
+
 def _verify(profile: dict, ctx: PersonContext) -> str:
     """A plain-words basis when a current or recent position matches, else ""."""
     for role in profile.get("current_roles") or []:
@@ -127,6 +144,8 @@ def _verify(profile: dict, ctx: PersonContext) -> str:
         if matched:
             return f"profile current employer matches {matched}"
     for role in (profile.get("history") or [])[:RECENT_POSITIONS]:
+        if not _ended_recently(role):
+            continue
         matched = _role_match(role, ctx)
         if matched:
             return f"profile recent position matches {matched}"

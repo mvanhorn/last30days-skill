@@ -80,6 +80,7 @@ def _profile(**overrides):
         "timed_out": False,
         "in_window_posts": 0,
         "first_party_in_window": 0,
+        "posts_read": True,
     }
     artifact.update(overrides)
     return artifact
@@ -286,3 +287,9 @@ def test_identity_basis_names_the_anchors_once_and_leaves_out_the_profile_url():
     assert "results kept only when they name Northwind Freight" in line
     assert "linkedin.com" not in line.replace("\\", "")
     assert line.count("LinkedIn URL supplied by user") == 1
+
+
+def test_a_posts_read_that_did_not_finish_leaves_the_count_unknown():
+    block = _block(render.render_compact(_report(_profile(posts_read=False))))
+    assert "LinkedIn posts in the window: unknown, the posts read did not finish." in block
+    assert "LinkedIn posts in the window: 0" not in block

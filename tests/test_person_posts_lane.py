@@ -182,6 +182,7 @@ def test_posts_read_failure_is_recorded_and_the_run_completes():
     assert status.items_returned == 0
     assert "linkedin_profile" in report.errors_by_source
     assert report.artifacts["person_profile"]["older_posts"] == []
+    assert report.artifacts["person_profile"]["posts_read"] is False
 
 
 def test_no_posts_in_window_records_no_results_without_a_keyword_backfill():
@@ -191,6 +192,7 @@ def test_no_posts_in_window_records_no_results_without_a_keyword_backfill():
 
     assert report.source_status["linkedin_profile"].state == "no-results"
     assert not report.items_by_source.get("linkedin_profile")
+    assert report.artifacts["person_profile"]["posts_read"] is True
     assert len(report.artifacts["person_profile"]["older_posts"]) == 1
 
 

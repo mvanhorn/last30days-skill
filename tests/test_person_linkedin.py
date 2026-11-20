@@ -7,6 +7,7 @@ boundary (URLs and payloads) and what lands in the person context.
 from __future__ import annotations
 
 import time
+from datetime import date
 
 import pytest
 
@@ -246,6 +247,32 @@ class TestLookedUpCandidates:
         _resolve(ctx, DEEPLINE_KEY)
         assert ctx.linkedin_status == "failed"
         assert ctx.profile == {}
+
+
+class TestPastPositions:
+    @staticmethod
+    def _former(end_text: str) -> dict:
+        profile = _profile(LOOKUP_URL, "Fabrikam Kitchens")
+        element = profile["result"]["data"]["element"]
+        element["experience"].insert(1, {
+            "position": "Analyst", "companyName": "Northwind Freight",
+            "startDate": {"text": "2001"}, "endDate": {"text": end_text},
+        })
+        return profile
+
+    def test_a_job_at_the_employer_that_ended_long_ago_does_not_confirm(self, fake):
+        fake(lookup=LOOKUP_URL, profiles={LOOKUP_URL: self._former("2004")})
+        ctx = _ctx(employer=EMPLOYER)
+        _resolve(ctx, DEEPLINE_KEY)
+        assert ctx.linkedin_status == "match rejected"
+        assert LOOKUP_URL not in ctx.anchors
+
+    def test_a_job_at_the_employer_that_just_ended_confirms(self, fake):
+        fake(lookup=LOOKUP_URL, profiles={LOOKUP_URL: self._former(str(date.today().year))})
+        ctx = _ctx(employer=EMPLOYER)
+        _resolve(ctx, DEEPLINE_KEY)
+        assert ctx.linkedin_status == "checked"
+        assert any("recent position" in basis for basis in ctx.match_basis)
 
 
 class TestSuppliedUrl:

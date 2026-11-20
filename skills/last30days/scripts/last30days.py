@@ -1954,11 +1954,17 @@ def _cache_research_options(
         "company", "jobs_board",
         "trustpilot_domain", "amazon_query", "meta_ads_page", "telegram_sources",
         "competitors", "competitors_list", "polymarket_keywords", "corpus_all_time", "drill",
+        "employer", "linkedin",
     )
     options = {
         name: getattr(args, name, None) for name in names
         if not supplied_only or name in getattr(args, "_explicit_options", ())
     }
+    if not supplied_only or "email" in getattr(args, "_explicit_options", ()):
+        # The person anchor counts toward the cache match, but the address is
+        # stored only as a hash.
+        email = (getattr(args, "email", None) or "").strip().lower()
+        options["email_sha256"] = hashlib.sha256(email.encode("utf-8")).hexdigest() if email else None
     if not supplied_only or "corpus" in getattr(args, "_explicit_options", ()):
         if resolved_corpus_dirs is None:
             resolved_corpus_dirs = corpus.resolve_directories(

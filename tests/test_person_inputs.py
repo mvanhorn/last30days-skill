@@ -244,3 +244,17 @@ class TestMain:
         assert rc == 0, err
         assert not any("person" in key.lower() for key in captured)
         assert not any("person" in str(key).lower() for key in captured["config"])
+
+
+def test_person_inputs_separate_cached_reports_and_the_email_is_only_hashed():
+    def options(*argv):
+        return cli._cache_research_options(cli.build_parser().parse_args(["Dana Okafor", *argv]))
+
+    first = options("--employer", "Northwind Freight")
+    assert first != options("--employer", "Contoso Logistics")
+    assert options("--linkedin", "https://www.linkedin.com/in/dana-a") != options(
+        "--linkedin", "https://www.linkedin.com/in/dana-b"
+    )
+    by_email = options("--email", "dana@northwind.example")
+    assert by_email != options("--email", "dana@contoso.example")
+    assert "dana@northwind.example" not in json.dumps(by_email)
