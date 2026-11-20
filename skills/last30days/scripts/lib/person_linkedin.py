@@ -30,6 +30,7 @@ from typing import Iterable
 from urllib.parse import urlsplit
 
 from . import company_names, deepline, grounding, linkedin, log
+from . import person
 from .person import PersonContext, normalize_linkedin_url
 
 # Exa people results read for candidates.
@@ -92,10 +93,6 @@ def _host(value: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def _same_site(host: str, domain: str) -> bool:
-    return bool(host and domain) and (host == domain or host.endswith("." + domain))
-
-
 def _names_match(company: str, employer: str) -> bool:
     """Equal name keys, or one key a whole-word run inside the other."""
     a, b = company_names.name_key(company), company_names.name_key(employer)
@@ -114,7 +111,7 @@ def _role_match(role: dict, ctx: PersonContext) -> str:
         return ctx.employer_name
     website = _host(str(role.get("company_website") or ""))
     for domain in (ctx.employer_domain, ctx.email_domain):
-        if _same_site(website, domain):
+        if person.same_or_subdomain(website, domain):
             return domain
     return ""
 
@@ -185,10 +182,10 @@ def _read_supplied(ctx, config, client, deadline, requested_sources) -> None:
     if client is not None:
         result = client.get_profile(ctx.linkedin_url, deadline_monotonic=deadline)
         if result["status"] != deepline.OK:
-            ctx.set_linkedin_status("failed")
+            ctx.set_linkedin_status(person.LINKEDIN_FAILED)
             return
         _anchor_profile(ctx, ctx.linkedin_url, result["data"], "deepline")
-        ctx.set_linkedin_status("checked")
+        ctx.set_linkedin_status(person.LINKEDIN_CHECKED)
         return
     if scrapecreators_allowed(ctx, config, requested_sources):
         result = linkedin.read_profile(
@@ -196,12 +193,12 @@ def _read_supplied(ctx, config, client, deadline, requested_sources) -> None:
             deadline_monotonic=deadline,
         )
         if result["status"] != "ok":
-            ctx.set_linkedin_status("failed")
+            ctx.set_linkedin_status(person.LINKEDIN_FAILED)
             return
         _store_profile(ctx, result["data"], "scrapecreators")
-        ctx.set_linkedin_status("checked")
+        ctx.set_linkedin_status(person.LINKEDIN_CHECKED)
         return
-    ctx.set_linkedin_status("no key")
+    ctx.set_linkedin_status(person.LINKEDIN_NO_KEY)
 
 
 def _exa_candidates(ctx: PersonContext, config: dict) -> list[str]:
@@ -273,7 +270,7 @@ def _look_up(ctx, config, client, deadline) -> None:
         if basis:
             _anchor_profile(ctx, url, profile, "deepline")
             ctx.match_basis += [basis, SELF_REPORTED_BASIS]
-            ctx.set_linkedin_status("checked")
+            ctx.set_linkedin_status(person.LINKEDIN_CHECKED)
             return
         rejected = True
 
@@ -287,21 +284,21 @@ def _look_up(ctx, config, client, deadline) -> None:
             ctx.match_basis.append(EMAIL_LOOKUP_BASIS)
             if basis:
                 ctx.match_basis += [basis, SELF_REPORTED_BASIS]
-            ctx.set_linkedin_status("checked" if profile is not None else "failed")
+            ctx.set_linkedin_status(person.LINKEDIN_CHECKED if profile is not None else person.LINKEDIN_FAILED)
             return
         if basis:
             _anchor_profile(ctx, url, profile, "deepline")
             ctx.match_basis += [basis, SELF_REPORTED_BASIS]
-            ctx.set_linkedin_status("checked")
+            ctx.set_linkedin_status(person.LINKEDIN_CHECKED)
             return
         rejected = rejected or profile is not None
 
     if rejected:
-        ctx.set_linkedin_status("match rejected")
+        ctx.set_linkedin_status(person.LINKEDIN_REJECTED)
     elif failed:
-        ctx.set_linkedin_status("failed")
+        ctx.set_linkedin_status(person.LINKEDIN_FAILED)
     else:
-        ctx.set_linkedin_status("profile not found")
+        ctx.set_linkedin_status(person.LINKEDIN_NOT_FOUND)
 
 
 def resolve_linkedin(
@@ -324,11 +321,11 @@ def resolve_linkedin(
         if ctx.linkedin_url:
             _read_supplied(ctx, config, client, deadline_monotonic, requested_sources)
         elif client is None:
-            ctx.set_linkedin_status("no key")
+            ctx.set_linkedin_status(person.LINKEDIN_NO_KEY)
         else:
             _look_up(ctx, config, client, deadline_monotonic)
     except Exception as exc:  # noqa: BLE001 - resolution never fails the run
         _log(f"LinkedIn resolution failed: {type(exc).__name__}")
-        ctx.set_linkedin_status("failed")
+        ctx.set_linkedin_status(person.LINKEDIN_FAILED)
     _log(f"LinkedIn: {ctx.linkedin_status}")
     return ctx

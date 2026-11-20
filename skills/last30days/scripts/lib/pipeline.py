@@ -56,6 +56,7 @@ from . import (
     normalize,
     permission_preflight,
     perplexity,
+    person,
     pinterest,
     planner,
     polymarket,
@@ -4561,8 +4562,7 @@ PERSON_OLDER_POSTS_MAX = 6
 PERSON_OLDER_POST_CHARS = 300
 # How far back older posts reach.
 PERSON_POSTS_LOOKBACK_DAYS = 365
-# Paid post pages per run (the Deepline client enforces the same cap).
-PERSON_POSTS_PAGES = 2
+PERSON_POSTS_PAGES = deepline.DEFAULT_CAPS[deepline.TOOL_POSTS]
 
 _PERSON_POSTS_FAILURE_STATES: dict[str, str] = {
     deepline.AUTH_FAILED: schema.AUTH_FAILED,
@@ -4580,7 +4580,7 @@ def _person_posts_mode(config: dict[str, Any]) -> str | None:
     ("stored"); otherwise a Deepline key reads them ("deepline").
     """
     ctx = config.get("_person")
-    if ctx is None or ctx.linkedin_status != "checked" or not ctx.linkedin_url:
+    if ctx is None or ctx.linkedin_status != person.LINKEDIN_CHECKED or not ctx.linkedin_url:
         return None
     profile = ctx.profile or {}
     if profile.get("source") == "scrapecreators" and profile.get("posts"):

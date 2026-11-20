@@ -32,7 +32,14 @@ FREEMAIL_PROVIDER_LABELS = frozenset({
     "yahoo", "hotmail", "outlook", "live", "aol", "gmx", "yandex",
 })
 
-LINKEDIN_STATUSES = ("checked", "no key", "failed", "profile not found", "match rejected")
+LINKEDIN_CHECKED = "checked"
+LINKEDIN_NO_KEY = "no key"
+LINKEDIN_FAILED = "failed"
+LINKEDIN_NOT_FOUND = "profile not found"
+LINKEDIN_REJECTED = "match rejected"
+LINKEDIN_STATUSES = (
+    LINKEDIN_CHECKED, LINKEDIN_NO_KEY, LINKEDIN_FAILED, LINKEDIN_NOT_FOUND, LINKEDIN_REJECTED,
+)
 
 _DOMAIN = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)+")
 _EMAIL = re.compile(r"[^@\s]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
@@ -248,7 +255,7 @@ def _is_company(name: str, ctx: PersonContext) -> bool:
     return any(marker in compact for marker in _company_markers(ctx))
 
 
-def _same_or_sub(host: str, domain: str) -> bool:
+def same_or_subdomain(host: str, domain: str) -> bool:
     return bool(host and domain) and (host == domain or host.endswith("." + domain))
 
 
@@ -284,8 +291,8 @@ def discover_handles(ctx: PersonContext) -> dict:
         if (
             "site" in found
             or not host
-            or any(_same_or_sub(host, social) for social in _NON_SITE_HOSTS)
-            or any(_same_or_sub(host, d) for d in (ctx.employer_domain, ctx.email_domain))
+            or any(same_or_subdomain(host, social) for social in _NON_SITE_HOSTS)
+            or any(same_or_subdomain(host, d) for d in (ctx.employer_domain, ctx.email_domain))
             or _is_company(host.rsplit(".", 1)[0], ctx)
         ):
             continue

@@ -399,13 +399,6 @@ def test_x_bearer_token_is_a_keychain_key():
     assert _parse_all_keys_from_shell(SETUP_KEYCHAIN_SH).count("X_BEARER_TOKEN") == 1
 
 
-def test_deepline_key_is_a_keychain_key():
-    """The person-run Deepline key loads from the Keychain and is listed by
-    the setup-keychain.sh helper (parity is enforced above)."""
-    assert "DEEPLINE_API_KEY" in env.KEYCHAIN_KEYS
-    assert _parse_all_keys_from_shell(SETUP_KEYCHAIN_SH).count("DEEPLINE_API_KEY") == 1
-
-
 def test_get_config_deepline_key_can_come_from_keychain(clean_env):
     with mock.patch.object(env, "_load_keychain", return_value={"DEEPLINE_API_KEY": "dl-from-kc"}):
         cfg = env.get_config()

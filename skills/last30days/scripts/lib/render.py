@@ -23,6 +23,7 @@ from . import (
     library_index,
     meta_ads,
     patent_digest,
+    person,
     polymarket,
     proxy,
     reddit_refs,
@@ -2543,8 +2544,8 @@ _PERSON_THIN_WINDOW = 3
 _PERSON_DATE = re.compile(r"^\d{4}-\d{2}(?:-\d{2})?$")
 _PERSON_BIO_FENCE = re.compile(r"^\s*<untrusted_content>\s*|\s*</untrusted_content>\s*$")
 _LINKEDIN_STATUS_LINES = {
-    "checked": "LinkedIn: checked",
-    "no key": "LinkedIn: not checked (no key)",
+    person.LINKEDIN_CHECKED: "LinkedIn: checked",
+    person.LINKEDIN_NO_KEY: "LinkedIn: not checked (no key)",
 }
 
 
@@ -2563,10 +2564,10 @@ def _person_date(value: object) -> str:
     return text if _PERSON_DATE.match(text) else ""
 
 
-def _person_links(person: dict, profile: dict, bio: dict) -> list[str]:
+def _person_links(profile_artifact: dict, profile: dict, bio: dict) -> list[str]:
     """Handles and sites the profile or bio page named, each made safe."""
     links: list[str] = []
-    handles = person.get("derived_handles")
+    handles = profile_artifact.get("derived_handles")
     for key, value in (handles if isinstance(handles, dict) else {}).items():
         value = str(value or "").strip()
         if not value:
@@ -2596,18 +2597,18 @@ def _person_profile_block(report: schema.Report) -> list[str]:
     run reached; only "checked" makes an in-window post count of zero real.
     Older posts are listed here and never join the ranked evidence.
     """
-    person = (report.artifacts or {}).get("person_profile")
-    if not isinstance(person, dict):
+    profile_artifact = (report.artifacts or {}).get("person_profile")
+    if not isinstance(profile_artifact, dict):
         return []
-    profile = person.get("profile") if isinstance(person.get("profile"), dict) else {}
-    bio = person.get("bio") if isinstance(person.get("bio"), dict) else {}
+    profile = profile_artifact.get("profile") if isinstance(profile_artifact.get("profile"), dict) else {}
+    bio = profile_artifact.get("bio") if isinstance(profile_artifact.get("bio"), dict) else {}
     out = ["## Person Profile", ""]
 
     basis = []
     # The profile URL is an anchor too, but the match basis below already says
     # how it was found; listing it again only repeats it.
     anchors = [
-        _person_text(a, _PERSON_SHORT_CHARS) for a in person.get("anchors") or []
+        _person_text(a, _PERSON_SHORT_CHARS) for a in profile_artifact.get("anchors") or []
         if not str(a).lower().startswith(("http://", "https://"))
     ]
     if any(anchors):
@@ -2616,10 +2617,10 @@ def _person_profile_block(report: schema.Report) -> list[str]:
     # is in match_basis; a looked-up URL was not given by the user.
     basis.extend(
         text for text in (
-            _person_text(b, _PERSON_HEADLINE_CHARS) for b in person.get("match_basis") or []
+            _person_text(b, _PERSON_HEADLINE_CHARS) for b in profile_artifact.get("match_basis") or []
         ) if text
     )
-    if person.get("identity_weak") or not basis:
+    if profile_artifact.get("identity_weak") or not basis:
         line = (
             "- Identity: uncertain. Nothing beyond the name ties these results to this "
             "person; adding an employer (`--employer`) or a LinkedIn URL (`--linkedin`) "
@@ -2652,29 +2653,29 @@ def _person_profile_block(report: schema.Report) -> list[str]:
         source = _markdown_url_link(str(bio.get("url") or ""))
         out.append(f"- Bio: {bio_text}" + (f" (source: {source})" if source else ""))
 
-    links = _person_links(person, profile, bio)
+    links = _person_links(profile_artifact, profile, bio)
     if links:
         out.append(
             "- Links found on the profile or bio page, not confirmed as this person's: "
             + ", ".join(links)
         )
 
-    status = person.get("linkedin_status") or "no key"
-    checked = status == "checked"
+    status = profile_artifact.get("linkedin_status") or person.LINKEDIN_NO_KEY
+    checked = status == person.LINKEDIN_CHECKED
     line = "- " + _LINKEDIN_STATUS_LINES.get(status, f"LinkedIn: {_person_text(status, 40)}")
     if not checked:
         line += "; LinkedIn activity unknown"
-    mismatch = _person_text(person.get("linkedin_mismatch"), _PERSON_HEADLINE_CHARS)
+    mismatch = _person_text(profile_artifact.get("linkedin_mismatch"), _PERSON_HEADLINE_CHARS)
     if mismatch:
         line += f" ({mismatch})"
-    if person.get("timed_out"):
+    if profile_artifact.get("timed_out"):
         line += ". The person lookups timed out before finishing, so some were not fully checked"
     out.append(line + ".")
 
-    first_party = int(person.get("first_party_in_window") or 0)
+    first_party = int(profile_artifact.get("first_party_in_window") or 0)
     if checked:
         out.append(
-            f"- LinkedIn posts in the window: {int(person.get('in_window_posts') or 0):,}. "
+            f"- LinkedIn posts in the window: {int(profile_artifact.get('in_window_posts') or 0):,}. "
             f"First-party items in the window (LinkedIn, resolved X and GitHub): {first_party:,}."
         )
     else:
@@ -2683,7 +2684,7 @@ def _person_profile_block(report: schema.Report) -> list[str]:
             f"First-party items in the window (resolved X and GitHub): {first_party:,}."
         )
 
-    older = [post for post in person.get("older_posts") or [] if isinstance(post, dict)]
+    older = [post for post in profile_artifact.get("older_posts") or [] if isinstance(post, dict)]
     if older and first_party < _PERSON_THIN_WINDOW:
         out.append(
             f"- Older activity on LinkedIn, from before this window opened on {report.range_from} "
@@ -2699,7 +2700,7 @@ def _person_profile_block(report: schema.Report) -> list[str]:
             parts.extend(part for part in (text, link) if part)
             out.append("  - " + " | ".join(parts))
 
-    counts = person.get("dropped_counts")
+    counts = profile_artifact.get("dropped_counts")
     dropped = {
         str(source): count
         for source, count in (counts if isinstance(counts, dict) else {}).items()

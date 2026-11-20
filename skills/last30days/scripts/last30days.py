@@ -3499,13 +3499,13 @@ def _resolve_person(
     if isinstance(resolved, person.PersonContext):
         ctx = resolved
     elif "linkedin" not in pending:
-        ctx.set_linkedin_status("failed")
+        ctx.set_linkedin_status(person.LINKEDIN_FAILED)
     if isinstance(bio, dict):
         ctx.bio = bio
     if pending:
         ctx.timed_out = True
         if "linkedin" in pending and ctx.linkedin_status is None:
-            ctx.set_linkedin_status("failed")
+            ctx.set_linkedin_status(person.LINKEDIN_FAILED)
         sys.stderr.write(
             f"[Person] Resolve step hit its {PERSON_RESOLVE_SECONDS:g}s deadline; "
             f"continuing without: {', '.join(sorted(pending))}\n"

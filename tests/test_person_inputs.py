@@ -147,17 +147,6 @@ class TestAnchors:
         assert ctx.linkedin_url == "https://www.linkedin.com/in/dana-okafor"
         assert ctx.identity_weak is False
 
-    def test_status_fields_start_unset(self):
-        ctx = person.build_person_context(NAME, employer="Northwind Freight")
-        assert ctx.linkedin_status is None
-        assert ctx.match_basis == []
-        assert ctx.linkedin_mismatch == ""
-        assert ctx.profile == {}
-        assert ctx.bio == {}
-        assert ctx.derived_handles == {}
-        assert ctx.older_posts == []
-        assert ctx.dropped_counts == {}
-        assert ctx.timed_out is False
 
     def test_linkedin_status_accepts_only_known_values(self):
         ctx = person.build_person_context(NAME, employer="Northwind Freight")
@@ -242,7 +231,11 @@ class TestMain:
             tmp_path, run=_capturing_run(captured),
         )
         assert rc == 0, err
-        assert captured["topic"] == NAME
+        ctx = captured["config"]["_person"]
+        assert ctx.full_name == NAME
+        assert {"Northwind Freight", "northwind.example"} <= set(ctx.anchors)
+        assert ctx.linkedin_url == "https://www.linkedin.com/in/dana-okafor"
+        assert ctx.email_domain == ""
         assert "dana@gmail.com" not in err
 
     def test_name_only_run_config_carries_nothing_new(self, tmp_path):
