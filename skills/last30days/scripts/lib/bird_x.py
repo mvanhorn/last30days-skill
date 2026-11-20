@@ -227,6 +227,21 @@ def _plain_query_tokens(text: str) -> list[str]:
 # is exactly what the planner intended when it quoted a proper noun.
 _GROUPING_CHARS = "“”()[]{}"
 
+# X v2 search/recent rejects a query longer than this with HTTP 400. The keyword
+# compiler in x_api enforces the same bound for the xurl lane.
+MAX_QUERY_CHARS = 512
+
+
+def _is_operator_token(token: str) -> bool:
+    """True for a token X would read as advanced-search syntax, not a keyword.
+
+    ``from:someone``, ``since:2020`` and ``lang:en`` become real operators, so a
+    topic containing one silently narrows or breaks the query. A bare OR/AND is
+    likewise a boolean operator to X. A trailing colon on an ordinary word is
+    lexical ("Docker:") and is kept by the caller after stripping the colon.
+    """
+    return ":" in token or token.startswith("-") or token.upper() in ("OR", "AND")
+
 
 def _date_filters(from_date: str, to_date: Optional[str] = None) -> str:
     filters = f"since:{from_date}"
@@ -251,6 +266,17 @@ def build_topic_query(
     '"Peter Steinberger"' degraded into `peter AND steinberger` -- narrower and
     noisier at once. X supports phrase queries natively, so the quotes are
     passed through.
+
+    Quotes are the one piece of X syntax this lane forwards on purpose. Every
+    other operator-shaped token (``from:``, ``since:``, ``lang:``, leading
+    negation, a bare OR/AND) is dropped: X would interpret it as syntax, so a
+    topic like 'since:2020 docker tips' used to emit a duplicate ``since:`` and
+    'from:someone' silently filtered the search to one account. ``x_api`` drops
+    the same tokens for the xurl lane; this keeps the two X backends agreeing
+    on what a topic may smuggle into a request.
+
+    The result is also bounded to ``MAX_QUERY_CHARS`` on a token boundary,
+    since X rejects longer queries outright.
     """
     separators = str.maketrans({char: " " for char in _GROUPING_CHARS})
     cleaned = topic.translate(separators)
@@ -260,13 +286,25 @@ def build_topic_query(
     # quotes pair up and fall back to bare tokens when they do not.
     if cleaned.count('"') % 2:
         cleaned = cleaned.replace('"', " ")
-    tokens = [
-        clean
-        for token in cleaned.split()
-        if (clean := token.strip("'‘’"))
-    ]
+    tokens = []
+    for token in cleaned.split():
+        clean = token.strip("'‘’")
+        if not clean:
+            continue
+        # "Docker:" is a subject word with punctuation, not an operator, so an
+        # otherwise-lexical trailing colon is stripped and the word kept.
+        if clean.endswith(":") and clean.count(":") == 1:
+            clean = clean[:-1]
+        if not clean or _is_operator_token(clean):
+            continue
+        tokens.append(clean)
+    filters = _date_filters(from_date, to_date)
+    if len(" ".join(tokens)) + 1 + len(filters) > MAX_QUERY_CHARS:
+        # Drop trailing tokens until the whole query, window included, fits.
+        while tokens and len(" ".join(tokens)) + 1 + len(filters) > MAX_QUERY_CHARS:
+            tokens.pop()
     core = " ".join(tokens).strip()
-    return " ".join(part for part in (core, _date_filters(from_date, to_date)) if part)
+    return " ".join(part for part in (core, filters) if part)
 
 
 def is_bird_installed() -> bool:
