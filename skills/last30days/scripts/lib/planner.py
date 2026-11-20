@@ -18,6 +18,21 @@ _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
 
 DISCOVERY_SOURCE_ORDER = ("reddit", "hackernews", "digg", "x")
 
+# Installed/opted-in lanes that can be backfilled into a host plan.
+HOST_PLAN_BACKFILL_SOURCES = (
+    "digg",
+    "arxiv",
+    "techmeme",
+    "bluesky",
+    "truthsocial",
+    "stocktwits",
+    "linkedin",
+    "dripstack",
+    "devto",
+    "telegram",
+    "trustpilot",
+)
+
 
 def detect_language(text: str) -> str | None:
     """Return 'he' if the text contains Hebrew characters, else None."""
@@ -259,6 +274,16 @@ def validate_external_plan(raw: dict) -> None:
         raise ValueError("person_identity_anchors must be an array of non-empty strings")
     polymarket_hints(raw.get("polymarket_hints"))
 
+    omit_sources = raw.get("omit_sources", [])
+    if not isinstance(omit_sources, list) or not all(
+        source in HOST_PLAN_BACKFILL_SOURCES for source in omit_sources
+    ):
+        raise ValueError(
+            "omit_sources must be an array of source names eligible for host-plan backfill: "
+            + ", ".join(HOST_PLAN_BACKFILL_SOURCES)
+        )
+    omitted = set(omit_sources)
+
     source_weights = raw.get("source_weights")
     if source_weights is not None and not isinstance(source_weights, dict):
         raise ValueError("field 'source_weights' must be an object when provided")
@@ -284,6 +309,11 @@ def validate_external_plan(raw: dict) -> None:
             isinstance(source, str) and source.strip() for source in sources
         ):
             raise ValueError(f"subqueries[{index}].sources must be a non-empty string array")
+        if overlap := omitted.intersection(sources):
+            raise ValueError(
+                f"omit_sources conflicts with subqueries[{index}].sources: "
+                + ", ".join(sorted(overlap))
+            )
         weight = subquery.get("weight")
         if weight is not None and (
             isinstance(weight, bool) or not isinstance(weight, (int, float))

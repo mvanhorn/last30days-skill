@@ -58,7 +58,7 @@ def test_internal_empty_intersection_retains_fallback():
 def _planned(report):
     """Subquery sources minus the installed/opted-in lanes the engine backfills."""
     return [
-        [s for s in sq.sources if s not in pipeline.HOST_PLAN_BACKFILL_SOURCES]
+        [s for s in sq.sources if s not in planner.HOST_PLAN_BACKFILL_SOURCES]
         for sq in report.query_plan.subqueries
     ]
 
@@ -130,6 +130,42 @@ def test_host_plan_gains_installed_lanes_it_never_named(capsys):
     ]
     assert {"digg", "arxiv"} <= fetched
     assert "digg, arxiv" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("depth", ["default", "deep"])
+def test_host_plan_can_omit_specific_installed_lanes(depth, capsys):
+    plan = dict(plan_with(["reddit"], ["hackernews"]), omit_sources=["arxiv", "devto"])
+    report, fetched = _run_with_plan(
+        "test topic", plan, depth=depth,
+        requested_sources=["reddit", "hackernews", "digg", "arxiv", "devto"],
+    )
+    assert [sq.sources for sq in report.query_plan.subqueries] == [
+        ["reddit", "digg"], ["hackernews"],
+    ]
+    assert fetched == {"reddit", "hackernews", "digg"}
+    assert {"arxiv", "devto"}.isdisjoint(report.query_plan.source_weights)
+    assert "part-0: digg" in capsys.readouterr().err
+
+
+def test_omitted_trustpilot_is_not_probed_or_backfilled():
+    plan = dict(plan_with(["reddit"]), omit_sources=["trustpilot"])
+    with patch.object(pipeline.trustpilot, "can_run_now") as can_run:
+        report, fetched = _run_with_plan("test topic", plan)
+    can_run.assert_not_called()
+    assert "trustpilot" not in report.query_plan.subqueries[0].sources
+    assert "trustpilot" not in fetched
+
+
+@pytest.mark.parametrize("omissions", ["arxiv", None, [True], ["arxive"], ["amazon"]])
+def test_host_plan_rejects_invalid_omissions(omissions):
+    with pytest.raises(ValueError, match="omit_sources"):
+        planner.validate_external_plan(dict(plan_with(["reddit"]), omit_sources=omissions))
+
+
+def test_host_plan_rejects_omitting_a_source_named_by_a_subquery():
+    plan = dict(plan_with(["reddit"], ["arxiv"]), omit_sources=["arxiv"])
+    with pytest.raises(ValueError, match="omit_sources.*arxiv"):
+        planner.validate_external_plan(plan)
 
 
 def test_host_plan_lane_named_in_secondary_subquery_is_not_duplicated():

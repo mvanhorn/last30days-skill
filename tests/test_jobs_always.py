@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 import last30days as cli
-from lib import http, jobs, pipeline, schema, yahoo_finance
+from lib import http, jobs, pipeline, planner, schema, yahoo_finance
 
 WINDOW = ("2026-10-12", "2026-11-11")
 
@@ -49,7 +49,7 @@ def _run_with_plan(topic, plan, *, config=None, depth="default", **kwargs):
 def _planned(report):
     """Subquery sources minus the installed lanes a mock run backfills."""
     return [
-        [s for s in sq.sources if s not in pipeline.HOST_PLAN_BACKFILL_SOURCES]
+        [s for s in sq.sources if s not in planner.HOST_PLAN_BACKFILL_SOURCES]
         for sq in report.query_plan.subqueries
     ]
 
