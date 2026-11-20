@@ -11,7 +11,7 @@ def test_fixture_matrix_covers_required_topic_archetypes():
     fixtures = harness.load_fixtures()
     archetypes = {fixture.manifest["archetype"] for fixture in fixtures}
 
-    assert 6 <= len(fixtures) <= 9
+    assert 6 <= len(fixtures) <= 10
     assert {
         "tech-product",
         "person",

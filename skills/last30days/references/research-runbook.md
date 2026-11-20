@@ -176,6 +176,9 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--ticker="{SYMBOL}:{Company}"` | Section B | Topic is a listed company, a person who leads one, or a product or subsidiary of one |
 | `--company="{Name}:{site}"` | Section B | A person's company or a product's maker, listed or not |
 | `--jobs-board={URL}` | Section B | A search showed its job board |
+| `--employer="{Name}[:{domain}]"` | User's words | The user named a working person's employer. Never for a famous figure (paid LinkedIn reads add nothing). Starts a person run: drops name-only evidence; reads the employer's bio (and LinkedIn with `DEEPLINE_API_KEY`). For a company the person leads, use `--company` |
+| `--linkedin={URL}` | User's words | The user supplied the person's LinkedIn URL; trusted as their identity |
+| `--email={address}` | User's words | The user supplied an email. A work domain anchors identity; a personal one only drives the LinkedIn lookup. Never ask for one |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
 | `--github-repo={owner/repo}` | Step 0.5c | Topic is a product / project / open-source tool |
 | `--trustpilot-domain={domain}` | Step 0.5d | Topic is a company / brand / service and `--diagnose` reports `trustpilot_can_run` (the flag also activates the opt-in Trustpilot source) |
@@ -191,6 +194,8 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
 
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.
+
+**Working person:** pass `--employer` when the user names their company, and `--linkedin`/`--email` only as supplied, never asked for. Given a name alone, tell the user an employer would sharpen the result.
 
 ---
 

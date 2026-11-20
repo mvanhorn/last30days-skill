@@ -286,9 +286,12 @@ def rerank_candidates(
     """
     # Enforce identity before either scoring path and before first-party/rescue
     # floors. A high score or a related author's status cannot revive a namesake.
-    if plan.person_identity_anchors:
+    person_run = getattr(plan, "person_run", False)
+    if plan.person_identity_anchors or person_run:
         candidates = [candidate for candidate in candidates if candidate.source_items and all(
-            entity_extract.matches_person_identity(item, plan.person_identity_anchors, primary_handle)
+            entity_extract.matches_person_identity(
+                item, plan.person_identity_anchors, primary_handle, person_run=person_run,
+            )
             for item in candidate.source_items
         )]
     handles = resolved_handles or set()

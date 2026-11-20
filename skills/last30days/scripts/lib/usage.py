@@ -28,6 +28,7 @@ _PAID_HOSTS = {
     "api.twitter.com": "x",
     "xquik.com": "xquik",
     "api.groq.com": "groq",
+    "code.deepline.com": "deepline",
 }
 
 

@@ -8,7 +8,9 @@ from lib.linkedin import (
     _parse_date,
     enrich_articles,
     parse_linkedin_response,
+    parse_person_profile,
     parse_profile_articles,
+    read_profile,
     search_linkedin,
 )
 
@@ -419,6 +421,56 @@ class TestEnrichArticles(unittest.TestCase):
             arts = enrich_articles(items, "Matt Van Horn", token="fake")
             self.assertEqual([], arts)
             mock_request.assert_not_called()
+
+
+class TestPersonProfile(unittest.TestCase):
+    """The ScrapeCreators profile read for a person run: posts and links only."""
+
+    PROFILE = {
+        "success": True,
+        "name": "Dana Okafor",
+        "location": "Columbus, Ohio",
+        "websites": [{"url": "https://danaokafor.example"}, "https://github.com/dokafor"],
+        "experience": [{"name": "Northwind Freight", "member": {"title": "*****"}}],
+        "recentPosts": [
+            {"title": "Dock wait times are down", "link": "https://www.linkedin.com/posts/a",
+             "datePublished": "2026-11-02T08:00:00Z", "activityType": "Shared by Dana Okafor"},
+            {"title": "A colleague's launch", "link": "https://www.linkedin.com/posts/b",
+             "activityType": "Reposted by Dana Okafor"},
+            {"title": "Someone else's post", "link": "https://www.linkedin.com/posts/c",
+             "activityType": "Liked by Dana Okafor"},
+        ],
+    }
+
+    def test_masked_titles_never_become_roles(self):
+        parsed = parse_person_profile(self.PROFILE)
+        self.assertEqual([], parsed["current_roles"])
+        self.assertEqual([], parsed["history"])
+        self.assertNotIn("*****", repr(parsed))
+
+    def test_keeps_own_posts_and_reshares_not_likes(self):
+        posts = parse_person_profile(self.PROFILE)["posts"]
+        self.assertEqual(["https://www.linkedin.com/posts/a", "https://www.linkedin.com/posts/b"],
+                         [p["url"] for p in posts])
+        self.assertEqual("2026-11-02", posts[0]["date"])
+        self.assertEqual([False, True], [p["is_reshare"] for p in posts])
+
+    def test_links_come_from_listed_websites(self):
+        self.assertEqual(
+            ["https://danaokafor.example", "https://github.com/dokafor"],
+            parse_person_profile(self.PROFILE)["websites"],
+        )
+
+    def test_read_failure_is_a_status(self):
+        from lib import http as http_module
+
+        with mock.patch(
+            "lib.linkedin.http.request",
+            side_effect=http_module.HTTPError("boom", status_code=500),
+        ):
+            result = read_profile("https://www.linkedin.com/in/dana-okafor", "fake")
+        self.assertEqual("failed", result["status"])
+        self.assertIsNone(result["data"])
 
 
 if __name__ == "__main__":

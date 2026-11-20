@@ -54,7 +54,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, pipeline, proxy, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, person, pipeline, proxy, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
 from lib.private_files import replace_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -1021,6 +1021,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--github-user", help="GitHub username for person-mode search (e.g., steipete)")
     parser.add_argument("--github-repo", help="Comma-separated owner/repo for project-mode search (e.g., openclaw/openclaw,paperclipai/paperclip)")
     parser.add_argument(
+        "--employer",
+        metavar="NAME[:DOMAIN]",
+        help=(
+            "Person run: the person's current employer, as \"Name\" or \"Name:domain\" "
+            "(e.g., \"Northwind Freight:northwind.example\"). Its name and domain become "
+            "identity anchors. Not --company, which researches a company the person leads."
+        ),
+    )
+    parser.add_argument(
+        "--linkedin",
+        metavar="URL",
+        help=(
+            "Person run: the person's LinkedIn profile URL "
+            "(https://www.linkedin.com/in/<name>), trusted as an identity anchor."
+        ),
+    )
+    parser.add_argument(
+        "--email",
+        metavar="ADDR",
+        help=(
+            "Person run: the person's email address. A work domain becomes an identity "
+            "anchor; a personal-mail domain (gmail and similar) does not. Never logged."
+        ),
+    )
+    parser.add_argument(
         "--trustpilot-domain",
         help=(
             "Trustpilot review-page domain for the topic (e.g., www.thriftbooks.com). "
@@ -1929,11 +1954,17 @@ def _cache_research_options(
         "company", "jobs_board",
         "trustpilot_domain", "amazon_query", "meta_ads_page", "telegram_sources",
         "competitors", "competitors_list", "polymarket_keywords", "corpus_all_time", "drill",
+        "employer", "linkedin",
     )
     options = {
         name: getattr(args, name, None) for name in names
         if not supplied_only or name in getattr(args, "_explicit_options", ())
     }
+    if not supplied_only or "email" in getattr(args, "_explicit_options", ()):
+        # The person anchor counts toward the cache match, but the address is
+        # stored only as a hash.
+        email = (getattr(args, "email", None) or "").strip().lower()
+        options["email_sha256"] = hashlib.sha256(email.encode("utf-8")).hexdigest() if email else None
     if not supplied_only or "corpus" in getattr(args, "_explicit_options", ()):
         if resolved_corpus_dirs is None:
             resolved_corpus_dirs = corpus.resolve_directories(
@@ -3370,6 +3401,154 @@ def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
     ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
 
 
+PERSON_FLAGS = (("--employer", "employer"), ("--linkedin", "linkedin"), ("--email", "email"))
+
+
+def _person_inputs_gate(args: argparse.Namespace, topic: str) -> int | None:
+    """Reject person flags that cannot define a person run; exit 2 or None.
+
+    A person run needs a single topic: comparison runs would split the
+    run's lookup caps across entities, so they take no person flags.
+    Malformed values fail here, before any config probe or paid call.
+    """
+    passed = [flag for flag, dest in PERSON_FLAGS if getattr(args, dest) is not None]
+    if not passed:
+        return None
+    if not topic:
+        sys.stderr.write(f"[last30days] {', '.join(passed)} requires a person topic.\n")
+        return 2
+    if _comparison_requested(args, topic):
+        sys.stderr.write(
+            f"[last30days] {', '.join(passed)} applies to a single-person run, not a "
+            "comparison run. Research each person separately.\n"
+        )
+        return 2
+    try:
+        person.build_person_context(
+            topic, employer=args.employer, linkedin=args.linkedin, email=args.email,
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+    return None
+
+
+# Wall time for the whole person resolve step, shared by every call in it.
+PERSON_RESOLVE_SECONDS = 60.0
+PERSON_NO_X_REASON = "person run: no X account linked from the person's LinkedIn profile or employer bio"
+
+
+def _resolve_person(
+    ctx: "person.PersonContext", config: dict, requested_sources: list[str] | None,
+) -> "person.PersonContext":
+    """Run the LinkedIn resolution and the employer bio lane concurrently under
+    one shared deadline; return the context with whatever resolved in time.
+
+    Daemon threads, not an executor: a hung lane must not hold the process
+    open past the deadline. The LinkedIn lane works on its own copy of the
+    context, so a straggler can never write to the one the run continues with.
+    """
+    import copy
+    import queue
+    import threading
+
+    from lib import employer_site, person_linkedin
+
+    deadline = time.monotonic() + PERSON_RESOLVE_SECONDS
+    person_linkedin.anchor_supplied_url(ctx)
+    linkedin_ctx = copy.deepcopy(ctx)
+    results: "queue.Queue[tuple[str, object]]" = queue.Queue()
+    run_id = uuid.uuid4().hex
+
+    def _linkedin() -> None:
+        try:
+            value: object = person_linkedin.resolve_linkedin(
+                linkedin_ctx, config, deadline_monotonic=deadline, run_id=run_id,
+                requested_sources=requested_sources,
+            )
+        except Exception as exc:  # noqa: BLE001 - a lane failure is a status
+            sys.stderr.write(f"[Person] LinkedIn resolution failed: {type(exc).__name__}\n")
+            value = None
+        results.put(("linkedin", value))
+
+    def _bio() -> None:
+        try:
+            value: object = employer_site.find_bio(
+                ctx.full_name, domain=ctx.employer_domain or None,
+                employer_name=ctx.employer_name or None, email_domain=ctx.email_domain or None,
+                deadline_monotonic=deadline, site_search=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a lane failure is a status
+            sys.stderr.write(f"[Person] Employer bio lane failed: {type(exc).__name__}\n")
+            value = {"status": "failed", "url": "", "title": "", "bio": "", "links": [], "domain": ""}
+        results.put(("bio", value))
+
+    for name, target in (("linkedin", _linkedin), ("bio", _bio)):
+        threading.Thread(target=target, name=f"person-{name}", daemon=True).start()
+
+    pending = {"linkedin", "bio"}
+    resolved, bio = None, None
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            name, value = results.get(timeout=remaining)
+        except queue.Empty:
+            break
+        pending.discard(name)
+        if name == "linkedin":
+            resolved = value
+        else:
+            bio = value
+
+    if isinstance(resolved, person.PersonContext):
+        ctx = resolved
+    elif "linkedin" not in pending:
+        ctx.set_linkedin_status(person.LINKEDIN_FAILED)
+    if isinstance(bio, dict):
+        ctx.bio = bio
+    if pending:
+        ctx.timed_out = True
+        if "linkedin" in pending and ctx.linkedin_status is None:
+            ctx.set_linkedin_status(person.LINKEDIN_FAILED)
+        sys.stderr.write(
+            f"[Person] Resolve step hit its {PERSON_RESOLVE_SECONDS:g}s deadline; "
+            f"continuing without: {', '.join(sorted(pending))}\n"
+        )
+    return ctx
+
+
+def _person_resolve_step(
+    args: argparse.Namespace, topic: str, config: dict, requested_sources: list[str] | None,
+) -> "person.PersonContext | None":
+    """Build and resolve the person context; fill empty handle slots.
+
+    Returns None (and changes nothing) when no person flag was passed. Mock
+    runs build the context but make no lookups.
+    """
+    ctx = person.build_person_context(
+        topic, employer=args.employer, linkedin=args.linkedin, email=args.email,
+    )
+    if ctx is None:
+        return None
+    if not args.mock:
+        ctx = _resolve_person(ctx, config, requested_sources)
+    args.x_handle, args.github_user = person.apply_derived_handles(
+        ctx, x_handle=args.x_handle, github_user=args.github_user,
+    )
+    for slot, label in (("x", "X handle"), ("github", "GitHub user")):
+        if slot in ctx.derived_handles:
+            sys.stderr.write(f"[Person] {label} from the person's own links: @{ctx.derived_handles[slot]}\n")
+    if not args.x_handle and not args.no_x_handle:
+        args.no_x_handle = PERSON_NO_X_REASON
+    sys.stderr.write(
+        f"[Person] LinkedIn: {ctx.linkedin_status or 'not checked'}; "
+        f"anchors: {len(ctx.anchors)}; bio page: {(ctx.bio or {}).get('status') or 'not checked'}\n"
+    )
+    return ctx
+
+
 LAW7_HOST_PLAN_EXIT = 2
 X_HANDLE_DECISION_EXIT = 2
 
@@ -4001,6 +4180,9 @@ def _unsupported_hosted_options(args: argparse.Namespace) -> list[str]:
         ("--ig-creators", args.ig_creators is not None),
         ("--github-user", args.github_user is not None),
         ("--github-repo", args.github_repo is not None),
+        ("--employer", args.employer is not None),
+        ("--linkedin", args.linkedin is not None),
+        ("--email", args.email is not None),
         ("--trustpilot-domain", args.trustpilot_domain is not None),
         ("--amazon-query", args.amazon_query is not None),
         ("--meta-ads-page", args.meta_ads_page is not None),
@@ -4066,6 +4248,9 @@ def _main(
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
         return 0
+    person_exit = _person_inputs_gate(args, topic)
+    if person_exit is not None:
+        return person_exit
 
     original_topic = topic
     requested_window = (
@@ -4887,6 +5072,12 @@ def _main(
         # relevance floor entirely — a noisier report beats losing evidence.
         # Skipped when a handle was already supplied, when an external plan
         # owns resolution, or in mock runs.
+        # A person run resolves who the person is before the X-handle gate:
+        # a handle on their profile or bio page changes which lanes run.
+        person_ctx = _person_resolve_step(args, topic, config, requested_sources)
+        if person_ctx is not None:
+            config["_person"] = person_ctx
+
         auto_resolve_topic = topic
         if args.competitors_list is None and (args.competitors is None or comp_plan):
             from lib import planner as _planner
@@ -4912,13 +5103,16 @@ def _main(
             if resolution.get("subreddits") and not subreddits:
                 subreddits = resolution["subreddits"]
                 sys.stderr.write(f"[AutoResolve] Subreddits: {', '.join(subreddits)}\n")
-            if resolution.get("x_handle") and not args.x_handle:
+            # A person run takes handles only from the host or the person's own
+            # profile and bio page; one picked by counting mentions may be a
+            # namesake's.
+            if resolution.get("x_handle") and not args.x_handle and person_ctx is None:
                 args.x_handle = resolution["x_handle"]
                 x_handle_from_auto = True
                 sys.stderr.write(f"[AutoResolve] X handle: @{args.x_handle}\n")
             # Empty x_handle is intentional: do not invent a lexical stand-in.
             # pipeline.run treats an unidentified subject as "skip the X floor".
-            if resolution.get("github_user") and not args.github_user:
+            if resolution.get("github_user") and not args.github_user and person_ctx is None:
                 args.github_user = resolution["github_user"]
                 github_user_from_auto = True
                 sys.stderr.write(f"[AutoResolve] GitHub user: @{args.github_user}\n")
@@ -4934,8 +5128,10 @@ def _main(
                 args.trustpilot_domain = resolution["trustpilot_domain"]
                 trustpilot_domain_is_hint = True
                 sys.stderr.write(f"[AutoResolve] Trustpilot domain: {args.trustpilot_domain} (hint)\n")
-            if resolution.get("trustpilot_domain"):
-                # The brand's review-page domain is its own site.
+            if resolution.get("trustpilot_domain") and person_ctx is None:
+                # The brand's review-page domain is its own site. A person run
+                # skips it: a host whose label matches the bare name may be a
+                # namesake's site.
                 auto_official_site = resolution["trustpilot_domain"]
             if resolution.get("context"):
                 # Inject context into external_plan metadata for the planner to use

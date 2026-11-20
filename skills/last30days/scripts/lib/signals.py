@@ -311,6 +311,7 @@ _ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
     "pinterest":   9.2,  # ~log1p(10000)
     # Reactions run like Reddit upvotes: a viral post has ~2k.
     "linkedin":    7.6,  # ~log1p(2000)
+    "linkedin_profile": 7.6,  # the person's own posts, same scale
     # Per-issue/PR reactions and comments (repo snapshot cards, whose counts
     # are lifetime stars, get no score: see is_repo_snapshot). A
     # ~100-reaction thread lands near 50.
