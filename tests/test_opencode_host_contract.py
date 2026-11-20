@@ -134,6 +134,62 @@ def test_recipe_states_the_reddit_hydration_limit(recipe):
     assert "cannot rescue Reddit" in recipe
 
 
+def test_recipe_requires_date_bounded_browser_searches(recipe):
+    section = recipe.split("## 1. Check the browser", 1)[1].split("## 2.", 1)[0]
+    for token in (
+        "since:{YYYY-MM-DD}",
+        "until:{YYYY-MM-DD}",
+        "`f=live`",
+        "`t=month`",
+        "`t=week`",
+        "`old.reddit.com`",
+        "in the URL itself, not only in the envelope header",
+    ):
+        assert token in section, token
+
+
+def test_recipe_gates_the_handoff_on_in_window_posts(recipe):
+    section = recipe.split("## 2. X posts", 1)[1].split("## 3.", 1)[0]
+    for token in (
+        "check every row's `created_at` against the window",
+        "Only write the envelope when at least one in-window post survives",
+        "supplying `--x-posts` replaces the engine's X fetch",
+        "If no in-window posts came back",
+        "do not write a file and do not set the lane signal",
+    ):
+        assert token in section, token
+
+
+def test_recipe_wires_the_comparison_handoff(recipe):
+    section = recipe.split("## 6. Engine command", 1)[1]
+    for token in (
+        "`comparison.md`'s \"Without host web search\" command",
+        'if [ "${LAST30DAYS_X_HOST_LANE:-}" = "1" ]',
+        "host-agnostic",
+        "`COMPETITORS_PLAN_JSON`",
+        "`x_posts` path per entity",
+        "only when every entity's fetch returned in-window posts",
+        "A bare `--x-posts` on a comparison run exits `2`",
+    ):
+        assert token in section, token
+
+
+def test_recipe_uses_obvious_placeholders_instead_of_sample_secrets(recipe):
+    assert "1963000000000000000" not in recipe
+    assert "abc123" not in recipe
+    for token in ("{NUMERIC_POST_ID}", "{IN_WINDOW_TIMESTAMP}", "{THREAD_ID}"):
+        assert token in recipe, token
+
+
+def test_comparison_gate_is_lane_signal_only():
+    text = reference_text("comparison")
+    assert 'if [ "${LAST30DAYS_X_HOST_LANE:-}" = "1" ]; then' in text
+    section = text.split("### Without host web search", 1)[1]
+    assert '"${LAST30DAYS_HOST:-}" = "grok-bot"' not in section
+    assert "opencode-browse-lane.md" in section
+    assert "if any entity's fetch returned no posts" in section
+
+
 def test_configuration_documents_the_lane_and_footer_label():
     text = CONFIGURATION.read_text(encoding="utf-8")
     for token in (

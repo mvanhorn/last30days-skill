@@ -89,7 +89,7 @@ The cleanup trap removes the competitors plan file after research. For a later H
 
 ### Without host web search
 
-On a Grok Bot with the official X connector, follow `grok-bot-x.md` to fetch and write one envelope per entity before this command. Replace `COMPETITORS_PLAN_JSON` with JSON keyed by every entity name, including the main one, containing each envelope's absolute path as `x_posts`. When an envelope has `from` or `mention` calls, its plan entry must also contain the matching `x_handle`; when it has `related` calls, include their handles as an `x_related` array. For example, `{"Main Brand":{"x_posts":"/tmp/main.json","x_handle":"mainbrand"},"Peer Brand":{"x_posts":"/tmp/peer.json","x_handle":"peerbrand"}}`. Set `TOPIC_A_HANDLE` below to the main entity's matching handle and `TOPIC_A_RELATED` to its comma-separated related handles, or leave them empty when no handles are known. The main plan entry validates its envelope, while the outer flags target its pipeline run. With no known handle, fetch only a topic call and omit handle fields. Run the command in the same shell as the envelope setup so its parent cleanup trap remains active. Other hosts use this command without a competitors plan.
+When a host-fetched X lane is active (`LAST30DAYS_X_HOST_LANE=1`), follow that host's recipe (`grok-bot-x.md` for Grok Bot's connector, `opencode-browse-lane.md` for OpenCode's paired browser) to fetch and write one envelope per entity before this command. Replace `COMPETITORS_PLAN_JSON` with JSON keyed by every entity name, including the main one, containing each envelope's absolute path as `x_posts`. When an envelope has `from` or `mention` calls, its plan entry must also contain the matching `x_handle`; when it has `related` calls, include their handles as an `x_related` array. For example, `{"Main Brand":{"x_posts":"/tmp/main.json","x_handle":"mainbrand"},"Peer Brand":{"x_posts":"/tmp/peer.json","x_handle":"peerbrand"}}`. Set `TOPIC_A_HANDLE` below to the main entity's matching handle and `TOPIC_A_RELATED` to its comma-separated related handles, or leave them empty when no handles are known. The main plan entry validates its envelope, while the outer flags target its pipeline run. With no known handle, fetch only a topic call and omit handle fields. Run the command in the same shell as the envelope setup so its parent cleanup trap remains active. Only set the lane signal when every entity has an envelope; if any entity's fetch returned no posts, leave the signal unset and use this command without a competitors plan so each entity's normal X search can still run.
 
 ```bash
 (
@@ -102,7 +102,7 @@ TOPIC_EOF
 COMPARISON_TOPIC=${COMPARISON_TOPIC%$'\n'}
 MAIN_TARGETING=()
 COMPETITORS_PLAN_ARGS=()
-if [ "${LAST30DAYS_HOST:-}" = "grok-bot" ] && [ "${LAST30DAYS_X_HOST_LANE:-}" = "1" ]; then
+if [ "${LAST30DAYS_X_HOST_LANE:-}" = "1" ]; then
   TOPIC_A_HANDLE=$(cat <<'HANDLE_EOF'
 {TOPIC_A_HANDLE}
 HANDLE_EOF
@@ -129,7 +129,7 @@ fi
 )
 ```
 
-This branch has no host-authored `--plan`. The only no-web-search `--competitors-plan` is the Grok Bot connector handoff above. If the user supplied explicit targeting flags, pass those values through quoted variables as above. Do not fabricate a host query plan or pretend that empty `## Resolved Entities` fields prove Step 0.55 was skipped on a host that cannot run it.
+This branch has no host-authored `--plan`. The only no-web-search `--competitors-plan` is the host-fetched X handoff above, which any host with a paired lane can use; without the lane signal the plan file stays empty and no per-entity envelopes are passed. If the user supplied explicit targeting flags, pass those values through quoted variables as above. Do not fabricate a host query plan or pretend that empty `## Resolved Entities` fields prove Step 0.55 was skipped on a host that cannot run it.
 
 Topic A (the main topic, first in the vs-string) uses outer `--x-handle`, `--x-related`, `--subreddits`, `--github-user`, `--github-repo`, `--trustpilot-domain`, `--tiktok-*`, `--ig-creators` as usual. Topics B and C get their targeting from `--competitors-plan` entries (keyed by entity name, case-insensitive) — a main-topic entry does not override those outer targeting flags, so the main topic's Trustpilot domain must ride the outer flag. Per-entity `x_posts` entries are the explicit exception: they can supply the main entity's connector envelope as well as peer envelopes.
 
