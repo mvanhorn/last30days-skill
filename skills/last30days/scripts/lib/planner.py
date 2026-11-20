@@ -276,7 +276,8 @@ def validate_external_plan(raw: dict) -> None:
 
     omit_sources = raw.get("omit_sources", [])
     if not isinstance(omit_sources, list) or not all(
-        source in HOST_PLAN_BACKFILL_SOURCES for source in omit_sources
+        isinstance(source, str) and source in HOST_PLAN_BACKFILL_SOURCES
+        for source in omit_sources
     ):
         raise ValueError(
             "omit_sources must be an array of source names eligible for host-plan backfill: "

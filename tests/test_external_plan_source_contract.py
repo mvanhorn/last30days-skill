@@ -1,9 +1,12 @@
 """Unavailable external-plan sources must never broaden retrieval."""
 
+import json
+import sys
 from unittest.mock import patch
 
 import pytest
 
+import last30days as cli
 from lib import pipeline, planner
 
 
@@ -156,7 +159,34 @@ def test_omitted_trustpilot_is_not_probed_or_backfilled():
     assert "trustpilot" not in fetched
 
 
-@pytest.mark.parametrize("omissions", ["arxiv", None, [True], ["arxive"], ["amazon"]])
+@pytest.mark.parametrize("mode", ["--mock", "--diagnose", "--preflight"])
+def test_cli_omission_skips_trustpilot_readiness_check(mode, tmp_path, capsys):
+    plan = dict(plan_with(["reddit"]), omit_sources=["trustpilot"])
+    config = {"EXCLUDE_SOURCES": "digg"}
+    with (
+        patch.object(sys, "argv", [
+            "last30days.py", "test topic", mode, "--no-browser-cookies",
+            "--plan", json.dumps(plan), "--search", "reddit,trustpilot",
+            "--emit", "json", "--save-dir", str(tmp_path),
+        ]),
+        patch.object(cli.env, "get_config", return_value=config),
+        patch.object(pipeline, "which", side_effect=lambda command: command),
+        patch.object(pipeline.trustpilot, "can_run_now", return_value={"can_run": True}) as can_run,
+    ):
+        assert cli.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    can_run.assert_not_called()
+    assert config["EXCLUDE_SOURCES"] == "digg"
+    if mode == "--diagnose":
+        assert not payload["trustpilot_can_run"]
+        assert {"digg", "trustpilot"}.isdisjoint(payload["available_sources"])
+    elif mode == "--preflight":
+        assert {"digg", "trustpilot"}.isdisjoint(payload["network"]["available_sources"])
+
+
+@pytest.mark.parametrize(
+    "omissions", ["arxiv", None, [True], [["arxiv"]], ["arxive"], ["amazon"]],
+)
 def test_host_plan_rejects_invalid_omissions(omissions):
     with pytest.raises(ValueError, match="omit_sources"):
         planner.validate_external_plan(dict(plan_with(["reddit"]), omit_sources=omissions))

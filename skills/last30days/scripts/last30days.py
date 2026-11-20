@@ -4404,9 +4404,10 @@ def _main(
 
     if args.preflight:
         requested_sources = resolve_requested_sources(args.search, config)
-        diag = pipeline.diagnose(config, requested_sources, safe=True)
+        preflight_config = pipeline.with_plan_source_omissions(config, external_plan)
+        diag = pipeline.diagnose(preflight_config, requested_sources, safe=True)
         preflight = permission_preflight.build(
-            config,
+            preflight_config,
             diag,
             planned_save_dir=args.save_dir,
             report_on_save_dir=(
@@ -4933,7 +4934,8 @@ def _main(
             return 2
     if args.diagnose:
         diag = pipeline.diagnose(
-            config, requested_sources, safe=True,
+            pipeline.with_plan_source_omissions(config, external_plan),
+            requested_sources, safe=True,
             x_envelope=x_posts_envelope is not None,
         )
         if args.include_research_backend:
@@ -5020,7 +5022,8 @@ def _main(
         return law7_exit
 
     diag = pipeline.diagnose(
-        config, requested_sources, safe=args.mock,
+        pipeline.with_plan_source_omissions(config, external_plan),
+        requested_sources, safe=args.mock,
         x_envelope=x_posts_envelope is not None,
         probe_x=(
             (external_plan is None or pipeline._external_plan_names_source(external_plan, "x"))

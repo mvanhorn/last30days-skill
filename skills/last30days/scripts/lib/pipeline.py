@@ -406,6 +406,17 @@ def _excluded_sources(config: dict[str, Any]) -> set[str]:
     }
 
 
+def with_plan_source_omissions(
+    config: dict[str, Any], plan: dict | None,
+) -> dict[str, Any]:
+    """Apply a validated plan's exclusions without changing shared configuration."""
+    omissions = (plan or {}).get("omit_sources")
+    if not omissions:
+        return config
+    excluded = _excluded_sources(config).union(omissions)
+    return {**config, "EXCLUDE_SOURCES": ",".join(sorted(excluded))}
+
+
 class NoRequestedSourceAvailable(RuntimeError):
     """None of the sources the user asked for with --search is configured."""
 
@@ -2185,7 +2196,10 @@ def diagnose(
         "brightdata_authenticated": brightdata_status["brightdata_authenticated"],
         # Fresh browser session or a cached company record: the host resolves
         # a --trustpilot-domain only then. Local reads; never opens a browser.
-        "trustpilot_can_run": trustpilot.can_run_now(config)["can_run"],
+        "trustpilot_can_run": (
+            "trustpilot" not in _excluded_sources(config)
+            and trustpilot.can_run_now(config)["can_run"]
+        ),
         # safe=True (doctor/--diagnose/--preflight) must stay network-free:
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
@@ -2342,10 +2356,10 @@ def run(
     reddit_threads: reddit_envelope.Envelope | None = None,
 ) -> schema.Report:
     _check_research(config)
-    excluded_sources = _excluded_sources(config)
     if external_plan is not None:
         planner.validate_external_plan(external_plan)
-        excluded_sources.update(external_plan.get("omit_sources", ()))
+        config = with_plan_source_omissions(config, external_plan)
+    excluded_sources = _excluded_sources(config)
     # ``suppress_x_host_lane`` is distinct from ``internal_subrun``: comparison
     # entities share the latter and must still honor the connector lane;
     # only discovery enrichment passes set the former.
@@ -5002,7 +5016,7 @@ def _ensure_unplanned_lanes_in_host_plan(
         "Planner",
         "Added installed/opted-in/requested sources absent from every --plan subquery to "
         f"{plan.subqueries[0].label}: {', '.join(missing)} "
-        "(set EXCLUDE_SOURCES to skip them).",
+        "(use EXCLUDE_SOURCES or, for optional lanes, plan omit_sources to skip them).",
         tty_only=False,
     )
 
