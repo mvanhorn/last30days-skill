@@ -4634,6 +4634,7 @@ def _read_person_posts(
 
 def _split_person_posts(
     posts: list[dict[str, Any]], *, author: str, from_date: str, to_date: str,
+    owner_id: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(in-window raw items, older-activity entries newest first).
 
@@ -4655,7 +4656,12 @@ def _split_person_posts(
         if key:
             seen.add(key)
         text = str(post.get("text") or "").strip()
-        is_reshare = bool(post.get("is_reshare"))
+        # A post another member wrote shows on the profile's activity because
+        # the person shared it; it is not their own words.
+        post_author = str(post.get("author_id") or "").lower()
+        is_reshare = bool(post.get("is_reshare")) or bool(
+            owner_id and post_author and post_author != owner_id.lower()
+        )
         if from_date <= day <= to_date:
             in_window.append({
                 "id": post.get("id"),
@@ -4697,6 +4703,7 @@ def _fetch_person_posts(
             posts, failure = _read_person_posts(profile_url, config, from_date)
         in_window, older = _split_person_posts(
             posts, author=author, from_date=from_date, to_date=to_date,
+            owner_id=profile_url.rstrip("/").rsplit("/", 1)[-1],
         )
     except Exception as exc:  # noqa: BLE001 - a lane failure is an outcome
         return [], {

@@ -270,3 +270,19 @@ def test_block_is_absent_in_non_person_runs():
         render.render_full(_report()),
     ):
         assert "## Person Profile" not in rendered
+
+
+def test_identity_basis_names_the_anchors_once_and_leaves_out_the_profile_url():
+    url = "https://www.linkedin.com/in/dana-okafor"
+    person = _profile(
+        linkedin_url=url,
+        anchors=["Northwind Freight", url],
+        match_basis=["LinkedIn URL supplied by user"],
+    )
+    line = next(
+        line for line in _block(render.render_compact(_report(person))).splitlines()
+        if line.startswith("- Identity basis:")
+    )
+    assert "results kept only when they name Northwind Freight" in line
+    assert "linkedin.com" not in line.replace("\\", "")
+    assert line.count("LinkedIn URL supplied by user") == 1

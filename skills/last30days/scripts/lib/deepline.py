@@ -403,6 +403,7 @@ def parse_posts(response: Dict[str, Any]) -> Dict[str, Any]:
             "is_reshare": is_reshare,
             "author": _text(author.get("name")),
             "author_url": _text(author.get("linkedinUrl")) or None,
+            "author_id": _text(author.get("publicIdentifier")) or None,
             "engagement": {
                 key: engagement[key]
                 for key in ("likes", "comments", "shares")

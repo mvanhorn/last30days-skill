@@ -155,6 +155,23 @@ def test_reshares_carry_the_flag_and_render_as_reshares():
     assert "Reshared: Northwind Freight opens a new cross-dock" in rendered
 
 
+def test_a_post_another_member_wrote_counts_as_a_reshare():
+    ctx = _context()
+    other = _element(1, 3, "Episode 12 with Dana Okafor is out now.")
+    other["author"] = {"name": "Lee Marsh", "linkedinUrl": "https://www.linkedin.com/in/lee-marsh",
+                       "publicIdentifier": "lee-marsh"}
+    own = _element(2, 5, "Our Rotterdam cross-dock is live.")
+    own["author"]["publicIdentifier"] = "dana-okafor"
+    request, _ = _fake_http([other, own])
+    report = _run({"DEEPLINE_API_KEY": "test-key", "_person": ctx}, request=request)
+
+    flags = {item.url: item.metadata["is_reshare"] for item in report.items_by_source["linkedin_profile"]}
+    assert flags == {
+        "https://www.linkedin.com/posts/dana-okafor-1": True,
+        "https://www.linkedin.com/posts/dana-okafor-2": False,
+    }
+
+
 def test_posts_read_failure_is_recorded_and_the_run_completes():
     ctx = _context()
     request, _ = _fake_http(error=http.HTTPError("server error", status_code=500))

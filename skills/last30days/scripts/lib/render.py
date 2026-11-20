@@ -2604,11 +2604,16 @@ def _person_profile_block(report: schema.Report) -> list[str]:
     out = ["## Person Profile", ""]
 
     basis = []
-    anchors = [_person_text(a, _PERSON_SHORT_CHARS) for a in person.get("anchors") or []]
+    # The profile URL is an anchor too, but the match basis below already says
+    # how it was found; listing it again only repeats it.
+    anchors = [
+        _person_text(a, _PERSON_SHORT_CHARS) for a in person.get("anchors") or []
+        if not str(a).lower().startswith(("http://", "https://"))
+    ]
     if any(anchors):
-        basis.append("matches " + ", ".join(a for a in anchors if a))
-    if person.get("linkedin_url"):
-        basis.append("LinkedIn URL given by the user")
+        basis.append("results kept only when they name " + ", ".join(a for a in anchors if a))
+    # How the LinkedIn URL was found (supplied, or looked up and verified)
+    # is in match_basis; a looked-up URL was not given by the user.
     basis.extend(
         text for text in (
             _person_text(b, _PERSON_HEADLINE_CHARS) for b in person.get("match_basis") or []
