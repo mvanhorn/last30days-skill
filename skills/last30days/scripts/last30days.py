@@ -3427,6 +3427,122 @@ def _person_inputs_gate(args: argparse.Namespace, topic: str) -> int | None:
     return None
 
 
+# Wall time for the whole person resolve step, shared by every call in it.
+PERSON_RESOLVE_SECONDS = 60.0
+PERSON_NO_X_REASON = "person run: no X account linked from the person's LinkedIn profile or employer bio"
+
+
+def _resolve_person(
+    ctx: "person.PersonContext", config: dict, requested_sources: list[str] | None,
+) -> "person.PersonContext":
+    """Run the LinkedIn resolution and the employer bio lane concurrently under
+    one shared deadline; return the context with whatever resolved in time.
+
+    Daemon threads, not an executor: a hung lane must not hold the process
+    open past the deadline. The LinkedIn lane works on its own copy of the
+    context, so a straggler can never write to the one the run continues with.
+    """
+    import copy
+    import queue
+    import threading
+
+    from lib import employer_site, person_linkedin
+
+    deadline = time.monotonic() + PERSON_RESOLVE_SECONDS
+    person_linkedin.anchor_supplied_url(ctx)
+    linkedin_ctx = copy.deepcopy(ctx)
+    results: "queue.Queue[tuple[str, object]]" = queue.Queue()
+    run_id = uuid.uuid4().hex
+
+    def _linkedin() -> None:
+        try:
+            value: object = person_linkedin.resolve_linkedin(
+                linkedin_ctx, config, deadline_monotonic=deadline, run_id=run_id,
+                requested_sources=requested_sources,
+            )
+        except Exception as exc:  # noqa: BLE001 - a lane failure is a status
+            sys.stderr.write(f"[Person] LinkedIn resolution failed: {type(exc).__name__}\n")
+            value = None
+        results.put(("linkedin", value))
+
+    def _bio() -> None:
+        try:
+            value: object = employer_site.find_bio(
+                ctx.full_name, domain=ctx.employer_domain or None,
+                employer_name=ctx.employer_name or None, email_domain=ctx.email_domain or None,
+                deadline_monotonic=deadline, site_search=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a lane failure is a status
+            sys.stderr.write(f"[Person] Employer bio lane failed: {type(exc).__name__}\n")
+            value = {"status": "failed", "url": "", "title": "", "bio": "", "links": [], "domain": ""}
+        results.put(("bio", value))
+
+    for name, target in (("linkedin", _linkedin), ("bio", _bio)):
+        threading.Thread(target=target, name=f"person-{name}", daemon=True).start()
+
+    pending = {"linkedin", "bio"}
+    resolved, bio = None, None
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            name, value = results.get(timeout=remaining)
+        except queue.Empty:
+            break
+        pending.discard(name)
+        if name == "linkedin":
+            resolved = value
+        else:
+            bio = value
+
+    if isinstance(resolved, person.PersonContext):
+        ctx = resolved
+    elif "linkedin" not in pending:
+        ctx.set_linkedin_status("failed")
+    if isinstance(bio, dict):
+        ctx.bio = bio
+    if pending:
+        ctx.timed_out = True
+        if "linkedin" in pending and ctx.linkedin_status is None:
+            ctx.set_linkedin_status("failed")
+        sys.stderr.write(
+            f"[Person] Resolve step hit its {PERSON_RESOLVE_SECONDS:g}s deadline; "
+            f"continuing without: {', '.join(sorted(pending))}\n"
+        )
+    return ctx
+
+
+def _person_resolve_step(
+    args: argparse.Namespace, topic: str, config: dict, requested_sources: list[str] | None,
+) -> "person.PersonContext | None":
+    """Build and resolve the person context; fill empty handle slots.
+
+    Returns None (and changes nothing) when no person flag was passed. Mock
+    runs build the context but make no lookups.
+    """
+    ctx = person.build_person_context(
+        topic, employer=args.employer, linkedin=args.linkedin, email=args.email,
+    )
+    if ctx is None:
+        return None
+    if not args.mock:
+        ctx = _resolve_person(ctx, config, requested_sources)
+    args.x_handle, args.github_user = person.apply_derived_handles(
+        ctx, x_handle=args.x_handle, github_user=args.github_user,
+    )
+    for slot, label in (("x", "X handle"), ("github", "GitHub user")):
+        if slot in ctx.derived_handles:
+            sys.stderr.write(f"[Person] {label} from the person's own links: @{ctx.derived_handles[slot]}\n")
+    if not args.x_handle and not args.no_x_handle:
+        args.no_x_handle = PERSON_NO_X_REASON
+    sys.stderr.write(
+        f"[Person] LinkedIn: {ctx.linkedin_status or 'not checked'}; "
+        f"anchors: {len(ctx.anchors)}; bio page: {(ctx.bio or {}).get('status') or 'not checked'}\n"
+    )
+    return ctx
+
+
 LAW7_HOST_PLAN_EXIT = 2
 X_HANDLE_DECISION_EXIT = 2
 
@@ -4950,6 +5066,12 @@ def _main(
         # relevance floor entirely — a noisier report beats losing evidence.
         # Skipped when a handle was already supplied, when an external plan
         # owns resolution, or in mock runs.
+        # A person run resolves who the person is before the X-handle gate:
+        # a handle on their profile or bio page changes which lanes run.
+        person_ctx = _person_resolve_step(args, topic, config, requested_sources)
+        if person_ctx is not None:
+            config["_person"] = person_ctx
+
         auto_resolve_topic = topic
         if args.competitors_list is None and (args.competitors is None or comp_plan):
             from lib import planner as _planner
@@ -4975,13 +5097,16 @@ def _main(
             if resolution.get("subreddits") and not subreddits:
                 subreddits = resolution["subreddits"]
                 sys.stderr.write(f"[AutoResolve] Subreddits: {', '.join(subreddits)}\n")
-            if resolution.get("x_handle") and not args.x_handle:
+            # A person run takes handles only from the host or the person's own
+            # profile and bio page; one picked by counting mentions may be a
+            # namesake's.
+            if resolution.get("x_handle") and not args.x_handle and person_ctx is None:
                 args.x_handle = resolution["x_handle"]
                 x_handle_from_auto = True
                 sys.stderr.write(f"[AutoResolve] X handle: @{args.x_handle}\n")
             # Empty x_handle is intentional: do not invent a lexical stand-in.
             # pipeline.run treats an unidentified subject as "skip the X floor".
-            if resolution.get("github_user") and not args.github_user:
+            if resolution.get("github_user") and not args.github_user and person_ctx is None:
                 args.github_user = resolution["github_user"]
                 github_user_from_auto = True
                 sys.stderr.write(f"[AutoResolve] GitHub user: @{args.github_user}\n")

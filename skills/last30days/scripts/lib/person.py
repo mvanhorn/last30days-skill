@@ -216,3 +216,99 @@ def build_person_context(
             ctx.add_anchor(domain)
     ctx.identity_weak = not ctx.anchors and not ctx.linkedin_url
     return ctx
+
+
+# -- handle discovery ----------------------------------------------------------
+
+_NON_SITE_HOSTS = (
+    "linkedin.com", "x.com", "twitter.com", "github.com", "facebook.com",
+    "instagram.com", "youtube.com", "tiktok.com", "threads.net", "bsky.app",
+    "medium.com", "substack.com",
+)
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _company_markers(ctx: PersonContext) -> list[str]:
+    """Compact forms of the employer's name and site labels. A handle or site
+    containing one is the company's account, not the person's."""
+    from . import company_names
+
+    markers = [_compact(company_names.name_key(ctx.employer_name))]
+    for domain in (ctx.employer_domain, ctx.email_domain):
+        if domain:
+            markers.append(_compact(domain.split(".")[0]))
+    return [marker for marker in markers if len(marker) >= 3]
+
+
+def _is_company(name: str, ctx: PersonContext) -> bool:
+    compact = _compact(name)
+    return any(marker in compact for marker in _company_markers(ctx))
+
+
+def _same_or_sub(host: str, domain: str) -> bool:
+    return bool(host and domain) and (host == domain or host.endswith("." + domain))
+
+
+def discover_handles(ctx: PersonContext) -> dict:
+    """X handle, GitHub user and personal site from the person's own links.
+
+    Links from the person's block on the employer's bio page come before the
+    profile's listed websites. A link whose handle or host names the employer
+    (its name key or its domain) is the company's account and is skipped.
+    Returns only what was found, e.g. ``{"x": ..., "github": ..., "site": ...}``.
+    """
+    from . import resolve
+
+    links = list((ctx.bio or {}).get("links") or []) + list((ctx.profile or {}).get("websites") or [])
+    found: dict = {}
+    for raw in links:
+        url = str(raw or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        x_match = resolve._X_PROFILE_LINK.match(url)
+        if x_match:
+            handle = x_match.group(1)
+            if "x" not in found and handle.lower() not in resolve._X_NON_ACCOUNTS and not _is_company(handle, ctx):
+                found["x"] = handle
+            continue
+        gh_match = resolve._GITHUB_OWNER_LINK.match(url)
+        if gh_match:
+            user = gh_match.group(1)
+            if "github" not in found and user.lower() not in resolve._GITHUB_NON_OWNERS and not _is_company(user, ctx):
+                found["github"] = user.lower()
+            continue
+        host = _site_domain(url)
+        if (
+            "site" in found
+            or not host
+            or any(_same_or_sub(host, social) for social in _NON_SITE_HOSTS)
+            or any(_same_or_sub(host, d) for d in (ctx.employer_domain, ctx.email_domain))
+            or _is_company(host.rsplit(".", 1)[0], ctx)
+        ):
+            continue
+        found["site"] = url
+    return found
+
+
+def apply_derived_handles(
+    ctx: PersonContext, *, x_handle: str | None, github_user: str | None,
+) -> tuple[str | None, str | None]:
+    """Fill empty handle slots from the person's own links.
+
+    Host-passed handles always win. What fills a slot (and any personal site)
+    is recorded in ``ctx.derived_handles``, which marks it as discovered by
+    the engine rather than supplied. Returns the (x_handle, github_user) to use.
+    """
+    found = discover_handles(ctx)
+    derived: dict = {}
+    if not x_handle and found.get("x"):
+        x_handle = derived["x"] = found["x"]
+    if not github_user and found.get("github"):
+        github_user = derived["github"] = found["github"]
+    if found.get("site"):
+        derived["site"] = found["site"]
+    ctx.derived_handles = derived
+    return x_handle, github_user
