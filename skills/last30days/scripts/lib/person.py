@@ -146,6 +146,12 @@ class PersonContext:
     older_posts: list[dict] = field(default_factory=list)
     dropped_counts: dict = field(default_factory=dict)
     timed_out: bool = False
+    # Posts from the person's own LinkedIn inside the window, and every
+    # first-party item (LinkedIn posts plus the resolved X and GitHub
+    # accounts) inside the window. Older activity shows only when the
+    # second count is thin.
+    in_window_posts: int = 0
+    first_party_in_window: int = 0
 
     def add_anchor(self, anchor: str) -> None:
         """Add a text anchor once, ignoring case."""
@@ -178,6 +184,8 @@ class PersonContext:
             "older_posts": list(self.older_posts),
             "dropped_counts": dict(self.dropped_counts),
             "timed_out": self.timed_out,
+            "in_window_posts": self.in_window_posts,
+            "first_party_in_window": self.first_party_in_window,
         }
 
 
