@@ -58,7 +58,7 @@ class _RetrievalReached(Exception):
     pass
 
 
-def _run_main(monkeypatch, argv, *, websites=(), bio=None, config=None, host_env=None, auto=None):
+def _run_main(monkeypatch, argv, *, websites=(), bio=None, config=None, host_env=None, auto=None, socials=None):
     for name in ("LAST30DAYS_API_KEY", "LAST30DAYS_API_BASE", "LAST30DAYS_MEMORY_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
@@ -87,7 +87,7 @@ def _run_main(monkeypatch, argv, *, websites=(), bio=None, config=None, host_env
          mock.patch.object(http, "request", fake_request), \
          mock.patch.object(employer_site, "find_bio", bio_lane), \
          mock.patch("lib.resolve.auto_resolve", mock.Mock(return_value=dict(auto or {}))), \
-         mock.patch("lib.resolve.official_site_socials", mock.Mock(return_value={"x_handle": "", "github_user": ""})), \
+         mock.patch("lib.resolve.official_site_socials", mock.Mock(return_value=dict(socials or {"x_handle": "", "github_user": ""}))), \
          mock.patch.object(cli.ui, "ProgressDisplay", return_value=mock.Mock()), \
          redirect_stdout(io.StringIO()), redirect_stderr(err):
         try:
@@ -160,6 +160,18 @@ def test_person_run_ignores_handles_auto_resolve_picked_by_mention_count(monkeyp
     rc, err, run_mock, _ = _run_main(
         monkeypatch, [NAME, "--employer", EMPLOYER, "--auto-resolve"],
         auto={"x_handle": "dana_namesake", "github_user": "dana-namesake"}, host_env=HOSTED,
+    )
+    assert rc is None, err
+    assert run_mock.call_args.kwargs["x_handle"] is None
+    assert run_mock.call_args.kwargs["github_user"] is None
+
+
+def test_person_run_ignores_handles_from_an_auto_resolved_official_site(monkeypatch):
+    # A host whose label matches the bare name may be a namesake's site.
+    rc, err, run_mock, _ = _run_main(
+        monkeypatch, [NAME, "--employer", EMPLOYER, "--auto-resolve"],
+        auto={"trustpilot_domain": "danaokafor.example"},
+        socials={"x_handle": "dana_namesake", "github_user": "dana-namesake"}, host_env=HOSTED,
     )
     assert rc is None, err
     assert run_mock.call_args.kwargs["x_handle"] is None

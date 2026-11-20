@@ -126,6 +126,38 @@ def test_a_team_page_gives_only_the_persons_own_block(monkeypatch):
     assert site.asked == ["https://northwind.example/team"]
 
 
+FLAT_TEAM_PAGE = """<html><body><main><section class="team">
+  <h3>Dana Okafor</h3><p>Head of Logistics Engineering</p>
+  <h3>Marcus Lee</h3><p>Chief Financial Officer</p><a href="https://x.com/mlee">X</a>
+</section></main></body></html>"""
+
+LIST_TEAM_PAGE = """<html><body><main><div class="team"><ul>
+  <li>Dana Okafor</li>
+  <li>Marcus Lee, Chief Financial Officer <a href="https://x.com/mlee">X</a></li>
+</ul></div></main></body></html>"""
+
+BIO_PAGE = """<html><body><main><article>
+  <h1>Dana Okafor</h1><h2>About</h2><p>Dana builds the routing software.</p>
+  <a href="https://x.com/danaokafor">X</a>
+</article></main></body></html>"""
+
+
+@pytest.mark.parametrize("page", [FLAT_TEAM_PAGE, LIST_TEAM_PAGE], ids=["flat-section", "list"])
+def test_a_shared_team_block_gives_no_colleague_links(monkeypatch, page):
+    _serve(monkeypatch, _Site(pages={"https://northwind.example/team": page}))
+    result, _failures = _find(domain="northwind.example")
+
+    assert result["status"] == "found"
+    assert result["links"] == []
+
+
+def test_a_single_bio_page_keeps_the_persons_links(monkeypatch):
+    _serve(monkeypatch, _Site(pages={"https://northwind.example/team": BIO_PAGE}))
+    result, _failures = _find(domain="northwind.example")
+
+    assert result["links"] == ["https://x.com/danaokafor"]
+
+
 def test_a_page_with_only_the_first_name_is_not_kept(monkeypatch):
     page = "<html><body><main><p>Questions about shipping? Ask Dana at the front desk.</p></main></body></html>"
     _serve(monkeypatch, _Site(pages={"https://northwind.example/team": page}))

@@ -71,7 +71,7 @@ class FakeHTTP:
         self.calls: list[dict] = []
 
     def __call__(self, method, url, headers=None, json_data=None, params=None, **kwargs):
-        self.calls.append({"method": method, "url": url, "json": json_data, "params": params})
+        self.calls.append({"method": method, "url": url, "json": json_data, "params": params, "kwargs": kwargs})
         for prefix in self.fail:
             if url.startswith(prefix):
                 raise http.HTTPError("HTTP 500", status_code=500)
@@ -153,6 +153,26 @@ class TestLookedUpCandidates:
         assert ctx.profile["headline"] == "VP Operations at Northwind Freight"
         assert any("Northwind Freight" in basis for basis in ctx.match_basis)
         assert any("self-reported" in basis for basis in ctx.match_basis)
+
+    def test_exa_pre_search_is_bounded_by_the_resolve_deadline(self, fake):
+        http_fake = fake(lookup=LOOKUP_URL, profiles={LOOKUP_URL: _profile(LOOKUP_URL, "Northwind Freight")})
+        deadline = time.monotonic() + 60
+        person_linkedin.resolve_linkedin(
+            _ctx(employer=EMPLOYER), {**DEEPLINE_KEY, **EXA_KEY}, deadline_monotonic=deadline, run_id="run-1",
+        )
+        (exa_call,) = http_fake.to(EXA)
+        assert exa_call["kwargs"]["retries"] == 1
+        assert exa_call["kwargs"]["deadline_monotonic"] <= deadline
+
+    def test_exa_pre_search_is_skipped_when_the_deadline_leaves_room_only_for_the_paid_read(self, fake):
+        http_fake = fake(lookup=LOOKUP_URL, profiles={LOOKUP_URL: _profile(LOOKUP_URL, "Northwind Freight")})
+        ctx = _ctx(employer=EMPLOYER)
+        person_linkedin.resolve_linkedin(
+            ctx, {**DEEPLINE_KEY, **EXA_KEY}, deadline_monotonic=time.monotonic() + 20, run_id="run-1",
+        )
+        assert http_fake.to(EXA) == []
+        assert len(http_fake.lookups) == 1
+        assert ctx.linkedin_status == "checked"
 
     def test_exa_result_without_employer_text_is_never_read(self, fake):
         http_fake = fake(

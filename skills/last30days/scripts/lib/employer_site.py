@@ -59,6 +59,8 @@ _SKIP_TAGS = frozenset({"script", "style", "noscript", "template", "svg", "head"
 _CHROME_TAGS = frozenset({"header", "footer", "nav", "aside"})
 # Elements that hold one person's card on a team page.
 _BLOCK_TAGS = frozenset({"article", "li", "section", "div", "figure", "tr", "td", "dd"})
+# Repeated siblings of these mean a list of people, not one person's card.
+_ENTRY_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6", "li", "article", "figure", "tr"})
 # Past these, the name has no block of its own.
 _PAGE_TAGS = frozenset({"main", "body", "html", "root"})
 
@@ -175,6 +177,22 @@ def _person_block(holder: _Node, name: list[str]) -> _Node | None:
     return None
 
 
+def _shared_with_others(holder: _Node, block: _Node) -> bool:
+    """True when the block holds a list of people rather than one person: on
+    the way up from the name, an entry (heading, list item, card) has a
+    sibling entry of the same kind, so a link in the block may be a
+    colleague's."""
+    node = holder
+    while node is not block and node.parent is not None:
+        if node.tag in _ENTRY_TAGS and any(
+            isinstance(sibling, _Node) and sibling is not node and sibling.tag == node.tag
+            for sibling in node.parent.children
+        ):
+            return True
+        node = node.parent
+    return False
+
+
 def _title_line(segments: list[tuple[str, bool]], name: list[str]) -> str:
     """The short line after the name that reads as a job title, or ''."""
     after = None
@@ -249,6 +267,14 @@ def _read_page(html: str, page_url: str, name: list[str], site_host: str) -> dic
     if block is None:
         return {"title": "", "bio": _fence(_window(_text(root), name)), "links": []}
     segments = list(_segments(block))
+    if _shared_with_others(holder, block):
+        # Several people share the block: keep the text near the name and
+        # take no links, since any of them may be a colleague's.
+        return {
+            "title": _title_line(segments, name),
+            "bio": _fence(_window(_text(block), name)),
+            "links": [],
+        }
     return {
         "title": _title_line(segments, name),
         "bio": _fence(" ".join(text for text, _anchor in segments)),

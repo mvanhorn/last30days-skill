@@ -26,6 +26,7 @@ Every outcome lands on the ``PersonContext``: ``linkedin_status``,
 from __future__ import annotations
 
 import re
+import time
 from typing import Iterable
 from urllib.parse import urlsplit
 
@@ -35,6 +36,9 @@ from .person import PersonContext, normalize_linkedin_url
 
 # Exa people results read for candidates.
 EXA_RESULT_COUNT = 5
+# The free pre-search gets at most this long, and runs only when enough of the
+# shared deadline is left for the paid profile read after it.
+EXA_SECONDS = 15.0
 # History entries, newest first, that count as a recent position.
 RECENT_POSITIONS = 3
 # Current-role employers added as anchors from an anchored profile.
@@ -201,15 +205,21 @@ def _read_supplied(ctx, config, client, deadline, requested_sources) -> None:
     ctx.set_linkedin_status(person.LINKEDIN_NO_KEY)
 
 
-def _exa_candidates(ctx: PersonContext, config: dict) -> list[str]:
+def _exa_candidates(ctx: PersonContext, config: dict, deadline: float | None = None) -> list[str]:
     """LinkedIn profile URLs from an Exa people search whose result text names
     the employer. The query is the name and employer only."""
     key = grounding.exa_api_key(config)
     if not key or not ctx.employer_name:
         return []
+    exa_deadline = time.monotonic() + EXA_SECONDS
+    if deadline is not None:
+        if deadline - time.monotonic() < EXA_SECONDS + deepline.MIN_ATTEMPT_SECONDS:
+            return []
+        exa_deadline = min(exa_deadline, deadline)
     try:
         results, _artifact = grounding.exa_people_search(
             f"{ctx.full_name} {ctx.employer_name}", key, count=EXA_RESULT_COUNT,
+            deadline_monotonic=exa_deadline, retries=1,
         )
     except Exception as exc:  # noqa: BLE001 - a free pre-search failing just skips it
         _log(f"Exa people search failed: {type(exc).__name__}")
@@ -262,7 +272,7 @@ def _look_up(ctx, config, client, deadline) -> None:
             failed = failed or read[url] is None
         return read[url]
 
-    for url in _exa_candidates(ctx, config)[:1]:
+    for url in _exa_candidates(ctx, config, deadline)[:1]:
         profile = read_profile(url)
         if profile is None:
             continue

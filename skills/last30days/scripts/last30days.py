@@ -5122,8 +5122,10 @@ def _main(
                 args.trustpilot_domain = resolution["trustpilot_domain"]
                 trustpilot_domain_is_hint = True
                 sys.stderr.write(f"[AutoResolve] Trustpilot domain: {args.trustpilot_domain} (hint)\n")
-            if resolution.get("trustpilot_domain"):
-                # The brand's review-page domain is its own site.
+            if resolution.get("trustpilot_domain") and person_ctx is None:
+                # The brand's review-page domain is its own site. A person run
+                # skips it: a host whose label matches the bare name may be a
+                # namesake's site.
                 auto_official_site = resolution["trustpilot_domain"]
             if resolution.get("context"):
                 # Inject context into external_plan metadata for the planner to use
