@@ -2754,6 +2754,76 @@ def _youtube_payload(*_args, **_kwargs):
     ]}
 
 
+def _with_stale_post(payload_fn, url_for):
+    def payload(*_args, **_kwargs):
+        data = payload_fn()
+        kept = data["items"][0]
+        data["items"] = [
+            {**kept, "id": "old", "video_id": "old", "url": url_for("old"), "date": "2022-02-03",
+             "engagement": {"views": 50_000_000}, "relevance": 0.9},
+            kept,
+        ]
+        return data
+    return payload
+
+
+def _post(pid, relevance=0.9, date="2026-09-20", author="dev"):
+    return {"id": pid, "date": date, "relevance": relevance, "author_name": author}
+
+
+class TestCommentsSpentOnKeptPosts:
+    """Paid comment calls go to posts the report can keep."""
+
+    RANGE = ("2026-09-11", "2026-10-11")
+
+    def _ids(self, items, creators=None):
+        return [i["id"] for i in pipeline._comment_candidates(items, *self.RANGE, creators)]
+
+    def test_tiktok_comments_skip_stale_posts(self):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("comments",))
+        payload = _with_stale_post(_tiktok_payload, lambda v: f"https://www.tiktok.com/@dev/video/{v}")
+        with patch("lib.tiktok.search_and_enrich", side_effect=payload), \
+             patch("lib.tiktok.enrich_with_comments") as comments:
+            _memo_stream("tiktok", subquery, dict(_MEMO_SC_CONFIG))
+        assert [i["id"] for i in comments.call_args.args[0]] == ["t1"]
+
+    def test_instagram_comments_skip_stale_posts(self):
+        [subquery] = _memo_subqueries(["instagram"], labels=("comments",))
+        payload = _with_stale_post(_instagram_payload, lambda v: f"https://www.instagram.com/reel/{v}/")
+        with patch("lib.instagram.search_and_enrich", side_effect=payload), \
+             patch("lib.instagram.enrich_with_comments") as comments:
+            _memo_stream("instagram", subquery, dict(_MEMO_SC_CONFIG))
+        assert [i["id"] for i in comments.call_args.args[0]] == ["i1"]
+
+    def test_off_topic_posts_wait_behind_enough_on_topic_ones(self):
+        items = [_post("off", relevance=0.0), _post("a"), _post("b"), _post("c"),
+                 _post("undated", date="")]
+        assert self._ids(items) == ["a", "b", "c", "undated"]
+
+    def test_off_topic_posts_only_fill_empty_slots_loudest_first(self):
+        def loud(pid, views):
+            return {**_post(pid, relevance=0.0), "engagement": {"views": views}}
+
+        items = [loud("quiet", 10), _post("a"), loud("loudest", 9_000), loud("louder", 500),
+                 _post("stale", date="2022-02-03")]
+        # Enrichment ranks by engagement and takes three: the loud off-topic
+        # posts must not be able to push "a" out, so only two are offered.
+        assert self._ids(items) == ["a", "loudest", "louder"]
+
+    def test_spoken_caption_match_counts_as_on_topic(self):
+        spoken = {**_post("spoken", relevance=0.0), "text": "wait for it",
+                  "caption_snippet": "the ghostty terminal config I use every day"}
+        items = [spoken, _post("a"), _post("b"), _post("c")]
+        ids = [i["id"] for i in pipeline._comment_candidates(
+            items, *self.RANGE, topic="ghostty terminal")]
+        assert ids == ["spoken", "a", "b", "c"]
+
+    def test_requested_creator_posts_count_as_on_topic(self):
+        items = [_post("mine", relevance=0.0, author="@Traveler"), _post("other", relevance=0.0),
+                 _post("a"), _post("b")]
+        assert self._ids(items, creators=["traveler"]) == ["mine", "a", "b"]
+
+
 class TestSourceFetchMemo:
     def test_three_subquery_streams_fetch_each_source_once(self):
         subqueries = _memo_subqueries(["tiktok", "instagram", "youtube"])
