@@ -85,6 +85,12 @@ _HUMAN = "Q5"
 # business, enterprise, company, public company, corporation. "organization"
 # is left out on purpose: bands, parties and constituencies sit under it.
 _BUSINESS_CLASSES = frozenset({"Q4830453", "Q6881511", "Q783794", "Q891723", "Q167037"})
+# Direct P31 only: a product company named after its app is often
+# "software" / "application" and must still get company peers.
+_LANGUAGE_OR_OS_CLASSES = frozenset({
+    "Q9143",  # programming language
+    "Q9135",  # operating system
+})
 # A person recorded as chief executive of more organizations than this is not
 # checked further; the answer would be "more than one" or a very large fetch.
 _MAX_LED_ORGANIZATIONS = 5
@@ -115,11 +121,35 @@ _EXA_DIRECTORY_HOSTS = frozenset({
 })
 _EXA_HOMEPAGE_PATHS = frozenset({"", "/en", "/en-us", "/home"})
 EXA_COMPANY_SOURCE = "exa"
+# Trailing generic words dropped once when the compact topic is not the
+# registrable label ("Modal Labs" → modal.com). Not prefixes, and not "co"
+# (that would let StripeCo claim stripe.com).
+_TRAILING_LABEL_WORDS = frozenset({
+    "labs", "lab", "ai", "hq", "inc", "technologies", "systems",
+    "studio", "studios",
+})
+COMPANY_PEER_KEYWORD = "keyword"
+WIKIDATA_NONE = "none"
+WIKIDATA_HUMAN = "human"
+WIKIDATA_SOFTWARE = "software"
 
 
 class FailedLookup(dict):
     """The empty result of a lookup that failed, as opposed to one Wikidata
     answered. It is an empty dict to every caller that does not ask."""
+
+
+class UncertainLookup(dict):
+    """Wikidata answered and nothing is certain.
+
+    Empty to every caller that does not ask. ``kind`` is ``none`` (no matching
+    entity, or a non-business that is not a language or OS), ``human``, or
+    ``software`` (a programming language or operating system, direct P31).
+    """
+
+    def __init__(self, kind: str = WIKIDATA_NONE):
+        super().__init__()
+        self.kind = kind
 
 
 def company_topic_likely(topic: str) -> bool:
@@ -167,9 +197,16 @@ def resolve_company(
     to the company: its official names and aliases that could be a legal
     filing name, then its subsidiaries, at most ``MAX_COMPANY_NAMES`` distinct
     strings and never ``company`` itself), and
-    ``company_via_person`` (True) when the topic is the person who leads the
-    company. An empty dict means nothing is certain; it is a ``FailedLookup``
-    when the lookup itself failed. No request is made for a topic that is not
+    ``company_via_person`` (True) when the topic is the person who leads
+    the company. ``company_peer_discovery`` is ``keyword`` when Wikidata's
+    top hit is a human with no unique company, or directly a programming
+    language or operating system, so competitor discovery keeps keyword
+    SERPs. A food, occupation, application, or other homonym is treated
+    like no entity: Exa may still fill the site and company peers stay on.
+    An empty dict means nothing is certain; it
+    is a ``FailedLookup`` when the lookup itself failed, and an
+    ``UncertainLookup`` when Wikidata answered with nothing certain and Exa
+    did not fill a site. No request is made for a topic that is not
     company-shaped. With ``listing`` off the company's stock listing is not
     read, so there is no ``ticker``, ``exchange`` or ``ticker_candidates``.
     Without ``names`` the company's other names are not read: there is no
@@ -195,7 +232,9 @@ def resolve_company(
         return FailedLookup()
     if found:
         return found
-    return _exa_site_fallback(topic, config)
+    kind = found.kind if isinstance(found, UncertainLookup) else WIKIDATA_NONE
+    filled = _exa_site_fallback(topic, config, wikidata_kind=kind)
+    return filled or found
 
 
 def _is_directory_host(host: str) -> bool:
@@ -225,21 +264,53 @@ def _registrable_label(host: str) -> str:
     return _compact_name(name)
 
 
+def _compact_topic_keys(topic: str) -> tuple[str, ...]:
+    """Registrable-label keys for this topic: the compact name, then one trim.
+
+    After the full compact name fails, one trailing generic word (labs, ai,
+    hq, ...) may be dropped from the topic. The domain is never trimmed, and
+    a shared prefix is never a match.
+    """
+    keys: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: str) -> None:
+        key = _compact_name(name_key(text)) or _compact_name(text)
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+
+    add(topic)
+    words = topic.split()
+    if len(words) >= 2:
+        last = re.sub(r"[^a-z0-9]+", "", words[-1].casefold())
+        if last in _TRAILING_LABEL_WORDS:
+            add(" ".join(words[:-1]))
+    return tuple(keys)
+
+
+def _exa_hit_site(url: str) -> tuple[str, str, str] | None:
+    """Registrable label, homepage (or ''), and host root, or None if unusable."""
+    host = _site_host(url)
+    if not host or _is_directory_host(host):
+        return None
+    label = _registrable_label(host)
+    if not label:
+        return None
+    return label, _exa_homepage(url), f"https://{host}/"
+
+
 def _exa_site_matches_topic(topic: str, url: str) -> bool:
     """True when the URL's registrable label is this company, not a look-alike.
 
     The compact topic (legal designators stripped via ``name_key``) must
-    equal the registrable label. Shared prefixes (``StripeCo`` / ``stripe.com``)
-    and a matching first label on someone else's domain
-    (``stripeco.example.org``) do not count. ``get`` / ``try`` / ``hq``
-    affixes are not trimmed: they would reintroduce prefix matches.
+    equal the registrable label. If that misses, one trailing generic word
+    may be dropped from the topic (``Modal Labs`` → ``modal.com``). Shared
+    prefixes (``StripeCo`` / ``stripe.com``) and a matching first label on
+    someone else's domain (``stripeco.example.org``) do not count.
     """
-    want = _compact_name(name_key(topic)) or _compact_name(topic)
-    host = _site_host(url)
-    if not want or not host or _is_directory_host(host):
-        return False
-    label = _registrable_label(host)
-    return bool(label) and label == want
+    hit = _exa_hit_site(url)
+    return bool(hit) and hit[0] in _compact_topic_keys(topic)
 
 
 def _exa_homepage(url: str) -> str:
@@ -257,27 +328,45 @@ def _exa_homepage(url: str) -> str:
 
 
 def _pick_exa_official_site(topic: str, items: list[dict]) -> str:
-    """The first Exa hit that looks like this company's own homepage."""
-    fallback = ""
-    for item in items:
-        url = str(item.get("url") or "")
-        if not _exa_site_matches_topic(topic, url):
-            continue
-        homepage = _exa_homepage(url)
-        if homepage:
-            return homepage
-        if not fallback:
-            host = _site_host(url)
-            fallback = f"https://{host}/" if host else ""
-    return fallback
+    """The Exa hit that looks like this company's own homepage.
+
+    An exact registrable-label match against the full compact topic
+    (``Acme Labs`` → ``acmelabs.com``) wins over a match that needed a
+    trailing generic word trimmed (``acme.com``), regardless of result
+    order. Homepages beat a host-root fallback within each of those
+    tiers.
+    """
+    keys = _compact_topic_keys(topic)
+    if not keys:
+        return ""
+    exact, *rest = keys
+    trimmed = rest[0] if rest else ""
+
+    def first_site(want: str) -> str:
+        fallback = ""
+        for item in items:
+            hit = _exa_hit_site(str(item.get("url") or ""))
+            if not hit or hit[0] != want:
+                continue
+            homepage, host_root = hit[1], hit[2]
+            if homepage:
+                return homepage
+            if not fallback:
+                fallback = host_root
+        return fallback
+
+    return first_site(exact) or (first_site(trimmed) if trimmed else "")
 
 
-def _exa_site_fallback(topic: str, config: dict | None) -> dict[str, Any]:
-    """Official-site search when Wikidata named nothing.
+def _exa_site_fallback(
+    topic: str, config: dict | None, *, wikidata_kind: str = WIKIDATA_NONE,
+) -> dict[str, Any]:
+    """Official-site search when Wikidata named nothing certain.
 
-    Searches Exa's company index only (undated). An uncategorized search
-    would also match people and projects that own an exact-name domain
-    (kanyewest.com, python.org) and mark them as companies.
+    Searches Exa's company index only (undated). A person, language, or OS
+    site is kept; ``wikidata_kind`` decides whether peer discovery may use
+    that company index (``none``) or must stay on keyword SERPs (``human``,
+    ``software``).
     """
     api_key = grounding.exa_api_key(config)
     if not api_key:
@@ -309,7 +398,12 @@ def _exa_site_fallback(topic: str, config: dict | None) -> dict[str, Any]:
         f"Exa official site for {topic!r}: {site}",
         tty_only=False,
     )
-    return {"company": topic, "company_site": site, "company_source": EXA_COMPANY_SOURCE}
+    found: dict[str, Any] = {
+        "company": topic, "company_site": site, "company_source": EXA_COMPANY_SOURCE,
+    }
+    if wikidata_kind in {WIKIDATA_HUMAN, WIKIDATA_SOFTWARE}:
+        found["company_peer_discovery"] = COMPANY_PEER_KEYWORD
+    return found
 
 
 def _resolve(topic: str, listing: bool = True, names: bool = False) -> dict[str, Any]:
@@ -318,19 +412,21 @@ def _resolve(topic: str, listing: bool = True, names: bool = False) -> dict[str,
         "uselang": "en", "type": "item", "limit": 1,
     })["search"]
     if not hits:
-        return {}
+        return UncertainLookup(WIKIDATA_NONE)
     top_id = hits[0]["id"]
     entity = _entities([top_id], "labels|aliases|claims")[top_id]
     if topic.casefold() not in _names(entity):
-        return {}
+        return UncertainLookup(WIKIDATA_NONE)
     if _HUMAN in _item_ids(_statements(entity, _INSTANCE_OF)):
         company = _company_led_by(top_id)
         if company is None:
-            return {}
+            return UncertainLookup(WIKIDATA_HUMAN)
         return {**_company_fields(company, listing, names), "company_via_person": True}
-    if not _is_business(entity):
-        return {}
-    return _company_fields(entity, listing, names)
+    if _is_language_or_os(entity):
+        return UncertainLookup(WIKIDATA_SOFTWARE)
+    if _is_business(entity):
+        return _company_fields(entity, listing, names)
+    return UncertainLookup(WIKIDATA_NONE)
 
 
 # Wikimedia's User-Agent policy asks for a contact URL. Without one, Wikidata
@@ -396,19 +492,30 @@ def _ended(statement: dict[str, Any]) -> bool:
     return _END_TIME in statement.get("qualifiers", {})
 
 
-def _is_business(entity: dict[str, Any]) -> bool:
-    """True when the entity is an instance of a business class, or of a class
-    that is itself a direct subclass of one (an automobile manufacturer)."""
+def _is_instance_of(entity: dict[str, Any], class_ids: frozenset[str]) -> bool:
+    """True when the entity is an instance of one of ``class_ids``, or of a
+    class that is itself a direct subclass of one (same P279 hop as business)."""
     classes = _item_ids(_statements(entity, _INSTANCE_OF))
-    if classes & _BUSINESS_CLASSES:
+    if classes & class_ids:
         return True
     if not classes:
         return False
     parents = _entities(sorted(classes), "claims")
     return any(
-        _item_ids(_statements(parent, _SUBCLASS_OF)) & _BUSINESS_CLASSES
+        _item_ids(_statements(parent, _SUBCLASS_OF)) & class_ids
         for parent in parents.values()
     )
+
+
+def _is_business(entity: dict[str, Any]) -> bool:
+    """True when the entity is an instance of a business class, or of a class
+    that is itself a direct subclass of one (an automobile manufacturer)."""
+    return _is_instance_of(entity, _BUSINESS_CLASSES)
+
+
+def _is_language_or_os(entity: dict[str, Any]) -> bool:
+    """True when P31 is a programming language or OS. No P279 hop."""
+    return bool(_item_ids(_statements(entity, _INSTANCE_OF)) & _LANGUAGE_OR_OS_CLASSES)
 
 
 def _company_led_by(person_id: str) -> dict[str, Any] | None:

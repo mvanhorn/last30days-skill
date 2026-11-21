@@ -5437,6 +5437,8 @@ def _main(
                     topic, comp_count, config, lookback_days=args.lookback_days,
                     is_company=(
                         not main_company.get("company_via_person")
+                        and main_company.get("company_peer_discovery")
+                        != company_resolve.COMPANY_PEER_KEYWORD
                         and bool(
                             main_company.get("company")
                             or config.get("_company_signal")
