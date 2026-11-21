@@ -832,6 +832,64 @@ def test_snapshot_falls_back_to_private_local_copy_on_drvfs_io_error(tmp_path, m
         conn.close()
 
 
+def test_snapshot_fallback_retries_when_checkpoint_lands_between_copies(tmp_path, monkeypatch):
+    """A checkpoint after the DB copy empties the WAL; the torn pair is recopied."""
+    from lib import sqlite_snapshot
+
+    db = tmp_path / "cookies.sqlite"
+    monkeypatch.setattr(sqlite_snapshot, "_backup", _fail_in_place_backup(sqlite_snapshot._backup))
+    conn = _make_wal_cookie_db(db)
+    real_copyfile = sqlite_snapshot.shutil.copyfile
+    db_copies = []
+
+    def copy_then_checkpoint(src, dst):
+        result = real_copyfile(src, dst)
+        if Path(src) == db:
+            db_copies.append(dst)
+            if len(db_copies) == 1:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return result
+
+    monkeypatch.setattr(sqlite_snapshot.shutil, "copyfile", copy_then_checkpoint)
+    try:
+        result = _query_cookies_db(db, ".reddit.com", ["reddit_session"])
+        assert result == {"reddit_session": "dummy-wal-session"}
+        assert len(db_copies) == 2
+    finally:
+        conn.close()
+
+
+def test_snapshot_fallback_gives_up_on_a_database_that_keeps_changing(tmp_path, monkeypatch):
+    from lib import sqlite_snapshot
+
+    db = tmp_path / "cookies.sqlite"
+    monkeypatch.setattr(sqlite_snapshot, "_backup", _fail_in_place_backup(sqlite_snapshot._backup))
+    conn = _make_wal_cookie_db(db)
+    real_copyfile = sqlite_snapshot.shutil.copyfile
+    writes = iter(range(100))
+
+    def copy_then_write(src, dst):
+        result = real_copyfile(src, dst)
+        if Path(src) == db:
+            conn.execute("UPDATE moz_cookies SET value = ?", (f"dummy-{next(writes)}",))
+            conn.commit()
+        return result
+
+    monkeypatch.setattr(sqlite_snapshot.shutil, "copyfile", copy_then_write)
+    private = tmp_path / "private"
+    private.mkdir()
+    real_mkdtemp = sqlite_snapshot.tempfile.mkdtemp
+    monkeypatch.setattr(
+        sqlite_snapshot.tempfile, "mkdtemp", lambda **kw: real_mkdtemp(dir=private, **kw)
+    )
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="changed while copying"):
+            sqlite_snapshot.copy_snapshot(db, str(tmp_path / "copy.sqlite"))
+        assert list(private.iterdir()) == []
+    finally:
+        conn.close()
+
+
 def test_snapshot_timeout_does_not_fall_back_to_file_copy(tmp_path, monkeypatch):
     from lib import sqlite_snapshot
 

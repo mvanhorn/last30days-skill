@@ -13,6 +13,22 @@ logger = logging.getLogger(__name__)
 # The file-copy fallback reads a private local copy that no browser holds a
 # lock on, so its only cost is copying the database; give it room for that.
 _FALLBACK_MIN_TIMEOUT = 5.0
+# Copies of a live database pair are retried when the browser changes either
+# file mid-copy; a few tries ride out a checkpoint without spinning.
+_COPY_ATTEMPTS = 3
+
+
+def _file_state(*paths: Path) -> tuple:
+    """Size and mtime of each file (None when absent), to detect concurrent writes."""
+    state = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            state.append(None)
+        else:
+            state.append((stat.st_size, stat.st_mtime_ns))
+    return tuple(state)
 
 
 class SnapshotTimeout(sqlite3.OperationalError):
@@ -41,10 +57,21 @@ def _backup_from_local_copy(source: Path, destination: str, timeout: float) -> N
     tmp_dir = tempfile.mkdtemp(prefix="l30d-snap-")
     try:
         local_db = Path(tmp_dir) / source.name
-        shutil.copyfile(source, local_db)
         wal = source.with_name(source.name + "-wal")
-        if wal.is_file():
-            shutil.copyfile(wal, Path(tmp_dir) / wal.name)
+        local_wal = Path(tmp_dir) / wal.name
+        for _attempt in range(_COPY_ATTEMPTS):
+            before = _file_state(source, wal)
+            shutil.copyfile(source, local_db)
+            local_wal.unlink(missing_ok=True)
+            if wal.is_file():
+                shutil.copyfile(wal, local_wal)
+            if _file_state(source, wal) == before:
+                break
+        else:
+            # The browser checkpointed or wrote between the two copies, so the
+            # pair may be torn (a database missing changes its WAL no longer
+            # holds). Report a failed read rather than stale cookies.
+            raise sqlite3.OperationalError("Browser database changed while copying it")
         _backup(
             local_db.as_uri(),
             destination,
