@@ -1,1 +1,0 @@
-Bird now drops topic-supplied search operators on both the first request and retries. It keeps quoted phrases such as `"Research and Development"` intact, preserves the research date window, and caps each query at 512 characters.
