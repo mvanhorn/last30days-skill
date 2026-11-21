@@ -167,6 +167,8 @@ def test_recipe_wires_the_comparison_handoff(recipe):
         "`x_posts` path per entity",
         "only when every entity's fetch returned in-window posts",
         "keep the resolved `--competitors-plan`",
+        "comparison runs reject it (exit `2`)",
+        "rerun `--diagnose` with the lane signal exported",
         "A bare `--x-posts` on a comparison run exits `2`",
     ):
         assert token in section, token
