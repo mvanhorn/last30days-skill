@@ -6574,6 +6574,11 @@ def _detail_rate_limits_source(source: str, artifact: dict) -> bool:
     return source != "x" or not bool(artifact.get("_x_backup_not_rate_limited"))
 
 
+# TikTok videos per run that get comments from the free public endpoint (the
+# lane keeps about this many; ScrapeCreators comments cover three).
+PUBLIC_COMMENT_POSTS = 12
+
+
 def _comment_candidates(
     items: list[dict],
     from_date: str,
@@ -7686,10 +7691,25 @@ def _retrieve_stream_impl(
             ):
                 sc_token = config.get("SCRAPECREATORS_API_KEY", "")
                 try:
-                    tiktok.enrich_with_comments(
-                        _comment_candidates(items, from_date, to_date, tiktok_creators, topic=tiktok_query),
-                        token=sc_token, deadline=deadline, cancel=cancel,
-                    )
+                    public_got = 0
+                    if env.is_tiktok_public_comments_on(config):
+                        # Free and keyless, so every kept-sized slate of videos
+                        # gets comments, not just the three ScrapeCreators pays for.
+                        slate = _comment_candidates(
+                            items, from_date, to_date, tiktok_creators,
+                            want=PUBLIC_COMMENT_POSTS, topic=tiktok_query,
+                        )
+                        tiktok.enrich_with_comments(
+                            slate, token="", max_posts=PUBLIC_COMMENT_POSTS,
+                            deadline=deadline, cancel=cancel, public=True,
+                        )
+                        public_got = sum(1 for item in slate if item.get("top_comments"))
+                    if not public_got:
+                        # Endpoint off, blocked or empty: ScrapeCreators as before.
+                        tiktok.enrich_with_comments(
+                            _comment_candidates(items, from_date, to_date, tiktok_creators, topic=tiktok_query),
+                            token=sc_token, deadline=deadline, cancel=cancel,
+                        )
                 except http.DeadlineExceeded:
                     result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
@@ -7700,6 +7720,7 @@ def _retrieve_stream_impl(
                 bool(env.get_tiktok_token(config)),
                 tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
                 env.is_tiktok_comments_available(config),
+                env.is_tiktok_public_comments_on(config),
             ),
             _fetch_tiktok,
             timeout=_memo_wait_seconds(config),

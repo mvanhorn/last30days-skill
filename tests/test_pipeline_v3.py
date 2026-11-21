@@ -2824,6 +2824,42 @@ class TestCommentsSpentOnKeptPosts:
         assert self._ids(items, creators=["traveler"]) == ["mine", "a", "b"]
 
 
+def _attach_comments(items, *_args, **_kwargs):
+    for item in items:
+        item["top_comments"] = [{"author": "a", "text": "fire", "digg_count": 9, "date": ""}]
+    return items
+
+
+class TestTikTokPublicComments:
+    """ScrapeCreators runs take TikTok comments from the free public endpoint first."""
+
+    def _run(self, config, side_effect=_attach_comments):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("public",))
+        with patch("lib.tiktok.search_and_enrich", side_effect=_tiktok_payload), \
+             patch("lib.tiktok.enrich_with_comments", side_effect=side_effect) as comments:
+            _memo_stream("tiktok", subquery, config)
+        return comments
+
+    def test_public_endpoint_serves_comments_without_scrapecreators_calls(self):
+        comments = self._run(dict(_MEMO_SC_CONFIG))
+        assert comments.call_count == 1
+        kwargs = comments.call_args.kwargs
+        assert kwargs["public"] is True and kwargs["token"] == ""
+        assert kwargs["max_posts"] == pipeline.PUBLIC_COMMENT_POSTS
+
+    def test_scrapecreators_backs_up_an_empty_public_endpoint(self):
+        comments = self._run(dict(_MEMO_SC_CONFIG), side_effect=lambda items, *a, **k: items)
+        assert comments.call_count == 2
+        assert comments.call_args_list[0].kwargs["public"] is True
+        last = comments.call_args_list[1].kwargs
+        assert last["token"] == "test-key" and "public" not in last
+
+    def test_switch_off_goes_straight_to_scrapecreators(self):
+        comments = self._run({**_MEMO_SC_CONFIG, "LAST30DAYS_TIKTOK_PUBLIC_COMMENTS": "off"})
+        assert comments.call_count == 1
+        assert comments.call_args.kwargs["token"] == "test-key"
+
+
 class TestSourceFetchMemo:
     def test_three_subquery_streams_fetch_each_source_once(self):
         subqueries = _memo_subqueries(["tiktok", "instagram", "youtube"])
@@ -2833,7 +2869,7 @@ class TestSourceFetchMemo:
              patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
              patch("lib.env.is_youtube_comments_available", return_value=True), \
              patch("lib.youtube_yt.enrich_with_comments") as yt_comments, \
-             patch("lib.tiktok.enrich_with_comments") as tiktok_comments, \
+             patch("lib.tiktok.enrich_with_comments", side_effect=_attach_comments) as tiktok_comments, \
              patch("lib.instagram.enrich_with_comments") as ig_comments:
             results = _memo_streams_concurrently([
                 (source, subquery, dict(_MEMO_SC_CONFIG))
