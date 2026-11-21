@@ -558,8 +558,12 @@ def enrich_with_comments(
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    public: bool = False,
 ) -> List[Dict[str, Any]]:
     """Enrich top TikTok posts with comment data from ScrapeCreators.
+
+    With ``public=True`` the comments come from TikTok's public web comment
+    endpoint instead: free, no key, same comment shape.
 
     For the top N posts by engagement, fetches comments via the SC API
     and attaches them as a ``top_comments`` field on each item. Mirrors
@@ -575,8 +579,9 @@ def enrich_with_comments(
         Items list (mutated in place) with top_comments added to enriched items.
         Raises DeadlineExceeded on a budget stop; collected comments remain attached.
     """
-    if not items or not token or max_posts <= 0:
+    if not items or max_posts <= 0 or not (token or public):
         return items
+    fetch = _fetch_public_comments if public else _fetch_post_comments
 
     _check_budget(deadline, cancel)
     ranked = sorted(items, key=_tiktok_total_engagement, reverse=True)
@@ -590,7 +595,7 @@ def enrich_with_comments(
         if not post_url:
             return False
         try:
-            comments = _fetch_post_comments(
+            comments = fetch(
                 post_url, token, max_comments, deadline=deadline, cancel=cancel,
                 creator=str(item.get("author_name") or ""),
             )
@@ -655,6 +660,60 @@ def _fetch_post_comments(
         return []
 
     raw_comments = data.get("comments") or data.get("data") or []
+    return _normalize_comments(raw_comments, max_comments, creator)
+
+
+_PUBLIC_COMMENTS_URL = "https://www.tiktok.com/api/comment/list/"
+_POST_ID_RE = re.compile(r"/(?:video|photo)/(\d{8,})")
+
+
+def _fetch_public_comments(
+    post_url: str,
+    _token: str = "",
+    max_comments: int = 5,
+    *,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
+    creator: str = "",
+) -> List[Dict[str, Any]]:
+    """Top comments for one post from TikTok's public web endpoint, no key.
+
+    Same shape as ``_fetch_post_comments``. Empty list on any provider error;
+    DeadlineExceeded propagates to the lane.
+    """
+    m = _POST_ID_RE.search(post_url or "")
+    if not m:
+        return []
+    _check_budget(deadline, cancel)
+    try:
+        # Optional and backed up by ScrapeCreators: a failure here is logged,
+        # never recorded as the run's own, so a recovered stream stays
+        # cacheable and is not refetched (paid calls included) by later streams.
+        with http.capture_failures():
+            data = http.get(
+                _PUBLIC_COMMENTS_URL,
+                params={"aweme_id": m.group(1), "count": 20, "cursor": 0, "aid": 1988},
+                headers={"User-Agent": http.BROWSER_USER_AGENT, "Referer": "https://www.tiktok.com/"},
+                timeout=10,
+                retries=1,
+                deadline_monotonic=deadline,
+                cancel=cancel,
+            )
+    except http.DeadlineExceeded:
+        raise
+    except Exception as exc:
+        _log(f"Public comment fetch error for {post_url}: {exc}")
+        return []
+    raw_comments = data.get("comments") if isinstance(data, dict) else None
+    return _normalize_comments(raw_comments or [], max_comments, creator)
+
+
+def _normalize_comments(
+    raw_comments: List[Dict[str, Any]], max_comments: int, creator: str,
+) -> List[Dict[str, Any]]:
+    """TikTok comment payloads (ScrapeCreators or the public endpoint, same
+    field names) to the ``top_comments`` shape, most liked first."""
+    raw_comments = [c for c in raw_comments if isinstance(c, dict)]
     # Sort by digg_count desc so normalize sees the highest-signal first.
     raw_comments = sorted(
         raw_comments,

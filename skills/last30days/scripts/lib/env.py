@@ -734,6 +734,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_NATIVE_SEARCH', None),
         # Optional SearXNG instance for the keyless-search fallback rung.
         ('LAST30DAYS_SEARXNG_URL', None),
+        # TikTok top comments from TikTok's public web endpoint (free, no key):
+        # on (default) or off. Off puts comment calls back on ScrapeCreators.
+        ('LAST30DAYS_TIKTOK_PUBLIC_COMMENTS', None),
         # Truthy -> disable Trustpilot's headless-Chrome WAF-cookie harvest in
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
@@ -2037,6 +2040,12 @@ def is_youtube_comments_available(
     if not is_youtube_sc_available(config):
         return False
     return 'youtube_comments' in _parse_include_sources(config)
+
+
+def is_tiktok_public_comments_on(config: dict[str, Any]) -> bool:
+    """TikTok comments come from the free public endpoint unless switched off."""
+    raw = config.get('LAST30DAYS_TIKTOK_PUBLIC_COMMENTS') or os.environ.get('LAST30DAYS_TIKTOK_PUBLIC_COMMENTS') or 'on'
+    return str(raw).strip().lower() not in ('off', '0', 'false', 'no')
 
 
 def is_tiktok_comments_available(config: dict[str, Any]) -> bool:
