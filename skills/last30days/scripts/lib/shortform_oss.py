@@ -406,6 +406,14 @@ def creator_urls(
     return out[:count]
 
 
+def _post_id(kind: str, url: str) -> str:
+    """The platform id in a post URL (TikTok video id, Instagram shortcode)."""
+    m = (_TT_RE if kind == "tiktok" else _IG_RE).search(url or "")
+    if not m:
+        return ""
+    return m.group(2) if kind == "tiktok" else m.group(1)
+
+
 def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optional[Dict[str, Any]]:
     video_id = str(raw.get("id") or "")
     if not video_id:
@@ -548,6 +556,24 @@ def search(
     window = {"from_date": from_date, "to_date": to_date}
     urls: List[str] = []
     explicit = [h.lstrip("@").strip().lower() for h in (creators or []) if h]
+
+    # Host-found URLs (--shortform-urls): post URLs lead, held to the same
+    # id-date filter; they widen the hydration budget by up to one cap.
+    from . import shortform_envelope
+    host_env = shortform_envelope.from_config(config)
+    host_posts = host_env.posts(kind) if host_env else []
+    host_creators = host_env.creators(kind) if host_env else []
+    host_urls: set[str] = set()
+    host_stale = [u for u in host_posts if _outside_window(kind, u, from_date, to_date)]
+    if host_stale:
+        _log(kind, f"host URLs: dropped {len(host_stale)} dated outside "
+                   f"{from_date}..{to_date} before extraction")
+    for u in host_posts:
+        if u not in host_stale and u not in urls:
+            urls.append(u)
+            host_urls.add(u)
+    limit = cap + min(len(urls), cap)
+
     if kind == "tiktok" and creators:
         per = max(3, cap // max(len(creators), 1))
         for handle in creators:
@@ -564,34 +590,47 @@ def search(
     if stale:
         _log(kind, f"OSS dropped {len(stale)} discovered posts dated outside "
                    f"{from_date}..{to_date} before extraction")
+    stale += host_stale
     for u in found:
         if u not in urls and u not in stale:
             urls.append(u)
 
-    # Creator expansion (TikTok): every handle seen in discovery, stale
-    # videos included, is a lead for in-window, on-topic videos.
-    if kind == "tiktok" and len(urls) < cap and _expansion_on(config):
+    # Creator expansion (TikTok). Host creator profiles are listed first and
+    # always (the host named them); with expansion on, every handle seen in
+    # discovery or in a host post URL, stale videos included, is a lead too.
+    if kind == "tiktok":
         max_creators, per_creator = _DEPTH_CREATORS.get(depth, _DEPTH_CREATORS["default"])
-        handles: List[str] = []
-        for u in found:
-            m = _TT_RE.search(u)
-            h = m.group(1) if m else ""
-            if h and h.lower() not in explicit and h not in handles:
-                handles.append(h)
-        for handle in handles[:max_creators]:
-            if _stopped(deadline, cancel) or len(urls) >= cap:
+        leads: List[Tuple[str, bool]] = [(h, True) for h in host_creators]
+        if _expansion_on(config):
+            for u in [*host_posts, *found]:
+                m = _TT_RE.search(u)
+                if m:
+                    leads.append((m.group(1), False))
+        handles: List[Tuple[str, bool]] = []
+        for h, from_host in leads:
+            if h.lower() not in explicit and h.lower() not in {x.lower() for x, _ in handles}:
+                handles.append((h, from_host))
+        for handle, from_host in handles[:max_creators]:
+            if _stopped(deadline, cancel) or len(urls) >= limit:
                 break
             for u in creator_urls(
                 kind, handle, per_creator, deadline=deadline, topic=topic, **window,
             ):
                 if u not in urls:
                     urls.append(u)
+                    if from_host:
+                        host_urls.add(u)
 
-    urls = urls[:cap]
-    _log(kind, f"OSS discovery via {backend}: {len(urls)} urls (depth={depth})")
+    urls = urls[:limit]
+    source = f"{backend}+host" if host_urls and backend != "none" else ("host" if host_urls else backend)
+    _log(kind, f"OSS discovery via {source}: {len(urls)} urls (depth={depth})")
     if not urls:
         if stale:
             return {"items": [], "error": "oss discovery found only posts outside the date window"}
+        from .env import keyless_web_allowed
+        if host_env is None and backend == "none" and not keyless_web_allowed(config):
+            # Native-search host: its own search is the discovery source.
+            return {"items": [], "error": "oss discovery empty (the host passed no --shortform-urls)"}
         return {"items": [], "error": "oss discovery empty"}
 
     items = enrich_urls(kind, urls, topic, deadline=deadline, cancel=cancel)
@@ -606,6 +645,24 @@ def search(
         return {"items": [], "error": f"no posts in date range ({len(items)} extracted, "
                                       f"none dated {from_date}..{to_date})"}
     items = in_range
+
+    if host_urls:
+        host_ids = {_post_id(kind, u) for u in host_urls}
+        kept: List[Dict[str, Any]] = []
+        off_topic = 0
+        for item in items:
+            if _post_id(kind, item.get("url") or "") in host_ids or str(item.get("video_id")) in host_ids:
+                # Host input is untrusted: it must clear the topic bar itself.
+                if (item.get("relevance") or 0) < RELEVANCE_FLOOR:
+                    off_topic += 1
+                    continue
+                item["_host_found"] = True
+            kept.append(item)
+        _log(kind, f"host URLs: kept {sum(1 for i in kept if i.get('_host_found'))} "
+                   f"after hydration (off-topic {off_topic})")
+        items = kept
+        if not items:
+            return {"items": [], "error": "host URLs and discovery kept 0 on-topic posts"}
 
     items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
     return {"items": items, "backend": backend}

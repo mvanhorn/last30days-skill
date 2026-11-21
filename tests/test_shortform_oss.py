@@ -2,8 +2,9 @@
 
 TikTok and Instagram are no longer purely key-gated. Without
 SCRAPECREATORS_API_KEY they can still run when yt-dlp is installed and a
-web-discovery backend (SearXNG / Serper / Exa / Brave / keyless
-floor) is available. This file pins BOTH branches of that gate so a later
+discovery source (SearXNG / Serper / Exa / Brave / the keyless floor, or
+on a native-search host the host's own search via --shortform-urls) is
+available. This file pins BOTH branches of that gate so a later
 change to is_tiktok_available() / is_instagram_available() cannot silently
 collapse the fallback back to key-only, and so a keyless run does not keep
 telling the user to buy a ScrapeCreators key it will never need.
@@ -58,11 +59,10 @@ class TestShortformGate:
         for cfg in DISCOVERY_BACKENDS:
             assert _gate(cfg, False) is False, cfg
 
-    def test_blank_searxng_url_does_not_open_the_gate(self):
+    def test_blank_searxng_url_is_not_listed_as_a_discovery_source(self):
         # A whitespace-only URL is a misconfiguration, not a backend.
-        assert _gate(
-            {"LAST30DAYS_SEARXNG_URL": "   ", **NATIVE_SEARCH_HOST}, True
-        ) is False
+        cfg = {"LAST30DAYS_SEARXNG_URL": "   ", **NATIVE_SEARCH_HOST}
+        assert env.shortform_discovery_sources(cfg) == ["host search"]
 
     @pytest.mark.parametrize("cfg", DISCOVERY_BACKENDS)
     def test_paid_backend_arms_the_gate_on_a_native_search_host(self, cfg):
@@ -71,22 +71,26 @@ class TestShortformGate:
 
     def test_keyless_floor_arms_the_gate_without_native_search(self):
         assert _gate({}, True) is True
+        assert env.shortform_discovery_sources({}) == ["keyless floor"]
 
-    def test_keyless_floor_is_suppressed_on_a_native_search_host(self):
-        assert _gate(dict(NATIVE_SEARCH_HOST), True) is False
+    def test_native_search_host_arms_the_gate_through_host_search(self):
+        # The keyless floor is off there; the host's own search hands the
+        # engine URLs through --shortform-urls instead.
+        assert _gate(dict(NATIVE_SEARCH_HOST), True) is True
+        assert env.shortform_discovery_sources(dict(NATIVE_SEARCH_HOST)) == ["host search"]
 
-    def test_exa_key_arms_only_tiktok_not_instagram(self):
-        # Exa returns 0 Instagram posts; its key must not advertise Instagram.
+    def test_exa_is_a_discovery_source_only_for_tiktok(self):
+        # Exa returns 0 Instagram posts; its key must not be listed there.
         cfg = {"EXA_API_KEY": "ex", **NATIVE_SEARCH_HOST}
-        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True):
-            assert env.is_shortform_oss_available(cfg, "tiktok") is True
-            assert env.is_shortform_oss_available(cfg, "instagram") is False
-            assert env.is_instagram_available(cfg) is False
+        assert env.shortform_discovery_sources(cfg, "tiktok") == ["Exa", "host search"]
+        assert env.shortform_discovery_sources(cfg, "instagram") == ["host search"]
 
-    def test_instagram_gate_still_accepts_its_own_backends(self):
-        cfg = {"BRAVE_API_KEY": "br", **NATIVE_SEARCH_HOST}
-        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True):
-            assert env.is_shortform_oss_available(cfg, "instagram") is True
+    def test_discovery_sources_list_every_armed_rung_in_lane_order(self):
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "SERPER_API_KEY": "sp",
+               "EXA_API_KEY": "ex", "BRAVE_API_KEY": "br"}
+        assert env.shortform_discovery_sources(cfg, "tiktok") == [
+            "SearXNG", "Serper", "Exa", "Brave", "keyless floor",
+        ]
 
 
 class TestSourceAvailability:
@@ -137,6 +141,20 @@ class TestDoctorSurface:
         # The old key-gated wording is the failure mode worth pinning.
         record = _build({}, probe_map={"yt-dlp": health.OK})["sources"]["tiktok"]
         assert record["requires"] != "SCRAPECREATORS_API_KEY"
+
+    def test_doctor_names_the_armed_discovery_sources(self):
+        report = _build({"SERPER_API_KEY": "sp", "EXA_API_KEY": "ex", **NATIVE_SEARCH_HOST},
+                        probe_map={"yt-dlp": health.OK})
+        tiktok = report["sources"]["tiktok"]["detail"]
+        assert "keyless lane armed via Serper, Exa, host search" in tiktok
+        instagram = report["sources"]["instagram"]["detail"]
+        assert "via Serper, host search" in instagram and "Exa" not in instagram
+
+    def test_doctor_calls_instagram_best_effort(self):
+        report = _build({}, probe_map={"yt-dlp": health.OK})
+        assert "best effort, low recall" in report["sources"]["instagram"]["detail"]
+        assert "best effort" not in report["sources"]["tiktok"]["detail"]
+        assert "keyless floor" in report["sources"]["tiktok"]["detail"]
 
     def test_doctor_keeps_the_key_gated_verdict_when_ytdlp_is_absent(self):
         report = _build({}, probe_map={"yt-dlp": health.MISSING})

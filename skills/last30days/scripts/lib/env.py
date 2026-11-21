@@ -734,6 +734,10 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_NATIVE_SEARCH', None),
         # Optional SearXNG instance for the keyless-search fallback rung.
         ('LAST30DAYS_SEARXNG_URL', None),
+        # Keyless TikTok/Instagram lane switches (lib/shortform_oss.py):
+        # discovery freshness (on/off/backend list) and TikTok creator expansion.
+        ('LAST30DAYS_SHORTFORM_FRESHNESS', None),
+        ('LAST30DAYS_SHORTFORM_CREATOR_EXPANSION', None),
         # Truthy -> disable Trustpilot's headless-Chrome WAF-cookie harvest in
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
@@ -2157,29 +2161,49 @@ def is_polymarket_available() -> bool:
     return True
 
 
+def shortform_discovery_sources(
+    config: dict[str, Any] | None = None, kind: str = "tiktok",
+) -> list[str]:
+    """Discovery sources armed for the keyless TikTok / Instagram lane, in
+    the order the lane tries them.
+
+    Exa only counts for TikTok: its API returns 0 Instagram posts. A host
+    with native web search (LAST30DAYS_NATIVE_SEARCH) counts as "host search":
+    it hands the engine post URLs through --shortform-urls, and it is also
+    why the keyless floor is off there.
+    """
+    cfg = config or {}
+    armed: list[str] = []
+    if (cfg.get('LAST30DAYS_SEARXNG_URL') or '').strip():
+        armed.append("SearXNG")
+    if cfg.get('SERPER_API_KEY'):
+        armed.append("Serper")
+    if kind == 'tiktok' and cfg.get('EXA_API_KEY'):
+        armed.append("Exa")
+    if cfg.get('BRAVE_API_KEY'):
+        armed.append("Brave")
+    if keyless_web_allowed(cfg):
+        armed.append("keyless floor")
+    else:
+        armed.append("host search")
+    return armed
+
+
 def is_shortform_oss_available(
     config: dict[str, Any] | None = None, kind: str = "tiktok",
 ) -> bool:
-    """yt-dlp extract + a discovery backend (SearXNG / Serper / Exa / Brave / keyless).
+    """yt-dlp extract + a discovery source (see ``shortform_discovery_sources``).
 
-    kind is the short-form source ("tiktok" or "instagram"). Exa only counts
-    for TikTok: its API returns 0 Instagram posts, so an EXA_API_KEY alone
-    must not advertise Instagram as ready. yt-dlp presence follows the
-    YouTube source's routing: local binary, or LAST30DAYS_YOUTUBE_SSH_HOST
-    with yt-dlp on the remote end.
+    kind is the short-form source ("tiktok" or "instagram"). yt-dlp presence
+    follows the YouTube source's routing: local binary, or
+    LAST30DAYS_YOUTUBE_SSH_HOST with yt-dlp on the remote end. Every host has
+    a discovery source: the keyless floor, or on a native-search host the
+    host's own search through --shortform-urls.
     """
     from . import youtube_yt
     if not youtube_yt.is_ytdlp_installed():
         return False
-    cfg = config or {}
-    exa_armed = cfg.get('EXA_API_KEY') if kind == 'tiktok' else None
-    return bool(
-        (cfg.get('LAST30DAYS_SEARXNG_URL') or '').strip()
-        or cfg.get('SERPER_API_KEY')
-        or exa_armed
-        or cfg.get('BRAVE_API_KEY')
-        or keyless_web_allowed(cfg)
-    )
+    return bool(shortform_discovery_sources(config, kind))
 
 
 def is_tiktok_available(config: dict[str, Any]) -> bool:

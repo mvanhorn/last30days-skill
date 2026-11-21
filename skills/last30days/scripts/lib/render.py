@@ -3638,6 +3638,17 @@ def _on_topic_items(
     return kept or items
 
 
+# TikTok / Instagram items the host found with its own web search
+# (--shortform-urls) name that lane in the footer.
+HOST_SEARCH_LABEL = "via host search"
+
+
+def _host_search_items(source: str, items) -> bool:
+    return source in ("tiktok", "instagram") and any(
+        (getattr(item, "metadata", None) or {}).get("host_search") for item in items
+    )
+
+
 def _footer_line_for_source(
     emoji: str, label: str, count: int, item_word: str, stats: str
 ) -> str:
@@ -3705,6 +3716,8 @@ def _build_source_footer_lines(
         if provenance in x_envelope.PROVENANCE_LABELS:
             # Host-fetched X names its lane on the user-facing line too.
             parts.append(f"via {x_envelope.PROVENANCE_LABELS[provenance]}")
+        if _host_search_items(source_key, items):
+            parts.append(HOST_SEARCH_LABEL)
         stats = " │ ".join(parts)
         line = _footer_line_for_source(emoji, label, len(items), item_word, stats)
         # Counts only: run diagnostics live in doctor --postmortem, the saved
@@ -4322,6 +4335,8 @@ def _render_stats(report: schema.Report) -> list[str]:
         if provenance in x_envelope.PROVENANCE_LABELS:
             # Host-fetched lane (--x-posts): name the provenance in the footer.
             parts.append(f"via {x_envelope.PROVENANCE_LABELS[provenance]}")
+        if _host_search_items(source, items):
+            parts.append(HOST_SEARCH_LABEL)
         lines.append(f"- {_source_label(source)}: {' | '.join(parts)}")
     lines.append("")
     return lines

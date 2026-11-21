@@ -72,6 +72,7 @@ from . import (
     relevance,
     rerank,
     schema,
+    shortform_envelope,
     signals,
     snippet,
     stocktwits,
@@ -2356,6 +2357,7 @@ def run(
     corpus_all_time: bool = False,
     x_posts: x_envelope.Envelope | None = None,
     reddit_threads: reddit_envelope.Envelope | None = None,
+    shortform_urls: shortform_envelope.Envelope | None = None,
 ) -> schema.Report:
     _check_research(config)
     if external_plan is not None:
@@ -2454,6 +2456,22 @@ def run(
     if reddit_refs_envelope is not None:
         config = dict(config)
         config["_reddit_envelope"] = reddit_refs_envelope
+
+    # Host-found TikTok / Instagram URLs (--shortform-urls). Only the keyless
+    # short-form lane reads them; a run searching neither platform ignores them.
+    if shortform_urls is not None and not any(
+        name not in excluded_sources
+        and (not requested_sources or name in requested_sources)
+        for name in ("tiktok", "instagram")
+    ):
+        log.source_log(
+            "TikTok", "host short-form URLs: envelope ignored (TikTok and Instagram are excluded from this run)",
+            tty_only=False,
+        )
+        shortform_urls = None
+    if shortform_urls is not None:
+        config = dict(config)
+        config["_shortform_envelope"] = shortform_urls
 
     # Gate StockTwits to ticker/crypto topics. Single chokepoint: when False,
     # available_sources() never registers stocktwits, so the planner can't

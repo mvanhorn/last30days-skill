@@ -415,18 +415,27 @@ def _sc_gated_record(config: Dict[str, Any], purpose: str) -> Dict[str, Any]:
         return _record(status=health.OK, requires="SCRAPECREATORS_API_KEY",
                        detail=f"{_sc_key_detail(config)} ({purpose})")
     if purpose in ("tiktok", "instagram") and env.is_shortform_oss_available(config, purpose):
-        # Exa serves no Instagram posts, so its key does not arm that source.
-        rungs = (
-            "SearXNG/Serper/Exa/Brave/keyless" if purpose == "tiktok"
-            else "SearXNG/Serper/Brave/keyless"
-        )
         return _record(
             status=health.OK,
-            requires=f"yt-dlp + web discovery ({rungs})",
-            detail=f"OSS fallback armed ({purpose}); ScrapeCreators key absent",
+            requires="yt-dlp + web discovery (SearXNG/Serper/Exa/Brave/keyless floor/host search)",
+            detail=_shortform_keyless_detail(config, purpose),
         )
     return _record(status="unconfigured", requires="SCRAPECREATORS_API_KEY",
                    fix=_sc_fix())
+
+
+def _shortform_keyless_detail(config: Dict[str, Any], purpose: str) -> str:
+    """Which discovery sources the keyless lane has, and how much to expect.
+
+    Exa serves no Instagram posts, so its key is not listed there.
+    """
+    armed = ", ".join(env.shortform_discovery_sources(config, purpose))
+    if purpose == "instagram":
+        return (
+            f"keyless lane armed via {armed}; best effort, low recall (public pages, "
+            "no views or comments); ScrapeCreators key absent"
+        )
+    return f"keyless lane armed via {armed}; no comments; ScrapeCreators key absent"
 
 
 def _sc_optin_record(config: Dict[str, Any], source: str, purpose: str) -> Dict[str, Any]:
@@ -1460,14 +1469,20 @@ def _sub_lanes_for(source: str, config: Dict[str, Any]):
         backups.append({
             "name": "yt-dlp + web discovery",
             "armed": env.is_shortform_oss_available(config, "tiktok"),
-            "note": "used when ScrapeCreators is missing or 402s",
+            "note": (
+                "used when ScrapeCreators is missing or 402s; via "
+                + ", ".join(env.shortform_discovery_sources(config, "tiktok"))
+            ),
         })
     elif source == "instagram":
         comments = {"enabled": bool(env.is_instagram_comments_available(config))}
         backups.append({
             "name": "yt-dlp + web discovery",
             "armed": env.is_shortform_oss_available(config, "instagram"),
-            "note": "used when ScrapeCreators is missing or 402s",
+            "note": (
+                "used when ScrapeCreators is missing or 402s; best effort, low recall; via "
+                + ", ".join(env.shortform_discovery_sources(config, "instagram"))
+            ),
         })
     return backups, comments
 
