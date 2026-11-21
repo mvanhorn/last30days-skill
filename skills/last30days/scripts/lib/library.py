@@ -53,6 +53,10 @@ _LEGACY_CORPUS_SIGNAL = re.compile(
     r"^## From your files[ \t]*\r?$|^- (?:Sources|Re-researched sources):[^\r\n]*\bYour files\b",
     re.MULTILINE,
 )
+_FROM_YOUR_FILES_SECTION = re.compile(
+    r"^##[ \t]+From your files[ \t]*\r?\n.*?(?=^#{1,2}[ \t]|^```text[ \t]*\r?$|^---[ \t]*\r?$|\Z)",
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
 _FRESHNESS_TABLE = re.compile(
     r"^## Freshness Verification[ \t]*\r?\n[ \t]*\r?\n"
     r"\| Verdict \| Claim \| Evidence \| Checked \|\r?\n"
@@ -131,6 +135,7 @@ def public_markdown(markdown: str) -> str:
         markdown = preceding + markdown[end:]
         break
     markdown = _PRIVATE_CORPUS_BLOCK.sub("", markdown)
+    markdown = _FROM_YOUR_FILES_SECTION.sub("", markdown)
     if corpus_document:
         # The old renderer could keep a drill's local-derived cluster title
         # after dedupe left only public representatives.
