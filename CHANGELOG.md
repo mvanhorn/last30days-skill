@@ -9,6 +9,27 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.5.0] - 2026-11-21
+
+### Added
+
+- Add configurable SCRAPECREATORS_BASE_URL to point ScrapeCreators API calls across all modules at an enterprise proxy, local mock server, or alternative provider. ([#1367](https://github.com/mvanhorn/last30days-skill/issues/1367))
+- OpenCode agents with a paired `browse` MCP can now read public X posts and Reddit thread links in the user's logged-in browser and pass them through the existing `--x-posts` / `--reddit-threads` host envelopes. The X footer names the lane as "via OpenCode Browse".
+
+### Fixed
+
+- Browser cookie readers now include host-only cookies while excluding unrelated suffix hosts. Standalone automatic extraction prefers a complete requested cookie set, continues after browser permission denials, and keeps the first partial result only as a fallback without combining browsers. ([#1380](https://github.com/mvanhorn/last30days-skill/issues/1380))
+- Host query plans can use `omit_sources` to keep deliberately skipped optional sources out of a single run without disabling backfill for other sources. ([#1449](https://github.com/mvanhorn/last30days-skill/issues/1449))
+- Add LinkedIn to planner `SOURCE_CAPABILITIES` so queries classified under `how_to` (and `comparison`) retain LinkedIn when enabled. ([#1543](https://github.com/mvanhorn/last30days-skill/issues/1543))
+- Reddit threads from the host lane (`--reddit-threads`) get their archive comments again: `attach_comments` raised `ValueError` on every call, which was logged and swallowed, so those threads had no top comments. ([#1546](https://github.com/mvanhorn/last30days-skill/issues/1546))
+- Recover Windows Firefox cookies on WSL when SQLite cannot open the live WAL index and the database and WAL can be copied without a detected change. If the database stays unreadable, Reddit setup reports a read error instead of asking the user to log in again. ([#1547](https://github.com/mvanhorn/last30days-skill/issues/1547))
+- Bird now drops topic-supplied search operators on both the first request and retries. It keeps quoted phrases such as `"Research and Development"` intact, preserves the research date window, and caps each query at 512 characters.
+- Exa official-site fallback still fills a person's or language/OS domain. Wikidata humans with no unique company, and a direct P31 programming-language or operating-system hit, skip the company competitor index (`company_peer_discovery=keyword`). `company_via_person` stays only for a company the person leads, so patent copy does not call a person's own site "the company they lead." A product company named after its app (Raycast, Exa) still gets company peers. A trailing generic word such as Labs is trimmed once so Modal Labs matches modal.com, but an exact registrable-label match (Acme Labs → acmelabs.com) wins over the trimmed name even if the shorter domain appears first.
+- Per-source voices in report Stats now rank social handles by engagement. Doctor warns when an older Techmeme helper can only read the first page and shows how to upgrade it.
+- The top clusters now share one story cap across linked titles and query angles, leaving more room for distinct stories.
+- TikTok no longer falls back to `APIFY_API_TOKEN`: an Apify-only config used to send that token to ScrapeCreators as an API key and mark TikTok ready with no usable credential. TikTok now requires `SCRAPECREATORS_API_KEY` (found by @grain-lu in #1533).
+
+
 ## [4.4.0] - 2026-11-20
 
 ### Security
