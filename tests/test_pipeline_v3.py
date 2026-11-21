@@ -2800,10 +2800,23 @@ class TestCommentsSpentOnKeptPosts:
                  _post("undated", date="")]
         assert self._ids(items) == ["a", "b", "c", "undated"]
 
-    def test_off_topic_posts_are_offered_when_on_topic_ones_are_scarce(self):
-        # The early score misses spoken-caption matches the report may still keep.
-        items = [_post("off", relevance=0.0), _post("a"), _post("stale", date="2022-02-03")]
-        assert self._ids(items) == ["off", "a"]
+    def test_off_topic_posts_only_fill_empty_slots_loudest_first(self):
+        def loud(pid, views):
+            return {**_post(pid, relevance=0.0), "engagement": {"views": views}}
+
+        items = [loud("quiet", 10), _post("a"), loud("loudest", 9_000), loud("louder", 500),
+                 _post("stale", date="2022-02-03")]
+        # Enrichment ranks by engagement and takes three: the loud off-topic
+        # posts must not be able to push "a" out, so only two are offered.
+        assert self._ids(items) == ["a", "loudest", "louder"]
+
+    def test_spoken_caption_match_counts_as_on_topic(self):
+        spoken = {**_post("spoken", relevance=0.0), "text": "wait for it",
+                  "caption_snippet": "the ghostty terminal config I use every day"}
+        items = [spoken, _post("a"), _post("b"), _post("c")]
+        ids = [i["id"] for i in pipeline._comment_candidates(
+            items, *self.RANGE, topic="ghostty terminal")]
+        assert ids == ["spoken", "a", "b", "c"]
 
     def test_requested_creator_posts_count_as_on_topic(self):
         items = [_post("mine", relevance=0.0, author="@Traveler"), _post("other", relevance=0.0),
