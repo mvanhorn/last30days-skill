@@ -21,7 +21,7 @@ A skip, an unrelated reply or no answer is a no. Never read a reddit.com cookie 
 
 - On yes: run `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" setup --reddit-session` and read the `status` field of its JSON:
   - `found`: say the logged-in Reddit session is on, using the named `browser`.
-  - `not-found`: consent is saved but no browser had a reddit.com login. Say: log in to reddit.com in Chrome (or another listed browser), then run `setup --reddit-session` again. If a `checked` entry says `permission-denied`, give the macOS Privacy & Security advice from the setup reference; `unsupported-encryption` means that Windows browser cannot be read, so suggest Firefox.
+  - `not-found`: consent is saved. Check `checked` before suggesting a new login. On `error`, say the browser's login could not be checked. If Windows Firefox on WSL could not be read, suggest fully quitting Windows Firefox, then retrying `setup --reddit-session`. On `permission-denied`, give the macOS Privacy & Security advice from the setup reference if applicable. On `unsupported-encryption`, suggest Firefox. When the browser was read successfully and says `not-logged-in`, suggest logging in to reddit.com there and rerunning setup.
   - `vetoed`: a saved refusal blocks every browser read, so nothing was read. Name the `reason` once. Do not remove the refusal yourself.
   - `unavailable`: a Grok Bot host; say nothing about Reddit login.
 - On no: run `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" setup --no-reddit-session`. It records the refusal and the offer. Free Reddit keeps working.

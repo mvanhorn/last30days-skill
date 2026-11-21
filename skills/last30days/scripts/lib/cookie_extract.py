@@ -24,6 +24,10 @@ from .sqlite_snapshot import copy_snapshot
 logger = logging.getLogger(__name__)
 
 
+class CookieDatabaseReadError(RuntimeError):
+    """A browser database could not be read to check for a login."""
+
+
 def has_complete_pair(result: Optional[Dict[str, str]], cookie_names) -> bool:
     """Return True when ``result`` holds every requested cookie with a value.
 
@@ -250,7 +254,7 @@ def _fallback_find_profile(
 
 
 def _query_cookies_db(
-    db_path: Path, domain: str, cookie_names: List[str]
+    db_path: Path, domain: str, cookie_names: List[str], *, windows_wsl: bool = False,
 ) -> Optional[Dict[str, str]]:
     """Snapshot the cookies database to a temp file and query it.
 
@@ -265,7 +269,10 @@ def _query_cookies_db(
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
         # Snapshot content only; preserve mkstemp's 0600 permissions.
-        copy_snapshot(db_path, tmp_path)
+        if windows_wsl:
+            copy_snapshot(db_path, tmp_path, wsl_wal_fallback=True)
+        else:
+            copy_snapshot(db_path, tmp_path)
         _lock_temp_cookie_copy(tmp_path)
 
         conn = sqlite3.connect(tmp_path)
@@ -290,13 +297,17 @@ def _query_cookies_db(
             return None
         return {name: value for name, value in rows}
 
-    except PermissionError as exc:
-        if exc.filename == str(db_path):
-            raise
-        logger.debug("Failed to query cookies database %s: %s", db_path, exc)
-        return None
     except (sqlite3.Error, OSError) as exc:
+        if isinstance(exc, PermissionError):
+            if exc.filename == str(db_path):
+                raise
+            if windows_wsl:
+                source = db_path.resolve()
+                if exc.filename in (str(source), f"{source}-wal"):
+                    raise
         logger.debug("Failed to query cookies database %s: %s", db_path, exc)
+        if windows_wsl:
+            raise CookieDatabaseReadError("Could not read Windows Firefox cookies") from exc
         return None
     finally:
         if tmp_path:
@@ -312,7 +323,9 @@ def _query_cookies_db(
                 pass
 
 
-def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -> Optional[Dict[str, str]]:
+def _try_firefox_dir(
+    profiles_dir: Path, domain: str, cookie_names: List[str], *, windows_wsl: bool = False,
+) -> Optional[Dict[str, str]]:
     """Try to extract cookies from a Firefox profiles directory.
 
     Tries the default profile first, then falls back to scanning all
@@ -322,15 +335,22 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
     default-profile result is kept only as a fallback.
     """
     denials: list[PermissionError] = []
+    read_errors: list[CookieDatabaseReadError] = []
+
+    def query(db: Path) -> Optional[Dict[str, str]]:
+        try:
+            return _query_cookies_db(db, domain, cookie_names, windows_wsl=windows_wsl)
+        except PermissionError as exc:
+            denials.append(exc)
+        except CookieDatabaseReadError as exc:
+            read_errors.append(exc)
+        return None
+
     default_profile = _find_default_profile(profiles_dir, denials)
     profiles_tried = 0
     fallback: Optional[Dict[str, str]] = None
     if default_profile is not None:
-        try:
-            result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
-        except PermissionError as exc:
-            denials.append(exc)
-            result = None
+        result = query(default_profile / "cookies.sqlite")
         if result is not None:
             if has_complete_pair(result, cookie_names):
                 return result
@@ -346,7 +366,7 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
                     continue
                 db = child / "cookies.sqlite"
                 if path_is_file(db):
-                    result = _query_cookies_db(db, domain, cookie_names)
+                    result = query(db)
                     if result is not None:
                         if has_complete_pair(result, cookie_names):
                             return result
@@ -363,6 +383,8 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
         raise denials[0]
     if fallback is not None:
         return fallback
+    if read_errors:
+        raise read_errors[0]
     logger.debug("No matching cookies found in %d Firefox profile(s)", profiles_tried)
     return None
 
@@ -376,54 +398,18 @@ def extract_firefox_cookies(
     (to avoid lock conflicts), and queries for the requested cookies.
 
     On WSL2, falls back to Windows Firefox if native Linux Firefox has no
-    matching cookies. Windows Firefox cookies are unencrypted, so this works
-    without DPAPI or any Windows-side helpers.
+    matching cookies. If that database cannot be read, raises
+    CookieDatabaseReadError so callers can distinguish failure from no match.
 
     Args:
         domain: The cookie domain to match (e.g. ".x.com"). Matched with LIKE %domain.
         cookie_names: List of cookie names to extract (e.g. ["auth_token", "ct0"]).
 
     Returns:
-        Dict of {cookie_name: cookie_value} or None if extraction fails.
+        Dict of {cookie_name: cookie_value} or None if no match.
     """
-    denied = None
-    try:
-        profiles_dir = _get_firefox_profiles_dir()
-    except PermissionError as exc:
-        denied = exc
-        profiles_dir = None
-    if profiles_dir is not None:
-        try:
-            result = _try_firefox_dir(profiles_dir, domain, cookie_names)
-        except PermissionError as exc:
-            denied = exc
-            result = None
-        if result is not None:
-            return result
-
-    if platform.system() == "Linux" and _is_wsl():
-        try:
-            wsl_dir = _get_wsl_firefox_profiles_dir()
-        except PermissionError as exc:
-            if denied is None:
-                denied = exc
-            wsl_dir = None
-        if wsl_dir is not None:
-            logger.debug("Trying Windows Firefox via WSL: %s", wsl_dir)
-            try:
-                result = _try_firefox_dir(wsl_dir, domain, cookie_names)
-            except PermissionError as exc:
-                if denied is None:
-                    denied = exc
-                result = None
-            if result is not None:
-                return result
-
-    if denied is not None:
-        raise denied
-    if profiles_dir is None:
-        logger.debug("Firefox profiles directory not found")
-    return None
+    result = _extract_firefox_with_source(domain, cookie_names)
+    return result[0] if result is not None else None
 
 
 def extract_chrome_cookies(
@@ -609,16 +595,22 @@ def _extract_firefox_with_source(
         if wsl_dir is not None:
             logger.debug("Trying Windows Firefox via WSL: %s", wsl_dir)
             try:
-                result = _try_firefox_dir(wsl_dir, domain, cookie_names)
+                result = _try_firefox_dir(wsl_dir, domain, cookie_names, windows_wsl=True)
             except PermissionError as exc:
                 if denied is None:
                     denied = exc
                 result = None
+            except CookieDatabaseReadError:
+                if denied is not None:
+                    raise denied from None
+                raise
             if result is not None:
                 return (result, "firefox-wsl")
 
     if denied is not None:
         raise denied
+    if profiles_dir is None:
+        logger.debug("Firefox profiles directory not found")
     return None
 
 
@@ -633,7 +625,7 @@ def extract_cookies_with_source(
     Auto mode tries browsers in platform order until one supplies every requested
     cookie with a nonempty value. If none does, it returns the first partial
     result without combining cookies from different browsers. A browser's
-    PermissionError does not stop later candidates from being tried.
+    access or database read error does not stop later candidates from being tried.
 
     Args:
         browser: One of 'firefox', 'chrome', 'brave', 'edge', 'vivaldi',
@@ -648,6 +640,8 @@ def extract_cookies_with_source(
     Raises:
         PermissionError: The explicitly selected browser denies access, or auto
             mode encounters a denial and no browser returns even a partial result.
+        CookieDatabaseReadError: Windows Firefox cannot be read and no other
+            candidate supplies cookies or reports a permission denial.
     """
     extractors = {
         "firefox": extract_firefox_cookies,
@@ -687,6 +681,7 @@ def extract_cookies_with_source(
 
     fallback = None
     first_denial = None
+    first_read_error = None
     for name in order:
         try:
             if name == "firefox":
@@ -697,6 +692,10 @@ def extract_cookies_with_source(
         except PermissionError as exc:
             if first_denial is None:
                 first_denial = exc
+            continue
+        except CookieDatabaseReadError as exc:
+            if first_read_error is None:
+                first_read_error = exc
             continue
 
         if result is not None:
@@ -709,5 +708,7 @@ def extract_cookies_with_source(
         return fallback
     if first_denial is not None:
         raise first_denial
+    if first_read_error is not None:
+        raise first_read_error
 
     return None
