@@ -15,36 +15,15 @@ from . import html_render, library, private_files
 
 FINISHED_SUBDIR = "finished"
 
-_BADGE_LINE = re.compile(r"^🌐\s*last30days\b[^\r\n]*$", re.MULTILINE)
+_BADGE_LINE = library._BADGE_LINE
 _RAW_DUMP_MARKERS = (
     "<!-- EVIDENCE FOR SYNTHESIS",
     "# END OF last30days CANONICAL OUTPUT",
 )
-_SYNCED_DATE = re.compile(r"\bsynced\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
+_SYNCED_DATE = library._BADGE_SYNCED_DATE
 _VERSION_TOKEN = re.compile(r"\bv(\d+\.\d+(?:\.\d+)*(?:[-+][A-Za-z0-9._-]+)?)\b")
-_ISO_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
-_MONTH_DAY_YEAR = re.compile(
-    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),\s*(\d{4})\b",
-    re.IGNORECASE,
-)
 _FIRST_HEADING = re.compile(r"^#{1,2}\s+(.+?)\s*$", re.MULTILINE)
 _CORPUS_FOOTER_LINE = re.compile(r"\bYour files\b", re.IGNORECASE)
-
-_MONTHS = {
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "may": 5,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "sept": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,22 +229,7 @@ def _topic_from_body(body: str) -> str:
 
 
 def _parse_date_segment(text: str) -> date | None:
-    # Prefer the end date when a range like "Oct 22 to Nov 21, 2026" is present.
-    month_matches = list(_MONTH_DAY_YEAR.finditer(text))
-    if month_matches:
-        match = month_matches[-1]
-        month_num = _MONTHS.get(match.group(1).lower()[:4]) or _MONTHS.get(
-            match.group(1).lower()[:3]
-        )
-        if month_num:
-            try:
-                return date(int(match.group(3)), month_num, int(match.group(2)))
-            except ValueError:
-                pass
-    iso_matches = list(_ISO_DATE.finditer(text))
-    if iso_matches:
-        return _safe_iso_date(iso_matches[-1].group(1))
-    return None
+    return library._parse_badge_date(text)
 
 
 def _safe_iso_date(value: str) -> date | None:
