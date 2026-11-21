@@ -178,6 +178,15 @@ class TestComments:
         assert len(comments) == 2
         assert all(c["score"] is None and c["score_pending"] for c in comments)
 
+    def test_attach_comments_after_hydrating_without_them(self, monkeypatch):
+        # Regression for #1546: the public wrapper unpacked two of three results.
+        fake = FakeArctic(posts=[_post("p1")], trees={"p1": [_comment("c1", "p1")]})
+        result = _hydrate(fake, [_ref("p1")], monkeypatch, comments=False)
+        assert not result.items[0].get("top_comments")
+        assert reddit_hydrate.attach_comments(result.items, "quick", now=NOW) == 1
+        assert [c["id"] for c in result.items[0]["top_comments"]] == ["c1"]
+        assert result.items[0]["comments_source"] == reddit_refs.ARCTIC
+
     def test_comments_only_for_top_threads_within_budget(self, monkeypatch):
         pids = [f"t{i}" for i in range(12)]
         fake = FakeArctic(
