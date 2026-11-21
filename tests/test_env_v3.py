@@ -188,8 +188,12 @@ class TikTokApifyTokenTests(unittest.TestCase):
         )
 
     def test_tiktok_unavailable_on_apify_only_config(self):
-        self.assertFalse(env.is_tiktok_available({"APIFY_API_TOKEN": "legacy"}))
-        self.assertFalse(env.is_apify_available({"APIFY_API_TOKEN": "legacy"}))
+        # The Apify token never arms TikTok; only the keyless lane (yt-dlp plus
+        # a discovery backend) can, so take yt-dlp away to see the token alone.
+        from lib import youtube_yt
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=False):
+            self.assertFalse(env.is_tiktok_available({"APIFY_API_TOKEN": "legacy"}))
+            self.assertFalse(env.is_apify_available({"APIFY_API_TOKEN": "legacy"}))
         self.assertTrue(env.is_tiktok_available({"SCRAPECREATORS_API_KEY": "sc"}))
 
     def test_instagram_token_never_falls_back_to_apify(self):
