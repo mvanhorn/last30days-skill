@@ -291,6 +291,58 @@ def test_title_chain_and_angle_share_one_story_cap():
     assert sum(c.cluster_id in outage_ids for c in ordered[:8]) == 3
 
 
+def test_primary_title_match_counts_against_the_whole_angle_story():
+    # The first cluster joins the story by title, not by its retrieval label.
+    # The last two are related by the angle, not by wording.
+    outage = [
+        _candidate("o0", "Microsoft 365 outage takes down Outlook", 100),
+        _candidate("o1", "Microsoft 365 outage takes down Outlook worldwide", 95, labels=("outage",)),
+        _candidate("o2", "Outage live: disruption costs Australia billions", 35, labels=("outage",)),
+        _candidate("o3", "Regulators question hospitals after the outage", 34, labels=("outage",)),
+    ]
+    other = [_candidate(f"d{i}", t, 20 - i) for i, t in enumerate(DISTINCT_TITLES[:6])]
+    candidates = outage + other
+    clusters = _singletons(candidates)
+    plan = _plan(("primary", "outage"))
+
+    ordered = cluster_diversity.diversify_clusters(clusters, candidates, plan)
+
+    assert ordered[:8] == [*clusters[:3], *clusters[4:9]]
+    assert _ids(ordered[8:]) == ["cluster-4", "cluster-10"]
+
+
+def test_title_matching_two_picked_stories_cannot_overfill_the_combined_story():
+    # The roundup is similar to both sets of titles. Accounting only for its
+    # closest match would let a five-cluster chain into the head.
+    candidates = [
+        _candidate("a0", "Outlook message delivery delays", 100),
+        _candidate("a1", "Outlook message delivery delays reported", 99),
+        _candidate("b0", "Azure database connection failures", 90),
+        _candidate("b1", "Azure database connection failures hit region", 89),
+        _candidate("both", "Outlook message delivery delays and Azure database connection failures", 30),
+    ] + [_candidate(f"d{i}", t, 10 - i) for i, t in enumerate(DISTINCT_TITLES[:5])]
+    clusters = _singletons(candidates)
+
+    ordered = cluster_diversity.diversify_clusters(clusters, candidates, _plan())
+
+    assert set(_ids(clusters[:4])) <= set(_ids(ordered[:8]))
+    assert _ids(ordered[8:]) == ["cluster-5", "cluster-10"]
+
+
+def test_title_bridge_under_cap_unifies_both_selected_stories():
+    candidates = [
+        _candidate("a", "Outlook message delivery delays", 100),
+        _candidate("b", "Azure database connection failures", 90),
+        _candidate("both", "Outlook message delivery delays and Azure database connection failures", 80),
+        _candidate("b2", "Azure database connection failures again", 50),
+    ] + [_candidate(f"d{i}", t, 20 - i) for i, t in enumerate(DISTINCT_TITLES[:5])]
+    clusters = _singletons(candidates)
+
+    ordered = cluster_diversity.diversify_clusters(clusters, candidates, _plan())
+
+    assert ordered == [*clusters[:3], *clusters[4:], clusters[3]]
+
+
 def test_out_of_window_subquery_cluster_is_not_reserved_a_head_slot():
     distinct = [_candidate(f"d{i}", t, 90 - i) for i, t in enumerate(DISTINCT_TITLES)]
     earnings = _candidate("e1", "Earnings beat estimates on cloud demand", 20, labels=("earnings",))
