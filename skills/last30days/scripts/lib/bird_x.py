@@ -207,25 +207,61 @@ def _extract_core_subject(topic: str) -> str:
     return extract_core_subject(topic, max_words=5, strip_suffixes=True)
 
 
-def _plain_query_tokens(text: str) -> list[str]:
-    """Return lexical tokens without Bird query grouping syntax.
+_PHRASE_MARKER = "\x00"
+_QUERY_SEPARATORS = str.maketrans({char: " " for char in "“”()[]{}\\" + _PHRASE_MARKER})
 
-    Strips phrase quotes as well as grouping characters. Used where a flat
-    token list is wanted; use ``build_topic_query`` for the provider query,
-    which preserves quoted phrases.
-    """
-    separators = str.maketrans({char: " " for char in '\"“”()[]{}'})
-    return [
-        clean
-        for token in text.translate(separators).split()
-        if (clean := token.strip("'‘’"))
-    ]
+# Use the public X recent-search query budget for Bird's SearchTimeline queries.
+MAX_QUERY_CHARS = 512
 
 
-# Bird/X grouping syntax that carries no lexical meaning. Double quotes are
-# deliberately absent: X advanced search treats "..." as a phrase match, which
-# is exactly what the planner intended when it quoted a proper noun.
-_GROUPING_CHARS = "“”()[]{}"
+def _topic_query_terms(topic: str) -> list[str]:
+    """Return safe keywords and whole quoted phrases for the Bird compiler."""
+    sections = topic.split('"')
+    if len(sections) % 2 == 0:
+        sections = [" ".join(sections)]
+    terms = []
+    for index, section in enumerate(sections):
+        if index % 2:
+            phrase = section.replace(_PHRASE_MARKER, " ").strip()
+            if phrase:
+                terms.append(f'"{phrase}"')
+            continue
+        for token in section.translate(_QUERY_SEPARATORS).split():
+            word = token.strip("'‘’")
+            if word.endswith(":") and word.count(":") == 1:
+                word = word[:-1]
+            if not word or ":" in word or word.startswith("-"):
+                continue
+            if word.upper() in ("AND", "OR"):
+                continue
+            terms.append(word)
+    return terms
+
+
+def _fit_query(terms: list[str], filters: str, *, disjunction: bool = False) -> str:
+    """Fit complete terms and the date filters without emitting a window-only query."""
+    prefix = "(" if disjunction else ""
+    suffix = f") {filters}" if disjunction else f" {filters}"
+    separator = " OR " if disjunction else " "
+    length = len(prefix) + len(suffix)
+    if not disjunction and terms and terms[0].startswith('"'):
+        if len(terms[0]) + terms[0].count("\\") + length > MAX_QUERY_CHARS:
+            terms = _topic_query_terms(terms[0][1:-1]) + terms[1:]
+
+    fitted = []
+    for term in terms:
+        if term.startswith('"'):
+            term = term.replace("\\", "\\\\")
+        added = len(term) + (len(separator) if fitted else 0)
+        if length + added > MAX_QUERY_CHARS:
+            if disjunction:
+                continue
+            break
+        fitted.append(term)
+        length += added
+    if not fitted:
+        return ""
+    return f"{prefix}{separator.join(fitted)}{suffix}"
 
 
 def _date_filters(from_date: str, to_date: Optional[str] = None) -> str:
@@ -244,29 +280,8 @@ def _date_filters(from_date: str, to_date: Optional[str] = None) -> str:
 def build_topic_query(
     topic: str, from_date: str, to_date: Optional[str] = None
 ) -> str:
-    """Build the X topic query, preserving quoted proper-noun phrases.
-
-    Previously the topic went through ``_plain_query_tokens``, which stripped
-    the quotes the planner had added, so an intended phrase match for
-    '"Peter Steinberger"' degraded into `peter AND steinberger` -- narrower and
-    noisier at once. X supports phrase queries natively, so the quotes are
-    passed through.
-    """
-    separators = str.maketrans({char: " " for char in _GROUPING_CHARS})
-    cleaned = topic.translate(separators)
-    # An unbalanced quote is worse than no quote: X reads the orphan as an
-    # unterminated phrase and matches nothing. Upstream trimming (core-subject
-    # extraction, retry shortening) can cut a topic mid-phrase, so verify the
-    # quotes pair up and fall back to bare tokens when they do not.
-    if cleaned.count('"') % 2:
-        cleaned = cleaned.replace('"', " ")
-    tokens = [
-        clean
-        for token in cleaned.split()
-        if (clean := token.strip("'‘’"))
-    ]
-    core = " ".join(tokens).strip()
-    return " ".join(part for part in (core, _date_filters(from_date, to_date)) if part)
+    """Build a bounded topic query with literal phrases and engine-owned dates."""
+    return _fit_query(_topic_query_terms(topic), _date_filters(from_date, to_date))
 
 
 def is_bird_installed() -> bool:
@@ -688,12 +703,26 @@ def search_x(
     if timeout is None:
         return {"error": "bird: chain budget exhausted", "items": []}
 
-    # Extract core subject - X search is literal, not semantic
-    core_subject = _extract_core_subject(topic)
-    core_words = _plain_query_tokens(core_subject)
-    core_topic = " ".join(core_words)
-    query = build_topic_query(core_subject, from_date, to_date)
+    terms = _topic_query_terms(topic)
+    # Protect literal phrases from the shared subject extractor's casing,
+    # noise filtering, and word cap.
+    phrases = {}
+    protected_terms = []
+    for index, term in enumerate(terms):
+        if term.startswith('"'):
+            marker = f"{_PHRASE_MARKER}{index}"
+            phrases[marker] = term
+            term = marker
+        protected_terms.append(term)
+    core_subject = _extract_core_subject(" ".join(protected_terms))
+    core_terms = _topic_query_terms(" ".join(phrases.get(word, word) for word in core_subject.split()))
+    exact_phrases = list(phrases.values())
+    retry_keywords = exact_phrases + [term for term in core_terms if not term.startswith('"')]
+    core_topic = " ".join(core_terms).replace('"', "")
     date_filters = _date_filters(from_date, to_date)
+    query = _fit_query(core_terms, date_filters)
+    if not query:
+        return {"error": "bird: no searchable keywords fit the topic query", "items": []}
 
     _log(f"Searching: {query}")
     response = _run_bird_search(query, count, timeout, deadline=deadline, **search_kwargs)
@@ -703,14 +732,15 @@ def search_x(
     items = parse_bird_response(response, query=core_topic)
 
     # Retry with OR groups for multi-word queries (X supports OR operator)
-    if not items and len(core_words) >= 2:
+    if not items and len(core_terms) >= 2:
         from .query import extract_compound_terms
-        compounds = extract_compound_terms(topic)
-        if compounds:
-            # Build OR-group query: ("multi-agent" OR "agent simulation") since:DATE
-            or_parts = ' OR '.join(f'"{t}"' for t in compounds[:3])
-            _log(f"0 results for '{core_topic}', retrying with OR groups: {or_parts}")
-            query = f"({or_parts}) {date_filters}"
+        alternatives = exact_phrases
+        if not alternatives:
+            compounds = extract_compound_terms(" ".join(terms))
+            alternatives = ['"' + term.strip('"') + '"' for term in compounds]
+        query = _fit_query(alternatives[:3], date_filters, disjunction=True)
+        if query:
+            _log(f"0 results for '{core_topic}', retrying with OR groups: {query}")
             timeout = _clamped_bird_timeout(base_timeout, deadline)
             if timeout is None:
                 return _budget_stop(response, last_clean_response)
@@ -720,10 +750,11 @@ def search_x(
             items = parse_bird_response(response, query=core_topic)
 
     # Retry with fewer keywords if still 0 results and query has 3+ words
-    if not items and len(core_words) > 2:
-        shorter = ' '.join(core_words[:2])
-        _log(f"0 results for '{core_topic}', retrying with '{shorter}'")
-        query = f"{shorter} {date_filters}"
+    query = ""
+    if not items and len(retry_keywords) > 2:
+        query = _fit_query(retry_keywords[:2], date_filters)
+    if query:
+        _log(f"0 results for '{core_topic}', retrying with '{query}'")
         timeout = _clamped_bird_timeout(base_timeout, deadline)
         if timeout is None:
             return _budget_stop(response, last_clean_response)
@@ -733,13 +764,14 @@ def search_x(
         items = parse_bird_response(response, query=core_topic)
 
     # Last-chance retry: use strongest remaining token (often the product name)
-    if not items and core_words:
+    if not items:
         low_signal = {
             'trendiest', 'trending', 'hottest', 'hot', 'popular', 'viral',
             'best', 'top', 'latest', 'new', 'plugin', 'plugins',
             'skill', 'skills', 'tool', 'tools',
         }
-        candidates = [w for w in core_words if w not in low_signal]
+        candidates = [term for term in retry_keywords if term not in low_signal]
+        query = ""
         if candidates:
             # Keep an entity anchor (the first distinctive topic token) in the
             # retry so it can't collapse to a bare generic token like "compound"
@@ -749,9 +781,10 @@ def search_x(
             # over-broaden to an unanchored generic term.
             anchor = candidates[0]
             strongest = max(candidates, key=len)
-            retry_terms = anchor if strongest == anchor else f"{anchor} {strongest}"
-            _log(f"0 results for '{core_topic}', retrying anchored on '{retry_terms}'")
-            query = f"{retry_terms} {date_filters}"
+            anchored_terms = [anchor] if strongest == anchor else [anchor, strongest]
+            query = _fit_query(anchored_terms, date_filters)
+        if query:
+            _log(f"0 results for '{core_topic}', retrying anchored on '{query}'")
             timeout = _clamped_bird_timeout(base_timeout, deadline)
             if timeout is None:
                 return _budget_stop(response, last_clean_response)
