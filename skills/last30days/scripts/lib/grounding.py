@@ -49,14 +49,16 @@ def claim_source_map(report: schema.Report) -> dict[str, GroundedClaimText]:
 
 def brave_search(
     query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+    freshness: str | None = None,
 ) -> tuple[list[dict], dict]:
+    """``freshness`` overrides the request's date-range freshness (e.g. "pm")."""
     url = (
         "https://api.search.brave.com/res/v1/web/search?"
         + urllib.parse.urlencode(
             {
                 "q": query,
                 "count": count,
-                "freshness": f"{date_range[0]}to{date_range[1]}",
+                "freshness": freshness or f"{date_range[0]}to{date_range[1]}",
             }
         )
     )

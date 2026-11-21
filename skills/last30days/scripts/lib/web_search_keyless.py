@@ -479,9 +479,14 @@ def is_challenge_page(rung: str, text: str) -> bool:
     return bool(text) and any(marker in text for marker in _CHALLENGE_MARKERS.get(rung, ()))
 
 
-def _search_searxng(query: str, count: int, instance_url: str) -> list[dict]:
+def _search_searxng(
+    query: str, count: int, instance_url: str, time_range: str | None = None,
+) -> list[dict]:
     base = instance_url.rstrip("/")
-    url = f"{base}/search?{urlencode({'q': query, 'format': 'json'})}"
+    params = {'q': query, 'format': 'json'}
+    if time_range:
+        params['time_range'] = time_range
+    url = f"{base}/search?{urlencode(params)}"
     try:
         data = http.get(url, headers={"Accept": "application/json"}, timeout=15, retries=2)
     except http.HTTPError:

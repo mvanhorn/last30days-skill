@@ -5,7 +5,10 @@ module finds public post URLs via the already-configured web backends, then
 extracts metadata with yt-dlp (already on PATH for YouTube).
 
 Discovery never uses Google ``site:`` — Serper's free tier 400s that pattern.
-Date filtering happens after yt-dlp, not at the search engine.
+Discovery asks each web backend for recent results (see ``_freshness_on``).
+Post dates are decoded from TikTok ids and Instagram shortcodes so stale URLs
+are dropped before any yt-dlp call; yt-dlp's own timestamp is the final
+filter. Out-of-window posts are never kept: an empty window returns zero.
 
 ponytail: no hashtag/user listing for IG (yt-dlp extractors are broken);
 TikTok ``@user`` listing still works and is used for ``creators=``.
@@ -14,13 +17,16 @@ TikTok ``@user`` listing still works and is used for ``creators=``.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from . import dates, http, log, subproc, web_search_keyless, youtube_yt
+from .relevance import RELEVANCE_FLOOR
 from .relevance import token_overlap_relevance as _compute_relevance
 
 _TT_RE = re.compile(
@@ -33,6 +39,24 @@ _HASHTAG_RE = re.compile(r"#(\w+)")
 
 _DEPTH_URLS = {"quick": 8, "default": 12, "deep": 20}
 _ENRICH_TIMEOUT = 180
+
+# TikTok creator expansion: (creators listed, videos listed per creator).
+_DEPTH_CREATORS = {"quick": (3, 5), "default": (5, 8), "deep": (8, 12)}
+
+# Discovery freshness. LAST30DAYS_SHORTFORM_FRESHNESS (env or config):
+#   "on" (default) asks every backend for recent results,
+#   "off" sends the unfiltered requests,
+#   a comma list (e.g. "serper,exa") turns it on for those backends only.
+# Backends: serper (tbs=qdr:m), brave (freshness=pm), exa (startPublishedDate
+# = window start), searxng (time_range=month). Brave cards often lack
+# page_age, so each switch exists to A/B the recall cost per backend.
+FRESHNESS_ENV = "LAST30DAYS_SHORTFORM_FRESHNESS"
+
+# Instagram media ids carry milliseconds since this epoch in their top bits.
+_IG_EPOCH_MS = 1314220021721
+_IG_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+# Ids that decode before 2016 are not plausible post dates.
+_MIN_ID_TS = datetime(2016, 1, 1, tzinfo=timezone.utc).timestamp()
 
 
 def _stopped(deadline: float | None, cancel: threading.Event | None) -> bool:
@@ -47,6 +71,70 @@ def _bounded_timeout(base: float, deadline: float | None) -> float:
     if deadline is None:
         return base
     return max(1.0, min(base, deadline - time.monotonic()))
+
+
+def _freshness_on(backend: str, config: Dict[str, Any] | None = None) -> bool:
+    """True when discovery should ask ``backend`` for recent results."""
+    raw = (config or {}).get(FRESHNESS_ENV) or os.environ.get(FRESHNESS_ENV) or "on"
+    value = str(raw).strip().lower()
+    if value in ("on", "1", "true", "yes"):
+        return True
+    if value in ("off", "0", "false", "no"):
+        return False
+    return backend in {part.strip() for part in value.split(",")}
+
+
+def post_timestamp_from_url(kind: str, url: str) -> Optional[float]:
+    """Unix seconds decoded from a post URL's id, or None when undecodable.
+
+    TikTok: the video id's top 32 bits are the upload time in seconds.
+    Instagram: the shortcode is a base64 media id whose top bits
+    (``id >> 23``) are milliseconds since ``_IG_EPOCH_MS``.
+    """
+    if kind == "tiktok":
+        m = _TT_RE.search(url or "")
+        if not m:
+            return None
+        ts = float(int(m.group(2)) >> 32)
+    elif kind == "instagram":
+        m = _IG_RE.search(url or "")
+        code = m.group(1) if m else ""
+        if not code or len(code) > 11:
+            return None
+        media_id = 0
+        for ch in code:
+            idx = _IG_ALPHABET.find(ch)
+            if idx < 0:
+                return None
+            media_id = media_id * 64 + idx
+        ts = ((media_id >> 23) + _IG_EPOCH_MS) / 1000.0
+    else:
+        return None
+    if ts < _MIN_ID_TS or ts > time.time() + 2 * 86400:
+        return None
+    return ts
+
+
+def post_date_from_url(kind: str, url: str) -> Optional[str]:
+    """UTC ``YYYY-MM-DD`` decoded from a post URL's id, or None."""
+    ts = post_timestamp_from_url(kind, url)
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
+
+
+def _outside_window(kind: str, url: str, from_date: str, to_date: str) -> bool:
+    """True only when the id decodes to a date clearly outside the window.
+
+    One day of slack on each side covers timezone and post-vs-upload skew;
+    yt-dlp's timestamp applies the exact window after hydration.
+    """
+    day = post_date_from_url(kind, url)
+    if day is None:
+        return False
+    d = date.fromisoformat(day)
+    return (d < date.fromisoformat(from_date) - timedelta(days=1)
+            or d > date.fromisoformat(to_date) + timedelta(days=1))
 
 
 def _log(kind: str, msg: str) -> None:
@@ -89,12 +177,16 @@ def _collect(kind: str, raw_urls, dest: List[str], limit: int) -> bool:
 
 def _serper_links(
     query: str, api_key: str, count: int, deadline: float | None = None,
+    fresh: bool = False,
 ) -> List[str]:
+    body: Dict[str, Any] = {"q": query, "num": min(20, max(count, 10))}
+    if fresh:
+        body["tbs"] = "qdr:m"
     data = http.request(
         "POST",
         "https://google.serper.dev/search",
         headers={"X-API-KEY": api_key},
-        json_data={"q": query, "num": min(20, max(count, 10))},
+        json_data=body,
         timeout=_bounded_timeout(15.0, deadline),
         retries=1,
     )
@@ -103,29 +195,35 @@ def _serper_links(
 
 def _exa_links(
     query: str, api_key: str, domain: str, count: int, deadline: float | None = None,
+    start_date: str | None = None,
 ) -> List[str]:
+    body: Dict[str, Any] = {
+        "query": query,
+        "numResults": count,
+        "includeDomains": [domain],
+        "contents": {"text": False},
+    }
+    if start_date:
+        body["startPublishedDate"] = f"{start_date}T00:00:00.000Z"
     data = http.request(
         "POST",
         "https://api.exa.ai/search",
         headers={"x-api-key": api_key},
-        json_data={
-            "query": query,
-            "numResults": count,
-            "includeDomains": [domain],
-            "contents": {"text": False},
-        },
+        json_data=body,
         timeout=_bounded_timeout(20.0, deadline),
         retries=1,
     )
     return [r.get("url", "") for r in (data.get("results") or []) if isinstance(r, dict)]
 
 
-def _brave_links(query: str, api_key: str, count: int) -> List[str]:
+def _brave_links(query: str, api_key: str, count: int, fresh: bool = False) -> List[str]:
     from . import grounding
 
-    # Wide date window: social cards often lack page_age and would otherwise drop.
+    # Wide date window for the result filter: social cards often lack
+    # page_age and would otherwise drop. ``fresh`` only shapes the request.
     items, _art = grounding.brave_search(
-        query, ("1970-01-01", "2099-12-31"), api_key, count=count
+        query, ("1970-01-01", "2099-12-31"), api_key, count=count,
+        freshness="pm" if fresh else None,
     )
     return [i.get("url", "") for i in items]
 
@@ -137,8 +235,12 @@ def discover_urls(
     count: int,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
+    from_date: str | None = None,
 ) -> Tuple[List[str], str]:
-    """Return (post_urls, backend_name). Never raises; stops at deadline/cancel."""
+    """Return (post_urls, backend_name). Never raises; stops at deadline/cancel.
+
+    ``from_date`` is the window start Exa's freshness filter uses.
+    """
     urls: List[str] = []
     used = "none"
     q = discovery_query(kind, query)
@@ -146,7 +248,10 @@ def discover_urls(
     searxng = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
     if searxng and not _stopped(deadline, cancel):
         try:
-            items = web_search_keyless._search_searxng(q, count, searxng)
+            items = web_search_keyless._search_searxng(
+                q, count, searxng,
+                time_range="month" if _freshness_on("searxng", config) else None,
+            )
             if _collect(kind, (i.get("url", "") for i in items), urls, count):
                 return urls, "searxng"
             if urls:
@@ -163,7 +268,10 @@ def discover_urls(
         try:
             if _collect(
                 kind,
-                _serper_links(q, config["SERPER_API_KEY"], count, deadline=deadline),
+                _serper_links(
+                    q, config["SERPER_API_KEY"], count, deadline=deadline,
+                    fresh=_freshness_on("serper", config),
+                ),
                 urls,
                 count,
             ):
@@ -177,7 +285,10 @@ def discover_urls(
         try:
             if _collect(
                 kind,
-                _exa_links(q, config["EXA_API_KEY"], "tiktok.com", count, deadline=deadline),
+                _exa_links(
+                    q, config["EXA_API_KEY"], "tiktok.com", count, deadline=deadline,
+                    start_date=from_date if _freshness_on("exa", config) else None,
+                ),
                 urls,
                 count,
             ):
@@ -191,7 +302,10 @@ def discover_urls(
         try:
             if _collect(
                 kind,
-                _brave_links(q, config["BRAVE_API_KEY"], count),
+                _brave_links(
+                    q, config["BRAVE_API_KEY"], count,
+                    fresh=_freshness_on("brave", config),
+                ),
                 urls,
                 count,
             ):
@@ -222,9 +336,21 @@ def discover_urls(
 
 
 def creator_urls(
-    kind: str, handle: str, count: int, deadline: float | None = None,
+    kind: str,
+    handle: str,
+    count: int,
+    deadline: float | None = None,
+    *,
+    topic: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
 ) -> List[str]:
-    """List recent TikTok posts for ``@handle``. IG user listing is broken — skip."""
+    """List recent TikTok posts for ``@handle``. IG user listing is broken — skip.
+
+    Lists ``count`` entries (id and title, one JSON object per line). With a
+    window, ids that decode outside it are dropped; with ``topic``, titles
+    below the shared relevance floor are dropped. Both run before hydration.
+    """
     if kind != "tiktok" or not handle:
         return []
     handle = handle.lstrip("@").strip()
@@ -238,7 +364,7 @@ def creator_urls(
         "--playlist-end",
         str(count),
         "--print",
-        "%(id)s",
+        "%(.{id,title})j",
         f"https://www.tiktok.com/@{handle}",
     ]
     # Same routing as the YouTube source: local yt-dlp, or the SSH host when
@@ -251,9 +377,22 @@ def creator_urls(
         return []
     out: List[str] = []
     for line in (result.stdout or "").splitlines():
-        vid = line.strip()
-        if vid.isdigit():
-            out.append(f"https://www.tiktok.com/@{handle}/video/{vid}")
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        vid = str(entry.get("id") or "")
+        if not vid.isdigit():
+            continue
+        url = f"https://www.tiktok.com/@{handle}/video/{vid}"
+        if from_date and to_date and _outside_window(kind, url, from_date, to_date):
+            continue
+        title = str(entry.get("title") or "")
+        if topic and _compute_relevance(topic, title) < RELEVANCE_FLOOR:
+            continue
+        out.append(url)
     return out[:count]
 
 
@@ -396,23 +535,53 @@ def search(
         return {"items": [], "error": "research deadline passed before OSS fallback"}
 
     cap = _DEPTH_URLS.get(depth, _DEPTH_URLS["default"])
+    window = {"from_date": from_date, "to_date": to_date}
     urls: List[str] = []
+    explicit = [h.lstrip("@").strip().lower() for h in (creators or []) if h]
     if kind == "tiktok" and creators:
         per = max(3, cap // max(len(creators), 1))
         for handle in creators:
             if _stopped(deadline, cancel):
                 return {"items": [], "error": "research deadline passed before OSS discovery"}
-            for u in creator_urls(kind, handle, per, deadline=deadline):
+            for u in creator_urls(kind, handle, per, deadline=deadline, **window):
                 if u not in urls:
                     urls.append(u)
 
-    found, backend = discover_urls(kind, topic, config, cap, deadline=deadline, cancel=cancel)
+    found, backend = discover_urls(
+        kind, topic, config, cap, deadline=deadline, cancel=cancel, from_date=from_date,
+    )
+    stale = [u for u in found if _outside_window(kind, u, from_date, to_date)]
+    if stale:
+        _log(kind, f"OSS dropped {len(stale)} discovered posts dated outside "
+                   f"{from_date}..{to_date} before extraction")
     for u in found:
-        if u not in urls:
+        if u not in urls and u not in stale:
             urls.append(u)
+
+    # Creator expansion (TikTok): every handle seen in discovery, stale
+    # videos included, is a lead for in-window, on-topic videos.
+    if kind == "tiktok" and len(urls) < cap:
+        max_creators, per_creator = _DEPTH_CREATORS.get(depth, _DEPTH_CREATORS["default"])
+        handles: List[str] = []
+        for u in found:
+            m = _TT_RE.search(u)
+            h = m.group(1) if m else ""
+            if h and h.lower() not in explicit and h not in handles:
+                handles.append(h)
+        for handle in handles[:max_creators]:
+            if _stopped(deadline, cancel) or len(urls) >= cap:
+                break
+            for u in creator_urls(
+                kind, handle, per_creator, deadline=deadline, topic=topic, **window,
+            ):
+                if u not in urls:
+                    urls.append(u)
+
     urls = urls[:cap]
     _log(kind, f"OSS discovery via {backend}: {len(urls)} urls (depth={depth})")
     if not urls:
+        if stale:
+            return {"items": [], "error": "oss discovery found only posts outside the date window"}
         return {"items": [], "error": "oss discovery empty"}
 
     items = enrich_urls(kind, urls, topic, deadline=deadline, cancel=cancel)
@@ -420,13 +589,13 @@ def search(
         return {"items": [], "error": "yt-dlp extracted 0 posts"}
 
     in_range = [i for i in items if i.get("date") and from_date <= i["date"] <= to_date]
-    if in_range:
-        dropped = len(items) - len(in_range)
-        items = in_range
-        if dropped:
-            _log(kind, f"OSS filtered {dropped} posts outside date range")
-    else:
-        _log(kind, f"OSS: no posts in date range, keeping all {len(items)}")
+    dropped = len(items) - len(in_range)
+    if dropped:
+        _log(kind, f"OSS dropped {dropped} posts outside date range or undated")
+    if not in_range:
+        return {"items": [], "error": f"no posts in date range ({len(items)} extracted, "
+                                      f"none dated {from_date}..{to_date})"}
+    items = in_range
 
     items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
     return {"items": items, "backend": backend}

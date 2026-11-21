@@ -281,7 +281,7 @@ class TestSshRoutedExtraction:
 
         def fake_run(cmd, timeout=None, input_text=None):
             captured["cmd"] = cmd
-            return SimpleNamespace(stdout="1234567890")
+            return SimpleNamespace(stdout='{"id": "1234567890", "title": "t"}')
 
         with mock.patch.dict(os.environ, self.SSH_ENV), \
              mock.patch.object(subproc_mod, "run_with_timeout", side_effect=fake_run):
