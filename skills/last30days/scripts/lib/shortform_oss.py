@@ -57,8 +57,6 @@ FRESHNESS_ENV = "LAST30DAYS_SHORTFORM_FRESHNESS"
 # TikTok creator expansion. LAST30DAYS_SHORTFORM_CREATOR_EXPANSION (env or
 # config): "on" (default) or "off", so the A/B harness can measure its lift.
 EXPANSION_ENV = "LAST30DAYS_SHORTFORM_CREATOR_EXPANSION"
-# Keyless TikTok top comments from the public web endpoint. Same on/off shape.
-COMMENTS_ENV = "LAST30DAYS_SHORTFORM_COMMENTS"
 
 # Instagram media ids carry milliseconds since this epoch in their top bits.
 _IG_EPOCH_MS = 1314220021721
@@ -100,11 +98,6 @@ def _switch_on(name: str, config: Dict[str, Any] | None = None) -> bool:
 def _expansion_on(config: Dict[str, Any] | None = None) -> bool:
     """True unless creator expansion is switched off."""
     return _switch_on(EXPANSION_ENV, config)
-
-
-def comments_on(config: Dict[str, Any] | None = None) -> bool:
-    """True unless keyless TikTok top comments are switched off."""
-    return _switch_on(COMMENTS_ENV, config)
 
 
 def post_timestamp_from_url(kind: str, url: str) -> Optional[float]:

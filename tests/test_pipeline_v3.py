@@ -2774,12 +2774,132 @@ class TestKeylessTikTokComments:
         items, comments = self._run({})
         assert items
         assert comments.call_count == 1
-        assert comments.call_args.kwargs["keyless"] is True
+        assert comments.call_args.kwargs["public"] is True
         assert comments.call_args.kwargs["token"] == ""
 
     def test_switch_off_skips_keyless_comments(self):
-        _items, comments = self._run({"LAST30DAYS_SHORTFORM_COMMENTS": "off"})
+        _items, comments = self._run({"LAST30DAYS_TIKTOK_PUBLIC_COMMENTS": "off"})
         assert comments.call_count == 0
+
+
+def _with_stale_post(payload_fn, url_for):
+    def payload(*_args, **_kwargs):
+        data = payload_fn()
+        kept = data["items"][0]
+        data["items"] = [
+            {**kept, "id": "old", "video_id": "old", "url": url_for("old"), "date": "2022-02-03",
+             "engagement": {"views": 50_000_000}, "relevance": 0.9},
+            kept,
+        ]
+        return data
+    return payload
+
+
+def _post(pid, relevance=0.9, date="2026-09-20", author="dev"):
+    return {"id": pid, "date": date, "relevance": relevance, "author_name": author}
+
+
+class TestCommentsSpentOnKeptPosts:
+    """Paid comment calls go to posts the report can keep."""
+
+    RANGE = ("2026-09-11", "2026-10-11")
+
+    def _ids(self, items, creators=None):
+        return [i["id"] for i in pipeline._comment_candidates(items, *self.RANGE, creators)]
+
+    def test_tiktok_comments_skip_stale_posts(self):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("comments",))
+        payload = _with_stale_post(_tiktok_payload, lambda v: f"https://www.tiktok.com/@dev/video/{v}")
+        with patch("lib.tiktok.search_and_enrich", side_effect=payload), \
+             patch("lib.tiktok.enrich_with_comments") as comments:
+            _memo_stream("tiktok", subquery, dict(_MEMO_SC_CONFIG))
+        assert [i["id"] for i in comments.call_args.args[0]] == ["t1"]
+
+    def test_instagram_comments_skip_stale_posts(self):
+        [subquery] = _memo_subqueries(["instagram"], labels=("comments",))
+        payload = _with_stale_post(_instagram_payload, lambda v: f"https://www.instagram.com/reel/{v}/")
+        with patch("lib.instagram.search_and_enrich", side_effect=payload), \
+             patch("lib.instagram.enrich_with_comments") as comments:
+            _memo_stream("instagram", subquery, dict(_MEMO_SC_CONFIG))
+        assert [i["id"] for i in comments.call_args.args[0]] == ["i1"]
+
+    def test_off_topic_posts_wait_behind_enough_on_topic_ones(self):
+        items = [_post("off", relevance=0.0), _post("a"), _post("b"), _post("c"),
+                 _post("undated", date="")]
+        assert self._ids(items) == ["a", "b", "c", "undated"]
+
+    def test_off_topic_posts_only_fill_empty_slots_loudest_first(self):
+        def loud(pid, views):
+            return {**_post(pid, relevance=0.0), "engagement": {"views": views}}
+
+        items = [loud("quiet", 10), _post("a"), loud("loudest", 9_000), loud("louder", 500),
+                 _post("stale", date="2022-02-03")]
+        # Enrichment ranks by engagement and takes three: the loud off-topic
+        # posts must not be able to push "a" out, so only two are offered.
+        assert self._ids(items) == ["a", "loudest", "louder"]
+
+    def test_spoken_caption_match_counts_as_on_topic(self):
+        spoken = {**_post("spoken", relevance=0.0), "text": "wait for it",
+                  "caption_snippet": "the ghostty terminal config I use every day"}
+        items = [spoken, _post("a"), _post("b"), _post("c")]
+        ids = [i["id"] for i in pipeline._comment_candidates(
+            items, *self.RANGE, topic="ghostty terminal")]
+        assert ids == ["spoken", "a", "b", "c"]
+
+    def test_requested_creator_posts_count_as_on_topic(self):
+        items = [_post("mine", relevance=0.0, author="@Traveler"), _post("other", relevance=0.0),
+                 _post("a"), _post("b")]
+        assert self._ids(items, creators=["traveler"]) == ["mine", "a", "b"]
+
+
+def _attach_comments(items, *_args, **_kwargs):
+    for item in items:
+        item["top_comments"] = [{"author": "a", "text": "fire", "digg_count": 9, "date": ""}]
+    return items
+
+
+class TestTikTokPublicComments:
+    """ScrapeCreators runs take TikTok comments from the free public endpoint first."""
+
+    def _run(self, config, side_effect=_attach_comments):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("public",))
+        with patch("lib.tiktok.search_and_enrich", side_effect=_tiktok_payload), \
+             patch("lib.tiktok.enrich_with_comments", side_effect=side_effect) as comments:
+            _memo_stream("tiktok", subquery, config)
+        return comments
+
+    def test_public_endpoint_serves_comments_without_scrapecreators_calls(self):
+        comments = self._run(dict(_MEMO_SC_CONFIG))
+        assert comments.call_count == 1
+        kwargs = comments.call_args.kwargs
+        assert kwargs["public"] is True and kwargs["token"] == ""
+        assert kwargs["max_posts"] == pipeline.PUBLIC_COMMENT_POSTS
+
+    def test_scrapecreators_backs_up_an_empty_public_endpoint(self):
+        comments = self._run(dict(_MEMO_SC_CONFIG), side_effect=lambda items, *a, **k: items)
+        assert comments.call_count == 2
+        assert comments.call_args_list[0].kwargs["public"] is True
+        last = comments.call_args_list[1].kwargs
+        assert last["token"] == "test-key" and "public" not in last
+
+    def test_a_stalled_public_endpoint_still_leaves_time_for_scrapecreators(self):
+        from lib import http as lib_http
+
+        def stall_public(items, *a, **kwargs):
+            if kwargs.get("public"):
+                raise lib_http.DeadlineExceeded()
+            return _attach_comments(items)
+
+        comments = self._run(dict(_MEMO_SC_CONFIG), side_effect=stall_public)
+        assert comments.call_count == 2
+        public, paid = comments.call_args_list
+        assert public.kwargs["deadline"] <= paid.kwargs["deadline"] - pipeline.SC_COMMENT_RESERVE_SECONDS
+        assert paid.kwargs["token"] == "test-key"
+
+    def test_switch_off_goes_straight_to_scrapecreators(self):
+        comments = self._run({**_MEMO_SC_CONFIG, "LAST30DAYS_TIKTOK_PUBLIC_COMMENTS": "off"})
+        assert comments.call_count == 1
+        assert comments.call_args.kwargs["token"] == "test-key"
 
 
 class TestSourceFetchMemo:
@@ -2791,7 +2911,7 @@ class TestSourceFetchMemo:
              patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
              patch("lib.env.is_youtube_comments_available", return_value=True), \
              patch("lib.youtube_yt.enrich_with_comments") as yt_comments, \
-             patch("lib.tiktok.enrich_with_comments") as tiktok_comments, \
+             patch("lib.tiktok.enrich_with_comments", side_effect=_attach_comments) as tiktok_comments, \
              patch("lib.instagram.enrich_with_comments") as ig_comments:
             results = _memo_streams_concurrently([
                 (source, subquery, dict(_MEMO_SC_CONFIG))

@@ -287,7 +287,21 @@ class TestTikTokPublicComments(unittest.TestCase):
             with patch.object(tiktok.http, "get", return_value=payload):
                 self.assertEqual([], tiktok._fetch_public_comments(url))
 
-    def test_keyless_enrich_uses_the_public_endpoint_without_a_token(self):
+    def test_public_failures_stay_out_of_the_run_record(self):
+        from unittest.mock import patch
+        from lib import http, tiktok
+
+        def blocked(*_a, **_k):
+            http._raise(http.HTTPError("HTTP 403", status_code=403))
+
+        with http.capture_failures() as run_failures, \
+             patch.object(tiktok.http, "get", side_effect=blocked):
+            out = tiktok._fetch_public_comments(
+                "https://www.tiktok.com/@dev/video/7710485679641267469")
+        self.assertEqual([], out)
+        self.assertEqual([], run_failures)
+
+    def test_public_enrich_uses_the_public_endpoint_without_a_token(self):
         from unittest.mock import patch
         from lib import tiktok
 
@@ -296,7 +310,7 @@ class TestTikTokPublicComments(unittest.TestCase):
         with patch.object(tiktok, "_fetch_post_comments") as paid, \
              patch.object(tiktok, "_fetch_public_comments",
                           return_value=[{"author": "a", "text": "hi", "digg_count": 9, "date": ""}]) as free:
-            tiktok.enrich_with_comments(items, token="", keyless=True)
+            tiktok.enrich_with_comments(items, token="", public=True)
         paid.assert_not_called()
         free.assert_called_once()
         self.assertEqual("hi", items[0]["top_comments"][0]["text"])

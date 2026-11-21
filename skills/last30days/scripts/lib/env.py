@@ -735,11 +735,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Optional SearXNG instance for the keyless-search fallback rung.
         ('LAST30DAYS_SEARXNG_URL', None),
         # Keyless TikTok/Instagram lane switches (lib/shortform_oss.py):
-        # discovery freshness (on/off/backend list), TikTok creator expansion and
-        # keyless TikTok top comments.
+        # discovery freshness (on/off/backend list) and TikTok creator expansion.
         ('LAST30DAYS_SHORTFORM_FRESHNESS', None),
         ('LAST30DAYS_SHORTFORM_CREATOR_EXPANSION', None),
-        ('LAST30DAYS_SHORTFORM_COMMENTS', None),
+        # TikTok top comments from TikTok's public web endpoint (free, no key):
+        # on (default) or off. Off puts comment calls back on ScrapeCreators.
+        ('LAST30DAYS_TIKTOK_PUBLIC_COMMENTS', None),
         # Truthy -> disable Trustpilot's headless-Chrome WAF-cookie harvest in
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
@@ -2043,6 +2044,12 @@ def is_youtube_comments_available(
     if not is_youtube_sc_available(config):
         return False
     return 'youtube_comments' in _parse_include_sources(config)
+
+
+def is_tiktok_public_comments_on(config: dict[str, Any]) -> bool:
+    """TikTok comments come from the free public endpoint unless switched off."""
+    raw = config.get('LAST30DAYS_TIKTOK_PUBLIC_COMMENTS') or os.environ.get('LAST30DAYS_TIKTOK_PUBLIC_COMMENTS') or 'on'
+    return str(raw).strip().lower() not in ('off', '0', 'false', 'no')
 
 
 def is_tiktok_comments_available(config: dict[str, Any]) -> bool:

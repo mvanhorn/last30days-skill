@@ -435,9 +435,7 @@ def _shortform_keyless_detail(config: Dict[str, Any], purpose: str) -> str:
             f"keyless lane armed via {armed}; best effort, low recall (public pages, "
             "no views or comments); ScrapeCreators key absent"
         )
-    from . import shortform_oss
-
-    comments = ("top comments from the public endpoint" if shortform_oss.comments_on(config)
+    comments = ("top comments from the public endpoint" if env.is_tiktok_public_comments_on(config)
                 else "comments off")
     return (f"keyless lane armed via {armed}; {comments}; finds videos through "
             "creators, not keyword search; ScrapeCreators key absent")
