@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lib import arxiv, techmeme, trustpilot
+from lib import arxiv, github, techmeme, trustpilot
 
 
 # Five diverse topics from real run history, with the expected fire/quiet call
@@ -85,6 +85,39 @@ def test_techmeme_drops_header_rows_keeps_stories():
     items = techmeme.parse_techmeme_response(resp, query="AI coding agents")
     assert len(items) == 1
     assert items[0]["title"].startswith("OpenAI")
+
+
+def _github_envelope(core, titled_urls):
+    return {
+        "items": [
+            {"html_url": url, "title": title, "created_at": "2026-06-10T12:00:00Z",
+             "comments": 2, "reactions": {"total_count": 9}}
+            for url, title in titled_urls
+        ],
+        "context": {"core": core, "from_date": "2026-05-28", "to_date": "2026-06-27"},
+    }
+
+
+def test_github_quiet_on_offtopic_keyword_matches():
+    """GitHub's issue search still returns a page for the "Golden State
+    Warriors" control: spam issues and a passing mention in an unrelated repo.
+    None of them is about the topic, so the source stays quiet."""
+    resp = _github_envelope("golden state warriors", [
+        ("https://github.com/qa-helpdesk-7/tickets/issues/8922",
+         "Bug report: MESSAGE #L8922 — THE PROMOCODE — $5000 LEARN MORE"),
+        ("https://github.com/stablehand/horse-counter/issues/12",
+         "Weekly count is off by one for the north paddock"),
+    ])
+    assert github.parse_github_response(resp, topic="Golden State Warriors") == []
+
+
+def test_github_fires_on_ontopic_issue():
+    resp = _github_envelope("ai coding agents", [
+        ("https://github.com/acme/evals/issues/7",
+         "Benchmark AI coding agents on multi-file refactors"),
+    ])
+    items = github.parse_github_response(resp, topic="AI coding agents")
+    assert len(items) == 1
 
 
 # ---- Layer 2: opt-in live exploration ----

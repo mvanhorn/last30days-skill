@@ -348,3 +348,86 @@ def test_nothing_solid_output_stays_byte_identical():
         "- No topic cleared the discovery confidence floor this window; "
         "reporting nothing solid instead of ranked noise.\n"
     )
+
+
+# --- Digg engagement: score per item, counts only in totals ------------------
+
+def _digg_item(item_id: str, engagement: dict) -> schema.SourceItem:
+    return schema.SourceItem(
+        item_id=item_id, source="digg", title=f"Story {item_id}", body="b",
+        url=f"https://digg.com/technology/{item_id}", published_at="2026-11-08",
+        snippet="s", engagement=engagement,
+    )
+
+
+DIGG_BIG = {"postCount": 127, "uniqueAuthors": 96, "digg_score": 1286}
+DIGG_SMALL = {"postCount": 29, "uniqueAuthors": 23, "digg_score": 239}
+
+
+def _digg_report() -> schema.Report:
+    return schema.Report(
+        topic="OpenAI", range_from="2026-10-12", range_to="2026-11-11",
+        generated_at="2026-11-11T01:00:00+00:00",
+        provider_runtime=schema.ProviderRuntime(
+            reasoning_provider="local", planner_model="mock", rerank_model="mock",
+        ),
+        query_plan=schema.QueryPlan(
+            intent="breaking_news", freshness_mode="strict_recent", cluster_mode="story",
+            raw_topic="OpenAI", subqueries=[], source_weights={},
+        ),
+        clusters=[], ranked_candidates=[], errors_by_source={},
+        items_by_source={
+            "digg": [_digg_item("big", DIGG_BIG), _digg_item("small", DIGG_SMALL)]
+        },
+    )
+
+
+def test_discovery_engagement_totals_leave_out_the_digg_score():
+    totals = pipeline._discovery_engagement(
+        [_digg_item("big", DIGG_BIG), _digg_item("small", DIGG_SMALL)]
+    )
+    assert totals["digg"] == {"postCount": 156, "uniqueAuthors": 119}
+
+
+def test_rendered_digg_item_shows_its_score_and_source_count():
+    item = _digg_item("big", DIGG_BIG)
+    candidate = schema.Candidate(
+        candidate_id="c-big", item_id=item.item_id, source="digg", title=item.title,
+        url=item.url, snippet=item.snippet, subquery_labels=["primary"],
+        native_ranks={"primary:digg": 1}, local_relevance=0.8, freshness=90,
+        engagement=100, source_quality=0.6, rrf_score=0.01, final_score=80,
+        source_items=[item],
+    )
+
+    assert render._format_engagement(item) == "[1,286 Digg Score, 127posts, 96auth]"
+    rendered = "\n".join(render._render_candidate(candidate, "1."))
+    assert "1,286 Digg Score, 127posts" in rendered
+
+
+def test_digg_item_without_a_score_shows_its_counts_only():
+    item = _digg_item("old", {"postCount": 15, "uniqueAuthors": 10, "rank": 1, "rank_score": 50.0})
+    assert render._format_engagement(item) == "[15posts, 10auth]"
+
+
+def test_digg_stats_line_sums_posts_and_authors_and_no_score():
+    stats = render._render_stats(_digg_report())
+    digg_line = next(line for line in stats if line.startswith("- Digg:"))
+    assert digg_line == "- Digg: 2 items | 156posts, 119auth"
+
+
+def test_digg_footer_line_sums_posts_and_authors_and_no_score():
+    assert render._build_source_footer_lines(_digg_report()) == [
+        "⛏️ Digg: 2 clusters │ 156 posts │ 119 authors"
+    ]
+
+
+def test_reddit_stats_still_sum_upvotes():
+    items = [
+        schema.SourceItem(
+            item_id=f"r{i}", source="reddit", title="t", body="b",
+            url=f"https://www.reddit.com/r/x/comments/{i}", published_at="2026-11-08",
+            snippet="s", engagement={"score": 100, "num_comments": 10},
+        )
+        for i in range(2)
+    ]
+    assert render._aggregate_engagement("reddit", items) == "200pts, 20cmt"

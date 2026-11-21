@@ -104,7 +104,7 @@ _REGISTERS = {
             "source_outcomes",
             "source_coverage",
         ),
-        item_budgets={"clusters": 6, "best_takes": 5, "top_comments": 8},
+        item_budgets={"clusters": 6, "best_takes": 5, "top_comments": 40},
         emphasis_weights={
             "tiktok": 1.60,
             "instagram": 1.50,

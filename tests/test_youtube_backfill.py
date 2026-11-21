@@ -155,3 +155,30 @@ class TestFinalizeWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBackfillBotCheck(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        youtube_yt.reset_transcript_fetch_stats()
+        self.addCleanup(youtube_yt.reset_transcript_fetch_stats)
+
+    def _backfill(self, detail):
+        def fake_parallel(video_ids, **_kwargs):
+            youtube_yt._note_youtube_block(detail)
+            return {vid: None for vid in video_ids}
+
+        items = [_item("vidA"), _item("vidB")]
+        with mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_parallel):
+            youtube_yt.backfill_transcripts(items, topic="microsoft", depth="default")
+        return youtube_yt.get_transcript_fetch_stats()
+
+    def test_a_bot_check_during_backfill_is_recorded(self):
+        stats = self._backfill("ERROR: Sign in to confirm you're not a bot")
+        self.assertEqual(stats["blocked"], 1)
+
+    def test_a_plain_backfill_failure_records_no_bot_check(self):
+        stats = self._backfill("ERROR: Unable to extract video data")
+        self.assertEqual(stats["blocked"], 0)

@@ -178,6 +178,39 @@ class TestVendoredBirdRuntime(unittest.TestCase):
         self.assertTrue(payload["warnings"])
         self.assertIn("Missing auth_token", " ".join(payload["warnings"]))
 
+    def _search_products(self, *flags):
+        """Run a search with fetch stubbed; return each SearchTimeline product."""
+        import tempfile
+        stub = textwrap.dedent("""
+            globalThis.fetch = async (url) => {
+              const u = String(url);
+              if (u.includes('SearchTimeline')) {
+                const v = JSON.parse(new URL(u).searchParams.get('variables'));
+                process.stderr.write(`PRODUCT=${v.product}\\n`);
+                const body = {data: {search_by_raw_query: {search_timeline: {timeline: {instructions: []}}}}};
+                return new Response(JSON.stringify(body), {status: 200, headers: {'content-type': 'application/json'}});
+              }
+              return new Response('', {status: 404});
+            };
+        """)
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_path = Path(tmp) / "stub.mjs"
+            stub_path.write_text(stub)
+            env = os.environ.copy()
+            env.update(AUTH_TOKEN="dummy-auth", CT0="dummy-ct0", BIRD_DISABLE_BROWSER_COOKIES="1")
+            result = subprocess.run(
+                ["node", "--import", stub_path.as_uri(), str(VENDORED_BIRD), "q", "--count", "1", "--json", *flags],
+                cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return [line.split("=", 1)[1] for line in result.stderr.splitlines() if line.startswith("PRODUCT=")]
+
+    def test_search_requests_latest_by_default(self):
+        self.assertEqual(["Latest"], self._search_products())
+
+    def test_top_flag_requests_the_top_tab(self):
+        self.assertEqual(["Top"], self._search_products("--top"))
+
     def test_browser_cookie_helpers_lazy_load_sweet_cookie(self):
         sweet_cookie_dir = (
             REPO_ROOT
@@ -570,6 +603,51 @@ class TestHandleSearchLogsOnSuccess(unittest.TestCase):
                         f"expected a Searching: log on success, got {logged}")
 
 
+class TestTopicSearchReadsTopTab(unittest.TestCase):
+    """Topic searches read X's Top tab; handle and mention lanes keep Latest.
+
+    Latest is time-ordered, so on a busy topic ("taylor swift") its first page
+    is the last few minutes of zero-engagement posts, and handle expansion then
+    promoted whoever posted in those minutes.
+    """
+
+    def _result(self):
+        class _R:
+            returncode = 0
+            stderr = ""
+            stdout = json.dumps([])
+        return _R()
+
+    def test_every_topic_search_tier_asks_for_top(self):
+        tops = []
+
+        def fake_run(query, count, timeout, deadline=None, top=False):
+            tops.append(top)
+            return {"items": []}  # 0 results forces every retry tier
+
+        with mock.patch.object(bird_x, "_run_bird_search", side_effect=fake_run):
+            bird_x.search_x("trevin chow ai agents compound", "2026-05-19", "2026-06-18")
+        self.assertGreater(len(tops), 1)
+        self.assertTrue(all(tops), tops)
+
+    def test_top_flag_reaches_the_bird_command_line(self):
+        cmds = []
+
+        def fake_run(cmd, timeout=None, env=None):
+            cmds.append(cmd)
+            return self._result()
+
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=fake_run):
+            bird_x.search_x("taylor swift", "2026-10-16", "2026-11-15")
+            bird_x.search_handles(["taylorswift13"], "taylor swift", "2026-10-16", count_per=1)
+            bird_x.search_mentions(["taylorswift13"], "2026-10-16", count_per=1)
+        topic = [c for c in cmds if c[2].startswith("taylor swift")]
+        lanes = [c for c in cmds if c[2].startswith(("from:", "@"))]
+        self.assertTrue(topic and lanes)
+        self.assertTrue(all("--top" in c for c in topic), topic)
+        self.assertFalse(any("--top" in c for c in lanes), lanes)
+
+
 class TestStrongestTokenRetryAnchored(unittest.TestCase):
     """The last-chance retry must keep an entity anchor, not collapse to a bare
     generic token (e.g. 'compound') that floods the X pool with off-topic noise.
@@ -581,7 +659,7 @@ class TestStrongestTokenRetryAnchored(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout, deadline=None):
+        def fake_run(query, count, timeout, deadline=None, top=False):
             queries.append(query)
             return {"items": []}  # always 0 → forces every retry tier
 
@@ -603,7 +681,7 @@ class TestStrongestTokenRetryAnchored(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout, deadline=None):
+        def fake_run(query, count, timeout, deadline=None, top=False):
             queries.append(query)
             return {"items": []}
 
@@ -622,7 +700,7 @@ class TestBirdRetryQueryCorrectness(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout, deadline=None):
+        def fake_run(query, count, timeout, deadline=None, top=False):
             queries.append(query)
             if len(queries) == 1:
                 return {"items": []}

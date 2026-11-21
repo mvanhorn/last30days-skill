@@ -12,6 +12,8 @@ READMES = {
     "日本語": ROOT / "README.ja.md",
     "简体中文": ROOT / "README.zh-CN.md",
     "العربية": ROOT / "README.ar.md",
+    "فارسی": ROOT / "README.fa.md",
+    "Türkçe": ROOT / "README.tr.md",
 }
 
 
@@ -84,3 +86,15 @@ def test_readme_translation_relative_links_exist() -> None:
     for path in READMES.values():
         for target in _relative_link_targets(path.read_text(encoding="utf-8")):
             assert (ROOT / target).exists(), f"{path.name}: missing relative link target {target}"
+
+
+def test_every_readme_lists_yahoo_finance_as_a_source() -> None:
+    for path in READMES.values():
+        rows = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("| **Yahoo Finance** |")
+        ]
+        assert len(rows) == 1, path.name
+        assert "`yahoo-finance-pp-cli`" in rows[0], path.name
+        assert rows[0].count("|") == 3, path.name

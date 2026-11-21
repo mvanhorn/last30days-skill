@@ -1,5 +1,6 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
+import http.client
 import json
 from collections import OrderedDict
 import math
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit, quote
 
-from . import bounded_get, health, usage
+from . import bounded_get, health, proxy, usage
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
@@ -61,11 +62,18 @@ def retry_delay_from_headers(headers, fallback):
     reported dead when it was merely early. Honouring the reset header turns a
     guaranteed zero into a result at the cost of one wait.
 
-    Returns ``fallback`` when neither header is present or parseable.
+    USPTO Patent Public Search names its wait in
+    ``x-rate-limit-retry-after-seconds`` instead.
+
+    Returns ``fallback`` when none of these headers is present or parseable.
     """
     if not headers:
         return fallback
-    for name in ("Retry-After", "x-ratelimit-reset"):
+    for name in (
+        "Retry-After",
+        "x-rate-limit-retry-after-seconds",
+        "x-ratelimit-reset",
+    ):
         raw = headers.get(name)
         if raw is None:
             continue
@@ -89,7 +97,7 @@ USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 
 # urllib copies almost all headers across 3xx; strip credentials when origin changes (#1062).
 _CROSS_ORIGIN_AUTH_HEADERS = frozenset(
-    {"authorization", "x-api-key", "x-csrf-token", "x-subscription-token"}
+    {"authorization", "cookie", "x-access-token", "x-api-key", "x-csrf-token", "x-subscription-token"}
 )
 
 
@@ -108,11 +116,24 @@ def _request_origin(url: str) -> tuple[str, str, int]:
     return scheme, host, port
 
 
+# A request may carry a check on where it is allowed to be redirected: a
+# caller that fetches an address from remote content (a sitemap) refuses a
+# redirect to a private network before it is followed, not after.
+_REDIRECT_GUARD_ATTR = "_last30days_redirect_guard"
+
+
 class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        guard = getattr(req, _REDIRECT_GUARD_ATTR, None)
+        if guard is not None and not guard(newurl):
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "redirect refused: off the site or to a private address", headers, fp,
+            )
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is None:
             return None
+        if guard is not None:
+            setattr(new, _REDIRECT_GUARD_ATTR, guard)
         if _request_origin(req.full_url) != _request_origin(new.full_url):
             for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
                 if not store:
@@ -156,6 +177,10 @@ _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
 _expected_miss_statuses: ContextVar[frozenset[int]] = ContextVar(
     "last30days_http_expected_miss_statuses",
     default=frozenset(),
+)
+_expected_no_host: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
+    "last30days_http_expected_no_host",
+    default=None,
 )
 
 _FIXTURE_FORMAT = "last30days-http-fixture/v1"
@@ -456,7 +481,31 @@ def replaying_requests(path: str | Path):
             _fixture_state = None
 
 
-def _fixture_replay(request_data: dict[str, Any]) -> Any:
+class ResponseHeaders(dict):
+    """Response headers keyed by lowercased name; lookups ignore case.
+
+    ``url`` is the address that answered, after any redirects ('' when not
+    known, as for a replayed fixture).
+    """
+
+    url = ""
+
+    def __init__(self, pairs=()):
+        super().__init__(
+            (str(name).lower(), value) for name, value in dict(pairs).items()
+        )
+
+    def __getitem__(self, name):
+        return super().__getitem__(str(name).lower())
+
+    def __contains__(self, name):
+        return super().__contains__(str(name).lower())
+
+    def get(self, name, default=None):
+        return super().get(str(name).lower(), default)
+
+
+def _fixture_replay(request_data: dict[str, Any], *, return_headers: bool = False) -> Any:
     with _fixture_lock:
         state = _fixture_state
         if state is None or state["mode"] != "replay":
@@ -476,7 +525,15 @@ def _fixture_replay(request_data: dict[str, Any]) -> Any:
             body=error.get("body"),
             outcome_state=error.get("outcome_state"),
         )
+        # Callers branch on this (a dead careers host is not asked for its
+        # second page), so a replay without it makes requests the live run
+        # never recorded.
+        recorded_error.no_host = bool(error.get("no_host"))
         _raise(recorded_error)
+    if return_headers:
+        # An exchange recorded by a request that did not ask for headers has
+        # none stored; it replays with an empty set.
+        return response.get("value"), ResponseHeaders(response.get("headers") or {})
     return response.get("value")
 
 
@@ -486,6 +543,7 @@ def _fixture_record(
     value: Any = None,
     error: Optional["HTTPError"] = None,
     redactions: frozenset[str] = frozenset(),
+    headers: Optional["ResponseHeaders"] = None,
 ) -> None:
     if _fixture_module_capture.get():
         return
@@ -502,6 +560,12 @@ def _fixture_record(
         response: dict[str, Any]
         if error is None:
             response = {"value": _scrub_fixture_value(value, redactions=redactions)}
+            if headers is not None:
+                # Scrubbed like any other value: a secret-named header (a
+                # session token, Set-Cookie) is stored as "<redacted>".
+                response["headers"] = _scrub_fixture_value(
+                    dict(headers), redactions=redactions
+                )
         else:
             response = {
                 "error": _scrub_fixture_value(
@@ -514,6 +578,8 @@ def _fixture_record(
                     redactions=redactions,
                 )
             }
+            if error.no_host:
+                response["error"]["no_host"] = True
         state["exchanges"].append({"request": request_data, "response": response})
 
 
@@ -610,6 +676,9 @@ class HTTPError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+        # True when no host answered: the name did not resolve or the
+        # connection was refused. See ``expected_no_host``.
+        self.no_host = False
         self.outcome_state = outcome_state or classify_failure(
             status_code=status_code,
             message=message,
@@ -663,6 +732,55 @@ def tee_failures():
             parent.extend(local)
 
 
+def other_host_form(host: str) -> str:
+    """The ``www.`` form of a bare two-label host, or the bare form of a ``www.``
+    host, or "" when the host has neither (a subdomain such as ``jobs.x.com``).
+
+    Some sites answer on only one of the two: ``nvidia.com`` drops the
+    connection while ``www.nvidia.com`` serves the page.
+    """
+    host = (host or "").strip().lower()
+    if host.startswith("www."):
+        bare = host[4:]
+        return bare if "." in bare else ""
+    return f"www.{host}" if host.count(".") == 1 else ""
+
+
+def connection_dropped(failures: list[HTTPError]) -> bool:
+    """True when a request reached no page because the connection was dropped:
+    no HTTP status, not a timeout, and not a name that failed to resolve or a
+    refused connection, which say nothing answers there at all."""
+    return any(
+        failure.status_code is None
+        and failure.outcome_state != health.TIMEOUT
+        and not failure.no_host
+        for failure in failures
+    )
+
+
+def text_on_either_host_form(fetch: Callable[[str], Optional[str]], url: str) -> tuple[Optional[str], str]:
+    """``fetch(url)``, retried once on the site's other host form when the
+    connection was dropped. Returns the text and the URL that gave it.
+
+    Only one failure is kept for the run's record: the first one when both
+    forms fail, none when the other form answers.
+    """
+    parts = urlsplit(url)
+    other = other_host_form(parts.hostname or "")
+    with tee_failures() as failures:
+        text = fetch(url)
+        if text or not other or not connection_dropped(failures):
+            return text, url
+        first = list(failures)
+        failures.clear()
+        other_url = urlunsplit(parts._replace(netloc=other))
+        text = fetch(other_url)
+        if text:
+            return text, other_url
+        failures[:] = first
+        return None, url
+
+
 @contextmanager
 def expected_misses(*status_codes: int):
     """Exclude adapter-declared probe misses from captured run failures."""
@@ -675,6 +793,30 @@ def expected_misses(*status_codes: int):
         _expected_miss_statuses.reset(token)
 
 
+@contextmanager
+def expected_no_host():
+    """Exclude "there is no such host" failures from captured run failures.
+
+    For a caller that tries a host it only guessed: a name that does not
+    resolve, or a connection the host refuses, means nothing is there, not
+    that a source is down. Yields the failures left out, so the caller can
+    stop asking that host. Timeouts and HTTP errors are still recorded.
+    """
+    dropped: list[HTTPError] = []
+    token = _expected_no_host.set(dropped)
+    try:
+        yield dropped
+    finally:
+        _expected_no_host.reset(token)
+
+
+def _is_no_host(error: BaseException) -> bool:
+    """A name that did not resolve or a refused connection, bare or wrapped
+    in a ``URLError``."""
+    reason = getattr(error, "reason", error)
+    return isinstance(reason, (socket.gaierror, ConnectionRefusedError))
+
+
 def submit_with_context(executor, func, /, *args, **kwargs) -> Future:
     """Submit a worker with the caller's failure-capture context."""
     context = copy_context()
@@ -683,6 +825,10 @@ def submit_with_context(executor, func, /, *args, **kwargs) -> Future:
 
 def _record_failure(error: HTTPError) -> None:
     if error.status_code in _expected_miss_statuses.get():
+        return
+    no_host = _expected_no_host.get()
+    if no_host is not None and error.no_host:
+        no_host.append(error)
         return
     sink = _failure_sink.get()
     if sink is not None:
@@ -783,7 +929,11 @@ def request(
     owned_get: bool = False,
     on_retry: Callable[[], None] | None = None,
     bypass_proxy: bool = False,
-) -> Union[Dict[str, Any], str]:
+    retry_dns: bool = True,
+    return_headers: bool = False,
+    redirect_guard: Callable[[str], bool] | None = None,
+    sensitive_url: bool = False,
+) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
     Args:
@@ -803,9 +953,18 @@ def request(
             its deadline. Requires deadline_monotonic; other methods are refused.
         on_retry: Called before each transport attempt after the first.
         bypass_proxy: Use a direct connection for this request and its redirects.
+        retry_dns: Widen the retry budget to MIN_DNS_RETRIES when the name does
+            not resolve. Off for a host the caller only guessed, where a name
+            that does not resolve is the answer.
+        return_headers: Also return the response headers, for a host that
+            answers in a header (a session token) rather than the body. Not
+            available with owned_get, whose child process reports no headers.
+        sensitive_url: Exclude credential-bearing URLs and their responses
+            from request diagnostics and fixture capture.
 
     Returns:
-        Parsed JSON response as dict, or raw text string if raw=True.
+        Parsed JSON response as dict, or raw text string if raw=True. With
+        return_headers=True, a ``(body, ResponseHeaders)`` tuple instead.
 
     Raises:
         HTTPError: On request failure
@@ -816,6 +975,8 @@ def request(
         raise ValueError("owned GET requires an operation deadline")
     if owned_get and bypass_proxy:
         raise ValueError("owned GET does not support proxy bypass")
+    if owned_get and return_headers:
+        raise ValueError("owned GET does not report response headers")
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
 
@@ -838,9 +999,28 @@ def request(
         quote(parts.fragment, safe=safe),
     ))
 
-    fixture_request = _fixture_request(method, url, json_data, raw)
+    # Proxy mode: a paid call backed by the proxy sentinel goes to the metered
+    # proxy instead (lib/proxy.py). Rewritten before fixture capture so the
+    # recorded request carries the proxy URL and the bearer key is redacted.
+    usage_url = url
+    try:
+        routed = proxy.route(method, url, headers)
+    except proxy.ProxyUnavailable as exc:
+        unavailable = HTTPError(f"API key proxy: {exc}", exc.status_code)
+        _raise(unavailable)
+    call_key = None
+    if routed is not None:
+        url = routed.url
+        headers = routed.headers
+        call_key = proxy.new_idempotency_key()
+        headers[proxy.IDEMPOTENCY_HEADER] = call_key
+
+    fixture_request = None if sensitive_url else _fixture_request(method, url, json_data, raw)
     fixture_redactions = _fixture_redactions(url, headers, json_data)
-    replayed = _fixture_replay(fixture_request)
+    replayed = _fixture_replay(
+        fixture_request if fixture_request is not None else {"method": method, "url": "<redacted>"},
+        return_headers=return_headers,
+    )
     if replayed is not _NO_FIXTURE:
         return replayed
 
@@ -850,9 +1030,12 @@ def request(
         headers.setdefault("Content-Type", "application/json")
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    if redirect_guard is not None:
+        setattr(req, _REDIRECT_GUARD_ATTR, redirect_guard)
 
     def log_request(message: str) -> None:
-        log(_scrub_fixture_value(message, redactions=fixture_redactions))
+        if not sensitive_url:
+            log(_scrub_fixture_value(message, redactions=fixture_redactions))
 
     safe_url = re.sub(r'([?&])(key|api_key|token|secret)=[^&]*', r'\1\2=***', url)
     log_request(f"{method} {safe_url}")
@@ -865,9 +1048,11 @@ def request(
     effective_retries = retries
     dns_attempts = 0
     attempt = 0
+    response_headers: Optional[ResponseHeaders] = None
 
     def raise_recorded(error: HTTPError) -> None:
-        _fixture_record(fixture_request, error=error, redactions=fixture_redactions)
+        if fixture_request is not None:
+            _fixture_record(fixture_request, error=error, redactions=fixture_redactions)
         _raise(error)
 
     def deadline_error() -> HTTPError:
@@ -892,12 +1077,19 @@ def request(
     def open_and_read(
         request_timeout: float,
     ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
+        nonlocal response_headers
         try:
             transport = (
                 _open_request(req, request_timeout, bypass_proxy=True)
                 if bypass_proxy else _open_request(req, request_timeout)
             )
             with transport as response:
+                if routed is not None:
+                    proxy.record_charge(getattr(response, "headers", None), call_key=call_key)
+                if return_headers:
+                    response_headers = ResponseHeaders(response.headers.items())
+                    final = response.geturl() if hasattr(response, "geturl") else ""
+                    response_headers.url = final if isinstance(final, str) else ""
                 return response.status, response.read().decode('utf-8'), None
         except urllib.error.HTTPError as error:
             # Error bodies can stall just like successful bodies. Read both
@@ -915,9 +1107,11 @@ def request(
         """Stop waiting at the wall deadline, even during DNS or body reads."""
         if owned_get:
             try:
-                status, body, error = bounded_get.get(
+                owned = bounded_get.get(
                     req, timeout=request_timeout,
                     deadline_monotonic=deadline_monotonic, cancel=cancel,
+                    # Only a proxied call needs the charge header back.
+                    **({"with_headers": True} if routed is not None else {}),
                 )
             except bounded_get.GetLaunchError:
                 usage.cancel(charge)
@@ -926,6 +1120,12 @@ def request(
                 if not exc.started:
                     usage.cancel(charge)
                 raise deadline_error() from exc
+            if routed is not None:
+                status, body, error, owned_headers = owned
+                if error is None:
+                    proxy.record_charge(dict(owned_headers), call_key=call_key)
+            else:
+                status, body, error = owned
             try:
                 decoded = body.decode("utf-8") if body is not None else None
             except UnicodeDecodeError:
@@ -984,7 +1184,14 @@ def request(
         try:
             if attempt > 0 and on_retry is not None:
                 on_retry()
-            charge = usage.begin_http(url, method)
+            if routed is not None:
+                # Another call may have turned this lane off while we waited.
+                try:
+                    proxy.ensure_open(routed.provider)
+                except proxy.ProxyUnavailable as exc:
+                    raise_recorded(HTTPError(f"API key proxy: {exc}", exc.status_code))
+                req.add_header(proxy.DEADLINE_HEADER, proxy.deadline_value(request_timeout))
+            charge = usage.begin_http(usage_url, method)
             response_status, body, response_error = open_and_read_before_deadline(request_timeout)
             if body:
                 try:
@@ -1000,12 +1207,17 @@ def request(
                 raise response_error
             body = body or ""
             log_request(f"Response: {response_status} ({len(body)} bytes)")
-            if raw:
-                _fixture_record(fixture_request, value=body, redactions=fixture_redactions)
-                return body
-            parsed = json.loads(body) if body else {}
-            _fixture_record(fixture_request, value=parsed, redactions=fixture_redactions)
-            return parsed
+            value = body if raw else (json.loads(body) if body else {})
+            if fixture_request is not None:
+                _fixture_record(
+                    fixture_request,
+                    value=value,
+                    redactions=fixture_redactions,
+                    headers=response_headers,
+                )
+            if return_headers:
+                return value, response_headers
+            return value
         except DeadlineExceeded as exc:
             raise_recorded(exc)
         except urllib.error.HTTPError as e:
@@ -1014,6 +1226,13 @@ def request(
                 snippet = _scrub_fixture_value(" ".join(body.split()), redactions=fixture_redactions)
                 log_request(f"Error body: {snippet[:200]}")
             last_error = HTTPError(f"HTTP {e.code}: {e.reason}", e.code, body)
+
+            # A proxy error that ends the lane (out of credits, spend ceiling,
+            # provider off, duplicate call) is never retried.
+            if routed is not None and proxy.observe_error(
+                routed.provider, e.code, body, getattr(e, "headers", None), call_key,
+            ):
+                raise_recorded(last_error)
 
             # Don't retry client errors (4xx) except rate limits
             if 400 <= e.code < 500 and e.code != 429:
@@ -1056,6 +1275,7 @@ def request(
                 f"URL Error: {e.reason}",
                 outcome_state=health.TIMEOUT if wrapped_timeout else health.UNREACHABLE,
             )
+            last_error.no_host = _is_no_host(e)
             if _is_dns_failure(e):
                 # DNS resolution failures are transient; expand the retry budget
                 # to MIN_DNS_RETRIES if the caller passed fewer, and use
@@ -1063,7 +1283,7 @@ def request(
                 # default. Counts DNS attempts separately so other URLError
                 # causes don't bypass the regular retry budget.
                 dns_attempts += 1
-                if effective_retries < MIN_DNS_RETRIES:
+                if retry_dns and effective_retries < MIN_DNS_RETRIES:
                     log_request(
                         f"DNS resolution failed; expanding retry budget from "
                         f"{effective_retries} to {MIN_DNS_RETRIES}"
@@ -1094,14 +1314,17 @@ def request(
                 outcome_state=health.SCHEMA_DRIFT,
             )
             raise_recorded(last_error)
-        except (OSError, TimeoutError, ConnectionResetError) as e:
-            # Handle socket-level errors (connection reset, timeout, etc.)
+        except (OSError, TimeoutError, ConnectionResetError, http.client.HTTPException) as e:
+            # Handle socket-level errors (connection reset, timeout, etc.),
+            # and a body cut off mid-read (``IncompleteRead``), which
+            # ``http.client`` raises as an ``HTTPException``, not an OSError.
             log_request(f"Connection error: {type(e).__name__}: {e}")
             state = health.TIMEOUT if isinstance(e, TimeoutError) else health.UNREACHABLE
             last_error = HTTPError(
                 f"Connection error: {type(e).__name__}: {e}",
                 outcome_state=state,
             )
+            last_error.no_host = _is_no_host(e)
             if attempt < retries - 1:
                 # Socket errors respect the caller's original retry budget.
                 if not sleep_before_retry(RETRY_DELAY * (attempt + 1)):
@@ -1146,6 +1369,10 @@ def get_text(
     retries: int = 2,
     accept: str = "*/*",
     headers: Optional[Dict[str, str]] = None,
+    deadline_monotonic: float | None = None,
+    retry_dns: bool = True,
+    landed: Optional[list] = None,
+    redirect_guard: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1160,6 +1387,12 @@ def get_text(
         retries: Number of retries on failure (kept low — these tiers fail fast)
         accept: Accept header value (e.g. "text/html")
         headers: Optional extra headers merged over the defaults
+        deadline_monotonic: Optional absolute monotonic deadline for the call
+        retry_dns: See ``request``
+        landed: When given, the address that answered (after redirects) is
+            appended to it on success, or ``url`` when that is not known.
+        redirect_guard: When given, a redirect to an address it returns False
+            for is refused before it is followed, and the call returns None.
 
     Returns:
         Decoded response body as text, or None on failure.
@@ -1171,13 +1404,29 @@ def get_text(
     }
     if headers:
         merged.update(headers)
+    # Passed only when set, so the plain call stays what it always was.
+    bounds: Dict[str, Any] = {}
+    if deadline_monotonic is not None:
+        bounds["deadline_monotonic"] = deadline_monotonic
+    if not retry_dns:
+        bounds["retry_dns"] = False
+    if landed is not None:
+        bounds["return_headers"] = True
+    if redirect_guard is not None:
+        bounds["redirect_guard"] = redirect_guard
     try:
-        return request(
-            "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True
+        answer = request(
+            "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,
+            **bounds,
         )
     except HTTPError as e:
         log(f"get_text failed ({e}): {url}")
         return None
+    if landed is None:
+        return answer
+    body, response_headers = answer
+    landed.append(getattr(response_headers, "url", "") or url)
+    return body
 
 
 class RateLimiter:
@@ -1196,8 +1445,15 @@ class RateLimiter:
     while sleeping so waiting threads don't serialize on each other.
     """
 
-    def __init__(self, rate_per_sec: float, burst: int | None = None):
+    def __init__(
+        self,
+        rate_per_sec: float,
+        burst: int | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ):
         self.rate = rate_per_sec
+        # Injectable so tests never sleep (#1342); None means time.sleep.
+        self._sleep = sleep
         self.capacity = burst if burst is not None else max(1, int(rate_per_sec))
         self._tokens = float(self.capacity)
         self._last = time.monotonic()
@@ -1231,7 +1487,7 @@ class RateLimiter:
                         self._waiting += 1
                         queued = True
                     wait = (1.0 - self._tokens) / self.rate
-                time.sleep(wait)
+                (self._sleep or time.sleep)(wait)
         finally:
             if queued:
                 with self._lock:
@@ -1477,6 +1733,87 @@ def reddit_keyless_get_text_retry_429(
         _record_failure(err)
     err = first[-1] if first else None
     return None, str(err) if err is not None else "no response"
+
+
+# --- Logged-in Reddit session transport ----------------------------------
+#
+# The opt-in session (lib/reddit_session.py) is kept apart from the keyless
+# family: its own limiter (so a keyless stampede never spends the account's
+# pacing, and the reverse), and its own memo, so a page fetched with the
+# cookie is never served to a logged-out caller and a logged-out page never
+# to the session. Failures stay out of the stream's failure sink: one Reddit
+# layer failing is a detail note, not the source's outcome.
+REDDIT_SESSION_RATE = 1.0
+REDDIT_SESSION_BURST = 2
+REDDIT_SESSION_LIMITER = RateLimiter(REDDIT_SESSION_RATE, burst=REDDIT_SESSION_BURST)
+REDDIT_SESSION_MEMO_MAX = 128
+_REDDIT_SESSION_MEMO: "OrderedDict[str, tuple[int, str]]" = OrderedDict()
+_REDDIT_SESSION_MEMO_LOCK = threading.Lock()
+
+
+def reset_reddit_session_memo() -> None:
+    with _REDDIT_SESSION_MEMO_LOCK:
+        _REDDIT_SESSION_MEMO.clear()
+
+
+def reddit_only_redirect(url: str) -> bool:
+    """Redirect guard for session requests: https on reddit.com or a subdomain."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and (host == "reddit.com" or host.endswith(".reddit.com"))
+
+
+def reddit_session_get(
+    url: str,
+    cookie_header: str,
+    *,
+    accept: str = "text/html",
+    timeout: float = 20,
+    deadline_monotonic: Optional[float] = None,
+    limiter: Optional[RateLimiter] = None,
+) -> tuple[Optional[int], Optional[str], bool]:
+    """GET ``url`` with the session cookie: ``(status, body, from_memo)``.
+
+    A 200 is memoized per URL in the session namespace; an error status
+    comes back with its body (a 403 page says whether Reddit logged the
+    session out) and is not memoized. ``status`` is None when no answer
+    arrived. Never raises, and never puts the cookie in a log line or an
+    error string: ``request`` logs only the URL.
+    """
+    if not reddit_only_redirect(url):
+        return None, None, False
+    with _REDDIT_SESSION_MEMO_LOCK:
+        cached = _REDDIT_SESSION_MEMO.get(url)
+        if cached is not None:
+            _REDDIT_SESSION_MEMO.move_to_end(url)
+            return cached[0], cached[1], True
+    (limiter or REDDIT_SESSION_LIMITER).acquire()
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": accept,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cookie": cookie_header,
+    }
+    bounds: Dict[str, Any] = {"redirect_guard": reddit_only_redirect}
+    if deadline_monotonic is not None:
+        bounds["deadline_monotonic"] = deadline_monotonic
+    with capture_failures():
+        try:
+            body = request(
+                "GET", url, headers=headers, timeout=timeout, retries=1,
+                max_429_retries=0, raw=True, **bounds,
+            )
+        except HTTPError as error:
+            return error.status_code, error.body, False
+        except Exception:
+            return None, None, False
+    text = body if isinstance(body, str) else ""
+    with _REDDIT_SESSION_MEMO_LOCK:
+        _REDDIT_SESSION_MEMO[url] = (200, text)
+        _REDDIT_SESSION_MEMO.move_to_end(url)
+        while len(_REDDIT_SESSION_MEMO) > REDDIT_SESSION_MEMO_MAX:
+            _REDDIT_SESSION_MEMO.popitem(last=False)
+    return 200, text, False
 
 
 def scrapecreators_headers(token: str) -> Dict[str, str]:

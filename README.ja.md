@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | 日本語 | [简体中文](README.zh-CN.md) | [العربية](README.ar.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | 日本語 | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
@@ -22,7 +22,7 @@
 
 **編集者ではなく、アップボート・いいね・実際に動いたお金でランク付けする、AIエージェント主導の検索エンジンです。**
 
-このREADMEは現行のv3パイプラインについて説明しています。実行時のスキル仕様は [skills/last30days/SKILL.md](skills/last30days/SKILL.md) にあり、コマンドとセットアップの挙動についてはそちらが最新かつ正式なものです。
+このREADMEは現行のv4パイプラインについて説明しています。実行時のスキル仕様は [skills/last30days/SKILL.md](skills/last30days/SKILL.md) にあり、コマンドとセットアップの挙動についてはそちらが最新かつ正式なものです。
 
 **Claude Code(推奨 — マーケットプレイス経由で自動更新):**
 ```
@@ -38,7 +38,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 その他のインストール方法(claude.aiのウェブ版、OpenClaw、手動)は下の [インストール](#インストール) セクションにあります。
 
-設定は不要です。Reddit、HN、Polymarket、GitHub はすぐに使えます。一度実行すれば、セットアップウィザードが30秒で X、YouTube、TikTok、arXiv、Techmeme などを有効にします。
+設定は不要です。Reddit、HN、Polymarket、GitHub はすぐに使えます。トピックが企業なら、特許出願と採用ページも同様です。一度実行すれば、セットアップウィザードが30秒で X、YouTube、TikTok、arXiv、Techmeme などを有効にします。
 
 ---
 
@@ -68,17 +68,18 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 
 | 情報源 | 人々が教えてくれること |
 |--------|--------------------------|
-| **Reddit** | フィルターのかかっていない本音。実際のアップボート数付きのトップコメントが、無料・APIキーなしで手に入ります。Google が埋もれさせてしまう本当の意見です。 |
+| **Reddit** | フィルターのかかっていない本音。実際のアップボート数付きのトップコメントが、無料・APIキーなしで手に入ります。Google が埋もれさせてしまう本当の意見です。ご自身のログイン済み Reddit アカウントとして検索することもでき（許可した場合のみ）、より多くのスレッドとリアルタイムのスコアが得られます。 |
 | **X / Twitter** | 勢いのある一言、専門家のスレッド、速報への最初の反応。誰よりも早く知り、誰よりも早く議論が始まります。 |
 | **YouTube** | 45分の掘り下げ。文字起こし全文を検索し、引用に値する5つの文だけを取り出します。 |
 | **TikTok** | Google では絶対に見つからない切り口で360万人に届いているクリエイター。 |
 | **Instagram Reels** | 話した内容の文字起こし付きで届く、インフルエンサーの視点。ビジュアル文化のシグナルです。 |
 | **Hacker News** | 開発者の総意。825ポイント、899コメント。技術寄りの人たちが本気で議論している場所です。 |
-| **Polymarket** | 意見ではなく、オッズ。実際のお金が裏付けています。アルバムの売上に96%、買収に4%といった具合です。 |
+| **Polymarket** | 意見ではなく、オッズ。実際のお金が裏付けています。アルバムの売上に96%、買収に4%といった具合です。レポートは、関連するストーリーの下に市場のオッズを1行で示し、どれだけ動いたかも添えます。 |
 | **GitHub** | 人物について: PRの勢い、スター数の多いリポジトリ、リリースノート。トピックについて: Issue と Discussion。 |
-| **Digg** | Digg の AI と Tech セクションから集めたストーリークラスター。X の投稿を出典をたどれるインライン引用として付け、X の認証は不要です。`digg-pp-cli` が PATH にあると自動的に有効になります。 |
+| **Digg** | Digg のすべてのトピック(AI、テック、世界とビジネス、スポーツ、科学、ゲーム、エンタメ)から集めたストーリークラスター。Digg Score の順に並び、X の投稿を出典をたどれるインライン引用として付け、X の認証は不要です。`digg-pp-cli` が PATH にあると自動的に有効になります。古い `digg-pp-cli` も引き続き動作しますが、対象は AI とテックのみで、スコアは付きません。 |
 | **arXiv** | 話題の裏側にある論文。対象期間に出た新しい研究が、無料・APIキーなしで手に入ります。`arxiv-pp-cli` が PATH にあると自動的に有効になります(初回セットアップでインストールされます)。 |
 | **Techmeme** | テックニュースの編集レイヤーを、対象の30日間に絞って取得します。無料・APIキーなし。`techmeme-pp-cli` が PATH にあると自動的に有効になります(初回セットアップでインストールされます)。 |
+| **Yahoo Finance** | 企業に対する市場の評価。対象の30日間の株価の変動を、米国上場銘柄では S&P 500 と並べて示します。無料・APIキーなし。トピックが上場企業またはその経営トップで、`yahoo-finance-pp-cli` が PATH にあるときに表示されます(初回セットアップでインストールされます)。 |
 | **LinkedIn** | ビジネス面のシグナル。投稿と記事を拾い、記事は強いシグナルとして重み付けします。 |
 | **Meta Ads** | ブランドが費用を払って発信しているメッセージ。今月配信を開始した Meta 広告のコピー、プロモコード、音声の書き起こしを拾います。 |
 | **StockTwits** | トレーダーの温度感。調べる対象が銘柄コードや暗号資産のときに自動で有効になります。 |
@@ -93,7 +94,8 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 | **Trustpilot** | 企業の TrustScore、レビュー件数、顧客の声の AI 要約。任意で有効にし、PATH 上の `trustpilot-pp-cli` と利用可能なセッションが必要です。 |
 | **Amazon** | 商品の評価、価格、カスタマーレビュー。任意で有効にし、認証済みの `brightdata` CLI が必要です。Bright Data のクレジットを使用します。 |
 | **DripStack** | 公開 API で金融ニュースレターとアナリストの記事を検索します。キーは不要です。`--search dripstack` または `INCLUDE_SOURCES=dripstack` で有効にします。 |
-| **求人 / 採用ページ** | 企業の注力分野を示す公開求人。`--hiring-signals`、`--search jobs`、または調査計画で選択します。 |
+| **求人 / 採用ページ** | 企業が何を採用しているかを、その企業自身の採用ページから読み取ります(Workday、Apple、Amazon、Google、Microsoft、Netflix、Oracle など)。企業トピックでは自動的に読み込まれ、未発表の何かを匂わせる職種は Jobs Page Secret Signals になります。`--hiring-signals`、`--search jobs`、または調査計画でも選択できます。 |
+| **特許** | 企業が出願した米国特許の新規公開を、製品が出る前に何を作っているかを示す根拠として扱います。無料、API キー不要。トピックが企業のときに表示されます。出願が Patent Secret Signal になるのは、その企業らしくない場合、またはまだ出荷も発表もしていないものを説明している場合だけです。 |
 | **ローカルコーパス** | ローカルの Markdown・テキストファイル。`pdftotext` が PATH 上にあれば PDF も対象です。`--corpus` または `LAST30DAYS_CORPUS_DIRS` で有効にします。 |
 | **Web** | 編集記事や、ブログの比較記事。数あるシグナルの1つであって、唯一のものではありません。 |
 
@@ -107,9 +109,9 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 
 **打ち合わせの前に。** `/last30days Peter Steinberger` — OpenAI の Codex チームに参加、サードパーティ製エージェントを禁じた Anthropic の方針と対立、GitHub で23本のPRをマージ率85%でマージ、デバイスをまたいでエージェントを操作する LobsterOS を開発中。r/ClaudeCode では「OpenClaw が出てからずっと、API 以外の経路で動かせばいずれBANされると広く知られていた」(227アップボート)。これは LinkedIn には載っていません。
 
-**採用シグナルを読むために。** `/last30days Listen Labs --hiring-signals` — 現在の求人ページやキャリアページが、注力領域の変化を示す引用可能な根拠になります。エンタープライズ向けセキュリティ、カスタマーサクセス、インフラ、プロダクト拡張といった採用の動きです。レポートが述べるのは「採用が何を示唆しているように見えるか」であって、「ロードマップが何を出すか」ではありません。
+**製品が出る前に企業が何を作っているかを見るために。** `/last30days Apple` — Jobs Page Secret Signal は、リクエストがパートナー API や金融システムを通る取引を引き起こすかをテストする新しいディレクターの職を検出しました。購入まで完了するアシスタントの品質管理のように読めます。Patent Secret Signal は、部屋の保存写真の中の機器をタップして、その機器の状態を変える出願を検出しました。Polymarket は、Apple が年末に世界最大の企業になる確率を91%としました。`/last30days Alphabet` では「YouTube Ads Agentic Buyflows」のプロダクトマネージャー職が見つかり、株価の行は30日間で17.6%下落(同期間のS&P 500は3.6%下落)、最悪の日は Oct 29(-12.6%)でした。採用のみのレポートにしたい場合は `--hiring-signals` を追加してください。
 
-**ピークを迎える前の話題を見つけるために。** `/last30days what's exploding in AI agents?` と尋ねると、スキルはディスカバリーモードに切り替わります。エンジンが Reddit のカテゴリー一覧、Hacker News のフロントページとベストストーリー、Digg の AI と Tech のフィード、そして認証済みであれば X を横断してさらいます。次にエージェントが候補を審査し(名前の妥当性、ノイズの除去、記事になるか)、ポッドキャストや X 記事の切り口を書きます。最後に、勢いの強さで並べた5〜10件のトピックが返ってきます。各結果には情報源をまたいだ数値、モメンタムのラベル、そしてそのまま実行できる `/last30days "<topic>"` が付いてきます。
+**ピークを迎える前の話題を見つけるために。** `/last30days what's exploding in AI agents?` と尋ねると、スキルはディスカバリーモードに切り替わります。エンジンが Reddit のカテゴリー一覧、Hacker News のフロントページとベストストーリー、Digg のストーリー、そして認証済みであれば X を横断してさらいます。次にエージェントが候補を審査し(名前の妥当性、ノイズの除去、記事になるか)、ポッドキャストや X 記事の切り口を書きます。最後に、勢いの強さで並べた5〜10件のトピックが返ってきます。各結果には情報源をまたいだ数値、モメンタムのラベル、そしてそのまま実行できる `/last30days "<topic>"` が付いてきます。
 
 **何かが出たとき。** `/last30days Kanye West` — イギリスがビザを却下、Wireless Festival は中止、スポンサーは離脱。それでも BULLY は Billboard 初登場2位。Fantano は「Yay sabbatical」から復帰してレビューを公開(65.3万回再生)。SoFi Homecoming では Lauryn Hill と Travis Scott を迎えて44曲を披露。Polymarket では「Kanye はまたツイートするか?」が「はい」86%。Reddit のスレッド23件、YouTube の動画17本、アップボート8.6万件。
 
@@ -123,6 +125,17 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 
 ## 最近の変更
 
+v4 は、企業が発表する前にその動きを読み取り、すべてのレポートをより引用しやすくします。
+
+- Patent Secret Signals: 企業トピックではその月の米国特許出願をキーなしで読み取り、その企業らしくないもの、または未発表のものを説明している出願だけを検出します。
+- Jobs Page Secret Signals: 企業自身の採用ページを読み取り、これから起こることを示す職種(まだ誰も報じていない新チームを含む)を検出します。
+- 引用行: Reddit、X、YouTube、TikTok、Instagram の最良のコメントが、それが裏付けるストーリーの下に独立した行として並びます。必要に応じて翻訳され、動画の中で語られた一言も引用できます。
+- Polymarket のオッズ行: 関連するストーリーの下に1行で、オッズがどれだけ動いたかを添えて表示します。
+- Yahoo Finance の行: 上場企業の直近30日間の株価を S&P 500 と並べて表示し、1日で最も大きく動いた日も添えます。
+- 誰のことかを理解: 「Apple」は、その企業、サイト、ティッカーに自動的に解決されます。
+- あなたとしての Reddit: 許可すると、Reddit をご自身のログイン済みアカウントとして検索します。
+- Digg は AI とテックだけでなく、すべてのトピックをカバーします。
+
 現在公開されているバージョンは[最新リリース](https://github.com/mvanhorn/last30days-skill/releases/latest)、各バージョンの変更内容は [CHANGELOG.md](CHANGELOG.md) を参照してください。デフォルトブランチの未リリースの変更は [changelog.d/](changelog.d/) に記録されています。
 
 この README は現在のソースコードを説明しています。インストール済みのバージョンとは異なる場合があります。
@@ -133,6 +146,7 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 |---------|---------|---------|
 | **Claude Code**(推奨) | `/plugin marketplace add mvanhorn/last30days-skill` | マーケットプレイス経由で自動、または `claude plugin update last30days@last30days-skill` |
 | **Grok**(xAI Build CLI) | `grok plugin marketplace add mvanhorn/last30days-skill` のあとに `grok plugin install last30days` | `grok plugin update last30days` |
+| **Grok Bot** | [Grok Bot マーケットプレイスから追加](https://x.ai/bot/marketplace/bots/last30days) | マーケットプレイスが管理 |
 | **Codex、Cursor、Copilot、Gemini CLI、その他50以上の [Agent Skills](https://agentskills.io) ホスト** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
 | **claude.ai**(ウェブ) | [`last30days.skill` をダウンロード](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill)し、claude.ai > Customize > Skills > + > Create skill > Upload a skill からアップロード | ダウンロードし直してアップロードし直す |
 | **Claude Desktop** | [お使いのプラットフォーム向けの `.mcpb` をダウンロード](https://github.com/mvanhorn/last30days-skill/releases/latest)し、Settings > Extensions にドラッグ | ダウンロードし直して新しいバンドルをドラッグ |
@@ -173,7 +187,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-インストール時の確認を省きたい場合は `--trust` を付けてください。更新は `grok plugin update last30days` です。Grok は互換性のために Claude Code のマニフェストも読みますが、第一の経路はネイティブの `.grok-plugin/` のペアで、[xAI のマーケットプレイス](https://github.com/xai-org/plugin-marketplace)への公式掲載もこちらを指しています。`npx skills add` は、どのホストでも使える代替手段として引き続き有効です。Grok Bot では、X は設定不要でボットの組み込み X ツールを通じて動作し、次にボットの X コネクタ、公式 X API（`X_BEARER_TOKEN`）がバックアップになります。
+インストール時の確認を省きたい場合は `--trust` を付けてください。更新は `grok plugin update last30days` です。Grok は互換性のために Claude Code のマニフェストも読みますが、第一の経路はネイティブの `.grok-plugin/` のペアで、[xAI のマーケットプレイス](https://github.com/xai-org/plugin-marketplace)への公式掲載もこちらを指しています。`npx skills add` は、どのホストでも使える代替手段として引き続き有効です。[Grok Bot](https://x.ai/bot/marketplace/bots/last30days)(last30days はマーケットプレイスからインストールされます)では、X は設定不要でボットの組み込み X ツールを通じて動作し、次にボットの X コネクタ、公式 X API（`X_BEARER_TOKEN`）がバックアップになります。
 
 ### Codex、Cursor、Copilot、Gemini CLI、その他の Agent Skills ホスト
 
@@ -257,7 +271,7 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 
 シンボリックリンクにしておけば、編集するたびに作業ツリーとインストール先が同期するので、コピーし直す必要はありません。`claude.ai` 用には、ソースから `.skill` ファイルをビルドしてください。`bash skills/last30days/scripts/build-skill.sh` で `dist/last30days.skill` が生成されます。
 
-Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使えます。設定は不要です。`/last30days` を一度実行すれば、セットアップウィザードが30秒でさらに多くの情報源を有効にします。無料の arXiv と Techmeme の CLI も含まれます。
+Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使えます。企業トピックでは特許出願と採用ページも同様です。設定は不要です。`/last30days` を一度実行すれば、セットアップウィザードが30秒でさらに多くの情報源を有効にします。無料の arXiv と Techmeme の CLI も含まれます。
 
 ## 自分のキーを持ち込む
 
@@ -265,8 +279,8 @@ Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使�
 
 | 情報源 | 必要なもの | 費用 |
 |---------|---------------|------|
-| Reddit(コメント込み)+ HN + Polymarket + GitHub + StockTwits | 不要 | 無料 |
-| arXiv + Techmeme | 無料のCLI。初回セットアップが自動でインストールします | 無料 |
+| Reddit(コメント込み)+ HN + Polymarket + GitHub + StockTwits + 企業の特許出願と採用ページ | 不要 | 無料 |
+| arXiv + Techmeme + Yahoo Finance | 無料のCLI。初回セットアップが自動でインストールします | 無料 |
 | X / Twitter | 公式 X API 用に `X_BEARER_TOKEN` を設定（最近の投稿、およそ直近 1 週間分。X 開発者プロジェクトにフルアーカイブ検索のアクセスがある場合を除く。Grok Bot ではボットの組み込み X ツールの次のバックアップ、それ以外のホストでは `LAST30DAYS_X_BACKEND=xapi` でオプトイン）するか、任意のブラウザで x.com にログインするか、`XQUIK_API_KEY` / `XAI_API_KEY` を設定 | X API のクレジットはご自身の X 開発者プロジェクトから消費。ブラウザのクッキーは無料。その他のキーの料金は提供元によります |
 | YouTube | `brew install yt-dlp` | 無料 |
 | Bluesky | bsky.app のアプリパスワード | 無料 |

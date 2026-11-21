@@ -1,5 +1,5 @@
 """Tests for setup-wizard auto-install of the default-on Printing Press sources
-(arxiv, techmeme, trustpilot) -- lib/setup_wizard.py."""
+(arxiv, techmeme, yahoo_finance; trustpilot stays opt-in) -- lib/setup_wizard.py."""
 
 from __future__ import annotations
 
@@ -100,12 +100,12 @@ def test_install_failed_nonzero_rc(monkeypatch, no_off_path):
     assert "boom" in stderr
 
 
-def test_install_default_pp_sources_covers_default_on_pair(monkeypatch):
+def test_install_default_pp_sources_covers_default_on_set(monkeypatch):
     # Only the zero-auth default-on sources are auto-installed. Trustpilot is
     # opt-in (INCLUDE_SOURCES=trustpilot) and intentionally excluded here.
     monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
     out = sw.install_default_pp_sources()
-    assert set(out.keys()) == {"arxiv", "techmeme"}
+    assert set(out.keys()) == {"arxiv", "techmeme", "yahoo_finance"}
     assert "trustpilot" not in out
     for entry in out.values():
         assert entry["action"] == "already_installed"
@@ -120,3 +120,214 @@ def test_install_is_idempotent(monkeypatch):
     sw.install_default_pp_sources()
     # All already on PATH -> npx install never invoked.
     assert run_calls == []
+
+
+def _version_stub(monkeypatch, line_for):
+    """Stub the helper version exec; ``line_for(argv)`` returns its stdout."""
+    import subprocess
+
+    from lib import health
+
+    execs = []
+
+    def fake_version(cmd, **kwargs):
+        execs.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=line_for(cmd), stderr="")
+
+    monkeypatch.setattr(health.subproc, "run_with_timeout", fake_version)
+    return execs
+
+
+def test_helper_with_no_minimum_is_never_upgraded(monkeypatch):
+    # yahoo-finance-pp-cli numbers its releases 1.0.0, far below Digg's
+    # date-shaped versions; with no table entry it is left alone and its
+    # version is not even read.
+    monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
+    execs = _version_stub(monkeypatch, lambda cmd: "yahoo-finance-pp-cli 1.0.0\n")
+    run_calls = []
+    monkeypatch.setattr(sw.subprocess, "run", lambda *a, **k: run_calls.append(a))
+    installed, action, stderr, off = sw._install_pp_cli("yahoo-finance", YF_BIN)
+    assert (installed, action) == (True, "already_installed")
+    assert run_calls == []
+    assert execs == []
+
+
+def test_pp_helper_below_its_minimum_is_upgraded(monkeypatch):
+    from lib import health
+
+    monkeypatch.setitem(health.MIN_HELPER_VERSIONS, "arxiv-pp-cli", (2, 0, 0))
+    state = {"installed": False}
+    monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
+    _version_stub(
+        monkeypatch,
+        lambda cmd: (
+            "techmeme-pp-cli 2026.11.1\n" if "techmeme" in cmd[0]
+            else "arxiv-pp-cli 2.1.0\n" if state["installed"] else "arxiv-pp-cli 1.9.9\n"
+        ),
+    )
+    runs = []
+
+    def fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        state["installed"] = True
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    out = sw.install_default_pp_sources()
+    assert out["arxiv"] == {"installed": True, "action": "upgraded"}
+    assert runs == [["/usr/bin/npx", "-y", sw.PRINTING_PRESS_NPM, "install", "arxiv", "--cli-only"]]
+
+
+def _techmeme_setup(monkeypatch, current: str, after: str):
+    state = {"installed": False}
+    monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
+    _version_stub(
+        monkeypatch,
+        lambda cmd: f"techmeme-pp-cli {after if state['installed'] else current}\n",
+    )
+    runs = []
+
+    def fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        state["installed"] = True
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    return runs
+
+
+def test_techmeme_without_dates_is_upgraded_by_setup(monkeypatch):
+    # Real table entry, not monkeypatched: 2026.6.2 predates dated search.
+    runs = _techmeme_setup(monkeypatch, "2026.6.2", "2026.11.1")
+    installed, action, _stderr, _off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
+    assert (installed, action) == (True, "upgraded")
+    assert runs == [["/usr/bin/npx", "-y", sw.PRINTING_PRESS_NPM, "install", "techmeme", "--cli-only"]]
+
+
+def test_techmeme_at_the_minimum_is_left_alone(monkeypatch):
+    runs = _techmeme_setup(monkeypatch, "2026.11.1", "2026.11.1")
+    installed, action, _stderr, _off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
+    assert (installed, action) == (True, "already_installed")
+    assert runs == []
+
+
+def test_techmeme_without_search_pages_is_upgraded_by_setup(monkeypatch):
+    # 2026.9.1 has dated search but reads only one page of 10.
+    runs = _techmeme_setup(monkeypatch, "2026.9.1", "2026.11.1")
+    installed, action, _stderr, _off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
+    assert (installed, action) == (True, "upgraded")
+    assert runs == [["/usr/bin/npx", "-y", sw.PRINTING_PRESS_NPM, "install", "techmeme", "--cli-only"]]
+
+
+def test_status_text_pp_helper_upgraded():
+    text = sw.get_setup_status_text({"pp_sources": {"arxiv": {"installed": True, "action": "upgraded"}}})
+    assert "Upgraded arXiv CLI" in text
+
+
+# --- Yahoo Finance: source key and catalog slug differ (underscore vs hyphen) ---
+
+YF_BIN = "yahoo-finance-pp-cli"
+YF_OFF_PATH = "/home/u/.local/bin/" + YF_BIN
+
+
+def _yahoo_outcome(monkeypatch, *, before, after, npx=True, rc=0, on_disk_before=False, on_disk_after=False):
+    """Run the default install with every other CLI already on PATH and the
+    Yahoo Finance binary in the given state before and after the npx run.
+
+    Returns ``(yahoo entry, argv of each npx run)``. No real install runs:
+    ``shutil.which``, the off-PATH probe and ``subprocess.run`` are stubbed.
+    """
+    state = {"ran": False}
+    runs = []
+
+    def fake_which(name):
+        if name == YF_BIN:
+            present = after if state["ran"] else before
+            return f"/usr/bin/{name}" if present else None
+        if name == "npx":
+            return "/usr/bin/npx" if npx else None
+        return f"/usr/bin/{name}"
+
+    def fake_off_path(bin_name):
+        if bin_name != YF_BIN:
+            return None
+        return YF_OFF_PATH if (on_disk_after if state["ran"] else on_disk_before) else None
+
+    def fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        state["ran"] = True
+        return type("P", (), {"returncode": rc, "stdout": "", "stderr": "boom" if rc else ""})()
+
+    monkeypatch.setattr(sw.shutil, "which", fake_which)
+    monkeypatch.setattr(sw, "_pp_off_path_binary", fake_off_path)
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    return sw.install_default_pp_sources()["yahoo_finance"], runs
+
+
+def test_yahoo_finance_installed(monkeypatch):
+    entry, runs = _yahoo_outcome(monkeypatch, before=False, after=True)
+    assert entry == {"installed": True, "action": "installed"}
+    # The catalog install takes the hyphenated slug, not the source key.
+    assert runs == [["/usr/bin/npx", "-y", sw.PRINTING_PRESS_NPM, "install", "yahoo-finance", "--cli-only"]]
+
+
+def test_yahoo_finance_already_installed(monkeypatch):
+    entry, runs = _yahoo_outcome(monkeypatch, before=True, after=True)
+    assert entry == {"installed": True, "action": "already_installed"}
+    assert runs == []
+
+
+def test_yahoo_finance_already_on_disk_off_path(monkeypatch):
+    # A binary on disk that the agent PATH cannot see is never reinstalled and
+    # never counted as active.
+    entry, runs = _yahoo_outcome(monkeypatch, before=False, after=False, on_disk_before=True)
+    assert entry == {"installed": False, "action": "installed_off_path", "path": YF_OFF_PATH}
+    assert runs == []
+
+
+def test_yahoo_finance_install_lands_off_path(monkeypatch):
+    entry, runs = _yahoo_outcome(monkeypatch, before=False, after=False, on_disk_after=True)
+    assert entry == {"installed": False, "action": "installed_off_path", "path": YF_OFF_PATH}
+    assert len(runs) == 1
+
+
+def test_yahoo_finance_install_failed(monkeypatch):
+    entry, runs = _yahoo_outcome(monkeypatch, before=False, after=False, rc=1)
+    assert entry == {"installed": False, "action": "install_failed", "stderr": "boom"}
+
+
+def test_yahoo_finance_no_npx(monkeypatch):
+    entry, runs = _yahoo_outcome(monkeypatch, before=False, after=False, npx=False)
+    assert entry == {"installed": False, "action": "no_npx"}
+    assert runs == []
+
+
+def _status_text(entry):
+    return sw.get_setup_status_text({"pp_sources": {"yahoo_finance": entry}})
+
+
+@pytest.mark.parametrize("action", ["install_failed", "no_npx"])
+def test_manual_install_hint_prints_the_catalog_slug(action):
+    text = _status_text({"installed": False, "action": action})
+    assert f"npx -y {sw.PRINTING_PRESS_NPM} install yahoo-finance --cli-only" in text
+    assert "install yahoo_finance" not in text
+    assert "Yahoo Finance CLI" in text
+
+
+def test_status_text_names_yahoo_finance_active_only_on_path():
+    assert "Installed Yahoo Finance CLI (Yahoo Finance source now active)" in _status_text(
+        {"installed": True, "action": "installed"}
+    )
+    off_path = _status_text({"installed": False, "action": "installed_off_path", "path": YF_OFF_PATH})
+    assert f"Yahoo Finance CLI at {YF_OFF_PATH} but not on PATH" in off_path
+    assert "now active" not in off_path
+
+
+def test_every_default_source_has_a_display_name_and_slug():
+    # A source missing from either map falls back to the source key, which is
+    # the wrong install argument for a hyphenated slug.
+    for source_key, slug, _bin_name in sw.PP_DEFAULT_SOURCES:
+        text = sw.get_setup_status_text(
+            {"pp_sources": {source_key: {"installed": False, "action": "install_failed"}}}
+        )
+        assert f"install {slug} --cli-only" in text, source_key

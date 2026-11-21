@@ -236,15 +236,19 @@ def test_api_key_travels_in_the_environment_never_in_argv(monkeypatch):
     assert seen["env"]["BRIGHTDATA_API_KEY"] == "dummy-key"
 
 
-def test_no_key_means_the_child_simply_inherits_the_parent_env(monkeypatch):
+def test_no_explicit_key_still_filters_the_parent_env(monkeypatch):
     _installed(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-unrelated-secret")
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "dummy-brightdata-key")
     seen = {}
     monkeypatch.setattr(
         subproc, "run_with_timeout",
         lambda cmd, **k: seen.update(env=k.get("env")) or _Result(stdout="[]"),
     )
     brightdata.run_pipeline("gd_x", {"url": "u"}, timeout=30, config={})
-    assert seen["env"] is None
+    assert isinstance(seen["env"], dict)
+    assert "OPENAI_API_KEY" not in seen["env"]
+    assert seen["env"]["BRIGHTDATA_API_KEY"] == "dummy-brightdata-key"
 
 
 def test_option_shaped_values_stay_inside_the_input_json(monkeypatch):

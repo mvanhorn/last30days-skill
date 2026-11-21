@@ -1,8 +1,9 @@
 """GitHub Issues/PRs search via the public GitHub Search API.
 
-Uses api.github.com/search/issues for issue/PR discovery and
-per-item comment enrichment. Auth via GITHUB_TOKEN env var or
-`gh auth token` subprocess fallback.
+Uses api.github.com/search/issues for issue/PR discovery and per-item comment
+enrichment. Search and repository metadata can use GITHUB_TOKEN or
+`gh auth token` for higher limits. Comments, READMEs, and releases use the
+anonymous REST tier because those responses do not certify repository visibility.
 """
 
 import json
@@ -22,6 +23,7 @@ from .query import extract_core_subject
 from .relevance import token_overlap_relevance
 
 SEARCH_URL = "https://api.github.com/search/issues"
+_REPO_SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 DEPTH_LIMITS = {
     "quick": 15,
@@ -69,10 +71,7 @@ def _resolve_token(token: Optional[str] = None) -> Optional[str]:
 def resolve_token(token: Optional[str] = None) -> Optional[str]:
     """Public alias for ``_resolve_token``.
 
-    The pipeline calls this once before ``search_github`` and
-    ``enrich_with_comments`` so the ``gh auth token`` subprocess fallback
-    only fires once per query when ``GITHUB_TOKEN`` is unset, instead of
-    twice (once per call site).
+    The pipeline uses this to select the authenticated search tier.
     """
     return _resolve_token(token)
 
@@ -164,6 +163,27 @@ def _compute_relevance(
         relevance = min(1.0, rank_score * 0.7 + engagement_boost + 0.1)
 
     return round(relevance, 2)
+
+
+# Issue search matches body text, so an off-topic query still returns a full
+# page: keyword-stuffed spam issues and passing mentions in unrelated repos.
+# Their search rank is as good as a real hit's, so the blended score above
+# cannot separate them. A keyword result is kept only when its title names the
+# topic or its repo is named for it. 0.25 sits just above the 0.24 cap that
+# token_overlap_relevance gives a match on generic words alone.
+TOPICAL_FLOOR = 0.25
+
+
+def _clears_topical_floor(topic: str, title: str, repo: str) -> bool:
+    """True when a keyword-search result is about ``topic``.
+
+    Rank and engagement play no part. Person and project modes never call this.
+    """
+    repo_words = re.sub(r"[/_.\-]+", " ", repo)
+    return max(
+        token_overlap_relevance(topic, title),
+        token_overlap_relevance(topic, repo_words),
+    ) >= TOPICAL_FLOOR
 
 
 # GitHub search qualifiers the planner sometimes writes straight into the topic
@@ -300,8 +320,7 @@ def search_github(
         _log("No GitHub token; using the unauthenticated REST tier (low rate limit)")
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
-    # Build search query with date filter
-    base_q = f"{core} created:{from_date}..{to_date}"
+    base_q = f"is:public {core} created:{from_date}..{to_date}"
 
     def _search(qualifier: Optional[str]) -> Optional[Dict[str, Any]]:
         q = f"{base_q} {qualifier}" if qualifier else base_q
@@ -391,11 +410,18 @@ def search_github(
     return envelope
 
 
-def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+def parse_github_response(
+    response: Dict[str, Any],
+    topic: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Normalize a ``search_github`` envelope into the skill's item shape.
 
-    Pure function: no I/O, no token, no enrichment. Applies the date
-    filter using the search context and sorts by relevance.
+    Pure function: no I/O, no token, no enrichment. Drops results that are
+    not about the topic, applies the date filter using the search context and
+    sorts by relevance.
+
+    ``topic`` is the research topic the results are judged against. It
+    defaults to the subject the search ran on.
     """
     if not isinstance(response, dict):
         return []
@@ -407,12 +433,17 @@ def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     from_date = context.get("from_date") or ""
     to_date = context.get("to_date") or ""
     count = context.get("count") or DEPTH_LIMITS["default"]
+    floor_topic = strip_search_qualifiers(extract_core_subject(topic or "")) or core
 
     items: List[Dict[str, Any]] = []
+    off_topic = 0
     for i, item in enumerate(raw_items[:count]):
         html_url = item.get("html_url", "")
         repo = _parse_repo_from_url(html_url)
         title = item.get("title", "")
+        if not _clears_topical_floor(floor_topic, title, repo):
+            off_topic += 1
+            continue
         body_text = item.get("body") or ""
         reactions_total = item.get("reactions", {}).get("total_count", 0) if isinstance(item.get("reactions"), dict) else 0
         comment_count = item.get("comments") or 0
@@ -451,6 +482,12 @@ def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
             },
         })
 
+    if off_topic:
+        _log(
+            f"Dropped {off_topic} of {off_topic + len(items)} results not about "
+            f"'{_truncate_diagnostic(floor_topic)}'"
+        )
+
     # Date filter
     if from_date and to_date:
         items = [
@@ -465,28 +502,8 @@ def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 def enrich_with_comments(
     items: List[Dict[str, Any]],
     depth: str = "default",
-    token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch top comments for top-K items by reactions and attach to metadata.
-
-    Mutates and returns ``items``. Resolves ``token`` via env/gh CLI when
-    not supplied, matching ``search_github``'s fallback chain.
-    """
-    if not items:
-        return items
-    resolved_token = _resolve_token(token)
-    if not resolved_token:
-        _log("No GitHub token available for comment enrichment")
-        return items
-    return _enrich_top_items(items, depth, resolved_token)
-
-
-def _enrich_top_items(
-    items: List[Dict[str, Any]],
-    depth: str,
-    token: str,
-) -> List[Dict[str, Any]]:
-    """Fetch comments for top N items by reactions."""
+    """Fetch public comments for top items by reactions and attach to metadata."""
     if not items:
         return items
 
@@ -506,7 +523,6 @@ def _enrich_top_items(
             executor.submit(
                 _fetch_item_comments,
                 items[idx]["url"],
-                token,
             ): idx
             for idx in to_enrich
         }
@@ -525,34 +541,42 @@ def _enrich_top_items(
 
 def _fetch_item_comments(
     issue_url: str,
-    token: str,
     max_comments: int = 5,
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a GitHub issue/PR.
 
     Args:
         issue_url: HTML URL like https://github.com/owner/repo/issues/123
-        token: GitHub auth token
         max_comments: Max comments to return
 
     Returns:
         List of comment dicts with score, excerpt, author.
     """
+    if max_comments <= 0:
+        return []
+
     path = issue_url.replace("https://github.com/", "")
     path = path.replace("/pull/", "/issues/")
-    api_url = f"https://api.github.com/repos/{path}/comments?per_page={max_comments}&sort=reactions&direction=desc"
+    # GitHub's per-issue comments endpoint orders by ascending ID and does not
+    # support reaction sorting, so fetch its largest page and rank locally.
+    api_url = f"https://api.github.com/repos/{path}/comments?per_page=100"
 
-    data = _fetch_json(api_url, token=token, timeout=15)
+    data = _fetch_json(api_url, timeout=15)
     if not data or not isinstance(data, list):
         return []
 
     comments = []
-    for c in data[:max_comments]:
+    for c in data:
+        if not isinstance(c, dict):
+            continue
+        user = c.get("user")
+        if _is_bot_user(user):
+            continue
         body = c.get("body") or ""
         excerpt = body[:300] + "..." if len(body) > 300 else body
         reactions = c.get("reactions", {})
         reaction_count = reactions.get("total_count", 0) if isinstance(reactions, dict) else 0
-        author = c.get("user", {}).get("login", "") if isinstance(c.get("user"), dict) else ""
+        author = user.get("login", "") if isinstance(user, dict) else ""
 
         comments.append({
             "score": reaction_count,
@@ -560,7 +584,28 @@ def _fetch_item_comments(
             "author": author,
         })
 
-    return comments
+    # Python's sort is stable, preserving API order for reaction-count ties.
+    comments.sort(key=lambda comment: comment["score"], reverse=True)
+    return comments[:max_comments]
+
+
+def _is_bot_user(user: Any) -> bool:
+    """Return whether a GitHub comment author is recognizably automated.
+
+    GitHub's REST payload marks bot accounts with ``user.type == "Bot"``.
+    Some compatible or partial payloads omit that field but retain the
+    conventional ``[bot]`` suffix on the login or display name. Missing user
+    metadata represents an unknown/deleted author, not evidence of automation.
+    """
+    if not isinstance(user, dict):
+        return False
+    if str(user.get("type") or "").casefold() == "bot":
+        return True
+    return any(
+        isinstance(user.get(field), str)
+        and user[field].strip().casefold().endswith("[bot]")
+        for field in ("login", "name")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -576,16 +621,13 @@ PERSON_DEPTH_LIMITS = {
 PERSON_EVENTS_PER_PAGE = 100
 
 
-def _fetch_readme_snippet(repo: str, token: str, max_chars: int = 500) -> Optional[str]:
+def _fetch_readme_snippet(repo: str, max_chars: int = 500) -> Optional[str]:
     """Fetch README content for a repo, truncated to first ~max_chars."""
     url = f"https://api.github.com/repos/{repo}/readme"
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/vnd.github.raw+json",
     }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
     req = urllib.request.Request(url, headers=headers)
     try:
         with http.open_request(req, 10) as resp:
@@ -606,11 +648,11 @@ def _fetch_readme_snippet(repo: str, token: str, max_chars: int = 500) -> Option
 
 
 def _fetch_latest_releases(
-    repo: str, token: str, count: int = 3, max_body: int = 300,
+    repo: str, count: int = 3, max_body: int = 300,
 ) -> List[Dict[str, str]]:
     """Fetch latest releases for a repo."""
     url = f"https://api.github.com/repos/{repo}/releases?per_page={count}"
-    data = _fetch_json(url, token=token, timeout=10)
+    data = _fetch_json(url, timeout=10)
     if not data or not isinstance(data, list):
         return []
     releases = []
@@ -628,7 +670,8 @@ def _fetch_top_issues(repo: str, token: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
 
     # Top feature request: issues with enhancement label, sorted by reactions
-    feat_q = urllib.parse.quote(f"repo:{repo} is:issue is:open label:enhancement")
+    issue_query = f"is:public repo:{repo} is:issue is:open"
+    feat_q = urllib.parse.quote(f"{issue_query} label:enhancement")
     feat_url = f"{SEARCH_URL}?q={feat_q}&sort=reactions&order=desc&per_page=1"
     feat_data = _fetch_json(feat_url, token=token, timeout=10)
     if feat_data and feat_data.get("items"):
@@ -641,7 +684,7 @@ def _fetch_top_issues(repo: str, token: str) -> Dict[str, Any]:
         }
     elif feat_data and feat_data.get("total_count", 0) == 0:
         # No enhancement label; fall back to top issue by reactions
-        fallback_q = urllib.parse.quote(f"repo:{repo} is:issue is:open")
+        fallback_q = urllib.parse.quote(issue_query)
         fallback_url = f"{SEARCH_URL}?q={fallback_q}&sort=reactions&order=desc&per_page=1"
         fallback_data = _fetch_json(fallback_url, token=token, timeout=10)
         if fallback_data and fallback_data.get("items"):
@@ -654,7 +697,7 @@ def _fetch_top_issues(repo: str, token: str) -> Dict[str, Any]:
             }
 
     # Top complaint: most-discussed open issue (by comments)
-    bug_q = urllib.parse.quote(f"repo:{repo} is:issue is:open")
+    bug_q = urllib.parse.quote(issue_query)
     bug_url = f"{SEARCH_URL}?q={bug_q}&sort=comments&order=desc&per_page=1"
     bug_data = _fetch_json(bug_url, token=token, timeout=10)
     if bug_data and bug_data.get("items"):
@@ -669,11 +712,21 @@ def _fetch_top_issues(repo: str, token: str) -> Dict[str, Any]:
     return result
 
 
+def _is_public_repo(data: Any) -> bool:
+    return (
+        isinstance(data, dict)
+        and data.get("visibility") == "public"
+        and data.get("private") is not True
+    )
+
+
 def _fetch_repo_info(repo: str, token: str) -> Optional[Dict[str, Any]]:
-    """Fetch repo metadata (stars, forks, description, language)."""
+    """Fetch metadata for a public repository."""
+    if not _REPO_SLUG.fullmatch(repo):
+        return None
     url = f"https://api.github.com/repos/{repo}"
     data = _fetch_json(url, token=token, timeout=10)
-    if not data or not isinstance(data, dict):
+    if not _is_public_repo(data):
         return None
     return {
         "stars": data.get("stargazers_count", 0),
@@ -701,7 +754,7 @@ def refetch_datum(item: schema.SourceItem | None, datum_key: str) -> dict[str, A
     (candidate-enrichment claim; the repo itself is the refetch subject and
     the item is not consulted, so it may be ``None``).
     """
-    if re.fullmatch(r"[^/\s]+/[^/\s]+", datum_key):
+    if _REPO_SLUG.fullmatch(datum_key):
         repo = datum_key
     elif datum_key != "stars":
         raise KeyError(f"Unsupported GitHub datum: {datum_key}")
@@ -709,10 +762,10 @@ def refetch_datum(item: schema.SourceItem | None, datum_key: str) -> dict[str, A
         if item is None:
             raise ValueError("Item-level star refetch requires the grounding item")
         repo = item.container or ""
-        if not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+        if not _REPO_SLUG.fullmatch(repo):
             match = re.match(r"https?://github\.com/([^/]+/[^/#?]+)", item.url)
             repo = match.group(1).removesuffix(".git") if match else ""
-        if not repo:
+        if not _REPO_SLUG.fullmatch(repo):
             raise ValueError("GitHub item has no owner/repository reference")
     headers = {"Accept": "application/vnd.github+json"}
     token = _resolve_token()
@@ -722,8 +775,8 @@ def refetch_datum(item: schema.SourceItem | None, datum_key: str) -> dict[str, A
         "GET", f"https://api.github.com/repos/{repo}",
         headers=headers, timeout=10, retries=2,
     )
-    if not isinstance(data, dict) or not isinstance(data.get("stargazers_count"), int):
-        raise KeyError("GitHub star count was not returned")
+    if not _is_public_repo(data) or not isinstance(data.get("stargazers_count"), int):
+        raise KeyError("Public GitHub star count was not returned")
     fallback_url = item.url if item is not None else f"https://github.com/{repo}"
     return {
         "value": data["stargazers_count"],
@@ -746,6 +799,8 @@ def search_github_person(
     - Per-repo items for top external repos (with stars + release notes)
     - Per-repo items for own repos (with stars + README + top issues + releases)
     """
+    if not re.fullmatch(r"[A-Za-z0-9_-]+(?:\[bot\])?", username):
+        return []
     resolved_token = _resolve_token(token)
     if not resolved_token:
         _log("No GitHub token available for person-mode search")
@@ -755,8 +810,9 @@ def search_github_person(
     _log(f"Person-mode search for @{username} (since {from_date})")
 
     # Phase 1: PR velocity via search API
-    total_q = urllib.parse.quote(f"author:{username} type:pr created:{from_date}..{to_date}")
-    merged_q = urllib.parse.quote(f"author:{username} type:pr is:merged created:{from_date}..{to_date}")
+    author_query = f"is:public author:{username} type:pr created:{from_date}..{to_date}"
+    total_q = urllib.parse.quote(author_query)
+    merged_q = urllib.parse.quote(f"{author_query} is:merged")
 
     total_url = f"{SEARCH_URL}?q={total_q}&per_page=1"
     merged_url = f"{SEARCH_URL}?q={merged_q}&sort=reactions&order=desc&per_page=100"
@@ -789,21 +845,22 @@ def search_github_person(
     repo_pr_counts: Dict[str, int] = {}
     for item in merged_items:
         repo = _parse_repo_from_url(item.get("html_url", ""))
-        if repo:
+        if _REPO_SLUG.fullmatch(repo):
             repo_pr_counts[repo] = repo_pr_counts.get(repo, 0) + 1
 
     # Sort repos by PR count (most active first)
     sorted_repos = sorted(repo_pr_counts.items(), key=lambda x: x[1], reverse=True)
 
     # Phase 3: Fetch own repos
-    own_repos_url = f"https://api.github.com/users/{username}/repos?sort=stars&per_page={limits['own_repos']}&direction=desc"
+    encoded_username = urllib.parse.quote(username, safe="")
+    own_repos_url = f"https://api.github.com/users/{encoded_username}/repos?sort=stars&per_page={limits['own_repos']}&direction=desc"
     own_repos_data = _fetch_json(own_repos_url, token=resolved_token, timeout=15)
     own_repo_names = set()
     own_repos_info: List[Dict[str, Any]] = []
     if own_repos_data and isinstance(own_repos_data, list):
         for r in own_repos_data:
             full_name = r.get("full_name", "")
-            if full_name and not r.get("fork"):
+            if _REPO_SLUG.fullmatch(full_name or "") and not r.get("fork"):
                 own_repo_names.add(full_name)
                 own_repos_info.append({
                     "full_name": full_name,
@@ -1023,7 +1080,7 @@ def _person_recent_pushes(
 
             repo = event.get("repo")
             full_name = repo.get("name", "") if isinstance(repo, dict) else ""
-            if not re.fullmatch(r"[^/\s]+/[^/\s]+", full_name):
+            if not _REPO_SLUG.fullmatch(full_name or ""):
                 continue
 
             previous = latest_by_repo.get(full_name)
@@ -1147,14 +1204,14 @@ def _person_recent_pushes(
 def _enrich_external_repo(repo: str, token: str) -> Dict[str, Any]:
     """Fetch star count + releases for an external repo."""
     info = _fetch_repo_info(repo, token)
-    releases = _fetch_latest_releases(repo, token, count=3)
+    releases = _fetch_latest_releases(repo, count=3)
     return {"info": info, "releases": releases}
 
 
 def _enrich_own_repo(repo: str, token: str) -> Dict[str, Any]:
     """Fetch README + releases + top issues for an own repo."""
-    readme = _fetch_readme_snippet(repo, token, max_chars=500)
-    releases = _fetch_latest_releases(repo, token, count=3)
+    readme = _fetch_readme_snippet(repo, max_chars=500)
+    releases = _fetch_latest_releases(repo, count=3)
     top_issues = _fetch_top_issues(repo, token)
     return {"readme": readme, "releases": releases, "top_issues": top_issues}
 
@@ -1205,6 +1262,9 @@ def search_github_project(
     Returns:
         List of SourceItems, one per repo.
     """
+    repos = [repo for repo in repos if _REPO_SLUG.fullmatch(repo)]
+    if not repos:
+        return []
     resolved_token = _resolve_token(token)
     if not resolved_token:
         _log("No GitHub token available for project-mode search")
@@ -1291,10 +1351,9 @@ def search_github_project(
 def _enrich_project_repo(repo: str, token: str) -> Dict[str, Any]:
     """Fetch all project data for a repo: info + README + releases + top issues."""
     info = _fetch_repo_info(repo, token)
-    readme = _fetch_readme_snippet(repo, token, max_chars=500)
-    releases = _fetch_latest_releases(repo, token, count=3)
-    top_issues = _fetch_top_issues(repo, token)
-    return {"info": info, "readme": readme, "releases": releases, "top_issues": top_issues}
+    if not info:
+        return {}
+    return {"info": info, **_enrich_own_repo(repo, token)}
 
 
 # ---------------------------------------------------------------------------

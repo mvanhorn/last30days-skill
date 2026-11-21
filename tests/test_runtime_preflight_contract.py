@@ -39,6 +39,24 @@ class RuntimePreflightContractTests(unittest.TestCase):
         self.assertIn('if [ -z "${LAST30DAYS_PYTHON:-}" ]; then', self.skill_md)
         self.assertIn('ERROR: LAST30DAYS_PYTHON must point to Python 3.12+.', self.skill_md)
 
+    def test_inline_python_helpers_use_isolated_mode(self) -> None:
+        command = re.compile(
+            r'^[ \t]*(?:"?\$(?:candidate|LAST30DAYS_PYTHON|\{(?:candidate|LAST30DAYS_PYTHON)\})"?'
+            r'|python(?:3(?:\.\d+)?)?)[ \t]+'
+            r'(?P<flags>(?:-[A-Za-z]+[ \t]+)*)(?:-[cm]|-)(?=[ \t]|$)',
+            re.M,
+        )
+        found_in = set()
+        unisolated = []
+        for name, document in contract_documents().items():
+            for block in re.findall(r"```bash\n(.*?)\n```", document, re.S):
+                for match in command.finditer(block):
+                    found_in.add(name)
+                    if "-I" not in match["flags"].split():
+                        unisolated.append((name, match[0].strip()))
+        self.assertTrue({"runtime", "comparison", "save-html-brief"} <= found_in)
+        self.assertEqual(unisolated, [])
+
     def test_code_has_no_bare_positional_parameters(self) -> None:
         # Claude Code replaces $<digit> in a skill body with words from the
         # invocation arguments before the model reads it (anthropics/claude-code#94709),
@@ -86,8 +104,8 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         version_probe = f"import sys; sys.version_info = {version!r}; exec(sys.argv[1])"
         candidate.write_text(
             "#!/bin/sh\n"
-            'if [ "$1" = "-c" ]; then\n'
-            f"  exec {shlex.quote(sys.executable)} -c {shlex.quote(version_probe)} \"$2\"\n"
+            'if [ "$1" = "-I" ] && [ "$2" = "-c" ]; then\n'
+            f"  exec {shlex.quote(sys.executable)} -I -c {shlex.quote(version_probe)} \"$3\"\n"
             "fi\n"
             f'exec {shlex.quote(sys.executable)} "$@"\n',
             encoding="utf-8",
@@ -116,14 +134,14 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
     def test_missing_python_stops_before_engine(self) -> None:
         result = self._run_preflight()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("ERROR: last30days v3 requires Python 3.12+", result.stderr)
+        self.assertIn("ERROR: last30days v4 requires Python 3.12+", result.stderr)
         self.assertNotIn("Resolved save directory:", result.stderr)
 
     def test_old_python_stops_before_engine(self) -> None:
         self._python_candidate("python3", (3, 11))
         result = self._run_preflight()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("ERROR: last30days v3 requires Python 3.12+", result.stderr)
+        self.assertIn("ERROR: last30days v4 requires Python 3.12+", result.stderr)
         self.assertNotIn("Resolved save directory:", result.stderr)
 
     def test_selects_supported_python_after_rejecting_old_candidate(self) -> None:
@@ -205,18 +223,13 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         )
         self.assertIn(f"Resolved save directory: <{self.save_dir}>", result.stderr)
 
-    def test_badge_version_awk_fallback_survives_argument_substitution(self) -> None:
-        command = re.search(r"`(jq -r '\.version'.*?)`", root_text())
-        self.assertIsNotNone(command)
-        installed_skill = self.root / "badge skill"
-        installed_skill.mkdir()
-        self.env["SKILL_DIR"] = str(installed_skill)
-        for version_line in ('version: "3.12.7"', "version: 3.12.7"):
-            with self.subTest(version_line=version_line):
-                (installed_skill / "SKILL.md").write_text(f"---\n{version_line}\n---\n", encoding="utf-8")
-                result = self._run(command[1])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout, "3.12.7\n")
+    def test_badge_block_copies_the_engine_line_without_a_version_command(self) -> None:
+        # The engine prints the badge with the version already resolved, so
+        # the instructions carry no shell command to look the version up.
+        badge = root_text().split("**BADGE", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Copy the engine's first line", badge)
+        self.assertNotIn("jq -r '.version'", root_text())
+        self.assertNotIn("awk '/^version:/", root_text())
 
 
 if __name__ == "__main__":

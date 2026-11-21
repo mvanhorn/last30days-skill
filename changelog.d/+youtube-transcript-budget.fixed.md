@@ -1,1 +1,0 @@
-A YouTube lane keeps 60 to 75 seconds for transcripts before it starts another expanded search. After yt-dlp hits a bot-check or HTTP 429, including over SSH, the rest of that search's transcripts go to ScrapeCreators when a key is set, and a transcript cut off by the lane deadline is logged as that deadline.

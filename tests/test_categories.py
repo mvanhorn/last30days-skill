@@ -38,6 +38,18 @@ class DetectCategoryHappyPath(unittest.TestCase):
     def test_sora_matches_video_generation(self):
         self.assertEqual(detect_category("Sora 2 prompts"), "ai_video_generation")
 
+    def test_plural_topic_matches_singular_pattern(self):
+        self.assertEqual(detect_category("AI coding agents"), "ai_coding_agent")
+        self.assertEqual(detect_category("prediction markets"), "prediction_markets")
+
+    def test_plural_that_is_another_word_does_not_match(self):
+        self.assertIsNone(detect_category("yoga asanas"))
+        self.assertIsNone(detect_category("SunOS"))
+        self.assertEqual(detect_category("asana"), "saas_productivity")
+
+    def test_generic_single_word_pattern_still_pluralizes(self):
+        self.assertEqual(detect_category("stablecoins"), "crypto_defi")
+
 
 class PeerSubsForHappyPath(unittest.TestCase):
     def test_image_generation_peer_subs_priority_order(self):

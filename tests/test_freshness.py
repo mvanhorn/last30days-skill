@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -194,6 +196,7 @@ def test_source_refetch_helpers_use_shared_http_wrapper(monkeypatch):
         "request",
         lambda *_args, **_kwargs: {
             "stargazers_count": 123,
+            "visibility": "public",
             "html_url": github_item.url,
             "updated_at": "2026-07-10T12:00:00Z",
         },
@@ -748,7 +751,8 @@ def test_unverified_drill_clears_inherited_freshness_verdicts(tmp_path, monkeypa
     merged = _report(_item("reddit", title="Widget API is open"))
     merged.freshness_verdicts = list(cached.freshness_verdicts)
     drill_report = _report(_item("reddit", title="Widget API is closed"))
-    monkeypatch.setattr(cli, "_load_last_report_cache", lambda *_args, **_kwargs: (cached, None, tmp_path / "last-report.json"))
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run(cached.topic, cached)
     monkeypatch.setattr(planner, "resolve_drill_clusters", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(planner, "build_drill_plan", lambda *_args, **_kwargs: cached.query_plan)
     monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {})
@@ -841,9 +845,9 @@ def test_polymarket_refetch_marks_resolved_market_movement_stale(monkeypatch):
 def test_github_refetch_reuses_resolved_gh_cli_token(monkeypatch):
     item = _item(
         "github",
-        title="owner/private",
-        url="https://github.com/owner/private",
-        container="owner/private",
+        title="owner/public",
+        url="https://github.com/owner/public",
+        container="owner/public",
     )
     seen_headers = []
     monkeypatch.setattr(github, "_resolve_token", lambda: "gh-cli-token")
@@ -852,6 +856,7 @@ def test_github_refetch_reuses_resolved_gh_cli_token(monkeypatch):
         "request",
         lambda *_args, **kwargs: seen_headers.append(kwargs["headers"]) or {
             "stargazers_count": 7,
+            "visibility": "public",
             "html_url": item.url,
         },
     )
@@ -882,15 +887,19 @@ def test_early_return_paths_do_not_ignore_freshness_verification(tmp_path, monke
     report = _report(_item("reddit", title="Widget API is open"))
     calls = []
     monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(cli, "_load_last_report_cache", lambda *_args, **_kwargs: (report, None, tmp_path / "last-report.json"))
+    monkeypatch.setattr(cli.pipeline, "run", lambda **_kwargs: pytest.fail("expected cached report reuse"))
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run("topic", report)
     monkeypatch.setattr(cli, "_verify_report_set", lambda *_args, **_kwargs: calls.append("verified"))
     monkeypatch.setattr(cli, "_render_save_and_print", lambda *_args, **_kwargs: calls.append("rendered") or 0)
     cached_args = parser.parse_args([
         "topic", "--emit=html", f"--synthesis-file={synthesis}", "--verify-freshness",
+        "--as-of=2026-07-10",
     ])
 
     assert cli._main(parser, cached_args, []) == 0
     assert calls == ["verified", "rendered"]
+    assert "Reusing cached report data" in capsys.readouterr().err
 
 
 def test_hosted_configured_freshness_skips_unless_cli_explicitly_enables(monkeypatch, capsys):
@@ -968,22 +977,85 @@ def test_render_surfaces_inline_flag_and_freshness_footer_table():
     assert "## Freshness Verification" in render.render_brief(report)
 
 
-def test_post_hoc_path_loads_updates_and_rewrites_cache(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("envelope_digest", "bound"),
+    [(None, False), ("b" * 64, False), ("b" * 64, True)],
+)
+def test_post_hoc_path_loads_updates_and_rewrites_cache(tmp_path, monkeypatch, capsys, envelope_digest, bound):
     item = _item("reddit", title="Widget API is open")
     report = _report(item)
     monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
-    assert cli._write_last_run(report.topic, report)
-    before = json.loads((tmp_path / "last-report.json").read_text(encoding="utf-8"))
-    args = cli.build_parser().parse_args(["--verify-freshness", "--mock", "--emit=json"])
+    assert cli._write_last_run(report.topic, report, x_envelope_sha256=envelope_digest)
+    cache_path = tmp_path / "last-report.json"
+    before_bytes = cache_path.read_bytes()
+    before = json.loads(before_bytes)
+    real_replace = os.replace
+    published = []
 
-    rc = cli._run_cached_freshness(args, {})
+    def observe_publish(staged, target):
+        assert target == cache_path
+        assert target.read_bytes() == before_bytes
+        published.append(Path(staged).read_bytes())
+        real_replace(staged, target)
+
+    monkeypatch.setattr(os, "replace", observe_publish)
+    parser = cli.build_parser()
+    options = ["--verify-freshness", "--mock", "--emit=json"]
+    if bound:
+        options.extend([f"--followup-topic={report.topic}", f"--followup-run={before['run_id']}"])
+    args = parser.parse_args(options)
+
+    rc = cli._main(parser, args, [])
 
     assert rc == 0
-    payload = json.loads((tmp_path / "last-report.json").read_text(encoding="utf-8"))
+    updated = cache_path.read_bytes()
+    assert published == [updated]
+    payload = json.loads(updated)
     cached_verdicts = payload["reports"][0]["report"]["freshness_verdicts"]
     assert cached_verdicts[0]["verdict"] == "unsupported"
     assert payload["timestamp"] == before["timestamp"]
+    assert payload["run_id"] == before["run_id"]
+    assert payload["x_envelope_sha256"] == envelope_digest
     assert "Updated freshness verdicts" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("new_topic", ["Another topic", "Widget API"])
+def test_post_hoc_freshness_preserves_concurrent_research(tmp_path, monkeypatch, capsys, new_topic):
+    original = _report(_item("reddit", title="Widget API is open"))
+    original.topic = "Widget API"
+    replacement = _report(_item("reddit", title="Widget API is closed"))
+    replacement.topic = new_topic
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run(original.topic, original, x_envelope_sha256="2" * 64)
+    cache_path = tmp_path / "last-report.json"
+    original_run_id = json.loads(cache_path.read_bytes())["run_id"]
+    newest = []
+    verify = cli._verify_report_set
+
+    def verify_during_research(report, entity_reports, *, allow_network):
+        assert report.ranked_candidates[0].title == "Widget API is open"
+        verify(report, entity_reports, allow_network=allow_network)
+        assert cli._write_last_run(
+            replacement.topic,
+            replacement,
+            x_envelope_sha256="1" * 64,
+            research_options={"quick": True},
+        )
+        newest.append(cache_path.read_bytes())
+
+    monkeypatch.setattr(cli, "_verify_report_set", verify_during_research)
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "--verify-freshness", "--mock", "--emit=json",
+        f"--followup-topic={original.topic}", f"--followup-run={original_run_id}",
+    ])
+
+    assert cli._main(parser, args, []) == 0
+    output = capsys.readouterr()
+    assert "freshness_verdicts" in output.out
+    assert len(newest) == 1
+    assert cache_path.read_bytes() == newest[0]
+    assert json.loads(newest[0])["run_id"] != original_run_id
 
 
 def test_opt_in_gating_accepts_flag_or_truthy_config():
@@ -1292,6 +1364,7 @@ def test_refetch_datum_accepts_repo_slug_datum_key(monkeypatch):
         "request",
         lambda _method, url, **_kwargs: seen_urls.append(url) or {
             "stargazers_count": 42,
+            "visibility": "public",
             "html_url": "https://github.com/a/b",
         },
     )
@@ -1391,6 +1464,130 @@ def test_slug_refetch_rejects_same_slug_different_event_id(monkeypatch):
     assert polymarket.refetch_datum(cached, "Yes") is not None
 
 
+def _ladder_event(questions_and_prices):
+    return {
+        "id": "77",
+        "slug": "ladder",
+        "title": "Ladder by...?",
+        "updatedAt": "2026-11-10T12:00:00Z",
+        "markets": [
+            {
+                "active": True,
+                "closed": False,
+                "question": question,
+                "liquidity": str(100 - index),
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": f'["{price}", "{round(1 - price, 3)}"]',
+            }
+            for index, (question, price) in enumerate(questions_and_prices)
+        ],
+    }
+
+
+_LONG_TAIL = "after the annual shareholder meeting held in Santa Clara in June 2027?"
+
+
+@pytest.mark.parametrize(
+    "questions, saved_names",
+    [
+        # The old name was cut at 40 characters and then lost its leading
+        # article, so it is shorter than 40 and no prefix of the new name.
+        pytest.param(
+            [
+                "The Nvidia board removes Jensen Huang by June 30, 2027?",
+                "The Nvidia board removes Jensen Huang by December 31, 2026?",
+            ],
+            ["Nvidia board removes Jensen Huang by", "Nvidia board removes Jensen Huang by"],
+            id="the-ladder",
+        ),
+        pytest.param(
+            [
+                "A successor to Jensen Huang is named by June 30, 2027?",
+                "Nvidia stock above 200 dollars on December 31, 2026?",
+            ],
+            ["successor to Jensen Huang is named by ", "Nvidia stock above 200 dollars on Decemb"],
+            id="a-and-plain",
+        ),
+        pytest.param(
+            [
+                "An Nvidia chief executive other than Jensen Huang by June 30, 2027?",
+                "An Nvidia chief executive other than Jensen Huang by December 31, 2026?",
+            ],
+            ["Nvidia chief executive other than Jen", "Nvidia chief executive other than Jen"],
+            id="an-ladder",
+        ),
+        # A question longer than the new limit is cut in both, at other places.
+        pytest.param(
+            [
+                "The Nvidia board announces a successor to Jensen Huang " + _LONG_TAIL,
+                "Jensen Huang announces his own successor as chief executive " + _LONG_TAIL,
+            ],
+            ["Nvidia board announces a successor t", "Jensen Huang announces his own successor"],
+            id="longer-than-the-new-limit",
+        ),
+        # Names the old "Will ..." rules produced are the names of today.
+        pytest.param(
+            [
+                "Will Arizona win the 2026 NCAA Tournament?",
+                "Will the Duke Blue Devils be a number 1 seed?",
+            ],
+            ["Arizona", "the Duke Blue Devils"],
+            id="will-subject",
+        ),
+        pytest.param(
+            [
+                "Will Jensen Huang step down?",
+                "Will Lisa Su step down?",
+            ],
+            ["Jensen", "Lisa"],
+            id="will-short-subject",
+        ),
+    ],
+)
+def test_polymarket_refetch_matches_every_name_the_old_shortener_saved(
+    monkeypatch, questions, saved_names
+):
+    prices = [0.32, 0.2]
+    item = _item(
+        "polymarket",
+        title="Ladder by...?",
+        url="https://polymarket.com/event/ladder",
+        metadata={
+            "event_id": "77",
+            "outcome_prices": [list(pair) for pair in zip(saved_names, prices)],
+        },
+    )
+    event = _ladder_event(list(zip(questions, prices)))
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+
+
+def test_polymarket_refetch_old_cut_name_reads_its_own_market(monkeypatch):
+    # Both old names are the same text; the second one is the second market.
+    saved = "Nvidia board removes Jensen Huang by"
+    item = _item(
+        "polymarket",
+        title="Ladder by...?",
+        url="https://polymarket.com/event/ladder",
+        metadata={"event_id": "77", "outcome_prices": [[saved, 0.32], [saved, 0.2]]},
+    )
+    event = _ladder_event(
+        [
+            ("The Nvidia board removes Jensen Huang by June 30, 2027?", 0.32),
+            ("The Nvidia board removes Jensen Huang by December 31, 2026?", 0.05),
+        ]
+    )
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "stale"]
+    assert verdicts[1].current_value == 0.05
+
+
 def test_slug_refetch_fails_closed_without_any_event_identity(monkeypatch):
     """A synthetic PM<N> parse id carries no identity, so slug equality alone
     must not verify a claim; the refetch fails closed to unsupported."""
@@ -1409,3 +1606,77 @@ def test_slug_refetch_fails_closed_without_any_event_identity(monkeypatch):
     with pytest.raises(ValueError):
         polymarket.refetch_datum(cached, "Yes")
     assert calls == []  # fails closed before any network request
+
+
+def test_polymarket_refetch_matches_names_saved_with_the_old_forty_character_cut(monkeypatch):
+    # Reports saved before sub-market names were kept whole hold names cut at
+    # 40 characters, so sibling deadlines collapsed to one repeated name.
+    cut = "Jensen Huang announced resignation or re"
+    item = _item(
+        "polymarket",
+        title="Jensen Huang announced resignation or removal by...?",
+        url="https://polymarket.com/event/jensen-huang-out",
+        metadata={
+            "event_id": "77",
+            "outcome_prices": [[cut, 0.32], [cut, 0.2]],
+        },
+    )
+    event = {
+        "id": "77",
+        "slug": "jensen-huang-out",
+        "title": "Jensen Huang announced resignation or removal by...?",
+        "updatedAt": "2026-11-10T12:00:00Z",
+        "markets": [
+            {
+                "active": True,
+                "closed": False,
+                "question": "Jensen Huang announced resignation or removal by June 30, 2027?",
+                "liquidity": "100",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.32", "0.68"]',
+            },
+            {
+                "active": True,
+                "closed": False,
+                "question": "Jensen Huang announced resignation or removal by December 31, 2026?",
+                "liquidity": "90",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.2", "0.8"]',
+            },
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+
+
+def test_polymarket_refetch_reads_a_repeated_subject_name_from_its_own_market(monkeypatch):
+    # A run saved while sibling brackets were all named by their subject holds
+    # "Waymo" three times. Each still reads its own bracket, now that the
+    # brackets carry their own labels.
+    item = _item(
+        "polymarket",
+        title="How many cities will Waymo operate in by December 31?",
+        url="https://polymarket.com/event/ladder",
+        metadata={
+            "event_id": "77",
+            "outcome_prices": [["Waymo", 0.79], ["Waymo", 0.12], ["Waymo", 0.046]],
+        },
+    )
+    event = _ladder_event(
+        [
+            ("Will Waymo operate in 12-15 cities on December 31 2026?", 0.79),
+            ("Will Waymo operate in 16-19 cities on December 31 2026?", 0.3),
+            ("Will Waymo operate in fewer than 12 cities on December 31 2026?", 0.046),
+        ]
+    )
+    for market, label in zip(event["markets"], ("12-15", "16-19", "<12")):
+        market["groupItemTitle"] = label
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "stale", "current"]
+    assert verdicts[1].current_value == 0.3

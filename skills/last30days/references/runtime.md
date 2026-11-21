@@ -45,7 +45,7 @@ try_last30days_python() {
   else
     return 1
   fi
-  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || return 1
+  "$candidate" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || return 1
   LAST30DAYS_PYTHON="$candidate"
   return 0
 }
@@ -99,11 +99,11 @@ if [ -z "${LAST30DAYS_PYTHON:-}" ] && command -v uv >/dev/null 2>&1; then
 fi
 
 if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
-  echo "ERROR: last30days v3 requires Python 3.12+. Install Python 3.12+ or set LAST30DAYS_PYTHON to a supported interpreter." >&2
+  echo "ERROR: last30days v4 requires Python 3.12+. Install Python 3.12+ or set LAST30DAYS_PYTHON to a supported interpreter." >&2
   exit 1
 fi
 
-"${LAST30DAYS_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || {
+"${LAST30DAYS_PYTHON}" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || {
   echo "ERROR: LAST30DAYS_PYTHON must point to Python 3.12+." >&2
   exit 1
 }
@@ -116,13 +116,13 @@ case "$last30days_python_path" in
   *) echo "ERROR: selected Python must resolve to an executable path." >&2; exit 1 ;;
 esac
 export LAST30DAYS_PYTHON
-"${LAST30DAYS_PYTHON}" -c 'import os, shlex; print("LAST30DAYS_PYTHON=" + shlex.quote(os.environ["LAST30DAYS_PYTHON"]))'
+"${LAST30DAYS_PYTHON}" -I -c 'import os, shlex; print("LAST30DAYS_PYTHON=" + shlex.quote(os.environ["LAST30DAYS_PYTHON"]))'
 
 ```
 
 **PYTHON VERSION GATE — when the Runtime Preflight Bash block above exits with a Python version error:**
 
-If the preflight script (including the uv fallback above) emits `ERROR: last30days v3 requires Python 3.12+` (or `LAST30DAYS_PYTHON must point to Python 3.12+`) and exits, you MUST:
+If the preflight script (including the uv fallback above) emits `ERROR: last30days v4 requires Python 3.12+` (or `LAST30DAYS_PYTHON must point to Python 3.12+`) and exits, you MUST:
 
 1. Display this message to the user:
    > "The last30days engine needs Python 3.12+. Your system has an older version. Install it with one command:
@@ -160,6 +160,12 @@ Set `LAST30DAYS_MEMORY_DIR` in the process environment, trusted project config, 
 
 The engine reads `LAST30DAYS_MEMORY_DIR` from either the process env or `~/.config/last30days/.env`, so direct CLI invocations (`python3 scripts/last30days.py ...`) without `--save-dir` will still save when the env var is set. Mirrors the `LAST30DAYS_STORE` env-or-flag convention. Explicit `--save-dir` always wins.
 
-When both `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` are set, the engine runs the research through that configured remote API instead of local sources (unless `--mock` is passed); `LAST30DAYS_API_BASE` is the endpoint and has no built-in default, so leaving either variable unset runs local sources normally. A configured `--corpus` / `LAST30DAYS_CORPUS_DIRS` is the privacy exception: the engine bypasses the hosted backend and runs locally so no file-derived input is forwarded. An explicit `--perplexity-search-type` flag also runs locally when a direct `PERPLEXITY_API_KEY` exists, because the hosted backend cannot apply it; the engine prints one stderr notice. Without a direct key the run stays hosted and prints a note that the flag was not applied. A `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` value set only in the environment keeps hosted routing and prints a note that it was not applied. The invocation is otherwise unchanged: same flags, `--quick`/`--deep` map to search depth, a non-default `--register` is forwarded for server-side synthesis, progress lines still stream on stderr (`[narrate] step=...` plus a compact elapsed/eta line), and the report prints on stdout and saves to the memory dir as usual, so Steps 1-4 proceed normally on the output. The exception is research JSON: the remote endpoint does not return the local `Report` needed for the versioned agent profile, so use `--emit=json --json-profile=raw` for its existing server-response JSON contract. No per-source keys or setup-wizard credentials are needed for the search itself in this mode. Two engine exits need specific handling: exit code 3 means the API asked a clarifying question first - the engine prints the question and options on stderr; present them to the user and re-run with the chosen angle folded into the topic. An insufficient-credits failure (HTTP 402) prints the account's balance, the amount needed, and a billing link - relay those lines to the user verbatim; do not fall back to WebSearch-only synthesis.
+When both `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` are set, and `LAST30DAYS_API_MODE` is not `proxy`, the engine routes ordinary research through the configured remote API. Leave either variable unset to use local sources. A configured `--corpus` / `LAST30DAYS_CORPUS_DIRS`, `--mock`, and `--deep-research` use the local engine. An explicit `--perplexity-search-type` uses the local engine when a direct `PERPLEXITY_API_KEY` is available. Without a direct key, the run stays hosted and reports that it skipped that option. A value set only through `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` also keeps hosted routing.
+
+For hosted research, pass the topic with optional `--quick`, `--deep`, and `--register`. The API chooses the sources and synthesizes the result. Use compact or Markdown output, or `--emit=json --json-profile=raw` for the server's JSON. Explicit date bounds, source restrictions, local plans, targeting flags, and HTML requests exit 2 before submission. Use the local engine when the request needs those controls. Per-source keys and setup-wizard credentials are unnecessary for a hosted search.
+
+Hosted progress streams on stderr and the synthesized report prints on stdout. Exit 3 means the API requested clarification. Present its question and options, then rerun the same topic with `--clarify-angle "<query>"`, using the query printed beside the option the user chose, or with `--clarify-broadly` when the user wants the topic run as asked. A failed hosted run prints the server's failure reason. When the hosted engine's major version differs from the local skill's, the engine prints one notice on stderr; relay it if the user asks why results differ from a local run. If the backend returns HTTP 402, relay the reported balance, required credits, and billing link verbatim. Wait for the user's direction before attempting a different search.
+
+With `LAST30DAYS_API_MODE=proxy` plus the same key and base, research runs on the local engine with every flag, and only paid provider calls the user has no key for (ScrapeCreators, xAI, Serper, Parallel) go through the API key's metered proxy. Free sources never touch it, and a provider key the user set wins for that provider. The emoji footer ends with a `💳 API key:` line giving the credits this run charged; relay it with the footer. When the key runs out of credits or hits its hourly ceiling, the engine prints one line with the billing link, skips paid sources for the rest of the run, and still renders the free-source report.
 
 **Developer-only eval capture:** `--record-fixtures <dir>` is a hidden direct-engine flag for maintaining the deterministic research-quality suite. It records scrubbed HTTP and CLI-adapter responses to `<dir>/http.json`; it is never part of the user-facing slash-command invocation. Follow `docs/reference/eval.md` for fixture review, replay, and baseline rules.

@@ -21,8 +21,9 @@ Two resolution modes:
   results fall below the configured thinness floor (see the gating in
   ``lib/pipeline.py``). No probe can pick one winner, so resolution renders
   honest conditional wording instead of an ``active_backend``. Reddit's
-  internal keyless lanes (search/listing/arctic/shreddit) are sub-probe detail
-  inside the public composite, never chain entries.
+  internal keyless paths (web rungs, arctic, site search, listings) are
+  sub-probe detail inside the public composite, never chain entries; doctor
+  shows them as per-path rows.
 
 ``active_backend`` semantics: a PREDICTION — "the first backend the probes
 say the next run will try" — rendered as "will use". It is not an
@@ -50,7 +51,7 @@ from dataclasses import dataclass
 from shutil import which
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import env, health, prescriptions
+from . import env, health, prescriptions, proxy
 
 # Resolution modes.
 MODE_ALTERNATIVE = "alternative"  # probe-ordered chain, first-usable wins
@@ -199,7 +200,7 @@ def _key_probe(name: str, key_var: str, requires: str, note: str = "") -> Callab
             return BackendFinding(
                 name=name,
                 status=health.OK,
-                detail=f"{key_var} present",
+                detail="via API key" if proxy.is_sentinel(config.get(key_var)) else f"{key_var} present",
                 requires=requires,
             )
         prescription = note or f"set {key_var} in ~/.config/last30days/.env"
@@ -295,7 +296,7 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
                 status=health.MISSING,
                 requires=requires,
                 detail=f"grok is installed at {off_path} but that directory is not on this process's PATH",
-                prescription=f'add {off_path.parent} to PATH (e.g. export PATH="{off_path.parent}:$PATH")',
+                prescription=health.path_edit_prescription(str(off_path.parent), "grok"),
             )
         return BackendFinding(
             name="grok",
@@ -303,7 +304,7 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
             requires=requires,
             detail="grok CLI not found on PATH",
             prescription=(
-                "install the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash, "
+                "install the Grok CLI: npm install -g @xai-official/grok (or the installer at https://x.ai/cli/install.sh), "
                 "then run `grok login`"
             ),
         )
@@ -473,12 +474,32 @@ def _probe_web_keyless(config: Dict[str, Any]) -> BackendFinding:
 
 
 def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
-    """Public keyless Reddit composite; internal lanes are sub-probe detail."""
+    """Reddit's keyless floor: Brave web search finds threads, Arctic Shift
+    ``/posts/ids`` hydrates them.
+
+    Side-effect-free like every probe here: it reads the persisted path health
+    (``reddit_health``) that runs and doctor's live probe write, never the
+    network and never a cookie. The floor is degraded when every web rung, or
+    the archive, is inside a recorded skip.
+    """
+    from . import reddit_health
+
+    requires = "none (keyless web search + Arctic Shift)"
+    detail = "keyless floor (paths: brave, ddg, startpage web search; arctic /posts/ids)"
+    try:
+        skipped = [p for p in (*reddit_health.WEB_RUNGS, "arctic") if reddit_health.skip_until(p)]
+    except Exception:
+        skipped = []
+    if not skipped:
+        return BackendFinding(name="public", status=health.OK, detail=detail, requires=requires)
+    web_down = all(rung in skipped for rung in reddit_health.WEB_RUNGS)
+    status = health.DEGRADED if web_down or "arctic" in skipped else health.OK
     return BackendFinding(
         name="public",
-        status=health.OK,
-        detail="public keyless composite (lanes: search, listing, arctic, shreddit)",
-        requires="none (public endpoints)",
+        status=status,
+        detail=f"{detail}; skipped after a refusal: {', '.join(skipped)}",
+        prescription="run doctor to clear the skips and re-probe" if status != health.OK else "",
+        requires=requires,
     )
 
 
@@ -584,7 +605,7 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
         backends=(
             BackendSpec(
                 name="public",
-                requires="none (public endpoints)",
+                requires="none (keyless web search + Arctic Shift)",
                 probe=_probe_reddit_public,
             ),
             _SC_SPEC,
@@ -676,6 +697,39 @@ def _run_probe(spec: BackendSpec, config: Dict[str, Any]) -> BackendFinding:
     return finding
 
 
+# Key behind each backend the API-key proxy can serve (lib/proxy.py).
+_PROXY_KEY_VARS = {
+    "xai": "XAI_API_KEY",
+    "serper": "SERPER_API_KEY",
+    "parallel": "PARALLEL_API_KEY",
+    "scrapecreators": "SCRAPECREATORS_API_KEY",
+}
+
+
+def _demote_proxied(
+    source: str, findings: List[BackendFinding], config: Dict[str, Any],
+) -> List[BackendFinding]:
+    """Order findings the way the runtime ranks proxy-served backends.
+
+    A backend served by the API-key proxy ranks after every backend the user
+    holds a key for: last in the X chain (env.x_backend_chain), and after the
+    keyed web backends but ahead of the keyless floor
+    (grounding.configured_backend). Without proxy lanes the order is unchanged.
+    """
+    proxied = [
+        f for f in findings
+        if proxy.is_sentinel(config.get(_PROXY_KEY_VARS.get(f.name, "")))
+    ]
+    if not proxied:
+        return findings
+    proxied_ids = {id(f) for f in proxied}
+    rest = [f for f in findings if id(f) not in proxied_ids]
+    if source == "web":
+        cut = next((i for i, f in enumerate(rest) if f.name not in _WEB_KEYED), len(rest))
+        return rest[:cut] + proxied + rest[cut:]
+    return rest + proxied
+
+
 def _resolve_alternative(
     descriptor: ChainDescriptor,
     config: Dict[str, Any],
@@ -732,7 +786,10 @@ def _resolve_alternative(
     # Collect-then-pick: first fully-usable wins; else best degraded; else
     # error carrying the highest-priority backend's prescription.
     # Opt-in backends are NEVER auto-selected; skip them entirely.
-    auto_findings = [f for f in findings if f.name not in opt_in_names]
+    auto_findings = _demote_proxied(
+        descriptor.source, [f for f in findings if f.name not in opt_in_names], config,
+    )
+    res.chain = [f.name for f in _demote_proxied(descriptor.source, findings, config)]
     for finding in auto_findings:
         if finding.status == health.OK:
             res.active_backend = finding.name

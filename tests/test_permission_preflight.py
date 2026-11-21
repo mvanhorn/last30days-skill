@@ -6,10 +6,13 @@ import io
 import json
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import env, permission_preflight, pipeline, providers
+import pytest
+
+from lib import agentcookie, chrome_cdp, cookie_extract, corpus, env, permission_preflight, pipeline, providers
 
 DEFAULT_SAVE_DIR = "~" + "/Documents/Last30Days"
 
@@ -279,12 +282,11 @@ def test_cli_preflight_uses_plan_only_policy_and_does_not_run_research(monkeypat
     assert "Local writes:" in stdout.getvalue()
 
 
-def test_cli_preflight_reuses_embedded_preflight_without_save_overrides(monkeypatch):
+def test_cli_preflight_keeps_diagnosed_sources_with_research_write_plan(monkeypatch):
     embedded = permission_preflight.build({}, _diag())
     diag = _diag(permission_preflight=embedded)
     with mock.patch.object(cli.env, "get_config", return_value={}), \
          mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
-         mock.patch.object(cli.permission_preflight, "build", side_effect=AssertionError("should reuse embedded preflight")), \
          mock.patch.object(sys, "argv", ["last30days.py", "--preflight", "--emit=json"]):
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -292,7 +294,11 @@ def test_cli_preflight_reuses_embedded_preflight_without_save_overrides(monkeypa
             assert cli.main() == 0
 
     payload = json.loads(stdout.getvalue())
-    assert payload == embedded
+    assert payload["network"] == embedded["network"]
+    assert payload["local_writes"] == [
+        {"kind": "research_cache", "path": str(env.CONFIG_DIR / name)}
+        for name in ("last-run.json", "last-report.json")
+    ]
 
 
 def test_cli_preflight_reports_explicit_save_dir(monkeypatch, tmp_path):
@@ -328,6 +334,238 @@ def test_cli_preflight_reports_conditional_save_dir(monkeypatch):
             assert cli.main() == 0
 
     assert f"Report (if saved): {DEFAULT_SAVE_DIR}" in stdout.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("browser_guard", "x_browser", "reddit_consent", "expected"),
+    [
+        ([], "firefox", "false", ["firefox"]),
+        ([], "", "true", ["firefox"]),
+        ([], "off", "true", []),
+        (["--no-browser-cookies"], "firefox", "true", []),
+    ],
+)
+def test_cli_preflight_forecasts_browser_policy_without_reading_cookies(
+    monkeypatch, capsys, browser_guard, x_browser, reddit_consent, expected,
+):
+    monkeypatch.setenv("FROM_BROWSER", x_browser)
+    monkeypatch.setenv("BROWSER_CONSENT", "true" if x_browser else "false")
+    monkeypatch.setenv("REDDIT_BROWSER_CONSENT", reddit_consent)
+    monkeypatch.setenv("REDDIT_FROM_BROWSER", "firefox")
+    monkeypatch.setenv("BROWSER_CDP_URL", "https://localhost:9222")
+    monkeypatch.setattr(
+        sys, "argv", ["last30days.py", "--preflight", "--emit=json", *browser_guard]
+    )
+
+    with mock.patch.object(cookie_extract, "extract_cookies", side_effect=AssertionError("cookie read")):
+        assert cli.main() == 0
+
+    browser = json.loads(capsys.readouterr().out)["local_reads"]["browser_cookies"]
+    assert browser["browsers"] == expected
+    assert browser["status"] == ("enabled_by_config" if expected else "off")
+    assert browser["reads_values"] is False
+
+
+@pytest.mark.parametrize("scope", ["excluded", "search_without_reddit", "scrapecreators_primary"])
+def test_cli_preflight_omits_reddit_browser_when_research_will_not_use_it(monkeypatch, capsys, scope):
+    monkeypatch.setenv("BROWSER_CONSENT", "false")
+    monkeypatch.setenv("REDDIT_BROWSER_CONSENT", "true")
+    monkeypatch.setenv("REDDIT_FROM_BROWSER", "firefox")
+    args = ["last30days.py", "--preflight", "--emit=json"]
+    if scope == "excluded":
+        monkeypatch.setenv("EXCLUDE_SOURCES", "reddit")
+    elif scope == "search_without_reddit":
+        args.append("--search=hackernews")
+    else:
+        monkeypatch.setenv(env.REDDIT_BACKEND_PIN_VAR, "scrapecreators")
+        monkeypatch.setenv("SCRAPECREATORS_API_KEY", "dummy-key")
+    monkeypatch.setattr(sys, "argv", args)
+    monkeypatch.setattr(env, "read_reddit_session_cookie", lambda *_args: pytest.fail("cookie read"))
+
+    assert cli.main() == 0
+
+    browser = json.loads(capsys.readouterr().out)["local_reads"]["browser_cookies"]
+    assert browser["status"] == "off"
+    assert browser["browsers"] == []
+
+
+@pytest.mark.parametrize(
+    ("config", "denied", "expected"),
+    [
+        ({"AGENTCOOKIE": "on"}, False, ["agentcookie (if available)"]),
+        ({"BROWSER_CONSENT": "true", "AGENTCOOKIE": "off"}, False, ["Chrome CDP (if available)"]),
+        ({"BROWSER_CONSENT": "true", "AGENTCOOKIE": "off", "BROWSER_CDP_URL": "https://localhost:9222"}, False, []),
+        ({"BROWSER_CONSENT": "true"}, False, ["agentcookie (if available)", "Chrome CDP (if available)"]),
+        ({"BROWSER_CONSENT": "true"}, True, []),
+        ({"AGENTCOOKIE": "on", "BROWSER_CONSENT": "false"}, False, []),
+        ({"AGENTCOOKIE": "on", "FROM_BROWSER": "off"}, False, []),
+    ],
+)
+def test_cli_preflight_forecasts_conditional_x_cookie_routes_without_contact(
+    monkeypatch, capsys, config, denied, expected,
+):
+    for key, value in config.items():
+        monkeypatch.setenv(key, value)
+    reachables = agentcookie.shutil.which
+    monkeypatch.setattr(agentcookie.shutil, "which", lambda name: "/agentcookie" if name == "agentcookie" else reachables(name))
+    monkeypatch.setattr(env, "x_extras_enabled", lambda _config: True)
+    monkeypatch.setattr(agentcookie, "read_x_cookies", lambda *_args: pytest.fail("sidecar contact"))
+    monkeypatch.setattr(chrome_cdp, "read_x_cookies", lambda *_args: pytest.fail("CDP contact"))
+    args = ["last30days.py", "--preflight", "--emit=json"]
+    if denied:
+        args.append("--no-browser-cookies")
+    monkeypatch.setattr(sys, "argv", args)
+
+    assert cli.main() == 0
+
+    browser = json.loads(capsys.readouterr().out)["local_reads"]["browser_cookies"]
+    assert browser["browsers"] == expected
+    assert browser["reads_values"] is False
+
+
+def test_cli_preflight_forecasts_disabled_export_and_local_persistence(monkeypatch, capsys, tmp_path):
+    report_dir = tmp_path / "configured reports"
+    config_dir = tmp_path / "app config"
+    monkeypatch.setattr(env, "CONFIG_DIR", config_dir)
+    monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", str(report_dir))
+    monkeypatch.setenv("LAST30DAYS_STORE", "1")
+    monkeypatch.setattr(
+        sys, "argv",
+        ["last30days.py", "--preflight", "--emit=json", "--save-dir", ""],
+    )
+
+    assert cli.main() == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    planned_paths = {Path(write["path"]) for write in payload["local_writes"]}
+    assert config_dir / "last-run.json" in planned_paths
+    assert config_dir / "last-report.json" in planned_paths
+    assert any(path.name == "research.db" for path in planned_paths)
+    assert report_dir not in planned_paths
+    assert not config_dir.exists()
+    assert not report_dir.exists()
+
+
+@pytest.mark.parametrize("export_enabled", [True, False])
+def test_cli_preflight_requires_mcp_save_for_research_persistence(
+    monkeypatch, capsys, tmp_path, export_enabled,
+):
+    import store
+
+    config_dir = tmp_path / "app config"
+    engine_dir = tmp_path / "installed engine"
+    report_dir = tmp_path / "configured reports"
+    default_db = tmp_path / "default store" / "research.db"
+    corpus_dir = tmp_path / "notes"
+    corpus_dir.mkdir()
+    saved_reports = str(report_dir) if export_enabled else ""
+    monkeypatch.setattr(env, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(store, "DB_PATH", default_db)
+    monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", str(report_dir))
+    monkeypatch.setenv("LAST30DAYS_CORPUS_DIRS", str(corpus_dir))
+    monkeypatch.setenv("LAST30DAYS_STORE", "yes")
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "last30days.py", "--preflight", "--emit=json", "--save-dir", "",
+            "--no-browser-cookies", "--preflight-report-on-save-dir", saved_reports,
+            "--preflight-engine-cache-dir", str(engine_dir),
+        ],
+    )
+
+    assert cli.main() == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["local_writes"] == []
+    expected = {
+        ("engine_cache_on_first_use", str(engine_dir)),
+        ("research_cache_on_save", str(config_dir / "last-run.json")),
+        ("research_cache_on_save", str(config_dir / "last-report.json")),
+        ("corpus_cache_on_save", str(config_dir / corpus.CACHE_FILENAME)),
+    }
+    if export_enabled:
+        expected.update({
+            ("report_on_save", str(report_dir)),
+            ("library_index_on_save", str(report_dir / ".last30days-library.db")),
+            ("research_store_on_save", str(report_dir / "research.db")),
+        })
+    else:
+        expected.add(("research_store_on_save", str(default_db)))
+    assert {(row["kind"], row["path"]) for row in payload["conditional_writes"]} == expected
+    assert list(tmp_path.iterdir()) == [corpus_dir]
+
+
+@pytest.mark.parametrize("no_persistence", [False, True], ids=["normal", "no-persistence"])
+def test_cli_preflight_matches_actual_corpus_and_library_writes(
+    monkeypatch, capsys, tmp_path, no_persistence,
+):
+    import store
+    from lib import library_index
+
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "MCP servers.txt").write_text("MCP servers use a local transport.", encoding="utf-8")
+    config_dir = tmp_path / "app config"
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(env, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "state" / "research.db")
+    monkeypatch.setattr(library_index, "DEFAULT_LIBRARY_DB", tmp_path / "state" / "library.db")
+    monkeypatch.setenv("LAST30DAYS_STORE", "1")
+    monkeypatch.setenv("LAST30DAYS_LIBRARY_CONTEXT", "on")
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+    monkeypatch.setenv("LAST30DAYS_ALLOW_ENGINE_PLAN", "1")
+    monkeypatch.setenv("LAST30DAYS_NO_PATENT_DIGEST", "1")
+    monkeypatch.setenv("EXCLUDE_SOURCES", "jobs,yahoo_finance")
+    flags = [
+        "--search=corpus", "--quick", "--web-backend=none", "--no-browser-cookies",
+        "--corpus", str(notes), "--save-dir", str(reports),
+    ]
+    topic = "MCP servers"
+    preflight_topic = []
+    if no_persistence:
+        flags.extend(["--research-only", "--no-research-persistence", "--store"])
+        preflight_topic.append(topic)
+    monkeypatch.setattr(
+        sys, "argv", ["last30days.py", "--preflight", "--emit=json", *flags, *preflight_topic],
+    )
+
+    assert cli.main() == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert not config_dir.exists()
+    assert not reports.exists()
+
+    monkeypatch.setattr(sys, "argv", ["last30days.py", topic, *flags])
+    assert cli.main() == 0
+
+    if no_persistence:
+        assert "MCP servers" in capsys.readouterr().out
+        assert list(tmp_path.iterdir()) == [notes]
+        assert plan["local_writes"] == []
+        assert plan["conditional_writes"] == []
+        return
+
+    expected = {
+        config_dir / "last-run.json", config_dir / "last-report.json",
+        config_dir / corpus.CACHE_FILENAME, reports / "research.db",
+        reports / ".last30days-library.db", reports,
+    }
+    assert all(path.exists() for path in expected)
+    assert expected <= {Path(write["path"]) for write in plan["local_writes"] + plan["conditional_writes"]}
+    [report] = reports.glob("*-raw.md")
+    assert "MCP servers" in report.read_text(encoding="utf-8")
+
+
+def test_cli_preflight_omits_disabled_corpus_and_library_writes(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("LAST30DAYS_CORPUS_DIRS", str(tmp_path))
+    monkeypatch.setenv("EXCLUDE_SOURCES", "corpus")
+    monkeypatch.setenv("LAST30DAYS_LIBRARY_CONTEXT", "off")
+    monkeypatch.setattr(
+        sys, "argv", ["last30days.py", "--preflight", "--emit=json", "--save-dir", ""],
+    )
+
+    assert cli.main() == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert {write["kind"] for write in plan["local_writes"] + plan["conditional_writes"]} == {"research_cache"}
 
 
 def test_cli_preflight_json_returns_structured_contract(monkeypatch):

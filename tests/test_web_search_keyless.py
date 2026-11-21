@@ -1,8 +1,12 @@
 """Tests for scripts/lib/web_search_keyless.py — keyless web search floor."""
 
+import datetime as _dt
+from pathlib import Path
 from unittest import mock
 
-from lib import web_search_keyless
+import pytest
+
+from lib import http, web_search_keyless
 
 _DDG_HTML = """
 <div class="result">
@@ -132,3 +136,165 @@ class TestStripHtml:
         got = web_search_keyless._strip_html(
             "<style>.a{color:red}</style><h2>Title</h2>")
         assert got == "Title"
+
+
+# --- Brave HTML rung -------------------------------------------------------
+
+_BRAVE_FIXTURE = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "brave_reddit_serp.html"
+).read_text(encoding="utf-8")
+_REDDIT_QUERY = "site:reddit.com kanye west"
+_WINDOW = ("2026-10-16", "2026-11-15")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rung_health():
+    web_search_keyless.reset_rung_health()
+    yield
+    web_search_keyless.reset_rung_health()
+
+
+def _failing(status):
+    """A get_text stand-in that fails the way the transport does: the
+    HTTPError reaches the failure sink and the call returns None."""
+    def fail():
+        http._record_failure(http.HTTPError(f"HTTP {status}", status))
+        return None
+    return fail
+
+
+def _by_host(brave=None, ddg="", startpage=""):
+    """Route get_text by host; a callable answers for its rung."""
+    calls = []
+
+    def side_effect(url, *args, **kwargs):
+        calls.append(url)
+        for host, answer in (("search.brave.com", brave), ("duckduckgo.com", ddg),
+                             ("startpage.com", startpage)):
+            if host in url:
+                return answer() if callable(answer) else answer
+        raise AssertionError(f"unexpected url {url}")
+    return side_effect, calls
+
+
+class TestBraveParse:
+    def test_captured_serp_yields_dated_reddit_results(self):
+        now = _dt.datetime(2026, 11, 15, tzinfo=_dt.timezone.utc)
+        items = web_search_keyless.parse_brave(_BRAVE_FIXTURE, 50, now=now)
+        urls = [i["url"] for i in items]
+        assert len(items) >= 10
+        assert "https://www.reddit.com/r/Kanye/comments/1xattdz/debunked_north_west_is_not_pregnant_with_ken/" in urls
+        # Each web result is read once: the inline comment cards under a result
+        # repeat its link and are not results of their own.
+        assert len(urls) == len(set(urls))
+        first = next(i for i in items if "1xattdz" in i["url"])
+        assert first["title"].endswith(
+            "Debunked: North West is not pregnant with Ken Carson’s baby and they never dated")
+        assert "Kanye's daughter" in first["snippet"]
+        # "1 month ago" on the capture day.
+        assert first["date"] == "2026-10-16"
+        assert first["source_domain"] == "www.reddit.com"
+
+    def test_count_caps_results(self):
+        assert len(web_search_keyless.parse_brave(_BRAVE_FIXTURE, 3)) == 3
+
+    def test_page_with_no_results_parses_empty(self):
+        assert web_search_keyless.parse_brave("<html><body>nothing</body></html>", 10) == []
+
+
+class TestBraveRung:
+    def test_reddit_query_tries_brave_first(self):
+        side_effect, calls = _by_host(brave=_BRAVE_FIXTURE, ddg=_DDG_HTML)
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            items, artifact = web_search_keyless.keyless_search(
+                _REDDIT_QUERY, _WINDOW, {}, count=20)
+        assert artifact["keyless_backend"] == "brave"
+        assert all("search.brave.com" in url for url in calls)
+        assert items and all("reddit.com" in i["url"] for i in items)
+        assert artifact["keyless_rungs"] == {"brave": "ok"}
+
+    def test_other_queries_never_use_brave(self):
+        side_effect, calls = _by_host(brave=_BRAVE_FIXTURE, ddg=_DDG_HTML)
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            _, artifact = web_search_keyless.keyless_search("kanye west", _WINDOW, {})
+        assert artifact["keyless_backend"] == "ddg"
+        assert not any("brave" in url for url in calls)
+
+    def test_month_freshness_reaches_every_rung(self):
+        side_effect, calls = _by_host(brave="", ddg="", startpage="")
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            web_search_keyless.keyless_search(_REDDIT_QUERY, _WINDOW, {}, freshness="month")
+        brave, ddg, startpage = calls
+        assert "tf=pm" in brave
+        assert "df=m" in ddg
+        assert "with_date=m" in startpage
+
+    def test_brave_429_falls_through_to_ddg_then_startpage(self):
+        side_effect, calls = _by_host(brave=_failing(429), ddg="", startpage=_STARTPAGE_HTML)
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            items, artifact = web_search_keyless.keyless_search(_REDDIT_QUERY, _WINDOW, {})
+        assert [u.split("/")[2] for u in calls] == [
+            "search.brave.com", "html.duckduckgo.com", "www.startpage.com"]
+        assert artifact["keyless_backend"] == "startpage"
+        assert items
+        assert artifact["keyless_rungs"] == {
+            "brave": "throttled", "ddg": "empty", "startpage": "ok"}
+        assert web_search_keyless.rung_health()["brave"] == "throttled"
+
+    def test_brave_403_skips_brave_for_the_rest_of_the_run(self):
+        side_effect, calls = _by_host(brave=_failing(403), ddg=_DDG_HTML)
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            web_search_keyless.keyless_search(_REDDIT_QUERY, _WINDOW, {})
+            calls.clear()
+            _, artifact = web_search_keyless.keyless_search(
+                "site:reddit.com another topic", _WINDOW, {})
+        assert not any("brave" in url for url in calls)
+        assert artifact["keyless_backend"] == "ddg"
+        assert artifact["keyless_rungs"]["brave"] == "skipped"
+        assert web_search_keyless.rung_health()["brave"] == "blocked"
+
+    def test_seeded_brave_skip_goes_straight_to_ddg_and_startpage(self):
+        # The seam a persisted health cache seeds at run start.
+        web_search_keyless.seed_rung_health({"brave": "blocked"})
+        side_effect, calls = _by_host(brave=_BRAVE_FIXTURE, ddg="", startpage=_STARTPAGE_HTML)
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            _, artifact = web_search_keyless.keyless_search(_REDDIT_QUERY, _WINDOW, {})
+        assert [u.split("/")[2] for u in calls] == ["html.duckduckgo.com", "www.startpage.com"]
+        assert artifact["keyless_rungs"]["brave"] == "skipped"
+
+    def test_one_failed_page_does_not_skip_a_rung(self):
+        side_effect, calls = _by_host(brave=_failing(500), ddg=_DDG_HTML)
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            web_search_keyless.keyless_search(_REDDIT_QUERY, _WINDOW, {})
+            calls.clear()
+            web_search_keyless.keyless_search(_REDDIT_QUERY, _WINDOW, {})
+        assert any("brave" in url for url in calls)
+        assert web_search_keyless.rung_health()["brave"] == "error"
+
+    def test_ddg_challenge_page_counts_as_throttled(self):
+        challenge = '<div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>'
+        side_effect, calls = _by_host(ddg=challenge, startpage=_STARTPAGE_HTML)
+        with mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            web_search_keyless.keyless_search("topic", _WINDOW, {})
+            calls.clear()
+            _, artifact = web_search_keyless.keyless_search("topic", _WINDOW, {})
+        assert not any("duckduckgo" in url for url in calls)
+        assert artifact["keyless_rungs"] == {"ddg": "skipped", "startpage": "ok"}
+
+    def test_startpage_proof_of_work_page_counts_as_throttled(self):
+        challenge = (
+            '"v1.26.4" {"rules":{"algorithm":"fast","difficulty":4},'
+            '"challenge":{"issuedAt":"2026-11-16T02:47:50Z","difficulty":4}}'
+        )
+        side_effect, _calls = _by_host(ddg=_DDG_HTML, startpage=challenge)
+        with mock.patch.object(web_search_keyless, "_ddg_rung", return_value=([], "empty")), \
+             mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            web_search_keyless.keyless_search("topic", _WINDOW, {})
+        assert web_search_keyless.rung_health()["startpage"] == "throttled"
+
+    def test_rung_failures_still_reach_the_callers_sink(self):
+        side_effect, _calls = _by_host(brave=_failing(429), ddg=_DDG_HTML)
+        with http.capture_failures() as failures, \
+             mock.patch.object(web_search_keyless.http, "get_text", side_effect=side_effect):
+            web_search_keyless.keyless_search(_REDDIT_QUERY, _WINDOW, {})
+        assert [f.status_code for f in failures] == [429]

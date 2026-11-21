@@ -70,6 +70,7 @@ DIAGNOSE_TOP_KEYS = {
     "has_github",
     "brightdata_installed",
     "brightdata_authenticated",
+    "trustpilot_can_run",
     "x_pending_browser_auth",
     "available_sources",
     "safe",

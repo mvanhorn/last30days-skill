@@ -22,7 +22,9 @@ type Config struct {
 
 // BrowserCookiesEnvOverride is an explicit MCP-layer opt-in. It only removes
 // the default-deny CLI flag; the engine still enforces its own recorded
-// browser-cookie consent and configuration.
+// browser-cookie consent and configuration. The logged-in Reddit session also
+// needs its own recorded Reddit consent (REDDIT_BROWSER_CONSENT), so this
+// override alone never unlocks a reddit.com cookie read.
 const BrowserCookiesEnvOverride = "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES"
 
 // allowEnginePlanEnv lets the engine use its internal planner. The research
@@ -30,6 +32,30 @@ const BrowserCookiesEnvOverride = "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES"
 // this, an MCP server launched from an agent shell (which inherits markers such
 // as CLAUDECODE) would hit the engine's LAW 7 host-plan gate and exit 2.
 const allowEnginePlanEnv = "LAST30DAYS_ALLOW_ENGINE_PLAN=1"
+
+// noJobsDigestEnv has the engine leave the "## Jobs Digest" section out. With
+// no digest to stand in for them, the engine keeps each job posting's own
+// evidence snippet, which it otherwise drops for the roles the digest lists.
+const noJobsDigestEnv = "LAST30DAYS_NO_JOBS_DIGEST=1"
+
+// noPatentDigestEnv has the engine skip the patent lane: no USPTO search is
+// made and no "## Patent Digest" section is printed. How to weigh that digest
+// is told in a skill reference an MCP client never sees. The variable stops
+// the fetch itself, so there is no section for this server to filter out.
+const noPatentDigestEnv = "LAST30DAYS_NO_PATENT_DIGEST=1"
+
+// noReportChecklistEnv has the engine end compact output at its canonical
+// boundary. Otherwise it prints, after the boundary, a checklist of the
+// skill's report format, which an MCP client is not asked to follow: the tool
+// description above is this server's presentation guidance.
+const noReportChecklistEnv = "LAST30DAYS_NO_REPORT_CHECKLIST=1"
+
+const (
+	canonicalOutputEnd     = "# END OF last30days CANONICAL OUTPUT"
+	reportChecklistHeading = "## Before you write the report"
+	strictExitCode         = 3
+	strictExitPrefix       = "[last30days] strict-exit: degraded sources: "
+)
 
 // Register adds every tool this server exposes to s. The caller supplies a
 // Config so test harnesses can pin a version without touching globals.
@@ -48,8 +74,8 @@ func Register(s *server.MCPServer, cfg Config) {
 					"System, developer, tool, and user instructions take precedence over these presentation defaults.",
 			),
 			mcplib.WithString("topic", mcplib.Required(), mcplib.Description("The subject to research (a person, company, product, event, or general topic).")),
-			mcplib.WithString("emit", mcplib.Description("Output shape: 'compact' (default) for inline synthesis or 'html' to save a shareable brief alongside the response.")),
-			mcplib.WithBoolean("save", mcplib.Description("Persist the synthesis as a markdown report under ~/Documents/Last30Days/ (or LAST30DAYS_MEMORY_DIR if set).")),
+			mcplib.WithString("emit", mcplib.Description("Output shape: 'compact' (default) for inline synthesis or 'html' for an HTML response.")),
+			mcplib.WithBoolean("save", mcplib.Description("Enable local research persistence, including export to the configured save directory. Defaults to false.")),
 			mcplib.WithReadOnlyHintAnnotation(false),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -95,7 +121,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 				return mcplib.NewToolResultError(err.Error()), nil
 			}
 		}
-		runArgs := researchRunArgs(topic, emit, saveDir)
+		runArgs := researchRunArgs(topic, emit, saveDir, save)
 
 		res, runErr := engine.Run(ctx, engine.RunOptions{
 			CacheDir: cacheDir,
@@ -103,28 +129,109 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 			ExtraEnv: researchExtraEnv(),
 		})
 		if runErr != nil {
+			if isDegradedReport(res, runErr, emit) {
+				output := withoutReportChecklist(withoutJobsDigest(string(res.Stdout)))
+				return mcplib.NewToolResultStructured(
+					map[string]string{"status": "degraded", "report": output},
+					"Research completed with degraded coverage.\n\n"+output,
+				), nil
+			}
 			return mcplib.NewToolResultError(formatRunError(runErr, res)), nil
 		}
-		return mcplib.NewToolResultText(string(res.Stdout)), nil
+		return mcplib.NewToolResultText(withoutReportChecklist(withoutJobsDigest(string(res.Stdout)))), nil
 	}
 }
 
-func researchRunArgs(topic, emit, saveDir string) []string {
+// The engine emits the strict-exit receipt only after rendering. Hosted
+// clarification uses the same exit code without producing a report.
+func isDegradedReport(res *engine.RunResult, runErr error, emit string) bool {
+	if res == nil || res.ExitCode != strictExitCode || res.TimedOut || errors.Is(runErr, context.Canceled) {
+		return false
+	}
+	output := strings.TrimSpace(withoutReportChecklist(string(res.Stdout)))
+	if emit == "html" {
+		if !strings.HasPrefix(output, "<!DOCTYPE html>") || !strings.HasSuffix(output, "</html>") {
+			return false
+		}
+	} else if !strings.HasSuffix(strings.ReplaceAll(output, "\r\n", "\n"), "\n---\n"+canonicalOutputEnd) {
+		return false
+	}
+	for line := range strings.SplitSeq(string(res.Stderr), "\n") {
+		sources, matched := strings.CutPrefix(line, strictExitPrefix)
+		if matched && strings.TrimSpace(sources) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutJobsDigest drops the engine's "## Jobs Digest" evidence section. The
+// digest is raw role text that the skill's instruction files say how to
+// weigh, and an MCP client never sees those files; the footer's Jobs line,
+// outside the section, is kept. The engine is already asked for no digest
+// (noJobsDigestEnv), so this is the second check, for an engine that prints
+// one anyway. The section runs to the next "## " heading or
+// to the end of the evidence block, and scraped text inside it cannot start
+// either: the engine keeps each role on one line that starts with "- ".
+func withoutJobsDigest(output string) string {
+	lines := strings.SplitAfter(output, "\n")
+	kept := lines[:0:0]
+	inDigest := false
+	for _, line := range lines {
+		text := strings.TrimRight(line, "\r\n")
+		if text == "## Jobs Digest" {
+			inDigest = true
+			continue
+		}
+		if inDigest && (strings.HasPrefix(text, "## ") || strings.HasPrefix(text, "<!-- END EVIDENCE")) {
+			inDigest = false
+		}
+		if !inDigest {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "")
+}
+
+// withoutReportChecklist ends the engine's output at its canonical boundary
+// when a report checklist follows it. The engine is already asked for none
+// (noReportChecklistEnv), so this is the second check, for an engine that
+// prints one anyway. Only a heading after the last boundary line counts: the
+// same words earlier in the output are evidence text.
+func withoutReportChecklist(output string) string {
+	boundary := strings.LastIndex(output, canonicalOutputEnd)
+	if boundary < 0 {
+		return output
+	}
+	end := boundary + len(canonicalOutputEnd)
+	if !strings.Contains(output[end:], "\n"+reportChecklistHeading) {
+		return output
+	}
+	return output[:end] + "\n"
+}
+
+func researchRunArgs(topic, emit, saveDir string, save bool) []string {
 	// Options first, positional topic last behind a `--` separator: a
 	// dash-prefixed topic must never be parsed as engine flags.
-	runArgs := []string{"--research-only", "--emit=" + emit}
-	if !browserCookiesAllowed() {
-		runArgs = append(runArgs, "--no-browser-cookies")
-	}
+	runArgs := withBrowserCookiePolicy([]string{"--research-only", "--emit=" + emit})
 	// Always pass --save-dir explicitly. An empty value skips the engine's
-	// `is None` LAST30DAYS_MEMORY_DIR fallback and is falsy at the save
-	// gate, so declining to save writes nothing even when the env var set.
+	// LAST30DAYS_MEMORY_DIR fallback and disables report export.
 	runArgs = append(runArgs, "--save-dir", saveDir)
+	if !save {
+		runArgs = append(runArgs, "--no-research-persistence")
+	}
 	return append(runArgs, "--", topic)
 }
 
+func withBrowserCookiePolicy(args []string) []string {
+	if !browserCookiesAllowed() {
+		return append(args, "--no-browser-cookies")
+	}
+	return args
+}
+
 func researchExtraEnv() []string {
-	return []string{allowEnginePlanEnv}
+	return []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
 }
 
 func browserCookiesAllowed() bool {

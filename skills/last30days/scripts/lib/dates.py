@@ -64,6 +64,56 @@ def get_date_range(days: int = 30, as_of_date: Optional[str] = None) -> Tuple[st
     return from_date.isoformat(), to_date.isoformat()
 
 
+def _local_now() -> datetime:
+    """The reader's clock, with its UTC offset."""
+    return datetime.now().astimezone()
+
+
+def reader_end_date(to_date: str, now: Optional[datetime] = None) -> date:
+    """A window's end date as the reader's calendar has it.
+
+    The window ends on the UTC date so queries and item filters lose no
+    post. West of UTC that date is tomorrow for part of every day (5pm in
+    Los Angeles on Nov 10 is already Nov 11 in UTC), and "to Nov 11" reads
+    as a window that runs into the future. A window that ends on today's UTC
+    date is shown ending on the reader's own date when that is earlier. A
+    window that ends on any other day (``--as-of``) is shown as it is.
+    ``now`` is an aware datetime; tests pass one.
+    """
+    end = date.fromisoformat(to_date)
+    now = now or _local_now()
+    if end == now.astimezone(timezone.utc).date() and now.date() < end:
+        return now.date()
+    return end
+
+
+def is_today(value: str, now: Optional[datetime] = None) -> bool:
+    """Whether a YYYY-MM-DD date is today in UTC or on the reader's calendar.
+
+    West of UTC the two calendars differ for part of every day, and a date
+    that is today on either one is a live window. ``now`` is an aware
+    datetime.
+    """
+    day = date.fromisoformat(value)
+    now = now or _local_now()
+    return day in (now.astimezone(timezone.utc).date(), now.date())
+
+
+def format_window(from_date: str, to_date: str, now: Optional[datetime] = None) -> str:
+    """Render an ISO date window for readers, e.g. ``Oct 11 to Nov 10, 2026``.
+
+    The year is printed once when both dates share it and on both dates when
+    the window crosses a year boundary. The end is the reader's date
+    (``reader_end_date``), never tomorrow.
+    """
+    end = reader_end_date(to_date, now)
+    start = min(date.fromisoformat(from_date), end)
+    start_text = f"{start:%b} {start.day}"
+    if start.year != end.year:
+        start_text += f", {start.year}"
+    return f"{start_text} to {end:%b} {end.day}, {end.year}"
+
+
 def parse_date(date_str: Optional[str]) -> Optional[datetime]:
     """Parse a date string in various formats.
 

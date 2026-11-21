@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -125,8 +126,8 @@ func TestResearchRunArgsIncludesNoBrowserCookies(t *testing.T) {
 	if err := os.Unsetenv(BrowserCookiesEnvOverride); err != nil {
 		t.Fatalf("unset %s: %v", BrowserCookiesEnvOverride, err)
 	}
-	args := researchRunArgs("OpenAI", "compact", "")
-	want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "OpenAI"}
+	args := researchRunArgs("OpenAI", "compact", "", false)
+	want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--no-research-persistence", "--", "OpenAI"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -136,8 +137,8 @@ func TestResearchRunArgsAllowsBrowserCookiesForTruthyOptIn(t *testing.T) {
 	for _, value := range []string{"1", "true", "TRUE", "yes", "YeS", "on", "ON"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv(BrowserCookiesEnvOverride, value)
-			args := researchRunArgs("OpenAI", "compact", "")
-			want := []string{"--research-only", "--emit=compact", "--save-dir", "", "--", "OpenAI"}
+			args := researchRunArgs("OpenAI", "compact", "", false)
+			want := []string{"--research-only", "--emit=compact", "--save-dir", "", "--no-research-persistence", "--", "OpenAI"}
 			if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 				t.Fatalf("%s=%q: args = %#v, want %#v", BrowserCookiesEnvOverride, value, args, want)
 			}
@@ -153,8 +154,8 @@ func TestResearchRunArgsDeniesBrowserCookiesForFalseAndUnrecognizedValues(t *tes
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(BrowserCookiesEnvOverride, value)
-			args := researchRunArgs("OpenAI", "compact", "")
-			want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "OpenAI"}
+			args := researchRunArgs("OpenAI", "compact", "", false)
+			want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--no-research-persistence", "--", "OpenAI"}
 			if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 				t.Fatalf("%s=%q: args = %#v, want %#v", BrowserCookiesEnvOverride, value, args, want)
 			}
@@ -165,7 +166,7 @@ func TestResearchRunArgsDeniesBrowserCookiesForFalseAndUnrecognizedValues(t *tes
 func TestResearchRunArgsSaveUsesSupportedSaveDir(t *testing.T) {
 	t.Setenv(BrowserCookiesEnvOverride, "")
 	t.Setenv("LAST30DAYS_MEMORY_DIR", "")
-	args := researchRunArgs("OpenAI", "html", "~/Documents/Last30Days")
+	args := researchRunArgs("OpenAI", "html", "~/Documents/Last30Days", true)
 	got := strings.Join(args, "\x00")
 	if strings.Contains(got, "--save\x00") || strings.HasSuffix(got, "--save") {
 		t.Fatalf("args still include unsupported --save: %#v", args)
@@ -179,7 +180,7 @@ func TestResearchRunArgsSaveUsesSupportedSaveDir(t *testing.T) {
 func TestResearchRunArgsSaveUsesResolvedDirectory(t *testing.T) {
 	t.Setenv(BrowserCookiesEnvOverride, "")
 	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/last30days-reports")
-	args := researchRunArgs("OpenAI", "html", "/tmp/last30days-reports")
+	args := researchRunArgs("OpenAI", "html", "/tmp/last30days-reports", true)
 	want := []string{"--research-only", "--emit=html", "--no-browser-cookies", "--save-dir", "/tmp/last30days-reports", "--", "OpenAI"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
@@ -192,8 +193,8 @@ func TestResearchRunArgsSaveUsesResolvedDirectory(t *testing.T) {
 func TestResearchRunArgsSeparatesTopicWithDoubleDash(t *testing.T) {
 	t.Setenv(BrowserCookiesEnvOverride, "")
 	t.Setenv("LAST30DAYS_MEMORY_DIR", "")
-	args := researchRunArgs("--mock", "compact", "")
-	want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "--mock"}
+	args := researchRunArgs("--mock", "compact", "", false)
+	want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--no-research-persistence", "--", "--mock"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -214,15 +215,11 @@ func TestResearchRunArgsSeparatesTopicWithDoubleDash(t *testing.T) {
 	}
 }
 
-// TestResearchRunArgsSaveFalsePassesExplicitEmptySaveDir pins CR-003: when
-// save is false the argv carries an explicit empty --save-dir, which skips
-// the engine's `is None` MEMORY_DIR fallback and is falsy at the save gate,
-// so declining to save writes nothing even with LAST30DAYS_MEMORY_DIR set.
-func TestResearchRunArgsSaveFalsePassesExplicitEmptySaveDir(t *testing.T) {
+func TestResearchRunArgsSaveFalseSuppressesExportAndResearchPersistence(t *testing.T) {
 	t.Setenv(BrowserCookiesEnvOverride, "")
 	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/last30days-reports")
-	args := researchRunArgs("OpenAI", "compact", "")
-	want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "OpenAI"}
+	args := researchRunArgs("OpenAI", "compact", "", false)
+	want := []string{"--research-only", "--emit=compact", "--no-browser-cookies", "--save-dir", "", "--no-research-persistence", "--", "OpenAI"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -277,8 +274,12 @@ func TestFormatRunErrorHandlesNilResult(t *testing.T) {
 
 func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
 	got := researchExtraEnv()
-	if len(got) != 1 || got[0] != "LAST30DAYS_ALLOW_ENGINE_PLAN=1" {
-		t.Fatalf("researchExtraEnv() = %#v, want [LAST30DAYS_ALLOW_ENGINE_PLAN=1]", got)
+	want := []string{
+		"LAST30DAYS_ALLOW_ENGINE_PLAN=1", "LAST30DAYS_NO_JOBS_DIGEST=1",
+		"LAST30DAYS_NO_PATENT_DIGEST=1", "LAST30DAYS_NO_REPORT_CHECKLIST=1",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("researchExtraEnv() = %#v, want %#v", got, want)
 	}
 }
 
@@ -323,12 +324,113 @@ func TestResolveSaveDirUsesEngineConfiguration(t *testing.T) {
 				t.Fatalf("resolveSaveDir() = %q, %v; want %q", got, err, tc.want)
 			}
 			preflight := preflightRunArgs("json", got)
-			research := researchRunArgs("setup", "compact", got)
+			research := researchRunArgs("setup", "compact", got, true)
 			if preflight[4] != research[4] {
 				t.Fatalf("preflight/research destinations differ: %q, %q", preflight, research)
+			}
+			if slices.Contains(research, "--no-research-persistence") {
+				t.Fatalf("save=true suppressed research persistence: %q", research)
 			}
 		})
 	}
 }
 
 func stringPointer(value string) *string { return &value }
+
+func TestWithoutJobsDigestKeepsTheFooterLineAndDropsTheDigest(t *testing.T) {
+	output := strings.Join([]string{
+		"<!-- EVIDENCE FOR SYNTHESIS: ranked source data. -->",
+		"",
+		"## Hiring Signals",
+		"",
+		"- Mode: standard; company-size tier: growth",
+		"",
+		"## Jobs Digest",
+		"",
+		"- Board: Acme | greenhouse | 2,904 open roles | 658 posted 2026-10-11 to 2026-11-10",
+		"- [Analyst](https://boards.greenhouse.io/acme/jobs/1) | MaaS: Join the first APAC team.",
+		"",
+		"## Ranked Evidence Clusters",
+		"",
+		"### 1. Something",
+		"<!-- END EVIDENCE FOR SYNTHESIS -->",
+		"├─ 💼 Jobs: 2,904 open roles │ 658 new in the L30",
+		"",
+	}, "\n")
+
+	got := withoutJobsDigest(output)
+
+	for _, gone := range []string{"## Jobs Digest", "- Board: Acme", "Join the first APAC team"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("digest text %q survived:\n%s", gone, got)
+		}
+	}
+	for _, kept := range []string{
+		"## Hiring Signals", "- Mode: standard", "## Ranked Evidence Clusters", "### 1. Something",
+		"<!-- END EVIDENCE FOR SYNTHESIS -->", "💼 Jobs: 2,904 open roles │ 658 new in the L30",
+	} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%q was dropped:\n%s", kept, got)
+		}
+	}
+}
+
+func TestWithoutJobsDigestStopsAtTheEvidenceEndWhenTheDigestIsLast(t *testing.T) {
+	output := "## Jobs Digest\n\n- Board: Acme\n\n<!-- END EVIDENCE FOR SYNTHESIS -->\nfooter\n"
+	want := "<!-- END EVIDENCE FOR SYNTHESIS -->\nfooter\n"
+	if got := withoutJobsDigest(output); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestWithoutJobsDigestLeavesOtherOutputUnchanged(t *testing.T) {
+	output := "## Ranked Evidence Clusters\n\n- item\n"
+	if got := withoutJobsDigest(output); got != output {
+		t.Errorf("got %q, want %q", got, output)
+	}
+}
+
+func TestWithoutReportChecklistEndsOutputAtTheCanonicalBoundary(t *testing.T) {
+	canonical := strings.Join([]string{
+		"<!-- EVIDENCE FOR SYNTHESIS: ranked source data. -->",
+		"## Top Community Comments",
+		"<!-- END EVIDENCE FOR SYNTHESIS -->",
+		"```text",
+		"✅ All agents reported back!",
+		"```",
+		"",
+		"---",
+		"# END OF last30days CANONICAL OUTPUT",
+		"",
+	}, "\n")
+	checklist := strings.Join([]string{
+		"",
+		"## Before you write the report",
+		"",
+		"Format facts for a report written from this output. User and host instructions come first.",
+		"• Line 1 is the badge line, copied as printed.",
+		"• `CLAUDECODE` is set: no markdown lists anywhere in the reply.",
+		"",
+	}, "\n")
+
+	got := withoutReportChecklist(canonical + checklist)
+
+	if got != canonical {
+		t.Errorf("got %q, want %q", got, canonical)
+	}
+}
+
+func TestWithoutReportChecklistLeavesOtherOutputUnchanged(t *testing.T) {
+	for _, output := range []string{
+		"## Ranked Evidence Clusters\n\n- item\n\n---\n# END OF last30days CANONICAL OUTPUT\n",
+		// A heading of the same words inside the output, before the boundary,
+		// is source text or evidence, not the checklist.
+		"- item\n## Before you write the report\n- more\n\n---\n# END OF last30days CANONICAL OUTPUT\n",
+		// HTML and error output carry no boundary at all.
+		"<html>## Before you write the report</html>\n",
+	} {
+		if got := withoutReportChecklist(output); got != output {
+			t.Errorf("got %q, want %q", got, output)
+		}
+	}
+}

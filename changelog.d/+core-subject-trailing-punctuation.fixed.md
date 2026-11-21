@@ -1,1 +1,0 @@
-X, Threads and planner searches no longer keep a question's closing "?" in the core subject: "What is Claude Code?" now searches for "claude code" instead of "claude code?", and a noise word or suffix right before the "?" is stripped as it is without one.

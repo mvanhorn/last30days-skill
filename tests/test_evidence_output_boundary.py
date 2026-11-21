@@ -82,6 +82,37 @@ def test_hiring_output_preserves_evidence_and_caveats_without_synthesis_commands
     assert "a new capability or expansion of an existing one" in text
 
 
+def test_jobs_digest_is_data_without_presentation_instructions():
+    from lib import jobs_digest
+
+    raw = [
+        {"id": f"GH{index}", "title": f"Engineer {index}", "department": f"Dept {index}",
+         "location": "Remote", "url": f"https://boards.greenhouse.io/acme/jobs/{index}",
+         "description": f"Own system {index}.", "date": "2026-06-01", "posted_date_true": True}
+        for index in range(6)
+    ]
+    report = sample_report()
+    report.artifacts["jobs"] = {
+        "tier": "ats", "provider": "greenhouse", "company": "Acme", "owned": True,
+        "open_roles": 6, "new_in_window": 6,
+        "digest": jobs_digest.build_digest(raw, jobs_digest.select_roles(raw)),
+    }
+
+    text = render.render_compact(report)
+    block = text[text.index("## Jobs Digest"):]
+    block = block[:block.index("\n## ")]
+
+    assert "Own system 3." in block
+    assert "https://boards.greenhouse.io/acme/jobs/3" in block
+    lowered = block.lower()
+    for command in (
+        "secret signals", "you must", "you should", "do not", "write a", "include a",
+        "in synthesis", "in your", "judge", "interpret", "lead with", "render", "omit",
+    ):
+        assert command not in lowered
+    assert "💼 Jobs: 6 open roles │ 6 new in the L30" in text
+
+
 def test_skill_guidance_is_available_without_report_tail():
     from tests.skill_contract import reference_text, root_text
 

@@ -33,7 +33,11 @@ End users need Python 3.12+. The bundle ships the engine source but relies on th
 
 MCP research denies browser-cookie access by default by passing `--no-browser-cookies`. Set `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES` to `1`, `true`, `yes`, or `on` (case-insensitive) to remove that MCP-layer denial. Empty, false, unset, and unrecognized values keep the denial in place. Enabling this variable does not create consent: browser-cookie use still requires the engine's separately recorded consent and configuration.
 
-The research tool passes `--research-only`, so topics such as `setup` remain research queries and cannot invoke administrative commands. Preflight and research resolve save destinations through the engine's `--resolve-save-dir` query, including trusted `.env` configuration. Set `save=false` to suppress research file saves.
+The research tool passes `--research-only`, so topics such as `setup` remain research queries and cannot invoke administrative commands. Preflight applies the same browser-cookie policy as research and leaves cookie values unread. Both tools resolve save destinations through the engine's `--resolve-save-dir` query, including trusted `.env` configuration.
+
+With `save=false` (the default), research returns the requested output in the response and skips the report export, last-run and report caches, corpus text cache, and SQLite findings. Set `save=true` to enable the engine's configured persistence. An explicitly empty save directory disables the export and keeps caching and configured SQLite storage enabled. Engine installation and source diagnostics can still use local caches.
+
+Preflight lists configured research writes under the `save=true` condition. It lists first-use engine installation separately because even a preflight call can initialize the engine cache.
 
 ## Versioning
 

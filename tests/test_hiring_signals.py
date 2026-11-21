@@ -1,6 +1,6 @@
 import unittest
 
-from lib import hiring_signals, schema
+from lib import hiring_signals, pipeline, schema
 
 
 def job(title: str, body: str, department: str = "Engineering") -> schema.SourceItem:
@@ -18,6 +18,15 @@ def job(title: str, body: str, department: str = "Engineering") -> schema.Source
 
 
 class HiringSignalsTests(unittest.TestCase):
+    def test_theme_keywords_match_whole_words_only(self):
+        themed = hiring_signals._theme_items([
+            job("JP-Technical Specialist", "Apple Retail store training and maintaining displays", "Apple Retail"),
+            job("Web Developer", "html and css", "Engineering"),
+            job("Staff Engineer, LLMs", "train large models", "Engineering"),
+        ])
+        ai = [item.title for item in themed.get("ai and machine learning", [])]
+        self.assertEqual(["Staff Engineer, LLMs"], ai)
+
     def test_startup_cluster_surfaces_in_standard_mode(self):
         items = [
             job("Founding Enterprise Solutions Engineer", "SSO SOC 2 procurement enterprise", "Sales"),
@@ -99,6 +108,227 @@ class HiringSignalsTests(unittest.TestCase):
         self.assertTrue(ny)
         self.assertIn("new-geo", ny[0]["flags"])
 
+    def _located(self, *rows):
+        items = []
+        for title, location in rows:
+            item = job(title, "work", "Engineering")
+            item.metadata["location"] = location
+            items.append(item)
+        return hiring_signals.analyze(items, explicit=True, topic="Acme")["strategic_candidates"]
+
+    def test_a_spelling_of_a_place_already_on_the_board_is_not_a_new_geography(self):
+        candidates = self._located(
+            ("Engineer A", "San Francisco"),
+            ("Engineer B", "San Francisco"),
+            ("Engineer C", "San Francisco"),
+            ("Engineer D", "Seattle"),
+            ("Engineer E", "Seattle, WA"),
+        )
+        self.assertFalse([c for c in candidates if "new-geo" in c["flags"]])
+
+    def test_a_title_tail_is_specialized_only_when_it_names_a_specialty(self):
+        candidates = self._located(
+            ("Engineer, Payments", "Seattle"),
+            ("Engineer, Seattle", "Seattle"),
+            ("Engineer, Multiple Teams", "Seattle"),
+            ("Engineer, Entry Level", "Seattle"),
+        )
+        flagged = {c["title"] for c in candidates if "specialized" in c["flags"]}
+        self.assertEqual({"Engineer, Payments"}, flagged)
+
+
+# Company text a board repeats on every role, the way Microsoft's postings do.
+BOILERPLATE = (
+    "Our team accelerates customer outcomes and business growth with AI-powered "
+    "solutions and cloud platforms. We design for security and data insights."
+)
+KEYWORD_THEMES = set(hiring_signals.THEME_KEYWORDS)
+
+
+def board(*roles: tuple[str, str, str]) -> list[schema.SourceItem]:
+    """Postings that each open with BOILERPLATE, then the role's own text."""
+    return [job(title, f"{title}\n{department}\n{BOILERPLATE}\n{own}", department)
+            for title, own, department in roles]
+
+
+def themes_of(themed: dict[str, list[schema.SourceItem]], title: str) -> set[str]:
+    return {theme for theme, items in themed.items() if any(i.title == title for i in items)}
+
+
+class BoilerplateThemeTests(unittest.TestCase):
+    def test_role_matching_only_shared_boilerplate_is_unthemed(self):
+        themed = hiring_signals._theme_items(board(
+            ("Logistics Technician", "Move parts between sites.", "Operations"),
+            ("Paralegal", "Draft contracts.", "Legal"),
+            ("Facilities Coordinator", "Book rooms.", "Workplace"),
+            ("Product Designer", "Shape the editor.", "Studio"),
+        ))
+        for title in ("Logistics Technician", "Paralegal", "Facilities Coordinator"):
+            self.assertEqual(set(), themes_of(themed, title) & KEYWORD_THEMES, title)
+        self.assertEqual({"product expansion"}, themes_of(themed, "Product Designer") & KEYWORD_THEMES)
+        self.assertIn("operations", themed)
+
+    def test_role_unique_body_sentence_still_themes(self):
+        themed = hiring_signals._theme_items(board(
+            ("Software Engineer", "You will build LLM evaluation pipelines.", "Engineering"),
+            ("Paralegal", "Draft contracts.", "Legal"),
+            ("Facilities Coordinator", "Book rooms.", "Workplace"),
+        ))
+        self.assertEqual({"ai and machine learning"},
+                         themes_of(themed, "Software Engineer") & KEYWORD_THEMES)
+
+    def test_boilerplate_needs_three_roles_before_it_is_removed(self):
+        themed = hiring_signals._theme_items(board(
+            ("Paralegal", "Draft contracts.", "Legal"),
+            ("Facilities Coordinator", "Book rooms.", "Workplace"),
+        ))
+        # Two roles sharing a sentence is not yet company text.
+        self.assertIn("ai and machine learning", themes_of(themed, "Paralegal"))
+
+    def test_title_match_outranks_body_match(self):
+        themed = hiring_signals._theme_items([
+            job("Software Engineer", "Software Engineer\nYou will tune ML ranking.", "Engineering"),
+            job("Machine Learning Engineer", "Machine Learning Engineer\nShip things.", "Engineering"),
+            job("Data Engineer", "Data Engineer\nKeep pipelines up.", "AI Platform"),
+        ])
+        self.assertEqual(
+            ["Machine Learning Engineer", "Data Engineer", "Software Engineer"],
+            [item.title for item in themed["ai and machine learning"]],
+        )
+
+    def test_generic_words_do_not_theme_a_logistics_technician(self):
+        themed = hiring_signals._theme_items([
+            job(
+                "Logistics Technician",
+                "Logistics Technician\nSupport warehouse growth, design shipping solutions on "
+                "our platform, and model activation insights for admin teams.",
+                "Operations",
+            ),
+        ])
+        self.assertEqual({"operations"}, set(themed))
+
+    def test_data_center_roles_are_infrastructure_not_data(self):
+        themed = hiring_signals._theme_items([
+            job("Data Center Program Manager", "Data Center Program Manager", "Operations"),
+            job("Data Analyst", "Data Analyst", "Finance"),
+        ])
+        self.assertEqual({"infrastructure and reliability"},
+                         themes_of(themed, "Data Center Program Manager") & KEYWORD_THEMES)
+        self.assertEqual({"data and analytics"}, themes_of(themed, "Data Analyst") & KEYWORD_THEMES)
+
+
+class DistinctEvidenceTests(unittest.TestCase):
+    def _items(self) -> list[schema.SourceItem]:
+        items = []
+        for prefix, department in (("Sales Lead", "Sales"), ("ML Engineer", "Research"),
+                                   ("Cloud Engineer", "Infra")):
+            items.extend(job(f"{prefix} {n}", f"{prefix} {n}", department) for n in range(3))
+        # Each of these matches all three themes on its title, and comes first.
+        shared = [job(f"Sales ML Cloud Architect {n}", "Sales ML Cloud Architect", "Office")
+                  for n in range(2)]
+        return shared + items
+
+    def test_no_role_is_an_example_under_two_themes(self):
+        summary = hiring_signals.analyze(self._items(), explicit=True, topic="Acme")
+        by_theme = {s["theme"]: s for s in summary["signals"]}
+        self.assertTrue({"go-to-market", "ai and machine learning",
+                         "infrastructure and reliability"} <= set(by_theme))
+        urls = [e["url"] for s in summary["signals"] for e in s["evidence"]]
+        self.assertEqual(len(urls), len(set(urls)))
+        for theme in ("go-to-market", "ai and machine learning", "infrastructure and reliability"):
+            self.assertTrue(by_theme[theme]["evidence"], theme)
+
+    def test_evidence_count_is_unchanged_by_dedup(self):
+        summary = hiring_signals.analyze(self._items(), explicit=True, topic="Acme")
+        by_theme = {s["theme"]: s for s in summary["signals"]}
+        for theme in ("go-to-market", "ai and machine learning", "infrastructure and reliability"):
+            self.assertEqual(5, by_theme[theme]["evidence_count"], theme)
+
+    def test_every_theme_gets_a_first_example_before_any_gets_a_second(self):
+        summary = hiring_signals.analyze(self._items(), explicit=True, topic="Acme")
+        firsts = [s["evidence"][0]["title"] for s in summary["signals"][:3]]
+        # The two all-theme roles go to the top two themes; the third takes its own.
+        self.assertEqual(2, sum(title.startswith("Sales ML Cloud Architect") for title in firsts))
+
+
+class HiringSignalGateTests(unittest.TestCase):
+    def _bundle(self, items: list[schema.SourceItem]) -> schema.RetrievalBundle:
+        bundle = schema.RetrievalBundle()
+        bundle.add_items("primary", "jobs", items)
+        return bundle
+
+    def test_mega_cap_standard_run_with_real_concentration_passes_the_gate(self):
+        roles = [
+            (f"{level} Machine Learning Engineer, {area}", f"Train {area} models.", dept)
+            for level, area, dept in [
+                ("Senior", "Copilot", "Research"), ("Principal", "Azure AI", "AI Platform"),
+                ("Staff", "Bing", "Search"), ("Senior", "Speech", "Research"),
+                ("Principal", "Vision", "AI Platform"), ("Senior", "Ads", "Search"),
+                ("Staff", "Office", "Research"), ("Senior", "Gaming", "AI Platform"),
+                ("Principal", "Security", "Search"), ("Senior", "Health", "Research"),
+            ]
+        ] + [
+            ("Logistics Technician", "Move parts.", "Operations"),
+            ("Paralegal", "Draft contracts.", "Legal"),
+        ]
+        bundle = self._bundle(board(*roles))
+
+        summary = pipeline._apply_hiring_signal_gate(bundle, explicit=False, topic="Microsoft")
+
+        self.assertEqual("mega-cap", summary["company_size_tier"])
+        self.assertTrue(summary["include"])
+        self.assertEqual("ai and machine learning", summary["signals"][0]["theme"])
+        self.assertIn("jobs", bundle.items_by_source)
+        shown = [e["title"] for s in summary["signals"] for e in s["evidence"]]
+        self.assertNotIn("Logistics Technician", shown)
+
+    def test_mega_cap_board_themed_only_by_boilerplate_leaves_the_pool(self):
+        # Before boilerplate removal, every one of these themed as AI, go-to-market,
+        # infrastructure, product, enterprise and data.
+        roles = [(f"Technician {n}", f"Move parts in bay {n}.", f"Site {n}") for n in range(12)]
+        bundle = self._bundle(board(*roles))
+
+        summary = pipeline._apply_hiring_signal_gate(bundle, explicit=False, topic="Microsoft")
+
+        self.assertFalse(summary["include"])
+        self.assertNotIn("jobs", bundle.items_by_source)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GreenhouseParagraphsTest(unittest.TestCase):
+    """HTML paragraphs without ending punctuation still split company from role text."""
+
+    def test_unpunctuated_company_paragraph_themes_nothing(self):
+        from lib import jobs, normalize
+
+        roles = [
+            ("Logistics Technician", "Move parts between sites"),
+            ("Paralegal", "Draft contracts for review"),
+            ("Executive Chef", "Run the kitchen line"),
+            ("Office Coordinator", "Plan team events"),
+        ]
+        items = []
+        for index, (title, duty) in enumerate(roles):
+            raw = jobs._greenhouse_job_to_item({
+                "id": index + 1,
+                "title": title,
+                "absolute_url": f"https://boards.greenhouse.io/acme/jobs/{index + 1}",
+                "content": f"<p>We build cloud infrastructure</p><p>{duty}</p>",
+                "departments": [{"name": "Operations"}],
+            }, "acme")
+            items.append(normalize._normalize_jobs("jobs", raw, index, "2026-10-16", "2026-11-15"))
+
+        themed = hiring_signals._theme_items(items)
+
+        for title, _duty in roles:
+            self.assertNotIn("infrastructure and reliability", themes_of(themed, title))
+
+
+def test_general_manager_titles_are_leadership():
+    from lib import hiring_signals
+    assert "leadership" in hiring_signals._title_flags("GM, NIKE Energy DOTSWOOSH")
+    assert "leadership" in hiring_signals._title_flags("General Manager, Prime Video")
+    assert "leadership" not in hiring_signals._title_flags("Program Manager, Payments")

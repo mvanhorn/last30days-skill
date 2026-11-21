@@ -145,14 +145,105 @@ def _queries_for(topic: str) -> dict[str, str]:
     }
 
 
+_TRAILING_QUALIFIER = re.compile(r"\s*[\(\[][^)\]]*[\)\]]?\s*$")
+
+
+def _strip_trailing_qualifiers(name: str) -> str:
+    """Drop trailing '(YC W24)' / '[stealth]' tags, including unbalanced leftovers."""
+    cleaned = name
+    while True:
+        next_name = _TRAILING_QUALIFIER.sub("", cleaned)
+        if next_name == cleaned:
+            return cleaned.strip()
+        cleaned = next_name
+
+
+def _company_name_from_title(title: str) -> str:
+    """Strip listicle suffixes ('Anthropic | Building…', 'Adyen - payments')."""
+    title = title.split("|")[0]
+    for sep in (" — ", " – ", " - "):
+        title = title.split(sep, 1)[0]
+    return _normalize_candidate(_strip_trailing_qualifiers(title))
+
+
+def _exa_competitors(topic: str, count: int, api_key: str) -> list[str]:
+    """Discover peers from Exa's company index. No publication-date filters."""
+    try:
+        items, _artifact = grounding.exa_company_search(
+            f"companies developing products like {topic} or competing with {topic}",
+            api_key,
+            count=max(count + 3, 8),
+            objective=(
+                f"Find independent companies that compete with {topic} or build "
+                f"similar products. Do not return {topic} itself, subsidiaries, "
+                "or directory and list pages."
+            ),
+        )
+    except Exception as exc:
+        _log(f"Exa company search failed: {exc}")
+        return []
+    topic_tokens = _topic_tokens(topic)
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        name = _company_name_from_title(str(item.get("title") or ""))
+        if not _candidate_ok(name, topic_tokens):
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+        if len(names) >= count:
+            break
+    return names
+
+
+def _merge_peer_names(*groups: list[str], limit: int) -> list[str]:
+    """Keep first-seen order across sources, case-insensitive."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for name in group:
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(name)
+            if len(merged) >= limit:
+                return merged
+    return merged
+
+
+def _topic_is_company(config: dict, is_company: bool | None) -> bool:
+    """True when the topic is already established as a company, not a person."""
+    if is_company is False:
+        return False
+    if is_company is True:
+        return True
+    company = config.get("_company")
+    if isinstance(company, dict) and company.get("company_via_person"):
+        return False
+    if isinstance(company, dict) and company.get("company"):
+        return True
+    return bool(config.get("_company_signal"))
+
+
 def discover_competitors(
     topic: str,
     count: int,
     config: dict,
     *,
     lookback_days: int = 30,
+    is_company: bool | None = None,
 ) -> list[str]:
     """Discover `count` peer entities for `topic` via web search.
+
+    When ``EXA_API_KEY`` is set and the topic is a resolved company, Exa's
+    ``company`` category runs first even if Brave (or another backend) is
+    the general web search. Artist and person topics keep keyword SERP
+    mining only. Keyword SERPs fill any remaining slots and are the only
+    path without that key or without a company signal.
 
     Args:
         topic: The primary research topic.
@@ -160,6 +251,10 @@ def discover_competitors(
         config: Runtime config dict — expects the same shape as the engine
             config (BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / etc.).
         lookback_days: Date range for freshness. Defaults to 30.
+        is_company: True when company resolution (or a host company
+            signal) already established this topic as a company. False
+            skips the company index. None reads ``config["_company"]`` /
+            ``config["_company_signal"]``.
 
     Returns:
         A list of up to `count` entity names, deduped and ordered by score.
@@ -171,6 +266,17 @@ def discover_competitors(
     if not _has_backend(config):
         _log("No web search backend available, skipping competitor discovery")
         return []
+
+    exa_names: list[str] = []
+    exa_key = grounding.exa_api_key(config)
+    if exa_key and _topic_is_company(config, is_company):
+        exa_names = _exa_competitors(topic, count, exa_key)
+        if len(exa_names) >= count:
+            _log(
+                f"Discovered {len(exa_names)} competitor(s) for {topic!r} "
+                f"via Exa company search: {exa_names}"
+            )
+            return exa_names
 
     date_range = dates.get_date_range(lookback_days)
     queries = _queries_for(topic)
@@ -195,13 +301,19 @@ def discover_competitors(
             except Exception as exc:
                 _log(f"Search failed for {label}: {exc}")
 
-    if not collected:
-        _log(f"No SERP results for {topic!r} across {searches_run}/{len(queries)} queries")
+    serp_names = _extract_peer_entities(collected, topic, limit=count) if collected else []
+    entities = _merge_peer_names(exa_names, serp_names, limit=count)
+    if not entities:
+        if not collected and not exa_names:
+            _log(
+                f"No SERP results for {topic!r} across "
+                f"{searches_run}/{len(queries)} queries"
+            )
         return []
 
-    entities = _extract_peer_entities(collected, topic, limit=count)
+    source = "Exa company search and " if exa_names else ""
     _log(
         f"Discovered {len(entities)} competitor(s) for {topic!r} "
-        f"from {searches_run}/{len(queries)} queries: {entities}"
+        f"from {source}{searches_run}/{len(queries)} queries: {entities}"
     )
     return entities

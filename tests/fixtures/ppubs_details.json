@@ -1,0 +1,1632 @@
+{
+"_note": "Real USPTO Patent Public Search document responses recorded 2026-11-13, trimmed to the fields the patent lane reads; claims cut to 2500 characters.",
+"details": {
+"US-12775345-B2": {
+"guid": "US-12775345-B2",
+"type": "USPAT",
+"kindCode": [
+"B2"
+],
+"datePublished": "2026-10-27T00:00:00Z",
+"inventionTitle": "Displaying a user interface based on activation of a rotatable and depressible input mechanism",
+"abstractHtml": "Button functionalities for user interfaces, e.g., for use with a portable multifunction device, are disclosed. Exemplary button functionalities are described for an electronic device with a display, a rotatable and depressible input mechanism, and/or a button. Different device features may be accessed, depending on whether the rotatable and depressible input mechanism or the button is activated, and further depending on whether the activation represents a single press, a double press, or an extended press on the rotatable and depressible input mechanism or the button.",
+"claimsHtml": "<b>1</b>. An electronic device, comprising: a display; a rotatable and depressible input mechanism; one or more processors; memory; and one or more programs, wherein the one or more programs are stored in the memory and configured to be executed by the one or more processors, the one or more programs including instructions for: detecting an activation of the rotatable and depressible input mechanism; and in response to detecting the activation of the rotatable and depressible input mechanism: in accordance with a determination that a clock face user interface that includes a clock face was displayed on the display when the activation of the rotatable and depressible input mechanism was detected: displaying, via the display, an application picker user interface, wherein the application picker user interface includes a plurality of affordances, the plurality of affordances comprising a first affordance representing a first application; and  in accordance with a determination that a respective user interface, different from the clock face user interface, was displayed on the display when the activation of the rotatable and depressible input mechanism was detected: displaying, via the display, the clock face user interface.     <br /> <b>2</b>. The electronic device of claim 1, wherein the application picker user interface further comprises a second affordance different from the first affordance, wherein the second affordance represents a second application different from the first application. <br /> <b>3</b>. The electronic device of claim 1, wherein: the rotatable and depressible input mechanism is a mechanical button that is rotatable; and the activation of the rotatable and depressible input mechanism comprises a depression of the mechanical button.  <br /> <b>4</b>. The electronic device of claim 1, wherein: the rotatable and depressible input mechanism is a capacitive button that is rotatable; and the activation of the rotatable and depressible input mechanism comprises a touch on the capacitive button.  <br /> <b>5</b>. The electronic device of claim 1, wherein the activation of the rotatable and depressible input mechanism includes an input other than rotation of the rotatable and depressible input mechanism. <br /> <b>6</b>. The electronic device of claim 1, wherein the clock face includes a first user interface object that indicates time, and the one or more programs further include instructions for: displaying a time affordance on the application p",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"G06F3/0362 20130101",
+"G06F1/163 20130101",
+"G06F3/0338 20130101",
+"G06F3/0393 20190501",
+"G06F3/041 20130101",
+"G06F3/0481 20130101",
+"G06F3/0482 20130101",
+"G06F3/04842 20130101",
+"G06F3/0487 20130101",
+"G06F3/0488 20130101",
+"G06F3/167 20130101",
+"G06Q20/085 20130101",
+"G06Q20/322 20130101",
+"H04M1/72412 20210101"
+],
+"continuityData": [
+"continuation parent-doc US 18444544 20240216 US 12197659 child-doc US 19018787\n<br />continuation parent-doc US 18144108 20230505 US 11941191 20240326 child-doc US 18444544\n<br />continuation parent-doc US 17902191 20220902 US 11644911 20230509 child-doc US 18144108\n<br />continuation parent-doc US 17378451 20210716 US 11474626 20221018 child-doc US 17902191\n<br />continuation parent-doc US 16384726 20190415 US 11068083 20210720 child-doc US 17378451\n<br />continuation parent-doc US 16055489 20180806 US 10281999 20190507 child-doc US 16384726\n<br />continuation parent-doc US 14641252 20150306 US 10082892 20180925 child-doc US 16055489\n<br />us-provisional-application US 62044922 20140902\n<br />"
+],
+"applicationFilingDate": [
+"2025-01-13T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2024-02-16T00:00:00Z",
+"2023-05-05T00:00:00Z",
+"2024-03-26T00:00:00Z",
+"2022-09-02T00:00:00Z",
+"2023-05-09T00:00:00Z",
+"2021-07-16T00:00:00Z",
+"2022-10-18T00:00:00Z",
+"2019-04-15T00:00:00Z",
+"2021-07-20T00:00:00Z",
+"2018-08-06T00:00:00Z",
+"2019-05-07T00:00:00Z",
+"2015-03-06T00:00:00Z",
+"2018-09-25T00:00:00Z",
+"2014-09-02T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "12775345",
+"applicationNumber": "19/018787"
+},
+"US-12775463-B2": {
+"guid": "US-12775463-B2",
+"type": "USPAT",
+"kindCode": [
+"B2"
+],
+"datePublished": "2026-10-27T00:00:00Z",
+"inventionTitle": "Hierarchical store queue circuit",
+"abstractHtml": "An apparatus includes a cache memory circuit, and a hierarchal store queue circuit that further includes a primary queue and a secondary queue. The hierarchal store queue circuit may be configured to write incoming store requests to the primary queue in response to the primary queue currently having capacity, and to write incoming store requests to the secondary queue in response to the primary queue currently not having capacity. The hierarchal store queue circuit may be further configured to commit store requests to the cache memory circuit from the primary queue but not from the secondary queue. In response to a determination that the primary queue currently has capacity, the hierarchal store queue circuit may perform a transfer of at least one store request from the secondary queue to the primary queue.",
+"claimsHtml": "<b>1</b>. An apparatus, comprising: a memory system; and a hierarchal store queue circuit that includes a primary queue and a secondary queue, wherein the hierarchal store queue circuit is configured to: receive a plurality of store requests to write information to the memory system; place a first subset of the plurality of store requests in the primary queue based on the primary queue currently having capacity; place a second subset of the plurality of store requests in the secondary queue based on the primary queue currently not having capacity; resolve addresses indicated by ones of the first subset of store requests placed in the primary queue; initiate a resolve operation for addresses indicated by ones of the second subset of store requests placed in the secondary queue; and based on a determination that the primary queue currently has capacity and the secondary queue currently includes one or more store requests, transfer a given store request from the secondary queue to the primary queue.   <br /> <b>2</b>. The apparatus of claim 1, wherein the hierarchal store queue circuit is further configured to: based on a determination that an initiated address translation has not completed for the transferred store request, complete the initiated address translation prior to a performance of the transferred store request.  <br /> <b>3</b>. The apparatus of claim 1, wherein the hierarchal store queue circuit is further configured to: make store requests that are in the primary queue available for commitment, wherein committing store requests from the primary queue frees space in the primary queue; and prevent store requests that are in the secondary queue from commitment.  <br /> <b>4</b>. The apparatus of claim 1, wherein to transfer the given store request, the hierarchal store queue circuit is further configured to select an oldest store request in the secondary queue to transfer to the primary queue. <br /> <b>5</b>. The apparatus of claim 1, wherein the hierarchal store queue circuit is further configured to: based on an indication of a load request for the memory system, determine whether the load request corresponds to a store request currently held in the hierarchal store queue circuit.  <br /> <b>6</b>. The apparatus of claim 5, wherein the hierarchal store queue circuit is further configured to: concurrently identify a plurality of store requests currently stored in the primary queue for a plurality of load requests; and identify a single store requ",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"G06F9/30043 20130101",
+"G06F9/3834 20130101",
+"G06F12/123 20130101"
+],
+"continuityData": [
+"continuation parent-doc US 18359755 20230726 US 12298915 child-doc US 19175328\n<br />"
+],
+"applicationFilingDate": [
+"2025-04-10T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-07-26T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "12775463",
+"applicationNumber": "19/175328"
+},
+"US-12783245-B2": {
+"guid": "US-12783245-B2",
+"type": "USPAT",
+"kindCode": [
+"B2"
+],
+"datePublished": "2026-11-03T00:00:00Z",
+"inventionTitle": "Training techniques for load value prediction and load address prediction",
+"abstractHtml": "Techniques are disclosed relating to load value prediction. In some embodiments, a processor includes load address prediction circuitry and load value prediction circuitry. Training circuitry may train loads in a given entry, and may include a first entry configured to store first predicted load address information and a confidence indication of confidence that the first predicted load address information is correct and a second entry configured to store first predicted load value information and a confidence indication of confidence that the first predicted load value information is correct (note a given entry may be configured for load address prediction or load value prediction at different times). Control circuitry may, in response to an entry in the training circuitry reaching a threshold level of confidence, allocate a corresponding entry in either the load value prediction circuitry or the load address prediction circuitry.",
+"claimsHtml": "<b>1</b>. An apparatus, comprising: hardware load address prediction circuitry that includes multiple entries and is configured to store a predicted load address in a given entry; hardware load value prediction circuitry that includes multiple entries and is configured to store a predicted load value in a given entry; hardware training circuitry that includes multiple entries, including: a first entry configured to store first predicted load address information and a confidence indication of confidence that the first predicted load address information is correct; and a second entry configured to store first predicted load value information and a confidence indication of confidence that the first predicted load value information is correct;  hardware control circuitry configured to, in response to an entry in the hardware training circuitry reaching a threshold level of confidence, allocate a corresponding entry in either the hardware load value prediction circuitry or the hardware load address prediction circuitry; and hardware pipeline circuitry configured to: use a predicted load address from the hardware load address prediction circuitry for a first load to retrieve data for the first load; and use a predicted load value from the hardware load value prediction circuitry for a second load as an input to one or more dependent instructions, prior to retrieving data for the second load.   <br /> <b>2</b>. The apparatus of claim 1, wherein entries of the hardware training circuitry are shared for load value prediction and load address prediction such that: during at least one time interval, the second entry is configured to store second predicted load address information and a confidence indication of confidence that the second predicted load address information is correct; and the second entry includes a field indicating whether the second entry is currently being trained for a predicted load address or a predicted load value.  <br /> <b>3</b>. The apparatus of claim 2, wherein the hardware training circuitry is configured to: use a first field of the hardware training circuitry to store predicted load value information for entries that are being trained for load value prediction; and use the first field to store auxiliary address information for entries that are being trained for load address prediction.  <br /> <b>4</b>. The apparatus of claim 3, wherein the auxiliary address information includes a predicted address stride. <br /> <b>5</b>. The apparatus ",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"G06F9/3842 20130101",
+"G06F9/30043 20130101",
+"G06F9/383 20130101",
+"G06F9/3832 20130101"
+],
+"continuityData": [
+"continuation parent-doc US 17661491 20220429 US 12067398 child-doc US 18764611\n<br />"
+],
+"applicationFilingDate": [
+"2024-07-05T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2022-04-29T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "12783245",
+"applicationNumber": "18/764611"
+},
+"US-12786790-B2": {
+"guid": "US-12786790-B2",
+"type": "USPAT",
+"kindCode": [
+"B2"
+],
+"datePublished": "2026-11-03T00:00:00Z",
+"inventionTitle": "Concatenated physical layer convergence protocol (PLCP) protocol data units (PDUs)",
+"abstractHtml": "Disclosed are methods, systems, and computer-readable medium to perform operations including obtaining data for transmission to a receiver; and generating a first component physical layer convergence protocol (PLCP) protocol data unit (PPDU) of a plurality of component PPDUs of a concatenated (C-PPDU), where the first component PPDU is directed to the receiver and includes at least a portion of the data.",
+"claimsHtml": "<b>1</b>. One or more processors configured to perform operations comprising: obtaining data for transmission to a receiver; generating a first component physical layer convergence protocol (PLCP) protocol data unit (PPDU) of a plurality of component PPDUs of a concatenated PPDU (C-PPDU), wherein the first component PPDU is directed to the receiver and includes at least a portion of the data; generating one or more component PPDUs other than the first component PPDU of the plurality; and including, in at least one of the one or more component PPDUs, a respective abbreviated preamble, wherein the respective abbreviated preamble comprises a target field indicating whether the at least one component PPDU is directed to a same receiver as or to a different receiver from a last component PPDU among previous component PPDUs of the plurality.  <br /> <b>2</b>. The one or more processors of claim 1, wherein the plurality of component PPDUs are scheduled to be transmitted consecutively in time. <br /> <b>3</b>. The one or more processors of claim 1, wherein generating the first component PPDU comprises including the portion of the data in a data field of the first component PPDU, and the operations further comprising: causing transmission of the first component PPDU to the receiver.  <br /> <b>4</b>. The one or more processors of claim 1, wherein generating the first component PPDU comprises: determining that a length of the first component PPDU is less than or equal to a desired communication latency between a transmitter and the receiver.  <br /> <b>5</b>. The one or more processors of claim 4, wherein the desired communication latency is 1 millisecond (ms). <br /> <b>6</b>. The one or more processors of claim 1, wherein generating the first component PPDU comprises: determining to operate in a low latency mode; and responsively generating the first component PPDU.  <br /> <b>7</b>. The one or more processors of claim 1, wherein generating the first component PPDU comprises: generating a full preamble for the first component PPDU, the full preamble comprising at least one of: (i) a length field that includes a length of the C-PPDU, (ii) a universal signal field (U-SIG) that includes a format of the C-PPDU, or (iii) a local signal field that includes a length of the first component PPDU.  <br /> <b>8</b>. The one or more processors of claim 7, wherein generating the one or more component PPDUs other than the first component PPDU of the plurality comprises: generat",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"H04W28/065 20130101"
+],
+"continuityData": [
+"us-provisional-application US 63448204 20230224\n<br />"
+],
+"applicationFilingDate": [
+"2024-02-23T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-02-24T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "12786790",
+"applicationNumber": "18/586380"
+},
+"US-12795009-B2": {
+"guid": "US-12795009-B2",
+"type": "USPAT",
+"kindCode": [
+"B2"
+],
+"datePublished": "2026-11-10T00:00:00Z",
+"inventionTitle": "Handheld electronic device",
+"abstractHtml": "A mobile phone may include a housing. The housing may include a first housing component including a cladding portion formed from a first metal and defining a first portion of a side exterior surface of the mobile phone, and a core portion coupled to the cladding portion, the core portion defining a portion of an interior surface of the mobile phone and formed from a second metal different from the first metal, a second housing component defining a second portion of the side exterior surface of the mobile phone, and a joint structure coupled to the first housing component and the second housing component and defining a third portion of the side exterior surface of the mobile phone between the first portion of the side exterior surface and the second portion of the side exterior surface. The cladding portion may be bonded directly to the core portion.",
+"claimsHtml": "<b>1</b>. A mobile phone comprising: a front cover defining a front exterior surface of the mobile phone; a display below the front cover; a rear cover defining a rear exterior surface of the mobile phone; and a housing positioned between the front cover and the rear cover and comprising: a first housing component defining a hole extending therethrough, the first housing component comprising: a cladding portion formed from a first metal and defining: a first portion of a side exterior surface of the mobile phone; and a sleeve portion extending towards an interior of the mobile phone and defining a surface of the hole extending through the first housing component; and  a core portion coupled to the cladding portion, the core portion defining a portion of an interior surface of the mobile phone and formed from a second metal different from the first metal;  a second housing component defining a second portion of the side exterior surface of the mobile phone; and a joint structure coupled to the first housing component and the second housing component and defining a third portion of the side exterior surface of the mobile phone between the first portion of the side exterior surface and the second portion of the side exterior surface.   <br /> <b>2</b>. The mobile phone of claim 1, wherein: the cladding portion is a first cladding portion; the core portion is a first core portion; and the second housing component comprises: a second cladding portion formed from the first metal and defining the second portion of the side exterior surface of the mobile phone; and a second core portion coupled to the second cladding portion, the second core portion formed from the second metal.   <br /> <b>3</b>. The mobile phone of claim 2, wherein: the first metal is a titanium alloy; and the second metal is an aluminum alloy.  <br /> <b>4</b>. The mobile phone of claim 1, wherein: the cladding portion defines a first portion of a mounting surface; the core portion defines a second portion of the mounting surface; and the front cover is coupled to the mounting surface.  <br /> <b>5</b>. The mobile phone of claim 4, wherein: the mounting surface is a first mounting surface; the cladding portion defines a first portion of a second mounting surface; the core portion defines a second portion of the second mounting surface; and the rear cover is coupled to the second mounting surface.  <br /> <b>6</b>. The mobile phone of claim 1, wherein: the cladding portion is a first cladding po",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"H04M1/0266 20130101",
+"G06F1/1643 20130101",
+"G06F1/1656 20130101",
+"G06F1/1683 20130101",
+"G06F1/169 20130101",
+"G06F1/181 20130101",
+"G06T7/50 20170101",
+"G06V40/161 20220101",
+"G06V40/172 20220101",
+"H04M1/0262 20130101",
+"H04M1/0264 20130101",
+"H04M1/0268 20130101",
+"H04M1/0283 20130101",
+"H04M1/22 20130101",
+"H04M1/724631 20220201",
+"H04M1/72466 20210101",
+"H04N23/90 20230101"
+],
+"continuityData": [
+"us-provisional-application US 63441756 20230127\n<br />"
+],
+"applicationFilingDate": [
+"2023-09-07T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-01-27T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "12795009",
+"applicationNumber": "18/243448"
+},
+"US-12795327-B2": {
+"guid": "US-12795327-B2",
+"type": "USPAT",
+"kindCode": [
+"B2"
+],
+"datePublished": "2026-11-10T00:00:00Z",
+"inventionTitle": "User interfaces for navigating to locations of shared devices",
+"abstractHtml": "Some embodiments described in this disclosure are directed to one or more electronic devices that provide for navigating to destinations, including locations of other electronic devices, based on location information of the one or more electronic devices that is shared with the electronic device.",
+"claimsHtml": "<b>1</b>. A method, comprising: at an electronic device in communication with a display generation component and one or more input devices: while navigating to a first destination via a maps application, including displaying, via the display generation component, a navigation user interface associated with the maps application, detecting a location of the electronic device within a first threshold distance of the first destination, wherein the navigation to the first destination is in accordance with a first mode of transit; while the location of the electronic device is within the first threshold distance of the first destination, detecting an indication that a user of the electronic device is no longer utilizing the first mode of transit to the first destination; and in response to detecting the indication: in accordance with a determination that the indication is detected while the location of the electronic device is outside a second threshold distance, less than the first threshold distance, from the first destination, displaying, via the display generation component, a first option in the navigation user interface that is selectable to initiate navigation to the first destination via the maps application in accordance with a second mode of transit, different from the first mode of transit; and in accordance with a determination that the indication is detected while the location of the electronic device is within the second threshold distance from the first destination, replacing display, via the display generation component, of the navigation user interface with an arrival user interface, different from the navigation user interface, associated with the maps application for the first destination.    <br /> <b>2</b>. The method of claim 1, further comprising: in response to detecting the location of the electronic device within the first threshold distance of the first destination: displaying, via the display generation component, a user interface for changing a mode of transit for the navigation to the first destination.   <br /> <b>3</b>. The method of claim 2, wherein the user interface for changing the mode of transit for the navigation to the first destination includes a selectable option that is selectable to change the mode of transit from the first mode of transit to the second mode of transit. <br /> <b>4</b>. The method of claim 1, further comprising: before navigating to the first destination via the maps application, and while displaying a",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"H04W4/024 20180201",
+"H04W4/029 20180201"
+],
+"continuityData": [
+"us-provisional-application US 63581955 20230911\n<br />us-provisional-application US 63505910 20230602\n<br />"
+],
+"applicationFilingDate": [
+"2024-05-29T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-09-11T00:00:00Z",
+"2023-06-02T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "12795327",
+"applicationNumber": "18/677680"
+},
+"US-12795647-B2": {
+"guid": "US-12795647-B2",
+"type": "USPAT",
+"kindCode": [
+"B2"
+],
+"datePublished": "2026-11-10T00:00:00Z",
+"inventionTitle": "User equipment configuration for SIB and MIB decoding",
+"abstractHtml": "A user equipment (UE) is configured to receive, from a cell of a network, a system information block (SIB), determine values for scheduling information for the SIB without decoding a Physical Downlink Control Channel (PDCCH) corresponding to the SIB and decode the SIB using the scheduling information. A UE is also configured to receive, from a cell of a network, a message to be decoded, receive, from a source different from the cell, additional information related to a portion of the message, determine the portion of the message using the additional information and decode the message based at least in part on the determined portion of the message.",
+"claimsHtml": "<b>1</b>. A processor of a network cell configured to perform operations comprising: generating, for transmission to a user equipment (UE), cell search information comprising non-scheduling information, wherein the non-scheduling information comprises cell identification information, and wherein the cell identification information comprises a primary synchronization signal (PSS) identification (ID), a secondary synchronization signal (SSS) ID, or a demodulation reference signal (DMRS) ID; generating, for transmission to the UE, a system information block (SIB); and generating, for transmission to the UE, Downlink Control Information (DCI) in a Physical Downlink Control Channel (PDCCH) corresponding to the SIB, wherein the DCI comprises scheduling information for the SIB and wherein the SIB is to be decoded by the UE without decoding the PDCCH corresponding to the SIB.  <br /> <b>2</b>. The processor of claim 1, wherein the scheduling information for the SIB comprises time domain resource assignment, frequency domain assignment, virtual resource block (VRB) to physical resource block (PRB) mapping, modulation and coding scheme (MCS), a redundancy version (RV), or a system information (SI) indicator. <br /> <b>3</b>. The processor of claim 1, wherein values for the scheduling information for the SIB comprise fixed values known to the UE. <br /> <b>4</b>. The processor of claim 1, wherein the cell search information is to be transmitted prior to any control information during a cell search procedure. <br /> <b>5</b>. The processor of claim 4, wherein the DCI in the PDCCH corresponding to the SIB is to be transmitted during the cell search procedure. <br /> <b>6</b>. A base station, comprising: a transceiver configured to communicate with a user equipment (UE); and a processor communicatively coupled to the transceiver and configured to: generate, for transmission to the UE, cell search information comprising non-scheduling, wherein the non-scheduling information comprises cell identification information, and wherein the cell identification information comprises a primary synchronization signal (PSS) identification (ID), a secondary synchronization signal (SSS) ID, or a demodulation reference signal (DMRS) ID; generate, for transmission to the UE, a system information block (SIB); and generate, for transmission to the UE, Downlink Control Information (DCI) in a Physical Downlink Control Channel (PDCCH) corresponding to the SIB, wherein the DCI comprises schedu",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"H04W72/1263 20130101",
+"H04W72/232 20230101"
+],
+"continuityData": [
+"continuation parent-doc US 18303857 20230420 PENDING child-doc US 18474481\n<br />us-provisional-application US 63363447 20220422\n<br />"
+],
+"applicationFilingDate": [
+"2023-09-26T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-04-20T00:00:00Z",
+"2022-04-22T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "12795647",
+"applicationNumber": "18/474481"
+},
+"US-20260320992-A1": {
+"guid": "US-20260320992-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-15T00:00:00Z",
+"inventionTitle": "IMAGING DEVICE, IMAGING SYSTEM, AND IMAGING DEVICE CONTROL METHOD",
+"abstractHtml": "To suppress performance degradation when sparsity is improved in an imaging device using a neural network. The imaging device includes a predetermined number of output-side neurons and a statistic calculation unit. In this imaging device, each of the output-side neurons generates an output signal on the basis of an input signal from an intermediate layer every time a predetermined unit time elapses. The statistic calculation unit performs, for each output-side neuron, a calculation of a statistic of the output signals generated within a predetermined frame period longer than the unit time.",
+"claimsHtml": "<b>1</b>. An imaging device comprising a simple detector, wherein the simple detector includes a predetermined number of output-side neurons each configured to generate an output signal on the basis of an input signal from an intermediate layer every time a predetermined unit time elapses; and a statistic calculation unit configured to perform, for each of the output-side neurons, a calculation of a statistic of the output signals generated within a predetermined frame period longer than the unit time.  <br /> <b>2</b>. The imaging device according to claim 1, further comprising a function calculation unit configured to output a calculation value obtained by inputting each of the statistics to a predetermined function. <br /> <b>3</b>. The imaging device according to claim <b>3</b>, further comprising a control unit configured to control a length of the frame period in accordance with a detection result of the simple detector. <br /> <b>4</b>. The imaging device according to claim 3, further comprising a control unit configured to control a threshold value of a neuron in the simple detector in accordance with the detection result of the simple detector. <br /> <b>5</b>. The imaging device according to claim 1, further comprising an image sensor configured to generate image data, wherein the simple detector detects a predetermined detection target from the image data by analysis.  <br /> <b>6</b>. The imaging device according to claim 5, further comprising: a detail detector configured to detect a predetermined detection target from the image data by a more detailed analysis than the simple detector; an evaluator configured to generate an evaluation value from the image data by an analysis different from the analysis by the detail detector; and a rule selection unit configured to select a rule for controlling operations of the detail detector and the evaluator, on the basis of a detection result of the simple detector.  <br /> <b>7</b>. The imaging device according to claim 6, wherein the simple detector and the detail detector are disposed in a neural network circuit. <br /> <b>8</b>. The imaging device according to claim 6, wherein the simple detector, the detail detector, and the evaluator are disposed in a neural network circuit. <br /> <b>9</b>. The imaging device according to claim 6, further comprising an input control unit configured to control an operation of the image sensor on the basis of the detection result of the simple detector. <br /> <b>10",
+"applicantName": [
+"SONY SEMICONDUCTOR SOLUTIONS CORPORATION"
+],
+"applicantCity": [
+"KANAGAWA"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"JP"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G06V10/82 20220101",
+"G06T7/00 20130101",
+"H04N23/12 20230101",
+"H04N23/60 20230101"
+],
+"continuityData": null,
+"applicationFilingDate": [
+"2024-04-03T00:00:00Z"
+],
+"relatedApplFilingDate": null,
+"priorityClaimsDate": [
+"2023-05-29T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260320992",
+"applicationNumber": "19/485224"
+},
+"US-20260322621-A1": {
+"guid": "US-20260322621-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-15T00:00:00Z",
+"inventionTitle": "Pointer Authentication",
+"abstractHtml": "In an embodiment, a processor includes hardware circuitry which may be used to detect that a return address has been modified since it was generated. In response to detecting the modification, the processor may be configured to signal an exception or otherwise initiate error handling to prevent execution at the modified return address. In an embodiment, the processor may perform a cryptographic signature operation on the return address to generate a signed return address, and the signature may be verified before the address is used as a return target.",
+"claimsHtml": "<b>1</b>.-<b>20</b>. (canceled) <br /> <b>21</b>. A processor comprising: one or more registers; and an execution core coupled to the one or more registers, the execution core configured to perform an authenticated load of an address for a return operation, wherein to perform the authenticated load the execution core is configured to: load the address for the return operation from a signed address; and authenticate the signed address based at least in part on a cryptographic key, a value of a stack pointer stored in one of the one or more registers, and the loaded address for the return operation.   <br /> <b>22</b>. The processor of claim 21, wherein the signed address is an operand of the return instruction. <br /> <b>23</b>. The processor of claim 21, wherein loading the address for the return operation comprises masking one or bits of the signed address. <br /> <b>24</b>. The processor of claim 21, wherein the address is a return address for a call to a subroutine that is terminated by one or more return instructions. <br /> <b>25</b>. The processor of claim 21, wherein to authenticate the signed address, the execution core is configured to: combine or concatenate the address and the value of the stack pointer to generate a combined value; perform a signature operation on the combined value to generate a signature on the cryptographic key; and verify the signature according to the signed address.  <br /> <b>26</b>. The processor of claim 25, wherein the signature operation is based on a block cipher algorithm, and wherein the block cipher algorithm includes one of advanced encryption standard (AES), data encryption standard (DES), international data encryption algorithm (IDEA) or PRINCE. <br /> <b>27</b>. The processor of claim 25, wherein the combining or concatenating comprises performing an exclusive-OR function using the address and the value of the stack pointer. <br /> <b>28</b>. A method comprising: performing, by an execution core of a processor, an authenticated load of an address for a return operation, comprising: loading the address for the return operation from a signed address; and authenticating the signed address based at least in part on a cryptographic key, a value of a stack pointer stored in one of one or more registers of the processor, and the loaded address for the return operation.   <br /> <b>29</b>. The method of claim 28, wherein the signed address is an operand of the return instruction. <br /> <b>30</b>. The method of claim",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"H04L9/002 20130101",
+"H04L9/3247 20130101",
+"G06F21/52 20130101",
+"H04L9/0618 20130101"
+],
+"continuityData": [
+"parent US continuation 18326910 20230531 \n parent-grant-document US 12562918 \n child US 19466142\n<br />us-provisional-application US 63354611 20220622\n<br />"
+],
+"applicationFilingDate": [
+"2026-01-30T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-05-31T00:00:00Z",
+"2022-06-22T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260322621",
+"applicationNumber": "19/466142"
+},
+"US-20260328577-A1": {
+"guid": "US-20260328577-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-22T00:00:00Z",
+"inventionTitle": "NAVIGATION USER INTERFACES",
+"abstractHtml": "The present disclosure generally relates to navigation user interfaces.",
+"claimsHtml": "<b>1</b>-<b>25</b>. (canceled) <br /> <b>26</b>. A method, comprising: at a computer system that is in communication with a display generation component and one or more sensors: displaying, via the display generation component, a representation of a physical environment; while displaying the representation of the physical environment, detecting, via at least one sensor of the one or more sensors, a first object in the physical environment; and in conjunction with detecting the first object in the physical environment: in accordance with a determination that a path to the first object is a first type of path, emphasizing the first object; and in accordance with a determination that the path to the first object is a second type of path that is different from the first type of path, forgoing emphasis of the first object.    <br /> <b>27</b>. The method of claim 26, wherein the path to the first object is determined to be the first type of path or the second type of path based on at least a distance between the computer system and the first object. <br /> <b>28</b>. The method of claim 26, wherein the path to the first object is determined to be the first type of path or the second type of path based on at least a speed of the first object. <br /> <b>29</b>. The method of claim 26, wherein the path to the first object is determined to be the first type of path or the second type of path based on at least a speed of the computer system. <br /> <b>30</b>. The method of claim 26, wherein the path to the first object is determined to be the first type of path or the second type of path based on at least a determination of whether the first object is stationary. <br /> <b>31</b>. The method of claim 26, wherein the path to the first object is determined to be the first type of path or the second type of path based on at least a direction of the first object from the computer system. <br /> <b>32</b>. The method of claim 26, further comprising: while displaying the representation of the first object, detecting an input directed to the first object; and in response to detecting the input directed to the first object: in accordance with a determination that the first object is selectable, initiating navigation to the first object; and in accordance with a determination that the first object is not selectable, forgoing navigation to the first object.   <br /> <b>33</b>. The method of claim 26, wherein initiating navigation to the first object includes displaying a path",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G05D1/2285 20240101",
+"G06F3/0481 20130101",
+"G01C21/005 20130101",
+"G01C21/20 20130101",
+"G01C21/3605 20130101",
+"G01C21/3626 20130101",
+"G06F3/017 20130101",
+"G06F3/0482 20130101",
+"G06F3/04842 20130101",
+"G06F3/0485 20130101",
+"G06F3/0488 20130101",
+"G06F3/04883 20130101",
+"G06V40/20 20220101"
+],
+"continuityData": [
+"us-provisional-application US 63409773 20220924\n<br />us-provisional-application US 63409774 20220924\n<br />us-provisional-application US 63409776 20220924\n<br />us-provisional-application US 63409777 20220924\n<br />"
+],
+"applicationFilingDate": [
+"2023-09-23T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2022-09-24T00:00:00Z",
+"2022-09-24T00:00:00Z",
+"2022-09-24T00:00:00Z",
+"2022-09-24T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260328577",
+"applicationNumber": "19/109483"
+},
+"US-20260328905-A1": {
+"guid": "US-20260328905-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-22T00:00:00Z",
+"inventionTitle": "OBJECT DETECTION",
+"abstractHtml": "A machine learning (ML) model may be trained using a self-supervised approach. Training sensor data may be provided to the ML model, and the ML model may estimate one or more object properties based on the training sensor data. Reconstructed sensor data may be generated based at least on the estimated object properties. The reconstructed sensor data may be of a same data type as the training sensor data. One or more parameters of the ML model may be updated based at least on a comparison between the training sensor data and the reconstructed sensor data. A machine may obtain sensor data using one or more sensors. The machine may determine one or more properties corresponding to an object based at least on the ML model processing the sensor data. The machine may perform one or more operations based at least on the determined properties.",
+"claimsHtml": "<b>1</b>. A method comprising: performing, by a machine, one or more operations based at least on an output of a machine learning (ML) model as generated using RADAR data, wherein the ML model was trained, at least in part, by: comparing training RADAR data to reconstructed RADAR data, wherein the reconstructed RADAR data was reconstructed based at least on one or more previously estimated velocities previously estimated based at least on the ML model processing the training RADAR data, the reconstructed RADAR data being of a same data type as the training RADAR data.   <br /> <b>2</b>. The method of claim 1, wherein the output includes a velocity estimate corresponding to an object. <br /> <b>3</b>. The method of claim 2, wherein the velocity estimate is determined prior to the machine having an ability to determine a velocity corresponding to the object using bounding shapes corresponding to the object. <br /> <b>4</b>. The method of claim 1, wherein the ML model was trained based at least on a difference between the training RADAR data and the reconstructed RADAR data as indicated by the comparing of the training RADAR data to the reconstructed RADAR data. <br /> <b>5</b>. The method of claim 1, wherein at least one of the one or more previously estimated velocities includes one or more previously estimated velocities individually corresponding to one or more portions of a previously detected object indicated by the training RADAR data. <br /> <b>6</b>. The method of claim 1, wherein the reconstructed RADAR data was generated based at least on one or more reverse calculations performed with respect to the one or more previously estimated velocities. <br /> <b>7</b>. The method of claim 1, wherein the machine includes an autonomous or semi-autonomous machine. <br /> <b>8</b>. An autonomous or semi-autonomous machine comprising: one or more systems-on-a-chip (SoCs) individually comprising one or more central processing units (CPUs), one or more graphics processing units (GPUs), and one or more hardware accelerators; and one or more sensors having fields of view or sensory fields external to the autonomous or semi-autonomous machine, wherein: the autonomous or semi-autonomous machine performs one or more operations based at least on one or more properties corresponding to an object determined based at least on a machine learning (ML) model processing sensor data obtained using the one or more sensors, the ML model was trained based at least on training sen",
+"applicantName": [
+"NVIDIA Corporation"
+],
+"applicantCity": [
+"Santa Clara"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G01S7/415 20130101",
+"G01S7/417 20130101",
+"G01S13/42 20130101",
+"G01S13/58 20130101",
+"G01S13/874 20130101",
+"G06N3/045 20230101",
+"G06N20/00 20190101"
+],
+"continuityData": [
+"parent US continuation 18477325 20230928 PENDING \n child US 19726152\n<br />"
+],
+"applicationFilingDate": [
+"2026-06-30T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-09-28T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260328905",
+"applicationNumber": "19/726152"
+},
+"US-20260332916-A1": {
+"guid": "US-20260332916-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-22T00:00:00Z",
+"inventionTitle": "PHOTODETECTION DEVICE",
+"abstractHtml": "A light detecting device including a first photodiode; pixel readout circuitry coupled to the first photodiode, the pixel readout circuitry including a recharging circuit coupled to the photodiode and count rate control circuitry coupled between a node and a fixed voltage, the count rate control circuitry including a switch; and counter circuitry coupled to an output of the pixel readout circuitry, wherein the switch is configured to switch between a first counting mode and a second counting mode.",
+"claimsHtml": "<b>1</b>. A light detecting device comprising: a first photodiode; pixel readout circuitry coupled to the first photodiode, the pixel readout circuitry including a recharging circuit coupled to the photodiode and count rate control circuitry coupled between a node and a fixed voltage, the count rate control circuitry including a switch; and counter circuitry coupled to an output of the pixel readout circuitry, wherein the switch is configured to switch a first counting mode and a second counting mode.  <br /> <b>2</b>. The light detecting device of claim 1, wherein the first counting mode is a low-illuminance counting mode, and the second counting mode is a high-illuminance counting mode.  <br /> <b>3</b>. The light detecting device of claim 2, wherein a counting rate of the counter in the low-illuminance mode is higher than a counting rate of the counter in the high-luminance mode.  <br /> <b>4</b>. The light detecting device of claim 2, wherein a charge cycle of the first photodiode in a low-illuminance mode is longer than a charge cycle in the high-illuminance mode, in the low-illuminance mode, the counter circuitry increments a photon count value for each detected photon, in the high-illuminance mode, the counter circuitry increases the photon count value for each of a predetermined plurality of detected photons.  <br /> <b>5</b>. The light detecting device of claim 1, wherein the pixel readout circuitry includes a resistor coupled between the first photodiode and the node.  <br /> <b>6</b>. The light detecting device of claim 5, wherein the recharge circuitry includes a transistor connected between a voltage source and the resistor. <br /> <b>7</b>. The light detecting device of claim 6, wherein the transistor is configured to receive an external control signal that causes the transistor to recharge the first photodiode. <br /> <b>8</b>. The light detecting device of claim 1, wherein the pixel readout circuitry includes a first transistor coupled between the first photodiode and the node.  <br /> <b>9</b>. The light detecting device of claim 8, wherein the recharge circuitry includes a second transistor connected between a voltage source and the first transistor. <br /> <b>10</b>. The light detecting device of claim 9, wherein the second transistor is configured to receive an external control signal that causes the second transistor to recharge the first photodiode. <br /> <b>11</b>. The light detecting device of claim 1, further comprising: a second ",
+"applicantName": [
+"Sony Semiconductor Solutions Corporation"
+],
+"applicantCity": [
+"Kanagawa"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"JP"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"H04N25/773 20230101",
+"H04N25/78 20230101",
+"H04N25/575 20230101"
+],
+"continuityData": null,
+"applicationFilingDate": [
+"2023-09-13T00:00:00Z"
+],
+"relatedApplFilingDate": null,
+"priorityClaimsDate": [
+"2022-11-07T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260332916",
+"applicationNumber": "19/115591"
+},
+"US-20260333439-A1": {
+"guid": "US-20260333439-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-22T00:00:00Z",
+"inventionTitle": "TRANSMIT OPPORTUNITY SHARING IN A RESTRICTED TARGET WAIT TIME",
+"abstractHtml": "Wireless IEEE 802.11 communication mechanisms are described for a member STA of a R-TWT SP to gain TXOP channel access before the R-TWT SP, which does not need to end before the start time of the R-TWT SP. On trigger based R-TWT SP, the TXOP time is shared to overlap the R-TWT SP; allowing the AP to behave as the TXOP holder for the frame exchange of latency sensitive traffic during the R-TWT SP. Thus, the R-TWT scheduling AP and member STAs of a R-TWT SP can contend for the channel together before the scheduled start time of the R-TWT SP. When one of these STAs gains channel access, it can reserve a TXOP until the scheduled end time of the R-TWT SP, which may extend beyond the normal TXOP limit.",
+"claimsHtml": "<b>1</b>. An apparatus for wireless communication in a network, the apparatus comprising: (a) a wireless communication circuit as a wirelss station (STA), configured for transmitting frames to other STAs using a carrier sense multiple access/collision avoidance (CSMA/CA) mechanism on a wireless local area network (WLAN) in which enhanced distributed channel access (EDCA) is utilized for random channel access; (b) a processor coupled to the STA for operating on the WLAN; (c) a non-transitory memory storing instructions executable by the processor; and (d) wherein the instructions, when executed by the processor, perform steps of a wireless communications protocol for the STA in reserving channel resources for frame exchanges of latency sensitive traffic with members of restricted-target wake time (R-TWT) service periods (SPs), comprising: (i) contending for and gaining channel access to reserve a transmit opportunity (TXOP), (ii) responsive to determining that the STA requires TXOP time that overlaps an R-TWT SP, the STA reserves TXOP time as follow: (A) if the STA does not require obtaining the TXOP outside of the R-TWT SP, it reserves the TXOP that is covering the remaining time of the R-TWT SP; (B) otherwise, if the STA does require obtaining the TXOP outside of the R-TWT SP it reserves the TXOP covering the entire duration of the R-TWT SP, and the STA operates as the TXOP holder before the scheduled start time of the R-TWT SP;  by the STA, on the channel whose duration overlaps the R-TWT SP; and (iii) sharing the TXOP with an access point station (AP), wherein the AP is allowed to operate as the TXOP holder.   <br /> <b>2</b>. The apparatus of claim 1, wherein the STA reserving a TXOP that overlaps the R-TWT SP ignores a TXOP limit of a primary access class (AC). <br /> <b>3</b>. The apparatus of claim 1, wherein the non-AP STA reserving a TXOP that overlaps the R-TWT SP, is not allowed to exceed a TXOP limit of a primary access class (AC) plus the R-TWT SP duration. <br /> <b>4</b>. The apparatus of claim 1, wherein the non-AP STA reserving a TXOP that overlaps the R-TWT SP, reserves a portion of the TXOP which does not exceed the scheduled end time of the R-TWT SP. <br /> <b>5</b>. The apparatus of claim 1, wherein the non-AP STA shares the TXOP with the AP either before or at a scheduled start time of the R-TWT SP. <br /> <b>6</b>. The apparatus of claim 1, wherein the STA is not allowed to share with the AP any portion of the TXOP which exceeds the ",
+"applicantName": [
+"SONY GROUP CORPORATION",
+"SONY CORPORATION OF AMERICA"
+],
+"applicantCity": [
+"Tokyo",
+"New York"
+],
+"applicantState": [
+"N/A",
+"NY"
+],
+"applicantCountry": [
+"JP",
+"US"
+],
+"assigneeName": [
+"SONY GROUP CORPORATION",
+"SONY CORPORATION OF AMERICA"
+],
+"assigneeCity": [
+"Tokyo",
+"New York"
+],
+"assigneeState": [
+"N/A",
+"NY"
+],
+"assigneeCountry": [
+"JP",
+"US"
+],
+"cpcInventive": [
+"H04W74/0816 20130101",
+"H04W72/1268 20130101"
+],
+"continuityData": [
+"parent US continuation 18165807 20230207 PENDING \n child US 19722807\n<br />us-provisional-application US 63268085 20220216\n<br />"
+],
+"applicationFilingDate": [
+"2026-06-27T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2023-02-07T00:00:00Z",
+"2022-02-16T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260333439",
+"applicationNumber": "19/722807"
+},
+"US-20260338957-A1": {
+"guid": "US-20260338957-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-29T00:00:00Z",
+"inventionTitle": "Identifying object motion using Laser speckle",
+"abstractHtml": "Optical sensing apparatus includes a light source configured to emit coherent light toward a scene and an array of detectors configured to detect reflected light including a speckle pattern created by scattering of the coherent light from an object. Processing circuitry is configured to process signals output by the detectors during multiple time intervals to identify changes in the speckle pattern between successive time intervals and to determine, based on the identified changes, whether the object is stationary or mobile.",
+"claimsHtml": "<b>1</b>. Optical sensing apparatus, comprising: a light source configured to emit coherent light toward a scene; an array of detectors configured to detect reflected light including a speckle pattern created by scattering of the coherent light from an object; and processing circuitry configured to process signals output by the detectors during multiple time intervals to identify changes in the speckle pattern between successive time intervals and to determine, based on the identified changes, whether the object is stationary or mobile.  <br /> <b>2</b>. ​The apparatus according to claim 1, further comprising light collection optics configured to form an image of the scene on the array of detectors. <br /> <b>3</b>. ​The apparatus according to claim 1, wherein the light source is configured to emit light pulses toward the scene, and the processing circuitry is configured to count electrical pulses output by the detectors in response to the light pulses. <br /> <b>4</b>. ​The apparatus according to claim 3, wherein the detectors comprise single-photon avalanche diodes (SPADs). <br /> <b>5</b>.​ The apparatus according to claim 3, wherein the processing circuitry is configured to estimate times of flight of photons to and from points in the scene and to generate a three-dimensional map of the scene based on the times of flight. <br /> <b>6</b>.​ The apparatus according to claim 3, wherein the processing circuitry is configured to compute differences between counts of the electrical pulses output by the detectors during different time intervals and to compare the differences to a predefined threshold. <br /> <b>7</b>. ​The apparatus according to claim 6, wherein the processing circuitry is configured to determine that the object is mobile when at least one of the differences is greater than the predefined threshold, and to determine that the object is stationary when none of the differences is greater than the predefined threshold. <br /> <b>8</b>.​ The apparatus according to claim 6, wherein the light source is configured to emit trains of light pulses during the different time intervals, and the processing circuitry is configured to compare counts of the electrical pulses output by the detectors in response to the pulse trains. <br /> <b>9</b>. ​The apparatus according to claim 1, wherein the processing circuitry is configured to issue an alarm upon determining that the object is stationary. <br /> <b>10</b>.​ The apparatus according to claim 1, further com",
+"applicantName": [
+"APPLE INC."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G01B11/25 20130101",
+"G01S17/894 20200101",
+"G01B11/22 20130101",
+"G01S7/4808 20130101",
+"G01S7/4813 20130101",
+"G01S7/4814 20130101",
+"G01S7/4816 20130101",
+"G01S7/4865 20130101",
+"G01S7/497 20130101",
+"G08B21/187 20130101"
+],
+"continuityData": [
+"parent US continuation 17838218 20220612 GRANTED \n parent-grant-document US 12710541 \n child US 19734057\n<br />us-provisional-application US 63235742 20210822\n<br />"
+],
+"applicationFilingDate": [
+"2026-07-08T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2022-06-12T00:00:00Z",
+"2021-08-22T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260338957",
+"applicationNumber": "19/734057"
+},
+"US-20260339630-A1": {
+"guid": "US-20260339630-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-29T00:00:00Z",
+"inventionTitle": "INFORMATION PROCESSING DEVICE, INFORMATION PROCESSING METHOD, AND PROGRAM",
+"abstractHtml": "An information processing device and a method for compiling source code written in a predetermined programming language and using a library having a plurality of versions are disclosed. When source code to be compiled is accepted and the source code accepted uses defined elements defined in the library, an example information processing device accepts a version specification specifying whether to use a defined element of any version among the plurality of versions, or allows coexistence of defined elements of the plurality of versions, and compiles the source code accepted, by treating each of the defined elements in the source code accepted as a defined element of any version among the plurality of versions according to the version specification.",
+"claimsHtml": "<b>1</b>. A device comprising: a memory configured to store instructions; and a processor configured to execute the instructions that, when executed by the processor, cause the processor to: upon acceptance of source code including elements defined in a library having a plurality of versions, accept a version specification specifying whether to: use an element of any version among the plurality of versions; or allow coexistence of elements of the plurality of versions; and  compile the source code by processing each of the elements in the source code as an element of any version among the plurality of versions according to the version specification.   <br /> <b>2</b>. The device of claim 1, wherein the elements include at least one of a class, a function, a variable, or a type alias.  <br /> <b>3</b>. The device of claim 1, wherein the instructions, when executed by the processor, further cause the processor to: output an identification value in association with a symbol representing a user-defined element based on a version of an element used by the user-defined element, upon compiling the source code that includes the user-defined element defined in the source code using the element defined in the library; and when linking a plurality of objects obtained by compiling source code files different from each other, compare the identification values in the respective objects that are associated with symbols representing respective user-defined elements; and determine whether linking the plurality of objects is permitted.   <br /> <b>4</b>. The device of claim 1, wherein the instructions, when executed by the processor, further cause the processor to: preferentially include a representative header for a predetermined element based on a command in the source code instructing to include a header declaring the predetermined element defined in the library; and based on a description of the representative header and content of the version specification, selectively include one or more headers for compilation among a plurality of headers declaring the predetermined element corresponding to the respective versions.  <br /> <b>5</b>. The device of claim 4, wherein the instructions, when executed by the processor, further cause the processor to expand a macro used in each of one or more headers to content corresponding to a version of each header, based on description of the header, upon including the one or more headers declaring the predetermined element correspondin",
+"applicantName": [
+"Sony Interactive Entertainment Inc."
+],
+"applicantCity": [
+"Tokyo"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"JP"
+],
+"assigneeName": [
+"Sony Interactive Entertainment Inc."
+],
+"assigneeCity": [
+"Tokyo"
+],
+"assigneeState": [
+"N/A"
+],
+"assigneeCountry": [
+"JP"
+],
+"cpcInventive": [
+"G06F8/41 20130101",
+"G06F8/30 20130101",
+"G06F8/71 20130101"
+],
+"continuityData": [
+"parent WO continuation PCT/JP2024/042963 20241204 PENDING \n child US 19707105\n<br />"
+],
+"applicationFilingDate": [
+"2026-06-12T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2024-12-04T00:00:00Z"
+],
+"priorityClaimsDate": [
+"2023-12-14T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260339630",
+"applicationNumber": "19/707105"
+},
+"US-20260342141-A1": {
+"guid": "US-20260342141-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-10-29T00:00:00Z",
+"inventionTitle": "WIRELESS POWER TRANSFER PROFILES",
+"abstractHtml": "Negotiating a power loss accounting profile (PLAP) for detecting a foreign object associated with wireless power transfer (WPT) from a wireless power transmitter (PTx) to a wireless power receiver (PRx) can include: receiving a request to operate according to a particular PLAP; providing one or more transmitter coefficients associated with a model corresponding to the particular PLAP; receiving one or more receiver coefficients associated with the model; receiving an indication of received power associated with the WPT; determining a measured power loss associated with the WPT by comparing the indication of received power from a transmitted wireless power; computing a predicted power loss based on the indication of received power, the one or more transmitter coefficients, the one or more receiver coefficients, and the model; and determining that a foreign object is present if the measured power loss exceeds the predicted power loss by more than a threshold.",
+"claimsHtml": "<b>1</b>. A method performed by control circuitry of a wireless power transmitter, the method comprising: receiving from a wireless power receiver one or more receiver coefficients associated with a model corresponding to a power loss accounting profile; receiving from the wireless power receiver an indication of received power associated with wireless power transfer from the wireless power transmitter to the wireless power receiver; determining a measured power loss associated with the wireless power transfer by comparing the indication of received power to a transmitted wireless power measured by the wireless power transmitter; computing a predicted power loss based on the indication of received power, one or more transmitter coefficients, the one or more receiver coefficients, and the model corresponding to the power loss accounting profile; and responsive to determining that the measured power loss exceeds the predicted power loss by more than a threshold, reducing a power level of or suspending the wireless power transfer.  <br /> <b>2</b>. The method of claim 1 wherein the power loss accounting profile: includes a model of the wireless power transfer system defined by one or more equations, the one or more transmitter coefficients, and the one or more receiver coefficients; and defines the format and content of messages for communications between wireless power transmitter and wireless power receiver.  <br /> <b>3</b>. The method of claim 2 wherein the messages include: a power profile selection message including an identifier representing the particular power loss accounting profile; and a definition of allowed and disallowed responses to the power profile selection message.  <br /> <b>4</b>. The method of claim 2 wherein the messages include a capability indication message specifying a power limit associated with the particular power loss accounting profile and reason for the power limit. <br /> <b>5</b>. The method of claim 2 wherein the messages include: a coefficient transfer message including one or more coefficients associated with the model; and a definition of allowed and disallowed responses to the coefficient transfer message.  <br /> <b>6</b>. The method of claim 2 wherein the messages include: a power reporting message indicating at least a received power measurement; and a definition of allowed and disallowed responses to the power reporting message.  <br /> <b>7</b>. The method of claim 6 wherein the power reporting message also includ",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"H02J50/60 20160201",
+"H02J50/70 20160201",
+"H02J50/10 20160201",
+"H02J50/80 20160201"
+],
+"continuityData": [
+"parent US continuation 18952398 20241119 GRANTED \n parent-grant-document US 12719312 \n child US 19732938\n<br />us-provisional-application US 63549731 20240205\n<br />"
+],
+"applicationFilingDate": [
+"2026-07-07T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2024-11-19T00:00:00Z",
+"2024-02-05T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260342141",
+"applicationNumber": "19/732938"
+},
+"US-20260349259-A1": {
+"guid": "US-20260349259-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-05T00:00:00Z",
+"inventionTitle": "Optical Module For Head-Mounted Device",
+"abstractHtml": "A head-mounted device is configured to present content to a user and includes a housing, a first optical module located in the housing, a second optical module located in the housing, and an interpupillary distance adjustment assembly configured to determine a target interpupillary distance based on signals from one or more sensors during operation of the head-mounted device and automatically move the first optical module and the second optical module relative to the housing to positions corresponding to the target interpupillary distance.",
+"claimsHtml": "<b>1</b>. A head-mounted device configured to present content to a user, comprising: a housing; a first optical module located in the housing; a second optical module located in the housing; and an interpupillary distance adjustment assembly configured to: determine a target interpupillary distance based on signals from one or more sensors during operation of the head-mounted device; and automatically move the first optical module and the second optical module relative to the housing to positions corresponding to the target interpupillary distance.   <br /> <b>2</b>. The head-mounted device of claim 1, wherein the target interpupillary distance is based on one or more characteristics of the user detected by the one or more sensors. <br /> <b>3</b>. The head-mounted device of claim 2, wherein the one or more characteristics include a position of one or both eyes of the user. <br /> <b>4</b>. The head-mounted device of claim 2, wherein the one or more characteristics include a spacing between eyes of the user. <br /> <b>5</b>. The head-mounted device of claim 1, further comprising: one or more user-facing cameras configured to obtain images of one or both eyes of the user.  <br /> <b>6</b>. The head-mounted device of claim 5, further comprising: one or more infrared emitters configured to emit infrared radiation toward the eyes of the user, wherein the one or more user-facing cameras are configured to obtain images based on reflected portions of the infrared radiation.  <br /> <b>7</b>. The head-mounted device of claim 6, wherein the one or more infrared emitters include a plurality of light emitting diodes arranged around an optical axis. <br /> <b>8</b>. The head-mounted device of claim 2, wherein the interpupillary distance adjustment assembly is configured to determine the target interpupillary distance using a stored user profile associated with the user. <br /> <b>9</b>. The head-mounted device of claim 8, wherein the stored user profile is generated at least in part from a biometric identification of the user. <br /> <b>10</b>. A head-mounted device configured to present content to a user, comprising: a housing; a first optical module coupled to the housing; a second optical module coupled to the housing; and an interpupillary distance adjustment assembly configured to: support the first optical module and the second optical module with respect to the housing; and automatically adjust a distance between the first optical module and the second optical ",
+"applicantName": [
+"APPLE INC."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G02B27/0172 20130101",
+"G02B27/0149 20130101",
+"G02B27/62 20130101"
+],
+"continuityData": [
+"parent US continuation 19086674 20250321 PENDING \n child US 19657232\n<br />parent US continuation 18944113 20241112 \n parent-grant-document US 12547004 \n child US 19086674\n<br />parent US continuation 18380767 20231017 \n parent-grant-document US 12287485 \n child US 18944113\n<br />parent US continuation 16904602 20200618 \n parent-grant-document US 11822081 \n child US 18380767\n<br />us-provisional-application US 62893396 20190829\n<br />"
+],
+"applicationFilingDate": [
+"2026-04-24T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2025-03-21T00:00:00Z",
+"2024-11-12T00:00:00Z",
+"2023-10-17T00:00:00Z",
+"2020-06-18T00:00:00Z",
+"2019-08-29T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260349259",
+"applicationNumber": "19/657232"
+},
+"US-20260349288-A1": {
+"guid": "US-20260349288-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-05T00:00:00Z",
+"inventionTitle": "SEMICONDUCTOR DEVICE",
+"abstractHtml": "A semiconductor device comprises a substrate; a first insulating layer on the substrate; an optical waveguide on the first insulating layer; a second insulating layer on the first insulating layer; a plurality of first insulating patterns extending from the second insulating layer toward the substrate and spaced apart from each other in a first direction parallel to an upper surface of the substrate; a second insulating pattern disposed on the substrate and penetrating the first insulating layer and the second insulating layer; and an air gap disposed in the substrate and interposed between the plurality of first insulating patterns. Each of the plurality of first insulating patterns penetrates the substrate. An upper surface of the second insulating pattern is located at a higher level than the upper surface of the optical waveguide.",
+"claimsHtml": "<b>1</b>. A semiconductor device comprising: a substrate; a first insulating layer on the substrate; an optical waveguide on the first insulating layer; a second insulating layer on the first insulating layer; a plurality of first insulating patterns extending from the second insulating layer toward the substrate and spaced apart from each other in a first direction parallel to an upper surface of the substrate; a second insulating pattern disposed on the substrate and penetrating the first insulating layer and the second insulating layer; and an air gap disposed in the substrate and interposed between the plurality of first insulating patterns, wherein each of the plurality of first insulating patterns penetrates the substrate, wherein an upper surface of the second insulating pattern is located at a higher level than an upper surface of the optical waveguide.  <br /> <b>2</b>. The semiconductor device of claim 1, wherein at least a portion of a lowermost surface of the air gap is located at a lower level than a lower surface of each of the plurality of first insulating patterns. <br /> <b>3</b>. The semiconductor device of claim 1, wherein the second insulating pattern is spaced apart from the optical waveguide in the first direction. <br /> <b>4</b>. The semiconductor device of claim 1, wherein a lower surface of the second insulating pattern is exposed by the air gap. <br /> <b>5</b>. The semiconductor device of claim 1, wherein the upper surface of the second insulating pattern is located at a higher level than an upper surface of the first insulating layer. <br /> <b>6</b>. The semiconductor device of claim 1, wherein the second insulating pattern is interposed between the plurality of first insulating patterns. <br /> <b>7</b>. The semiconductor device of claim 1, wherein the air gap exposes a lower surface of the first insulating layer, and a width of a lower surface of the exposed first insulating layer in the first direction is smaller than a maximum of a width of the air gap in the first direction.  <br /> <b>8</b>. The semiconductor device of claim 1, wherein the plurality of first insulating patterns is spaced apart from each other by a first distance in the first direction, and the first distance increases as it approaches a lower surface of each of the plurality of first insulating patterns.  <br /> <b>9</b>. The semiconductor device of claim 8, wherein: a maximum of a width of the air gap in the first direction is smaller than or equal to a",
+"applicantName": [
+"SAMSUNG ELECTRONICS CO., LTD."
+],
+"applicantCity": [
+"Suwon-si"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"KR"
+],
+"assigneeName": [
+"SAMSUNG ELECTRONICS CO., LTD."
+],
+"assigneeCity": [
+"Suwon-si"
+],
+"assigneeState": [
+"N/A"
+],
+"assigneeCountry": [
+"KR"
+],
+"cpcInventive": [
+"G02F1/025 20130101",
+"G02F1/0147 20130101"
+],
+"continuityData": null,
+"applicationFilingDate": [
+"2025-10-28T00:00:00Z"
+],
+"relatedApplFilingDate": null,
+"priorityClaimsDate": [
+"2025-04-30T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260349288",
+"applicationNumber": "19/371195"
+},
+"US-20260350283-A1": {
+"guid": "US-20260350283-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-05T00:00:00Z",
+"inventionTitle": "DIFFERENTIABLE STATISTICAL STATIC TIMING ANALYSIS FOR INTEGRATED CIRCUITS",
+"abstractHtml": "Mechanisms for timing analysis, timing driven component sizing, and timing driven component placement in integrated circuit designs, utilizing an arc-based weighting strategy guided by timing gradients, assigning weights to arcs based on their timing gradient contributions to global timing metrics.",
+"claimsHtml": "<b>1</b>. A circuit static timing analysis process comprising: for each output pin of the circuit: assigning a thread to the pin; gathering with the thread top-K signal arrival distributions for each parent of the pin; propagating a mean (μ) and standard deviation (σ) of the top-K arrival distributions through parent-child arcs according to: μ=μ.sub.in+μ.sub.arc, where pin is a distribution mean the parent of the pin and Marc is a distribution mean for the parent-child arc; and   <maths id=\"MATH-US-00013\" num=\"00013\"> <math overflow=\"scroll\">  <mrow>   <mrow>    <mi>σ</mi>    <mo>=</mo>    <msqrt>     <mrow>      <msubsup>       <mi>σ</mi>       <mrow>        <mi>i</mi>        <mo>⁢</mo>        <mi>n</mi>       </mrow>       <mn>2</mn>      </msubsup>      <mo>+</mo>      <msubsup>       <mi>σ</mi>       <mrow>        <mi>a</mi>        <mo>⁢</mo>        <mi>r</mi>        <mo>⁢</mo>        <mi>c</mi>       </mrow>       <mn>2</mn>      </msubsup>     </mrow>    </msqrt>   </mrow>   <mo>,</mo>  </mrow> </math> </maths>  where σ.sub.in is a distribution standard deviation of the parent of the pin and σ.sub.arc is a distribution standard deviation for the parent-child arc. <br /> <b>2</b>. The static timing analysis process of claim 1, further comprising: mapping signal rise and fall edges to unateness.  <br /> <b>3</b>. The static timing analysis process of claim 1, further comprising: assigning a score A to the arrival distributions according to A=μ+Nu.Math.σ, where Nu is a level of pessimism; and stores the highest-scoring unique start point arrivals for the output pin for both of signal rise and fall.  <br /> <b>4</b>. The static timing analysis process of claim 3, wherein the high-scoring unique start point arrivals are determined with a log-sum-exponential (LSE) operator comprising a differentiable approximation of a maximum function. <br /> <b>5</b>. The static timing analysis process of claim 4, wherein the LSE operator is  <maths id=\"MATH-US-00014\" num=\"00014\"> <math overflow=\"scroll\">  <mrow>   <mrow>    <mi>LSE</mi>    <mo>⁡</mo>    <mo>(</mo>    <msubsup>     <mrow>      <mo>{</mo>      <msub>       <mi>A</mi>       <mi>i</mi>      </msub>      <mo>}</mo>     </mrow>     <mrow>      <mi>i</mi>      <mo>=</mo>      <mn>1</mn>     </mrow>     <mi>n</mi>    </msubsup>    <mo>)</mo>   </mrow>   <mo>=</mo>   <mrow>    <mi>M</mi>    <mo>+</mo>    <mrow>     <mi>τ</mi>     <mo>.Math.</mo>     <mrow>      <mi>log</mi>      <mo>⁡</mo>      <mo>(</mo>      <",
+"applicantName": [
+"NVIDIA Corp."
+],
+"applicantCity": [
+"Santa Clara"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"NVIDIA Corp."
+],
+"assigneeCity": [
+"Santa Clara"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"G06F30/392 20200101",
+"G06F30/3312 20200101",
+"G06F30/3315 20200101",
+"G06F30/337 20200101"
+],
+"continuityData": [
+"us-provisional-application US 63720384 20241114\n<br />us-provisional-application US 63752465 20250131\n<br />"
+],
+"applicationFilingDate": [
+"2025-11-14T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2024-11-14T00:00:00Z",
+"2025-01-31T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260350283",
+"applicationNumber": "19/389412"
+},
+"US-20260352560-A1": {
+"guid": "US-20260352560-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-05T00:00:00Z",
+"inventionTitle": "METHODS AND APPARATUS FOR HANDLING AI/ML DATA",
+"abstractHtml": "The disclosure relates to a 5G or 6G communication system for supporting a higher data transmission rate. According to an example of the present disclosure, there is provided a first entity in a communications network, the first entity comprising: a transmitter; a receiver; and at least one processor configured to: while a first connection with a user equipment (UE) is established, transmit information relating to an artificial intelligence/machine learning (AI/ML) model to a second entity in the communications network, wherein the information is usable for obtaining the AI/ML model and/or data relating to the AI/ML model; transmit, to the UE, a first message to trigger the UE to establish a second connection with the second entity, wherein the first message indicates that the second entity has obtained the AI/ML model and/or the data relating to the AI/ML model; and forward AI/ML data for the AI/ML model to the second entity.",
+"claimsHtml": "<b>1</b>-<b>15</b>. (canceled) <br /> <b>16</b>. A first entity in a communication system, the first entity comprising: a transceiver; and at least one processor coupled with the transceiver and configured to: while a first connection with a user equipment (UE) is established, transmit, to a second entity, information relating to an artificial intelligence/machine learning (AI/ML) model, wherein the information is usable for obtaining at least one of the AI/ML model or data relating to the AI/ML model, transmit, to the UE, a first message to trigger the UE to establish a second connection with the second entity, wherein the first message indicates that the second entity has obtained at least one of the AI/ML model or the data relating to the AI/ML model, and transmit, to the second entity, AI/ML data for the AI/ML model.   <br /> <b>17</b>. The first entity of claim 16, wherein the information relating to the AI/ML model comprises at least one of information on the AI/ML model, information on an update to the AI/ML model, information on the data relating to the AI/ML model, or assistance information on the AI/ML model. <br /> <b>18</b>. The first entity of claim 17, wherein the assistance information comprises at least one of information on an identifier (ID), information on a deployment, information on an AI/ML training, information on a transfer, information on an AI/ML model update, information on a use case, information on a level, or information on an AI/ML model inference. <br /> <b>19</b>. The first entity of claim 16, wherein the at least one processor is further configured to: receive, from a user plane function (UPF), data, and identify at least part of the data as the AI/ML data based on at least one of information on a label, information on a quality of service (QoS), information on 5G QoS indicator (5QI), information on an identifier (ID), information on a volume, information on a structure, or information on a data format, wherein a transmission of the AI/ML data is performed differently from a transmission of the other data.  <br /> <b>20</b>. A second entity in a communication system, the second entity comprising: a transceiver; and at least one processor coupled with the transceiver and configured to: receive, from a first entity having a first connection with a user equipment (UE), information relating to an artificial intelligence/machine learning (AI/ML) model, wherein the information is usable for obtaining at least one of the AI/ML mo",
+"applicantName": [
+"Samsung Electronics Co., Ltd."
+],
+"applicantCity": [
+"Suwon-si, Gyeonggi-do"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"KR"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"H04L41/16 20130101",
+"H04L67/14 20130101",
+"H04L41/145 20130101",
+"H04W24/02 20130101",
+"H04W28/0268 20130101",
+"H04W76/15 20180201"
+],
+"continuityData": null,
+"applicationFilingDate": [
+"2023-10-11T00:00:00Z"
+],
+"relatedApplFilingDate": null,
+"priorityClaimsDate": [
+"2022-10-12T00:00:00Z",
+"2023-09-18T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260352560",
+"applicationNumber": "19/120557"
+},
+"US-20260352919-A1": {
+"guid": "US-20260352919-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-05T00:00:00Z",
+"inventionTitle": "WIRELESS TRANSMISSION DEVICE, DISPLAY DEVICE AND DATA TRANSMISSION METHOD AND STREAM PROCESSING METHOD THEREOF",
+"abstractHtml": "A transmission device includes a communication interface configured to perform communications with an external device and at least one display device, a memory configured to store analog data received from the external device, a signal processor, and a processor configured to control the signal processor to decode the analog data, separate the decoded analog data into analog audio data, analog video data, and analog additional data, convert the analog audio data, the analog video data, and the analog additional data, separated from one another, respectively, to digital audio data, digital video data, and digital additional data, configure a digital transport stream including a plurality of packets by separately packetizing the digital audio data, the digital video data, and the digital additional data, respectively, and transmit, using the communication interface, the digital transport stream to the at least one display device.",
+"claimsHtml": "<b>1</b>. A transmission device, comprising: a communication interface configured to perform communications with an external device and at least one display device; a memory configured to store analog data received from the external device using the communication interface; a signal processor; and a processor communicatively coupled with the communication interface, the memory and, the signal processor, wherein the processor is configured to control the signal processor to: decode the analog data; separate the decoded analog data into analog audio data, analog video data, and analog additional data, the analog additional data comprising a plurality of different types of additional data; convert the analog audio data, the analog video data, and the analog additional data, separated from one another, respectively, to digital audio data, digital video data, and digital additional data; receive, using the communication interface, a selection signal from the at least one display device, the selection signal indicating a selection of at least one of the plurality of different types of additional data; configure a digital transport stream comprising a plurality of packets by separately packetizing the digital audio data, the digital video data, and the digital additional data corresponding to the selection of the at least one of the plurality of different types of additional data, respectively; and transmit, using the communication interface, the digital transport stream to the at least one display device.   <br /> <b>2</b>. The transmission device of claim 1, wherein the analog additional data comprises at least one of wide screen signaling (WSS) data, teletext (TTX) data, subtitle data, foreign language subtitle data, or aspect ratio setting data. <br /> <b>3</b>. The transmission device of claim 1, wherein the processor is further configured to: transmit, using the communication interface, guidance information to the at least one display device, the guidance information indicating the plurality of different types of additional data comprised by the digital additional data.  <br /> <b>4</b>. The transmission device of claim 1, wherein the processor is further configured to: select, from the analog additional data, selected additional data to be transmitted to the at least one display device based on the selection signal; and control the signal processor to packetize each of the selected additional data into the digital additional data and add the packetized dat",
+"applicantName": [
+"SAMSUNG ELECTRONICS CO., LTD."
+],
+"applicantCity": [
+"Suwon-si"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"KR"
+],
+"assigneeName": [
+"SAMSUNG ELECTRONICS CO., LTD."
+],
+"assigneeCity": [
+"Suwon-si"
+],
+"assigneeState": [
+"N/A"
+],
+"assigneeCountry": [
+"KR"
+],
+"cpcInventive": [
+"H04N21/4343 20130101",
+"H04N21/4402 20130101",
+"H04N21/236 20130101",
+"H04N21/4122 20130101",
+"H04N21/42607 20130101",
+"H04N21/43637 20130101",
+"H04N21/4884 20130101"
+],
+"continuityData": [
+"parent US continuation 18932163 20241030 GRANTED \n parent-grant-document US 12726676 \n child US 19742416\n<br />parent US continuation PCT/KR2024/013062 20240830 PENDING \n child US 18932163\n<br />"
+],
+"applicationFilingDate": [
+"2026-07-15T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2024-10-30T00:00:00Z",
+"2024-08-30T00:00:00Z"
+],
+"priorityClaimsDate": [
+"2023-08-30T00:00:00Z",
+"2023-12-21T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260352919",
+"applicationNumber": "19/742416"
+},
+"US-20260353934-A1": {
+"guid": "US-20260353934-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-05T00:00:00Z",
+"inventionTitle": "DISPLAY DEVICE",
+"abstractHtml": "A display device includes a substrate including a first unit area, a second unit area, and an intermediate area between the first unit area and the second unit area, an organic insulating layer disposed on the substrate, an emission element layer disposed on the organic insulating layer, the emission element layer including a first emission element overlapping the first unit area and a second emission element overlapping the second unit area, and an encapsulation layer disposed on the emission element layer, wherein the emission element layer and the encapsulation layer define a valley portion which overlaps the intermediate area and exposes an upper surface of the organic insulating layer.",
+"claimsHtml": "<b>1</b>. A display device comprising: a substrate comprising a first unit area, a second unit area, and an intermediate area between the first unit area and the second unit area; a first emission element disposed on the substrate and overlapping the first unit area; a second emission element disposed on the substrate and overlapping the second unit area; a bank layer disposed on the substrate, comprising a first bank portion overlapping the first unit area and a second bank portion overlapping the second unit area; and a first inorganic encapsulation layer on the first emission element and a second inorganic encapsulation layer on the second emission element, wherein the intermediate area is disposed between the first bank portion and the second bank portion, the first bank portion has a first side surface facing the intermediate area, and the second bank portion has a second side surface facing the intermediate area, and the first inorganic encapsulation layer covers the first side surface, and the second inorganic encapsulation layer covers the second side surface.  <br /> <b>2</b>. The display device of claim 1, wherein the first emission element comprises: a pixel electrode; an opposite electrode disposed on the pixel electrode; and an emission layer arranged between the pixel electrode and the opposite electrode, and the first bank portion comprises: an inorganic bank layer disposed on the substrate and covering an edge of the pixel electrode in a plan view; and a metal bank layer disposed on the inorganic bank layer and comprising a first metal layer and a second metal layer disposed on the first metal layer.   <br /> <b>3</b>. The display device of claim 2, wherein the first bank portion defines a first opening that exposes a portion of the pixel electrode, and the second metal layer has a tip protruding toward a center direction of the first opening from an inner side surface of the first metal layer defining the first opening. <br /> <b>4</b>. The display device of claim 3, wherein a third inorganic encapsulation layer disposed between the first emission element and the first inorganic encapsulation layer. <br /> <b>5</b>. The display device of claim 4, wherein the third inorganic encapsulation layer is in direct contact with the inner side surface of the first metal layer defining the first opening. <br /> <b>6</b>. The display device of claim 4, further comprising: a fourth inorganic encapsulation layer disposed between the second emission elem",
+"applicantName": [
+"Samsung Display Co., LTD."
+],
+"applicantCity": [
+"Yongin-si, Gyeonggi-do"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"KR"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"H10K59/122 20230201",
+"H10K59/124 20230201",
+"H10K59/131 20230201",
+"H10K59/873 20230201",
+"H10K59/8731 20230201",
+"H10K77/111 20230201"
+],
+"continuityData": [
+"parent US continuation 18900221 20240927 GRANTED \n parent-grant-document US 12713783 \n child US 19734881\n<br />"
+],
+"applicationFilingDate": [
+"2026-07-08T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2024-09-27T00:00:00Z"
+],
+"priorityClaimsDate": [
+"2023-10-10T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260353934",
+"applicationNumber": "19/734881"
+},
+"US-20260358170-A1": {
+"guid": "US-20260358170-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "LIGHT DETECTING DEVICE AND ELECTRONIC APPARATUS",
+"abstractHtml": "A light detecting device according to an embodiment of the present disclosure includes: a first pixel and a second pixel each including a first photoelectric conversion element that photoelectrically converts light; a first filter provided in a manner corresponding to the first pixel; a second filter provided in a manner corresponding to the second pixel; a first light-guiding member provided between the first filter and the second filter; and a second light-guiding member provided around the first light-guiding member and having a refractive index higher than a refractive index of the first light-guiding member.",
+"claimsHtml": "<b>1</b>. A light detecting device comprising: a first pixel and a second pixel each including a first photoelectric conversion element that photoelectrically converts light; a first filter provided in a manner corresponding to the first pixel; a second filter provided in a manner corresponding to the second pixel; a first light-guiding member provided between the first filter and the second filter; and a second light-guiding member provided around the first light-guiding member, the second light-guiding member having a refractive index higher than a refractive index of the first light-guiding member.  <br /> <b>2</b>. The light detecting device according to claim 1, wherein at least a portion of the second light-guiding member is provided on a side of the first filter opposite to a side on which light is incident. <br /> <b>3</b>. The light detecting device according to claim 1, wherein at least a portion of the second light-guiding member is provided between the first light-guiding member and the first photoelectric conversion element. <br /> <b>4</b>. The light detecting device according to claim 1, wherein at least a portion of the second light-guiding member is provided in the first light-guiding member. <br /> <b>5</b>. The light detecting device according to claim 1, wherein the second light-guiding member is provided to be adjacent to the first light-guiding member. <br /> <b>6</b>. The light detecting device according to claim 1, wherein the first photoelectric conversion element photoelectrically converts light incident via the first filter and the second light-guiding member. <br /> <b>7</b>. The light detecting device according to claim 1, further comprising a lens on which light is incident, the lens being provided above the first filter, wherein the first photoelectric conversion element photoelectrically converts light incident via the lens, the first filter, and the second light-guiding member.  <br /> <b>8</b>. The light detecting device according to claim 7, wherein a center position of the lens differs from a center position of the first filter, in a direction orthogonal to a direction of stacking the lens and the first filter. <br /> <b>9</b>. The light detecting device according to claim 1, wherein a width of the second light-guiding member is larger than a width of the first light-guiding member, in a direction orthogonal to a direction of stacking the first filter and the first photoelectric conversion element. <br /> <b>10</b>. The ",
+"applicantName": [
+"SONY SEMICONDUCTOR SOLUTIONS CORPORATION"
+],
+"applicantCity": [
+"KANAGAWA"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"JP"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G01J1/0492 20130101",
+"G01J1/44 20130101"
+],
+"continuityData": null,
+"applicationFilingDate": [
+"2024-05-17T00:00:00Z"
+],
+"relatedApplFilingDate": null,
+"priorityClaimsDate": [
+"2023-06-07T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260358170",
+"applicationNumber": "19/486054"
+},
+"US-20260359001-A1": {
+"guid": "US-20260359001-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "SPEECH PREDICTION BASED ON MOTION",
+"abstractHtml": "Some examples of the disclosure are directed to systems and methods for detecting, via the one or more input devices, a first movement of a first portion of a user of the first computer system; determining a first user intention based on the first movement of the first portion of the user; and in response to determining the first user intention: in accordance with a determination that the first user intention corresponds to a first intention, performing a first action; and in accordance with a determination that the first user intention corresponds to a second intention, different from the first intention, performing a second action, different from the first action.",
+"claimsHtml": "<b>1</b>. A method comprising: at a first computer system in communication with one or more input devices and one or more output devices: while the first computer system is presenting, via the one or more output devices, a first audio output: detecting, via the one or more input devices, a first movement of a first portion of a user of the first computer system; determining a first user intention based on the first movement of the first portion of the user; and in response to determining the first user intention: in accordance with a determination that the first user intention corresponds to an intention of the user to speak, performing a first action, including ceasing the first audio output; and in accordance with a determination that the first user intention corresponds to a second intention, different from the intention of the user to speak, performing a second action, different from the first action.     <br /> <b>2</b>. The method of claim 1, wherein the intention of the user to speak corresponds to a user intention to interrupt the first audio output that is being presented by the first computer system. <br /> <b>3</b>. The method of claim 2, wherein determining the first user intention includes: determining a state of the first audio output at a respective time corresponding to the detecting of the first movement of the first portion of the user; and determining a confidence score of user interruption based on the state of the first audio output at the respective time, wherein the first user intention corresponds to the intention of the user to speak when the confidence score of user interruption exceeds a respective threshold.  <br /> <b>4</b>. The method of claim 1, wherein the first movement of the first portion of the user is detected via at least one of an inertial measurement unit, an inward-facing camera, or an outward-facing camera. <br /> <b>5</b>. The method of claim 1, wherein determining the first user intention includes: providing data associated with the first movement of the first portion of the user to a model; and receiving, from the model, an output indicating the first user intention based on the data associated with the first movement.  <br /> <b>6</b>. The method of claim 5, wherein the model is trained using historical interaction data corresponding to one or more previous interactions of the user with the first computer system. <br /> <b>7</b>. The method of claim 1, further comprising: during the detecting of the first movem",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G06F3/165 20130101",
+"G06F3/012 20130101",
+"G06F3/013 20130101",
+"G06F3/017 20130101",
+"G06F3/167 20130101"
+],
+"continuityData": [
+"us-provisional-application US 63804555 20250512\n<br />"
+],
+"applicationFilingDate": [
+"2026-04-23T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2025-05-12T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260359001",
+"applicationNumber": "19/656843"
+},
+"US-20260359726-A1": {
+"guid": "US-20260359726-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "DISTRIBUTED ATTENTION PAIR BIAS",
+"abstractHtml": "Apparatuses, systems, and techniques to perform distributed attention computations for machine-learning models. In at least one embodiment, a local query block generated from a single-representation tensor and communicated attention data including key blocks, value blocks, and pair-bias blocks derived from a pair-representation tensor are used to compute a local attention contribution and local normalization information, and to update a local normalization state and a local output block corresponding to the local query block.",
+"claimsHtml": "<b>1</b>. One or more processors, comprising: circuitry to: generate, for an attention computation, a local query block; prior to repeated ring-communication steps along a first mesh axis of a two-dimensional GPU mesh, redistribute key blocks, value blocks, and, where used, mask blocks across a second mesh axis of the two-dimensional GPU mesh; during the repeated ring-communication steps along the first mesh axis, receive communicated attention data including key blocks, value blocks, and pair-bias blocks derived from a pair-representation tensor, wherein the pair-bias blocks are passed in coordination with corresponding key blocks and value blocks such that, at each repeated ring-communication step, a received key block, a received value block, and a received pair-bias block correspond to the same query-key comparisons as the local query block; and generate a local output block for the local query block based on local attention contributions computed using the local query block and the communicated attention data.   <br /> <b>2</b>. The one or more processors of claim 1, wherein redistributing the key blocks, the value blocks, and, where used, the mask blocks across the second mesh axis comprises transposing ownership of the key blocks, the value blocks, and, where used, the mask blocks across the second mesh axis. <br /> <b>3</b>. The one or more processors of claim 1, wherein the circuitry is further to perform the repeated ring-communication steps without transmitting the local query block to another GPU of the two-dimensional GPU mesh. <br /> <b>4</b>. The one or more processors of claim 1, wherein the pair-bias blocks are generated, prior to the repeated ring-communication steps, by applying a learned pair-bias projection to local blocks of the pair-representation tensor. <br /> <b>5</b>. The one or more processors of claim 1, wherein the single-representation tensor includes a batch dimension, a sequence-position dimension, and a single-representation feature dimension, and the pair-representation tensor includes a batch dimension, a first sequence-position dimension, a second sequence-position dimension, and a pair-representation feature dimension, the pair-representation tensor storing, for each ordered pair of sequence positions, a feature vector corresponding to a query-key comparison between the ordered pair of sequence positions. <br /> <b>6</b>. The one or more processors of claim 1, wherein generating the local output block comprises rescali",
+"applicantName": [
+"NVIDIA Corporation"
+],
+"applicantCity": [
+"Santa Clara"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"G06N20/00 20190101"
+],
+"continuityData": [
+"us-provisional-application US 63803202 20250509\n<br />"
+],
+"applicationFilingDate": [
+"2026-05-09T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2025-05-09T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260359726",
+"applicationNumber": "19/672630"
+},
+"US-20260361131-A1": {
+"guid": "US-20260361131-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "THERMAL MANAGEMENT IN CHARGING PUCK",
+"abstractHtml": "Circuits, methods, and structures that can conduct heat out of an electronic device that is being charged. An example can provide top caps for charging pucks that have multiple layers. A top cap can include a top compliant layer that deform to contact the electronic device over an increased area. This increased contact area can help to conduct heat out of the electronic device and into the charging puck, thereby reducing the temperature of the electronic device during charging, which in turn can allow an electronic device to charged at a higher power. These top caps can further include a second thermally conductive layer under the top compliant layer. The increased conductivity of this layer can further help to conduct heat away from the electronic device to the housing of the charging puck or other charging device.",
+"claimsHtml": "<b>1</b>. A charging device comprising: a housing having a recess; and a top cap, wherein the top cap forms a charging surface for engaging an electronic device being charged by the charging device, wherein the top cap comprises a thermally conductive layer covering the recess in the housing.  <br /> <b>2</b>. The charging device of claim 1 wherein the top cap is formed of resin. <br /> <b>3</b>. The charging device of claim 1 wherein the top cap is formed of a nylon-based resin. <br /> <b>4</b>. The charging device of claim 3 wherein the top cap is doped with boron nitride. <br /> <b>5</b>. The charging device of claim 3 wherein the top cap is doped with carbon. <br /> <b>6</b>. The charging device of claim 1 wherein the top cap is polycarbonate doped with thermally conductive particles. <br /> <b>7</b>. The charging device of claim 1 wherein the charging device is a charging puck. <br /> <b>8</b>. A charging device comprising: a housing having a recess; a top cap, wherein the top cap forms a charging surface for engaging an electronic device being charged by the charging device, wherein the top cap covers the recess in the housing and comprises: a compliant layer to physically contact an electronic device when the electronic device is charged by the charging device; and a thermally conductive layer positioned adjacent to the compliant layer.   <br /> <b>9</b>. The charging device of claim 8 wherein the compliant layer comprises a silicone layer. <br /> <b>10</b>. The charging device of claim 9 wherein the compliant layer is doped with thermally conductive materials. <br /> <b>11</b>. The charging device of claim 10 wherein the thermally conductive layer is a nylon-based resin. <br /> <b>12</b>. The charging device of claim 11 wherein the thermally conductive layer is doped with ceramic particles. <br /> <b>13</b>. The charging device of claim 11 wherein the thermally conductive layer is doped with boron nitride. <br /> <b>14</b>. The charging device of claim 11 wherein the thermally conductive layer is doped with carbon. <br /> <b>15</b>. A charging device comprising: a housing having a recess; a top cap, wherein the top cap forms a charging surface for engaging an electronic device being charged by the charging device, wherein the top cap comprises a thermally conductive layer covering the recess in the housing; a charging coil; a ferrite supporting the charging coil; an alignment magnet; and control electronics to receive power from an external source ",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": [
+"H02J50/005 20200101",
+"H02J50/10 20160201",
+"H02J50/90 20160201",
+"H05K7/2039 20130101"
+],
+"continuityData": [
+"us-provisional-application US 63804551 20250512\n<br />"
+],
+"applicationFilingDate": [
+"2026-05-12T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2025-05-12T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260361131",
+"applicationNumber": "19/675267"
+},
+"US-20260361461-A1": {
+"guid": "US-20260361461-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "ACCELERATED PARALLEL PROCESSING OF 5G NR SIGNAL INFORMATION",
+"abstractHtml": "Apparatuses, systems, and techniques to perform signal processing operations in a fifth generation (5G) new radio (NR) network using one or more parallel processing units (PPUs). In at least one embodiment, one or more PPUs implement signal processing in a baseband unit (BBU) performing 5G NR physical layer operations in a communication network.",
+"claimsHtml": "<b>1</b>-<b>20</b>. (canceled) <br /> <b>21</b>. One or more processors, comprising: circuitry to cause one or more graphics processing unit (GPU) kernels to be scheduled based at least on signals received or transmitted by one or more radio units, wherein a GPU kernel comprises at least one signal processing operation that encodes an uplink channel or decodes a downlink channel, and the one or more GPU kernels are to be executed by one or more GPUs.  <br /> <b>22</b>. The one or more processors of claim 21, wherein one or more NICs communicate signal processing information to the one or more GPUs. <br /> <b>23</b>. The one or more processors of claim 21, wherein to encode the uplink channel at least one of a physical uplink shared channel (PUSCH) beamforming kernel, a PUSCH front-end kernel, a PUSCH de-rate-matching kernel, a PUSCH low density parity check (LDPC) kernel, or a cyclic redundancy check (CRC) kernel is executed. <br /> <b>24</b>. The one or more processors of claim 21, wherein to decode the downlink channel at least one of a physical downlink shared channel (PDSCH) beamforming kernel, a PDSCH rate matching kernel, a PDSCH low density parity check (LDPC) kernel, or a cyclic redundancy check (CRC) kernel is executed. <br /> <b>25</b>. The one or more processors of claim 21, wherein one or more NICs communicate the signals between the one or more radio units and the one or more GPUs. <br /> <b>26</b>. The one or more processors of claim 21, wherein a physical layer (PHY) controller is to manage execution of the one or more GPU kernels. <br /> <b>27</b>. The one or more processors of claim 26, wherein the PHY controller is to supply parameters to the one or more GPU kernels and manage output from the one or more GPU kernels. <br /> <b>28</b>. The one or more processors of claim 21, wherein the one or more radio units execute one or more low physical layer operations including fast Fourier transform (FFT), inverse fast Fourier transform (IFFT), cyclic prefix insertion or removal, transmit beamforming, or receive beamforming. <br /> <b>29</b>. A computer-implemented method comprising: sending and receiving, by one or more radio units (RUs), radio signals; generating, by one or more network interface controllers (NICs), signal processing information from the radio signals; scheduling, by a controller, one or more graphics processing unit (GPU) kernels to be executed by one or more GPUs, wherein a GPU kernel comprises at least one signal processing o",
+"applicantName": [
+"NVIDIA Corporation"
+],
+"applicantCity": [
+"Santa Clara"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"H04L1/0061 20130101",
+"H04W4/40 20180201",
+"H04W88/06 20130101",
+"H04W88/08 20130101"
+],
+"continuityData": [
+"parent US continuation 16716350 20191216 \n parent-grant-document US 12494865 \n child US 19304399\n<br />"
+],
+"applicationFilingDate": [
+"2025-08-19T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2019-12-16T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260361461",
+"applicationNumber": "19/304399"
+},
+"US-20260361633-A1": {
+"guid": "US-20260361633-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "PROCESSING A TIME-VARYING SIGNAL",
+"abstractHtml": "A method of processing a time-varying signal m a signal processing system. Data representative of one or more first time samples of the time-varying signal is received at an artificial neural network, ANN. The received data is processed using the ANN to generate predicted data representative of a second time sample of the time-varying signal, the second time sample being later than the one or more first time samples. The ANN is trained to predict data representative of time samples of time-varying signals based on data representative of earlier time samples of the time-varying signals. The signal processing system processes the predicted data representative of the second time sample in place of a third time sample of the time-varying signal, the third time sample being earlier than the second time sample.",
+"claimsHtml": "<b>1</b>. (canceled) <br /> <b>2</b>. A computer-implemented method comprising: obtaining a first time sample of an signal that includes (i) the first time sample that is associated with a first time instance, (ii) a second time sample that is associated with a second time instance that is later than the first time instance, and (iii) a third time sample that is associated with a third time instance that is later than both the first time instance and the second time instance; before the second time sample and the third time sample are obtained, generating a prediction of the third time sample; and processing the first time sample then the prediction of the third time sample.  <br /> <b>3</b>. The method of claim 2, wherein processing the first time sample then the prediction of the third time sample comprises processing the first time sample and the prediction of the third time sample without processing the second time sample or the third time sample. <br /> <b>4</b>. The method of claim 2, wherein processing the first time sample then the prediction of the third time sample comprises processing the first time sample and the prediction of the third time sample, then processing the second time sample or the third time sample. <br /> <b>5</b>. The method of claim 2, comprising selecting the third time sample to predict based upon an amount of latency. <br /> <b>6</b>. The method of claim 2, wherein the first time sample and the prediction of the third time sample are processed by an encoder or a decoder. <br /> <b>7</b>. The method of claim 2, wherein the prediction of the third time sample is generated using a neural network. <br /> <b>8</b>. The method of claim 2, comprising selecting the third time sample to predict based upon a quality or bandwidth of a network connection. <br /> <b>9</b>. A system comprising: one or more processors, and one or more non-transitory computer-readable media that store instructions which, when executed by the one or more processors, cause the one or more processors to perform operations comprising: obtaining a first time sample of an signal that includes (i) the first time sample that is associated with a first time instance, (ii) a second time sample that is associated with a second time instance that is later than the first time instance, and (iii) a third time sample that is associated with a third time instance that is later than both the first time instance and the second time instance; before the second time sample and",
+"applicantName": [
+"Sony Interactive Entertainment Europe Limited"
+],
+"applicantCity": [
+"London"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"GB"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"H04L43/0852 20130101"
+],
+"continuityData": [
+"parent US continuation 17864214 20220713 ABANDONED \n child US 19643143\n<br />"
+],
+"applicationFilingDate": [
+"2026-04-09T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2022-07-13T00:00:00Z"
+],
+"priorityClaimsDate": [
+"2022-02-08T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260361633",
+"applicationNumber": "19/643143"
+},
+"US-20260362500-A1": {
+"guid": "US-20260362500-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "RANDOM ACCESS CHANNEL ADAPTATION TECHNIQUES",
+"abstractHtml": "The present disclosure generally relates to random access channel (RACH) adaptation techniques. In some implementations, a user equipment (UE) determines one or more resources to monitor for a RACH adaptation indicator based on a connectivity state of the UE and a capability of the UE to support RACH adaptation. Accordingly, the UE monitors the one or more resources for the RACH adaptation indicator. In some implementations, the UE receives an indication of one or more trigger conditions for RACH adaptation and enables RACH adaptation in response to determining that the one or more trigger conditions are met.",
+"claimsHtml": "<b>1</b>. A method comprising: determining one or more resources to monitor for a random access channel (RACH) adaptation indicator based at least on a connectivity state of a user equipment (UE) and a capability of the UE to support RACH adaptation; and monitoring the one or more resources for the RACH adaptation indicator.  <br /> <b>2</b>. The method of claim 1, wherein monitoring the one or more resources comprises monitoring at least one paging occasion (PO) per system information modification period for paging messages with a RACH adaptation indicator while the UE is in an RRC CONNECTED state. <br /> <b>3</b>. The method of claim 2, further comprising receiving downlink control information (DCI) format 1_0 with a physical downlink control channel (PDCCH) order comprising the RACH adaptation indicator. <br /> <b>4</b>. The method of claim 3, further comprising overwriting a RACH resource activation or deactivation status indicated by a DCI associated with a paging radio network temporary identifier (P-RNTI). <br /> <b>5</b>. The method of claim 1, further comprising receiving a first system information block (SIB1) with a bit indicating whether semi-static RACH adaptation is enabled or disabled. <br /> <b>6</b>. The method of claim 5, wherein semi-static RACH adaptation is disabled and the method further comprises:  monitoring paging DCI messages for RACH adaptation indicators when the bit is set to 0.  <br /> <b>7</b>. The method of claim 5, wherein semi-static RACH adaptation is enabled and the method further comprises: monitoring paging DCI messages for RACH adaptation indicators.  <br /> <b>8</b>. The method of claim 5, wherein monitoring the one or more resources comprises monitoring one of: a next broadcast control channel (BCCH) occasion for a SIB1 update after receiving a paging short message, a current BCCH period for a SIB1 update after receiving a paging short message when the bit in SIB1 indicates that semi-static RACH adaptation is enabled, a current BCCH period for a SIB1 update after receiving a paging short message that enables immediate acquisition of SIB1 updates, or a next BCCH period for a SIB1 update after receiving a paging short message that disables immediate acquisition of SIB1 updates. <br /> <b>9</b>. The method of claim 1, further comprising receiving a first system information block (SIB1) while the UE is in an RRC CONNECTED state, the SIB1 comprising a bit indicating whether semi-static RACH adaptation is enabled or disab",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": null,
+"assigneeCity": null,
+"assigneeState": null,
+"assigneeCountry": null,
+"cpcInventive": [
+"H04W74/0833 20130101",
+"H04W36/0061 20130101",
+"H04W36/0072 20130101",
+"H04W76/20 20180201"
+],
+"continuityData": [
+"us-provisional-application US 63800904 20250506\n<br />"
+],
+"applicationFilingDate": [
+"2026-05-06T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2025-05-06T00:00:00Z"
+],
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "20260362500",
+"applicationNumber": "19/669829"
+},
+"US-20260362568-A1": {
+"guid": "US-20260362568-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "DISPLAY DEVICE FOR INDICATING RECEPTION OF NOTIFICATION WHILE DISPLAYING IMAGE AND CONTROL METHOD THEREFOR",
+"abstractHtml": "A display device including a display including a plurality of pixel elements on a front surface of the display and a plurality of light emitting elements on an edge region of a rear surface of the display; memory storing one or more instructions; and at least one processor. The at least one processor is configured to execute the one or more instructions to: control the display to display an image using the plurality of pixel elements; receive a predetermined notification; based on receiving the predetermined notification, identify at least one light emitting element among the plurality of light emitting elements based on location information on a screen related to the predetermined notification; and cause the at least one identified light emitting element to emit light based on color information related to the predetermined notification.",
+"claimsHtml": "<b>1</b>. A display device comprising: a display comprising a plurality of pixel elements on a front surface of the display and a plurality of light emitting elements on an edge region of a rear surface of the display; memory storing one or more instructions; and at least one processor, wherein the at least one processor is configured to execute the one or more instructions to: control the display to display an image using the plurality of pixel elements; receive a predetermined notification; based on receiving the predetermined notification, identify at least one light emitting element among the plurality of light emitting elements based on location information on a screen related to the predetermined notification; and cause the at least one identified light emitting element to emit light based on color information related to the predetermined notification.  <br /> <b>2</b>. The display device of claim 1, wherein the location information comprises: a previous display location or a default display location of an application for providing the predetermined notification, and the at least one light emitting element is identified based on being adjacent to the previous display location or the default display location.  <br /> <b>3</b>. The display device of claim 1, wherein the at least one processor is configured to execute the one or more instructions to: receive a user input for identifying the predetermined notification; and based on receiving the user input for identifying the predetermined notification, display the predetermined notification by overlaying the predetermined notification on the image.  <br /> <b>4</b>. The display device of claim 3, wherein the display comprises: a 3D display, and wherein the at least one processor is configured to execute the one or more instructions to: based on receiving the user input while displaying a 3D image through the 3D display, display the predetermined notification on the 3D image; and provide an effect that the predetermined notification is located more in front than the 3D image by granting a depth to the 3D image or blurring the 3D image.  <br /> <b>5</b>. The display device of claim 1, wherein the memory stores information related to colors corresponding to each of a plurality of users, and wherein the at least one processor is configured to execute the one or more instructions to: based on receiving the predetermined notification from a first user among the plurality of users, identify a color correspondi",
+"applicantName": [
+"SAMSUNG ELECTRONICS CO., LTD."
+],
+"applicantCity": [
+"Suwon-si"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"KR"
+],
+"assigneeName": [
+"SAMSUNG ELECTRONICS CO., LTD."
+],
+"assigneeCity": [
+"Suwon-si"
+],
+"assigneeState": [
+"N/A"
+],
+"assigneeCountry": [
+"KR"
+],
+"cpcInventive": [
+"H05B47/105 20200101",
+"G06T7/90 20170101",
+"G06T15/10 20130101"
+],
+"continuityData": [
+"parent WO continuation PCT/KR2024/017353 20241106 PENDING \n child US 19719842\n<br />"
+],
+"applicationFilingDate": [
+"2026-06-25T00:00:00Z"
+],
+"relatedApplFilingDate": [
+"2024-11-06T00:00:00Z"
+],
+"priorityClaimsDate": [
+"2024-01-02T00:00:00Z",
+"2024-02-26T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260362568",
+"applicationNumber": "19/719842"
+},
+"US-20260362905-A1": {
+"guid": "US-20260362905-A1",
+"type": "US-PGPUB",
+"kindCode": [
+"A1"
+],
+"datePublished": "2026-11-12T00:00:00Z",
+"inventionTitle": "DISPLAY DEVICE AND ELECTRONIC DEVICE INCLUDING THE SAME",
+"abstractHtml": "A display device includes a display panel having a display area and a peripheral area, and the display panel includes a substrate, a thin-film transistor on the substrate, at least partially in the display area and including a semiconductor layer, a gate electrode, a source electrode, a drain electrode, a planarization insulating layer on the thin-film transistor and at least partially in the display area and the peripheral area, a pixel electrode on the planarization insulating layer at least partially in the display area and electrically connected to the thin-film transistor, an alignment mark on the planarization insulating layer at least partially in the peripheral area and including a first conductive layer, and a bank layer on the planarization insulating layer to cover a portion of the pixel electrode and defining a pixel opening exposing a portion of the pixel electrode.",
+"claimsHtml": "<b>1</b>. A display device comprising a display panel having a display area and a peripheral area, wherein the display panel comprises: a substrate; a thin-film transistor on the substrate, at least partly in the display area and comprising a semiconductor layer, a gate electrode, a source electrode, and a drain electrode; a planarization insulating layer on the thin-film transistor, at least partly in the display area and in the peripheral area; a pixel electrode on the planarization insulating layer, at least partly in the display area and electrically connected to the thin-film transistor; an alignment mark on the planarization insulating layer, at least partly in the peripheral area and comprising a first conductive layer; and a bank layer on the planarization insulating layer, covering a portion of the pixel electrode and defining a pixel opening, the pixel opening exposing the portion of the pixel electrode, wherein the pixel electrode and the first conductive layer are in a same layer and comprise a same material, and the first conductive layer is apart from the bank layer.  <br /> <b>2</b>. The display device of claim 1, wherein the first conductive layer comprises: a first portion; a second portion on the first portion and comprising a different material from the first portion; and a third portion on the second portion and comprising a same material as the first portion.  <br /> <b>3</b>. The display device of claim 2, wherein each of the first portion and the third portion comprises an indium tin oxide (ITO) material, and the second portion comprises a silver (Ag) material.  <br /> <b>4</b>. The display device of claim 1, wherein the display panel further comprises a second conductive layer between the substrate and the planarization insulating layer and at least partly in the peripheral area, and the second conductive layer is in a same layer as each of the source electrode and the drain electrode and comprises a same material as each of the source electrode and the drain electrode.  <br /> <b>5</b>. The display device of claim 4, wherein the first conductive layer is surrounded by the second conductive layer in a plan view. <br /> <b>6</b>. The display device of claim 5, wherein each of the second conductive layer, the source electrode, and the drain electrode independently comprises at least one material from among titanium (Ti) and aluminum (Al). <br /> <b>7</b>. The display device of claim 1, further comprising: an optical functional layer o",
+"applicantName": [
+"Samsung Display Co., Ltd."
+],
+"applicantCity": [
+"Yongin-si"
+],
+"applicantState": [
+"N/A"
+],
+"applicantCountry": [
+"KR"
+],
+"assigneeName": [
+"Samsung Display Co., Ltd."
+],
+"assigneeCity": [
+"Yongin-si"
+],
+"assigneeState": [
+"N/A"
+],
+"assigneeCountry": [
+"KR"
+],
+"cpcInventive": [
+"H10K59/122 20230201",
+"H10K59/1213 20230201"
+],
+"continuityData": null,
+"applicationFilingDate": [
+"2025-12-18T00:00:00Z"
+],
+"relatedApplFilingDate": null,
+"priorityClaimsDate": [
+"2025-05-12T00:00:00Z"
+],
+"publicationReferenceDocumentNumber": "20260362905",
+"applicationNumber": "19/425242"
+},
+"US-D1154662-S": {
+"guid": "US-D1154662-S",
+"type": "USPAT",
+"kindCode": [
+"S"
+],
+"datePublished": "2026-10-20T00:00:00Z",
+"inventionTitle": "Display screen or portion thereof with animated graphical user interface",
+"abstractHtml": null,
+"claimsHtml": "The ornamental design for a display screen or portion thereof with animated graphical user interface as shown and described.",
+"applicantName": [
+"Apple Inc."
+],
+"applicantCity": [
+"Cupertino"
+],
+"applicantState": [
+"CA"
+],
+"applicantCountry": [
+"US"
+],
+"assigneeName": [
+"Apple Inc."
+],
+"assigneeCity": [
+"Cupertino"
+],
+"assigneeState": [
+"CA"
+],
+"assigneeCountry": [
+"US"
+],
+"cpcInventive": null,
+"continuityData": null,
+"applicationFilingDate": [
+"2025-06-08T00:00:00Z"
+],
+"relatedApplFilingDate": null,
+"priorityClaimsDate": null,
+"publicationReferenceDocumentNumber": "D1154662",
+"applicationNumber": "30/007378"
+}
+}
+}

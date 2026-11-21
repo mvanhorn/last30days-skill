@@ -1,0 +1,54 @@
+name: Reddit canary
+
+# Live check of the keyless Reddit floor (Brave, DuckDuckGo, Startpage) and
+# the Arctic Shift hydrator. Scheduled and manual only: it hits live services
+# from a datacenter IP, so it must never gate a pull request.
+on:
+  schedule:
+    - cron: "23 13 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: reddit-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Reddit canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # The previous run's verdict, for the "challenged two days running"
+      # rule. Each run saves a new entry; restore-keys picks the newest.
+      - name: Restore previous canary state
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .reddit-canary
+          key: reddit-canary-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            reddit-canary-state-
+
+      - name: Run canary
+        run: uv run --no-project --python 3.12 python skills/last30days/scripts/reddit_canary.py --state-file .reddit-canary/state.json --report .reddit-canary/report.json
+
+      - name: Save canary state
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .reddit-canary
+          key: reddit-canary-state-${{ github.run_id }}-${{ github.run_attempt }}

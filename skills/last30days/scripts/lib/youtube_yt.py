@@ -20,7 +20,9 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
@@ -46,18 +48,35 @@ TRANSCRIPT_LIMITS = {
 # quality_nudge reads these via last30days.py to suppress the stale-yt-dlp
 # nudge when every attempted fetch actually succeeded. yt-dlp path only: the
 # nudge diagnoses the local binary, not the ScrapeCreators API.
-_TRANSCRIPT_FETCH_STATS = {"attempts": 0, "failures": 0}
+#
+# ``target`` sums each search's transcript target, so health is measured
+# against what the run tried to get rather than every surviving video.
+# ``blocked`` counts searches whose yt-dlp hit a YouTube bot check or rate
+# limit, and ``sc_rescued`` counts transcripts the ScrapeCreators fallback
+# fetched instead: those failures are the network, not a stale binary.
+_TRANSCRIPT_FETCH_STATS = {
+    "attempts": 0, "failures": 0, "target": 0, "blocked": 0, "sc_rescued": 0,
+}
+_TRANSCRIPT_FETCH_STATS_LOCK = threading.Lock()
 
 
 def get_transcript_fetch_stats() -> Dict[str, int]:
     """Return cumulative transcript-fetch stats for this process."""
-    return dict(_TRANSCRIPT_FETCH_STATS)
+    with _TRANSCRIPT_FETCH_STATS_LOCK:
+        return dict(_TRANSCRIPT_FETCH_STATS)
 
 
 def reset_transcript_fetch_stats() -> None:
     """Reset cumulative transcript-fetch stats (used by tests)."""
-    _TRANSCRIPT_FETCH_STATS["attempts"] = 0
-    _TRANSCRIPT_FETCH_STATS["failures"] = 0
+    with _TRANSCRIPT_FETCH_STATS_LOCK:
+        for key in _TRANSCRIPT_FETCH_STATS:
+            _TRANSCRIPT_FETCH_STATS[key] = 0
+
+
+def _add_transcript_fetch_stats(**counts: int) -> None:
+    with _TRANSCRIPT_FETCH_STATS_LOCK:
+        for key, value in counts.items():
+            _TRANSCRIPT_FETCH_STATS[key] += value
 
 # Max words to keep from each transcript
 TRANSCRIPT_MAX_WORDS = 5000
@@ -109,8 +128,13 @@ _NO_CAPTION_RE = re.compile(
 )
 
 
-def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -> list[str]:
+def extract_transcript_highlights(
+    transcript: str, topic: str, limit: int = 5, *, max_words: int = 50,
+) -> list[str]:
     """Extract quotable highlights from a YouTube transcript.
+
+    ``max_words`` bounds a sentence; short-form spoken captions run long
+    sentences together, so their callers pass a higher bound.
 
     Filters filler (subscribe, welcome back, etc.), scores sentences by
     specificity (numbers, proper nouns, topic relevance), and returns
@@ -122,8 +146,8 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
     sentences = re.split(r'(?<=[.!?])\s+', transcript)
 
     # Fallback for punctuation-free transcripts (common with auto-captions):
-    # chunk into ~20-word segments so they pass the 8-50 word filter.
-    if len(sentences) <= 1 and len(transcript.split()) > 50:
+    # chunk into ~20-word segments so they pass the 8-to-max_words filter.
+    if len(sentences) <= 1 and len(transcript.split()) > max_words:
         words = transcript.split()
         sentences = [' '.join(words[i:i+20]) for i in range(0, len(words), 20)]
 
@@ -140,7 +164,7 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
     for sent in sentences:
         sent = sent.strip()
         words = sent.split()
-        if len(words) < 8 or len(words) > 50:
+        if len(words) < 8 or len(words) > max_words:
             continue
         if any(re.search(p, sent, re.IGNORECASE) for p in filler):
             continue
@@ -230,6 +254,9 @@ def _lane_seconds_left() -> Optional[float]:
 
 
 def _lane_out_of_time() -> bool:
+    limit = _sc_spend_limit.get()
+    if limit is not None and limit.cancel is not None and limit.cancel.is_set():
+        return True
     seconds_left = _lane_seconds_left()
     return seconds_left is not None and seconds_left <= 0
 
@@ -264,7 +291,7 @@ def _lane_under_transcript_reserve(reserve: float) -> bool:
 # yt-dlp text for "stop calling YouTube for transcripts this search".
 # Timeouts are not included: one slow video is not a block.
 _YOUTUBE_BLOCK_RE = re.compile(
-    r"429|too many requests|sign in to confirm|not a bot|bot-gate",
+    r"429|too many requests|sign in to confirm(?! your age)|not a bot|bot-gate",
     re.IGNORECASE,
 )
 
@@ -410,21 +437,33 @@ def _run_ytdlp(
         if abort_if_blocked and _youtube_transcripts_blocked():
             raise _YtdlpBlocked()
 
-    seconds_left = _lane_seconds_left()
-    if seconds_left is None:
+    limit = _sc_spend_limit.get()
+    cancel = limit.cancel if limit else None
+    deadline = _lane_deadline()
+    if deadline is None and cancel is None:
         with _ytdlp_slots:
             _abort_if_blocked()
             return _remember_youtube_block(subproc.run_with_timeout(cmd, timeout=timeout))
-    if not _ytdlp_slots.acquire(timeout=max(0.0, seconds_left)):
-        raise subproc.SubprocTimeout("no yt-dlp slot before the lane deadline", started=False)
+    if deadline is None:
+        deadline = time.monotonic() + timeout
+    while True:
+        if cancel is not None and cancel.is_set():
+            raise subproc.SubprocTimeout("YouTube lane cancelled", started=False)
+        seconds_left = deadline - time.monotonic()
+        if seconds_left <= 0:
+            raise subproc.SubprocTimeout("no yt-dlp slot before the lane deadline", started=False)
+        if _ytdlp_slots.acquire(timeout=min(0.05, seconds_left) if cancel is not None else seconds_left):
+            break
     try:
         _abort_if_blocked()
-        seconds_left = _lane_seconds_left() or 0.0
+        seconds_left = deadline - time.monotonic()
         if seconds_left <= 0:
             raise subproc.SubprocTimeout("lane deadline passed", started=False)
         bounded = min(timeout, seconds_left)
         try:
-            result = subproc.run_with_timeout(cmd, timeout=bounded)
+            result = subproc.run_with_timeout(
+                cmd, timeout=bounded, deadline_monotonic=deadline, cancel=cancel,
+            )
         except subproc.SubprocTimeout as exc:
             # The attempt cap was not what stopped the process. The lane
             # deadline was shorter, so don't report the full cap.
@@ -782,6 +821,123 @@ def _apply_date_window(
     return items
 
 
+# YouTube's own upload-date search filters (the ``sp`` results-page parameter),
+# smallest first: this week, this month, this year.
+_UPLOAD_DATE_FILTERS = ((7, "EgIIAw=="), (31, "EgIIBA=="), (366, "EgIIBQ=="))
+# The filters count back from now, so they only fit a window ending about today.
+_UPLOAD_FILTER_MAX_END_LAG_DAYS = 2
+
+
+def _upload_date_filter(from_date: str, to_date: str) -> Optional[str]:
+    """Return the smallest YouTube upload filter covering the window, or None."""
+    try:
+        start = _dt.date.fromisoformat(from_date)
+        end = _dt.date.fromisoformat(to_date)
+    except ValueError:
+        return None
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    if (today - end).days > _UPLOAD_FILTER_MAX_END_LAG_DAYS:
+        return None
+    span = (today - start).days
+    for max_days, sp in _UPLOAD_DATE_FILTERS:
+        if span <= max_days:
+            return sp
+    return None
+
+
+def _first_stderr_line(stderr: Optional[str]) -> str:
+    lines = (stderr or "").strip().splitlines()
+    return lines[0] if lines else "(no stderr)"
+
+
+def _count_in_window(items: List[Dict[str, Any]], from_date: str, to_date: str) -> int:
+    return sum(1 for i in items if i["date"] and from_date <= i["date"] <= to_date)
+
+
+def _parse_search_stdout(stdout: str, core_topic: str) -> List[Dict[str, Any]]:
+    """Parse yt-dlp ``--dump-json`` lines into video items."""
+    items = []
+    for line in stdout.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            video = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        video_id = video.get("id", "")
+        view_count = video.get("view_count") if video.get("view_count") is not None else 0
+        like_count = video.get("like_count") if video.get("like_count") is not None else 0
+        comment_count = video.get("comment_count") if video.get("comment_count") is not None else 0
+        upload_date = video.get("upload_date", "")  # YYYYMMDD
+
+        # Convert YYYYMMDD to YYYY-MM-DD
+        date_str = None
+        if upload_date and len(upload_date) == 8:
+            date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+
+        description = str(video.get("description", ""))[:500]
+        items.append({
+            "video_id": video_id,
+            "title": video.get("title", ""),
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": video.get("channel", video.get("uploader", "")),
+            "date": date_str,
+            "engagement": {
+                "views": view_count,
+                "likes": like_count,
+                "comments": comment_count,
+            },
+            "duration": video.get("duration"),
+            "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
+            "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
+            "description": description,
+        })
+    return items
+
+
+def _search_recent_uploads(
+    core_topic: str, count: int, sp: str, timeout: float,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Search YouTube's results page with an upload-date filter.
+
+    Relevance-ranked ``ytsearch`` fills its top results with years-old videos
+    for topics that have a big back catalog (a music artist's official videos),
+    so a recent window can come back empty while new uploads exist. The
+    filtered results page returns only uploads from the period.
+
+    Returns the parsed videos and an error string when the search failed
+    without producing any, so the caller can keep the failure visible.
+    """
+    query = urllib.parse.urlencode({"search_query": core_topic, "sp": sp})
+    cmd = [
+        "yt-dlp",
+        "--ignore-config",
+        "--no-cookies-from-browser",
+        f"https://www.youtube.com/results?{query}",
+        "--playlist-end",
+        str(count),
+        "--dump-json",
+        "--no-warnings",
+        "--no-download",
+    ]
+    try:
+        result = _run_ytdlp(_wrap_ytdlp_cmd(cmd), timeout=timeout)
+    except subproc.SubprocTimeout:
+        _log(f"YouTube upload-date search timed out ({timeout:g}s)")
+        return [], f"Upload-date search timed out after {timeout:g}s"
+    except FileNotFoundError:
+        return [], "yt-dlp not found"
+    if result.returncode != 0:
+        _note_youtube_block(result.stderr or "")
+    items = _parse_search_stdout(result.stdout or "", core_topic)
+    _log(f"YouTube upload-date search found {len(items)} videos")
+    if result.returncode != 0 and not items:
+        return [], f"yt-dlp upload-date search failed: {_first_stderr_line(result.stderr)}"
+    return items, None
+
+
 def search_youtube(
     topic: str,
     from_date: str,
@@ -861,64 +1017,45 @@ def search_youtube(
         # going through the error path below.
         if result.returncode != 0:
             _note_youtube_block(result.stderr or "")
+        stderr = result.stderr or ""
+        blocked = result.returncode != 0 and _is_youtube_bot_or_rate_limit(stderr)
+        search_error: Optional[str] = None
         if result.returncode != 0 and not stdout.strip():
-            stderr_first = (result.stderr or "").strip().splitlines()
-            first_line = stderr_first[0] if stderr_first else "(no stderr)"
+            first_line = _first_stderr_line(stderr)
             if ssh_host:
                 _log(
                     f"YouTube search via SSH host {ssh_host!r} failed "
                     f"(rc={result.returncode}): {first_line}"
                 )
-                error = f"SSH routing to {ssh_host!r} failed: {first_line}"
+                search_error = f"SSH routing to {ssh_host!r} failed: {first_line}"
             else:
                 _log(f"YouTube search failed (rc={result.returncode}): {first_line}")
-                error = f"yt-dlp search failed: {first_line}"
-            published = _publish({"items": [], "error": error})
-            return published
-        if not stdout.strip():
+                search_error = f"yt-dlp search failed: {first_line}"
+
+        items = _parse_search_stdout(stdout, core_topic) if stdout.strip() else []
+
+        # Old catalog videos can crowd every relevance slot, and an age-gated
+        # result can leave stdout empty. For a recent window, retry once with
+        # YouTube's upload-date filter and merge. A bot block skips it.
+        retry_error: Optional[str] = None
+        sp = None
+        if (
+            freshness_mode in _RECENT_FRESHNESS_MODES
+            and _count_in_window(items, from_date, to_date) < 3
+            and not blocked
+            and not _lane_out_of_time()
+        ):
+            sp = _upload_date_filter(from_date, to_date)
+        if sp:
+            _log(f"Retrying YouTube for '{core_topic}' with an upload-date filter")
+            recent_items, retry_error = _search_recent_uploads(core_topic, count, sp, timeout)
+            seen = {i["video_id"] for i in items}
+            for item in recent_items:
+                if item["video_id"] not in seen:
+                    seen.add(item["video_id"])
+                    items.append(item)
+        if not items and not search_error and not retry_error:
             _log("YouTube search returned 0 results")
-            published = _publish({"items": []})
-            return published
-
-        # Parse JSON-per-line output
-        items = []
-        for line in stdout.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                video = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            video_id = video.get("id", "")
-            view_count = video.get("view_count") if video.get("view_count") is not None else 0
-            like_count = video.get("like_count") if video.get("like_count") is not None else 0
-            comment_count = video.get("comment_count") if video.get("comment_count") is not None else 0
-            upload_date = video.get("upload_date", "")  # YYYYMMDD
-
-            # Convert YYYYMMDD to YYYY-MM-DD
-            date_str = None
-            if upload_date and len(upload_date) == 8:
-                date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
-
-            description = str(video.get("description", ""))[:500]
-            items.append({
-                "video_id": video_id,
-                "title": video.get("title", ""),
-                "url": f"https://www.youtube.com/watch?v={video_id}",
-                "channel_name": video.get("channel", video.get("uploader", "")),
-                "date": date_str,
-                "engagement": {
-                    "views": view_count,
-                    "likes": like_count,
-                    "comments": comment_count,
-                },
-                "duration": video.get("duration"),
-                "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
-                "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
-                "description": description,
-            })
 
         # Date filter: prefer recent items; the keep-all fallback is scoped
         # by freshness mode (evergreen only), see _apply_date_window.
@@ -926,7 +1063,12 @@ def search_youtube(
 
         # Sort by views descending
         items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
-        published = _publish({"items": items})
+        payload: Dict[str, Any] = {"items": items}
+        # Nothing usable survived: keep whichever search failed visible so the
+        # run reports a failed source instead of a quiet zero.
+        if not items and (search_error or retry_error):
+            payload["error"] = search_error or retry_error
+        published = _publish(payload)
         return published
     except Exception as exc:
         # Post-subprocess failures (parse/relevance/sort) must still unblock
@@ -1215,6 +1357,18 @@ def _transcript_backoff(video_id: str, attempt: int) -> float:
     return _TRANSCRIPT_BACKOFF_BASE * (attempt + 1) + offset
 
 
+def _wait_for_transcript_retry(video_id: str, attempt: int) -> bool:
+    delay = _transcript_backoff(video_id, attempt)
+    remaining = _lane_seconds_left()
+    if remaining is not None and delay >= remaining:
+        return False
+    limit = _sc_spend_limit.get()
+    if limit is not None and limit.cancel is not None:
+        return not limit.cancel.wait(delay)
+    time.sleep(delay)
+    return True
+
+
 def _read_vtt(video_id: str, temp_dir: str) -> Optional[str]:
     """Return the VTT text yt-dlp wrote for ``video_id``, or None if absent."""
     vtt_path = _pick_ytdlp_vtt(video_id, temp_dir, _ytdlp_sub_langs().split(","))
@@ -1301,8 +1455,7 @@ def _fetch_transcript_ytdlp(
             partial_vtt = _read_vtt(video_id, temp_dir)
             if partial_vtt is not None:
                 return partial_vtt
-            if attempt < attempts - 1:
-                time.sleep(_transcript_backoff(video_id, attempt))
+            if attempt < attempts - 1 and _wait_for_transcript_retry(video_id, attempt):
                 continue
             break
         except FileNotFoundError:
@@ -1340,10 +1493,12 @@ def _fetch_transcript_ytdlp(
             # Treat as genuine no-captions, not an error worth retrying.
             return None
         last_reason = snippet
-        if _TRANSIENT_RE.search(stderr) and attempt < attempts - 1:
+        if (
+            _TRANSIENT_RE.search(stderr) and attempt < attempts - 1
+            and _wait_for_transcript_retry(video_id, attempt)
+        ):
             _log(f"yt-dlp transcript transient failure for {video_id} "
                  f"(attempt {attempt + 1}/{attempts}): {snippet}")
-            time.sleep(_transcript_backoff(video_id, attempt))
             continue
         # Non-transient, or retries exhausted — surface the real reason.
         _log(f"yt-dlp transcript failed for {video_id} "
@@ -1631,6 +1786,7 @@ def _fetch_transcripts_parallel(
     # Surface the split so the summary can't misrepresent a masked failure
     # as a clean success.
     sc_rescued = sum(1 for st in statuses.values() if st.get("sc_rescued"))
+    _add_transcript_fetch_stats(sc_rescued=sc_rescued)
     if sc_rescued:
         _log(f"Got transcripts for {got}/{len(video_ids)} videos "
              f"({errors} failed, {sc_rescued} rescued via ScrapeCreators fallback)")
@@ -1673,12 +1829,17 @@ def backfill_transcripts(
         return
     _log(f"Backfilling transcripts for {len(attempts)} finalized videos (target: {need})")
     captions_disabled: Set[str] = set()
-    transcripts = fetch_transcripts_parallel(
-        [it.item_id for it in attempts],
-        out_captions_disabled=captions_disabled,
-        token=token,
-        max_sc_rescues=need,
-    )
+    with _youtube_block_scope() as block:
+        transcripts = fetch_transcripts_parallel(
+            [it.item_id for it in attempts],
+            out_captions_disabled=captions_disabled,
+            token=token,
+            max_sc_rescues=need,
+        )
+    # A bot check here is a network loss like one in the search pass, so the
+    # footer gives the bot-check advice rather than "upgrade yt-dlp".
+    if block.tripped:
+        _add_transcript_fetch_stats(blocked=1)
     for it in attempts:
         if it.item_id in captions_disabled:
             it.metadata["captions_disabled"] = True
@@ -1838,10 +1999,14 @@ def _search_and_transcribe(
         # and unfinished ones never ran to an answer, so neither counts as a
         # failure) for the stale-yt-dlp nudge.
         finished_ids = [vid for vid in candidate_ids if vid not in unfinished_ids]
-        _TRANSCRIPT_FETCH_STATS["attempts"] += len(finished_ids)
-        _TRANSCRIPT_FETCH_STATS["failures"] += sum(
-            1 for vid in finished_ids
-            if not transcripts.get(vid) and vid not in captions_disabled_ids
+        _add_transcript_fetch_stats(
+            attempts=len(finished_ids),
+            failures=sum(
+                1 for vid in finished_ids
+                if not transcripts.get(vid) and vid not in captions_disabled_ids
+            ),
+            target=transcript_limit,
+            blocked=int(_youtube_transcripts_blocked()),
         )
     else:
         _log(f"Transcript limit is 0 for depth={depth}, skipping transcript fetch")
@@ -2010,17 +2175,27 @@ def _ytdlp_comments_result(
         _log(f"yt-dlp comment JSON parse failed for {video_id}: {exc}")
         return [], False
 
+    channel_id = str(payload.get("channel_id") or "")
     comments = []
     for c in (payload.get("comments") or [])[:max_comments]:
         text = c.get("text") or ""
         if not text:
             continue
-        comments.append({
+        comment = {
             "author": c.get("author") or "",
             "text": text[:400],
             "likes": c.get("like_count") or 0,
             "date": c.get("_time_text") or "",
-        })
+        }
+        # Whether the channel itself wrote this. A channel's display name and
+        # the handle on its comments can differ, so the name cannot say: yt-dlp
+        # does (author_is_uploader), and failing that the channel ids do. The
+        # key is left out when neither is known.
+        if isinstance(c.get("author_is_uploader"), bool):
+            comment["is_uploader"] = c["author_is_uploader"]
+        elif channel_id and c.get("author_id"):
+            comment["is_uploader"] = str(c["author_id"]) == channel_id
+        comments.append(comment)
     return comments, True
 
 
@@ -2089,6 +2264,7 @@ def _fetch_video_comments(
 
         # SC returns author as {"name": "@handle", ...}; legacy mocks may pass a string.
         author = c.get("author") or c.get("author_name", "")
+        is_uploader = _sc_comment_is_uploader(c)
         if isinstance(author, dict):
             author = author.get("name") or author.get("handle") or ""
 
@@ -2107,14 +2283,36 @@ def _fetch_video_comments(
             or c.get("publishedTimeText", "")
         )
 
-        comments.append({
+        comment = {
             "author": author,
             "text": text[:400],
             "likes": likes,
             "date": date,
-        })
+        }
+        if is_uploader is not None:
+            comment["is_uploader"] = is_uploader
+        comments.append(comment)
 
     return comments
+
+
+# Keys under which a comment payload may say its author is the video's
+# channel. Read from the comment and from its author object; a payload with
+# none of them leaves the comment's authorship unknown.
+_SC_UPLOADER_FLAG_KEYS = (
+    "author_is_uploader", "authorIsChannelOwner", "isChannelOwner", "isCreator",
+    "is_creator",
+)
+
+
+def _sc_comment_is_uploader(comment: Dict[str, Any]) -> Optional[bool]:
+    """The channel-owner flag a ScrapeCreators comment carries, or None."""
+    author = comment.get("author")
+    for holder in (comment, author if isinstance(author, dict) else {}):
+        for key in _SC_UPLOADER_FLAG_KEYS:
+            if isinstance(holder.get(key), bool):
+                return holder[key]
+    return None
 
 
 def search_youtube_sc(
@@ -2167,14 +2365,22 @@ def search_youtube_sc(
             raw.get("id") or raw.get("video_id") or raw.get("videoId") or ""
         )
         title = raw.get("title", "")
+        # SC's /v1/youtube/search returns camelCase fields (viewCountInt,
+        # publishedTime, lengthSeconds) and `channel` as an object; the
+        # snake_case names stay as fallbacks.
         channel = raw.get("channel") or raw.get("channel_name") or raw.get("uploader", "")
+        if isinstance(channel, dict):
+            channel = channel.get("title") or channel.get("handle") or ""
         description = str(raw.get("description", ""))[:500]
-        view_count = raw.get("view_count") or raw.get("views", 0)
+        view_count = raw.get("view_count") or raw.get("viewCountInt") or raw.get("views", 0)
         like_count = raw.get("like_count") or raw.get("likes", 0)
         comment_count = raw.get("comment_count") or raw.get("comments", 0)
 
         # Date: try multiple field names
-        date_str = raw.get("upload_date") or raw.get("date") or raw.get("published_at", "")
+        date_str = (
+            raw.get("upload_date") or raw.get("date") or raw.get("published_at")
+            or raw.get("publishedTime") or ""
+        )
         if date_str and len(date_str) == 8 and date_str.isdigit():
             date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
         elif date_str and "T" in date_str:
@@ -2195,7 +2401,7 @@ def search_youtube_sc(
                 "likes": like_count or 0,
                 "comments": comment_count or 0,
             },
-            "duration": raw.get("duration"),
+            "duration": raw.get("duration") or raw.get("lengthSeconds"),
             "relevance": _compute_relevance(core_topic, f"{title} {description}"),
             "why_relevant": f"YouTube: {title[:60]}" if title else f"YouTube: {core_topic}",
             "description": description,

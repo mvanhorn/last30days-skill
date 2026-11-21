@@ -163,7 +163,40 @@ def _is_youtube_degraded(research_results: dict, threshold: float) -> bool:
         # Every returned video had captions disabled - upstream content fact,
         # not a yt-dlp problem. Don't flag.
         return False
-    return (transcripts / eligible) < threshold
+    # The engine only tries for a few transcripts per search (the depth's
+    # transcript target), so judge against that, not every surviving video:
+    # 4 transcripts from 15 videos with a target of 2 is a healthy run.
+    target = int(research_results.get("youtube_transcript_target") or 0)
+    expected = min(target, eligible) if target > 0 else eligible
+    return (transcripts / expected) < threshold
+
+
+def _youtube_bot_check_text(research_results: dict, *, has_sc: bool) -> str:
+    """The degraded-YouTube line when yt-dlp hit a YouTube bot check.
+
+    A bot check is YouTube refusing this network, so upgrading yt-dlp cannot
+    help; name the two fixes that do."""
+    videos = int(research_results.get("youtube_videos_count") or 0)
+    transcripts = int(research_results.get("youtube_transcripts_count") or 0)
+    rescued = int(research_results.get("youtube_sc_rescued") or 0)
+    if rescued:
+        rescue = f"ScrapeCreators rescued {rescued} of them. "
+    elif has_sc:
+        rescue = "ScrapeCreators rescued none of them. "
+    else:
+        rescue = ""
+    fixes = "route yt-dlp through a residential host with LAST30DAYS_YOUTUBE_SSH_HOST"
+    if not has_sc:
+        fixes += (
+            ", or add SCRAPECREATORS_API_KEY for the ScrapeCreators transcript "
+            "fallback"
+        )
+    return (
+        f"YouTube returned {videos} videos and {transcripts} transcripts: "
+        "YouTube bot-checked yt-dlp on this network. "
+        f"{rescue}This is a bot check, not a stale yt-dlp, so upgrading it "
+        f"won't help. To get more transcripts, {fixes}."
+    )
 
 
 def _instagram_bonus_outcome(config: dict, research_results: dict) -> str | None:
@@ -309,6 +342,12 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         has_ytdlp=has_ytdlp,
         core_total=scored_source_count,
         x_fix=x_fix,
+        suggest_youtube_comments=(
+            not env.is_youtube_comments_available(
+                config, ytdlp_installed=has_ytdlp
+            )
+            and "youtube_comments" not in env.exclude_sources(config)
+        ),
     ) if (core_missing or core_degraded or bonus_errored) else None
 
     return {
@@ -333,11 +372,15 @@ def _build_nudge_text(
     has_ytdlp: bool = False,
     core_total: int | None = None,
     x_fix: Optional[prescriptions.Prescription] = None,
+    suggest_youtube_comments: bool = False,
 ) -> str:
     """Build human-readable nudge text describing what was missed or degraded.
 
     Prioritizes free suggestions. Optionally mentions bonus sources
     (TikTok, Instagram, Threads, Pinterest) if ScrapeCreators key is configured.
+    YouTube comments are only listed when the opt-in can actually enable them:
+    not already available through yt-dlp or INCLUDE_SOURCES, and not switched
+    off with EXCLUDE_SOURCES.
     """
     lines: List[str] = []
     core_degraded = core_degraded or []
@@ -436,6 +479,10 @@ def _build_nudge_text(
                 f"and reduce reliance on fallback providers: {install.fix_cli} "
                 f"(macOS), {scoop_install} (Windows), or {pip_install}."
             )
+        elif int(research_results.get("youtube_bot_checked") or 0) > 0:
+            free_suggestions.append(
+                _youtube_bot_check_text(research_results, has_sc=has_sc)
+            )
         else:
             captions_note = ""
             if captions_disabled > 0:
@@ -473,9 +520,11 @@ def _build_nudge_text(
             bonus_hints.append("Threads")
         if "pinterest" not in (active_sources or []):
             bonus_hints.append("Pinterest")
+        if suggest_youtube_comments:
+            bonus_hints.append("YouTube comments")
         if bonus_hints:
             free_suggestions.append(
-                f"Your SC key also powers {', '.join(bonus_hints)} and YouTube comments. "
+                f"Your SC key also powers {', '.join(bonus_hints)}. "
                 "Add them to INCLUDE_SOURCES in your .env to enable."
             )
 

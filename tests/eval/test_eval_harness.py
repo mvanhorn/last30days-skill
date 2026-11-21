@@ -11,7 +11,7 @@ def test_fixture_matrix_covers_required_topic_archetypes():
     fixtures = harness.load_fixtures()
     archetypes = {fixture.manifest["archetype"] for fixture in fixtures}
 
-    assert 6 <= len(fixtures) <= 8
+    assert 6 <= len(fixtures) <= 10
     assert {
         "tech-product",
         "person",
@@ -241,3 +241,110 @@ def test_hn_comment_replay_follows_firebase_kids_order(tmp_path):
         "posted_first",
         "posted_second",
     ]
+
+
+def test_digg_story_sources_confirm_matching_x_and_hacker_news_items():
+    [fixture] = [f for f in harness.load_fixtures() if f.name == "digg-confirmation"]
+    report = harness.evaluate_fixture(fixture).report
+    by_url = {candidate.url: candidate for candidate in report.ranked_candidates}
+
+    def story_of(url):
+        return (by_url[url].metadata.get("digg_story") or {}).get("url")
+
+    # Sources of a fetched story, in URL forms that differ from Digg's.
+    assert story_of("https://x.com/i/status/1940000000000000101") == "https://digg.com/ai/ljvbajl5"
+    assert story_of(
+        "https://x.com/Fixture_PHPDev/status/1940000000000000202?s=20"
+    ) == "https://digg.com/ai/1i79b1xh"
+    assert story_of(
+        "https://www.news.example.test/digg-confirmation/openai-lean-proofs/?utm_source=hn"
+    ) == "https://digg.com/ai/ljvbajl5"
+    # Same author topic, same site, or same subject, but not a story source.
+    for url in (
+        "https://x.com/fixture_onlooker/status/1940000000000000901",
+        "https://x.com/fixture_pricing/status/1940000000000000902",
+        "https://news.example.test/digg-confirmation/openai-lean-explainer",
+        "https://benchmarks.example.test/digg-confirmation/openai-terra",
+    ):
+        assert story_of(url) is None, url
+    # Each confirmed post outranks its unconfirmed twin, which has the same
+    # engagement and date.
+    assert (
+        by_url["https://x.com/i/status/1940000000000000101"].final_score
+        > by_url["https://x.com/fixture_onlooker/status/1940000000000000901"].final_score
+    )
+    proofs_story = next(
+        item for item in report.items_by_source["digg"] if item.item_id == "ljvbajl5"
+    )
+    assert len(proofs_story.metadata["posts"]) == 5
+
+
+def test_digg_bar_drops_off_topic_and_leads_with_biggest_on_topic_story():
+    [fixture] = [f for f in harness.load_fixtures() if f.name == "digg-confirmation"]
+    report = harness.evaluate_fixture(fixture).report
+    digg_ids = {item.item_id for item in report.items_by_source["digg"]}
+    by_url = {candidate.url: candidate for candidate in report.ranked_candidates}
+
+    # A 652-score sports story that never mentions OpenAI.
+    assert "q4rk8tzn" not in digg_ids
+    assert "https://digg.com/sports/q4rk8tzn" not in by_url
+
+    # The report's Digg items are re-sorted at the end of the run, so the
+    # order Digg's stream went into ranking is read from each story's rank
+    # in that stream. The story recorded last is also the oldest, so local
+    # ranking alone would put it last. It has the highest Digg Score of the
+    # stories whose title names OpenAI, and the other big ones follow by score.
+    stream = sorted(
+        (candidate for candidate in report.ranked_candidates if candidate.source == "digg"),
+        key=lambda candidate: candidate.native_ranks["primary:digg"],
+    )
+    assert [candidate.item_id for candidate in stream[:6]] == [
+        "b9ds3fua",  # 1502
+        "ljvbajl5",  # 1286
+        "1i79b1xh",  # 473
+        "x7hzsqzf",  # 239
+        "en0dbdyl",  # 226
+        "wo3n9meb",  # 180
+    ]
+    assert stream[0].native_ranks["primary:digg"] == 1
+    # Kept, but behind them: it names OpenAI in the title with a Digg Score
+    # of 38 and 3 sources.
+    assert [candidate.item_id for candidate in stream[6:]] == ["mtdi1c95"]
+
+    # A 310-score story that names OpenAI only in its summary. A summary-only
+    # mention is dropped, however big the story is.
+    assert "h2vy6wpc" not in digg_ids
+    assert "https://digg.com/ai/h2vy6wpc" not in by_url
+    # Its recorded sources include a Hacker News link and an X post that are
+    # in this report. Its sources are not read, so those two results carry
+    # no Digg story.
+    for url in (
+        "https://benchmarks.example.test/digg-confirmation/openai-terra",
+        "https://x.com/fixture_pricing/status/1940000000000000902",
+    ):
+        assert by_url[url].metadata.get("digg_story") is None, url
+
+
+def test_entity_markets_lead_with_the_teams_title_odds():
+    [fixture] = [f for f in harness.load_fixtures() if f.name == "entity-markets"]
+    report = harness.evaluate_fixture(fixture).report
+    markets = sorted(
+        report.items_by_source["polymarket"],
+        key=lambda item: item.metadata["selection_score"],
+        reverse=True,
+    )
+
+    # "Pro Football: 2027 Champion" never names the 49ers in its title; the
+    # 49ers are one of its 32 outcomes, and the favorite.
+    champion = markets[0]
+    assert champion.title == "Pro Football: 2027 Champion"
+    matched = champion.metadata["matched_market"]
+    assert matched["label"] == "San Francisco 49ers"
+    assert (matched["rank"], matched["race_size"]) == (1, 32)
+    assert champion.metadata["headline"]["question"] == (
+        "Will the San Francisco 49ers win the 2027 NFL league championship?"
+    )
+    # Every market shown names the 49ers in its own question or label.
+    for item in markets:
+        text = f"{item.metadata['matched_market']['question']} {item.metadata['matched_market']['label']}"
+        assert "49ers" in text, item.title

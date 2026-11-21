@@ -73,3 +73,20 @@ class TestDegradationWarnings:
             degraded_by_source={},
         )
         assert not any("degraded" in w.lower() for w in warnings)
+
+
+def test_pinned_installer_string_lives_in_one_place():
+    """Setup and doctor share one pinned catalog installer, so a version bump
+    cannot leave the two pointing at different releases."""
+    import re
+    from pathlib import Path
+
+    lib_dir = Path(health.__file__).parent
+    pinned = re.compile(r"@mvanhorn/printing-press-library@\d")
+    hits = [
+        f"{path.name}:{lineno}"
+        for path in sorted(lib_dir.glob("*.py"))
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if pinned.search(line)
+    ]
+    assert len(hits) == 1 and hits[0].startswith("health.py:"), hits

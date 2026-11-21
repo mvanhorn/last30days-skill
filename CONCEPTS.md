@@ -44,6 +44,10 @@ The fused unit of evidence that ranking, clustering, and rendering operate on: e
 
 The research flow available with no API keys: source data is gathered by scraping public web pages rather than authenticated APIs, and ranking falls back to local scoring instead of LLM-based reranking. This is the free tier of the Skill; lexical quality safeguards like Entity grounding matter most here, because no LLM is available to judge relevance semantically.
 
+### Reddit session layer
+
+The optional logged-in layer of free Reddit: with its own consent (`REDDIT_BROWSER_CONSENT`), the Engine reads the user's `reddit_session` browser cookie and searches reddit.com as that account, so posts, comment matches and communities come back with live scores. It runs before the Keyless path's site search and the web floor and replaces them when it serves; when it is off, expired or blocked, the Keyless path runs unchanged. It never runs on a Grok Bot host, the hosted backend or an unattended scheduled run.
+
 ### Comment-enrichment slots
 
 The small, depth-dependent budget of Reddit posts whose comments get fetched in the Keyless path (4 / 8 / 12 per subquery at quick / default / deep). Slot selection is relevance-aware and comment-first: posts that pass Entity grounding claim slots first, and within that tier the most-commented threads go first, so the budget is not spent on high-engagement posts that final ranking will demote or on near-empty threads.
@@ -51,6 +55,30 @@ The small, depth-dependent budget of Reddit posts whose comments get fetched in 
 ### Engagement keeper
 
 A Reddit thread that clears the relevance floor, passes Entity grounding, and ranks in the top three of its stream by upvotes plus comments. Keepers survive per-stream truncation regardless of their local rank score, and the fused candidate pool reserves a few slots (2 / 3 / 4 by depth) for the same class of thread, so the month's most-discussed on-topic threads reach the ranked output even when their title overlap with the query is weak. When the Primary entity's head token is generic ("ai", "new"), the floor rises so viral off-topic threads cannot claim the slots.
+
+### Prominent Digg story
+
+A Digg story whose title names the run topic as a whole word or phrase and that has a Digg Score of at least 40 and at least 5 sources. A story that names the topic in its title but is smaller, or whose title carries part of the topic (one word of a two-word name, or a telling word of a longer description), is an ordinary story. Every other story is dropped from the run, including one that names the topic only in its summary. The verdict is worked out from the topic and the story's own text and numbers each time it is needed and is never stored on the item. Clusters from digg-pp-cli 2026.10.x carry no story UUID and are not judged.
+
+### Person run
+
+A run about a working person that the host starts by passing an employer, a LinkedIn URL, or an email (`--employer`, `--linkedin`, `--email`). It resolves who the person is before searching: their LinkedIn profile (with a Deepline key), their bio on the employer's site, and their own X, GitHub, and site links. Only an Identity anchor or a first-party source admits evidence. A run on a bare name is not a person run and behaves as before.
+
+### Identity anchor
+
+A non-name fact that ties an item to the person in a Person run: the employer's name or domain, a work email's domain, the person's LinkedIn URL, or the employer their verified profile lists. An item that matches only the name is dropped and counted. Items from the person's own accounts pass on a first-party marker. A personal email domain is never an anchor, and a handle the Engine discovered for the person anchors only items that handle wrote; it never confirms the person's identity.
+
+### Older evidence
+
+The person's own LinkedIn posts from before the window, up to a year back, shown with their real dates in the `## Person Profile` block when fewer than three first-party items fall inside the window. Older evidence never enters the ranked findings, so a report never presents it as recent.
+
+### Patent Digest
+
+The bounded evidence block (`## Patent Digest`) the Engine prints on a company run from USPTO Patent Public Search: how many of the company's US applications were published and patents granted in the window, the names they were filed under, up to 12 First US publications with their abstract and first claim, and more by title. A filer known to belong to the company, such as a subsidiary Wikidata names, is the company's, and up to three such filers each get one of the 12 so the parent's filings cannot fill every slot. Filings under a name that only extends the company's name, which the Engine could not tie to the company, are marked not verified. The digest is evidence only: the Engine decides nothing about what a filing means, and the hosting model, following `references/patent-signals.md`, decides whether the report carries a Patent Secret Signals section. No digest means no section.
+
+### First US publication
+
+A published application, or a grant with no earlier publication, that does not continue an older application: the first time the USPTO published that invention. Only these are listed in a Patent Digest; continuations, divisionals, grants of applications published earlier, and design patents are counted and never shown. It does not mean the first time anyone published the invention (it may have published abroad earlier) or that the work is recent: a filing is written well before it publishes.
 
 ## Discovery
 
@@ -119,6 +147,12 @@ An X result the hosting model fetched itself, through its own X connector, and h
 One full research run for one entity of an "X vs Y" comparison; the Engine runs every entity's sub-run in parallel and renders them side by side. *Avoid: competitor run, peer run (for the run itself; "peer" still names a non-main entity).*
 
 Sub-runs share the process's limits (the YouTube fetch gate, paid-call budgets), so any per-run budget for work behind one of those limits is split across the sub-runs rather than granted to each in full. Otherwise the comparison multiplies the work and every sub-run misses the wait a single run fits inside.
+
+## Paid lanes
+
+### Proxy lane
+
+A paid provider lane (ScrapeCreators, xAI, Serper, Parallel) that, in proxy mode (`LAST30DAYS_API_MODE=proxy` with an API key and base), runs on the local Engine but is billed to the API key: the user holds no key for that provider, so its calls go through the hosted service's metered proxy. A key the user set always keeps its provider's lane direct, and a backend the user holds a key for ranks ahead of a Proxy lane serving the same need. Only calls made through the Engine's shared HTTP layer can be Proxy lanes; CLI-based backends and raw-socket clients never are. Free sources are never Proxy lanes. Once the key runs out of credits or hits its spend ceiling, every Proxy lane is off for the rest of the run. *Avoid: hosted mode (that hands the whole run to the service).*
 
 ## Flagged ambiguities
 

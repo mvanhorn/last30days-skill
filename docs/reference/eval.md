@@ -30,7 +30,7 @@ CI runs the pytest command in the `eval` job of `.github/workflows/validate.yml`
 | Coverage | Fraction of fixture sources represented by usable report items or an explicit `Report.source_status` outcome. |
 | Determinism | `schema.to_dict()` equality for two runs with fixed time and identical recorded inputs. |
 
-Aggregate floors live in `tests/eval/baseline.json`. The fixture matrix covers a tech product, a person, a comparison, breaking events, a niche technical topic, and a non-English CJK topic.
+Aggregate floors live in `tests/eval/baseline.json`. The fixture matrix covers a tech product, a person, a comparison, breaking events, a niche technical topic, a non-English CJK topic, a set of Digg stories whose sources confirm some X and Hacker News items and not others (`digg-confirmation`, hand-authored from saved Digg search answers rather than recorded), and a team's Polymarket markets (`entity-markets`, recorded from a live `49ers` run with Polymarket alone and trimmed to the fields the parser reads).
 
 ## Add or refresh a fixture
 
@@ -66,6 +66,8 @@ The replay is fail-closed: an unrecorded request or an unused recorded exchange 
 
 - `expects_clusters` (bool): fixtures whose topic historically forms multi-member clusters set this true; if cluster formation regresses to singletons on such a fixture, coherence scores 0.0 instead of a vacuous 1.0. Sparse topics (niche, non-english-cjk, tech-product) set it false because singletons are their legitimate shape.
 - Post-ranking enrichment (YouTube transcripts, Digg posts) is recorded and replayed by merging recorded `metadata` onto freshly computed items by item_id, so normalization/scoring/dedupe regressions stay visible to the eval rather than being overwritten by fixture state.
+- Digg story sources are fetched before supplemental search and record their own exchange (`phase: story_sources`): a map from story UUID to its quotes and source URLs. Replay feeds that map through the same attach-and-match code as a live run, so confirmation tags and the ranking bonus are computed, not replayed.
+- Each replay is one command, so the harness resets the run-scoped fetch memo before it; otherwise a second replay would reuse the first run's Polymarket search and leave its recorded exchanges unused. A Polymarket event URL counts as grounded when the recorded Gamma response carries its slug, because Gamma returns the slug and the parser builds the URL from it.
 - Post-rerank GitHub star enrichment records its repo->stars map and replays via `github.apply_star_map`, keeping runs offline even when `GITHUB_TOKEN` is set in CI. GitHub project-mode (`--github-repo`) and person-mode (`--github-user`) runs are not yet fixture-recordable; the network guard fails loudly if a fixture attempts them.
 
 ## Known seams
@@ -85,3 +87,33 @@ Include in the review:
 4. An explanation for any lower floor; never lower a floor solely to make CI green.
 
 `test_intentional_out_of_window_regression_fails_recency_floor` is the standing negative control: it injects stale ranked evidence and proves the baseline check detects the regression.
+
+## Jobs Page Secret Signals labelled set
+
+This set is separate from the harness above, which runs the pipeline and never a model. Whether a report carries a Jobs Page Secret Signals section is the host model's judgment of the `## Jobs Digest` evidence, following `skills/last30days/references/hiring-signals.md`, so it cannot be scored offline.
+
+`tests/fixtures/jobs_signals_labelled.json` holds a person's labels for four saved boards (Anthropic, Stripe, SpaceX, Nvidia) and a second Nvidia digest with a public sector cluster: each candidate signal with the posting's words, which of the four tests of the bar it meets, whether it is already public, and whether it should qualify, plus whether the board should get a section. `tests/test_hiring_signals_contract.py` checks two things with it in CI: that the written rules say what the labels assume, and that the labels agree with the decision rule restated in `tests/jobs_signals_rule.py` (two of the first three tests or the fourth; three or more postings sharing one concrete focus count as one cluster signal; one qualifying signal is enough and at most two are shown; no section without web search; public signals worded as public).
+
+That proves the arithmetic and the labels' consistency. It does not prove a model finds those signals or judges the tests the same way. For that, check by hand on a host with web search:
+
+1. Run `/last30days <Company>` for each of the four companies.
+2. Compare the section with the board's `expected_section`. Stripe should show one signal, and no section has more than two signal paragraphs of two sentences each. A "Jensen Huang" run should show the public sector cluster as one signal that cites two postings.
+3. Where a section appears, compare its signals with the candidates labelled `qualifies`. Boards change, so match on what the signal is, not on the exact role title, and look for a signal labelled `does not qualify` being shown.
+4. Check the wording against `public`: SpaceX's Starmind may appear only as already public, never as unreported.
+5. Check the form: the bold lead-in runs straight into the first signal, whose opening sentence carries the board's counts as a clause; each signal is two sentences that say what the role is in plain words, link the posting, and say what it would mean; no list; and the closing sentence about open postings.
+
+The Nvidia label that rests on a report story applies only when that month's report carries that story.
+
+## Patent Secret Signals labelled set
+
+The same split applies to the Patent Secret Signals section, which the host model writes from the `## Patent Digest` evidence following `skills/last30days/references/patent-signals.md`.
+
+`tests/fixtures/patent_signals_labelled.json` holds constructed cases, one per rule, not saved digests: each candidate filing with whether it is a first US publication, whether it names something concrete, which paths of the bar it meets, what the web check found, and whether it should qualify. `tests/test_patent_signals_contract.py` checks in CI that the written rules say what the labels assume, and that the labels agree with the decision rule restated in `tests/patent_signals_rule.py` (concrete and out of character or unshipped; a signal paragraph is two sentences of at most 60 words with its kept facts and nothing worded as a plan; a tie to a story in the report never qualifies a filing; a shipped or reported match removes the unshipped path; continuations and the like never qualify; a titles-only entry never qualifies; three invention families sharing one focus count as one cluster signal; a filing the engine could not verify needs an entity known to be the company's; one signal by default and a second only when neither has a matching product, and at most three paragraphs with the jobs section; no section without web search).
+
+That proves the arithmetic and the labels' consistency. It does not prove a model picks those filings or judges the bar the same way. For that, check by hand on a host with web search, using an installed copy of the skill:
+
+1. Run `/last30days <Company>` for a large filer (a company with hundreds of US filings a month) and for a company with no filings.
+2. Check presence. The company with no filings prints no `## Patent Digest`, and its report has no Patent Secret Signals section. For the large filer, a section appears only when a filing clears the bar, usually has one signal paragraph, and never has more than two (one when the report also has two jobs signals). A filing that only fits a story in the report gets no section.
+3. Check hedging. Each signal says what the filing describes with hedged verbs (describes, would, could), never that the company is building or will ship it, and is not worded as new or unreported when the web check found coverage or a matching product.
+4. Check the kept facts and the size. Each signal paragraph is two sentences of at most 60 words outside the linked titles, links the filing as the digest printed it, says application or grant, gives the publication date and the filing month and year in parentheses, and quotes the filing in 12 words or fewer when it quotes at all. Read it once without the filing open: it should say what the thing is in plain words before what it would mean. A filing by an entity other than the company itself names that entity, and the report never calls a filer confirmed, matched or unverified.
+5. Check the form: the bold lead-in runs straight into a two-sentence signal, with no counts sentence and no closing disclaimer; any second signal is one more two-sentence paragraph; no list; after the jobs section when there is one.

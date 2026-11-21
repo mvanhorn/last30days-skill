@@ -39,7 +39,7 @@ def _fake_json(url, **kwargs):
         return []
     if parsed.path.startswith("/repos/"):
         return {
-            "stargazers_count": 123, "open_issues_count": 17,
+            "stargazers_count": 123, "open_issues_count": 17, "visibility": "public",
             "description": "Repo description", "language": "Python", "forks_count": 4,
         }
     raise AssertionError(f"Unexpected HTTP endpoint: {url}")

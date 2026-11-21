@@ -1,9 +1,12 @@
 """Unavailable external-plan sources must never broaden retrieval."""
 
+import json
+import sys
 from unittest.mock import patch
 
 import pytest
 
+import last30days as cli
 from lib import pipeline, planner
 
 
@@ -58,7 +61,7 @@ def test_internal_empty_intersection_retains_fallback():
 def _planned(report):
     """Subquery sources minus the installed/opted-in lanes the engine backfills."""
     return [
-        [s for s in sq.sources if s not in pipeline.HOST_PLAN_BACKFILL_SOURCES]
+        [s for s in sq.sources if s not in planner.HOST_PLAN_BACKFILL_SOURCES]
         for sq in report.query_plan.subqueries
     ]
 
@@ -132,6 +135,69 @@ def test_host_plan_gains_installed_lanes_it_never_named(capsys):
     assert "digg, arxiv" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("depth", ["default", "deep"])
+def test_host_plan_can_omit_specific_installed_lanes(depth, capsys):
+    plan = dict(plan_with(["reddit"], ["hackernews"]), omit_sources=["arxiv", "devto"])
+    report, fetched = _run_with_plan(
+        "test topic", plan, depth=depth,
+        requested_sources=["reddit", "hackernews", "digg", "arxiv", "devto"],
+    )
+    assert [sq.sources for sq in report.query_plan.subqueries] == [
+        ["reddit", "digg"], ["hackernews"],
+    ]
+    assert fetched == {"reddit", "hackernews", "digg"}
+    assert {"arxiv", "devto"}.isdisjoint(report.query_plan.source_weights)
+    assert "part-0: digg" in capsys.readouterr().err
+
+
+def test_omitted_trustpilot_is_not_probed_or_backfilled():
+    plan = dict(plan_with(["reddit"]), omit_sources=["trustpilot"])
+    with patch.object(pipeline.trustpilot, "can_run_now") as can_run:
+        report, fetched = _run_with_plan("test topic", plan)
+    can_run.assert_not_called()
+    assert "trustpilot" not in report.query_plan.subqueries[0].sources
+    assert "trustpilot" not in fetched
+
+
+@pytest.mark.parametrize("mode", ["--mock", "--diagnose", "--preflight"])
+def test_cli_omission_skips_trustpilot_readiness_check(mode, tmp_path, capsys):
+    plan = dict(plan_with(["reddit"]), omit_sources=["trustpilot"])
+    config = {"EXCLUDE_SOURCES": "digg"}
+    with (
+        patch.object(sys, "argv", [
+            "last30days.py", "test topic", mode, "--no-browser-cookies",
+            "--plan", json.dumps(plan), "--search", "reddit,trustpilot",
+            "--emit", "json", "--save-dir", str(tmp_path),
+        ]),
+        patch.object(cli.env, "get_config", return_value=config),
+        patch.object(pipeline, "which", side_effect=lambda command: command),
+        patch.object(pipeline.trustpilot, "can_run_now", return_value={"can_run": True}) as can_run,
+    ):
+        assert cli.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    can_run.assert_not_called()
+    assert config["EXCLUDE_SOURCES"] == "digg"
+    if mode == "--diagnose":
+        assert not payload["trustpilot_can_run"]
+        assert {"digg", "trustpilot"}.isdisjoint(payload["available_sources"])
+    elif mode == "--preflight":
+        assert {"digg", "trustpilot"}.isdisjoint(payload["network"]["available_sources"])
+
+
+@pytest.mark.parametrize(
+    "omissions", ["arxiv", None, [True], [["arxiv"]], ["arxive"], ["amazon"]],
+)
+def test_host_plan_rejects_invalid_omissions(omissions):
+    with pytest.raises(ValueError, match="omit_sources"):
+        planner.validate_external_plan(dict(plan_with(["reddit"]), omit_sources=omissions))
+
+
+def test_host_plan_rejects_omitting_a_source_named_by_a_subquery():
+    plan = dict(plan_with(["reddit"], ["arxiv"]), omit_sources=["arxiv"])
+    with pytest.raises(ValueError, match="omit_sources.*arxiv"):
+        planner.validate_external_plan(plan)
+
+
 def test_host_plan_lane_named_in_secondary_subquery_is_not_duplicated():
     report, _ = _run_with_plan(
         "test topic", plan_with(["reddit"], ["digg"]),
@@ -159,6 +225,78 @@ def test_host_plan_backfill_skips_paid_decision_lanes():
     assert plan.subqueries[0].sources == ["reddit"]
 
 
+def test_host_plan_backfill_says_when_a_paid_lane_is_available_but_not_run(capsys):
+    plan = planner._sanitize_plan(
+        plan_with(["reddit"]), "test topic", ["reddit", "amazon", "meta_ads"], None, "default",
+        honor_plan_sources=True,
+    )
+    pipeline._ensure_unplanned_lanes_in_host_plan(plan, ["reddit", "amazon", "meta_ads"])
+    err = capsys.readouterr().err
+    assert "[Amazon] available but not requested for this run" in err
+    assert "[Meta Ads] available but not requested for this run" in err
+
+
+@pytest.mark.parametrize("lane", ["amazon", "meta_ads"])
+@pytest.mark.parametrize("depth", ["quick", "default"])
+def test_host_plan_gains_a_paid_lane_named_in_search(lane, depth, capsys):
+    # The runbook has the host request these through --search, not the plan.
+    report, fetched = _run_with_plan(
+        "test topic", plan_with(["hackernews"]),
+        requested_sources=["hackernews", lane], depth=depth,
+    )
+    assert report.query_plan.subqueries[0].sources == ["hackernews", lane]
+    assert lane in fetched
+    err = capsys.readouterr().err
+    assert f"[Planner] Added" in err and lane in err
+    assert "not requested for this run" not in err
+
+
+@pytest.mark.parametrize(
+    "lane,flag", [("amazon", "_amazon_query"), ("meta_ads", "_meta_ads_page")],
+)
+def test_host_plan_gains_a_paid_lane_whose_targeting_flag_is_set(lane, flag):
+    # INCLUDE_SOURCES makes the lane available; the flag is this run's request.
+    available = ["reddit", "amazon", "meta_ads"]
+    plan = planner._sanitize_plan(
+        plan_with(["reddit"]), "test topic", available, None, "default",
+        honor_plan_sources=True,
+    )
+    asked = pipeline._paid_lanes_asked_for(None, {flag: "value"})
+    assert asked == [lane]
+    pipeline._ensure_unplanned_lanes_in_host_plan(plan, available, asked=asked)
+    assert plan.subqueries[0].sources == ["reddit", lane]
+
+
+def test_paid_lane_only_in_include_sources_is_not_asked_for():
+    assert pipeline._paid_lanes_asked_for(
+        ["reddit"], {"INCLUDE_SOURCES": "amazon,meta_ads"},
+    ) == []
+    assert pipeline._paid_lanes_asked_for(None, {}) == []
+
+
+def test_host_plan_naming_a_paid_lane_is_left_alone(capsys):
+    report, _ = _run_with_plan(
+        "test topic", plan_with(["hackernews"], ["amazon"]),
+        requested_sources=["hackernews", "amazon"],
+    )
+    assert [sq.sources for sq in report.query_plan.subqueries] == [["hackernews"], ["amazon"]]
+    assert "[Planner] Added" not in capsys.readouterr().err
+
+
+def test_amazon_footer_is_silent_when_the_lane_was_available_but_never_ran():
+    # It used to print `no products matched "<keyword>"` for a search never made.
+    from lib import render
+
+    with patch.object(pipeline, "_paid_lanes_asked_for", return_value=[]):
+        report, fetched = _run_with_plan(
+            "test topic", plan_with(["hackernews"]),
+            requested_sources=["hackernews", "amazon"],
+        )
+    assert "amazon" not in fetched
+    assert "amazon_query" not in report.artifacts
+    assert render._amazon_footer_line(report) is None
+
+
 def test_exclude_sources_keeps_an_installed_lane_out_of_the_backfill():
     def which(name):
         return "/fake/bin/digg-pp-cli" if name == "digg-pp-cli" else None
@@ -175,3 +313,121 @@ def test_quick_host_plan_keeps_its_source_budget():
     )
     assert [sq.sources for sq in report.query_plan.subqueries] == [["reddit", "youtube"]]
     assert not {"digg", "arxiv"} & fetched
+
+
+def test_runbook_tells_the_host_to_name_jobs_for_company_topics():
+    from tests.skill_contract import reference_text
+
+    runbook = reference_text("research-runbook")
+    omit = runbook[runbook.index("Leave out only"):]
+    omit = omit[:omit.index(".") + 1]
+    assert "`jobs`" not in omit
+    assert "`perplexity`" in omit
+    assert "For a company or the person who leads it, name `jobs`" in runbook
+
+
+def test_host_plan_naming_jobs_on_a_person_topic_fetches_jobs():
+    report, fetched = _run_with_plan(
+        "Jensen Huang", plan_with(["reddit", "jobs"], ["hackernews"]),
+    )
+    assert _planned(report) == [["reddit", "jobs"], ["hackernews"]]
+    assert "jobs" in fetched
+
+
+# ---- #1449: backfill only lanes that can run this session ----
+
+def _backfill(available, monkeypatch, can_run, **kwargs):
+    from lib import trustpilot
+
+    calls = []
+
+    def fake_can_run(config=None):
+        calls.append(config)
+        return {"can_run": can_run}
+
+    monkeypatch.setattr(trustpilot, "can_run_now", fake_can_run)
+    plan = planner._sanitize_plan(
+        plan_with(["reddit"]), "test topic", available, None, "default",
+        honor_plan_sources=True,
+    )
+    pipeline._ensure_unplanned_lanes_in_host_plan(plan, available, **kwargs)
+    return plan.subqueries[0].sources, calls
+
+
+def test_trustpilot_without_a_session_is_not_backfilled(monkeypatch, capsys):
+    sources, calls = _backfill(["reddit", "trustpilot", "digg"], monkeypatch, can_run=False)
+    assert sources == ["reddit", "digg"]
+    assert calls
+    err = capsys.readouterr().err
+    assert "Not adding trustpilot" in err
+    assert "Added installed/opted-in/requested sources" in err
+    assert "digg" in err and "trustpilot" not in err.split("Added")[1]
+
+
+def test_trustpilot_that_can_run_is_still_backfilled(monkeypatch):
+    sources, _ = _backfill(["reddit", "trustpilot"], monkeypatch, can_run=True)
+    assert sources == ["reddit", "trustpilot"]
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"requested_sources": ["reddit", "trustpilot"]},
+    {"trustpilot_domain": "example.com"},
+])
+def test_explicitly_requested_trustpilot_is_backfilled_without_a_session(monkeypatch, kwargs):
+    sources, calls = _backfill(["reddit", "trustpilot"], monkeypatch, can_run=False, **kwargs)
+    assert sources == ["reddit", "trustpilot"]
+    assert calls == []
+
+
+def test_arxiv_backfill_is_unchanged_and_never_probes_trustpilot(monkeypatch):
+    sources, calls = _backfill(["reddit", "arxiv"], monkeypatch, can_run=False)
+    assert sources == ["reddit", "arxiv"]
+    assert calls == []
+
+
+def test_runbook_describes_host_plan_backfill_honestly():
+    from tests.skill_contract import reference_text
+
+    runbook = reference_text("research-runbook")
+    assert "never expands a narrow list" not in runbook
+    assert "is added to the primary subquery" in runbook
+    assert "`EXCLUDE_SOURCES` or `--search` keeps one out" not in runbook
+    assert "exclusions win." in runbook
+    assert "plus top-level `jobs_queries`: 2-4 product or team terms" in runbook
+    assert "Trustpilot when `trustpilot_can_run` is false" in runbook
+
+
+def test_search_list_dropping_a_plan_source_warns_once_naming_it(capsys):
+    report, fetched = _run_with_plan(
+        "test topic", plan_with(["reddit", "tiktok"], ["tiktok"]),
+        requested_sources=["reddit", "x"],
+    )
+    assert [sq.label for sq in report.query_plan.subqueries] == ["part-0"]
+    assert "tiktok" not in fetched
+    err = capsys.readouterr().err
+    warnings = [line for line in err.splitlines() if "--search dropped" in line]
+    assert len(warnings) == 1
+    assert "tiktok" in warnings[0]
+    # The subquery whose only source was tiktok is skipped, and the warning
+    # still names tiktok rather than leaving it to the skip line.
+    assert "Skipping external-plan subquery part-1" in err
+
+
+@pytest.mark.parametrize("plan_sources, config", [
+    # Not installed: the mock run cannot serve stocktwits.
+    (["reddit", "stocktwits"], {}),
+    # Engine-attached lanes.
+    (["reddit", "amazon"], {}),
+    (["reddit", "corpus"], {}),
+    (["reddit", "meta_ads"], {}),
+    # Excluded by the user, not by --search.
+    (["reddit", "tiktok"], {"EXCLUDE_SOURCES": "tiktok"}),
+])
+def test_sources_search_did_not_drop_never_warn(plan_sources, config, capsys):
+    with patch.object(pipeline, "_retrieve_stream", return_value=([], {})):
+        pipeline.run(
+            topic="test topic", config=config, mock=True, web_backend="none",
+            depth="default", requested_sources=["reddit"],
+            external_plan=plan_with(plan_sources),
+        )
+    assert "--search dropped" not in capsys.readouterr().err

@@ -139,6 +139,7 @@ def test_short_doctor_budget_preserves_completed_reddit_status(local_http, child
     probe_time = SimpleNamespace(monotonic=time.monotonic, sleep=time.sleep)
     with patch.dict(doctor._HTTP_PROBE_URLS, {"reddit": f"{url}/status/{status}"}), \
          patch.object(doctor, "time", probe_time), \
+         patch.object(doctor.reddit_health, "arctic_listing_probe_url", return_value=f"{url}/status/{status}"), \
          patch.object(probe_time, "sleep") as sleep:
         result = doctor._probe_source("reddit", {}, 1)
     assert not result["ok"]
@@ -147,7 +148,7 @@ def test_short_doctor_budget_preserves_completed_reddit_status(local_http, child
     assert result.get("transient", False) is (status == 429)
     assert doctor.audit_state("reddit", {"tier": doctor.TIER_OK},
                               probe_result=result) == expected_audit
-    assert len(children) == 1
+    assert len(children) == (2 if status == 403 else 1)
     sleep.assert_not_called()
 
 
@@ -542,7 +543,8 @@ def test_doctor_retry_spends_one_operation_budget(monkeypatch):
     monkeypatch.setattr(doctor.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     monkeypatch.setattr(doctor, "_http_ok", get)
     assert doctor._probe_source("reddit", {}, 10)["ok"]
-    assert timeouts == [(10, 110), (2, 110)]
+    # Brave, its one retry, then the Arctic Shift step on what is left.
+    assert timeouts == [(10, 110), (2, 110), (1.5, 110)]
 
 
 @pytest.mark.parametrize("elapsed", [8, 9])

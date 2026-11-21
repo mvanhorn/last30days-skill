@@ -2,7 +2,40 @@
 
 from __future__ import annotations
 
+import re
+
 from . import relevance, schema
+
+
+# Stored length of a quoted comment. Renderers shorten further at display
+# time and add their own ellipsis, so none is added here.
+QUOTE_LIMIT = 400
+# A sentence end is used when it falls in the last part of the allowed text;
+# an earlier one would throw away most of the quote.
+_QUOTE_SENTENCE_ZONE = 0.6
+_SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u2019)\]]*(?=\s)")
+
+
+def cut_quote(text: str, limit: int = QUOTE_LIMIT) -> str:
+    """Shorten a comment to ``limit`` characters without cutting a word.
+
+    Cuts at the last sentence end inside the limit when one falls in its last
+    part, otherwise at the last word boundary, otherwise (one unbroken run of
+    characters) at the limit. Text that already fits is returned stripped.
+    """
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    # One character past the limit, so an end or a space right at it counts.
+    window = text[: limit + 1]
+    ends = [match.end() for match in _SENTENCE_END.finditer(window) if match.end() <= limit]
+    if ends and ends[-1] >= limit * _QUOTE_SENTENCE_ZONE:
+        return window[: ends[-1]].rstrip()
+    # Any whitespace is a word boundary: comments carry newlines and tabs.
+    space = next((i for i in range(len(window) - 1, -1, -1) if window[i].isspace()), -1)
+    if space > 0:
+        return window[:space].rstrip()
+    return text[:limit]
 
 
 def _truncate_words(text: str, max_words: int) -> str:

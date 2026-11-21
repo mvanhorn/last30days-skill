@@ -184,3 +184,139 @@ def test_anchored_run_drops_namesakes_from_footer_counts_and_top_voices():
     assert [i.container for i in report.items_by_source['reddit']] == ['venturecapital']
     assert report.source_status['reddit'].items_returned == 1
     assert 'realestateinvesting' not in render._top_voices_footer_line(report)
+
+
+# -- person runs ---------------------------------------------------------------
+
+PERSON = 'Dana Okafor'
+PERSON_PLAN = {
+    'intent': 'research', 'freshness_mode': 'balanced_recent', 'cluster_mode': 'topic',
+    'subqueries': [{'label': 'primary', 'search_query': PERSON,
+                    'ranking_query': f'What has {PERSON} done lately?',
+                    'sources': ['grounding']}],
+}
+NAMESAKE_URL = 'https://food.example/lisbon/dana-okafor-bistro'
+NEWS_URL = 'https://news.example/freight/dana-okafor-coo'
+
+
+def _person_ctx(**overrides):
+    from lib import person
+    ctx = person.PersonContext(full_name=PERSON, employer_name='Northwind Freight',
+        employer_domain='northwind.example',
+        anchors=['Northwind Freight', 'northwind.example'], linkedin_status='no key')
+    for key, value in overrides.items():
+        setattr(ctx, key, value)
+    return ctx
+
+
+def _web(url, title, snippet):
+    return {'title': title, 'snippet': snippet, 'url': url,
+            'date': dates.get_date_range(5)[0], 'relevance': 0.9}
+
+
+NAMESAKE = _web(NAMESAKE_URL, 'Dana Okafor opens a new bistro in Lisbon',
+                'Chef Dana Okafor brings her tasting menu to the old town.')
+NEWS = _web(NEWS_URL, 'Dana Okafor named COO at Northwind Freight',
+            'Northwind Freight promoted Dana Okafor to chief operating officer.')
+
+
+def _person_run(config, web_items, *, github_user=None, github_items=()):
+    def retrieve(*_args, source=None, **_kwargs):
+        return (list(web_items), {}) if source == 'grounding' else ([], {})
+
+    with patch.object(pipeline, '_retrieve_stream', side_effect=retrieve), \
+            patch.object(pipeline, '_retry_thin_sources'), \
+            patch.object(pipeline.github, 'search_github_person', return_value=list(github_items)):
+        return pipeline.run(topic=PERSON, config=config, depth='quick',
+            requested_sources=['grounding', 'github'], web_backend='brave',
+            external_plan=PERSON_PLAN, github_user=github_user)
+
+
+def _urls(report, source):
+    return [i.url for i in report.items_by_source.get(source, [])]
+
+
+def test_person_run_drops_and_counts_a_namesake_and_keeps_the_anchored_article():
+    ctx = _person_ctx()
+    report = _person_run({'_person': ctx}, [NAMESAKE, NEWS])
+    assert _urls(report, 'grounding') == [NEWS_URL]
+    assert NAMESAKE_URL not in {c.url for c in report.ranked_candidates}
+    assert NEWS_URL in {c.url for c in report.ranked_candidates}
+    assert report.artifacts['person_profile']['dropped_counts'] == {'grounding': 1}
+    assert report.query_plan.person_run is True
+    assert report.query_plan.person_identity_anchors == ['Northwind Freight', 'northwind.example']
+
+
+def test_person_anchors_join_host_plan_anchors_once_ignoring_case():
+    ctx = _person_ctx()
+    plan_with_anchors = {**PERSON_PLAN, 'person_identity_anchors': ['NORTHWIND FREIGHT', 'Cedar Ventures']}
+    with patch.object(pipeline, '_retrieve_stream', return_value=([], {})), \
+            patch.object(pipeline, '_retry_thin_sources'):
+        report = pipeline.run(topic=PERSON, config={'_person': ctx}, depth='quick',
+            requested_sources=['grounding'], web_backend='brave', external_plan=plan_with_anchors)
+    assert report.query_plan.person_identity_anchors == [
+        'NORTHWIND FREIGHT', 'Cedar Ventures', 'northwind.example']
+
+
+def test_freemail_only_person_run_drops_the_namesake_and_keeps_first_party_activity():
+    ctx = _person_ctx(employer_name='', employer_domain='', anchors=[], identity_weak=True)
+    commit = {'id': 'GH1', 'title': 'dokafor/route-planner: add dock scheduling', 'snippet': '',
+              'url': 'https://github.com/dokafor/route-planner/pull/7', 'author': 'dokafor',
+              'container': 'dokafor/route-planner', 'date': dates.get_date_range(3)[0],
+              'relevance': 0.9}
+    report = _person_run({'_person': ctx}, [NAMESAKE], github_user='dokafor', github_items=[commit])
+    assert _urls(report, 'grounding') == []
+    assert _urls(report, 'github') == [commit['url']]
+    assert report.artifacts['person_profile']['dropped_counts'] == {'grounding': 1}
+    assert report.artifacts['person_profile']['first_party_in_window'] == 1
+
+
+def test_non_person_run_without_anchors_keeps_the_namesake():
+    report = _person_run({}, [NAMESAKE])
+    assert _urls(report, 'grounding') == [NAMESAKE_URL]
+    assert 'person_profile' not in report.artifacts
+    assert report.query_plan.person_run is False
+
+
+def test_marked_first_party_post_passes_without_employer_text():
+    post = item('Kicking off the winter peak plan with the dispatch team.', PERSON, 'linkedin_profile')
+    post.metadata = {'identity_anchor': True, 'is_reshare': False}
+    assert entity_extract.matches_person_identity(post, ['Northwind Freight'], person_run=True)
+    assert entity_extract.matches_person_identity(post, [], person_run=True)
+
+
+@pytest.mark.parametrize('anchors', [[], ['Northwind Freight']])
+def test_person_run_gate_drops_unmarked_name_only_items(anchors):
+    namesake = item('Chef Dana Okafor opens a bistro in Lisbon', 'foodnews', 'grounding')
+    assert not entity_extract.matches_person_identity(namesake, anchors, person_run=True)
+    assert entity_extract.matches_person_identity(namesake, [])
+
+
+def test_person_run_gate_keeps_the_resolved_x_subject_with_no_anchors():
+    post = item('Shipping the new dock schedule today', 'dokafor', 'x')
+    assert entity_extract.matches_person_identity(post, [], 'dokafor', person_run=True)
+    assert not entity_extract.matches_person_identity(post, [], 'someone_else', person_run=True)
+
+
+def test_backfilled_transcript_anchor_passes_the_person_run_gate():
+    video = item('Dana Okafor on last-mile logistics', 'logisticspod', 'youtube')
+    video.metadata = {'transcript_snippet': 'I run operations at Northwind Freight these days.'}
+    assert entity_extract.matches_person_identity(video, ['Northwind Freight'], person_run=True)
+    video.metadata = {}
+    assert not entity_extract.matches_person_identity(video, ['Northwind Freight'], person_run=True)
+
+
+def test_rerank_and_fusion_apply_the_person_run_gate_with_no_anchors():
+    scoped = replace(plan(), person_identity_anchors=[], person_run=True)
+    namesake = item('Chef Dana Okafor opens a bistro in Lisbon', 'foodnews')
+    assert rerank.rerank_candidates(topic=PERSON, plan=scoped, candidates=[candidate(namesake)],
+        provider=None, model=None, shortlist_size=10) == []
+    assert fusion.weighted_rrf({('primary', 'x'): [namesake]}, scoped, pool_limit=10) == []
+
+
+def test_person_run_flag_round_trips_and_old_reports_load():
+    scoped = replace(plan(), person_run=True)
+    assert schema.query_plan_from_dict(asdict(scoped)).person_run is True
+    legacy = asdict(plan())
+    del legacy['person_run']
+    assert schema.query_plan_from_dict(legacy).person_run is False

@@ -1,11 +1,14 @@
 # ruff: noqa: E402
 """Tests for --as-of date support."""
 
+import io
 import json
 import subprocess
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +111,92 @@ class AsOfDateTests(unittest.TestCase):
                 reference_date="2020-05-25",
             ),
         )
+
+
+class AsOfTodayIsLiveTests(unittest.TestCase):
+    """--as-of naming today (UTC or the reader's calendar) is a live run."""
+
+    LA = timezone(timedelta(hours=-8))
+
+    def _fake_now(self):
+        # Local Nov 13 5pm in Los Angeles is Nov 14 in UTC.
+        return datetime(2026, 11, 13, 17, 0, tzinfo=self.LA)
+
+    def _run_main(self, argv, target="_main"):
+        seen = {}
+
+        def fake(*call_args, **call_kwargs):
+            seen["args"] = call_args[1] if target == "_main" else call_args[0]
+            return 0
+
+        with mock.patch.object(dates, "_local_now", self._fake_now), \
+                mock.patch.object(sys, "argv", ["last30days.py", *argv]), \
+                mock.patch.object(cli, target, fake):
+            rc = cli.main()
+        return rc, seen.get("args")
+
+    def test_as_of_local_today_is_cleared(self):
+        rc, args = self._run_main(["OpenAI", "--as-of=2026-11-13"])
+        self.assertEqual(0, rc)
+        self.assertIsNone(args.as_of_date)
+
+    def test_as_of_utc_today_is_cleared_when_local_is_a_day_behind(self):
+        rc, args = self._run_main(["OpenAI", "--as-of=2026-11-14"])
+        self.assertEqual(0, rc)
+        self.assertIsNone(args.as_of_date)
+
+    def test_as_of_yesterday_is_kept(self):
+        rc, args = self._run_main(["OpenAI", "--as-of=2026-11-12"])
+        self.assertEqual(0, rc)
+        self.assertEqual("2026-11-12", args.as_of_date)
+
+    def test_past_as_of_still_skips_jobs_lane(self):
+        past = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "skills/last30days/scripts/last30days.py",
+                "Microsoft",
+                "--mock",
+                "--emit=json",
+                "--json-profile=raw",
+                "--search=jobs",
+                "--as-of",
+                past,
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        report = json.loads(result.stdout)
+        jobs = report["source_status"]["jobs"]
+        self.assertFalse(jobs["attempted"])
+        self.assertIn("past window", jobs["detail"])
+
+    def test_as_of_today_with_discover_is_accepted(self):
+        stderr = io.StringIO()
+        with mock.patch.object(dates, "_local_now", self._fake_now), \
+                mock.patch.object(
+                    sys, "argv", ["last30days.py", "--discover", "--as-of=2026-11-13"]
+                ), \
+                mock.patch.object(cli, "_run_discover", return_value=0) as run_discover, \
+                mock.patch.object(sys, "stderr", stderr):
+            rc = cli.main()
+        self.assertEqual(0, rc)
+        run_discover.assert_called_once()
+        self.assertNotIn("--as-of cannot be used", stderr.getvalue())
+
+    def test_past_as_of_with_discover_is_still_rejected(self):
+        stderr = io.StringIO()
+        with mock.patch.object(dates, "_local_now", self._fake_now), \
+                mock.patch.object(
+                    sys, "argv", ["last30days.py", "--discover", "--as-of=2026-11-12"]
+                ), \
+                mock.patch.object(sys, "stderr", stderr):
+            rc = cli.main()
+        self.assertEqual(2, rc)
+        self.assertIn("--as-of cannot be used", stderr.getvalue())
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ CONFIG_ENV_KEY_RE = re.compile(
     r"LAST30DAYS_[A-Z0-9_]+|"
     r"(?:XAI|GOOGLE|GEMINI|GOOGLE_GENAI|XIAOHONGSHU|SCRAPECREATORS|APIFY|"
     r"BSKY|TRUTHSOCIAL|BRAVE|EXA|SERPER|OPENROUTER|PERPLEXITY|PARALLEL|"
-    r"XQUIK|GROQ)_[A-Z0-9_]+|"
+    r"XQUIK|GROQ|DEEPLINE)_[A-Z0-9_]+|"
     r"OPENAI_API_KEY|AUTH_TOKEN|CT0|FROM_BROWSER|INCLUDE_SOURCES|"
     r"EXCLUDE_SOURCES|SETUP_COMPLETE|FUN_LEVEL|X_BEARER_TOKEN"
     r")(?![A-Z0-9_])"
@@ -27,6 +27,7 @@ CONFIG_ENV_KEY_RE = re.compile(
 DOC_ONLY_KEYS = {
     "LAST30DAYS_API_BASE",
     "LAST30DAYS_API_KEY",
+    "LAST30DAYS_API_MODE",
     "LAST30DAYS_CACHE_DIR",
     "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES",
     "LAST30DAYS_MCP_TIMEOUT",
@@ -43,6 +44,15 @@ DOC_ONLY_KEYS = {
     # neither make a cron run look agent-hosted nor silently lift the gate.
     "LAST30DAYS_ALLOW_ENGINE_PLAN",
     "LAST30DAYS_HOST_AGENT",
+    # Set per run by a wrapper (the MCP `research` tool) and read from the
+    # process environment only, so a .env line cannot drop the Jobs Digest
+    # from every run.
+    "LAST30DAYS_NO_JOBS_DIGEST",
+    # Same wrapper, same reason: a .env line cannot turn the patent lane off
+    # for every run.
+    "LAST30DAYS_NO_PATENT_DIGEST",
+    # Same wrapper, same reason: a .env line cannot drop the report checklist.
+    "LAST30DAYS_NO_REPORT_CHECKLIST",
 }
 
 

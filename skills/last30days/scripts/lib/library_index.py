@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from . import library
+from .private_files import prepare_private_sqlite_files
 
 
 DEFAULT_LIBRARY_DB = library.DEFAULT_BRIEFS_DIR.parent / "library.db"
@@ -28,11 +29,12 @@ _LEGACY_LIBRARY_CONTEXT = re.compile(
     r"^## From your library\s*$.*?(?=^##\s|\Z)",
     re.MULTILINE | re.DOTALL,
 )
-_PRIVATE_CORPUS_BLOCK = re.compile(
-    r"<!-- LAST30DAYS_PRIVATE_CORPUS_START -->.*?"
-    r"<!-- LAST30DAYS_PRIVATE_CORPUS_END -->\s*",
-    re.DOTALL,
-)
+
+
+def saved_report_index_path(save_dir: Path) -> Path:
+    if save_dir == Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve():
+        return DEFAULT_LIBRARY_DB
+    return save_dir / ".last30days-library.db"
 
 
 class LibrarySearchUnavailable(RuntimeError):
@@ -284,8 +286,8 @@ def _upsert_entry(
     fingerprint: str | None = None,
 ) -> None:
     stat = entry.source_path.stat()
-    private_free_content = _PRIVATE_CORPUS_BLOCK.sub("", entry.content)
-    indexed_content = _indexable_content(private_free_content)
+    private_free_content = library.public_markdown(entry.content)
+    indexed_content = _without_library_context(private_free_content)
     headline = entry.headline
     summary = entry.summary
     if private_free_content != entry.content and entry.source_format == "markdown":
@@ -343,7 +345,11 @@ def _search_store_sightings(
     if not store_db_path.is_file():
         return []
     try:
-        with sqlite3.connect(str(store_db_path)) as conn:
+        path = prepare_private_sqlite_files(store_db_path)
+        # Standard SQLite builds reject a UNC server name in a URI authority.
+        use_uri = os.name == "posix"
+        database = f"{path.as_uri()}?mode=ro" if use_uri else str(path)
+        with sqlite3.connect(database, uri=use_uri) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """SELECT t.name AS topic, rr.run_date,
@@ -355,7 +361,7 @@ def _search_store_sightings(
                    JOIN finding_sightings fs ON fs.finding_id = f.id
                    JOIN research_runs rr ON rr.id = fs.run_id
                    JOIN topics t ON t.id = fs.topic_id
-                   WHERE findings_fts MATCH ? AND rr.status = 'completed'
+                   WHERE findings_fts MATCH ? AND rr.status IN ('completed', 'degraded')
                          AND fs.source != 'corpus'
                    ORDER BY rank, rr.run_date DESC
                    LIMIT ?""",
@@ -403,8 +409,11 @@ def _clean_snippet(value: object) -> str:
 
 
 def _indexable_content(content: str) -> str:
-    without_private = _PRIVATE_CORPUS_BLOCK.sub("", content)
-    without_marked = _MARKED_LIBRARY_CONTEXT.sub("", without_private)
+    return _without_library_context(library.public_markdown(content))
+
+
+def _without_library_context(content: str) -> str:
+    without_marked = _MARKED_LIBRARY_CONTEXT.sub("", content)
     return _LEGACY_LIBRARY_CONTEXT.sub("", without_marked)
 
 

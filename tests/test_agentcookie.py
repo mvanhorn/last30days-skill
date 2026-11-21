@@ -16,10 +16,42 @@ from lib import agentcookie
 _DUMMY = {"auth_token": "test-auth-token", "ct0": "test-ct0"}
 
 
+@pytest.mark.parametrize("config,allowed", [
+    ({}, False),
+    ({"FROM_BROWSER": "firefox"}, False),
+    ({"AGENTCOOKIE": "auto"}, False),
+    ({"AGENTCOOKIE": " ON "}, True),
+    ({"BROWSER_CONSENT": "true"}, True),
+    ({"BROWSER_CONSENT": " YES "}, True),
+    ({"BROWSER_CONSENT": "true", "AGENTCOOKIE": "off"}, False),
+    ({"BROWSER_CONSENT": "unknown", "AGENTCOOKIE": "on"}, False),
+    ({"BROWSER_CONSENT": "false", "AGENTCOOKIE": "on"}, False),
+    ({"FROM_BROWSER": "off", "BROWSER_CONSENT": "true", "AGENTCOOKIE": "on"}, False),
+])
+@pytest.mark.parametrize("from_environment", [False, True])
+def test_sidecar_prediction_and_read_require_positive_consent(config, allowed, from_environment, monkeypatch):
+    if from_environment:
+        for key, value in config.items():
+            monkeypatch.setenv(key, value)
+        config = None
+    with (
+        mock.patch("shutil.which", return_value="/mock/agentcookie"),
+        mock.patch("subprocess.run", return_value=_run_ok(json.dumps(_DUMMY))) as run,
+    ):
+        available = agentcookie.is_available(config)
+        run.assert_not_called()
+        result = agentcookie.read_x_cookies(config)
+    assert run.call_count == int(allowed)
+    assert available is allowed
+    assert result == (_DUMMY if allowed else None)
+
+
 @pytest.mark.parametrize("refusal", [
     {"BROWSER_CONSENT": "false"},
     {"BROWSER_CONSENT": " NO "},
+    {"BROWSER_CONSENT": "unknown"},
     {"FROM_BROWSER": " OFF ", "BROWSER_CONSENT": "true"},
+    {"AGENTCOOKIE": "off", "BROWSER_CONSENT": "true"},
 ])
 @pytest.mark.parametrize("from_environment", [False, True])
 def test_cookie_refusal_disables_sidecar_even_when_explicitly_enabled(
@@ -31,12 +63,15 @@ def test_cookie_refusal_disables_sidecar_even_when_explicitly_enabled(
             monkeypatch.setenv(key, value)
         config = None
     with (
-        mock.patch("shutil.which", return_value="/mock/agentcookie"),
+        mock.patch("lib.agentcookie.role_is_sink", return_value=True) as sink,
+        mock.patch("shutil.which", return_value="/mock/agentcookie") as which,
         mock.patch("subprocess.run") as run,
     ):
         assert agentcookie.is_available(config) is False
         assert agentcookie.read_x_cookies(config) is None
     run.assert_not_called()
+    sink.assert_not_called()
+    which.assert_not_called()
 
 
 def _run_ok(stdout):
@@ -55,8 +90,8 @@ def test_off_disables_without_subprocess():
 
 def test_absent_binary_is_soft_skip():
     with mock.patch("shutil.which", return_value=None):
-        assert agentcookie.read_x_cookies({}) is None
-        assert agentcookie.is_available({}) is False
+        assert agentcookie.read_x_cookies({"AGENTCOOKIE": "on"}) is None
+        assert agentcookie.is_available({"AGENTCOOKIE": "on"}) is False
 
 
 def test_complete_pair_from_list_json():
@@ -69,7 +104,7 @@ def test_complete_pair_from_list_json():
         mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
         mock.patch("subprocess.run", return_value=_run_ok(payload)) as run,
     ):
-        result = agentcookie.read_x_cookies({})
+        result = agentcookie.read_x_cookies({"AGENTCOOKIE": "on"})
     assert result == _DUMMY
     # It asks for the x.com domain in JSON.
     args = run.call_args[0][0]
@@ -85,7 +120,7 @@ def test_complete_pair_from_cookies_wrapper():
         mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
         mock.patch("subprocess.run", return_value=_run_ok(payload)),
     ):
-        assert agentcookie.read_x_cookies({}) == _DUMMY
+        assert agentcookie.read_x_cookies({"AGENTCOOKIE": "on"}) == _DUMMY
 
 
 def test_complete_pair_from_flat_mapping():
@@ -94,7 +129,7 @@ def test_complete_pair_from_flat_mapping():
         mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
         mock.patch("subprocess.run", return_value=_run_ok(payload)),
     ):
-        assert agentcookie.read_x_cookies({}) == _DUMMY
+        assert agentcookie.read_x_cookies({"AGENTCOOKIE": "on"}) == _DUMMY
 
 
 def test_half_pair_is_rejected():
@@ -103,7 +138,7 @@ def test_half_pair_is_rejected():
         mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
         mock.patch("subprocess.run", return_value=_run_ok(payload)),
     ):
-        assert agentcookie.read_x_cookies({}) is None
+        assert agentcookie.read_x_cookies({"AGENTCOOKIE": "on"}) is None
 
 
 def test_nonzero_exit_is_none():
@@ -111,7 +146,7 @@ def test_nonzero_exit_is_none():
         mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
         mock.patch("subprocess.run", return_value=mock.Mock(returncode=2, stdout="", stderr="nope")),
     ):
-        assert agentcookie.read_x_cookies({}) is None
+        assert agentcookie.read_x_cookies({"AGENTCOOKIE": "on"}) is None
 
 
 def test_timeout_is_none():
@@ -119,7 +154,7 @@ def test_timeout_is_none():
         mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
         mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("agentcookie", 10)),
     ):
-        assert agentcookie.read_x_cookies({}) is None
+        assert agentcookie.read_x_cookies({"AGENTCOOKIE": "on"}) is None
 
 
 def test_non_json_is_none():
@@ -127,7 +162,7 @@ def test_non_json_is_none():
         mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
         mock.patch("subprocess.run", return_value=_run_ok("<html>blocked</html>")),
     ):
-        assert agentcookie.read_x_cookies({}) is None
+        assert agentcookie.read_x_cookies({"AGENTCOOKIE": "on"}) is None
 
 
 def test_never_logs_cookie_values():
@@ -138,7 +173,7 @@ def test_never_logs_cookie_values():
         mock.patch("subprocess.run", return_value=_run_ok(payload)),
         mock.patch("lib.agentcookie.log.source_log", lambda src, msg, **k: logged.append(msg)),
     ):
-        agentcookie.read_x_cookies({})
+        agentcookie.read_x_cookies({"AGENTCOOKIE": "on"})
     joined = "\n".join(logged)
     assert "test-auth-token" not in joined
     assert "test-ct0" not in joined

@@ -262,7 +262,9 @@ def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
     url = _official_site_url(site)
     if not url:
         return result
-    html = http.get_text(url, timeout=timeout, retries=1, accept="text/html")
+    html, url = http.text_on_either_host_form(
+        lambda page: http.get_text(page, timeout=timeout, retries=1, accept="text/html"), url,
+    )
     if not html:
         _log(f"Official site {url} could not be fetched")
         return result

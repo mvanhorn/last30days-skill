@@ -26,7 +26,7 @@ def _first_of(*values, default=None):
             return v
     return default
 
-from . import dates, health, http, log
+from . import dates, health, http, log, snippet
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/reddit"
 
@@ -734,13 +734,18 @@ def enrich_with_comments(
                 permalink = c.get("permalink", "")
                 comment_url = f"https://reddit.com{permalink}" if permalink else ""
 
-                max_excerpt = 400 if ci == 0 else 300
                 top_comments.append({
                     "score": score,
                     "date": _parse_date(c.get("created_utc")),
                     "author": author,
-                    "excerpt": body[:max_excerpt],
+                    "excerpt": snippet.cut_quote(body),
                     "url": comment_url,
+                    # The thread's own poster, when the payload says so.
+                    **(
+                        {"is_uploader": c["is_submitter"]}
+                        if isinstance(c.get("is_submitter"), bool)
+                        else {}
+                    ),
                 })
 
                 if len(body) >= 30 and author not in ("[deleted]", "[removed]", "AutoModerator"):

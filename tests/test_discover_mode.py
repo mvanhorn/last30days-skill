@@ -524,19 +524,152 @@ def test_dedicated_reddit_verification_title_reports_schema_drift():
     assert "interstitial" in (outcome.detail or "")
 
 
-def test_global_digg_empty_topic_skips_cli_without_fabricated_failure():
+_DIGG_NEW_HELP = "Search Digg stories.\n\nFlags:\n      --sort string   relevance, score or newest\n"
+_DIGG_OLD_HELP = "Search Digg stories by title and summary.\n\nFlags:\n      --topic strings   (default [ai])\n"
+
+
+def _digg_top_row(index: int, **overrides) -> dict:
+    short_id = f"top{index:05d}"
+    row = {
+        "rank": index,
+        "clusterId": f"11111111-2222-3333-4444-{short_id:0>12}",
+        "clusterUrlId": short_id,
+        "url": f"https://digg.com/world/{short_id}",
+        "topic": "world",
+        "title": f"Top story number {index}",
+        "description": "Longer description of the story.",
+        "diggScore": 900 - index,
+        "postCount": 40 + index,
+        "uniqueAuthors": 20 + index,
+        "publishedAt": "2026-11-10T08:30:00Z",
+    }
+    row.update(overrides)
+    return row
+
+
+def _fake_digg_cli(monkeypatch, *, help_text: str, stdout: str) -> list:
+    """Stand in for digg-pp-cli; returns the list its non-help calls land in."""
+    calls: list = []
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        if "--help" in cmd:
+            return digg.subproc.SubprocResult(returncode=0, stdout=help_text, stderr="")
+        calls.append(list(cmd))
+        return digg.subproc.SubprocResult(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(digg, "_all_topic_search", None)
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    return calls
+
+
+def _fetch_digg_discovery(domain: str, *, keyword_gate: bool):
     plan = schema.DiscoveryPlan(
-        domain="", category=None, subreddits=[], sources=["digg"],
+        domain=domain, category=None, subreddits=[], sources=["digg"],
     )
-    with mock.patch.object(digg, "_run_cli") as run_cli:
-        items, error = pipeline._fetch_discovery_source(
-            "digg", plan, from_date="2026-06-10", to_date="2026-07-10",
-            depth="default", mock=False, config={}, keyword_gate=False,
-        )
+    return pipeline._fetch_discovery_source(
+        "digg", plan, from_date="2026-10-12", to_date="2026-11-11",
+        depth="default", mock=False, config={}, keyword_gate=keyword_gate,
+    )
+
+
+def test_global_digg_discovery_lists_top_stories(monkeypatch):
+    rows = [_digg_top_row(i) for i in range(1, 21)]
+    calls = _fake_digg_cli(
+        monkeypatch, help_text=_DIGG_NEW_HELP, stdout=json.dumps({"meta": {}, "results": rows}),
+    )
+
+    items, error = _fetch_digg_discovery("", keyword_gate=False)
+
+    assert error is None
+    assert [cmd[1] for cmd in calls] == ["top"]
+    assert len(items) == 20
+    assert items[0]["title"] == "Top story number 1"
+    assert items[0]["engagement"] == {"postCount": 41, "uniqueAuthors": 21, "digg_score": 899}
+    for item in items:
+        assert set(item["engagement"]) == {"postCount", "uniqueAuthors", "digg_score"}
+        assert item["date"] == "2026-11-10"
+
+
+def test_domain_digg_discovery_searches_instead_of_reading_top(monkeypatch):
+    story = _digg_top_row(1, title="Bitcoin crypto rally accelerates")
+    calls = _fake_digg_cli(
+        monkeypatch, help_text=_DIGG_NEW_HELP, stdout=json.dumps({"meta": {}, "results": [story]}),
+    )
+
+    items, error = _fetch_digg_discovery("crypto", keyword_gate=True)
+
+    assert error is None
+    assert [cmd[1:3] for cmd in calls] == [["search", "crypto"]]
+    assert [item["title"] for item in items] == ["Bitcoin crypto rally accelerates"]
+
+
+def test_global_digg_discovery_on_an_older_cli_is_empty_without_a_failure(monkeypatch):
+    # digg-pp-cli 2026.10.1 answers `top --agent` from a local store, in plain
+    # text when that store is empty, and has no titles when it is not.
+    calls = _fake_digg_cli(
+        monkeypatch, help_text=_DIGG_OLD_HELP,
+        stdout="no clusters in the local store. Run `digg-pp-cli sync` first.\n",
+    )
+
+    items, error = _fetch_digg_discovery("", keyword_gate=False)
 
     assert items == []
     assert error is None
-    run_cli.assert_not_called()
+    assert calls == []
+
+
+def _global_trending_report(monkeypatch, *, digg_rows: list[dict], reddit_items: list[dict]):
+    _fake_digg_cli(
+        monkeypatch, help_text=_DIGG_NEW_HELP,
+        stdout=json.dumps({"meta": {}, "results": digg_rows}),
+    )
+    monkeypatch.setattr(pipeline, "available_sources", lambda *a, **k: ["reddit", "digg"])
+    monkeypatch.setattr(
+        reddit_listing, "fetch_discovery_listings",
+        lambda *a, **k: {"items": reddit_items, "errors": []},
+    )
+    return pipeline.run_discover(domain="", config={}, as_of_date="2026-11-11")
+
+
+_FERRY_TITLE = "Harbor ferry strike halts morning commute"
+
+
+def _ferry_reddit_item() -> dict:
+    return {
+        "id": "ferry-r-1",
+        "title": _FERRY_TITLE,
+        "url": "https://reddit.com/r/news/comments/ferry1",
+        "subreddit": "news",
+        "date": "2026-11-10",
+        "engagement": {"score": 20, "num_comments": 6},
+        "selftext": _FERRY_TITLE,
+        "relevance": 0.9,
+        "why_relevant": "listing",
+    }
+
+
+def test_lone_digg_top_story_below_the_engagement_floor_is_not_a_trend(monkeypatch):
+    # 30 posts + 12 authors = 42 interactions from one source: under the
+    # single-source floor of 200, however high the Digg Score is.
+    row = _digg_top_row(1, title=_FERRY_TITLE, diggScore=9000, postCount=30, uniqueAuthors=12)
+
+    report = _global_trending_report(monkeypatch, digg_rows=[row], reddit_items=[])
+
+    assert report.topics == []
+    assert report.outcome == "nothing-solid"
+    assert report.weak_signal == _FERRY_TITLE
+
+
+def test_digg_top_story_with_a_reddit_item_for_the_same_event_is_a_trend(monkeypatch):
+    row = _digg_top_row(1, title=_FERRY_TITLE, diggScore=9000, postCount=30, uniqueAuthors=12)
+
+    report = _global_trending_report(
+        monkeypatch, digg_rows=[row], reddit_items=[_ferry_reddit_item()],
+    )
+
+    assert len(report.topics) == 1
+    assert sorted(report.topics[0].sources) == ["digg", "reddit"]
 
 
 def test_reddit_discovery_adapter_preserves_partial_feed_errors():

@@ -608,3 +608,96 @@ def enrich_articles(
     if articles:
         _log(f"Found {len(articles)} article(s)")
     return articles
+
+
+# --- Person-run profile read ----------------------------------------------
+#
+# A person run without a Deepline key can read the person's profile here,
+# under the LinkedIn consent rule (the caller checks it). This endpoint masks
+# job titles, so the parse keeps the person's own posts and listed links and
+# never reports a role: a masked title must not read as a current position.
+
+PROFILE_TIMEOUT = 30.0
+# Recent-post entries whose activity says someone else posted them.
+_OTHERS_ACTIVITY = ("liked by", "commented on", "reacted")
+
+
+def read_profile(
+    profile_url: str, token: str, *, deadline_monotonic: float | None = None,
+) -> Dict[str, Any]:
+    """Read one profile for a person run.
+
+    Returns ``{"status", "data", "detail"}``: status "ok" with
+    ``parse_person_profile`` output, else "failed" (never raises).
+    """
+    timeout = PROFILE_TIMEOUT
+    if deadline_monotonic is not None:
+        timeout = min(timeout, deadline_monotonic - time.monotonic())
+        if timeout < MIN_PAGE_TIMEOUT:
+            return {"status": "failed", "data": None, "detail": "not enough time left to start"}
+    try:
+        response = http.get(
+            f"{SC_BASE}/profile",
+            params={"url": profile_url},
+            headers=http.scrapecreators_headers(token),
+            timeout=timeout,
+            retries=1,
+            deadline_monotonic=deadline_monotonic,
+        )
+    except http.HTTPError as exc:
+        _log(f"Person profile read failed (HTTP {exc.status_code})")
+        return {"status": "failed", "data": None, "detail": f"HTTP {exc.status_code}"}
+    except Exception as exc:  # noqa: BLE001 - a read failure is a status, not a crash
+        _log(f"Person profile read failed: {type(exc).__name__}")
+        return {"status": "failed", "data": None, "detail": type(exc).__name__}
+    if not isinstance(response, dict) or not response or response.get("success") is False:
+        return {"status": "failed", "data": None, "detail": "unexpected response shape"}
+    return {"status": "ok", "data": parse_person_profile(response), "detail": ""}
+
+
+def _profile_links(profile: Dict[str, Any]) -> List[str]:
+    links: List[str] = []
+    for key in ("website", "websites", "links"):
+        raw = profile.get(key)
+        for entry in raw if isinstance(raw, list) else [raw]:
+            url = entry.get("url") if isinstance(entry, dict) else entry
+            url = str(url or "").strip()
+            if url.startswith(("http://", "https://")) and url not in links:
+                links.append(url)
+    return links
+
+
+def parse_person_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """Posts and links from a ScrapeCreators profile, with no roles.
+
+    ``current_roles`` and ``history`` are always empty: this endpoint masks
+    titles, so nothing it returns is presented as a position.
+    """
+    posts: List[Dict[str, Any]] = []
+    for entry in profile.get("recentPosts") or profile.get("posts") or []:
+        if not isinstance(entry, dict):
+            continue
+        activity = str(entry.get("activityType") or "").strip().lower()
+        if any(word in activity for word in _OTHERS_ACTIVITY):
+            continue
+        url = str(entry.get("link") or entry.get("url") or "").strip()
+        text = str(entry.get("title") or entry.get("text") or "").strip()
+        if not url and not text:
+            continue
+        posts.append({
+            "url": url or None,
+            "text": text,
+            "date": _parse_date(entry.get("datePublished") or entry.get("date")),
+            "is_reshare": "repost" in activity,
+        })
+    location = profile.get("location")
+    return {
+        "name": str(profile.get("name") or "").strip(),
+        "headline": "",
+        "location": location.strip() if isinstance(location, str) else "",
+        "about": str(profile.get("about") or "").strip(),
+        "current_roles": [],
+        "history": [],
+        "websites": _profile_links(profile),
+        "posts": posts,
+    }

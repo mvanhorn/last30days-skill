@@ -1,0 +1,44 @@
+{
+  "name": "digg-confirmation",
+  "archetype": "digg-confirmation",
+  "topic": "OpenAI news?",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "default",
+  "fixture_sources": [
+    "digg",
+    "x",
+    "hackernews"
+  ],
+  "web_backend": "none",
+  "config": {},
+  "plan": {
+    "intent": "breaking_news",
+    "freshness_mode": "strict_recent",
+    "cluster_mode": "story",
+    "raw_topic": "OpenAI news",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "openai",
+        "ranking_query": "What recent OpenAI news matters?",
+        "sources": [
+          "digg",
+          "x",
+          "hackernews"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "digg": 1,
+      "x": 1,
+      "hackernews": 1
+    },
+    "notes": [
+      "eval-fixture-plan",
+      "hand-authored, not recorded"
+    ]
+  },
+  "expects_clusters": false
+}

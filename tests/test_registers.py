@@ -155,10 +155,10 @@ def _bullet_count(output: str, heading: str) -> int:
             "creator",
             ["Best Takes", "Top Community Comments", "Stats", "Ranked Evidence Clusters", "Source Coverage"],
             6,
-            # The register's own top_comments budget. It used to read 6 only
-            # because the comments pool was limited to the 6 visible clusters;
-            # the pool now spans every floor-clearing cluster.
-            8,
+            # Every quotable entry the fixture holds (12 comments and the X
+            # and Bluesky posts): the creator budget is the full quote pool,
+            # 40, as the default register's is. exec and dev keep theirs.
+            14,
         ),
     ],
 )
@@ -197,7 +197,11 @@ def test_creator_register_leads_markdown_and_html_with_best_takes():
 
 
 def test_default_register_is_byte_identical_when_omitted(monkeypatch):
-    monkeypatch.setattr(render, "_render_badge", lambda: ["fixed badge", ""])
+    monkeypatch.setattr(
+        render,
+        "_render_badge",
+        lambda topic, range_from, range_to: ["fixed badge", ""],
+    )
     monkeypatch.setattr(render, "_skill_version", lambda: "fixture")
     report = fixture_report()
 
@@ -213,8 +217,15 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
         # wording (no tool-contract override claim), and HN cluster-evidence
         # comment lines carrying the comment's own link, and #706's fenced
         # text footer, and #1082's removal of LAW N framing from model-visible
-        # contract text, then moving presentation commands out of the payload.
-        "55bbe53ca0895286ec01abc57579c9c6e0c5e0f50d4dbd43aa34bbbe850eb38f"
+        # contract text, then moving presentation commands out of the payload,
+        # and Top Community Comments lines naming the platform dot and subreddit,
+        # and job roles reported on their own Stats line, outside the total,
+        # and the quote pool: up to 40 entries in the quote line's own shape
+        # (platform name, `· count`), posts beside comments, each naming its
+        # cluster or thread, chosen and ordered by position in its item
+        # (top comment, then #2), not by like count, and #1449's Stats top
+        # voices filling @handle slots in engagement order.
+        "19662fd040d081a09a82b1b4fdc5ae12e259c5e11740e5ba122a13076cfdb23b"
     )
 
 

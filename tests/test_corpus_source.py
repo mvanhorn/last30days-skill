@@ -7,9 +7,12 @@ import os
 import sqlite3
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 import last30days as cli
 import store
@@ -566,6 +569,229 @@ def test_library_publish_strips_marked_corpus_but_local_page_keeps_it(tmp_path, 
     assert "PRIVATE-CORPUS-SENTINEL" in local_pages[0].read_text(encoding="utf-8")
     assert local_pages[0].stat().st_mode & 0o777 == 0o600
     assert local_pages[0].parent.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("include_drill_context", [True, False], ids=["compact", "full"])
+def test_legacy_drill_sections_are_local_only_in_library_briefs_and_search(tmp_path, monkeypatch, include_drill_context):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    raw = memory / "mcp-raw.md"
+    drill = """## Drill Follow-up
+
+- Target: Local routing notes
+- Matched: Local routing notes
+
+### Original
+
+### 1. Local drafthead
+
+The saved private excerpt refers to a prior report:
+
+### Deeper
+
+- 1 new items after dedupe
+- Re-researched sources: Your files
+
+More private draftbody.
+
+### Deeper
+
+- 2 new items after dedupe
+- Re-researched sources: Reddit
+
+""" if include_drill_context else ""
+    raw.write_text(
+        f"""# last30days: MCP servers
+
+- Sources: 2 active (Reddit, Your files)
+
+{drill}## Ranked Evidence Clusters
+
+### 1. Local legacyclusterhead (score 91, 1 item, sources: Reddit)
+1. [reddit] Public router design
+   - Evidence: The router uses stable route identifiers.
+   - URL: https://example.test/router
+
+### 2. Local unclassifiedheading (score 83, 1 item, sources: Reddit)
+- Coverage: Public route metadata is available.
+
+## Freshness Verification
+
+| Verdict | Claim | Evidence | Checked |
+| --- | --- | --- | --- |
+| **contradicted** | Private draftstatus (Newer corpus item disagrees) | [2026-07-05](corpus://notes) | 2026-07-08 |
+| **unsupported** | Private unsupportednote
+Private continuednote | source | 2026-07-08 |
+| **contradicted** | Private contradictednote (Newer reddit item disagrees) | [2026-07-05](https://example.test/status) | 2026-07-08 |
+| **fresh** | Public deployment status | [2026-07-05](https://example.test/status) | 2026-07-08 |
+
+## Public release receipt
+
+Public verification continues.
+""",
+        encoding="utf-8",
+    )
+    entry = library._parse_markdown(raw)
+    public_raw = memory / "public-raw.md"
+    public_raw.write_text(
+        """# last30days: Public release
+
+## Ranked Evidence Clusters
+
+### 1. Public legacy headline (score 90, 1 item, sources: Reddit)
+1. [reddit] Public legacy representative
+
+## Freshness Verification
+
+| Verdict | Claim | Evidence | Checked |
+| --- | --- | --- | --- |
+| **fresh** | Public-only verification | [2026-07-05](https://example.test/status) | 2026-07-08 |
+""",
+        encoding="utf-8",
+    )
+    public_entry = library._parse_markdown(public_raw)
+    marked_raw = memory / "marked-raw.md"
+    marked_raw.write_text(
+        f"""# last30days: Marked release
+
+- Sources: 2 active (Reddit, Your files)
+
+{library.PUBLIC_CLUSTERS_MARKER}
+## Ranked Evidence Clusters
+
+### 1. Public marked headline (score 90, 1 item, sources: Reddit)
+1. [reddit] Public marked representative
+""",
+        encoding="utf-8",
+    )
+    marked_entry = library._parse_markdown(marked_raw)
+    publish_many = mock.Mock(return_value={})
+    monkeypatch.setattr("lib.html_publish.publish_html_documents", publish_many)
+    monkeypatch.setattr("lib.html_publish.publish_html", mock.Mock(return_value={"url": "https://example.test/index"}))
+    args = cli.build_parser().parse_args(["library", "feed", "--save-dir", str(memory), "--publish"])
+    assert cli._run_library_feed(args, {}) == 0
+    local_path = memory / "briefs" / entry.output_name
+    local = local_path.read_text(encoding="utf-8")
+    published = publish_many.call_args.args[0][entry.entry_id]
+
+    assert entry.headline == "Public router design"
+    assert ("drafthead" in local and "draftbody" in local) == include_drill_context
+    assert "draftstatus" in local and "legacyclusterhead" in local and "unclassifiedheading" in local
+    assert "unsupportednote" in local and "continuednote" in local and "contradictednote" in local
+    assert local_path.stat().st_mode & 0o777 == 0o600
+    assert "drafthead" not in published and "draftbody" not in published and "draftstatus" not in published
+    assert "Public router design" in published
+    assert "legacyclusterhead" not in published and "unclassifiedheading" not in published
+    assert "The router uses stable route identifiers." in published
+    assert "Public route metadata is available." in published
+    assert "Freshness Verification" not in published
+    assert "continuednote" not in published
+    assert "Public verification continues." in published
+    assert "Public-only verification" in publish_many.call_args.args[0][public_entry.entry_id]
+    assert public_entry.headline == "Public legacy headline"
+    assert marked_entry.headline == "Public marked headline"
+    assert "Public marked headline" in publish_many.call_args.args[0][marked_entry.entry_id]
+
+    db_path = tmp_path / "library.db"
+    library_index.sync_library(memory, tmp_path / "no-briefings", db_path=db_path)
+    for term in (
+        "drafthead", "draftbody", "draftstatus", "unsupportednote", "continuednote", "contradictednote",
+        "legacyclusterhead", "unclassifiedheading",
+    ):
+        assert not library_index.search(term, db_path=db_path, store_db_path=tmp_path / "no-store.db")
+    assert library_index.search("router design", db_path=db_path, store_db_path=tmp_path / "no-store.db")
+    assert library_index.search("stable route identifiers", db_path=db_path, store_db_path=tmp_path / "no-store.db")
+
+
+def test_legacy_production_brief_keeps_public_evidence_in_library_feed_and_search(tmp_path, monkeypatch):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    legacy_path = memory / "legacy-brief.md"
+    legacy_path.write_text(
+        """# Production Brief: Router deployment
+
+- Sources: 2 active (Reddit, Your files)
+
+## Drill Follow-up
+
+- Target: Router deployment
+
+### Original
+
+Router notes.
+
+### Deeper
+
+- 1 new items after dedupe
+- Re-researched sources: Reddit, Your files
+
+## Ranked Storylines
+
+### 1. Private storylinehint (score 91, Reddit) [single source]
+- Stable route identifiers simplify deployments.
+
+## Topic Tensions
+
+- **Private tensionhint** [Single Source]: Reddit
+
+## Audience Questions
+
+- How do stable route identifiers work?
+
+## Source Clusters
+
+- **Private sourceclusterhint**: Reddit
+""",
+        encoding="utf-8",
+    )
+    report = _privacy_report()
+    report.topic = "Current router brief"
+    local = report.ranked_candidates[0]
+    public = replace(
+        local, candidate_id="reddit:public", item_id="R-public", source="reddit",
+        title="Public deploy headline", snippet="The router uses a staged deployment.",
+        url="https://example.test/router", cluster_id="cluster-public", sources=["reddit"],
+        source_items=[schema.SourceItem(
+            item_id="R-public", source="reddit", title="Public deploy headline",
+            url="https://example.test/router", body="The router uses a staged deployment.",
+        )],
+    )
+    report.items_by_source["reddit"] = public.source_items
+    report.ranked_candidates.append(public)
+    report.clusters.append(schema.Cluster(
+        cluster_id="cluster-public", title="Public deploy headline", sources=["reddit"],
+        candidate_ids=[public.candidate_id], representative_ids=[public.candidate_id],
+        score=91, uncertainty="single-source",
+    ))
+    current_path = memory / "current-brief.md"
+    current_path.write_text(render.render_brief(report), encoding="utf-8")
+    public_report = schema.without_sources(report, {"corpus"})
+    public_report.topic = "Public-only router brief"
+    public_path = memory / "public-brief.md"
+    public_path.write_text(render.render_brief(public_report), encoding="utf-8")
+
+    publish_many = mock.Mock(return_value={})
+    monkeypatch.setattr("lib.html_publish.publish_html_documents", publish_many)
+    monkeypatch.setattr("lib.html_publish.publish_html", mock.Mock(return_value={"url": "https://example.test/index"}))
+    args = cli.build_parser().parse_args(["library", "feed", "--save-dir", str(memory), "--publish"])
+    assert cli._run_library_feed(args, {}) == 0
+    published = publish_many.call_args.args[0]
+    legacy_entry = library._parse_markdown(legacy_path)
+    legacy_html = published[legacy_entry.entry_id]
+    local_html = (memory / "briefs" / legacy_entry.output_name).read_text(encoding="utf-8")
+    assert "Stable route identifiers simplify deployments." in legacy_html
+    assert "How do stable route identifiers work?" in legacy_html
+    for path in (current_path, public_path):
+        assert published[library._parse_markdown(path).entry_id].count("Public deploy headline") >= 3
+    assert library.PUBLIC_CLUSTERS_MARKER not in public_path.read_text(encoding="utf-8")
+
+    db_path = tmp_path / "library.db"
+    library_index.sync_library(memory, tmp_path / "no-briefings", db_path=db_path)
+    for private in ("storylinehint", "tensionhint", "sourceclusterhint"):
+        assert private in local_html and private not in legacy_html
+        assert not library_index.search(private, db_path=db_path, store_db_path=tmp_path / "no-store.db")
+    assert library_index.search("stable route identifiers", db_path=db_path, store_db_path=tmp_path / "no-store.db")
+    assert library_index.search("public deploy headline", db_path=db_path, store_db_path=tmp_path / "no-store.db")
 
 
 def test_private_corpus_cannot_escape_via_library_search_and_feed_publish(tmp_path, monkeypatch):

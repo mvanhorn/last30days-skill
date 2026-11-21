@@ -384,6 +384,13 @@ class TestSecurityAndFrontmatter(unittest.TestCase):
         self.assertIn("sent only in the Authorization header", security)
         self.assertIn("no X backend is called", security)
 
+    def test_post_write_checks_never_remove_required_sections_or_quotes(self):
+        text = reference_text("grok-bot-x")
+        self.assertIn("6. **Checks after writing.**", text)
+        self.assertIn("may never remove a section `synthesis.md` requires", text)
+        self.assertIn("a quote copied verbatim from the raw file", text)
+        self.assertIn("when a check and the template disagree, the template wins", text)
+
 
 class TestConfigurationGrokBotSubsection(unittest.TestCase):
     def test_configuration_grok_bot_subsection_has_no_r4_vocabulary(self):

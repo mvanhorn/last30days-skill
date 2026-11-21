@@ -46,6 +46,16 @@ CLI_BIN = "brightdata"
 # it resolves from a non-process-env layer we pass it in the child environment.
 API_KEY_ENV = "BRIGHTDATA_API_KEY"
 
+# Keep only runtime, credential-file location and network configuration.
+# In particular, do not inherit other providers' secrets or NODE_OPTIONS.
+_CHILD_ENV_ALLOWLIST = frozenset({
+    "PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA",
+    "LOCALAPPDATA", "XDG_CONFIG_HOME", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE",
+    "COMSPEC", "PATHEXT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "NODE_EXTRA_CA_CERTS", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+})
+
 # Credentials filename written by `brightdata login`. Probed for existence
 # only -- never opened, parsed, or logged.
 _CREDENTIALS_FILENAME = "credentials.json"
@@ -164,16 +174,18 @@ def _build_args(
     ]
 
 
-def _child_env(api_key: str) -> Optional[Dict[str, str]]:
-    """Environment for the child process, carrying the key when we have one.
+def _child_env(api_key: str) -> Dict[str, str]:
+    """Allowlisted child environment, even when the CLI uses its login file.
 
-    Returns None when there is nothing to inject, so the child simply
-    inherits the parent environment (the common case: the CLI owns its own
-    credentials file, or the key is already exported).
+    An explicit key takes precedence over an exported Bright Data key.
+    Always return a mapping: None would inherit every parent credential.
     """
-    if not api_key:
-        return None
-    return {**os.environ, API_KEY_ENV: api_key}
+    child_env = {
+        name: value for name, value in os.environ.items()
+        if name.upper() in _CHILD_ENV_ALLOWLIST
+    }
+    key = api_key or os.environ.get(API_KEY_ENV)
+    return {**child_env, API_KEY_ENV: key} if key else child_env
 
 
 def _scrub(text: str, secret: str) -> str:

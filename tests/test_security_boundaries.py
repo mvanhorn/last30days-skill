@@ -6,9 +6,13 @@ import importlib
 import io
 import json
 import os
+import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
+
+import pytest
 
 import last30days as cli
 from lib import env
@@ -17,10 +21,71 @@ from lib import env
 def test_importing_cli_does_not_load_config_or_propagate_endpoints(monkeypatch):
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("XAI_BASE_URL", raising=False)
-    with mock.patch("lib.env.get_config", side_effect=AssertionError("import loaded config")):
+    with mock.patch("lib.env.get_config", side_effect=AssertionError("import loaded config")) as get_config:
         importlib.reload(cli)
+    get_config.assert_not_called()
     assert os.environ.get("OPENAI_BASE_URL") is None
     assert os.environ.get("XAI_BASE_URL") is None
+
+
+@pytest.mark.parametrize("mode", ["import", "help"])
+def test_cold_cli_does_not_attempt_config_or_cookie_access(tmp_path, mode):
+    scripts = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"
+    attempts = tmp_path / "attempts.json"
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    sidecar = binary_dir / "agentcookie"
+    sidecar.write_text("#!/bin/sh\nprintf 'unexpected sidecar execution'\nexit 1\n")
+    sidecar.chmod(0o700)
+    # No inherited credentials or host paths: even a regression stays inside
+    # this fixture, and an exception caught by the CLI cannot hide an attempt.
+    child_env = {
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+        "LAST30DAYS_CONFIG_DIR": str(tmp_path / ".config" / "last30days"),
+        "LAST30DAYS_SKIP_KEYCHAIN": "1",
+        "PATH": str(binary_dir),
+    }
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", """
+import json
+from pathlib import Path
+import socket
+import subprocess
+import sys
+scripts, output, mode = sys.argv[1:]
+sys.path.insert(0, scripts)
+attempts = []
+def forbid(name):
+    def denied(*args, **kwargs):
+        attempts.append(name)
+        raise AssertionError("unexpected acquisition")
+    return denied
+subprocess.Popen = forbid("subprocess")
+socket.create_connection = forbid("network")
+socket.socket.connect = forbid("network")
+socket.getaddrinfo = forbid("network")
+from lib import env
+env.get_config = forbid("get_config")
+try:
+    import last30days
+    if mode == "help":
+        sys.argv = ["last30days.py", "--help"]
+        try:
+            last30days.main()
+        except SystemExit as error:
+            if error.code != 0:
+                raise
+finally:
+    Path(output).write_text(json.dumps(attempts))
+""", str(scripts), str(attempts), mode],
+        env=child_env, cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(attempts.read_text()) == []
+    if mode == "help":
+        assert "usage:" in result.stdout.lower()
 
 
 def test_diagnose_uses_plan_only_cookie_policy_and_safe_pipeline(monkeypatch):

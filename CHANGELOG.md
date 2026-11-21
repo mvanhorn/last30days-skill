@@ -9,6 +9,376 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.4.0] - 2026-11-20
+
+### Security
+
+- Auto setup reuses browser-cookie consent only when the active configuration grants it.
+- Drill follow-ups keep local file titles out of remote queries and private drill context out of published briefs.
+- GitHub research uses public repositories for search, project snapshots, and star counts. Search and repository metadata keep authenticated rate limits when configured. Comments, READMEs, and releases use the anonymous rate limit to keep enrichment public.
+- HTML briefs stage synthesis in a unique owner-only file and remove it when the sharing workflow finishes.
+- Interpreter selection, comparison JSON validation, and HTML export helpers now run in Python isolated mode.
+- Research databases, SQLite sidecars, and generated briefing archives now use owner-only permissions on POSIX.
+- Watchlist delivery hides webhook credentials from setup output, error logs, and HTTP diagnostics.
+
+### Added
+
+- Add a Turkish README with reciprocal language navigation and translation contract coverage.
+- Person runs: `--employer "Name[:domain]"`, `--linkedin URL`, or `--email ADDR` research a working professional who may have no X or GitHub presence. The run reads a bio from the employer's own site, keeps only results that name the person plus an anchor such as the employer, and adds a Person Profile section that says what was checked and why identity was accepted. With `DEEPLINE_API_KEY` it also reads the LinkedIn profile and recent posts (paid, capped per run) and shows up to a year of older posts when the last 30 days are quiet.
+- Proxy mode: with `LAST30DAYS_API_MODE=proxy`, `LAST30DAYS_API_KEY`, and `LAST30DAYS_API_BASE`, the local engine runs every source and flag while paid provider calls without a key of your own (ScrapeCreators, xAI, Serper, Parallel) go through the API key's metered proxy. The footer reports the credits each run charged, `doctor` shows those lanes as "via API key", and running out of credits skips paid sources for the rest of the run instead of failing it.
+
+### Fixed
+
+- Claude.ai skill packages now exclude development assets and apply the 200-file limit to files. Pull request validation builds the same package used for releases.
+- Direct Perplexity Deep Research uses its configured deadline alongside the ordinary source deadline, so answers can arrive after the ordinary search window closes.
+- Drill and freshness follow-ups reuse cached host evidence. Slash-command follow-ups stay bound to the original research or its latest drill.
+- Freshness verification now keeps newer cached research intact when another run finishes during the check. Cache updates publish complete files atomically.
+- Hosted mode: answer a clarification with `--clarify-angle` or `--clarify-broadly` instead of rewriting the topic, see the server's reason when a run fails instead of "unknown server error", and get a one-line notice when the hosted engine's major version differs from the local skill.
+- Hosted research rejects unsupported date windows, source filters, targeting, and output formats before submitting a search.
+- MCP and watchlist runs keep completed research when strict exit reports degraded coverage. The watchlist still delivers new findings and labels the run degraded.
+- MCP research with saving disabled leaves the report export, research caches, and SQLite findings untouched.
+- Permission preflight now follows the MCP browser-cookie policy, accounts for consented Reddit and conditional X cookie routes, and forecasts local research caches, library indexes, SQLite stores, and report exports.
+- Removing a watchlist topic preserves its recorded spending and unknown charges in the daily budget.
+- Research skips live X authentication checks when X is outside the requested source scope, the host supplies X evidence, or the run uses mock data.
+- Scheduled watchlist runs treat topic names and custom search queries as literal research text.
+- Watchlists save findings from every entity in a local comparison. Malformed output fails only the affected run, and watchlists reject unsupported hosted research before making a paid request.
+- YouTube transcript backfill and remote ranking now stop before the foreground report deadline, so a slow enrichment request can leave a useful partial report.
+
+
+## [4.3.2] - 2026-11-17
+
+### Changed
+
+- Exa web search now requests highlights instead of a 2,000-character text extract. When `EXA_API_KEY` is set, Wikidata-empty company resolution can take an official-site lookup in Exa's company index, and competitor discovery queries Exa's company category first for a resolved company even if Brave is the general web backend. ([#1501](https://github.com/mvanhorn/last30days-skill/issues/1501))
+
+### Fixed
+
+- On Windows, Printing Press CLIs (Digg, arXiv, Techmeme, Yahoo Finance) installed to `%LOCALAPPDATA%\Programs\PrintingPress\bin` now activate without a manual PATH edit, off-PATH fixes print a PowerShell command instead of bash `export`, and setup names a missing Go install as the reason a CLI install failed. ([#1434](https://github.com/mvanhorn/last30days-skill/issues/1434))
+- Doctor no longer tells you to add a `GROQ_API_KEY` or `OPENAI_API_KEY` for caption-free YouTube videos. No source calls the transcription module yet, so the key changed nothing. Thanks to @qq2514568380 for spotting it ([#1498](https://github.com/mvanhorn/last30days-skill/pull/1498)). ([#1436](https://github.com/mvanhorn/last30days-skill/issues/1436))
+- Explain unsuccessful X cookie discovery and the manual credential alternative. ([#1499](https://github.com/mvanhorn/last30days-skill/issues/1499))
+- Check Reddit archive availability after discovery failure without treating HTTP errors as working listings. ([#1500](https://github.com/mvanhorn/last30days-skill/issues/1500))
+
+
+## [4.3.1] - 2026-11-17
+
+### Fixed
+
+- Hermes installs work again: `hermes skills install mvanhorn/last30days-skill/skills/last30days --force` no longer gets a `dangerous` verdict from Hermes's skill scanner. The Grok CLI install hint now names `npm install -g @xai-official/grok` (with the official installer linked) instead of a `curl | bash` line, and the CI scanner guard now checks every CRITICAL rule of the current Hermes scanner. `HERMES_SETUP.md` documents the install and update path. ([#1502](https://github.com/mvanhorn/last30days-skill/issues/1502))
+
+  `SKILL.md` no longer names the `scripts/lib` folders as if they were files. Hermes rejected the whole download for that, reporting the skill as a stale index entry whose "files no longer exist upstream". ([#1502](https://github.com/mvanhorn/last30days-skill/issues/1502))
+
+
+## [4.3.0] - 2026-11-16
+
+### Changed
+
+- Polymarket now picks the markets that say the most about the subject: a team's title odds at any price (the 49ers' Super Bowl odds lead a `49ers` run), races where the subject or one of its people leads, and the big multi-outcome markets whose title never names it, instead of near-settled props and title-word collisions. Each line shows the subject's own price and rank, and the host can pass `polymarket_hints` (kind, aliases, related names) in the plan.
+
+### Fixed
+
+- The jobs lane now stays on for company runs under `--search` and warns when `--search` drops a source the plan named. It reads every Workday career site on a company's tenant, reads Kula boards (Nothing), searches each board for the run's own story terms and reserves digest slots for those matches, and damps rarity scoring on boards with more than 500 roles.
+  The Jobs Digest now names the teams a board's titles repeat, with role counts and how many are new, and reserves slots for each top team's newest role and for heads, GMs and founding hires of teams no other title names, so a new team the press has not covered yet (Amazon's Fauna, Nike's DOTSWOOSH) reaches the report. ([#1491](https://github.com/mvanhorn/last30days-skill/issues/1491))
+- Polymarket now reports a partial result when some of its searches are rate-limited, instead of caching the incomplete result for the run, and every Polymarket search (retries included) stops at the stream deadline.
+- Polymarket topic matching now treats simple plurals as the same word, so a topic like "Fed rate cut" matches "Will the Fed cut rates?".
+
+
+## [4.2.1] - 2026-11-16
+
+### Security
+
+- Hosted-backend runs now sanitize `--save-suffix` the same way local saves do, so traversal fragments cannot escape the save directory in that mode either ([#736](https://github.com/mvanhorn/last30days-skill/issues/736)).
+
+### Fixed
+
+- The post-run "Free fixes" hint no longer tells you to add `youtube_comments` to `INCLUDE_SOURCES` when yt-dlp (which fetches YouTube comments keyless) is installed, when the entry is already set, or when `EXCLUDE_SOURCES=youtube_comments` overrides the opt-in. Fixes #1437. ([#1437](https://github.com/mvanhorn/last30days-skill/issues/1437))
+- `doctor` no longer reports a failed grok probe as a broken credential store. When the probe raises, X reads as unconfigured with cookie guidance, and a set `X_BEARER_TOKEN` names the opt-in X API lane instead of being masked. ([#1448](https://github.com/mvanhorn/last30days-skill/issues/1448))
+- A reasoning-model reply that is valid JSON but not an object (a top-level array, `null`, or a number) now falls back to deterministic planning and ranking instead of crashing the run.
+- Comparison runs on macOS Bash 3.2 no longer fail before the engine starts when the topic contains an apostrophe or backtick; the comparison recipe now captures its topic the same way the research runbook has since [#1240](https://github.com/mvanhorn/last30days-skill/pull/1240).
+- GitHub comment enrichment now excludes automated bot accounts and ranks human responses locally by reactions instead of relying on unsupported REST sort parameters.
+- KEY PATTERNS and the follow-up suggestions no longer have a blank line between every item on Claude Code. T3 Code, the desktop app and IDEs now get real markdown lists, and the Claude Code terminal keeps its link-safe `1\.` and `•` lines, now one per row.
+- Reddit comment enrichment on hosts where the shreddit partials are blocked now reads the arctic-shift comment tree, so busy threads keep their most-upvoted replies instead of a sample of the newest 100. Thanks to @terry-li-hm, whose #1467 found and measured this.
+- The ScrapeCreators YouTube search fallback now reads the fields that endpoint returns (`publishedTime`, `viewCountInt`, `lengthSeconds`, and the `channel` object), so its videos keep their dates, view counts and channel names instead of being dropped by the date window.
+
+
+## [4.2.0] - 2026-11-15
+
+### Added
+
+- A scheduled Reddit canary (daily and manual, never on pull requests) checks the keyless web rungs and the Arctic Shift hydrator against live Reddit and tells a challenge or throttle apart from a broken parser. `evaluate_search_quality.py --reddit-coverage` counts on-topic Reddit threads per topic from a fixed topic set, on the keyless floor only, so engine versions can be compared.
+- Hosts with their own web search can hand Reddit thread URLs or ids to the engine with `--reddit-threads <file>` (schema `last30days-reddit-threads/1`, at most 50 threads). The engine reads only each thread's identity, rehydrates it through the logged-in session or Arctic Shift, holds it to the research window and the topic bar, and routes it to the subquery it matches; the research runbook collects the URLs during the pre-research web search.
+
+### Fixed
+
+- Logged-in Reddit search no longer fills a report with unrelated threads that mention the topic in a single comment. A thread whose title and body never name the topic is kept only to fill a thin result.
+
+
+## [4.1.0] - 2026-11-15
+
+### Added
+
+- Reddit can now search as your own logged-in reddit.com account, with its own consent. Setup asks once, right after the X cookie question whatever the answer (returning users are asked once too, never on a Grok Bot host), and `setup --reddit-session` finds the browser that holds your `reddit_session` cookie without saving it. Logged in, Reddit search returns more threads, comment matches and communities with live scores; the free keyless chain stays the fallback when the session is off, expired or blocked. Over-18 posts and private or quarantined communities you did not name are dropped, scheduled runs skip the session unless you opt in, and `REDDIT_BROWSER_CONSENT=false` turns it off. See CONFIGURATION.md, "Logged-in Reddit session".
+
+
+## [4.0.6] - 2026-11-15
+
+### Fixed
+
+- Reddit works again without a login or key now that Reddit's site search returns 403. A keyless web-search floor (Brave, then DuckDuckGo, then Startpage) finds threads, and the Arctic Shift archive fills in their scores and comments. A score from a post under 36 hours old shows as "score pending" instead of counting as zero. A thread found by several layers merges into one item. Report quotes include only Reddit comments that name the topic. A path that returns 403 is skipped for 6 hours. Each run reports which path served Reddit, and `doctor` shows one row per Reddit path.
+
+
+## [4.0.5] - 2026-11-15
+
+### Fixed
+
+- X keyword searches through the bird client now read X's Top tab, so busy topics return the month's most-engaged posts instead of the last few minutes of zero-engagement ones. ([#1465](https://github.com/mvanhorn/last30days-skill/issues/1465))
+
+
+## [4.0.4] - 2026-11-15
+
+### Fixed
+
+- Claude Code KEY PATTERNS and invitation lines no longer collapse into one paragraph in markdown renderers such as T3 Code and the desktop and mobile apps; the skill now puts a blank line between them. ([#1463](https://github.com/mvanhorn/last30days-skill/issues/1463))
+
+
+## [4.0.3] - 2026-11-15
+
+### Fixed
+
+- Techmeme now reads enough result pages to fill the depth cap (16 headlines by default, 30 at deep) instead of stopping at Techmeme's first 10, when the installed `techmeme-pp-cli` supports `search --pages`; older helpers still read one page. ([#1460](https://github.com/mvanhorn/last30days-skill/issues/1460))
+- Setup now upgrades the Techmeme helper to 2026.11.1, the first release that reads past Techmeme's first 10 results. ([#1461](https://github.com/mvanhorn/last30days-skill/issues/1461))
+
+
+## [4.0.2] - 2026-11-15
+
+### Fixed
+
+- Company resolution no longer gets rate-limited by Wikidata when several reports or a comparison run at once, so those runs keep their Jobs section. The Wikidata request now sends a User-Agent with a contact URL, as Wikimedia asks. ([#1447](https://github.com/mvanhorn/last30days-skill/issues/1447))
+- Polymarket odds now follow Polymarket's own display rule: the midpoint only for a tight book (bid and ask within $0.10), otherwise the last trade, and a market with neither is left out. A mutually exclusive range set whose prices still sum well over 100% no longer prints an impossible odds line, so an empty-book range can't top the list at 44%. ([#1450](https://github.com/mvanhorn/last30days-skill/issues/1450))
+- The top clusters in the chat report are now story-diverse: one story takes at most 3 of the top 8, near-duplicate clusters are pushed down, each plan subquery with on-topic evidence gets a slot, and `--drill N` still opens the cluster shown as N. ([#1451](https://github.com/mvanhorn/last30days-skill/issues/1451))
+- Top voices in the footer and `## Stats` now rank @handles by engagement (best 3 posts each) and drop near-zero-engagement accounts, so a prolific headline account no longer outranks the subject's own posts. ([#1452](https://github.com/mvanhorn/last30days-skill/issues/1452))
+- YouTube transcript health is judged against the transcript target, and a YouTube bot check now gets its own message (route yt-dlp through `LAST30DAYS_YOUTUBE_SSH_HOST` or add a ScrapeCreators key) instead of advice to upgrade yt-dlp. Host plans no longer gain Trustpilot when it cannot run this session. Techmeme searches are scoped to the run window, and setup upgrades a techmeme-pp-cli older than 2026.9.1. ([#1453](https://github.com/mvanhorn/last30days-skill/issues/1453))
+- Hiring Signals no longer lists the same roles under every theme: themes match a role's title, department, and only the description text other roles on the board do not share, each role is an example under one theme at most, and generic keywords such as "growth", "design" and "platform" no longer theme unrelated roles. ([#1454](https://github.com/mvanhorn/last30days-skill/issues/1454))
+
+
+## [4.0.1] - 2026-11-15
+
+### Fixed
+
+- A company that lists many regional sites on Wikidata with none preferred, such as Apple, now resolves to the host most of them share, so its own job board is read without web search. Hiring themes match keywords as whole words, so retail and training roles no longer fill the AI theme. ([#1445](https://github.com/mvanhorn/last30days-skill/issues/1445))
+
+
+## [4.0.0] - 2026-11-15
+
+### Added
+
+- The jobs lane reads company-run job boards through a registry: Amazon's and Apple's own boards, plus Eightfold boards for Microsoft, Qualcomm and Netflix. Sites it can't read automatically, such as Tesla's, get a footer line saying so and no requests. ([#1428](https://github.com/mvanhorn/last30days-skill/issues/1428))
+- The jobs lane detects the hiring platform a company's careers page runs on (Oracle Recruiting Cloud, Jibe, Phenom, TalentBrew, Eightfold on any host, or a linked Workday board) and reads its public listing, and reads Google's and IBM's job sites, so a company run now gets a Jobs Digest for Oracle, JPMorgan, Dell, AMD, Adobe, Cisco, Disney, IBM, Salesforce, Intel and Google. A careers site with no readable listing but a job sitemap (SAP, Uber, Walmart) gets a titles-only digest. Set `LAST30DAYS_JOBS_RESPECT_ROBOTS=1` to skip any listing a site's robots.txt disallows. ([#1431](https://github.com/mvanhorn/last30days-skill/issues/1431))
+
+### Changed
+
+- Require `AGENTCOOKIE=on` or affirmative `BROWSER_CONSENT` before reading X cookies through the agentcookie sidecar. Eligible Linux, Mac mini, and Darwin sink hosts no longer enable sidecar reads from binary presence alone. Explicit refusals still win, and direct `AUTH_TOKEN`+`CT0` credentials remain usable. Sidecar-only users can set `AGENTCOOKIE=on` with `BROWSER_CONSENT` and `FROM_BROWSER` absent. Doctor shows this opt-in hint for an installed, unadmitted sidecar and refreshes cached advice when `AGENTCOOKIE` changes. Thanks to @vincentkoc (#1365). ([#1365](https://github.com/mvanhorn/last30days-skill/issues/1365))
+- Patent Secret Signals now appear only for a filing that is out of character for the company or describes a product it has not shipped, announced or had reported. A tie to a story in the report no longer qualifies a filing, filings listed by title only are never signals, and the section is one short paragraph with no counts sentence or closing disclaimer. The patent digest and footer no longer say "confirmed" or "name-matched": a company's own holding, licensing and numbered entities count as the company, and other filers with the company's name are marked "not verified". ([#1427](https://github.com/mvanhorn/last30days-skill/issues/1427))
+- Patent and jobs Secret Signals are written as two plain-words sentences: what the filing or role is, then what it could mean. Patent entries print fuller abstract and claim text and give subsidiaries a slot. The two strongest candidates are checked on the web before a section is written or left out. ([#1428](https://github.com/mvanhorn/last30days-skill/issues/1428))
+- Big company boards are read concurrently up to 7,000 rows. When a platform reader fails, the lane falls to the site's job sitemap and then the web tier, and the Jobs footer says which happened. The footer for a site that can't be read now gives the reason. ([#1431](https://github.com/mvanhorn/last30days-skill/issues/1431))
+
+### Fixed
+
+- Large patent filers get abstract and first-claim text again: the patent lane has 90 seconds and keeps reading after one failed document. `--as-of` set to today is now a live run. An outdated Digg helper is reported with its upgrade command instead of failing on `unknown flag: --topic`, and a `--ticker` run with no stock helper says so with the install command. Setup installs from `@mvanhorn/printing-press-library@0.1.27` and upgrades a Digg helper older than 2026.10.1, and doctor reports it. Grok Bot post-write checks may no longer remove a required report section or a verbatim quote. ([#1427](https://github.com/mvanhorn/last30days-skill/issues/1427))
+- A response body cut off mid-read no longer crashes a run. A company's official site is kept when Yahoo Finance resolves the company. A site that fails on one host form is retried on its www or bare form. A job board that does not answer is reported as a retryable timeout, not as unreadable. ([#1428](https://github.com/mvanhorn/last30days-skill/issues/1428))
+- A stale or older `LAST30DAYS_PLANNER_MODEL` / `LAST30DAYS_RERANK_MODEL` pin on the Gemini provider now warns and falls back to the default model instead of failing the run, and Gemini 4 and newer models are accepted. Thanks to @SajjadPSavoji (#1430). ([#1429](https://github.com/mvanhorn/last30days-skill/issues/1429))
+
+
+## [3.39.0] - 2026-11-13
+
+### Added
+
+- A run about a company now reads that company's US patent applications published and patents granted inside the report window from USPTO Patent Public Search, with no API key and no flag. The report gets a `## Patent Digest` evidence block of first US publications and a `📜 Patents` footer line, and the skill may write a "Patent Secret Signals" section when a filing reveals a product the company has not shipped or a direction it is not known for. It is skipped on comparison, quick, `--hiring-signals` and mock runs. Turn it off with `EXCLUDE_SOURCES=patents` or `LAST30DAYS_NO_PATENT_DIGEST=1` (the MCP server sets the latter). The Wikidata lookup for company topics now also asks for the labels of the company's listed subsidiaries.
+
+### Fixed
+
+- X post text is unescaped, so titles, quotes and video titles show `&` and `'` instead of `&amp;` and `&#39;`. A reel or TikTok that arrives twice keeps its spoken transcript and `spoken_caption` mark together when the copies merge, so a longer written description no longer replaces the transcript.
+
+
+## [3.38.1] - 2026-11-12
+
+### Fixed
+
+- A slow second Digg search near the end of a run no longer costs the stories the first search found: the highest-scored call now ends five seconds before the run's deadline, and is skipped when that little time is left. When two searches return the same event as a prominent story and as a smaller one, the prominent story is the copy kept, so its quotes and its "Also in Digg story" confirmations are not lost.
+
+
+## [3.38.0] - 2026-11-12
+
+### Changed
+
+- A research run now looks at far more Digg stories, both the most relevant and the highest-scored, and holds them to a bar. A story is kept only when its title carries the topic, so a story that mentions the topic in passing is dropped and a topic Digg does not cover shows no Digg results. The biggest on-topic stories lead Digg's results, and only those have their sources read (up to 8 at default depth, 12 at deep, four at a time) and can mark another result "Also in Digg story". Digg's footer totals rise on busy topics because bigger stories are kept. Quick depth still makes one small search, with the bar applied to it. Clusters from `digg-pp-cli` 2026.10.x are not judged and behave as before.
+
+
+## [3.37.1] - 2026-11-12
+
+### Fixed
+
+- Digg search no longer fails on two-letter topics such as "AI" or "Go", or on queries over 120 characters: the newer `digg-pp-cli` rejects both, so the query is now fitted to the length it accepts. A Digg story that the subject or identity filters rejected no longer comes back as the "Also in Digg story" confirmation of another result. The story-sources fetch is now always bounded by the run's deadline, including on hosts that keep that deadline on a copy of the run config.
+
+
+## [3.37.0] - 2026-11-12
+
+### Added
+
+- Digg is now searched across every Digg topic (AI, tech, world and business, sports, science, gaming, entertainment) instead of AI and tech only. Digg stories rank by their Digg Score, which is shown on each item, and results from other sources that are sources of a Digg story are marked as confirmed by Digg and rank higher. Global trending (`--discover` with no domain) now includes Digg's current top stories. This needs a current `digg-pp-cli`: an older one keeps working on AI and tech, and the brief and `doctor` say how to upgrade.
+
+
+## [3.36.1] - 2026-11-11
+
+### Fixed
+
+- Reports can now quote what was said in the content itself, not only comments: a YouTube transcript highlight or a reel's or TikTok's spoken line joins the quote pool as a `said` entry, LinkedIn posts with a real author join as posts, and a small on-topic Reddit thread no longer needs a 5-vote top comment to be quoted.
+
+
+## [3.36.0] - 2026-11-11
+
+### Added
+
+- Two host flags for the jobs lane. `--company "Name:site"` (at most two, comma-separated) names the company behind a person or product topic, listed or not, with its own website, so a founder of a private company gets that company's board and digest (Palmer Luckey: `--company "Anduril:anduril.com"`); the site may be left out, and the engine then asks Wikidata for it. `--jobs-board <URL>` passes the company's job-board URL the host found by web search (Greenhouse, Ashby, Lever, Workable, SmartRecruiters, Workday); the engine reads that board first and gives a digest only when the board names the company or the official site links to it, otherwise the footer count alone with the reason on stderr, and a paged board that is not the company's is read one page only. A URL on an unsupported system is ignored with one stderr line.
+
+### Changed
+
+- Trustpilot is asked for only when it can answer. `--diagnose` reports `trustpilot_can_run` (a fresh `trustpilot-pp-cli` session, or a cached company record) and the host resolves `--trustpilot-domain` only then. With no fresh session the engine reads the CLI's cached record for the domain (`info <domain> --local`) and labels it with its cache age; a research run still never opens a browser.
+
+### Fixed
+
+- Amazon and Meta Ads run again on agent-hosted runs. Since 3.30.0 a host plan never ran either lane, because the host requests them through `--search` and not in the plan. The engine now adds `amazon` / `meta_ads` to the first subquery when the run asks for them (the source is in `--search`, or `--amazon-query` / `--meta-ads-page` is set), logs it on the `[Planner] Added ...` line, and says `available but not requested for this run; not run` when a lane is on only through `INCLUDE_SOURCES`. The Amazon footer no longer prints `no products matched` for a search that was never made.
+- Amazon keeps its products when the provider's review scraper does not answer. Products from the search still appear with their rating, rating count and price range, the footer adds `written reviews unavailable from the provider this run`, and Partial Coverage says the same. Review pulls now hold a run for at most 60 seconds (was 180) and are not fired a second time at the end of the run.
+- Polymarket odds lines keep the movement note on their last outcome: the rule and the closing checklist now say to copy the whole odds line, up to the ` — ` before its URL, where they said "through the last price".
+- The jobs lane no longer depends on the host naming `jobs` in its plan. On a host-planned run about a company (`--official-site`, a usable `--ticker` pair, `--company`, `--jobs-board`, or a topic the engine resolves to a company) the engine adds `jobs` to the primary subquery itself and logs `[Planner] Added jobs to primary: ...`; `EXCLUDE_SOURCES=jobs`, `--quick`, and a `--search` list without `jobs` still leave it out. The lane also finds more boards without help: it follows a careers page's link to its board page (`/careers/board`), and when the company's own slug has no board it tries the name the careers page states for its organization (`Anduril Industries` for `Anduril`), giving a digest only when that page is on the confirmed official site and the board states the same name.
+
+
+## [3.35.0] - 2026-11-11
+
+### Added
+
+- Polymarket odds now get their own line in a report, under the story they bear on (`> 📊 Polymarket · Huang divorce: 9.5% by Dec 31 (down 1 pt today) · 18% by Mar 31, 2027`), at most three per report, with the paragraph linking the market instead of repeating the numbers. `--emit=compact` prints each on-topic market as that ready-to-copy line in `## Polymarket Markets`: the nearest live deadlines of a deadline ladder, the leading outcomes of brackets under their own labels, or a single market's price, with movement worded in points.
+- `--emit=compact` output now carries what a report is written from, so the host no longer searches the saved raw file: the subject's own X posts for the resolved `--x-handle` (`## Posts by @handle`, most liked first, up to 8), each on-topic Polymarket market with every outcome's own label, odds, movement and URL (`## Polymarket Markets`, up to 8), and a wider quote pool (`## Top Community Comments`, up to 40 entries, X/Threads/Bluesky posts beside comments, each tagged with its story cluster).
+- `--emit=compact` stdout now ends with a short `## Before you write the report` checklist of the report's format facts (badge line, headline phrases, quote lines, no markdown lists when `CLAUDECODE` is set, the Jobs section, footer, invitation). It is printed only by the command line: saved files, `--output`, other emit modes and the MCP `research` tool do not carry it, and `LAST30DAYS_NO_REPORT_CHECKLIST=1` turns it off.
+
+### Changed
+
+- A research run no longer launches Chrome for Trustpilot. The lane used to run `trustpilot-pp-cli auth login` (and let the CLI harvest by itself) whenever the saved session was missing or older than four minutes. It now only checks the session; with none it skips the lane quietly (one stderr line, a "no results" note in Source Coverage, never a failed or degraded source) and names the fix: "Trustpilot needs a browser session, and a research run never opens a browser: run `trustpilot-pp-cli auth login`, then run again within 3 minutes".
+- Every `## Top Community Comments` entry now has one shape that copies straight into a quote line: quoted text on one line, platform dot, author, subreddit or platform name (`on YouTube`, `on Hacker News`), count with its unit when the source measured one, then the URL. The `creator` register's pool grows from 8 to 40 entries.
+- Reports now put their best six quoted comments or posts each on its own quote line under the paragraph it supports (`> "quote" 🟠 u/author on r/sub · 1,315 upvotes`), six in the whole report as a ceiling. Other good quotes may stay inside a paragraph, attributed and linked; no quote is used both ways. The earlier rule allowed one pulled quote per story.
+- The "Jobs Page Secret Signals" section is shorter and appears more often when it should. One strong signal is now enough (the two-signal floor is gone), at most two signals are shown, and three or more postings that share one concrete focus count together as one signal. Each signal is one paragraph of two to three sentences: what the company is hiring for, with the posting link and a short quote, then what that suggests and why it matters this month.
+- The closing format checklist now says the no-lists rule on Claude Code covers the whole message, including notes added before or after the report and any later message that shows the report again. A bulleted note under a report made every link in it print as raw `name (url)` text.
+- The quote pool is now chosen by position, not like count: each thread, video, reel or story gives its top comment and its #2, all top comments are listed first in story order and then the #2s, each entry is labelled `top comment`, `#2 comment` or `post`, and entries from a result the humor score rated funny lead their story and are tagged `funny`. Quote text is cut at a sentence end instead of mid-sentence, raw URLs and an X reply's leading handles are dropped, and a comment that is itself a quotation no longer prints doubled quote marks. Reports treat six quote lines in the whole report as a ceiling, not a target, and a recommendations run's closing checklist no longer asks for story quote lines. Bot comments, machine markup, a creator's or original poster's own comments, quoted-parent lines and markdown emphasis no longer reach the pool, GitHub comments need a reaction, and a thread joins only when its top community comment has at least 5 votes.
+
+### Fixed
+
+- A comment with no link of its own is now cited by the post it sits on. On a result merged from several sources it could carry another source's URL.
+- A person who leads more than one listed company now gets a jobs board: with `--ticker "TSLA:Tesla,SPCX:SpaceX"` each company is tried in order inside the lane's budget and the first one with a board is used. When the board is not the topic's own, the footer names the company (`💼 Jobs at SpaceX: 2,908 open roles │ 716 new in the L30`), as does the digest's `Board:` line.
+- Every Reddit thread that survives into the report now carries its top comments (author, score, permalink). Comment slots used to be spent before the run's own ranking, so only 3 to 5 of 12 kept threads had any; a second pass after ranking fetches comments for the kept threads that lack them, highest ranked first, up to 12 at default depth.
+- Footer engagement totals and Top voices count on-topic items only. One unrelated video carried 12.5M of a Waymo run's 12.7M YouTube views, and posts from related X handles about other things counted toward a person's totals; items the ranking marked off topic, and related-handle posts that do not name the topic, are now left out of the sums. Item counts are unchanged.
+- Reddit comment quotes are no longer stored cut mid-word at 200 characters ("...a progressive socialist. Th"). A comment is kept up to 400 characters and ends at a sentence when one falls near the limit, otherwise at a word; lines in the report keep their current display length.
+- Reddit no longer ends a busy run as "reddit timed out after 180s" with zero threads. The lane now works to a deadline 20 seconds inside the source wait: a stage that no longer fits (archive supplement, site search, comment enrichment) is skipped and the threads already found are returned.
+- Reddit on networks where site search is refused: the Arctic Shift archive is now asked for each subreddit listing and comment lookup once per run instead of once per subquery (identical concurrent requests were answered "HTTP 422: Timeout. Maybe slow down a bit"), a refused listing slice is asked for again after the others, and the newest week of the window is fetched first so a short budget drops the oldest week. A run that lost threads and comments to those 422s now keeps them.
+- The Polymarket footer names a recurring series once and puts substantive markets first. An "Elon Musk" run printed three brackets of the weekly "how many tweets" market in its three slots; it now names the net worth, Putin meeting and administration markets, and a tweet-count bracket only fills a slot that is left over.
+- The ScrapeCreators Reddit backfill now runs when it should. Its 5-thread floor counted every free thread, so a run whose site search was refused still cleared it with dozens of off-topic listing threads and ended with one usable thread and no backfill; the floor now counts on-topic threads. The free path also stops early enough to leave the backfill a turn, so a free path that timed out with nothing is backfilled instead of ending as "reddit timed out", and a slow backfill is abandoned before it can cost the free threads. Free stays first.
+- The `## Jobs Digest` now includes the roles the run itself ranked highest (its ranked job postings and the roles its Hiring Signals themes name). Up to 10 of the digest's 40 places go to them, listed first, and the rest stay with the rarest roles on the board, so the hiring section is no longer written without the run's strongest postings.
+- The jobs lane now works inside one 45 second budget of its own (careers pages, board detection, listing pages and detail calls) instead of running into the generic 180 second source timeout. When the budget runs out it returns what it has read: an open-role count with a `+`, a digest of the roles read so far and a coverage note. Every request has a short timeout, so a host that never answers costs seconds, not minutes; a domain guessed from the topic's name that does not answer is no longer reported as a jobs outage; and a lane that ends with nothing because of its budget says which host or step used the time, on stderr and in the source outcome. A company whose careers site is not one of the supported boards (Disney, Google) now ends quickly with `no supported job board found`.
+- The jobs lane reads the careers page of the official site the run already knows (`--official-site`, or the one auto-resolve found) when Wikidata names no company for the topic, instead of guessing domains from the topic's name. A board found under a guessed slug that states another company's name is no longer counted as the topic's.
+- The report's first line no longer ends its window on tomorrow's date. West of UTC in the evening it read "Oct 12 to Nov 11, 2026" on Nov 10; the window shown now ends on the reader's own date, while searches keep the UTC end date so no post from the last hours is lost.
+- When Reddit answers its site search with "HTTP 403: Blocked", the run stops searching after the first refusal instead of retrying every subreddit for every subquery, and Reddit is listed under Partial Coverage ("Reddit site search was blocked (HTTP 403: Blocked); threads come from subreddit listings only") instead of reading as a complete source.
+- When a company has no supported job board, the run no longer prints a `💼 Jobs: 4 roles` line built from web search results. The jobs web fallback now keeps only job postings on a supported board that carries the company's name, so ad links, search-engine redirects, Wikipedia, news stories and careers landing pages are never counted as roles, and the careers-page search skips ad and redirect links.
+- `doctor --postmortem` reports the run that just finished again. Since the report cache moved to its v2 format it printed "No saved run found" after every run, and plain `doctor` ignored the last run's per-source outcomes for the same reason.
+
+
+## [3.34.1] - 2026-11-11
+
+### Fixed
+
+- A topic with no job board no longer reports "Jobs unreachable" and "Some sources failed: jobs". A careers domain guessed from the topic's name that does not resolve, or refuses the connection, now counts as no board found; a hiring system's own API being down is still reported.
+- Jobs now finds a company's board when its careers page is a landing page that links to a job search on the same site (`nvidia.com/careers` to `jobs.nvidia.com`), so a person who leads such a company gets that company's roles ("Jensen Huang" returned 0 jobs). When Wikidata names no company for the topic and the topic has no board of its own, the one company the host passed with `--ticker` is searched instead; without an official site its board still gives a digest only when the board names that company.
+- Polymarket footer names are whole phrases and carry the price of the market they name: "Waymo operate in 12-15 cities on Dec 31, 2026 79%" where the footer printed "Waymo operate in 12-15 cities on 79%", and a bracket's price is no longer shown beside another bracket's question. A deadline ladder ("... by December 31, 2026", "... by March 31, 2027") shows its nearest deadline that has not passed instead of the furthest. A market is named in the footer only when it names the whole topic, so a table tennis match no longer appears under "Jensen Huang". In the saved file, the outcomes of a multi-outcome event keep their own labels ("12-15: 79% | 16-19: 12%") instead of repeating the subject ("Waymo: 79% | Waymo: 12%").
+- The footer's freshness note ("Recent evidence is thin: only N of M dated items are from the last 7 days") no longer counts job postings. A company board with thousands of older postings made every company run look stale; the note now measures only what people posted.
+- The saved raw file no longer lists every posting on a company's job board (one run's file was 2.4 MB, 2.3 MB of it postings). It now carries the Jobs Digest, the ranked postings (up to 40) and a count of the rest.
+
+
+## [3.34.0] - 2026-11-11
+
+### Added
+
+- Company and person topics now resolve to the company they name through Wikidata, with or without a host plan and for each entity of a comparison: the company and its site when the match is certain, and its ticker only when it has exactly one primary listing. The Resolved Entities row shows the ticker, as `Ticker NVDA`, or `Ticker NVDA (via Nvidia)` when the topic is the person who leads it.
+- Company job boards hosted on Workday (Nvidia, for example) are now read. The listing is fetched in parallel under a time budget, up to Workday's 2,000-row limit, and the run records when a board was capped or cut short. Descriptions and true posted dates are fetched for a small number of roles only.
+- Company reports can now carry a "Jobs Page Secret Signals" section, built from the company's own job board. It appears only when at least two postings reveal something out of character, concrete and hard to undo, or bear on a story in the report, and each signal quotes and links its posting. A signal is called unreported only after a web check; most runs show no section. `--hiring-signals` runs need only one such signal.
+- Company topics get a Yahoo Finance footer line: the share-price change over the 30 days ending on the report's last day, whatever the research window, with both closes, the S&P 500 for US listings, and the largest single-day move. It appears when `yahoo-finance-pp-cli` is on PATH and the topic resolves to a listed company or the person who leads one; the same numbers are in the evidence as a Market Data block and add nothing to the item counts. `EXCLUDE_SOURCES=yahoo_finance` turns the line off with no call to Yahoo Finance, and adding `jobs` to that list also skips the Wikidata company lookup. When the Wikidata lookup fails, the topic text is sent to Yahoo Finance's symbol search as a fallback and its first stock is used only on an exact name match with a US symbol. The hosting model can now pass the ticker it found by web search with `--ticker "SYMBOL:Company"` (two pairs for a person who leads two listed companies), which also covers products and subsidiaries through their listed parent; the engine uses a pair only when Yahoo Finance's price chart and symbol search both agree with it, and prints no price line when none does.
+- First-run setup now installs the free, keyless Yahoo Finance CLI with the arXiv and Techmeme CLIs, under the same consent, so company topics get the share-price line without a separate install. Existing installs are not changed: `doctor` lists the source with its CLI and prints the install command when the binary is missing. The security notes now name the two calls behind the line: the topic text goes to Wikidata when it looks like a company or a person's name, and Yahoo Finance receives a ticker symbol and, to confirm one, the company name.
+
+### Changed
+
+- A story in the report can now be followed by one pulled comment on its own quote line, with the platform, author, community and vote count, translated when the comment is in another language. The `## Top Community Comments` evidence lines name the platform dot and, for Reddit, the subreddit, and print counts with thousands separators.
+- Job postings now reach the report as a `## Jobs Digest` evidence section in place of the opening lines of each description: up to 40 of the board's rarest roles, each with the text no other role on that board repeats. Two postings that share a title stay separate roles unless they also say the same thing, and a ranked posting the digest does not list keeps its own evidence line. The footer Jobs line reads `N open roles`, adds `M new in the L30` only when the board gives every role a true first-posted date (Greenhouse now uses `first_published`, not `updated_at`), and shows `2,000+` for a board that was capped or cut short, with no new-roles count for a board read in part. SmartRecruiters boards are read past their first 100 roles, up to 2,000. Workable postings now carry their published date, so a Workable board read whole gets a new-roles count, and a posting's departments read as names (`Product, Design`). Workday descriptions are fetched for the digest's roles only; a Workday board whose every role was fetched gets a new-roles count too, and the digest's note counts detail requests that failed. The MCP `research` tool returns the footer line without the digest (it sets `LAST30DAYS_NO_JOBS_DIGEST=1`), and job postings there keep their evidence lines.
+- Reports now end on the "I'm now an expert on…" invitation and its suggestions; the closing "I have all the links to the … I pulled from. Just ask." line is gone. Saved HTML briefs and the library feed still leave the invitation out, for reports with either ending, and now leave out the comparison invitation too.
+- The report's first line now names the search and its window: `🌐 last30days · {topic} · {Mon D} to {Mon D, YYYY} · v{VERSION}` replaces `🌐 last30days v{VERSION} · synced {YYYY-MM-DD}`. Comparison runs show the entities joined by " vs " and discovery runs show the domain.
+
+### Fixed
+
+- A normal run on a company, or on the person who leads one, reads that company's job board again: the research instructions now have the host name `jobs` in its plan, which they had told it to leave out. The board is looked for on the company's official site, and other domains are guessed only when no official site is known. A board found by guessing its name or its domain is used for the role count alone unless it names the same company, and a run with `--as-of` in the past skips Jobs with the reason shown.
+- GitHub keyword search no longer adds spam issues and passing mentions from unrelated repos to reports on non-tech topics. A result is kept only when its title names the topic or its repo is named for it; `--github-user` and `--github-repo` runs are unchanged.
+- Report paragraphs keep their bold headline phrase when you have a general plain-style or no-bold preference, so reports stay scannable. The headline is dropped only when an instruction names the report or arrives with the request, the host or operator requires it, or the channel does not render markdown.
+- The Polymarket footer line names each market once and whole: a sub-market's name is no longer cut mid-word or repeated after its question, and markets that differ only in their deadline are told apart.
+- The `## Stats` block no longer counts job postings as evidence: "Total evidence" and its source count leave them out, "Top voices" no longer lists departments or the hiring system, and open roles get their own `Jobs: N roles` line.
+- The web section appended to the saved raw file now keeps each article's URL instead of only the outlet's domain, so later readers and later runs can link the articles.
+
+
+## [3.33.2] - 2026-11-10
+
+### Fixed
+
+- X search no longer fails with "Internal server error" when an earlier browser holds an expired x.com session. With `FROM_BROWSER=auto`, if X rejects the session from the first browser that has one (for example an old Safari login), the engine retries the search with the next browser's session (for example Chrome) and keeps using it for the rest of the run. When no other browser has a working session, the error names the browser whose session failed and is reported as an auth failure.
+
+
+## [3.33.1] - 2026-11-10
+
+### Fixed
+
+- YouTube no longer comes back empty for topics with a big back catalog, such as a music artist whose top search results are years-old official videos. When the relevance search finds fewer than 3 videos inside a recent window, the engine retries once with YouTube's own upload-date filter (this week, month, or year) and merges the new uploads. An age-restricted video in the results is also no longer mistaken for a bot block, which had been cancelling transcripts for the whole search.
+
+
+## [3.33.0] - 2026-11-10
+
+### Security
+
+- Limit the Bright Data CLI child environment to its own API key and runtime, credential-location, TLS and proxy settings, preventing unrelated provider secrets from being inherited even when no explicit Bright Data key is configured.
+
+### Fixed
+
+- Instagram searches that find no reels now show `no results` in Source Coverage instead of `error: HTTP 404`. A 404 from the Google discovery fallback is treated as a clean miss, matching the primary reels search; other fallback failures are still reported. ([#1370](https://github.com/mvanhorn/last30days-skill/issues/1370))
+- Enablement topics such as "best Grok AI bot to control my computer agent" now plan as how-to research, with subqueries for the built-in route and the third-party MCP servers, CLIs and automation tools that give the named tool that capability, instead of a strict-recent comparison about the tool.
+- In Claude Code, reports no longer contain markdown lists: KEY PATTERNS numbers and suggestion bullets are written as plain lines that look the same. While a list streamed, Claude Code could redraw every link in the reply as `label (url)`, leaving the scrolled-off part of a report with visible URLs. Other hosts are unchanged.
+- Plural topics like "AI coding agents" or "prediction markets" are classified into their category again, so discovery and subreddit resolution add the category's peer subreddits instead of finding no category.
+- Questions such as "best Grok bot to control my computer" now surface the general tools that answer them (MCP servers, agent CLIs, browser automation), not only posts about the named tool. The planner always adds a search for the capability itself, also when the LLM planner is unavailable. The candidate pool keeps a few of those results, spread across sources. The reranker no longer caps them for not naming the tool the question names.
+- Recommendation reports use available source voices without requiring X posts, and their example follows the root output format.
+- Reports stop printing a like, upvote, view, or point count beside every quote and source. Engagement numbers still decide what gets quoted, but a count now appears in the summary only when its size is the finding (a comparison, a contrast, or a surprise); otherwise the report says "the top comment" or drops the number. Polymarket odds, the `creator` and `exec` registers, and the stats footer are unchanged.
+
+
+## [3.32.0] - 2026-11-09
+
+### Security
+
+- Keep synthesis, citation, and response-format instructions in the skill and MCP tool description rather than research output. Compact and comparison reports retain source evidence, coverage warnings, footer data, and structural boundaries without commands to override the host's response format.
+- Make explicit cookie refusal (`BROWSER_CONSENT=false` or `FROM_BROWSER=off`) disable the agentcookie sidecar as well as native browser and CDP reads, including availability checks. User-supplied credentials and sidecar behavior without an explicit refusal are unchanged.
+
+  Existing sidecar users with either refusal setting must remove both `BROWSER_CONSENT` and `FROM_BROWSER` from the process environment, the active global `.env` (including a custom `LAST30DAYS_CONFIG_DIR`), and any trusted project `.claude/last30days.env`, then set `AGENTCOOKIE=on` to restore sidecar-only access. Native browser and CDP reads remain disabled with both settings absent; `BROWSER_CONSENT=true` would also permit CDP reads.
+
+### Fixed
+
+- Accept query plans from standard input with `--plan -` and use a quoted heredoc in the research runbook, so Codex can start research without a temporary-plan cleanup trap. ([#1346](https://github.com/mvanhorn/last30days-skill/issues/1346))
+- Identify Google discovery fallback failures in Instagram search results and Source Coverage, preserving clean no-reels responses, recovered reels across queries or creators, and the most specific typed HTTP failure. ([#1356](https://github.com/mvanhorn/last30days-skill/issues/1356))
+- A YouTube lane keeps 60 to 75 seconds for transcripts before it starts another expanded search. After yt-dlp hits a bot-check or HTTP 429, including over SSH, the rest of that search's transcripts go to ScrapeCreators when a key is set, and a transcript cut off by the lane deadline is logged as that deadline.
+- Amazon research works again with Bright Data CLI 0.4.0 and newer, which removed the named pipeline commands the engine called. Older CLIs now get a clear upgrade message (`npm i -g @brightdata/cli@latest`).
+- Research on an organization whose first word names other things (for example "Pace Capital" vs. Pace Morby) no longer writes up the namesakes. The planner can now anchor such organizations by full name, anchored runs drop namesake items from the footer counts and Top voices too, and synthesis drops a different entity with the same name silently instead of noting it is unrelated.
+- X, Threads and planner searches no longer keep a question's closing "?" in the core subject: "What is Claude Code?" now searches for "claude code" instead of "claude code?", and a noise word or suffix right before the "?" is stripped as it is without one.
+- `--search` with only sources that can't run here (for example telegram or tiktok without a ScrapeCreators key) now names those sources and exits 2 instead of ending in a traceback.
+- `store.store_findings` now collapses duplicate URLs within a single batch and coalesces null engagement scores during conflict upserts so a single run never inflates `sighting_count` or `findings_updated` for a newly discovered URL.
+
+
 ## [3.31.0] - 2026-10-27
 
 ### Security

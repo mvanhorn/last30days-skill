@@ -1,1 +1,0 @@
-`store.store_findings` now collapses duplicate URLs within a single batch and coalesces null engagement scores during conflict upserts so a single run never inflates `sighting_count` or `findings_updated` for a newly discovered URL.

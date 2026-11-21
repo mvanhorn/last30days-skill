@@ -4,6 +4,20 @@ from lib import normalize
 
 
 class NormalizeV3Tests(unittest.TestCase):
+    def test_x_post_text_is_unescaped_in_title_and_body(self):
+        items = [
+            {
+                "id": "1",
+                "text": "Insane W at Worlds for Tama &amp; Sahra &lt;3 it&#39;s over",
+                "url": "https://x.com/pickleball_com/status/1",
+                "author_handle": "pickleball_com",
+                "date": "2026-03-01",
+            }
+        ]
+        normalized = normalize.normalize_source_items("x", items, "2026-02-15", "2026-03-17")
+        self.assertEqual("Insane W at Worlds for Tama & Sahra <3 it's over", normalized[0].body)
+        self.assertEqual(normalized[0].body, normalized[0].title)
+
     def test_youtube_evergreen_fallback_keeps_older_items_when_recent_pool_is_empty(self):
         items = [
             {

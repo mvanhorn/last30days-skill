@@ -2,6 +2,7 @@
 that the keyless path never calls search.json (U2)."""
 
 from unittest import mock
+from urllib.parse import urlsplit
 
 from pathlib import Path
 
@@ -19,7 +20,12 @@ def _runtime():
 
 
 def _item(rid):
-    return {"url": f"https://www.reddit.com/r/x/comments/{rid}/t/", "title": rid}
+    # On topic for the "kanye" stream: the backfill floor counts the free
+    # threads its relevance prune will keep.
+    return {
+        "url": f"https://www.reddit.com/r/x/comments/{rid}/t/", "title": f"kanye {rid}",
+        "engagement": {"score": 40, "num_comments": 5},
+    }
 
 
 def _ids(items):
@@ -226,7 +232,8 @@ class TestBackfillOutcome:
              mock.patch("lib.reddit.search_and_enrich") as sc:
             _items, artifact = _stream(self.KEY)
         sc.assert_not_called()
-        assert not artifact.get("_source_outcome_detail")
+        # Only the served-path line: no backfill note.
+        assert artifact.get("_source_outcome_detail") == "reddit served 6"
 
 
 class TestMergeHelper:
@@ -243,6 +250,50 @@ class TestNoSearchJson:
              mock.patch("lib.reddit_keyless.reddit_listing.fetch_listings", return_value=[]):
             reddit_keyless._discover("topic", "default", ["test"])
         json_search.assert_not_called()
+
+    def test_grounding_reddit_enrichment_never_requests_thread_json(self, monkeypatch):
+        # Anonymous thread .json has been 403 since 2026: the web lane's Reddit
+        # enrichment goes through the hydrator (Arctic Shift), never reddit.com.
+        from lib import grounding, reddit_arctic, reddit_enrich
+
+        requested = []
+
+        def fake_get(url, headers=None, **_kwargs):
+            requested.append(url)
+            if "/posts/ids" in url:
+                return {"data": [{
+                    "id": "1abc2de", "title": "kanye thread", "score": 30, "num_comments": 4,
+                    "created_utc": 1_700_000_000, "subreddit": "Kanye",
+                    "permalink": "/r/Kanye/comments/1abc2de/kanye_thread/",
+                    "author": "op", "selftext": "the thread body",
+                }]}
+            if "/comments/tree" in url:
+                return {"data": [{"kind": "t1", "data": {
+                    "id": "c1", "score": 9, "created_utc": 1_700_000_100, "depth": 0,
+                    "author": "fan", "body": "a comment about kanye",
+                    "permalink": "/r/Kanye/comments/1abc2de/kanye_thread/c1/", "replies": "",
+                }}]}
+            raise AssertionError(f"unexpected URL {url}")
+
+        monkeypatch.setattr(reddit_arctic.http, "get", fake_get)
+        monkeypatch.setattr(reddit_arctic.time, "sleep", lambda _s: None)
+        reddit_arctic.reset_memo()
+        with mock.patch.object(reddit_enrich, "fetch_thread_data") as thread_json, \
+             mock.patch.object(http, "get_reddit_json") as reddit_json:
+            items = grounding._enrich_reddit_items([
+                {"url": "https://old.reddit.com/r/Kanye/comments/1abc2de/kanye_thread/", "title": "t"},
+                {"url": "https://example.com/news", "title": "n"},
+            ])
+        thread_json.assert_not_called()
+        reddit_json.assert_not_called()
+        hosts = {urlsplit(u).hostname for u in requested}
+        assert requested and not [h for h in hosts if h.split(".")[-2:] == ["reddit", "com"]]
+        assert not [u for u in requested if ".json" in u]
+        assert items[0]["snippet"] == "the thread body"
+        assert items[0]["top_comments"][0]["excerpt"] == "a comment about kanye"
+        assert items[0]["top_comments"][0]["depth"] == 0
+        assert items[0]["enriched_via"] == "arctic"
+        assert "top_comments" not in items[1]
 
 
 class TestEnvConstantParity:
@@ -284,3 +335,25 @@ class TestEnvConstantParity:
         items, pub, sc = self._run(cfg, [_item("a")], [_item("z")])
         sc.assert_called_once()
         assert _ids(items) == ["a", "z"]
+
+
+class TestScBackfillFoldsIntoFreeCopies:
+    def test_live_sc_score_replaces_a_pending_free_score(self):
+        pending = {
+            "url": "https://www.reddit.com/r/x/comments/b/t/", "title": "kanye b",
+            "score": None, "engagement": {"score": None, "num_comments": 0},
+            "engagement_source": "arctic-pending", "metadata": {"post_id": "b"},
+        }
+        sc_copy = {
+            "url": "https://www.reddit.com/r/x/comments/b/t/", "title": "kanye b",
+            "engagement": {"score": 250, "num_comments": 31},
+            "top_comments": [{"author": "u1", "score": 90, "excerpt": "kanye said it first"}],
+        }
+        out = pipeline._merge_reddit_items([pending], [sc_copy, _item("c")])
+        assert _ids(out) == ["b", "c"]
+        merged = out[0]
+        assert merged["engagement"]["score"] == 250
+        assert merged["engagement_source"] == "live"
+        assert merged["engagement"]["num_comments"] == 31
+        assert [c["author"] for c in merged["top_comments"]] == ["u1"]
+        assert merged["top_comments"][0]["depth"] == 0

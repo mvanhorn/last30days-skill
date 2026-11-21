@@ -191,6 +191,19 @@ def test_agent_export_uses_digg_post_count_not_rank_for_cluster_engagement():
     assert exported["clusters"][2]["engagement_total"] == 5
 
 
+def test_agent_export_cluster_engagement_leaves_out_the_digg_score():
+    report = _report()
+    report.ranked_candidates[2].source_items[0].engagement = {
+        "postCount": 127,
+        "uniqueAuthors": 96,
+        "digg_score": 1286,
+    }
+
+    exported = schema.to_agent_export(report)
+
+    assert exported["clusters"][2]["engagement_total"] == 127
+
+
 def test_agent_export_excludes_non_counter_metadata_from_cluster_engagement():
     report = _report()
     report.ranked_candidates[0].source = "web"

@@ -11,7 +11,9 @@ class JobsSourceTests(unittest.TestCase):
                 {
                     "id": 123,
                     "title": "Enterprise Security Engineer",
-                    "updated_at": "2026-06-01T10:00:00-05:00",
+                    "first_published": "2026-06-01T10:00:00-05:00",
+                    "updated_at": "2026-06-20T10:00:00-05:00",
+                    "company_name": "Acme",
                     "absolute_url": "https://boards.greenhouse.io/acme/jobs/123",
                     "content": "<p>Build SSO and SOC 2 workflows.</p>",
                     "location": {"name": "Remote"},
@@ -25,9 +27,35 @@ class JobsSourceTests(unittest.TestCase):
         item = parsed[0]
         self.assertEqual("Enterprise Security Engineer", item["title"])
         self.assertEqual("2026-06-01", item["date"])
+        self.assertTrue(item["posted_date_true"])
+        self.assertEqual("Acme", item["company_name"])
         self.assertEqual("Engineering", item["department"])
         self.assertIn("SSO", item["description"])
         self.assertEqual("greenhouse", item["provider"])
+
+    def test_greenhouse_role_without_first_published_has_no_date(self):
+        payload = {"jobs": [{"id": 1, "title": "Engineer", "updated_at": "2026-06-20T10:00:00-05:00"}]}
+        item = jobs.parse_greenhouse_response(payload, board_token="acme")[0]
+        self.assertIsNone(item["date"])
+        self.assertFalse(item["posted_date_true"])
+
+    def test_only_real_posting_dates_count_as_true(self):
+        ashby = jobs.parse_ashby_response(
+            {"jobs": [{"id": "1", "title": "Engineer", "publishedAt": "2026-06-02T00:00:00Z"}]}, slug="acme",
+        )[0]
+        lever = jobs.parse_lever_response(
+            [{"id": "1", "text": "Engineer", "createdAt": 1780000000000}], slug="acme",
+        )[0]
+        released = jobs.parse_smartrecruiters_response(
+            {"content": [{"id": "1", "name": "Engineer", "releasedDate": "2026-06-02T00:00:00.000Z"}]}, slug="acme",
+        )[0]
+        created = jobs.parse_smartrecruiters_response(
+            {"content": [{"id": "2", "name": "Engineer", "createdOn": "2026-06-02T00:00:00.000Z"}]}, slug="acme",
+        )[0]
+        self.assertTrue(ashby["posted_date_true"])
+        self.assertFalse(lever["posted_date_true"])
+        self.assertTrue(released["posted_date_true"])
+        self.assertFalse(created["posted_date_true"])
 
     @patch("lib.jobs.http.get_text", return_value=None)
     @patch("lib.jobs.http.get")
@@ -117,6 +145,64 @@ class JobsSourceTests(unittest.TestCase):
         self.assertEqual("Sales", parsed[0]["department"])
         self.assertEqual("2026-06-02", parsed[0]["date"])
         self.assertEqual("smartrecruiters", parsed[0]["provider"])
+
+    def test_parse_workable_response_reads_the_live_row_shape(self):
+        # The fields Workable's v3 jobs endpoint returns: `published`, a list
+        # of departments, and no URL or description.
+        payload = {
+            "total": 1,
+            "results": [
+                {
+                    "id": 6125026,
+                    "shortcode": "AB12CD34EF",
+                    "title": "Product Designer",
+                    "remote": True,
+                    "location": {"city": "", "country": "France", "countryCode": "FR", "region": None},
+                    "locations": [
+                        {"city": "", "country": "France", "countryCode": "FR", "hidden": False, "region": None}
+                    ],
+                    "state": "published",
+                    "published": "2026-09-21T00:00:00.000Z",
+                    "type": "full",
+                    "department": ["Product", "Design"],
+                    "workplace": "remote",
+                }
+            ],
+        }
+        parsed = jobs.parse_workable_response(payload, slug="acme")
+        self.assertEqual(1, len(parsed))
+        item = parsed[0]
+        self.assertEqual("2026-09-21", item["date"])
+        self.assertTrue(item["posted_date_true"])
+        self.assertEqual("Product, Design", item["department"])
+        self.assertEqual("France", item["location"])
+        self.assertEqual("https://apply.workable.com/acme/j/AB12CD34EF/", item["url"])
+        self.assertEqual("workable", item["provider"])
+        self.assertNotIn("[", item["department"])
+
+    def test_parse_workable_response_still_reads_the_older_row_shape(self):
+        payload = {
+            "jobs": [
+                {
+                    "shortcode": "OLD1",
+                    "title": "Clerk",
+                    "published_on": "2026-06-02",
+                    "created_at": "2026-05-01",
+                    "department": "Operations",
+                    "location": {"city": "Austin", "country": "United States"},
+                    "url": "https://apply.workable.com/acme/j/OLD1/",
+                },
+                {"shortcode": "OLD2", "title": "Porter", "created_at": "2026-05-01", "department": None},
+            ]
+        }
+        first, second = jobs.parse_workable_response(payload, slug="acme")
+        self.assertEqual("2026-06-02", first["date"])
+        self.assertTrue(first["posted_date_true"])
+        self.assertEqual("Operations", first["department"])
+        self.assertEqual("Austin, United States", first["location"])
+        self.assertEqual("2026-05-01", second["date"])
+        self.assertFalse(second["posted_date_true"])
+        self.assertEqual("", second["department"])
 
     def test_extract_jsonld_jobs_parses_jobposting(self):
         html = (

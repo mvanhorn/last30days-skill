@@ -9,6 +9,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 import last30days as cli
 from lib import dates, schema
 
@@ -75,6 +77,67 @@ def _diag() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("writer", ["research", "freshness"])
+def test_cache_writer_holds_exclusive_lock_during_publish(tmp_path, monkeypatch, writer):
+    cache_path = tmp_path / "last-report.json"
+    lock_path = cache_path.with_suffix(".lock")
+    lock_path.touch()
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    assert cli._write_last_run("Original", _report("Original"))
+    cached = cli._load_last_report_cache("Original")
+    assert cached is not None
+    probe = """
+import errno
+import os
+import sys
+
+with open(sys.argv[1], "r+b") as lock:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EAGAIN):
+            raise
+        print("contended")
+    else:
+        if os.name == "nt":
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        print("acquired")
+"""
+
+    def probe_lock():
+        return subprocess.run(
+            [sys.executable, "-I", "-c", probe, str(lock_path)],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+
+    published_paths = []
+    replace = cli.replace_private_text
+
+    def observe_publish(path, content):
+        assert probe_lock() == "contended"
+        replace(path, content)
+        published_paths.append(path)
+
+    monkeypatch.setattr(cli, "replace_private_text", observe_publish)
+    if writer == "research":
+        assert cli._write_last_run("New", _report("New"))
+        assert published_paths == [cache_path, tmp_path / "last-run.json"]
+        assert cli._load_last_report_cache("New") is not None
+    else:
+        cached.report.warnings.append("Freshness cache updated")
+        assert cli._update_cached_freshness(cached)
+        assert published_paths == [cache_path]
+        refreshed = cli._load_last_report_cache("Original")
+        assert refreshed is not None
+        assert refreshed.report.warnings == ["Freshness cache updated"]
+    assert probe_lock() == "acquired"
+
+
 class LastRunStateTests(unittest.TestCase):
     def test_empty_config_override_disables_last_run_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,7 +165,8 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(payload["topic"], "custom config query")
             self.assertGreaterEqual(payload["total"], 0)
             self.assertEqual(str(config_dir / "last-report.json"), payload["report_cache"])
-            self.assertTrue((config_dir / "last-report.json").exists())
+            report = json.loads((config_dir / "last-report.json").read_text(encoding="utf-8"))
+            self.assertIn(f"[last30days] Follow-up cache ID: {report['run_id']}\n", result.stderr)
 
     def test_last_report_cache_round_trips_single_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,10 +177,23 @@ class LastRunStateTests(unittest.TestCase):
                 loaded = cli._load_last_report_cache("OpenClaw")
 
             self.assertIsNotNone(loaded)
-            cached_report, entity_reports, cache_path = loaded
+            cached_report, entity_reports, cache_path = loaded.report, loaded.entity_reports, loaded.path
             self.assertEqual("OpenClaw", cached_report.topic)
             self.assertIsNone(entity_reports)
             self.assertEqual(config_dir / "last-report.json", cache_path)
+
+    def test_legacy_report_cache_remains_usable_without_run_selector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            cache_path = config_dir / "last-report.json"
+            with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
+                self.assertTrue(cli._write_last_run("OpenClaw", _report("OpenClaw")))
+                payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                run_id = payload.pop("run_id")
+                cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+                self.assertIsNotNone(cli._load_last_report_cache("OpenClaw"))
+                self.assertIsNone(cli._load_last_report_cache("OpenClaw", run_id=run_id))
 
     @unittest.skipUnless(os.name == "posix", "POSIX file permissions")
     def test_run_cache_files_are_private_before_writing(self):

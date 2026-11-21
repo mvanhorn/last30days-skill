@@ -765,6 +765,51 @@ class TestTranscriptFetchStats(unittest.TestCase):
         self.assertEqual(stats["attempts"], 4)
         self.assertEqual(stats["failures"], 0)
 
+    def test_fetch_stats_record_the_transcript_target_and_no_block(self):
+        items = [self._make_item(f"v{i}", 1_000 * (i + 1), "2026-03-15") for i in range(8)]
+
+        self._run(items)
+
+        stats = youtube_yt.get_transcript_fetch_stats()
+        self.assertEqual(stats["target"], youtube_yt.TRANSCRIPT_LIMITS["default"])
+        self.assertEqual(stats["blocked"], 0)
+
+    def test_fetch_stats_record_a_bot_check(self):
+        items = [self._make_item(f"v{i}", 1_000 * (i + 1), "2026-03-15") for i in range(4)]
+
+        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None, **_kwargs):
+            youtube_yt._note_youtube_block("ERROR: Sign in to confirm you're not a bot")
+            return {vid: None for vid in video_ids}
+
+        self._run(items, fake_parallel)
+
+        stats = youtube_yt.get_transcript_fetch_stats()
+        self.assertEqual(stats["blocked"], 1)
+        self.assertEqual(stats["failures"], stats["attempts"])
+
+    def test_fetch_stats_count_scrapecreators_rescues(self):
+        def fake_fetch(vid, temp_dir, status, token, rescue_budget=None):
+            if vid == "rescued":
+                status["sc_rescued"] = True
+            return "A transcript."
+
+        with mock.patch.object(youtube_yt, "fetch_transcript", side_effect=fake_fetch):
+            youtube_yt.fetch_transcripts_parallel(["rescued", "plain"], token="sc-dummy")
+
+        self.assertEqual(youtube_yt.get_transcript_fetch_stats()["sc_rescued"], 1)
+
+    def test_quality_results_pass_the_new_stats_through(self):
+        import last30days
+        report = mock.Mock()
+        report.items_by_source = {}
+        report.source_status = {}
+        report.errors_by_source = {}
+        stats = {"attempts": 6, "failures": 4, "target": 2, "blocked": 1, "sc_rescued": 2}
+        results = last30days._quality_research_results(report, {}, stats)
+        self.assertEqual(results["youtube_transcript_target"], 2)
+        self.assertEqual(results["youtube_bot_checked"], 1)
+        self.assertEqual(results["youtube_sc_rescued"], 2)
+
 
 class TestYtdlpSSHRouting(unittest.TestCase):
     """LAST30DAYS_YOUTUBE_SSH_HOST routes yt-dlp invocations through SSH for residential IP."""
@@ -1990,6 +2035,133 @@ class TestYoutubeProxy(unittest.TestCase):
         self.assertNotIn("--proxy", result)
 
 
+class TestYouTubeUploadDateFallback(unittest.TestCase):
+    """A relevance search full of old catalog videos retries with YouTube's upload-date filter."""
+
+    def setUp(self):
+        youtube_yt.reset_search_cache()
+        self.addCleanup(youtube_yt.reset_search_cache)
+        today = datetime.now(timezone.utc).date()
+        self.TO = today.isoformat()
+        self.FROM = (today - timedelta(days=30)).isoformat()
+        self.recent = [(today - timedelta(days=n)).isoformat() for n in (1, 2)]
+
+    @staticmethod
+    def _stdout(prefix, dates):
+        return "\n".join(
+            json.dumps({
+                "id": f"{prefix}{i}", "title": f"Kanye West video {i}", "view_count": 100 + i,
+                "like_count": 1, "comment_count": 1, "upload_date": d.replace("-", ""),
+                "description": "desc",
+            })
+            for i, d in enumerate(dates)
+        )
+
+    def _search(self, relevance_dates, filtered_dates, freshness_mode="strict_recent",
+                from_date=None, to_date=None, relevance_rc=0, relevance_stderr="",
+                filtered_rc=0, filtered_stderr=""):
+        from lib.subproc import SubprocResult
+        calls = []
+
+        def _run(cmd, timeout, **_kwargs):
+            calls.append(cmd)
+            if any("youtube.com/results" in arg for arg in cmd):
+                return SubprocResult(
+                    returncode=filtered_rc, stdout=self._stdout("new", filtered_dates),
+                    stderr=filtered_stderr,
+                )
+            return SubprocResult(
+                returncode=relevance_rc, stdout=self._stdout("old", relevance_dates),
+                stderr=relevance_stderr,
+            )
+
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_ytdlp_ssh_host", return_value=None), \
+             mock.patch.object(youtube_yt, "_run_ytdlp", side_effect=_run):
+            out = youtube_yt.search_youtube(
+                "Kanye West", from_date or self.FROM, to_date or self.TO,
+                freshness_mode=freshness_mode,
+            )
+        return out, calls
+
+    def test_catalog_topic_returns_recent_uploads_from_filtered_search(self):
+        out, calls = self._search(["2010-11-22", "2013-06-18"], self.recent)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+        self.assertEqual(len(calls), 2)
+        url = next(arg for arg in calls[1] if "youtube.com/results" in arg)
+        self.assertIn("search_query=kanye+west", url.lower())
+        self.assertIn("sp=EgIIBA%3D%3D", url)  # "this month"
+
+    def test_week_window_uses_this_week_filter(self):
+        from_date = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
+        _, calls = self._search(["2010-11-22"], self.recent, from_date=from_date)
+        url = next(arg for arg in calls[1] if "youtube.com/results" in arg)
+        self.assertIn("sp=EgIIAw%3D%3D", url)
+
+    def test_filtered_results_merge_with_in_window_relevance_hits(self):
+        out, _ = self._search([self.recent[0], "2010-11-22"], [self.recent[1]])
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"old0", "new0"})
+
+    def test_no_fallback_when_relevance_search_already_has_three_recent(self):
+        out, calls = self._search(self.recent + [self.recent[0]], self.recent)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(out["items"]), 3)
+
+    def test_no_fallback_for_evergreen_topics(self):
+        out, calls = self._search(["2010-11-22", "2013-06-18"], self.recent, freshness_mode="evergreen_ok")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"old0", "old1"})
+
+    def test_age_restricted_result_does_not_block_the_fallback(self):
+        """One age-gated video in the results is not a bot block."""
+        out, calls = self._search(
+            ["2010-11-22"], self.recent, relevance_rc=1,
+            relevance_stderr="ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+
+    def test_all_age_gated_relevance_hits_still_reach_the_fallback(self):
+        """Every hit age-gated leaves stdout empty; the retry must still run."""
+        out, calls = self._search(
+            [], self.recent, relevance_rc=1,
+            relevance_stderr="ERROR: [youtube] abc: Sign in to confirm your age. Use --cookies",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"new0", "new1"})
+        self.assertNotIn("error", out)
+
+    def test_failed_retry_is_reported_instead_of_a_quiet_zero(self):
+        out, calls = self._search(
+            ["2010-11-22"], [], filtered_rc=1,
+            filtered_stderr="ERROR: HTTP Error 429: Too Many Requests",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(out["items"], [])
+        self.assertIn("upload-date search failed", out["error"])
+
+    def test_failed_retry_keeps_relevance_hits_without_an_error(self):
+        out, _ = self._search(
+            [self.recent[0]], [], filtered_rc=1,
+            filtered_stderr="ERROR: HTTP Error 429: Too Many Requests",
+        )
+        self.assertEqual([i["video_id"] for i in out["items"]], ["old0"])
+        self.assertNotIn("error", out)
+
+    def test_bot_block_skips_the_fallback(self):
+        _, calls = self._search(
+            ["2010-11-22"], self.recent, relevance_rc=1,
+            relevance_stderr="ERROR: [youtube] abc: Sign in to confirm you're not a bot.",
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_no_fallback_for_past_as_of_window(self):
+        """YouTube's upload filters count back from now, so a past window cannot use them."""
+        out, calls = self._search(["2010-11-22"], ["2024-03-01"], from_date="2024-02-01", to_date="2024-03-02")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out["items"], [])
+
+
 class TestYouTubeDateWindowByFreshnessMode(unittest.TestCase):
     """Out-of-window soft fallback is scoped to evergreen_ok (recent topics stay honest)."""
 
@@ -2161,6 +2333,48 @@ class TestYouTubeDateWindowByFreshnessMode(unittest.TestCase):
             ["2026-10-20", "2026-11-01", "2026-12-01", "2017-03-01", self.TO], "evergreen_ok",
         )
         self.assertEqual({i["video_id"] for i in out["items"]}, {"s3", "s4"})
+
+    def test_sc_search_reads_documented_response_shape(self):
+        # Shape of a /v1/youtube/search video per docs.scrapecreators.com:
+        # camelCase counts/dates and `channel` as an object.
+        def video(vid, published, views):
+            return {
+                "type": "video",
+                "id": vid,
+                "url": f"https://www.youtube.com/watch?v={vid}",
+                "title": f"Ghostty terminal review {vid}",
+                "thumbnail": "https://i.ytimg.com/vi/x/hqdefault.jpg",
+                "channel": {
+                    "id": "UCx", "title": "Terminal Weekly",
+                    "handle": "@terminalweekly", "thumbnail": "https://yt3.ggpht.com/x",
+                },
+                "viewCountText": f"{views:,} views",
+                "viewCountInt": views,
+                "publishedTimeText": "3 weeks ago",
+                "publishedTime": published,
+                "lengthText": "4:14",
+                "lengthSeconds": 254,
+            }
+
+        raw = [
+            video("in1", "2026-09-20T17:08:46.499Z", 14860),
+            video("in2", "2026-10-05T09:00:00.000Z", 462705),
+            video("old", "2017-03-01T12:00:00.000Z", 999999),
+        ]
+        with mock.patch.object(youtube_yt, "_sc_youtube_search", return_value=raw), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript", return_value="transcript"):
+            out = youtube_yt.search_youtube_sc(
+                "Ghostty terminal", self.FROM, self.TO, token="dummy-key",
+                freshness_mode="balanced_recent",
+            )
+
+        items = out["items"]
+        self.assertEqual([i["video_id"] for i in items], ["in2", "in1"])
+        by_id = {i["video_id"]: i for i in items}
+        self.assertEqual(by_id["in1"]["date"], "2026-09-20")
+        self.assertEqual(by_id["in2"]["engagement"]["views"], 462705)
+        self.assertEqual(by_id["in1"]["channel_name"], "Terminal Weekly")
+        self.assertEqual(by_id["in1"]["duration"], 254)
 
 
 if __name__ == "__main__":

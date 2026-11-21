@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from . import http, dates
+from . import http, dates, snippet
 
 
 def extract_reddit_path(url: str) -> Optional[str]:
@@ -117,12 +117,35 @@ def parse_thread_data(data: Any) -> Dict[str, Any]:
                     "score": c_data.get("score", 0),
                     "created_utc": c_data.get("created_utc"),
                     "author": c_data.get("author", "[deleted]"),
-                    "body": c_data.get("body", "")[:300],  # Truncate
+                    "body": c_data.get("body", "")[:600],  # Truncate; the stored excerpt is cut cleanly from this
                     "permalink": c_data.get("permalink"),
                 }
+                # Reddit says whether the thread's own poster wrote this.
+                if isinstance(c_data.get("is_submitter"), bool):
+                    comment["is_submitter"] = c_data["is_submitter"]
                 result["comments"].append(comment)
 
     return result
+
+
+def stored_top_comments(comments: List[Dict]) -> List[Dict[str, Any]]:
+    """Parsed comments in the shape an item stores them. ``is_uploader`` is
+    Reddit's ``is_submitter`` (the thread's own poster wrote the comment), and
+    is left out when the thread data did not say."""
+    stored = []
+    for c in comments:
+        permalink = c.get("permalink", "")
+        entry = {
+            "score": c.get("score", 0),
+            "date": dates.timestamp_to_date(c.get("created_utc")),
+            "author": c.get("author", ""),
+            "excerpt": snippet.cut_quote(c.get("body", "")),
+            "url": f"https://reddit.com{permalink}" if permalink else "",
+        }
+        if isinstance(c.get("is_submitter"), bool):
+            entry["is_uploader"] = c["is_submitter"]
+        stored.append(entry)
+    return stored
 
 
 def get_top_comments(comments: List[Dict], limit: int = 10) -> List[Dict[str, Any]]:
@@ -240,17 +263,7 @@ def enrich_reddit_item(
 
     # Get top comments
     top_comments = get_top_comments(comments)
-    item["top_comments"] = []
-    for c in top_comments:
-        permalink = c.get("permalink", "")
-        comment_url = f"https://reddit.com{permalink}" if permalink else ""
-        item["top_comments"].append({
-            "score": c.get("score", 0),
-            "date": dates.timestamp_to_date(c.get("created_utc")),
-            "author": c.get("author", ""),
-            "excerpt": c.get("body", "")[:200],
-            "url": comment_url,
-        })
+    item["top_comments"] = stored_top_comments(top_comments)
 
     # Extract insights
     item["comment_insights"] = extract_comment_insights(top_comments)
@@ -301,7 +314,7 @@ def enrich_reddit_item_sc(
             "date": dates.timestamp_to_date(c.get("created_utc")) if c.get("created_utc") else None,
             "author": author,
             "body": body[:300],
-            "excerpt": body[:200],
+            "excerpt": snippet.cut_quote(body),
             "url": comment_url,
         })
 

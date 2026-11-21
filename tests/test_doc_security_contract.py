@@ -70,6 +70,34 @@ def test_security_copy_names_official_x_api_and_host_envelope():
     assert "no X backend is called" in security
 
 
+def test_security_copy_discloses_company_lookup_and_share_price_calls():
+    """Both keyless company calls are named with what each one receives."""
+    skill = SKILL_MD.read_text(encoding="utf-8")
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    skill_section = skill[skill.index("## Security & Permissions"):]
+    network = security[security.index("### Network"):security.index("### Hosted reasoning models")]
+    for text in (skill_section, network):
+        assert "wikidata.org" in text
+        assert "yahoo-finance-pp-cli" in text
+        assert "ticker" in text
+        assert "company name" in text
+        assert "topic text" in text
+    setup_installs = next(
+        line for line in security.splitlines() if line.startswith("- First-run setup installs")
+    )
+    assert "Yahoo Finance" in setup_installs
+    assert "`yahoo-finance-pp-cli`" in security[: security.index("## Supported versions")]
+
+
+def test_configuration_documents_the_yahoo_finance_requirement():
+    config = CONFIGURATION.read_text(encoding="utf-8")
+    row = next(line for line in config.splitlines() if line.startswith("| Yahoo Finance |"))
+    assert "`yahoo-finance-pp-cli` on PATH" in row
+    assert "install yahoo-finance --cli-only" in row
+    assert "listed company" in row
+    assert row.count("|") == 5
+
+
 def test_scrapecreators_copy_uses_canonical_free_call_count():
     text = "\n".join(
         [

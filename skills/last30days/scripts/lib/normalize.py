@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import Any
 from urllib.parse import urlparse
 
@@ -28,7 +29,11 @@ def filter_by_date_range(
                 filtered.append(item)
             continue
         if item.published_at < from_date or item.published_at > to_date:
-            continue
+            # A Reddit comment-search hit stays when the comment it matched is
+            # in the window, even on an older thread (the thread date is kept).
+            matched = str((item.metadata or {}).get("matched_comment_date") or "")
+            if not (matched and from_date <= matched <= to_date):
+                continue
         filtered.append(item)
     return filtered
 
@@ -83,6 +88,7 @@ def normalize_source_items(
         "perplexity": _normalize_grounding,
         "jobs": _normalize_jobs,
         "linkedin": _normalize_linkedin,
+        "linkedin_profile": _normalize_linkedin_profile,
     }
     normalizer = normalizers.get(source)
     if normalizer is None:
@@ -173,6 +179,10 @@ def _remap_comments(
         }
         if raw_c.get("url"):
             entry["url"] = str(raw_c["url"])
+        # Whether the item's own author wrote the comment, where the source
+        # said so. A comment stored without the key is unknown.
+        if isinstance(raw_c.get("is_uploader"), bool):
+            entry["is_uploader"] = raw_c["is_uploader"]
         out.append(entry)
     return out
 
@@ -349,6 +359,23 @@ def _normalize_reddit(
         metadata={
             "top_comments": top_comments,
             "comment_insights": item.get("comment_insights") or [],
+            # Where the score and the comments came from (reddit_refs labels),
+            # so a merge keeps the live score and render can say "score pending".
+            **{
+                key: item[key]
+                for key in ("engagement_source", "comments_source")
+                if item.get(key)
+            },
+            # The comment a logged-in comment search matched: its date keeps
+            # an older thread in the window, and render labels it.
+            **(
+                {
+                    "matched_comment_date": item["matched_comment"]["date"],
+                    "matched_comment_url": item["matched_comment"].get("url") or "",
+                }
+                if isinstance(item.get("matched_comment"), dict) and item["matched_comment"].get("date")
+                else {}
+            ),
         },
     )
 
@@ -360,7 +387,9 @@ def _normalize_x(
     from_date: str,
     to_date: str,
 ) -> schema.SourceItem:
-    text = str(item.get("text") or "").strip()
+    # X returns post text HTML-escaped ("Tom &amp; Jerry"). Unescape it here so
+    # the title, the body, quotes copied from it and video titles read as written.
+    text = html.unescape(str(item.get("text") or "")).strip()
     mentioned = item.get("mentioned_handles") or []
     return _source_item(
         item_id=str(item.get("id") or f"X{index + 1}"),
@@ -389,8 +418,12 @@ def _normalize_jobs(
     title = str(item.get("title") or "").strip()
     department = str(item.get("department") or "").strip()
     location = str(item.get("location") or "").strip()
+    # The body keeps the reader's paragraph breaks (``description_blocks``) so
+    # Hiring Signals can split company text from role text even when an HTML
+    # paragraph has no ending punctuation; the snippet stays the flat text.
+    blocks = str(item.get("description_blocks") or "").strip()
     body = "\n".join(
-        part for part in [title, department, location, description] if part
+        part for part in [title, department, location, blocks or description] if part
     )
     provider = str(item.get("provider") or "").strip()
     return _source_item(
@@ -491,6 +524,9 @@ def _normalize_shortform_video(
         snippet=caption,
         metadata={
             "hashtags": item.get("hashtags") or [],
+            # True only when the snippet is a spoken-word transcript, not the
+            # written description fetch_captions starts from.
+            "spoken_caption": bool(item.get("caption_is_transcript")),
             "top_comments": _remap_comments(
                 item.get("top_comments") or [],
                 # Instagram comments use comment_like_count as the vote field
@@ -647,12 +683,14 @@ def _normalize_digg(
     from_date: str,
     to_date: str,
 ) -> schema.SourceItem:
-    """Normalizer for Digg AI 1000 clusters.
+    """Normalizer for Digg clusters.
 
     Each cluster is one item. The TLDR carries the most useful body for
     rerank and synthesis. Top-ranked X posts attached at search time are
     passed through under metadata['posts'] so render can emit them as
-    inline 'via Digg' quotes.
+    inline 'via Digg' quotes. A story from the all-topic search also
+    carries its UUID, topic and canonical URL in metadata; the UUID is
+    what story-scoped CLI commands take.
     """
     title = str(item.get("title") or "").strip()
     tldr = str(item.get("tldr") or "").strip()
@@ -661,6 +699,19 @@ def _normalize_digg(
     if not isinstance(posts, list):
         posts = []
     cluster_url_id = str(item.get("id") or f"DG{index + 1}")
+    metadata = {
+        "clusterUrlId": cluster_url_id,
+        "tldr": tldr,
+        "rank": (item.get("engagement") or {}).get("rank"),
+        "uniqueAuthors": (item.get("engagement") or {}).get("uniqueAuthors"),
+        "postCount": (item.get("engagement") or {}).get("postCount"),
+        "firstPostAge": item.get("first_post_age"),
+        "posts": posts,
+    }
+    if item.get("cluster_id"):
+        metadata["clusterId"] = item["cluster_id"]
+        metadata["topic"] = item.get("topic") or ""
+        metadata["url"] = item.get("url")
     return _source_item(
         item_id=cluster_url_id,
         source=source,
@@ -675,15 +726,7 @@ def _normalize_digg(
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=tldr[:400],
-        metadata={
-            "clusterUrlId": cluster_url_id,
-            "tldr": tldr,
-            "rank": (item.get("engagement") or {}).get("rank"),
-            "uniqueAuthors": (item.get("engagement") or {}).get("uniqueAuthors"),
-            "postCount": (item.get("engagement") or {}).get("postCount"),
-            "firstPostAge": item.get("first_post_age"),
-            "posts": posts,
-        },
+        metadata=metadata,
     )
 
 
@@ -959,6 +1002,9 @@ def _normalize_amazon(
             # swings with keyword phrasing, so filtering can blank the lane.
             "sponsored": bool(item.get("sponsored")),
             "top_comments": top_comments,
+            # The review lane already fired for this product set (search
+            # time), so finalize must not pull again.
+            "reviews_attempted": bool(item.get("reviews_attempted")),
             "product_rating": item.get("product_rating"),
             "product_rating_count": item.get("product_rating_count") or 0,
             "star_distribution": item.get("star_distribution") or {},
@@ -979,6 +1025,8 @@ def _normalize_polymarket(
 ) -> schema.SourceItem:
     title = str(item.get("title") or "").strip()
     question = str(item.get("question") or "").strip()
+    matched = item.get("matched_market") if isinstance(item.get("matched_market"), dict) else None
+    matched_question = str((matched or {}).get("question") or "").strip()
     engagement = {
         "volume": item.get("volume1mo") or item.get("volume24hr") or 0,
         "liquidity": item.get("liquidity") or 0,
@@ -989,7 +1037,9 @@ def _normalize_polymarket(
         title=title or question or f"Polymarket event {index + 1}",
         body="\n".join(
             part
-            for part in [title, question, str(item.get("price_movement") or "")]
+            for part in dict.fromkeys(
+                [title, question, matched_question, str(item.get("price_movement") or "")]
+            )
             if part
         ),
         url=str(item.get("url") or ""),
@@ -1007,6 +1057,20 @@ def _normalize_polymarket(
             "end_date": item.get("end_date"),
             "outcome_prices": item.get("outcome_prices") or [],
             "outcomes_remaining": item.get("outcomes_remaining"),
+            # The market and price that stand for the event in the footer.
+            **({"headline": item["headline"]} if item.get("headline") else {}),
+            # What the compact output's one-line odds summary is built from.
+            **({"odds": item["odds"]} if item.get("odds") else {}),
+            # The subject's own market and the selection rule's verdict on it;
+            # render orders the Markets block and footer by them.
+            **(
+                {
+                    "matched_market": matched,
+                    "selection_score": item.get("selection_score"),
+                    "selection_tier": item.get("selection_tier"),
+                }
+                if matched else {}
+            ),
         },
     )
 
@@ -1111,4 +1175,41 @@ def _normalize_linkedin(
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=text[:200],
         metadata={"author_display": author, "is_article": is_article},
+    )
+
+
+def _normalize_linkedin_profile(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for a person run's own LinkedIn posts.
+
+    The posts come from the person's anchored profile, so each carries the
+    identity-anchor marker. A reshare is titled as one, so every surface that
+    prints the title says the person reshared it rather than wrote it.
+    """
+    text = str(item.get("text") or "").strip()
+    author = str(item.get("author") or "").strip()
+    is_reshare = bool(item.get("is_reshare"))
+    title = text[:140] or f"LinkedIn post {index + 1}"
+    if is_reshare:
+        title = f"Reshared: {title}"
+    return _source_item(
+        item_id=str(item.get("id") or f"LP{index + 1}"),
+        source=source,
+        title=title,
+        body=text,
+        url=str(item.get("url") or ""),
+        author=author,
+        container="LinkedIn",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=0.8,
+        why_relevant="The person's own LinkedIn post",
+        snippet=text[:200],
+        metadata={"author_display": author, "identity_anchor": True, "is_reshare": is_reshare},
     )

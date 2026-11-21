@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | 简体中文 | [العربية](README.ar.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | 简体中文 | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days——由 AI 智能体驱动、搜索真实用户而非编辑内容的搜索引擎" />
@@ -22,7 +22,7 @@
 
 **一个由 AI 智能体驱动的搜索引擎：按赞同票、点赞和真金白银评分，而不是由编辑决定。**
 
-本文档对应当前的 v3 流水线。运行时 Skill 规范位于 [skills/last30days/SKILL.md](skills/last30days/SKILL.md)，最新命令与配置行为以该文件为准。
+本文档对应当前的 v4 流水线。运行时 Skill 规范位于 [skills/last30days/SKILL.md](skills/last30days/SKILL.md)，最新命令与配置行为以该文件为准。
 
 **Claude Code（推荐——通过 marketplace 自动更新）：**
 
@@ -41,7 +41,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 更多安装方式（claude.ai 网页版、OpenClaw、手动安装）见下方[安装](#安装)章节。
 
-开箱即用。Reddit、Hacker News、Polymarket 和 GitHub 无需配置即可搜索。首次运行时，配置向导会在 30 秒内帮你解锁 X、YouTube、TikTok、arXiv、Techmeme 等更多来源。
+开箱即用。Reddit、Hacker News、Polymarket 和 GitHub 无需配置即可搜索，当主题是一家公司时，专利申请和招聘页面也一样。首次运行时，配置向导会在 30 秒内帮你解锁 X、YouTube、TikTok、arXiv、Techmeme 等更多来源。
 
 ---
 
@@ -71,17 +71,18 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 | 来源 | 人们会告诉你什么 |
 |------|------------------|
-| **Reddit** | 未经过滤的真实看法。免费获取带实际赞同数的热门评论，无需 API 密钥；那些常被 Google 埋没的真实意见。 |
+| **Reddit** | 未经过滤的真实看法。免费获取带实际赞同数的热门评论，无需 API 密钥；那些常被 Google 埋没的真实意见。经你同意后，它还能以你自己已登录的 Reddit 账号搜索，获得更多帖子和实时分数。 |
 | **X / Twitter** | 犀利观点、专家长帖和突发事件的第一反应。最早知道，也最早争论。 |
 | **YouTube** | 45 分钟的深度内容。搜索完整字幕，只提取真正值得引用的 5 句话。 |
 | **TikTok** | 一个触达 360 万人的创作者观点——你永远不会在 Google 上搜到。 |
 | **Instagram Reels** | 带口播字幕的影响者视角，反映视觉文化的信号。 |
 | **Hacker News** | 开发者共识：825 分、899 条评论，技术从业者真正交锋的地方。 |
-| **Polymarket** | 不是观点，而是由真金白银支撑的概率：专辑销量 96%，收购概率 4%。 |
+| **Polymarket** | 不是观点，而是由真金白银支撑的概率：专辑销量 96%，收购概率 4%。报告会把某个市场的概率放在相关报道下方的一行里，并标明概率变动了多少。 |
 | **GitHub** | 搜人时查看 PR 速度、按 Star 排名的热门仓库和发行说明；搜主题时查看 Issue 与 Discussion。 |
-| **Digg** | 来自 Digg AI 与 Tech 板块的话题聚类，包含可追溯的 X 行内引用，无需 X 认证。当 PATH 中存在 `digg-pp-cli` 时自动启用。 |
+| **Digg** | 来自 Digg 全部话题（AI、科技、国际与商业、体育、科学、游戏、娱乐）的话题聚类，按 Digg Score 排序，包含可追溯的 X 行内引用，无需 X 认证。当 PATH 中存在 `digg-pp-cli` 时自动启用。旧版 `digg-pp-cli` 仍可使用，但只覆盖 AI 与科技，且不带评分。 |
 | **arXiv** | 热点背后的论文。免费查找时间窗口内的新研究，无需 API 密钥。当 PATH 中存在 `arxiv-pp-cli` 时自动启用（首次配置会安装）。 |
 | **Techmeme** | 科技新闻的编辑视角，并按你设定的 30 天窗口筛选。免费且无需 API 密钥。当 PATH 中存在 `techmeme-pp-cli` 时自动启用（首次配置会安装）。 |
+| **Yahoo Finance** | 市场对一家公司的看法。显示 30 天窗口内的股价涨跌，美股上市公司还会对比标普 500。免费且无需 API 密钥。当主题是上市公司或其掌舵人，且 PATH 中存在 `yahoo-finance-pp-cli` 时显示（首次配置会安装）。 |
 | **LinkedIn** | 职业领域的信号。搜索帖子和文章，其中文章被视为高价值信号。 |
 | **Meta Ads** | 品牌花钱在说什么。本月新投放的 Meta 广告创意，包含文案、优惠码和语音转写。 |
 | **StockTwits** | 交易者情绪。当主题是股票代码或加密货币时自动启用。 |
@@ -96,7 +97,8 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Trustpilot** | 企业 TrustScore、评价数量和客户反馈的 AI 摘要。按需启用，需要 PATH 中的 `trustpilot-pp-cli` 和可用会话。 |
 | **Amazon** | 商品评分、价格和客户评价。按需启用，需要已认证的 `brightdata` CLI，并消耗你的 Bright Data 额度。 |
 | **DripStack** | 通过无需密钥的公共 API 搜索金融通讯和分析师文章。通过 `--search dripstack` 或 `INCLUDE_SOURCES=dripstack` 按需启用。 |
-| **招聘 / 职位页面** | 以公开职位信息作为企业重点方向的证据。通过 `--hiring-signals`、`--search jobs` 或研究计划选择。 |
+| **招聘 / 职位页面** | 公司正在招聘什么，直接读取其自己的招聘页面（Workday、Apple、Amazon、Google、Microsoft、Netflix、Oracle 等）。公司类研究会自动读取，暗示尚未公布内容的职位会成为 Jobs Page Secret Signals。也可通过 `--hiring-signals`、`--search jobs` 或研究计划选择。 |
+| **专利** | 公司新公布的美国专利申请，作为它在产品发布前正在做什么的证据。免费，无需 API 密钥。当你的主题是一家公司时出现。只有当某项申请不符合该公司一贯风格，或描述了它尚未发布或公布的东西时，才会成为 Patent Secret Signal。 |
 | **本地语料** | 你的本地 Markdown 和文本文件；PATH 中有 `pdftotext` 时也支持 PDF。通过 `--corpus` 或 `LAST30DAYS_CORPUS_DIRS` 按需启用。 |
 | **Web** | 编辑报道和博客对比。它只是众多信号之一，而不是唯一来源。 |
 
@@ -110,9 +112,9 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 **开会之前。** `/last30days Peter Steinberger`——加入 OpenAI Codex 团队、反对 Anthropic 禁止第三方智能体、GitHub 上合并了 23 个 PR 且合并率达 85%、正在开发跨设备智能体控制系统 LobsterOS。r/ClaudeCode 上的一条评论说：“自从 OpenClaw 发布之后，大家就知道，只要你不是通过 API 运行它，迟早会被封。”（227 个赞同票）。这些不会出现在 LinkedIn 上。
 
-**判断招聘信号。** `/last30days Listen Labs --hiring-signals`——把最新职位和招聘页面变成有引用依据的证据，从中判断公司是否正转向企业安全、客户成功、基础设施或产品扩张。报告只解释招聘看起来释放了什么信号，不会武断预测路线图一定会交付什么。
+**在公司发布之前看清它在做什么。** `/last30days Apple`——Jobs Page Secret Signal 标出了一个新的总监职位，负责测试请求是否会触发经由合作伙伴 API 和金融系统完成的交易，这像是在为能完成购买的助手做质量控制。Patent Secret Signal 标出了一项申请：在保存的房间照片中点按某个设备，即可改变该设备的状态。Polymarket 给出 Apple 在年底成为全球最大公司的概率为 91%。`/last30days Alphabet` 找到了一个“YouTube Ads Agentic Buyflows”产品经理职位，其股价行显示 30 天内下跌 17.6%，而同期标普 500 下跌 3.6%，最差的一天是 Oct 29（-12.6%）。如果只想要招聘报告，请加上 `--hiring-signals`。
 
-**在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg AI 与 Tech 信息流，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
+**在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg 的话题，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
 
 **突发事件发生时。** `/last30days Kanye West`——英国拒绝其签证，Wireless Festival 取消演出，赞助商纷纷离场；但《BULLY》首周登上 Billboard 第二名。Fantano 结束自己的 “Yay sabbatical” 回归评测（65.3 万次观看）；SoFi Homecoming 请来 Lauryn Hill 和 Travis Scott，共演出 44 首歌。Polymarket：“Kanye 还会再发推吗？”86% 认为会。共找到 23 个 Reddit 主题、17 个 YouTube 视频和 8.6 万次赞同。
 
@@ -126,6 +128,17 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 ## 最近更新
 
+v4 能在公司公布之前读出它在做什么，也让每份报告更便于引用：
+
+- Patent Secret Signals：公司类研究会读取当月的美国专利申请，无需密钥，只标出不符合公司一贯风格或描述了尚未公布内容的申请。
+- Jobs Page Secret Signals：读取公司自己的招聘页面，标出泄露即将发生之事的职位，包括尚无人报道的新团队。
+- 引用行：Reddit、X、YouTube、TikTok 和 Instagram 上最好的评论，会单独成行放在它所支持的报道下方，必要时附带翻译，视频中说的话也可以被引用。
+- Polymarket 概率行：一行放在相关报道下方，并标明概率变动了多少。
+- Yahoo Finance 行：上市公司过去 30 天的股价与标普 500 的对比，以及其最大的单日波动。
+- 知道你指的是谁：“Apple”会自动对应到该公司、其网站和股票代码。
+- 以你的身份使用 Reddit：经你同意后，Reddit 会以你自己已登录的账号搜索。
+- Digg 现在覆盖所有话题，不再只限于 AI 和科技。
+
 请查看[最新发布](https://github.com/mvanhorn/last30days-skill/releases/latest)了解当前已发布版本，并在 [CHANGELOG.md](CHANGELOG.md) 中查看各版本的变更。默认分支中尚未发布的变更记录在 [changelog.d/](changelog.d/)。
 
 本 README 描述当前源码；你安装的版本可能有所不同。
@@ -136,6 +149,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 |---------|---------|---------|
 | **Claude Code**（推荐） | `/plugin marketplace add mvanhorn/last30days-skill` | 通过 marketplace 自动更新，或运行 `claude plugin update last30days@last30days-skill` |
 | **Grok**（xAI Build CLI） | 先运行 `grok plugin marketplace add mvanhorn/last30days-skill`，再运行 `grok plugin install last30days` | `grok plugin update last30days` |
+| **Grok Bot** | [从 Grok Bot marketplace 添加](https://x.ai/bot/marketplace/bots/last30days) | 由 marketplace 管理 |
 | **Codex、Cursor、Copilot、Gemini CLI，或其他 50 多个支持 [Agent Skills](https://agentskills.io) 的宿主** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
 | **claude.ai**（网页） | [下载 `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill)，然后在 claude.ai 中依次进入 Customize > Skills > + > Create skill > Upload a skill 上传 | 重新下载并上传 |
 | **Claude Desktop** | 从[最新版本](https://github.com/mvanhorn/last30days-skill/releases/latest)下载适用于你的平台的 `.mcpb`，拖入 Settings > Extensions | 重新下载新包并拖入 |
@@ -176,7 +190,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-加入 `--trust` 可跳过安装确认；使用 `grok plugin update last30days` 更新。为兼容旧机制，Grok 也会读取 Claude Code 的清单文件；原生 `.grok-plugin/` 文件是首选通路，也是 [xAI marketplace](https://github.com/xai-org/plugin-marketplace) 官方目录条目指向的对象。`npx skills add` 仍是有效的跨宿主备用方案。在 Grok Bot 上，X 无需任何设置即可通过机器人内置的 X 工具使用，其次是机器人的 X 连接器，并以官方 X API（`X_BEARER_TOKEN`）作为备用。
+加入 `--trust` 可跳过安装确认；使用 `grok plugin update last30days` 更新。为兼容旧机制，Grok 也会读取 Claude Code 的清单文件；原生 `.grok-plugin/` 文件是首选通路，也是 [xAI marketplace](https://github.com/xai-org/plugin-marketplace) 官方目录条目指向的对象。`npx skills add` 仍是有效的跨宿主备用方案。在 [Grok Bot](https://x.ai/bot/marketplace/bots/last30days) 上（last30days 从 marketplace 安装），X 无需任何设置即可通过机器人内置的 X 工具使用，其次是机器人的 X 连接器，并以官方 X API（`X_BEARER_TOKEN`）作为备用。
 
 ### Codex、Cursor、Copilot、Gemini CLI 与其他 Agent Skills 宿主
 
@@ -256,7 +270,7 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 
 这个符号链接会让安装内容随工作区代码实时同步，无需重复复制。若用于 `claude.ai`，可从源码构建 `.skill` 文件：运行 `bash skills/last30days/scripts/build-skill.sh`，产物位于 `dist/last30days.skill`。
 
-Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置即可使用。首次运行 `/last30days` 后，配置向导会在 30 秒内解锁更多来源，包括免费的 arXiv 与 Techmeme CLI。
+Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置即可使用，公司主题还包括专利申请和招聘页面。首次运行 `/last30days` 后，配置向导会在 30 秒内解锁更多来源，包括免费的 arXiv 与 Techmeme CLI。
 
 ## 使用你自己的密钥
 
@@ -264,8 +278,8 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 
 | 来源 | 你需要准备什么 | 成本 |
 |------|----------------|------|
-| Reddit（含评论）+ HN + Polymarket + GitHub + StockTwits | 无 | 免费 |
-| arXiv + Techmeme | 免费 CLI，由首次配置自动安装 | 免费 |
+| Reddit（含评论）+ HN + Polymarket + GitHub + StockTwits + 公司专利申请和招聘页面 | 无 | 免费 |
+| arXiv + Techmeme + Yahoo Finance | 免费 CLI，由首次配置自动安装 | 免费 |
 | X / Twitter | 设置 `X_BEARER_TOKEN` 使用官方 X API（近期帖子，大约最近一周；除非你的 X 开发者项目拥有完整归档访问权限。Grok Bot 上作为机器人内置 X 工具之后的备用方式，其他宿主需通过 `LAST30DAYS_X_BACKEND=xapi` 选择启用），或在任意浏览器中登录 x.com，或设置 `XQUIK_API_KEY` / `XAI_API_KEY` | X API 额度来自你自己的 X 开发者项目；浏览器 Cookie 免费；其他密钥费用取决于服务商 |
 | YouTube | `brew install yt-dlp` | 免费 |
 | Bluesky | 来自 bsky.app 的应用密码 | 免费 |

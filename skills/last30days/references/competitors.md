@@ -2,6 +2,8 @@
 
 Read when competitor mode is selected. The root also requires `comparison.md`; retain each entity's own targeting and plan.
 
+Competitor mode uses the local engine only. Follow the research runbook's backend diagnosis before discovering peers. If it selects the hosted API, ask whether to run locally and wait for the user's choice before searching or planning.
+
 ### Competitor mode (`--competitors`)
 
 `--competitors` is a SKILL.md-level shortcut for vs-mode with auto-discovery. When host web search is available, YOU (the hosting reasoning model) do the discovery and Step 0.55, then invoke the web-search vs-topic path in `comparison.md`.
@@ -10,7 +12,7 @@ Read when competitor mode is selected. The root also requires `comparison.md`; r
 1. **Discover peers** via WebSearch, inside the pre-engine isolated web search dispatch from the research runbook: `"{topic} competitors"` / `"{topic} alternatives"`. Pick N=2 by default (match the flag's default), N=argument value if the user passed `--competitors=N`.
 2. **Run Step 0.55 for the main topic AND each peer** — same protocol you use for a single-entity topic, just N times. X handle, subreddits, GitHub, news context, per entity.
 3. **Build the vs-topic string**: `"{main} vs {peer1} vs {peer2}"`.
-4. **Invoke the engine** with the vs-topic and a JSON-encoded `--competitors-plan` file covering both peers, plus outer `--x-handle`/`--subreddits`/`--github-*` values captured and passed as quoted shell data for the main topic. Main-topic plan entries do not override those outer targeting flags. A per-entity `x_posts` envelope entry is the explicit exception, including for the main entity.
+4. **Invoke the engine** with the vs-topic and a JSON-encoded `--competitors-plan` file covering both peers, plus outer `--x-handle`/`--subreddits`/`--github-*` values captured and passed as quoted shell data for the main topic. Main-topic plan entries do not override those outer targeting flags. A per-entity `x_posts` envelope entry is the explicit exception, including for the main entity. A peer's entry may carry its own `polymarket_hints` (research runbook Step 0.75); the main topic's hints stay in `--plan`, and neither its hints nor `--polymarket-keywords` reach a peer.
 
 **Without host web search:** if the user named peers, use the no-web-search comparison command in `comparison.md`. For a bare `--competitors` request, use the research runbook's quoted `RESEARCH_TOPIC` heredoc and append `--competitors=N --auto-resolve` to its engine command, so the engine discovers peers through a configured search backend. Use `N=2` when the user did not specify a count. If the engine reports that peer discovery is unavailable, ask the user to name peers; do not invent them or claim that the keyless general-web floor discovered competitors. Apply the root's no-web-search rule: skip host Steps 0.55 and 0.75 and do not pass a host `--plan`.
 
@@ -24,7 +26,7 @@ Read when competitor mode is selected. The root also requires `comparison.md`; r
 
 **Why --competitors-plan over --competitors-list on web-search hosts:** without per-entity handles/subs, peer sub-runs can produce visibly thinner evidence than the main topic. The Resolved Entities block in stdout makes the gap visible. Dashes on a host with web search mean Step 0.55 needs another pass; dashes on a host without it may mean no resolver was configured.
 
-**Engine-internal auto-resolve:** if the engine detects BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY, it runs its own per-entity `resolve.auto_resolve()` before each sub-run. A hosting model with web search does not need those keys for its own Step 0.55; hosts without web search and headless cron/CI runs use this engine fallback.
+**Engine-internal auto-resolve:** if the engine detects BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY, it runs its own per-entity `resolve.auto_resolve()` before each sub-run. A hosting model with web search does not need those keys for its own Step 0.55; hosts without web search and headless cron/CI runs use this engine fallback. When `EXA_API_KEY` is set and the topic resolved as a company, competitor discovery queries Exa's `company` category first (even if Brave is the general web backend) and fills any remaining slots from keyword SERPs. Person and artist topics skip that index.
 
 OpenRouter and Perplexity credentials do not enable engine auto-resolve or peer discovery. Their paid Perplexity source remains a separate opt-in. Without a supported search API key, use host web search or supply named peers; the engine's keyless general-web floor does not enable automatic peer discovery.
 

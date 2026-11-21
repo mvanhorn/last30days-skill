@@ -78,8 +78,9 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         cause="X browser cookies (AUTH_TOKEN/CT0) are not configured",
         fix_nl=(
             "log into x.com in your browser and re-run (cookies detected "
-            "automatically), or add XAI_API_KEY to your .env (get key at "
-            "api.x.ai), or add XQUIK_API_KEY to your .env (get key at xquik.com)"
+            "automatically), or set AUTH_TOKEN and CT0 manually in your .env "
+            "if browser cookies cannot be read, or add XAI_API_KEY to your .env "
+            "(get key at api.x.ai), or add XQUIK_API_KEY to your .env (get key at xquik.com)"
         ),
         fix_cli=SETUP_BROWSER_COOKIES_CLI,
         anchor="api-keys-env",
@@ -133,7 +134,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         "x", "grok_cli_missing",
         cause="the Grok CLI is not installed, so the keyless X path is unavailable",
         fix_nl=(
-            "install the Grok CLI (curl -fsSL https://x.ai/cli/install.sh | bash) "
+            "install the Grok CLI (npm install -g @xai-official/grok, or the installer at https://x.ai/cli/install.sh) "
             "and sign in with `grok login` to search X without any X credential"
         ),
         fix_cli="npm install -g @xai-official/grok",
@@ -223,20 +224,6 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="bluesky-app-password-format-and-search-host",
     ),
     _entry(
-        "youtube", "transcription_key_missing",
-        cause=(
-            "no transcription provider key for the caption-free transcript "
-            "backstop (GROQ_API_KEY or OPENAI_API_KEY)"
-        ),
-        fix_nl=(
-            "add a free Groq key from console.groq.com to "
-            "~/.config/last30days/.env so caption-free videos still get "
-            "transcripts (OPENAI_API_KEY also works as the paid backstop)"
-        ),
-        fix_cli="GROQ_API_KEY=<your-groq-key>",
-        anchor="api-keys-env",
-    ),
-    _entry(
         "digg", "pp_cli_missing",
         cause="digg-pp-cli is not installed",
         fix_nl=(
@@ -255,6 +242,20 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         fix_nl=(
             "reinstall the Digg CLI (re-run the Printing Press install) so "
             "the binary actually executes; it is installed but not serving"
+        ),
+        fix_cli=_DIGG_PP_INSTALL_CLI,
+        anchor="first-run-onboarding",
+    ),
+    _entry(
+        "digg", "pp_cli_outdated",
+        cause=(
+            "digg-pp-cli is an older release: it searches only Digg's AI and "
+            "tech sections and reports no engagement scores"
+        ),
+        fix_nl=(
+            "re-run the Printing Press install to upgrade the Digg CLI so it "
+            "searches every Digg topic with engagement scores; Digg keeps "
+            "working on AI and tech until then"
         ),
         fix_cli=_DIGG_PP_INSTALL_CLI,
         anchor="first-run-onboarding",

@@ -9,7 +9,8 @@ endpoint comes only from LAST30DAYS_API_BASE - there is no built-in default.
 Contract (API v1):
   POST {base}/search   Authorization: Bearer <key>
                        {"query": ..., "depth": "quick"|"default"|"deep",
-                        "register"?: "exec"|"dev"|"creator"|"eli5"}
+                        "register"?: "exec"|"dev"|"creator"|"eli5",
+                        "clarify"?: {"angle": str} | {"run_broadly": true}}
                        -> 200 {"search_id": "<uuid>", "status": "running"}
                        -> 200 clarify payload {"needs_clarification": true, ...}
                        -> 401 {"error"} / 402 {"error","requires_credits",
@@ -18,7 +19,10 @@ Contract (API v1):
                        terminal ("complete" | "error"). Running rows carry
                        "stderr" (narration + engine lines) and "eta_ms";
                        terminal complete rows carry "synthesis_text" and
-                       "raw_markdown" (stderr stripped).
+                       "raw_markdown" (stderr stripped); error rows may carry
+                       "error" and/or "synthesis_text" (the failure reason).
+                       Terminal rows may carry "engine_version", the engine
+                       that wrote the run.
 
 This module carries ZERO pricing, rate-card, cost, or billing logic.
 Balance/credit numbers are only ever displayed verbatim from API responses.
@@ -85,11 +89,13 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-def submit(query: str, depth: str, register: str = "default") -> dict:
+def submit(query: str, depth: str, register: str = "default", clarify: dict | None = None) -> dict:
     """POST the search. retries=1: a blind POST retry could double-submit."""
     payload = {"query": query, "depth": depth}
     if register != "default":
         payload["register"] = register
+    if clarify:
+        payload["clarify"] = clarify
     usage.begin("hosted")
     return http.post(
         f"{_api_base()}/search",
@@ -148,19 +154,74 @@ def _handle_http_error(exc: http.HTTPError) -> int:
     return 1
 
 
+def _angle_queries(resp: dict) -> dict[int, str]:
+    """Option index -> the sharpened query the API pairs with that option."""
+    queries: dict[int, str] = {}
+    angles = resp.get("angles")
+    if not isinstance(angles, list):
+        return queries
+    for index, angle in enumerate(angles, 1):
+        if isinstance(angle, dict) and isinstance(angle.get("query"), str) and angle["query"].strip():
+            queries[index] = angle["query"].strip()
+    return queries
+
+
 def _handle_clarify(resp: dict) -> int:
     question = resp.get("question") or "The API needs a clarification before searching."
     options = resp.get("options") or []
+    queries = _angle_queries(resp)
     _err(f"Clarification needed before this search runs: {question}")
     for index, option in enumerate(options, 1):
         label = option if isinstance(option, str) else json.dumps(option)
-        sys.stderr.write(f"  {index}. {label}\n")
+        line = f"  {index}. {label}"
+        if index in queries:
+            line += f" (--clarify-angle {json.dumps(queries[index])})"
+        sys.stderr.write(f"{line}\n")
     sys.stderr.flush()
     _err(
-        "No search was started. Re-run last30days with the chosen angle "
-        "folded into the topic text."
+        "No search was started. Re-run last30days with the same topic plus "
+        "--clarify-angle \"<chosen option's query>\", or --clarify-broadly to "
+        "run the topic as asked."
     )
     return EXIT_CLARIFY
+
+
+def _failure_reason(row: dict) -> str:
+    for key in ("error", "synthesis_text"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "unknown server error"
+
+
+def _major(version) -> int | None:
+    if not isinstance(version, str):
+        return None
+    match = re.match(r"\s*v?(\d+)\.", version)
+    return int(match.group(1)) if match else None
+
+
+def _local_engine_version() -> str | None:
+    try:
+        from . import render
+
+        version = render._skill_version()
+    except Exception:
+        return None
+    return None if not version or version == "?" else version
+
+
+def _note_engine_version(row: dict) -> None:
+    """One stderr line when the server engine's major differs from this one."""
+    remote = row.get("engine_version")
+    local = _local_engine_version()
+    remote_major, local_major = _major(remote), _major(local)
+    if remote_major is None or local_major is None or remote_major == local_major:
+        return
+    _err(
+        f"This report came from engine v{remote} on the hosted backend; "
+        f"this skill is v{local}. Results may differ from a local run."
+    )
 
 
 def _print_new_narration(stderr_blob: str, seen: set[str]) -> bool:
@@ -210,6 +271,15 @@ def _slugify(value: str) -> str:
     return slug or "last30days"
 
 
+def _sanitize_suffix(suffix: str) -> str:
+    """Sanitize --save-suffix to a path-safe token (same policy as the local
+    save path): lowercase, fold non [a-z0-9] runs to a single hyphen, strip
+    edge hyphens. Unlike _slugify there is no fallback token - a suffix that
+    sanitizes to empty simply drops, so a suffix can never contribute path
+    separators or parent references to the saved filename."""
+    return re.sub(r"[^a-z0-9]+", "-", suffix.lower()).strip("-")
+
+
 def _save_output(topic: str, content: str, emit: str, save_dir: str, suffix: str):
     """Mirror local save_output() naming: <slug>-raw[-suffix].<ext>."""
     from datetime import datetime
@@ -219,7 +289,8 @@ def _save_output(topic: str, content: str, emit: str, save_dir: str, suffix: str
     path.mkdir(parents=True, exist_ok=True)
     slug = _slugify(topic)
     extension = "json" if emit == "json" else "md"
-    suffix_part = f"-{suffix}" if suffix else ""
+    sanitized_suffix = _sanitize_suffix(suffix or "")
+    suffix_part = f"-{sanitized_suffix}" if sanitized_suffix else ""
     base = path / f"{slug}-raw{suffix_part}.{extension}"
     date_str = datetime.now().strftime('%Y-%m-%d')
     candidates = [base]
@@ -273,6 +344,7 @@ def run_hosted(
     save_dir=None,
     save_suffix: str = "",
     register: str = "default",
+    clarify: dict | None = None,
 ) -> int:
     """Submit topic to the remote API, poll to terminal status, render report."""
     try:
@@ -282,7 +354,7 @@ def run_hosted(
         return 1
     _err(f"Running via last30days API ({base}), depth={depth}")
     try:
-        resp = submit(topic, depth, register=register)
+        resp = submit(topic, depth, register=register, clarify=clarify)
     except http.HTTPError as exc:
         return _handle_http_error(exc)
 
@@ -324,8 +396,10 @@ def run_hosted(
             _print_progress_line(elapsed, row.get("eta_ms"))
             last_progress_line = elapsed
 
+        if status in TERMINAL_STATUSES:
+            _note_engine_version(row)
         if status == "error":
-            _err(f"Search failed: {row.get('error') or 'unknown server error'}")
+            _err(f"Search failed: {_failure_reason(row)}")
             return 1
         if status == "complete":
             _err(f"Search complete in {int(elapsed)}s.")

@@ -33,10 +33,10 @@ SEED_INVENTORY = {
     ("x", "cookies_expired"),
     ("scrapecreators", "key_missing"),
     ("bluesky", "app_password_missing"),
-    ("youtube", "transcription_key_missing"),
     ("digg", "pp_cli_missing"),
     ("digg", "pp_cli_off_path"),
     ("digg", "pp_cli_broken"),
+    ("digg", "pp_cli_outdated"),
     ("youtube", "ytdlp_missing"),
     ("youtube", "ytdlp_stale"),
     ("youtube", "ytdlp_broken"),
@@ -139,6 +139,12 @@ class TestDocumentedCliForms:
     def test_digg_install_references_u1_printing_press_command(self):
         entry = prescriptions.get("digg", "pp_cli_missing")
         assert entry.fix_cli == health._pp_install_cmd("digg-pp-cli")
+
+    def test_outdated_digg_cli_prescribes_the_printing_press_install(self):
+        entry = prescriptions.get("digg", "pp_cli_outdated")
+        assert entry.fix_cli == health.pp_install_cmd("digg")
+        assert "AI and tech" in entry.cause
+        assert "every Digg topic" in entry.fix_nl
 
 
 # ---------------------------------------------------------------------------

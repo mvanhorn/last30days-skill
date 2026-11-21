@@ -1239,3 +1239,166 @@ class TestXaiErrorRemediation:
         q = _compute(config_overrides=config, result_overrides=results, ytdlp_installed=True)
         assert expected_fix in q["nudge_text"]
         assert "log into x.com" not in q["nudge_text"]
+
+
+class TestYouTubeTranscriptTargetAndBotCheck:
+    """#1449: health is measured against the transcript target, and a bot
+    check gets its own cause instead of stale-yt-dlp upgrade advice."""
+
+    def test_four_of_six_with_target_two_is_not_degraded(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 4,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 2,
+                "youtube_transcript_target": 2,
+            },
+        )
+        assert "youtube" not in q["core_degraded"]
+
+    def test_issue_run_four_of_fifteen_with_target_two_is_not_degraded(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 15,
+                "youtube_transcripts_count": 4,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 4,
+                "youtube_transcript_target": 2,
+                "youtube_bot_checked": 1,
+                "youtube_sc_rescued": 2,
+            },
+        )
+        assert "youtube" not in q["core_degraded"]
+
+    def test_zero_of_target_is_still_degraded(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 15,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+    def test_bot_check_with_rescues_names_the_cause_without_upgrade_advice(self):
+        q = _compute(
+            config_overrides={"SCRAPECREATORS_API_KEY": "sc-dummy"},
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 15,
+                "youtube_transcripts_count": 1,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 5,
+                "youtube_transcript_target": 8,
+                "youtube_bot_checked": 1,
+                "youtube_sc_rescued": 1,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+        text = q["nudge_text"]
+        assert "bot-checked yt-dlp" in text
+        assert "ScrapeCreators rescued 1 of them" in text
+        assert "LAST30DAYS_YOUTUBE_SSH_HOST" in text
+        assert "won't help" in text
+        assert "stale yt-dlp binary" not in text
+        assert "brew upgrade" not in text
+        assert "pip install" not in text
+        # A keyed run is not told to add the key it already has.
+        assert "add SCRAPECREATORS_API_KEY" not in text
+
+    def test_bot_check_without_a_key_suggests_ssh_host_and_scrapecreators_key(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 8,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+                "youtube_bot_checked": 1,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+        text = q["nudge_text"]
+        assert "bot-checked yt-dlp" in text
+        assert "LAST30DAYS_YOUTUBE_SSH_HOST" in text
+        assert "SCRAPECREATORS_API_KEY" in text
+        assert "stale yt-dlp binary" not in text
+        assert "brew upgrade" not in text
+
+    def test_failures_without_a_bot_check_keep_the_stale_ytdlp_advice(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 8,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+                "youtube_bot_checked": 0,
+            },
+        )
+        text = q["nudge_text"]
+        assert "stale yt-dlp" in text.lower()
+        assert "brew" in text.lower()
+        assert "bot-checked" not in text
+
+
+class TestBonusHintYouTubeComments:
+    """The SC bonus hint must not ask for youtube_comments that is already on.
+
+    yt-dlp fetches YouTube comments keyless, and an existing INCLUDE_SOURCES
+    entry needs no hint either (issue #1437).
+    """
+
+    def _text(self, ytdlp_installed, include_sources=None, exclude_sources=None):
+        overrides = {}
+        if include_sources is not None:
+            overrides["INCLUDE_SOURCES"] = include_sources
+        if exclude_sources is not None:
+            overrides["EXCLUDE_SOURCES"] = exclude_sources
+        q = _compute(
+            config_overrides={"SCRAPECREATORS_API_KEY": "sc-key", **overrides},
+            ytdlp_installed=ytdlp_installed,
+            result_overrides={
+                "youtube_videos_count": 8,
+                "youtube_transcripts_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+                "youtube_transcript_target": 2,
+            },
+        )
+        assert q["nudge_text"]
+        return q["nudge_text"]
+
+    def test_ytdlp_installed_drops_youtube_comments_from_the_hint(self):
+        text = self._text(ytdlp_installed=True)
+        assert "SC key also powers" in text
+        assert "YouTube comments" not in text
+
+    def test_include_sources_entry_drops_youtube_comments_from_the_hint(self):
+        text = self._text(
+            ytdlp_installed=False, include_sources="threads,pinterest,youtube_comments"
+        )
+        assert "SC key also powers" in text
+        assert "YouTube comments" not in text
+
+    def test_missing_comments_key_still_asks_for_the_opt_in(self):
+        text = self._text(ytdlp_installed=False, include_sources="threads,pinterest")
+        assert "SC key also powers Threads, Pinterest, YouTube comments." in text
+
+    def test_excluded_comments_are_not_recommended(self):
+        """EXCLUDE_SOURCES overrides INCLUDE_SOURCES, so the hint cannot work."""
+        text = self._text(
+            ytdlp_installed=False,
+            include_sources="threads,pinterest",
+            exclude_sources="youtube_comments",
+        )
+        assert "SC key also powers Threads, Pinterest." in text
+        assert "YouTube comments" not in text

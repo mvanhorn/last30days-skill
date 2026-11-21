@@ -216,7 +216,7 @@ class TestParseGithubResponse(unittest.TestCase):
             },
             {
                 "html_url": "https://github.com/vercel/next.js/pull/99",
-                "title": "Add streaming support",
+                "title": "Add React streaming support",
                 "body": "This PR adds...",
                 "created_at": "2026-03-20T10:00:00Z",
                 "state": "open",
@@ -299,6 +299,24 @@ class TestParseGithubResponse(unittest.TestCase):
         scores = [i.get("relevance", 0) for i in items]
         self.assertEqual(scores, sorted(scores, reverse=True))
 
+    def test_drops_results_that_do_not_name_the_topic(self):
+        envelope = {
+            "items": [
+                {"html_url": "https://github.com/vercel/next.js/pull/99",
+                 "title": "Add streaming support", "comments": 5,
+                 "reactions": {"total_count": 3}},
+                {"html_url": "https://github.com/vercel/next.js/pull/100",
+                 "title": "Add React streaming support", "comments": 0,
+                 "reactions": {"total_count": 0}},
+            ],
+            "context": {"core": "react"},
+        }
+        items = github.parse_github_response(envelope)
+        self.assertEqual(
+            [item["url"] for item in items],
+            ["https://github.com/vercel/next.js/pull/100"],
+        )
+
     def test_empty_envelope(self):
         self.assertEqual(github.parse_github_response({"items": []}), [])
         self.assertEqual(github.parse_github_response({}), [])
@@ -314,6 +332,115 @@ class TestComputeRelevance(unittest.TestCase):
         high = github._compute_relevance("react", "React", 0, 0, 0)
         low = github._compute_relevance("react", "React", 20, 0, 0)
         self.assertGreater(high, low)
+
+
+class TestFetchItemComments(unittest.TestCase):
+    def test_bot_detection_uses_type_or_conventional_identity_suffix(self):
+        self.assertTrue(github._is_bot_user({"login": "release-helper", "type": "Bot"}))
+        self.assertTrue(github._is_bot_user({"login": "dependabot[bot]"}))
+        self.assertTrue(github._is_bot_user({"login": "actions", "name": "CI Helper [BOT]"}))
+        self.assertFalse(github._is_bot_user({"login": "robotics-team", "type": "User"}))
+        self.assertFalse(github._is_bot_user(None))
+        self.assertFalse(github._is_bot_user({}))
+
+    @patch.object(github, "_fetch_json")
+    def test_non_positive_limit_skips_request(self, mock_fetch):
+        self.assertEqual(
+            github._fetch_item_comments(
+                "https://github.com/example/project/issues/9",
+                max_comments=0,
+            ),
+            [],
+        )
+        mock_fetch.assert_not_called()
+
+    @patch.object(github, "_fetch_json")
+    def test_requests_largest_page_without_unsupported_sort(self, mock_fetch):
+        mock_fetch.return_value = []
+
+        github._fetch_item_comments(
+            "https://github.com/example/project/issues/9",
+        )
+
+        self.assertEqual(
+            mock_fetch.call_args.args[0],
+            "https://api.github.com/repos/example/project/issues/9/comments?per_page=100",
+        )
+        self.assertNotIn("sort=", mock_fetch.call_args.args[0])
+        self.assertNotIn("direction=", mock_fetch.call_args.args[0])
+        self.assertIsNone(mock_fetch.call_args.kwargs.get("token"))
+
+    @patch.object(github, "_fetch_json")
+    def test_filters_bots_and_stably_ranks_humans_by_reactions(self, mock_fetch):
+        mock_fetch.return_value = [
+            {
+                "body": "Early low-signal response",
+                "reactions": {"total_count": 5},
+                "user": {"login": "alice", "type": "User"},
+            },
+            {
+                "body": "Automated release summary",
+                "reactions": {"total_count": 100},
+                "user": {"login": "release-helper", "type": "Bot"},
+            },
+            {
+                "body": "Dependency update",
+                "reactions": {"total_count": 90},
+                "user": {"login": "dependabot[bot]"},
+            },
+            {
+                "body": "First tied human response",
+                "reactions": {"total_count": 21},
+                "user": {"login": "bruno", "type": "User"},
+            },
+            {
+                "body": "Workflow report",
+                "reactions": {"total_count": 80},
+                "user": {"login": "actions", "name": "CI Helper [BOT]"},
+            },
+            {
+                "body": "Highest-signal human response",
+                "reactions": {"total_count": 34},
+                "user": {"login": "carol"},
+            },
+            {
+                "body": "Second tied human response",
+                "reactions": {"total_count": 21},
+                "user": {"login": "dana"},
+            },
+            {
+                "body": "Deleted author's useful response",
+                "reactions": {"total_count": 13},
+                "user": None,
+            },
+        ]
+
+        comments = github._fetch_item_comments(
+            "https://github.com/example/project/issues/9",
+            max_comments=3,
+        )
+
+        self.assertEqual(
+            comments,
+            [
+                {
+                    "score": 34,
+                    "excerpt": "Highest-signal human response",
+                    "author": "carol",
+                },
+                {
+                    "score": 21,
+                    "excerpt": "First tied human response",
+                    "author": "bruno",
+                },
+                {
+                    "score": 21,
+                    "excerpt": "Second tied human response",
+                    "author": "dana",
+                },
+            ],
+        )
+
 
 class TestPersonPushEventsLane(unittest.TestCase):
     """Person mode must not go dark when PR search returns nothing."""
@@ -739,7 +866,7 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         # rather than against a single exact string.
         self.assertEqual(len(queries), 2)
         for q in queries:
-            self.assertTrue(q.startswith("open source ai created:2026-07-01..2026-07-31"))
+            self.assertTrue(q.startswith("is:public open source ai created:2026-07-01..2026-07-31"))
             self.assertEqual(q.count("created:"), 1)
             self.assertNotIn("stars:", q)
         self.assertEqual(
@@ -886,7 +1013,7 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         queries = [self._query(u) for u in captured["urls"]]
         self.assertEqual(len(queries), 2)
         for q in queries:
-            self.assertTrue(q.startswith("open source ai created:2026-07-01..2026-07-31"))
+            self.assertTrue(q.startswith("is:public open source ai created:2026-07-01..2026-07-31"))
             self.assertEqual(q.count("created:"), 1)
             self.assertIn("created:2026-07-01..2026-07-31", q)
             self.assertNotIn("created:>2025-03-20", q)

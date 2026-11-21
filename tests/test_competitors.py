@@ -140,5 +140,118 @@ class CompetitorDiscoveryTests(unittest.TestCase):
         results = self._run(OPENAI_SERP, "OpenAI", count=0)
         self.assertEqual(results, [])
 
+    def test_exa_company_search_is_used_even_when_brave_is_the_web_backend(self):
+        config = {"BRAVE_API_KEY": "brave-key", "EXA_API_KEY": "exa-key"}
+        exa_items = [
+            {"title": "OpenAI", "url": "https://openai.com/"},
+            {"title": "Anthropic | Building reliable AI", "url": "https://www.anthropic.com/"},
+            {"title": "Anthropic", "url": "https://www.anthropic.com/about"},
+            {"title": "xAI - Grok", "url": "https://x.ai/"},
+            {"title": "Google DeepMind", "url": "https://deepmind.google/"},
+        ]
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+            return_value=(exa_items, {"label": "exa", "category": "company"}),
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search",
+        ) as web:
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors(
+                    "OpenAI", 2, config, is_company=True,
+                )
+        self.assertEqual(results, ["Anthropic", "xAI"])
+        exa.assert_called_once()
+        web.assert_not_called()
+        self.assertIn("OpenAI", exa.call_args.args[0])
+        self.assertTrue(exa.call_args.kwargs.get("objective"))
+
+    def test_exa_partial_results_are_filled_from_keyword_serps(self):
+        config = {"BRAVE_API_KEY": "brave-key", "EXA_API_KEY": "exa-key"}
+        exa_items = [
+            {"title": "Anthropic", "url": "https://www.anthropic.com/"},
+        ]
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+            return_value=(exa_items, {}),
+        ), mock.patch.object(
+            competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors(
+                    "OpenAI", 3, config, is_company=True,
+                )
+        self.assertEqual(results[0], "Anthropic")
+        self.assertEqual(len(results), 3)
+        self.assertNotIn("OpenAI", results)
+
+    def test_exa_failure_falls_back_to_keyword_serps(self):
+        config = {"BRAVE_API_KEY": "brave-key", "EXA_API_KEY": "exa-key"}
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+            side_effect=RuntimeError("Exa 400"),
+        ), mock.patch.object(
+            competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
+        ):
+            err = io.StringIO()
+            with redirect_stderr(err):
+                results = competitors.discover_competitors(
+                    "OpenAI", 2, config, is_company=True,
+                )
+        self.assertTrue(results)
+        self.assertIn("Exa company search failed", err.getvalue())
+
+    def test_brave_only_skips_exa_company_search(self):
+        config = {"BRAVE_API_KEY": "brave-key"}
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("OpenAI", 2, config)
+        exa.assert_not_called()
+        self.assertTrue(results)
+
+    def test_non_company_topic_does_not_use_exa_company_index(self):
+        config = {"BRAVE_API_KEY": "brave-key", "EXA_API_KEY": "exa-key"}
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(KANYE_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Kanye West", 2, config)
+        exa.assert_not_called()
+        joined = " ".join(results)
+        self.assertTrue(
+            "Drake" in joined and "Kendrick Lamar" in joined,
+            f"Expected Drake and Kendrick Lamar in {results}",
+        )
+
+    def test_exa_strips_trailing_and_unbalanced_parentheticals(self):
+        config = {"EXA_API_KEY": "exa-key"}
+        exa_items = [
+            {"title": "xPay (YC W24", "url": "https://xpay.example/"},
+            {"title": "Adyen (payments)", "url": "https://www.adyen.com/"},
+            {"title": "(YC W24)", "url": "https://www.ycombinator.com/"},
+            {"title": "Klarna [fintech]", "url": "https://www.klarna.com/"},
+            {"title": " [stealth] ", "url": "https://example.test/empty"},
+            {"title": "Payoneer - global payments", "url": "https://www.payoneer.com/"},
+        ]
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+            return_value=(exa_items, {"label": "exa", "category": "company"}),
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search",
+        ) as web:
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors(
+                    "Stripe", 4, config, is_company=True,
+                )
+        self.assertEqual(results, ["xPay", "Adyen", "Klarna", "Payoneer"])
+        self.assertFalse(any("(" in name or "[" in name for name in results))
+        exa.assert_called_once()
+        web.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

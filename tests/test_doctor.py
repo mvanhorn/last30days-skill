@@ -30,7 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import backends, doctor, env, grok_x, health, http, prescriptions, reddit_search, setup_wizard
+from lib import backends, digg, doctor, env, grok_x, health, http, prescriptions, reddit_health, setup_wizard
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -104,6 +104,9 @@ class _Hermetic:
         self._patches = [
             mock.patch("lib.health.probe_dependency", _probe_dep(probe_map, default_status)),
             mock.patch("lib.env.is_ytdlp_available", return_value=ytdlp_ok),
+            # Never read the real digg-pp-cli's help text. Tests of an older
+            # Digg CLI override this.
+            mock.patch("lib.digg.cli_searches_all_topics", return_value=True),
             mock.patch("lib.bird_x.is_bird_installed", return_value=False),
             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
             mock.patch("lib.bird_x.get_bird_status", return_value=dict(BIRD_STATUS_OFF)),
@@ -428,6 +431,79 @@ class CookieBackedXReadiness(unittest.TestCase):
         self.assertEqual("unconfigured", record["status"])
 
 
+class SidecarOptInHint(unittest.TestCase):
+    """A present, unadmitted sidecar has an actionable, no-cookie-read hint."""
+
+    def _record(self, config=None, *, present=True, system="Linux", probe_map=None):
+        with (
+            _Hermetic(probe_map=probe_map),
+            mock.patch("platform.system", return_value=system),
+            mock.patch("lib.env._mac_model", return_value="MacBookPro18,2"),
+            mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+            mock.patch("shutil.which", side_effect=lambda name: (
+                "/mock/agentcookie" if name == "agentcookie" and present else None
+            )),
+            mock.patch("lib.agentcookie.read_x_cookies") as cookies,
+            mock.patch("subprocess.run") as run,
+        ):
+            record = doctor._x_record(dict(config or {}))
+        cookies.assert_not_called()
+        run.assert_not_called()
+        return record
+
+    def test_present_unadmitted_sidecar_has_could_be_on_hint(self):
+        record = self._record()
+        self.assertEqual(doctor.AUDIT_COULD_BE_ON, doctor.audit_state("x", record))
+        self.assertIsNone(record["active_backend"])
+        self.assertIn("agentcookie", record["note"])
+        self.assertIn("AGENTCOOKIE=on", record["fix"])
+        line = doctor._audit_source_line("x", record, doctor.AUDIT_COULD_BE_ON)
+        self.assertIn("AGENTCOOKIE=on", line)
+
+    def test_refusal_never_offers_sidecar_opt_in(self):
+        for config in (
+            {"BROWSER_CONSENT": "false"},
+            {"BROWSER_CONSENT": "unknown"},
+            {"FROM_BROWSER": "off"},
+            {"AGENTCOOKIE": "off"},
+        ):
+            with self.subTest(config=config):
+                record = self._record(config)
+                self.assertNotIn("AGENTCOOKIE=on", record["fix"])
+
+    def test_absent_binary_or_non_extra_host_has_no_sidecar_hint(self):
+        for options in ({"present": False}, {"system": "Darwin"}):
+            with self.subTest(options=options):
+                self.assertNotIn("AGENTCOOKIE=on", self._record(**options)["fix"])
+
+    def test_admitted_sidecar_predicts_browser_auth_without_opt_in_hint(self):
+        record = self._record({"AGENTCOOKIE": "on"})
+        self.assertEqual("ok", record["tier"])
+        self.assertIn("not verified", record["note"])
+        self.assertEqual("", record["fix"])
+
+    def test_backend_connector_and_pin_diagnoses_keep_precedence(self):
+        for config, active in (
+            ({"XAI_API_KEY": "dummy-xai-key"}, "xai"),
+            ({"LAST30DAYS_X_HOST_LANE": "1"}, "connector"),
+            ({"LAST30DAYS_X_BACKEND": "xurl"}, None),
+            ({"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "bird"}, None),
+        ):
+            with self.subTest(config=config):
+                record = self._record(config)
+                self.assertEqual(active, record["active_backend"])
+                self.assertNotIn("AGENTCOOKIE=on", record["fix"])
+
+    def test_broken_configured_backend_keeps_its_repair(self):
+        record = self._record(
+            {"AUTH_TOKEN": "dummy-auth-token", "CT0": "dummy-ct0"},
+            probe_map={"node": health.BROKEN},
+        )
+        self.assertEqual("broken", record["status"])
+        self.assertIn("node", record["fix"])
+        self.assertNotIn("AGENTCOOKIE=on", record["fix"])
+
+
 class LibraryDoctorLine(unittest.TestCase):
     """U5: doctor reports the local research library so the report's
     'From your library' block is explained on the health surface."""
@@ -700,49 +776,29 @@ class IncludeSourcesTokenParsing(unittest.TestCase):
 
 
 class YoutubeTranscriptionNote(unittest.TestCase):
-    """F7: yt-dlp probes OK but no GROQ_API_KEY/OPENAI_API_KEY -> the ok
-    youtube record carries the caption-free note plus the
-    transcription_key_missing fix, and (F14) the text renderer surfaces
-    that fix even though the record's tier is ok."""
+    """The caption-free transcription module is not called by any source yet,
+    so doctor must not prescribe a GROQ_API_KEY/OPENAI_API_KEY for it: the key
+    would change nothing. A healthy yt-dlp YouTube record carries no
+    transcription note and no fix."""
 
     def setUp(self):
         self.report = _build({}, probe_map={"yt-dlp": health.OK})
-        self.entry = prescriptions.get("youtube", "transcription_key_missing")
 
-    def test_ok_record_carries_note_and_fix(self):
+    def test_ok_record_prescribes_no_transcription_key(self):
         record = self.report["sources"]["youtube"]
         self.assertEqual("ok", record["tier"])
         self.assertEqual("ok", record["status"])
-        note = record["note"].lower()
-        # Honest note: affirms the working path, scopes the key to caption-free.
-        self.assertIn("search + transcripts work", note)
-        self.assertIn("caption-free", note)
-        # Does not read as broken and does not attribute comment text to yt-dlp.
-        self.assertNotIn("no transcription key for caption-free videos", note)
-        self.assertIn(self.entry.fix_nl, record["fix"])
-        self.assertIn(self.entry.fix_cli, record["fix"])
+        self.assertNotIn("caption-free", (record.get("note") or "").lower())
+        self.assertNotIn("GROQ_API_KEY", record.get("fix") or "")
+        self.assertNotIn("GROQ_API_KEY", doctor.render_text(self.report))
 
     def test_no_paid_comment_prescription_when_ytdlp_is_installed(self):
         # yt-dlp fetches comment text free. With it installed, doctor must NOT
-        # tell the user to buy a ScrapeCreators key for comments — that would
+        # tell the user to buy a ScrapeCreators key for comments, which would
         # be selling a fix for a problem they do not have.
-        note = self.report["sources"]["youtube"]["note"].lower()
+        note = (self.report["sources"]["youtube"].get("note") or "").lower()
         self.assertNotIn("comment text needs", note)
         self.assertNotIn("scrapecreators", note)
-
-    def test_text_line_includes_the_fix_on_the_ok_line(self):
-        text = doctor.render_text(self.report)
-        # Located by source name, not glyph: the four-state audit sorts a
-        # no-run-evidence ok source to UNVERIFIED, but the transcription fix
-        # must still ride the youtube line.
-        line = next(
-            l
-            for l in text.splitlines()
-            if " youtube" in l and "search + transcripts work" in l
-        )
-        self.assertIn("search + transcripts work", line)
-        self.assertIn(f"fix: {self.entry.fix_nl}", line)
-        self.assertIn(self.entry.fix_cli, line)
 
 
 class YoutubeCommentsFixLine(unittest.TestCase):
@@ -779,11 +835,6 @@ class YoutubeCommentsFixLine(unittest.TestCase):
         self.assertIn("comment text needs", note)
         self.assertIn("yt-dlp (free)", note)
         self.assertTrue(record["fix"], "comment-text caveat must carry a fix")
-
-    def test_transcription_fix_takes_precedence_when_both_fire(self):
-        record = _build({}, probe_map={"yt-dlp": health.OK})["sources"]["youtube"]
-        entry = prescriptions.get("youtube", "transcription_key_missing")
-        self.assertIn(entry.fix_nl, record["fix"])
 
 
 class YoutubeHealthyWhenFullyConfigured(unittest.TestCase):
@@ -982,7 +1033,14 @@ class FourStateAudit(unittest.TestCase):
 
     def test_keyless_ok_no_evidence_is_working(self):
         rec = {"tier": "ok", "status": "ok"}
-        self.assertEqual(doctor.AUDIT_WORKING, doctor.audit_state("reddit", rec))
+        self.assertEqual(doctor.AUDIT_WORKING, doctor.audit_state("hackernews", rec))
+
+    def test_reddit_is_not_keyless_always_on(self):
+        # Every anonymous Reddit route closed; the floor rides third-party
+        # search and an archive, so Reddit needs run or probe evidence.
+        self.assertNotIn("reddit", doctor.KEYLESS_ALWAYS_ON)
+        rec = {"tier": "ok", "status": "ok"}
+        self.assertEqual(doctor.AUDIT_UNVERIFIED, doctor.audit_state("reddit", rec))
 
     def test_configured_ok_no_evidence_is_unverified(self):
         rec = {"tier": "ok", "status": "ok"}
@@ -1122,6 +1180,31 @@ class JsonContract(unittest.TestCase):
             self.assertIsNone(doctor.read_cached_report({**config, "BROWSER_CONSENT": "false"}))
             self.assertIsNone(doctor.read_cached_report({**config, "FROM_BROWSER": "off"}))
 
+    def test_sidecar_opt_in_invalidates_cached_advice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "doctor-cache.json"
+            with _Hermetic(), mock.patch("lib.doctor.cache_path", return_value=path):
+                report = doctor.build_report({})
+                self.assertTrue(doctor._write_cache(report, {}))
+                self.assertIsNotNone(doctor.read_cached_report({}))
+                self.assertIsNone(doctor.read_cached_report({"AGENTCOOKIE": "on"}))
+                self.assertTrue(doctor._write_cache(report, {"AGENTCOOKIE": "on"}))
+                self.assertIsNone(doctor.read_cached_report({"AGENTCOOKIE": "off"}))
+
+    def test_sidecar_environment_fallback_invalidates_cached_advice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "doctor-cache.json"
+            with _Hermetic(), mock.patch("lib.doctor.cache_path", return_value=path):
+                report = doctor.build_report({})
+                with mock.patch.dict(os.environ, {"AGENTCOOKIE": "off"}):
+                    self.assertTrue(doctor._write_cache(report, {}))
+                with mock.patch.dict(os.environ, {"AGENTCOOKIE": "on"}):
+                    self.assertTrue(doctor.read_cached_report({}) is None)
+                    self.assertTrue(doctor._write_cache(report, {}))
+                with mock.patch.dict(os.environ, {"AGENTCOOKIE": "off"}):
+                    self.assertTrue(doctor.read_cached_report({}) is None)
+                    self.assertIsNotNone(doctor.read_cached_report({"AGENTCOOKIE": "on"}))
+
 
 class LiveProbe(unittest.TestCase):
     """U5: bounded live probe (--probe / no-fresh-run auto-fallback)."""
@@ -1145,33 +1228,57 @@ class LiveProbe(unittest.TestCase):
 
     def test_reddit_probe_targets_the_endpoint_the_engine_uses(self):
         # Probing a hand-copied URL certified endpoints the engine had already
-        # abandoned (hot.json, then the retired feed). The probe asks the lane.
+        # abandoned (hot.json, the retired feed, then the anonymous site
+        # search). The probe asks the floor the lane asks: Brave, then Arctic.
         url = doctor._HTTP_PROBE_URLS["reddit"]
-        self.assertEqual(reddit_search.search_url("test"), url)
+        self.assertEqual(reddit_health.brave_probe_url(), url)
+        self.assertTrue(url.startswith("https://search.brave.com/search?"))
+        self.assertIn("site%3Areddit.com", url)
+        self.assertNotIn("reddit.com/svc", url)
+        follow = doctor._PROBE_FOLLOW_UPS["reddit"]
+        self.assertEqual("arctic", follow[0][0])
+        self.assertIn("/api/posts/ids?ids=", follow[0][2])
 
-    def _probe_reddit_with_body(self, body):
-        with mock.patch("lib.bounded_get.get", return_value=(200, body.encode("utf-8"), None)):
-            return doctor._probe_source("reddit", {}, 5)
+    BRAVE_PAGE = (Path(__file__).resolve().parent.parent / "fixtures" / "brave_reddit_serp.html")
 
-    def test_reddit_probe_200_with_results_passes(self):
-        body = (Path(__file__).resolve().parent.parent / "fixtures" / "reddit_search_page1.html").read_text()
-        res = self._probe_reddit_with_body(body)
+    def _probe_reddit_with_bodies(self, *bodies):
+        answers = [(200, body.encode("utf-8"), None) for body in bodies]
+        with mock.patch("lib.bounded_get.get", side_effect=answers) as get:
+            return doctor._probe_source("reddit", {}, 5), get
+
+    def test_reddit_probe_brave_results_and_arctic_answer_passes(self):
+        res, get = self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), '{"data": []}')
         self.assertTrue(res["ok"])
-        self.assertEqual("HTTP 200", res["detail"])
+        self.assertEqual("Brave HTTP 200; Arctic Shift HTTP 200", res["detail"])
+        self.assertEqual(2, get.call_count)
+        # A pass is fresh evidence: both paths read ok in the health cache.
+        entries = reddit_health.entries()
+        self.assertEqual("ok", entries["brave"]["state"])
+        self.assertEqual("ok", entries["arctic"]["state"])
 
-    def test_reddit_probe_200_no_results_page_passes(self):
-        # Reddit's explicit empty page is still the search endpoint answering.
-        res = self._probe_reddit_with_body(f"<div {reddit_search.NO_RESULTS_MARKER}></div>")
-        self.assertTrue(res["ok"])
-
-    def test_reddit_probe_200_challenge_page_is_blocked(self):
+    def test_reddit_probe_brave_page_without_results_is_blocked(self):
         # A 200 challenge page is the failure the lane hits: status alone
-        # would report a blocked Reddit as working.
-        res = self._probe_reddit_with_body("<html><title>Please wait for verification</title></html>")
+        # would report a refused floor as working. Arctic is not asked.
+        res, get = self._probe_reddit_with_bodies("<html><title>Captcha</title></html>")
         self.assertFalse(res["ok"])
         self.assertIn("HTTP 200", res["detail"])
         self.assertIn("blocked", res["detail"])
         self.assertFalse(res.get("transient", False))
+        self.assertEqual(2, get.call_count)
+
+    def test_reddit_probe_arctic_failure_fails_the_floor(self):
+        res, _get = self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), "<html>down</html>")
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["detail"].startswith("Arctic Shift: HTTP 200 but blocked"))
+
+    def test_reddit_probe_never_reads_a_cookie(self):
+        with mock.patch("lib.env.extract_browser_credentials") as creds, \
+             mock.patch("lib.cookie_extract.extract_cookies") as cookies, \
+             mock.patch("lib.cookie_extract.extract_cookies_with_source") as sourced:
+            self._probe_reddit_with_bodies(self.BRAVE_PAGE.read_text(), '{"data": []}')
+        creds.assert_not_called()
+        cookies.assert_not_called()
+        sourced.assert_not_called()
 
     def _probe_reddit_with_status(self, code):
         error = urllib.error.HTTPError(
@@ -1216,13 +1323,30 @@ class LiveProbe(unittest.TestCase):
         with (
             mock.patch(
                 "lib.doctor._http_ok",
-                side_effect=[(False, "HTTP 429"), (True, "HTTP 200")],
+                side_effect=[(False, "HTTP 429"), (True, "HTTP 200"), (True, "HTTP 200")],
             ),
             mock.patch("lib.doctor.time.sleep"),
         ):
             res = doctor._probe_source("reddit", {}, 5)
         self.assertTrue(res["ok"])
         self.assertNotIn("transient", res)
+
+    def test_reddit_archive_requires_checked_success(self):
+        for code in (400, 404, 422):
+            with mock.patch("lib.doctor._probe_url", side_effect=[
+                {"ok": False, "detail": "HTTP 403", "probed": True},
+                {"ok": True, "detail": f"HTTP {code}", "probed": True},
+            ]):
+                result = doctor._probe_source("reddit", {}, 5)
+            self.assertFalse(result.get("partial", False))
+        with mock.patch("lib.doctor._probe_url", side_effect=[
+            {"ok": False, "detail": "HTTP 403", "probed": True},
+            {"ok": True, "detail": "HTTP 200", "probed": True},
+        ]):
+            result = doctor._probe_source("reddit", {}, 5)
+        self.assertTrue(result["partial"])
+        self.assertEqual(doctor.AUDIT_UNVERIFIED,
+                         doctor.audit_state("reddit", {"tier": doctor.TIER_OK}, probe_result=result))
 
     def test_reddit_probe_403_is_not_retried(self):
         # 403 is the standing keyless block, not a burst. Retrying it only
@@ -1234,7 +1358,7 @@ class LiveProbe(unittest.TestCase):
             mock.patch("lib.doctor.time.sleep") as sleep,
         ):
             res = doctor._probe_source("reddit", {}, 5)
-        self.assertEqual(1, http_ok.call_count)
+        self.assertEqual(2, http_ok.call_count)
         sleep.assert_not_called()
         self.assertFalse(res.get("transient", False))
 
@@ -1267,8 +1391,8 @@ class LiveProbe(unittest.TestCase):
         seen = {}
 
         def capture(req, **kwargs):
-            seen["ua"] = req.get_header("User-agent")
-            seen["accept"] = req.get_header("Accept")
+            seen.setdefault("ua", req.get_header("User-agent"))
+            seen.setdefault("accept", req.get_header("Accept"))
             return 500, None, urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
 
         with mock.patch("lib.bounded_get.get", capture):
@@ -1500,6 +1624,96 @@ class CliHealth(unittest.TestCase):
             self.assertIn(src, report["sources"], src)
             self.assertEqual("ok", report["sources"][src]["cli"]["status"], src)
 
+    def test_yahoo_finance_listed_with_cli_marker(self):
+        report = _build({}, probe_map={"yahoo-finance-pp-cli": health.OK})
+        rec = report["sources"]["yahoo_finance"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("yahoo-finance-pp-cli", rec["cli"]["name"])
+        self.assertEqual("ok", rec["cli"]["status"])
+        text = doctor.render_text(report)
+        self.assertIn("yahoo_finance [CLI: yahoo-finance-pp-cli ✓]", text)
+        self.assertIn("yahoo-finance-pp-cli — yahoo_finance", text)
+
+    def test_patents_listed_as_a_keyless_company_lane(self):
+        report = _build({})
+        rec = report["sources"]["patents"]
+        self.assertEqual("opt-in", rec["status"])
+        self.assertEqual(
+            "none (public USPTO search); activates for company topics", rec["requires"]
+        )
+        for expected in ("not companies", "no filings in the window", "sign-in"):
+            self.assertIn(expected, rec["note"])
+        self.assertIsNone(rec.get("cli"))
+        self.assertEqual(set(doctor.SOURCE_ORDER), set(report["sources"]))
+        self.assertLess(
+            doctor.SOURCE_ORDER.index("jobs"), doctor.SOURCE_ORDER.index("patents")
+        )
+
+    def test_yahoo_finance_quiet_on_a_non_company_topic_is_not_broken(self):
+        # The lane only runs for a topic that resolves to a listed company, so
+        # a fresh run that recorded nothing for it is the normal case.
+        tmp = tempfile.mkdtemp()
+        path = _write_last_report(
+            tmp, source_status={"reddit": {"state": "ok", "items_returned": 4}}
+        )
+        with _Hermetic(probe_map={"yahoo-finance-pp-cli": health.OK}), mock.patch(
+            "lib.doctor._last_report_path", return_value=path
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["yahoo_finance"]
+        self.assertIsNone(rec["run_outcome"])
+        self.assertNotEqual(doctor.AUDIT_NOT_WORKING, rec["audit_state"])
+        self.assertIn("listed company", rec["note"])
+        line = next(
+            ln for ln in doctor.render_text(report).splitlines()
+            if "yahoo_finance [CLI" in ln
+        )
+        self.assertIn("no price line on other topics", line)
+        self.assertNotIn("✕", line)
+
+    def test_yahoo_finance_missing_prescribes_catalog_install(self):
+        def fake(name, timeout=health.PROBE_TIMEOUT):
+            prescription = (
+                health.pp_install_cmd("yahoo-finance")
+                if name == "yahoo-finance-pp-cli" else f"install {name}"
+            )
+            return health.DependencyProbe(
+                name=name, status=health.MISSING,
+                detail=f"{name} not found on PATH",
+                prescription=prescription, owner_pkg_manager="npx",
+            )
+
+        with _Hermetic(), mock.patch("lib.health.probe_dependency", fake):
+            report = doctor.build_report({})
+        rec = report["sources"]["yahoo_finance"]
+        # Never installed: an optional lane that is off, not a failure.
+        self.assertEqual("opt-in", rec["status"])
+        self.assertEqual(doctor.AUDIT_COULD_BE_ON, rec["audit_state"])
+        self.assertIn(
+            f"npx -y {setup_wizard.PRINTING_PRESS_NPM} install yahoo-finance --cli-only",
+            rec["fix"],
+        )
+        text = doctor.render_text(report)
+        self.assertIn("[CLI: yahoo-finance-pp-cli ✗ missing]", text)
+        self.assertIn("install yahoo-finance --cli-only", text)
+        blob = json.loads(doctor.render_json(report))
+        self.assertEqual("missing", blob["sources"]["yahoo_finance"]["cli"]["status"])
+
+    def test_yahoo_finance_off_path_is_not_working(self):
+        def fake(name, timeout=health.PROBE_TIMEOUT):
+            return health.DependencyProbe(
+                name=name, status=health.MISSING, detail="installed off PATH",
+                off_path=name == "yahoo-finance-pp-cli",
+                prescription="add $HOME/.local/bin to PATH",
+            )
+
+        with _Hermetic(), mock.patch("lib.health.probe_dependency", fake):
+            report = doctor.build_report({})
+        rec = report["sources"]["yahoo_finance"]
+        self.assertTrue(rec["cli"]["off_path"])
+        self.assertEqual(doctor.AUDIT_NOT_WORKING, rec["audit_state"])
+        self.assertIn("PATH", rec["fix"])
+
     def test_cli_marker_and_block_for_ytdlp(self):
         report = _build({}, probe_map={"yt-dlp": health.OK})
         self.assertEqual("ok", report["sources"]["youtube"]["cli"]["status"])
@@ -1533,6 +1747,54 @@ class CliHealth(unittest.TestCase):
         self.assertEqual(
             doctor.AUDIT_NOT_WORKING, report["sources"]["digg"]["audit_state"]
         )
+
+    def test_older_digg_cli_gets_the_upgrade_fix_and_stays_on(self):
+        with _Hermetic(probe_map={"digg-pp-cli": health.OK}), mock.patch(
+            "lib.digg.cli_searches_all_topics", return_value=False
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["digg"]
+        # An older CLI still answers, so Digg is not reported as failing.
+        self.assertEqual("ok", rec["tier"])
+        self.assertNotEqual(doctor.AUDIT_NOT_WORKING, rec["audit_state"])
+        self.assertIn("AI and tech", rec["note"])
+        install = "npx -y @mvanhorn/printing-press-library"
+        self.assertIn(install, rec["fix"])
+        self.assertIn("install digg --cli-only", rec["fix"])
+        digg_line = next(
+            line for line in doctor.render_text(report).splitlines()
+            if "digg [CLI: digg-pp-cli" in line
+        )
+        self.assertIn("AI and tech", digg_line)
+        self.assertIn("install digg --cli-only", digg_line)
+
+    def test_current_digg_cli_is_healthy_with_no_fix(self):
+        with _Hermetic(probe_map={"digg-pp-cli": health.OK}), mock.patch(
+            "lib.digg.cli_searches_all_topics", return_value=True
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["digg"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("", rec["fix"])
+        self.assertEqual("", rec["note"])
+
+    def test_digg_cli_whose_help_could_not_be_read_gets_no_upgrade_fix(self):
+        with _Hermetic(probe_map={"digg-pp-cli": health.OK}), mock.patch(
+            "lib.digg.cli_searches_all_topics", return_value=None
+        ):
+            report = doctor.build_report({})
+        rec = report["sources"]["digg"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("", rec["fix"])
+        self.assertEqual("", rec["note"])
+
+    def test_digg_cli_that_is_not_installed_is_not_asked_for_its_help_text(self):
+        with _Hermetic(), mock.patch(
+            "lib.digg.cli_searches_all_topics",
+            side_effect=AssertionError("asked a missing CLI for its help text"),
+        ):
+            report = doctor.build_report({})
+        self.assertEqual("opt-in", report["sources"]["digg"]["status"])
 
     def test_gh_absent_github_still_working(self):
         report = _build({})  # gh missing by default in _Hermetic
@@ -1872,6 +2134,66 @@ class GrokBotParityTable(unittest.TestCase):
                 self.assertNotIn("last30days_x_backend", x_text)
 
 
+def _grok_probe_raises():
+    """A grok probe whose filesystem scan is denied, as issue #1448 reports it."""
+    return [
+        mock.patch(
+            "lib.health._off_path_binary",
+            side_effect=PermissionError("simulated denial"),
+        ),
+    ]
+
+
+class GrokProbeThatCouldNotRun(unittest.TestCase):
+    """Issue #1448: a failed probe is not a broken credential store.
+
+    backends._run_probe records a raised probe as ERROR with a
+    "probe failed: ..." detail. Doctor read every grok ERROR as a corrupt
+    store, so it claimed a break it never observed and returned before the
+    bearer lane could be named.
+    """
+
+    def test_unchecked_probe_keeps_cookie_guidance_without_claiming_a_broken_store(self):
+        report = _build_with({}, _grok_probe_raises())
+
+        rec = report["sources"]["x"]
+        self.assertEqual("unconfigured", rec["status"])
+        self.assertEqual("off", rec["tier"])
+        self.assertIn("cookie", rec["fix"].lower())
+        self.assertIn("could not be checked", rec["note"].lower())
+        self.assertNotIn("store is broken", rec["note"].lower())
+
+    def test_unchecked_probe_does_not_hide_the_opt_in_bearer_lane(self):
+        placeholder = "dummy-x-bearer-value"
+        report = _build_with({"X_BEARER_TOKEN": placeholder}, _grok_probe_raises())
+
+        rec = report["sources"]["x"]
+        self.assertIn("LAST30DAYS_X_BACKEND=xapi", rec["note"])
+        self.assertIn("could not be checked", rec["note"].lower())
+        self.assertEqual("", rec["fix"])
+        self.assertNotIn(placeholder, json.dumps(rec))
+        text = doctor.render_text(report)
+        self.assertNotIn(placeholder, text)
+        self.assertNotIn("store is broken", text.lower())
+
+    def test_a_store_that_really_could_not_be_read_is_still_named(self):
+        patches = [
+            mock.patch(
+                "lib.backends.which",
+                lambda n: "/usr/bin/grok" if n == "grok" else None,
+            ),
+            mock.patch("lib.grok_audit.cached_status", return_value=None),
+            mock.patch(
+                "lib.grok_x.stored_auth_status",
+                return_value=(grok_x.AUTH_ERROR, "PermissionError: denied", None),
+            ),
+        ]
+        report = _build_with({}, patches)
+
+        rec = report["sources"]["x"]
+        self.assertIn("store is broken", rec["note"].lower())
+
+
 class UnsubstitutedTemplateReporting(unittest.TestCase):
     """Issue #1081 defect 2: a rejected `${user_config.*}` placeholder is named
     as unsubstituted instead of reading as "nothing configured"."""
@@ -1903,3 +2225,4 @@ class UnsubstitutedTemplateReporting(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
