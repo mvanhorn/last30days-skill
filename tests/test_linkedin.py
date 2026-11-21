@@ -473,5 +473,15 @@ class TestPersonProfile(unittest.TestCase):
         self.assertIsNone(result["data"])
 
 
+class TestLinkedinPlanner(unittest.TestCase):
+    def test_planner_capability(self):
+        from lib import planner
+
+        self.assertEqual(
+            {"discussion", "social"},
+            planner.SOURCE_CAPABILITIES.get("linkedin"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
