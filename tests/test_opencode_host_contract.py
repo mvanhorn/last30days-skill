@@ -137,8 +137,8 @@ def test_recipe_states_the_reddit_hydration_limit(recipe):
 def test_recipe_requires_date_bounded_browser_searches(recipe):
     section = recipe.split("## 1. Check the browser", 1)[1].split("## 2.", 1)[0]
     for token in (
-        "since:{YYYY-MM-DD}",
-        "until:{YYYY-MM-DD}",
+        "since:{start} until:{day after end}",
+        "excludes its date",
         "`f=live`",
         "`t=month`",
         "`t=week`",
@@ -164,6 +164,8 @@ def test_recipe_wires_the_comparison_handoff(recipe):
     section = recipe.split("## 6. Engine command", 1)[1]
     for token in (
         "`comparison.md`'s \"Without host web search\" command",
+        "\"With host web search\" (host-written `--plan`",
+        "by whether host web search is available",
         'if [ "${LAST30DAYS_X_HOST_LANE:-}" = "1" ]',
         "host-agnostic",
         "`COMPETITORS_PLAN_JSON`",
