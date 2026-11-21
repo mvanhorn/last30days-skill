@@ -415,12 +415,12 @@ cat > /tmp/l30d-threads.json <<'THREADS_EOF'
 THREADS_EOF
 ```
 
-**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches (`{TOPIC} site:tiktok.com`, `{TOPIC} tiktok creator`, `site:instagram.com reel {TOPIC}`); keep post and `@creator` URLs, even old (max 40). If any, write `/tmp/l30d-shortform.json` as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls=/tmp/l30d-shortform.json`.
+**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches (`{TOPIC} site:tiktok.com`, `{TOPIC} tiktok account`, `site:instagram.com reel {TOPIC}`); keep post and `@creator` URLs, even old (max 40). Add up to 5 handles posting on it (official, fan, reviewer) to `RESOLVED_TIKTOK_CREATORS`. If any, write `/tmp/l30d-shortform.json` as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls=/tmp/l30d-shortform.json`.
 
-**3. TikTok hashtags + creators** - **INFER these from topic knowledge. Never WebSearch for a TikTok account; most people and CEOs have none.**
+**3. TikTok hashtags + creators** - **INFER these from topic knowledge. Never WebSearch for a TikTok account (2c aside); most people and CEOs have none.**
 
-- **Hashtags:** Infer 2-3 from the topic name + category. Examples: "Kanye West" → `kanyewest,ye,bully`. "Claude Code" → `claudecode,aiagent,aicoding`. "Sam Altman" → `samaltman,openai,chatgpt`.
-- **Creators:** Only search if the topic is a content creator, influencer, or brand that likely has TikTok presence. For CEOs, politicians, and non-creator people: skip.
+- **Hashtags:** Infer 2-3 from the topic name + category. Examples: "Kanye West" → `kanyewest,ye,bully`. "Claude Code" → `claudecode,aiagent,aicoding`.
+- **Creators:** Only for a creator, influencer, or brand likely on TikTok; skip CEOs, politicians, other people.
 
 Store as `RESOLVED_HASHTAGS` and `RESOLVED_TIKTOK_CREATORS`.
 
