@@ -3287,11 +3287,82 @@ SETUP_PASSTHROUGH_FLAGS = {
     "--github",
     "--github-start",
     "--github-poll",
+    "--install-hooks",
     "--openclaw",
     "--reddit-session",
     "--no-reddit-session",
     "--store-key",
+    "--uninstall-hooks",
 }
+
+INSTALL_HOOKS_FLAG = "--install-hooks"
+UNINSTALL_HOOKS_FLAG = "--uninstall-hooks"
+
+
+def _split_hook_flags(
+    extra_argv: list[str],
+) -> tuple[str | None, str | None, list[str]]:
+    """Pull optional-value ``--install-hooks [HOST]`` / ``--uninstall-hooks [HOST]``.
+
+    Returns ``(install_target, uninstall_target, remaining)``. Each target is
+    ``None`` when absent, ``""`` when passed bare (meaning all detected local
+    harnesses), or the explicit host string when supplied. Callers MUST check
+    ``is not None``, never truthiness.
+    """
+    install_target: str | None = None
+    uninstall_target: str | None = None
+    remaining: list[str] = []
+    i = 0
+    while i < len(extra_argv):
+        arg = extra_argv[i]
+        if arg in (INSTALL_HOOKS_FLAG, UNINSTALL_HOOKS_FLAG):
+            value = ""
+            if i + 1 < len(extra_argv) and not extra_argv[i + 1].startswith("-"):
+                value = extra_argv[i + 1]
+                i += 2
+            else:
+                i += 1
+            if arg == INSTALL_HOOKS_FLAG:
+                install_target = value
+            else:
+                uninstall_target = value
+            continue
+        if arg.startswith(INSTALL_HOOKS_FLAG + "="):
+            install_target = arg[len(INSTALL_HOOKS_FLAG) + 1 :]
+            i += 1
+            continue
+        if arg.startswith(UNINSTALL_HOOKS_FLAG + "="):
+            uninstall_target = arg[len(UNINSTALL_HOOKS_FLAG) + 1 :]
+            i += 1
+            continue
+        remaining.append(arg)
+        i += 1
+    return install_target, uninstall_target, remaining
+
+
+def _run_hook_setup(
+    install_target: str | None,
+    uninstall_target: str | None,
+) -> int:
+    from lib import hook_installer
+
+    if install_target is not None and uninstall_target is not None:
+        sys.stderr.write(
+            "[last30days] pass --install-hooks or --uninstall-hooks, not both.\n"
+        )
+        return 2
+    try:
+        # Bare --install-hooks / --uninstall-hooks uses "" -> "all", so dispatch
+        # checks `is not None` rather than string truthiness.
+        if install_target is not None:
+            result = hook_installer.install_hooks(install_target or "all")
+        else:
+            result = hook_installer.uninstall_hooks(uninstall_target or "all")
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 STORE_KEY_FLAG = "--store-key"
 
@@ -3738,9 +3809,10 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
     if topic.lower() == "setup":
         if USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv and len(extra_argv) > 1:
             parser.error(f"{USE_RECORDED_BROWSER_CONSENT_FLAG} must be the only setup option")
-        # --store-key carries a value token; the name itself is allowlisted
-        # later in _run_store_key, not here.
+        # --store-key and --install-hooks/--uninstall-hooks carry optional
+        # value tokens validated later by their handlers, not here.
         _, _, extra_argv = _split_store_key(extra_argv)
+        _, _, extra_argv = _split_hook_flags(extra_argv)
         unsupported = [arg for arg in extra_argv if arg not in SETUP_PASSTHROUGH_FLAGS]
         if unsupported:
             parser.error(
@@ -4287,11 +4359,15 @@ def _main(
         )
         return 2
     if command_topic == "setup":
-        # Persisting a credential needs no config load (no Keychain / pass
-        # probes, no cookie policy), so it dispatches before get_config.
+        # Persisting a credential or managing local hook configs needs no
+        # config load (no Keychain / pass probes, no cookie policy), so these
+        # dispatch before get_config.
         store_key_present, store_key_name, _ = _split_store_key(extra_argv)
         if store_key_present:
             return _run_store_key(store_key_name)
+        install_target, uninstall_target, _ = _split_hook_flags(extra_argv)
+        if install_target is not None or uninstall_target is not None:
+            return _run_hook_setup(install_target, uninstall_target)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
     if args.no_research_persistence:
