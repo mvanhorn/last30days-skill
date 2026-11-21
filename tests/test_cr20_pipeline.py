@@ -75,12 +75,13 @@ def test_unconfigured_search_sources_name_the_sources(monkeypatch):
         return [], {}
 
     monkeypatch.setattr(pipeline, "_retrieve_stream", retrieve)
-    with pytest.raises(pipeline.NoRequestedSourceAvailable, match="--search can run here: telegram, tiktok"):
+    with pytest.raises(pipeline.NoRequestedSourceAvailable, match="--search can run here: telegram, threads"):
         pipeline.run(
             topic="rust async",
             config={},
             depth="quick",
-            requested_sources=["telegram", "tiktok"],
+            # local fork: tiktok runs keyless (shortform_oss); threads is SC-keyed.
+            requested_sources=["telegram", "threads"],
             web_backend="none",
         )
     assert dispatched == []

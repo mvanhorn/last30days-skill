@@ -234,7 +234,7 @@ After the response and required citations, stop and wait unless governing instru
 - Person runs (`--employer`, `--linkedin`, `--email`) fetch the employer's public pages; with `DEEPLINE_API_KEY` they send the name, employer, and any supplied LinkedIn URL or email to Deepline (`code.deepline.com`), which spends credits
 - Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name; company runs send USPTO patent search (`ppubs.uspto.gov`, no key) the company name
 - Runs `yt-dlp` locally for YouTube search and transcripts (no API key, public data)
-- Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG).
+- Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG). When the ScrapeCreators key is missing or returns HTTP 402, TikTok/Instagram fall back to web discovery (SearXNG / Serper / Exa / Brave / keyless) plus `yt-dlp` per-post extract.
 - Optionally sends search queries to Brave Search, Parallel AI, Perplexity (`api.perplexity.ai`), or OpenRouter APIs for web search / synthesis
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
 - Reads the `reddit_session` cookie only with its own consent (`REDDIT_BROWSER_CONSENT=true`), sending it only to `reddit.com`; never on Grok Bot, hosted or scheduled runs
@@ -252,7 +252,7 @@ After the response and required citations, stop and wait unless governing instru
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
 - Hacker News and Polymarket are always available (no API key or binary)
-- TikTok and Instagram sources require SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG); `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes it Reddit's primary path.
+- TikTok and Instagram prefer SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG) and fall back to `yt-dlp` plus web discovery (`LAST30DAYS_SEARXNG_URL`/Serper/Exa/Brave/keyless) when that key is missing or 402s; `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes ScrapeCreators Reddit's primary path.
 - Agent hosts invoke the slash-command skill contract; if `--agent` appears in the user's slash-command arguments, treat it as skill-level mode guidance, not a Python CLI flag.
 
 **Bundled scripts:** `scripts/last30days.py` (main research engine), the search, enrichment, and rendering modules in its `lib` folder, and the vendored X search client in `lib/vendor/bird-search` (MIT licensed)

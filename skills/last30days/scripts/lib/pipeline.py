@@ -451,8 +451,10 @@ def available_sources(
         config.get("_CORPUS_DIRS"), config.get("LAST30DAYS_CORPUS_DIRS")
     ):
         available.append("corpus")
-    if config.get("SCRAPECREATORS_API_KEY"):
-        available.extend(["tiktok", "instagram"])
+    if env.is_tiktok_available(config):
+        available.append("tiktok")
+    if env.is_instagram_available(config):
+        available.append("instagram")
     if env.get_x_source(config, local_only=local_only):
         available.append("x")
     elif x_envelope or (
@@ -7617,6 +7619,7 @@ def _retrieve_stream_impl(
                 token=env.get_tiktok_token(config),
                 hashtags=tiktok_hashtags,
                 creators=tiktok_creators,
+                config=config,
                 deadline=deadline,
                 cancel=cancel,
             )
@@ -7624,6 +7627,7 @@ def _retrieve_stream_impl(
             if (
                 items
                 and env.is_tiktok_comments_available(config)
+                and not items[0].get("_oss_backend")
                 and result.get("error") != tiktok.BUDGET_ERROR
             ):
                 sc_token = config.get("SCRAPECREATORS_API_KEY", "")
@@ -7662,11 +7666,16 @@ def _retrieve_stream_impl(
                 depth=depth,
                 token=env.get_instagram_token(config),
                 ig_creators=ig_creators,
+                config=config,
                 deadline=ig_deadline,
                 cancel=ig_cancel,
             )
             items = instagram.parse_instagram_response(result)
-            if items and env.is_instagram_comments_available(config):
+            if (
+                items
+                and env.is_instagram_comments_available(config)
+                and not items[0].get("_oss_backend")
+            ):
                 instagram.enrich_with_comments(
                     items, token=config.get("SCRAPECREATORS_API_KEY", ""),
                     deadline=ig_deadline, cancel=ig_cancel,
