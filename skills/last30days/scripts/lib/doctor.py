@@ -780,13 +780,17 @@ def _digg_record(config):
 def _cli_gated_record(config, cli_name: str, purpose: str):
     """A source gated purely on a keyless downloaded CLI (mirrors _digg_record).
 
-    ok -> installed and functional; opt-in -> never installed (an optional
-    source simply not enabled); its failing status -> installed off-PATH,
-    broken, or timing out (configured-but-broken).
+    ok -> installed and functional, with upgrade guidance if limited;
+    opt-in -> never installed; failing status -> off-PATH, broken, or timing out.
     """
     probe = health.probe_dependency(cli_name)
     requires = f"{cli_name} on the agent-subprocess PATH"
     if probe.ok:
+        if probe.outdated:
+            return _record(
+                status=health.OK, fix=probe.prescription, note=probe.detail,
+                detail=probe.detail, requires=requires,
+            )
         return _record(status=health.OK, detail=probe.detail, requires=requires)
     entry = prescriptions.for_dependency_probe(probe)
     fix = _fix_text(entry) if entry else probe.prescription
