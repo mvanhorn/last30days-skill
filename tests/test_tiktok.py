@@ -242,6 +242,66 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
         self.assertIn("top_comments", by_id["mid"])
         self.assertNotIn("top_comments", by_id["low"])
 
+class TestTikTokPublicComments(unittest.TestCase):
+    """Keyless top comments from TikTok's public web endpoint."""
+
+    PAYLOAD = {"comments": [
+        {"text": "second", "user": {"unique_id": "b"}, "digg_count": 8, "create_time": 1795252597},
+        {"text": "first", "user": {"unique_id": "a"}, "digg_count": 11, "create_time": 1795252597},
+        {"text": "mine", "user": {"unique_id": "Dev"}, "digg_count": 2, "create_time": 1795252597},
+    ], "total": 3}
+
+    def test_request_shape_carries_the_post_id_and_no_key(self):
+        from unittest.mock import patch
+        from lib import tiktok
+
+        with patch.object(tiktok.http, "get", return_value=self.PAYLOAD) as get:
+            out = tiktok._fetch_public_comments(
+                "https://www.tiktok.com/@dev/video/7710485679641267469?lang=en", creator="dev",
+            )
+        url = get.call_args[0][0]
+        kwargs = get.call_args[1]
+        self.assertEqual("https://www.tiktok.com/api/comment/list/", url)
+        self.assertEqual("7710485679641267469", kwargs["params"]["aweme_id"])
+        self.assertNotIn("x-api-key", {k.lower() for k in kwargs["headers"]})
+        self.assertEqual(["first", "second", "mine"], [c["text"] for c in out])
+        self.assertEqual("a", out[0]["author"])
+        self.assertEqual([False, False, True], [c["is_uploader"] for c in out])
+
+    def test_url_without_a_post_id_makes_no_request(self):
+        from unittest.mock import patch
+        from lib import tiktok
+
+        with patch.object(tiktok.http, "get") as get:
+            self.assertEqual([], tiktok._fetch_public_comments("https://www.tiktok.com/@dev"))
+        get.assert_not_called()
+
+    def test_provider_errors_and_odd_payloads_yield_nothing(self):
+        from unittest.mock import patch
+        from lib import tiktok
+
+        url = "https://www.tiktok.com/@dev/video/7710485679641267469"
+        with patch.object(tiktok.http, "get", side_effect=Exception("403")):
+            self.assertEqual([], tiktok._fetch_public_comments(url))
+        for payload in ({}, {"comments": None}, {"status_code": 10201}, {"comments": ["x", None]}):
+            with patch.object(tiktok.http, "get", return_value=payload):
+                self.assertEqual([], tiktok._fetch_public_comments(url))
+
+    def test_keyless_enrich_uses_the_public_endpoint_without_a_token(self):
+        from unittest.mock import patch
+        from lib import tiktok
+
+        items = [{"video_id": "1", "url": "https://www.tiktok.com/@u/video/7710485679641267469",
+                  "author_name": "u", "engagement": {"views": 100}}]
+        with patch.object(tiktok, "_fetch_post_comments") as paid, \
+             patch.object(tiktok, "_fetch_public_comments",
+                          return_value=[{"author": "a", "text": "hi", "digg_count": 9, "date": ""}]) as free:
+            tiktok.enrich_with_comments(items, token="", keyless=True)
+        paid.assert_not_called()
+        free.assert_called_once()
+        self.assertEqual("hi", items[0]["top_comments"][0]["text"])
+
+
 class TestTikTokArabicTopicEncoding(unittest.TestCase):
     """Regression for issue #817 across the TikTok search path."""
 

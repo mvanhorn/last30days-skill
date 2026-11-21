@@ -73,6 +73,7 @@ from . import (
     rerank,
     schema,
     shortform_envelope,
+    shortform_oss,
     signals,
     snippet,
     stocktwits,
@@ -7653,6 +7654,20 @@ def _retrieve_stream_impl(
                     tiktok.enrich_with_comments(items, token=sc_token, deadline=deadline, cancel=cancel)
                 except http.DeadlineExceeded:
                     result["error"] = tiktok.BUDGET_ERROR
+            elif (
+                items
+                and items[0].get("_oss_backend")
+                and shortform_oss.comments_on(config)
+                and result.get("error") != tiktok.BUDGET_ERROR
+            ):
+                # Keyless lane: top comments from TikTok's public endpoint, free, so
+                # every kept video (the lane keeps at most 12) gets them.
+                try:
+                    tiktok.enrich_with_comments(
+                        items, token="", max_posts=12, deadline=deadline, cancel=cancel, keyless=True,
+                    )
+                except http.DeadlineExceeded:
+                    result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
 
         return fetch_memo.fetch_once(
@@ -7661,6 +7676,7 @@ def _retrieve_stream_impl(
                 bool(env.get_tiktok_token(config)),
                 tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
                 env.is_tiktok_comments_available(config),
+                shortform_oss.comments_on(config),
             ),
             _fetch_tiktok,
             timeout=_memo_wait_seconds(config),

@@ -735,9 +735,11 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Optional SearXNG instance for the keyless-search fallback rung.
         ('LAST30DAYS_SEARXNG_URL', None),
         # Keyless TikTok/Instagram lane switches (lib/shortform_oss.py):
-        # discovery freshness (on/off/backend list) and TikTok creator expansion.
+        # discovery freshness (on/off/backend list), TikTok creator expansion and
+        # keyless TikTok top comments.
         ('LAST30DAYS_SHORTFORM_FRESHNESS', None),
         ('LAST30DAYS_SHORTFORM_CREATOR_EXPANSION', None),
+        ('LAST30DAYS_SHORTFORM_COMMENTS', None),
         # Truthy -> disable Trustpilot's headless-Chrome WAF-cookie harvest in
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
