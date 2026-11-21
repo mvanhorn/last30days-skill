@@ -710,3 +710,57 @@ def test_markdown_save_to_scoped_dir_syncs_a_scoped_index(tmp_path):
         scoped_root / "briefings",
         db_path=scoped_root / ".last30days-library.db",
     )
+
+
+def test_index_entry_upserts_finished_brief_in_o1_without_scanning_and_redacts_corpus(
+    tmp_path, monkeypatch
+):
+    memory = tmp_path / "memory"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    db_path = tmp_path / "library.db"
+    brief_path = finished / "anthropic-2026-11-21.md"
+    brief_path.write_text(
+        """🌐 last30days · Anthropic · Oct 22 to Nov 21, 2026 · v4.5.0
+
+Developers praise Claude Code reliability on multi-file refactors.
+
+## From your files
+
+Confidential Q4 contract negotiation token ZEBRA99.
+
+```text
+---
+✅ All agents reported back!
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+""",
+        encoding="utf-8",
+    )
+
+    def _forbid_scan(*_args, **_kwargs):
+        raise AssertionError("index_entry must not invoke scan_library")
+
+    monkeypatch.setattr(library, "scan_library", _forbid_scan)
+
+    assert library_index.index_entry(
+        brief_path, db_path=db_path, source_format="finished-brief"
+    ) is True
+
+    public_hits = library_index.search(
+        "refactors",
+        db_path=db_path,
+        store_db_path=tmp_path / "missing-store.db",
+    )
+    assert len(public_hits) == 1
+    assert public_hits[0].topic == "Anthropic"
+    assert public_hits[0].published_date == date(2026, 11, 21)
+
+    private_hits = library_index.search(
+        "ZEBRA99",
+        db_path=db_path,
+        store_db_path=tmp_path / "missing-store.db",
+    )
+    assert private_hits == []
+

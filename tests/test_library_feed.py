@@ -679,3 +679,72 @@ def test_brief_write_preserves_hand_edited_page_for_current_entry(tmp_path, monk
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         assert cli.main() == 0
     assert not (tmp_path / "briefs" / "ai-agents-c7760ea1-2026-07-10.html.bak1").exists()
+
+
+FINISHED_BRIEF_NO_H1 = """🌐 last30days · Anthropic · Oct 22 to Nov 21, 2026 · v4.5.0
+
+Anthropic developer threads focus on tool use reliability this month.
+
+## From your files
+
+Private board memo about internal vendor pricing.
+
+**KEY PATTERNS from the research:**
+1. Teams praise Claude Code on multi-file refactors.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 12 threads
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+"""
+
+
+def test_scan_library_prefers_finished_brief_over_unsuffixed_raw_and_keeps_client_suffix(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    finished = memory / "finished"
+    finished.mkdir()
+
+    # Unsuffixed raw dump for Anthropic on 2026-11-21 -> superseded by finished brief.
+    (memory / "anthropic-raw-2026-11-21.md").write_text(
+        "# last30days v4.5.0: Anthropic\n\n- Date range: 2026-10-22 to 2026-11-21\n\n## Ranked Evidence Clusters\n\n### 1. Raw cluster\n",
+        encoding="utf-8",
+    )
+    # Client-suffixed raw dump -> must NOT be suppressed.
+    (memory / "anthropic-raw-acme-2026-11-21.md").write_text(
+        "# last30days v4.5.0: Anthropic\n\n- Date range: 2026-10-22 to 2026-11-21\n\n## Ranked Evidence Clusters\n\n### 1. Acme client cluster\n",
+        encoding="utf-8",
+    )
+    # Raw-only topic with no finished brief -> stays visible.
+    (memory / "nvidia-raw-2026-11-21.md").write_text(
+        "# last30days v4.5.0: Nvidia\n\n- Date range: 2026-10-22 to 2026-11-21\n\n## Ranked Evidence Clusters\n\n### 1. Blackwell racks\n",
+        encoding="utf-8",
+    )
+    # Finished brief with badge-first format and no H1 heading.
+    finished_file = finished / "anthropic-2026-11-21.md"
+    finished_file.write_text(FINISHED_BRIEF_NO_H1, encoding="utf-8")
+
+    entries, notes = library.scan_library(memory, tmp_path / "missing-briefings")
+
+    assert notes == []
+    by_name = {entry.source_path.name: entry for entry in entries}
+    assert "anthropic-2026-11-21.md" in by_name
+    assert "anthropic-raw-2026-11-21.md" not in by_name
+    assert "anthropic-raw-acme-2026-11-21.md" in by_name
+    assert "nvidia-raw-2026-11-21.md" in by_name
+
+    brief_entry = by_name["anthropic-2026-11-21.md"]
+    assert brief_entry.source_format == "finished-brief"
+    assert brief_entry.topic == "Anthropic"
+    assert brief_entry.published_date == date(2026, 11, 21)
+    assert brief_entry.headline
+    assert "tool use reliability" in brief_entry.summary
+
+    public_html = html_render.render_library_brief(brief_entry, include_private=False)
+    assert 'class="badge"' in public_html
+    assert "Private board memo" not in public_html
+    assert "tool use reliability" in public_html
+

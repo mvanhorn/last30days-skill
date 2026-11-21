@@ -230,7 +230,20 @@ def _run_capture() -> None:
     if brief is None:
         return
 
-    brief_capture.save_finished_brief(brief, save_dir)
+    outcome = brief_capture.save_finished_brief(brief, save_dir)
+    if outcome.status == "saved":
+        try:
+            from lib import library_index
+
+            save_root = Path(save_dir).expanduser().resolve()
+            db_path = library_index.saved_report_index_path(save_root)
+            library_index.index_entry(
+                outcome.path,
+                db_path=db_path,
+                source_format="finished-brief",
+            )
+        except Exception as exc:
+            _debug_log(f"index_entry skipped ({type(exc).__name__}: {exc})")
 
 
 def main() -> int:

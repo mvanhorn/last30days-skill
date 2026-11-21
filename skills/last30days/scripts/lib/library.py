@@ -13,6 +13,7 @@ from pathlib import Path
 
 DEFAULT_MEMORY_DIR = Path.home() / "Documents" / "Last30Days"
 DEFAULT_BRIEFS_DIR = Path.home() / ".local" / "share" / "last30days" / "briefs"
+FINISHED_SUBDIR = "finished"
 LIBRARY_ID_FILENAME = ".last30days-library-id"
 PUBLIC_DRILL_MARKER = "<!-- LAST30DAYS_PUBLIC_DRILL -->"
 PUBLIC_FRESHNESS_MARKER = "<!-- LAST30DAYS_PUBLIC_FRESHNESS -->"
@@ -22,6 +23,19 @@ PRIVATE_CORPUS_END = "<!-- LAST30DAYS_PRIVATE_CORPUS_END -->"
 
 _REPORT_TITLE = re.compile(r"^#\s+last30days(?:\s+v[^:]+)?:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _FIRST_TITLE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_BADGE_LINE = re.compile(r"^🌐\s*last30days\b[^\r\n]*$", re.MULTILINE)
+_BADGE_SYNCED_DATE = re.compile(r"\bsynced\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
+_BADGE_VERSION = re.compile(r"^v\d+\.\d+(?:\.\d+)*(?:[-+][A-Za-z0-9._-]+)?$")
+_BADGE_MONTH_DAY_YEAR = re.compile(
+    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),\s*(\d{4})\b",
+    re.IGNORECASE,
+)
+_BADGE_ISO_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+_BADGE_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_UNSUFFIXED_RAW_STEM = re.compile(r"^(.+)-raw(?:-\d{4}-\d{2}-\d{2}(?:-\d+)?)?$")
 _DATE_RANGE = re.compile(
     r"^-\s*Date range:\s*\d{4}-\d{2}-\d{2}\s+to\s+(\d{4}-\d{2}-\d{2})\s*$",
     re.MULTILINE | re.IGNORECASE,
@@ -232,9 +246,19 @@ def scan_library(
     briefs_path = Path(briefs_dir).expanduser()
 
     if memory_path.is_dir():
+        finished_path = memory_path / FINISHED_SUBDIR
+        if finished_path.is_dir():
+            for path in sorted(finished_path.glob("*.md")):
+                try:
+                    entry = parse_markdown_file(path, source_format="finished-brief")
+                    _keep_preferred(entries, entry)
+                except (OSError, UnicodeError, ValueError) as exc:
+                    notes.append(f"Skipped {path}: {exc}")
+                    continue
+
         for path in sorted(memory_path.glob("*.md")):
             try:
-                entry = _parse_markdown(path)
+                entry = parse_markdown_file(path, source_format="markdown")
                 _keep_preferred(entries, entry)
             except (OSError, UnicodeError, ValueError) as exc:
                 notes.append(f"Skipped {path}: {exc}")
@@ -249,12 +273,38 @@ def scan_library(
                 notes.append(f"Skipped {path}: {exc}")
                 continue
 
+    filtered = _suppress_superseded_raw(entries)
     ordered = sorted(
-        entries.values(),
+        filtered.values(),
         key=lambda entry: (entry.published_date, entry.topic.casefold(), entry.source_path.name),
         reverse=True,
     )
     return ordered, notes
+
+
+def _suppress_superseded_raw(entries: dict[str, LibraryEntry]) -> dict[str, LibraryEntry]:
+    """Hide unsuffixed raw dumps when a finished brief covers the same topic and date."""
+    finished_keys = {
+        (entry.slug, entry.published_date)
+        for entry in entries.values()
+        if entry.source_format == "finished-brief"
+    }
+    if not finished_keys:
+        return entries
+    kept: dict[str, LibraryEntry] = {}
+    for entry_id, entry in entries.items():
+        if (
+            entry.source_format == "markdown"
+            and (entry.slug, entry.published_date) in finished_keys
+            and _is_unsuffixed_raw_dump(entry.source_path.stem)
+        ):
+            continue
+        kept[entry_id] = entry
+    return kept
+
+
+def _is_unsuffixed_raw_dump(stem: str) -> bool:
+    return _UNSUFFIXED_RAW_STEM.fullmatch(stem) is not None
 
 
 def _keep_preferred(entries: dict[str, LibraryEntry], entry: LibraryEntry) -> None:
@@ -263,18 +313,23 @@ def _keep_preferred(entries: dict[str, LibraryEntry], entry: LibraryEntry) -> No
         entries[entry.entry_id] = entry
 
 
-def _parse_markdown(path: Path) -> LibraryEntry:
+def parse_markdown_file(path: Path, *, source_format: str = "markdown") -> LibraryEntry:
+    """Parse one saved Markdown report or finished brief into a LibraryEntry."""
     content = path.read_text(encoding="utf-8")
     public_content = public_markdown(content)
+    badge_topic, badge_date = _parse_badge_line(public_content)
     title_match = _REPORT_TITLE.search(public_content) or _FIRST_TITLE.search(public_content)
-    if not title_match:
+    if title_match:
+        topic = _clean_inline(title_match.group(1))
+    elif badge_topic:
+        topic = _clean_inline(badge_topic)
+    else:
         raise ValueError("no Markdown title found")
-    topic = _clean_inline(title_match.group(1))
     if not topic:
         raise ValueError("empty Markdown title")
-    published_date = _markdown_date(public_content, path)
-    headline = _markdown_headline(public_content) or topic
-    summary = _markdown_summary(public_content) or headline
+    published_date = badge_date or _markdown_date(public_content, path)
+    headline = _markdown_headline(public_content) or _brief_prose_headline(public_content) or topic
+    summary = _markdown_summary(public_content) or _brief_prose_summary(public_content) or headline
     return LibraryEntry(
         slug=slugify(topic),
         topic=topic,
@@ -284,7 +339,100 @@ def _parse_markdown(path: Path) -> LibraryEntry:
         source_path=path,
         content=content,
         source_updated_at=_source_updated_at(path),
+        source_format=source_format,
     )
+
+
+def _parse_markdown(path: Path) -> LibraryEntry:
+    return parse_markdown_file(path, source_format="markdown")
+
+
+def _parse_badge_line(content: str) -> tuple[str, date | None]:
+    match = _BADGE_LINE.search(content)
+    if match is None:
+        return "", None
+    line = match.group(0).strip()
+    parts = [part.strip() for part in line.split("·") if part.strip()]
+    topic = ""
+    published: date | None = None
+    if synced := _BADGE_SYNCED_DATE.search(line):
+        try:
+            published = date.fromisoformat(synced.group(1))
+        except ValueError:
+            published = None
+    else:
+        for segment in parts[1:]:
+            if published is None:
+                parsed = _parse_badge_date(segment)
+                if parsed is not None:
+                    published = parsed
+                    continue
+            if not topic and not _BADGE_VERSION.fullmatch(segment) and segment.lower() not in {"quick", "default", "deep", "cached"}:
+                topic = segment
+    return topic, published
+
+
+def _parse_badge_date(text: str) -> date | None:
+    month_matches = list(_BADGE_MONTH_DAY_YEAR.finditer(text))
+    if month_matches:
+        m = month_matches[-1]
+        month_num = _BADGE_MONTHS.get(m.group(1).lower()[:4]) or _BADGE_MONTHS.get(m.group(1).lower()[:3])
+        if month_num:
+            try:
+                return date(int(m.group(3)), month_num, int(m.group(2)))
+            except ValueError:
+                pass
+    iso_matches = list(_BADGE_ISO_DATE.finditer(text))
+    if iso_matches:
+        try:
+            return date.fromisoformat(iso_matches[-1].group(1))
+        except ValueError:
+            pass
+    return None
+
+
+def _brief_prose_paragraph(content: str) -> str:
+    in_fence = False
+    para: list[str] = []
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            if para:
+                break
+            continue
+        if in_fence:
+            continue
+        if not stripped:
+            if para:
+                break
+            continue
+        if (
+            stripped.startswith("🌐 last30days")
+            or stripped.startswith("#")
+            or stripped.startswith("---")
+            or stripped.startswith("|")
+            or re.match(r"^\*\*KEY PATTERNS", stripped, re.IGNORECASE)
+            or re.match(r"^KEY PATTERNS", stripped, re.IGNORECASE)
+        ):
+            if para:
+                break
+            continue
+        para.append(stripped.rstrip("\\"))
+    return _clean_inline(" ".join(para))
+
+
+def _brief_prose_headline(content: str) -> str:
+    text = _brief_prose_paragraph(content)
+    if not text:
+        return ""
+    sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+    return sentence[:140]
+
+
+def _brief_prose_summary(content: str) -> str:
+    text = _brief_prose_paragraph(content)
+    return text[:500] if text else ""
 
 
 def _markdown_date(content: str, path: Path) -> date:
