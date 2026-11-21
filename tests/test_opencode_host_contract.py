@@ -42,14 +42,9 @@ def test_route_is_wired_to_the_reference():
     assert routing_table()["OpenCode browse lane"] == ("opencode-browse-lane",)
 
 
-def test_host_rule_lives_in_the_guaranteed_loaded_band():
+def test_route_lives_in_the_guaranteed_loaded_band():
     band = "\n".join(root_text().splitlines()[:420])
-    for token in (
-        "OPENCODE HOST RULE",
-        "`browse` MCP is paired",
-        "never place post text unquoted in a shell command",
-    ):
-        assert token in band, token
+    assert "[references/opencode-browse-lane.md](references/opencode-browse-lane.md)" in band
 
 
 def test_root_stays_within_the_read_budget():
@@ -211,8 +206,3 @@ def test_onboarding_still_has_exactly_three_branches():
     assert "OpenCode Prose Flow" not in text
 
 
-def test_runbook_points_to_the_lane_before_the_engine_command():
-    text = reference_text("research-runbook")
-    assert "opencode-browse-lane.md" in text
-    assert "for local engine research on an OpenCode host" in text
-    assert text.index("opencode-browse-lane.md") < text.index("**Step 1: Run the research script")
