@@ -249,13 +249,25 @@ def _fallback_find_profile(
     return None
 
 
+class CookieReadError(Exception):
+    """A browser cookie database exists but could not be read.
+
+    Distinct from "no matching cookies" so callers do not tell a logged-in
+    user to log in when the real problem is the read itself.
+    """
+
+
 def _query_cookies_db(
-    db_path: Path, domain: str, cookie_names: List[str]
+    db_path: Path,
+    domain: str,
+    cookie_names: List[str],
+    failures: Optional[List[Exception]] = None,
 ) -> Optional[Dict[str, str]]:
     """Snapshot the cookies database to a temp file and query it.
 
     The snapshot includes committed WAL updates while Firefox is running.
-    Returns {name: value} dict or None if no matching cookies found.
+    Returns {name: value} dict or None if no matching cookies found. A read
+    that fails outright also returns None; pass ``failures`` to collect it.
     """
     if not path_is_file(db_path):
         return None
@@ -294,9 +306,13 @@ def _query_cookies_db(
         if exc.filename == str(db_path):
             raise
         logger.debug("Failed to query cookies database %s: %s", db_path, exc)
+        if failures is not None:
+            failures.append(exc)
         return None
     except (sqlite3.Error, OSError) as exc:
         logger.debug("Failed to query cookies database %s: %s", db_path, exc)
+        if failures is not None:
+            failures.append(exc)
         return None
     finally:
         if tmp_path:
@@ -320,14 +336,20 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
     where the user is logged into x.com on a non-default profile.
     A complete match (all ``cookie_names``) always wins: a partial
     default-profile result is kept only as a fallback.
+
+    Raises CookieReadError when nothing matched and a profile's cookie
+    database could not be read, since "no cookies" would then be a guess.
     """
     denials: list[PermissionError] = []
+    failures: List[Exception] = []
     default_profile = _find_default_profile(profiles_dir, denials)
     profiles_tried = 0
     fallback: Optional[Dict[str, str]] = None
     if default_profile is not None:
         try:
-            result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
+            result = _query_cookies_db(
+                default_profile / "cookies.sqlite", domain, cookie_names, failures
+            )
         except PermissionError as exc:
             denials.append(exc)
             result = None
@@ -346,7 +368,7 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
                     continue
                 db = child / "cookies.sqlite"
                 if path_is_file(db):
-                    result = _query_cookies_db(db, domain, cookie_names)
+                    result = _query_cookies_db(db, domain, cookie_names, failures)
                     if result is not None:
                         if has_complete_pair(result, cookie_names):
                             return result
@@ -363,6 +385,10 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
         raise denials[0]
     if fallback is not None:
         return fallback
+    if failures:
+        raise CookieReadError(
+            f"Could not read {len(failures)} Firefox cookie database(s) in {profiles_dir}"
+        ) from failures[0]
     logger.debug("No matching cookies found in %d Firefox profile(s)", profiles_tried)
     return None
 
@@ -386,44 +412,8 @@ def extract_firefox_cookies(
     Returns:
         Dict of {cookie_name: cookie_value} or None if extraction fails.
     """
-    denied = None
-    try:
-        profiles_dir = _get_firefox_profiles_dir()
-    except PermissionError as exc:
-        denied = exc
-        profiles_dir = None
-    if profiles_dir is not None:
-        try:
-            result = _try_firefox_dir(profiles_dir, domain, cookie_names)
-        except PermissionError as exc:
-            denied = exc
-            result = None
-        if result is not None:
-            return result
-
-    if platform.system() == "Linux" and _is_wsl():
-        try:
-            wsl_dir = _get_wsl_firefox_profiles_dir()
-        except PermissionError as exc:
-            if denied is None:
-                denied = exc
-            wsl_dir = None
-        if wsl_dir is not None:
-            logger.debug("Trying Windows Firefox via WSL: %s", wsl_dir)
-            try:
-                result = _try_firefox_dir(wsl_dir, domain, cookie_names)
-            except PermissionError as exc:
-                if denied is None:
-                    denied = exc
-                result = None
-            if result is not None:
-                return result
-
-    if denied is not None:
-        raise denied
-    if profiles_dir is None:
-        logger.debug("Firefox profiles directory not found")
-    return None
+    result = _extract_firefox_with_source(domain, cookie_names)
+    return result[0] if result is not None else None
 
 
 def extract_chrome_cookies(
@@ -581,8 +571,12 @@ def _extract_firefox_with_source(
 
     Returns (cookies, "firefox") for native Linux/macOS Firefox, or
     (cookies, "firefox-wsl") for Windows Firefox accessed via WSL2.
+
+    Raises PermissionError when a profile was denied, else CookieReadError
+    when nothing matched and a cookie database could not be read.
     """
     denied = None
+    read_error = None
     try:
         profiles_dir = _get_firefox_profiles_dir()
     except PermissionError as exc:
@@ -593,6 +587,9 @@ def _extract_firefox_with_source(
             result = _try_firefox_dir(profiles_dir, domain, cookie_names)
         except PermissionError as exc:
             denied = exc
+            result = None
+        except CookieReadError as exc:
+            read_error = exc
             result = None
         if result is not None:
             return (result, "firefox")
@@ -612,11 +609,19 @@ def _extract_firefox_with_source(
                 if denied is None:
                     denied = exc
                 result = None
+            except CookieReadError as exc:
+                if read_error is None:
+                    read_error = exc
+                result = None
             if result is not None:
                 return (result, "firefox-wsl")
 
     if denied is not None:
         raise denied
+    if read_error is not None:
+        raise read_error
+    if profiles_dir is None:
+        logger.debug("Firefox profiles directory not found")
     return None
 
 
@@ -674,9 +679,14 @@ def extract_cookies_with_source(
     else:
         order = ["firefox"]
 
+    read_error = None
     for name in order:
         if name == "firefox":
-            result = _extract_firefox_with_source(domain, cookie_names)
+            try:
+                result = _extract_firefox_with_source(domain, cookie_names)
+            except CookieReadError as exc:
+                read_error = exc
+                continue
             if result is not None:
                 return result
         else:
@@ -684,4 +694,6 @@ def extract_cookies_with_source(
             if result is not None:
                 return (result, name)
 
+    if read_error is not None:
+        raise read_error
     return None

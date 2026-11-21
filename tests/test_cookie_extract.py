@@ -768,3 +768,156 @@ class TestHasCompletePair:
             {"auth_token": "a", "ct0": "c", "other": "o"},
             ["auth_token", "ct0"],
         ) is True
+
+
+# --- #1547: WSL drvfs snapshot fallback and read-failure status ---
+
+
+def _make_wal_cookie_db(path: Path) -> sqlite3.Connection:
+    """A live WAL cookie DB whose newest committed row lives only in the WAL."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    conn.execute("CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT)")
+    conn.execute(
+        "INSERT INTO moz_cookies VALUES (?, ?, ?)",
+        ("reddit_session", "dummy-old-session", ".reddit.com"),
+    )
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("UPDATE moz_cookies SET value = ?", ("dummy-wal-session",))
+    conn.commit()
+    return conn
+
+
+def _fail_in_place_backup(real_backup):
+    """Make the read-only in-place backup fail the way drvfs does."""
+
+    def backup(reader_uri, destination, deadline):
+        if reader_uri.endswith("?mode=ro"):
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_backup(reader_uri, destination, deadline)
+
+    return backup
+
+
+def test_snapshot_falls_back_to_private_local_copy_on_drvfs_io_error(tmp_path, monkeypatch):
+    from lib import sqlite_snapshot
+
+    db = tmp_path / "cookies.sqlite"
+    private = tmp_path / "private"
+    private.mkdir()
+    made = []
+    real_mkdtemp = sqlite_snapshot.tempfile.mkdtemp
+
+    def tracked_mkdtemp(**kwargs):
+        made.append(Path(real_mkdtemp(dir=private, **kwargs)))
+        return str(made[-1])
+
+    monkeypatch.setattr(sqlite_snapshot.tempfile, "mkdtemp", tracked_mkdtemp)
+    monkeypatch.setattr(sqlite_snapshot, "_backup", _fail_in_place_backup(sqlite_snapshot._backup))
+    conn = _make_wal_cookie_db(db)
+    try:
+        wal = db.with_name(db.name + "-wal")
+        before_db, before_wal = db.read_bytes(), wal.read_bytes()
+
+        result = _query_cookies_db(db, ".reddit.com", ["reddit_session"])
+
+        assert result == {"reddit_session": "dummy-wal-session"}
+        assert len(made) == 1
+        assert list(private.iterdir()) == []
+        assert db.read_bytes() == before_db
+        assert wal.read_bytes() == before_wal
+    finally:
+        conn.close()
+
+
+def test_snapshot_timeout_does_not_fall_back_to_file_copy(tmp_path, monkeypatch):
+    from lib import sqlite_snapshot
+
+    db = tmp_path / "cookies.sqlite"
+    sqlite3.connect(db).close()
+
+    def timed_out(*_args):
+        raise sqlite_snapshot.SnapshotTimeout("Timed out taking browser database snapshot")
+
+    monkeypatch.setattr(sqlite_snapshot, "_backup", timed_out)
+    monkeypatch.setattr(
+        sqlite_snapshot, "_backup_from_local_copy",
+        lambda *_args: pytest.fail("timeout must not fall back"),
+    )
+    with pytest.raises(sqlite_snapshot.SnapshotTimeout):
+        sqlite_snapshot.copy_snapshot(db, str(tmp_path / "copy.sqlite"))
+
+
+def test_reddit_session_found_through_snapshot_fallback(mock_firefox_env, monkeypatch):
+    from lib import sqlite_snapshot
+
+    profiles_dir = mock_firefox_env(
+        profiles={"abc123.default-release": [(".reddit.com", "reddit_session", "dummy-session")]}
+    )
+    monkeypatch.setattr(sqlite_snapshot, "_backup", _fail_in_place_backup(sqlite_snapshot._backup))
+    with patch(
+        "lib.cookie_extract._get_firefox_profiles_dir", return_value=profiles_dir
+    ), patch("lib.cookie_extract._is_wsl", return_value=False):
+        assert env.read_reddit_session_cookie({}, "firefox") == ("dummy-session", "ok")
+
+
+def test_unreadable_cookie_db_reports_error_not_logged_in(mock_firefox_env):
+    profiles_dir = mock_firefox_env(
+        profiles={"abc123.default-release": [(".reddit.com", "reddit_session", "dummy-session")]}
+    )
+    with patch(
+        "lib.cookie_extract._get_firefox_profiles_dir", return_value=profiles_dir
+    ), patch("lib.cookie_extract._is_wsl", return_value=False), patch(
+        "lib.cookie_extract.copy_snapshot",
+        side_effect=sqlite3.OperationalError("disk I/O error"),
+    ):
+        with pytest.raises(cookie_extract.CookieReadError):
+            extract_firefox_cookies(".reddit.com", ["reddit_session"])
+        assert env.read_reddit_session_cookie({}, "firefox") == (None, "error")
+
+
+def test_wsl_unreadable_windows_firefox_reports_error(mock_firefox_env):
+    """Native Linux Firefox absent; Windows Firefox over drvfs cannot be read."""
+    profiles_dir = mock_firefox_env(
+        profiles={"abc123.default-release": [(".reddit.com", "reddit_session", "dummy-session")]}
+    )
+    with patch(
+        "lib.cookie_extract._get_firefox_profiles_dir", return_value=None
+    ), patch("lib.cookie_extract.platform.system", return_value="Linux"), patch(
+        "lib.cookie_extract._is_wsl", return_value=True
+    ), patch(
+        "lib.cookie_extract._get_wsl_firefox_profiles_dir", return_value=profiles_dir
+    ), patch(
+        "lib.cookie_extract.copy_snapshot",
+        side_effect=sqlite3.OperationalError("disk I/O error"),
+    ):
+        assert env.read_reddit_session_cookie({}, "firefox") == (None, "error")
+
+
+def test_one_unreadable_profile_does_not_hide_a_readable_match(mock_firefox_env):
+    profiles_dir = mock_firefox_env(
+        profiles={
+            "abc123.default-release": [(".x.com", "auth_token", "dummy-default")],
+            "zzz999.other": [
+                (".x.com", "auth_token", "dummy-token"),
+                (".x.com", "ct0", "dummy-ct0"),
+            ],
+        }
+    )
+    real_snapshot = cookie_extract.copy_snapshot
+
+    def flaky(source, destination):
+        if "abc123" in str(source):
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_snapshot(source, destination)
+
+    with patch(
+        "lib.cookie_extract._get_firefox_profiles_dir", return_value=profiles_dir
+    ), patch("lib.cookie_extract._is_wsl", return_value=False), patch(
+        "lib.cookie_extract.copy_snapshot", side_effect=flaky
+    ):
+        assert extract_firefox_cookies(".x.com", ["auth_token", "ct0"]) == {
+            "auth_token": "dummy-token", "ct0": "dummy-ct0",
+        }
