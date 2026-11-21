@@ -40,9 +40,10 @@ _HASHTAG_RE = re.compile(r"#(\w+)")
 
 _DEPTH_URLS = {"quick": 8, "default": 12, "deep": 20}
 _ENRICH_TIMEOUT = 180
-# Extraction runs in batches of this many URLs, this many batches at a time.
-_ENRICH_BATCH = 4
-_ENRICH_WORKERS = 3
+# Extraction runs one yt-dlp per post (this many at a time), so a stalled
+# post loses only itself.
+_ENRICH_BATCH = 1
+_ENRICH_WORKERS = 4
 
 # TikTok creator expansion: (creators listed, videos listed per creator).
 _DEPTH_CREATORS = {"quick": (3, 5), "default": (5, 8), "deep": (8, 12)}
@@ -83,20 +84,25 @@ def _bounded_timeout(base: float, deadline: float | None) -> float:
     return max(1.0, min(base, deadline - time.monotonic()))
 
 
-# Relative filters (past month) only match a window that ends about today.
+# Relative filters ("past month") fit only a window that ends about today
+# and spans no more than a month.
 _RELATIVE_FRESHNESS_SLACK_DAYS = 2
+_RELATIVE_FRESHNESS_MAX_DAYS = 31
 
 
-def _window_is_current(to_date: str | None) -> bool:
-    """True when the window ends near today, so "past month" filters fit it."""
+def _window_is_current(from_date: str | None, to_date: str | None) -> bool:
+    """True when "past month" from today covers the whole window."""
     if not to_date:
         return True
+    today = datetime.now(timezone.utc).date()
     try:
         end = date.fromisoformat(to_date)
+        start = date.fromisoformat(from_date) if from_date else end
     except ValueError:
         return True
-    today = datetime.now(timezone.utc).date()
-    return end >= today - timedelta(days=_RELATIVE_FRESHNESS_SLACK_DAYS)
+    if end < today - timedelta(days=_RELATIVE_FRESHNESS_SLACK_DAYS):
+        return False
+    return (today - start).days <= _RELATIVE_FRESHNESS_MAX_DAYS
 
 
 def _freshness_on(backend: str, config: Dict[str, Any] | None = None) -> bool:
@@ -281,11 +287,12 @@ def discover_urls(
 
     ``from_date``/``to_date`` bound Exa's published-date filter. The relative
     "past month" filters (SearXNG, Serper, Brave) count back from today, so
-    they are sent only when the window ends about today; a historical window
-    (``--as-of``) relies on the id-date filter instead.
+    they are sent only when the window ends about today and spans at most a
+    month; a historical (``--as-of``) or longer window relies on the id-date
+    filter instead.
     """
     urls: List[str] = []
-    current = _window_is_current(to_date)
+    current = _window_is_current(from_date, to_date)
 
     def relative(backend: str) -> bool:
         return current and _freshness_on(backend, config)
@@ -402,6 +409,7 @@ def creator_urls(
     count: int,
     deadline: float | None = None,
     *,
+    cancel: threading.Event | None = None,
     topic: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
@@ -416,7 +424,7 @@ def creator_urls(
     creator's month is represented by what people actually watched. All of
     this runs before hydration.
     """
-    if kind != "tiktok" or not handle:
+    if kind != "tiktok" or not handle or _stopped(deadline, cancel):
         return []
     handle = handle.lstrip("@").strip()
     if not handle:
@@ -436,7 +444,10 @@ def creator_urls(
     # LAST30DAYS_YOUTUBE_SSH_HOST is set (proxy flag folds in too).
     cmd = youtube_yt.wrap_ytdlp_cmd(cmd)
     try:
-        result = subproc.run_with_timeout(cmd, timeout=_bounded_timeout(60.0, deadline))
+        result = subproc.run_with_timeout(
+            cmd, timeout=_bounded_timeout(60.0, deadline),
+            deadline_monotonic=deadline, cancel=cancel,
+        )
     except (subproc.SubprocTimeout, FileNotFoundError, OSError) as e:
         _log(kind, f"creator list @{handle} failed: {e}")
         return []
@@ -574,8 +585,8 @@ def enrich_urls(
 ) -> List[Dict[str, Any]]:
     """yt-dlp --dump-json over a URL list. Never raises; stops at deadline/cancel.
 
-    URLs run in small batches, a few at a time, so a timeout or cancel loses
-    only the unfinished batches: posts already read are kept.
+    Each URL runs in its own yt-dlp, a few at a time, so a timeout or cancel
+    loses only the posts still running: posts already read are kept.
     """
     if not urls or _stopped(deadline, cancel):
         return []
@@ -665,7 +676,7 @@ def search(
         for handle in creators:
             if _stopped(deadline, cancel):
                 return {"items": [], "error": "research deadline passed before OSS discovery"}
-            for u in creator_urls(kind, handle, per, deadline=deadline, **window):
+            for u in creator_urls(kind, handle, per, deadline=deadline, cancel=cancel, **window):
                 if u not in urls:
                     urls.append(u)
 
@@ -701,7 +712,7 @@ def search(
             if _stopped(deadline, cancel) or len(urls) >= limit:
                 break
             for u in creator_urls(
-                kind, handle, per_creator, deadline=deadline, topic=topic, **window,
+                kind, handle, per_creator, deadline=deadline, cancel=cancel, topic=topic, **window,
             ):
                 if u not in urls:
                     urls.append(u)

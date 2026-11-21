@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -370,7 +370,7 @@ class TestHistoricalWindow:
 
     OLD_FROM, OLD_TO = "2024-02-01", "2024-03-01"
 
-    def _discover(self, cfg, to_date):
+    def _discover(self, cfg, to_date, from_date=None):
         seen = {}
 
         def fake_request(method, url, **kw):
@@ -387,7 +387,7 @@ class TestHistoricalWindow:
             os.environ.pop("LAST30DAYS_SHORTFORM_FRESHNESS", None)
             shortform_oss.discover_urls(
                 "tiktok", "topic", {**cfg, **NATIVE}, 5,
-                from_date=self.OLD_FROM, to_date=to_date,
+                from_date=from_date or self.OLD_FROM, to_date=to_date,
             )
         return seen
 
@@ -406,11 +406,30 @@ class TestHistoricalWindow:
         assert body["startPublishedDate"].startswith(self.OLD_FROM)
         assert body["endPublishedDate"].startswith(self.OLD_TO)
 
+    def test_a_window_longer_than_a_month_drops_relative_filters(self):
+        today = datetime.now(timezone.utc).date()
+        seen = {}
+
+        def fake_request(method, url, **kw):
+            seen.setdefault("request", []).append(kw)
+            return {}
+
+        with mock.patch("lib.http.request", side_effect=fake_request), \
+             mock.patch.dict(os.environ, {}):
+            os.environ.pop("LAST30DAYS_SHORTFORM_FRESHNESS", None)
+            shortform_oss.discover_urls(
+                "tiktok", "topic", {"SERPER_API_KEY": "sp", **NATIVE}, 5,
+                from_date=(today - timedelta(days=90)).isoformat(),
+                to_date=today.isoformat(),
+            )
+        assert "tbs" not in seen["request"][0]["json_data"]
+
     def test_a_window_ending_today_keeps_relative_filters(self):
-        today = datetime.now(timezone.utc).date().isoformat()
-        serper = self._discover({"SERPER_API_KEY": "sp"}, today)
+        now = datetime.now(timezone.utc).date()
+        today, start = now.isoformat(), (now - timedelta(days=20)).isoformat()
+        serper = self._discover({"SERPER_API_KEY": "sp"}, today, start)
         assert serper["request"][0][2]["json_data"]["tbs"] == "qdr:m"
-        exa = self._discover({"EXA_API_KEY": "ex"}, today)
+        exa = self._discover({"EXA_API_KEY": "ex"}, today, start)
         assert "endPublishedDate" not in exa["request"][0][2]["json_data"]
 
 
@@ -450,3 +469,25 @@ class TestBatchedExtraction:
             )
         assert seen[0]["cancel"] is cancel
         assert seen[0]["deadline_monotonic"] == 10**12
+
+
+def test_creator_listing_passes_cancel_and_deadline_to_the_subprocess():
+    seen = []
+    cancel = threading.Event()
+
+    def fake_run(cmd, timeout=None, input_text=None, **kw):
+        seen.append(kw)
+        return SimpleNamespace(stdout="")
+
+    with mock.patch("lib.subproc.run_with_timeout", side_effect=fake_run):
+        shortform_oss.creator_urls("tiktok", "creator", 3, deadline=10**12, cancel=cancel)
+    assert seen[0]["cancel"] is cancel
+    assert seen[0]["deadline_monotonic"] == 10**12
+
+
+def test_creator_listing_skips_once_cancelled():
+    cancel = threading.Event()
+    cancel.set()
+    with mock.patch("lib.subproc.run_with_timeout") as run:
+        assert shortform_oss.creator_urls("tiktok", "creator", 3, cancel=cancel) == []
+    run.assert_not_called()
