@@ -686,15 +686,19 @@ def _fetch_public_comments(
         return []
     _check_budget(deadline, cancel)
     try:
-        data = http.get(
-            _PUBLIC_COMMENTS_URL,
-            params={"aweme_id": m.group(1), "count": 20, "cursor": 0, "aid": 1988},
-            headers={"User-Agent": http.BROWSER_USER_AGENT, "Referer": "https://www.tiktok.com/"},
-            timeout=10,
-            retries=1,
-            deadline_monotonic=deadline,
-            cancel=cancel,
-        )
+        # Optional and backed up by ScrapeCreators: a failure here is logged,
+        # never recorded as the run's own, so a recovered stream stays
+        # cacheable and is not refetched (paid calls included) by later streams.
+        with http.capture_failures():
+            data = http.get(
+                _PUBLIC_COMMENTS_URL,
+                params={"aweme_id": m.group(1), "count": 20, "cursor": 0, "aid": 1988},
+                headers={"User-Agent": http.BROWSER_USER_AGENT, "Referer": "https://www.tiktok.com/"},
+                timeout=10,
+                retries=1,
+                deadline_monotonic=deadline,
+                cancel=cancel,
+            )
     except http.DeadlineExceeded:
         raise
     except Exception as exc:

@@ -2854,6 +2854,20 @@ class TestTikTokPublicComments:
         last = comments.call_args_list[1].kwargs
         assert last["token"] == "test-key" and "public" not in last
 
+    def test_a_stalled_public_endpoint_still_leaves_time_for_scrapecreators(self):
+        from lib import http as lib_http
+
+        def stall_public(items, *a, **kwargs):
+            if kwargs.get("public"):
+                raise lib_http.DeadlineExceeded()
+            return _attach_comments(items)
+
+        comments = self._run(dict(_MEMO_SC_CONFIG), side_effect=stall_public)
+        assert comments.call_count == 2
+        public, paid = comments.call_args_list
+        assert public.kwargs["deadline"] <= paid.kwargs["deadline"] - pipeline.SC_COMMENT_RESERVE_SECONDS
+        assert paid.kwargs["token"] == "test-key"
+
     def test_switch_off_goes_straight_to_scrapecreators(self):
         comments = self._run({**_MEMO_SC_CONFIG, "LAST30DAYS_TIKTOK_PUBLIC_COMMENTS": "off"})
         assert comments.call_count == 1

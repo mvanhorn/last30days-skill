@@ -6577,6 +6577,10 @@ def _detail_rate_limits_source(source: str, artifact: dict) -> bool:
 # TikTok videos per run that get comments from the free public endpoint (the
 # lane keeps about this many; ScrapeCreators comments cover three).
 PUBLIC_COMMENT_POSTS = 12
+# Most of the stream deadline the public attempt may use, and what it always
+# leaves for the ScrapeCreators fallback.
+PUBLIC_COMMENT_BUDGET_SECONDS = 15.0
+SC_COMMENT_RESERVE_SECONDS = 10.0
 
 
 def _comment_candidates(
@@ -7692,17 +7696,30 @@ def _retrieve_stream_impl(
                 sc_token = config.get("SCRAPECREATORS_API_KEY", "")
                 try:
                     public_got = 0
-                    if env.is_tiktok_public_comments_on(config):
+                    # The public attempt gets its own short budget and always
+                    # leaves the fallback time, so a stalled endpoint cannot
+                    # use up the deadline ScrapeCreators would answer within.
+                    public_deadline = min(
+                        time.monotonic() + PUBLIC_COMMENT_BUDGET_SECONDS,
+                        deadline - SC_COMMENT_RESERVE_SECONDS,
+                    )
+                    if env.is_tiktok_public_comments_on(config) and public_deadline > time.monotonic():
                         # Free and keyless, so every kept-sized slate of videos
                         # gets comments, not just the three ScrapeCreators pays for.
                         slate = _comment_candidates(
                             items, from_date, to_date, tiktok_creators,
                             want=PUBLIC_COMMENT_POSTS, topic=tiktok_query,
                         )
-                        tiktok.enrich_with_comments(
-                            slate, token="", max_posts=PUBLIC_COMMENT_POSTS,
-                            deadline=deadline, cancel=cancel, public=True,
-                        )
+                        try:
+                            tiktok.enrich_with_comments(
+                                slate, token="", max_posts=PUBLIC_COMMENT_POSTS,
+                                deadline=public_deadline, cancel=cancel, public=True,
+                            )
+                        except http.DeadlineExceeded:
+                            # Only the public budget ran out: keep what came
+                            # back and let the fallback run on the real deadline.
+                            if (cancel is not None and cancel.is_set()) or time.monotonic() >= deadline:
+                                raise
                         public_got = sum(1 for item in slate if item.get("top_comments"))
                     if not public_got:
                         # Endpoint off, blocked or empty: ScrapeCreators as before.
