@@ -2754,41 +2754,61 @@ def _youtube_payload(*_args, **_kwargs):
     ]}
 
 
-def _with_stale_and_off_topic(payload_fn, url_for):
+def _with_stale_post(payload_fn, url_for):
     def payload(*_args, **_kwargs):
         data = payload_fn()
         kept = data["items"][0]
         data["items"] = [
             {**kept, "id": "old", "video_id": "old", "url": url_for("old"), "date": "2022-02-03",
              "engagement": {"views": 50_000_000}, "relevance": 0.9},
-            {**kept, "id": "off", "video_id": "off", "url": url_for("off"),
-             "engagement": {"views": 20_000_000}, "relevance": 0.0},
             kept,
         ]
         return data
     return payload
 
 
-class TestCommentsSpentOnKeptPosts:
-    """Paid comment calls go to posts that survive the window and topic filters."""
+def _post(pid, relevance=0.9, date="2026-09-20", author="dev"):
+    return {"id": pid, "date": date, "relevance": relevance, "author_name": author}
 
-    def test_tiktok_comments_skip_stale_and_off_topic_posts(self):
+
+class TestCommentsSpentOnKeptPosts:
+    """Paid comment calls go to posts the report can keep."""
+
+    RANGE = ("2026-09-11", "2026-10-11")
+
+    def _ids(self, items, creators=None):
+        return [i["id"] for i in pipeline._comment_candidates(items, *self.RANGE, creators)]
+
+    def test_tiktok_comments_skip_stale_posts(self):
         [subquery] = _memo_subqueries(["tiktok"], labels=("comments",))
-        payload = _with_stale_and_off_topic(
-            _tiktok_payload, lambda v: f"https://www.tiktok.com/@dev/video/{v}")
+        payload = _with_stale_post(_tiktok_payload, lambda v: f"https://www.tiktok.com/@dev/video/{v}")
         with patch("lib.tiktok.search_and_enrich", side_effect=payload), \
              patch("lib.tiktok.enrich_with_comments") as comments:
             _memo_stream("tiktok", subquery, dict(_MEMO_SC_CONFIG))
         assert [i["id"] for i in comments.call_args.args[0]] == ["t1"]
 
-    def test_instagram_comments_skip_stale_and_off_topic_posts(self):
+    def test_instagram_comments_skip_stale_posts(self):
         [subquery] = _memo_subqueries(["instagram"], labels=("comments",))
-        payload = _with_stale_and_off_topic(
-            _instagram_payload, lambda v: f"https://www.instagram.com/reel/{v}/")
+        payload = _with_stale_post(_instagram_payload, lambda v: f"https://www.instagram.com/reel/{v}/")
         with patch("lib.instagram.search_and_enrich", side_effect=payload), \
              patch("lib.instagram.enrich_with_comments") as comments:
             _memo_stream("instagram", subquery, dict(_MEMO_SC_CONFIG))
         assert [i["id"] for i in comments.call_args.args[0]] == ["i1"]
+
+    def test_off_topic_posts_wait_behind_enough_on_topic_ones(self):
+        items = [_post("off", relevance=0.0), _post("a"), _post("b"), _post("c"),
+                 _post("undated", date="")]
+        assert self._ids(items) == ["a", "b", "c", "undated"]
+
+    def test_off_topic_posts_are_offered_when_on_topic_ones_are_scarce(self):
+        # The early score misses spoken-caption matches the report may still keep.
+        items = [_post("off", relevance=0.0), _post("a"), _post("stale", date="2022-02-03")]
+        assert self._ids(items) == ["off", "a"]
+
+    def test_requested_creator_posts_count_as_on_topic(self):
+        items = [_post("mine", relevance=0.0, author="@Traveler"), _post("other", relevance=0.0),
+                 _post("a"), _post("b")]
+        assert self._ids(items, creators=["traveler"]) == ["mine", "a", "b"]
 
 
 class TestSourceFetchMemo:
