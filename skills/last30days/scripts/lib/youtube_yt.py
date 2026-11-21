@@ -2060,6 +2060,13 @@ def parse_youtube_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 SCRAPECREATORS_YT_BASE = "https://api.scrapecreators.com/v1/youtube"
 
 
+def _sc_yt_base() -> str:
+    if SCRAPECREATORS_YT_BASE != "https://api.scrapecreators.com/v1/youtube":
+        return SCRAPECREATORS_YT_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/youtube"
+
+
 def _total_engagement(item: Dict[str, Any]) -> int:
     """Combined engagement score for ranking which videos to enrich."""
     eng = item.get("engagement", {})
@@ -2244,7 +2251,7 @@ def _fetch_video_comments(
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         data = http.get(
-            f"{SCRAPECREATORS_YT_BASE}/video/comments",
+            f"{_sc_yt_base()}/video/comments",
             params={"url": video_url},
             headers=http.scrapecreators_headers(token),
             timeout=30,
@@ -2475,7 +2482,7 @@ def _sc_youtube_search(keyword: str, token: str) -> List[Dict[str, Any]]:
         # parameter for that endpoint is `query`. Other SC endpoints use their
         # own per-endpoint param names so this was the lone outlier.
         data = http.get(
-            f"{SCRAPECREATORS_YT_BASE}/search",
+            f"{_sc_yt_base()}/search",
             params={"query": keyword},
             headers=http.scrapecreators_headers(token),
             timeout=30,
@@ -2544,7 +2551,7 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
             # capture_failures() context.
             with http.capture_failures() as _tf:
                 data = http.get(
-                    f"{SCRAPECREATORS_YT_BASE}/video/transcript",
+                    f"{_sc_yt_base()}/video/transcript",
                     params={"url": video_url, "language": language},
                     headers=http.scrapecreators_headers(token),
                     timeout=_SC_TRANSCRIPT_TIMEOUT,

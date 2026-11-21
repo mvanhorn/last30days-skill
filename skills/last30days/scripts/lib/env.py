@@ -677,6 +677,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('XAI_BASE_URL', None),
         ('OPENROUTER_BASE_URL', None),
         ('SCRAPECREATORS_API_KEY', None),
+        ('SCRAPECREATORS_BASE_URL', None),
         ('APIFY_API_TOKEN', None),
         ('AUTH_TOKEN', None),
         ('CT0', None),
@@ -840,6 +841,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         'LAST30DAYS_REDDIT_KEYLESS_RATE',
         'LAST30DAYS_YT_PLAYER_CLIENT',
         'LAST30DAYS_JOBS_RESPECT_ROBOTS',
+        'SCRAPECREATORS_BASE_URL',
     ):
         value = config.get(key)
         # Empty LAST30DAYS_YT_PLAYER_CLIENT is a valid disable; other knobs
@@ -859,6 +861,11 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         legacy = read_secret_env('SCRAPE_CREATORS_API_KEY') or merged_env.get('SCRAPE_CREATORS_API_KEY')
         if legacy:
             config['SCRAPECREATORS_API_KEY'] = legacy
+
+    if not config.get('SCRAPECREATORS_BASE_URL'):
+        legacy_base = os.environ.get('SCRAPE_CREATORS_BASE_URL') or merged_env.get('SCRAPE_CREATORS_BASE_URL')
+        if legacy_base:
+            config['SCRAPECREATORS_BASE_URL'] = legacy_base
 
     # Multi-key rotation: comma-separated SCRAPECREATORS_API_KEY round-robins
     # via random.choice per run. Originally added in #268, accidentally dropped
@@ -2221,6 +2228,40 @@ def is_instagram_available(config: dict[str, Any]) -> bool:
 def get_instagram_token(config: dict[str, Any]) -> str:
     """Get Instagram API token (same ScrapeCreators key as TikTok)."""
     return config.get('SCRAPECREATORS_API_KEY') or ''
+
+
+DEFAULT_SCRAPECREATORS_BASE_URL = "https://api.scrapecreators.com"
+SCRAPECREATORS_BASE_URL = DEFAULT_SCRAPECREATORS_BASE_URL
+
+
+def get_scrapecreators_base_url(config: dict[str, Any] | None = None) -> str:
+    """Get ScrapeCreators API base URL.
+
+    Defaults to https://api.scrapecreators.com. Can be overridden via
+    SCRAPECREATORS_BASE_URL (or SCRAPE_CREATORS_BASE_URL) in environment
+    or config to point at a local mock server, caching proxy, or
+    compatible alternative provider.
+
+    Remote overrides must be https:// (http:// is allowed only on loopback)
+    to protect API keys from cleartext transmission. Trailing slashes are stripped.
+    """
+    raw = None
+    if config:
+        raw = config.get("SCRAPECREATORS_BASE_URL") or config.get("SCRAPE_CREATORS_BASE_URL")
+    if not raw:
+        raw = os.environ.get("SCRAPECREATORS_BASE_URL") or os.environ.get("SCRAPE_CREATORS_BASE_URL")
+    if raw and str(raw).strip():
+        val = str(raw).strip().rstrip("/")
+        from . import providers
+        if providers.allowed_base_url_override(val):
+            return val
+        sys.stderr.write(
+            f"[last30days] WARNING: ignoring SCRAPECREATORS_BASE_URL - a provider endpoint override "
+            "must be https:// (http:// is allowed only on localhost), otherwise the API "
+            f"key would be sent in cleartext. Using {DEFAULT_SCRAPECREATORS_BASE_URL} instead.\n"
+        )
+        sys.stderr.flush()
+    return DEFAULT_SCRAPECREATORS_BASE_URL
 
 
 def get_xiaohongshu_api_base(config: dict[str, Any]) -> str:
