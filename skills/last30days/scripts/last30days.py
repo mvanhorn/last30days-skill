@@ -1008,6 +1008,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-results", dest="max_results", type=int,
                         help="Override the final ranked-pool cap (pool_limit/rerank_limit) from the depth profile. "
                              "Use for high-volume topics where the default (deep=60) under-covers. See issue #716.")
+    parser.add_argument(
+        "--source",
+        dest="harvest_source",
+        default=None,
+        help="Transcript source for 'library harvest' (auto, all, claude, codex, antigravity, gemini, cursor)",
+    )
+    parser.add_argument(
+        "--since",
+        dest="harvest_since",
+        default=None,
+        help="Only harvest finished briefs on or after YYYY-MM-DD (for 'library harvest')",
+    )
+    parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Preview 'library harvest' without writing files",
+    )
     parser.add_argument("--max-per-source", dest="max_per_source", type=int,
                         help="Override the per-stream cap (per_stream_limit) applied to each (source, subquery) before "
                              "pooling. Raising it increases unique-item yield when one source has many relevant items. "
@@ -3849,6 +3867,7 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
     reuse_browser_consent = normalized_topic == "setup" and USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv
     is_library_command = (
         normalized_topic == "library feed"
+        or normalized_topic == "library harvest"
         or normalized_topic == "library search"
         or normalized_topic.startswith("library search ")
     )
@@ -4111,6 +4130,78 @@ def _run_library_search(
     return 0
 
 
+def _run_library_harvest(
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> int:
+    """Scan local agent transcripts offline and archive finished briefs."""
+    from lib import brief_capture, library, library_index, transcript_harvest
+
+    if args.publish or args.publish_html:
+        sys.stderr.write("[last30days] library harvest does not publish output.\n")
+        return 2
+    if args.output:
+        sys.stderr.write(
+            "[last30days] library harvest writes into <save_dir>/finished/; "
+            "--output is not supported.\n"
+        )
+        return 2
+
+    since_date = None
+    if args.harvest_since is not None:
+        try:
+            since_date = datetime.date.fromisoformat(args.harvest_since.strip())
+        except ValueError:
+            sys.stderr.write(
+                f"[last30days] invalid --since date '{args.harvest_since}'; expected YYYY-MM-DD.\n"
+            )
+            return 2
+
+    if args.save_dir == "":
+        sys.stderr.write(
+            "[last30days] saving is disabled (--save-dir / LAST30DAYS_MEMORY_DIR is empty); "
+            "pass --save-dir <dir> to run library harvest.\n"
+        )
+        return 2
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+
+    try:
+        result = transcript_harvest.harvest_transcripts(
+            save_dir=memory_dir,
+            source=args.harvest_source or "auto",
+            since=since_date,
+            dry_run=bool(args.dry_run),
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
+    if not args.dry_run and result.saved > 0:
+        try:
+            save_root = memory_dir.resolve()
+            db_path = library_index.saved_report_index_path(save_root)
+            if db_path == library_index.DEFAULT_LIBRARY_DB:
+                library_index.sync_library(save_root)
+            else:
+                library_index.sync_library(save_root, save_root / "briefings", db_path=db_path)
+        except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
+            pass
+
+    for note in result.notes:
+        sys.stderr.write(f"[last30days] Harvest note: {note}\n")
+
+    finished_dir = memory_dir.resolve() / brief_capture.FINISHED_SUBDIR
+    saved_label = "Would save" if result.dry_run else "Saved"
+    print(
+        f"Scanned files: {result.scanned_files}\n"
+        f"Matched briefs: {result.matched_briefs}\n"
+        f"{saved_label}: {result.saved}\n"
+        f"Duplicates: {result.duplicates}\n"
+        f"Destination: {finished_dir}"
+    )
+    return 0
+
+
 def _looks_like_entity_topic(topic: str) -> bool:
     """Whether a topic names a person, company, or product rather than a theme.
 
@@ -4358,6 +4449,15 @@ def _main(
             "[last30days] --publish is only supported by the 'library feed' command.\n"
         )
         return 2
+    if (
+        args.harvest_source is not None
+        or args.harvest_since is not None
+        or args.dry_run
+    ) and command_topic != "library harvest":
+        sys.stderr.write(
+            "[last30days] --source, --since, and --dry-run are only supported by the 'library harvest' command.\n"
+        )
+        return 2
     if command_topic == "setup":
         # Persisting a credential or managing local hook configs needs no
         # config load (no Keychain / pass probes, no cookie policy), so these
@@ -4514,6 +4614,8 @@ def _main(
 
     if command_topic == "library feed":
         return _run_library_feed(args, config)
+    if command_topic == "library harvest":
+        return _run_library_harvest(args, config)
     if command_topic == "library search" or command_topic.startswith("library search "):
         return _run_library_search(args, config, topic[len("library search") :].strip())
 
