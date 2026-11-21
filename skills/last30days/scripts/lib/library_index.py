@@ -16,7 +16,7 @@ from .private_files import prepare_private_sqlite_files
 
 DEFAULT_LIBRARY_DB = library.DEFAULT_BRIEFS_DIR.parent / "library.db"
 DEFAULT_STORE_DB = library.DEFAULT_BRIEFS_DIR.parent / "research.db"
-INDEX_FINGERPRINT_VERSION = "last30days-library-index/v2"
+INDEX_FINGERPRINT_VERSION = "last30days-library-index/v3"
 LIBRARY_CONTEXT_START = "<!-- last30days:library-context:start -->"
 LIBRARY_CONTEXT_END = "<!-- last30days:library-context:end -->"
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
@@ -123,6 +123,32 @@ def sync_library(
             raise
         _remove_database(target)
         return replace(_sync_library(memory_dir, briefs_dir, target), rebuilt=True)
+
+
+def index_entry(
+    path: Path | str,
+    *,
+    db_path: Path | str = DEFAULT_LIBRARY_DB,
+    source_format: str = "markdown",
+) -> bool:
+    """Index one saved Markdown artifact in O(1) without scanning its directory."""
+    if not fts5_available():
+        raise LibrarySearchUnavailable(
+            "library search requires a Python SQLite build with FTS5 support"
+        )
+    source = Path(path).expanduser().resolve()
+    try:
+        entry = library.parse_markdown_file(source, source_format=source_format)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    if library.is_unbounded_private_brief(entry.content, source_format=entry.source_format):
+        return False
+    target = Path(db_path).expanduser()
+    _ensure_private_directory(target.parent)
+    with _connect(target) as conn:
+        _upsert_entry(conn, entry)
+        conn.commit()
+    return True
 
 
 def index_brief(
@@ -235,6 +261,8 @@ def _sync_library(
         fts_rows = conn.execute("SELECT count(*) FROM library_fts").fetchone()[0]
         fts_trustworthy = fts_rows >= len(existing) if existing else True
         for entry in entries:
+            if library.is_unbounded_private_brief(entry.content, source_format=entry.source_format):
+                continue
             current_ids.add(entry.entry_id)
             stat = entry.source_path.stat()
             fingerprint = _fingerprint(_indexable_content(entry.content))
@@ -290,9 +318,9 @@ def _upsert_entry(
     indexed_content = _without_library_context(private_free_content)
     headline = entry.headline
     summary = entry.summary
-    if private_free_content != entry.content and entry.source_format == "markdown":
-        headline = library._markdown_headline(private_free_content) or entry.topic
-        summary = library._markdown_summary(private_free_content) or headline
+    if private_free_content != entry.content and entry.source_format in {"markdown", "finished-brief"}:
+        headline = library._markdown_headline(private_free_content) or library._brief_prose_headline(private_free_content) or entry.topic
+        summary = library._markdown_summary(private_free_content) or library._brief_prose_summary(private_free_content) or headline
     content_hash = fingerprint or _fingerprint(indexed_content)
     source_path = str(entry.source_path.resolve())
     replaced = conn.execute(

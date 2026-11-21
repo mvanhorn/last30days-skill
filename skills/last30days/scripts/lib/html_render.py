@@ -460,6 +460,8 @@ def render_library_brief(entry: LibraryEntry, *, include_private: bool = True) -
     md = entry.content if include_private else public_markdown(entry.content)
     md = _strip_invitation(md)
     md = _strip_canonical_boundary(md)
+    if entry.source_format == "finished-brief":
+        md = _promote_prose_labels(md)
     body = _markdown_to_html(md)
     body = _wrap_engine_footer(body)
     colophon = (

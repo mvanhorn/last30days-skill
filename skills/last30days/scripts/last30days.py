@@ -1008,6 +1008,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-results", dest="max_results", type=int,
                         help="Override the final ranked-pool cap (pool_limit/rerank_limit) from the depth profile. "
                              "Use for high-volume topics where the default (deep=60) under-covers. See issue #716.")
+    parser.add_argument(
+        "--source",
+        dest="harvest_source",
+        default=None,
+        help="Transcript source for 'library harvest' (auto, all, claude, codex, antigravity, gemini, cursor)",
+    )
+    parser.add_argument(
+        "--since",
+        dest="harvest_since",
+        default=None,
+        help="Only harvest finished briefs on or after YYYY-MM-DD (for 'library harvest')",
+    )
+    parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Preview 'library harvest' without writing files",
+    )
     parser.add_argument("--max-per-source", dest="max_per_source", type=int,
                         help="Override the per-stream cap (per_stream_limit) applied to each (source, subquery) before "
                              "pooling. Raising it increases unique-item yield when one source has many relevant items. "
@@ -3287,11 +3305,82 @@ SETUP_PASSTHROUGH_FLAGS = {
     "--github",
     "--github-start",
     "--github-poll",
+    "--install-hooks",
     "--openclaw",
     "--reddit-session",
     "--no-reddit-session",
     "--store-key",
+    "--uninstall-hooks",
 }
+
+INSTALL_HOOKS_FLAG = "--install-hooks"
+UNINSTALL_HOOKS_FLAG = "--uninstall-hooks"
+
+
+def _split_hook_flags(
+    extra_argv: list[str],
+) -> tuple[str | None, str | None, list[str]]:
+    """Pull optional-value ``--install-hooks [HOST]`` / ``--uninstall-hooks [HOST]``.
+
+    Returns ``(install_target, uninstall_target, remaining)``. Each target is
+    ``None`` when absent, ``""`` when passed bare (meaning all detected local
+    harnesses), or the explicit host string when supplied. Callers MUST check
+    ``is not None``, never truthiness.
+    """
+    install_target: str | None = None
+    uninstall_target: str | None = None
+    remaining: list[str] = []
+    i = 0
+    while i < len(extra_argv):
+        arg = extra_argv[i]
+        if arg in (INSTALL_HOOKS_FLAG, UNINSTALL_HOOKS_FLAG):
+            value = ""
+            if i + 1 < len(extra_argv) and not extra_argv[i + 1].startswith("-"):
+                value = extra_argv[i + 1]
+                i += 2
+            else:
+                i += 1
+            if arg == INSTALL_HOOKS_FLAG:
+                install_target = value
+            else:
+                uninstall_target = value
+            continue
+        if arg.startswith(INSTALL_HOOKS_FLAG + "="):
+            install_target = arg[len(INSTALL_HOOKS_FLAG) + 1 :]
+            i += 1
+            continue
+        if arg.startswith(UNINSTALL_HOOKS_FLAG + "="):
+            uninstall_target = arg[len(UNINSTALL_HOOKS_FLAG) + 1 :]
+            i += 1
+            continue
+        remaining.append(arg)
+        i += 1
+    return install_target, uninstall_target, remaining
+
+
+def _run_hook_setup(
+    install_target: str | None,
+    uninstall_target: str | None,
+) -> int:
+    from lib import hook_installer
+
+    if install_target is not None and uninstall_target is not None:
+        sys.stderr.write(
+            "[last30days] pass --install-hooks or --uninstall-hooks, not both.\n"
+        )
+        return 2
+    try:
+        # Bare --install-hooks / --uninstall-hooks uses "" -> "all", so dispatch
+        # checks `is not None` rather than string truthiness.
+        if install_target is not None:
+            result = hook_installer.install_hooks(install_target or "all")
+        else:
+            result = hook_installer.uninstall_hooks(uninstall_target or "all")
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 STORE_KEY_FLAG = "--store-key"
 
@@ -3738,9 +3827,10 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
     if topic.lower() == "setup":
         if USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv and len(extra_argv) > 1:
             parser.error(f"{USE_RECORDED_BROWSER_CONSENT_FLAG} must be the only setup option")
-        # --store-key carries a value token; the name itself is allowlisted
-        # later in _run_store_key, not here.
+        # --store-key and --install-hooks/--uninstall-hooks carry optional
+        # value tokens validated later by their handlers, not here.
         _, _, extra_argv = _split_store_key(extra_argv)
+        _, _, extra_argv = _split_hook_flags(extra_argv)
         unsupported = [arg for arg in extra_argv if arg not in SETUP_PASSTHROUGH_FLAGS]
         if unsupported:
             parser.error(
@@ -3777,6 +3867,7 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
     reuse_browser_consent = normalized_topic == "setup" and USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv
     is_library_command = (
         normalized_topic == "library feed"
+        or normalized_topic == "library harvest"
         or normalized_topic == "library search"
         or normalized_topic.startswith("library search ")
     )
@@ -3873,7 +3964,9 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             f"library feed; preserved the original at {backup.name}\n"
         )
 
+    publishable_entries: list[library.LibraryEntry] = []
     publishable_brief_documents: dict[str, str] = {}
+    omitted_private_briefs = 0
     for entry in entries:
         rendered = html_render.render_library_brief(entry)
         target = rendered_briefs_dir / entry.output_name
@@ -3883,6 +3976,10 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             str(target),
             private=entry.entry_id in private_entries,
         )
+        if library.is_unbounded_private_brief(entry.content, source_format=entry.source_format):
+            omitted_private_briefs += 1
+            continue
+        publishable_entries.append(entry)
         publishable_brief_documents[entry.entry_id] = html_render.render_library_brief(
             entry, include_private=False
         )
@@ -3922,6 +4019,11 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     )
 
     if args.publish:
+        if omitted_private_briefs:
+            sys.stderr.write(
+                f"[last30days] Omitted {omitted_private_briefs} private local-corpus "
+                "finished brief(s) from public publishing.\n"
+            )
         password = _publish_password_for_args(args, config)
         entry_urls: dict[str, str] = {}
         try:
@@ -3936,7 +4038,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             if batch_error := getattr(brief_results, "error", None):
                 raise batch_error
             published_index = html_render.render_library_index(
-                entries,
+                publishable_entries,
                 entry_urls=entry_urls,
                 feed_url=None,
             )
@@ -3954,7 +4056,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         # Keep the local artifacts useful as a record of the live publication.
         feed_path.write_text(
             feed.render_atom(
-                entries,
+                publishable_entries,
                 library_id=library_id,
                 entry_urls=entry_urls,
                 author=feed_author,
@@ -3962,7 +4064,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             encoding="utf-8",
         )
         index_path.write_text(
-            html_render.render_library_index(entries, entry_urls=entry_urls),
+            html_render.render_library_index(publishable_entries, entry_urls=entry_urls),
             encoding="utf-8",
         )
         sys.stderr.write(f"[last30days] Published library to {index_url}\n")
@@ -4036,6 +4138,78 @@ def _run_library_search(
     if synced.rebuilt:
         sys.stderr.write("[last30days] Rebuilt a corrupt library search index.\n")
     print(render.render_library_search(query, matches), end="")
+    return 0
+
+
+def _run_library_harvest(
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> int:
+    """Scan local agent transcripts offline and archive finished briefs."""
+    from lib import brief_capture, library, library_index, transcript_harvest
+
+    if args.publish or args.publish_html:
+        sys.stderr.write("[last30days] library harvest does not publish output.\n")
+        return 2
+    if args.output:
+        sys.stderr.write(
+            "[last30days] library harvest writes into <save_dir>/finished/; "
+            "--output is not supported.\n"
+        )
+        return 2
+
+    since_date = None
+    if args.harvest_since is not None:
+        try:
+            since_date = datetime.date.fromisoformat(args.harvest_since.strip())
+        except ValueError:
+            sys.stderr.write(
+                f"[last30days] invalid --since date '{args.harvest_since}'; expected YYYY-MM-DD.\n"
+            )
+            return 2
+
+    if args.save_dir == "":
+        sys.stderr.write(
+            "[last30days] saving is disabled (--save-dir / LAST30DAYS_MEMORY_DIR is empty); "
+            "pass --save-dir <dir> to run library harvest.\n"
+        )
+        return 2
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+
+    try:
+        result = transcript_harvest.harvest_transcripts(
+            save_dir=memory_dir,
+            source=args.harvest_source or "auto",
+            since=since_date,
+            dry_run=bool(args.dry_run),
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
+    if not args.dry_run and result.saved > 0:
+        try:
+            save_root = memory_dir.resolve()
+            db_path = library_index.saved_report_index_path(save_root)
+            if db_path == library_index.DEFAULT_LIBRARY_DB:
+                library_index.sync_library(save_root)
+            else:
+                library_index.sync_library(save_root, save_root / "briefings", db_path=db_path)
+        except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
+            pass
+
+    for note in result.notes:
+        sys.stderr.write(f"[last30days] Harvest note: {note}\n")
+
+    finished_dir = memory_dir.resolve() / brief_capture.FINISHED_SUBDIR
+    saved_label = "Would save" if result.dry_run else "Saved"
+    print(
+        f"Scanned files: {result.scanned_files}\n"
+        f"Matched briefs: {result.matched_briefs}\n"
+        f"{saved_label}: {result.saved}\n"
+        f"Duplicates: {result.duplicates}\n"
+        f"Destination: {finished_dir}"
+    )
     return 0
 
 
@@ -4286,12 +4460,25 @@ def _main(
             "[last30days] --publish is only supported by the 'library feed' command.\n"
         )
         return 2
+    if (
+        args.harvest_source is not None
+        or args.harvest_since is not None
+        or args.dry_run
+    ) and command_topic != "library harvest":
+        sys.stderr.write(
+            "[last30days] --source, --since, and --dry-run are only supported by the 'library harvest' command.\n"
+        )
+        return 2
     if command_topic == "setup":
-        # Persisting a credential needs no config load (no Keychain / pass
-        # probes, no cookie policy), so it dispatches before get_config.
+        # Persisting a credential or managing local hook configs needs no
+        # config load (no Keychain / pass probes, no cookie policy), so these
+        # dispatch before get_config.
         store_key_present, store_key_name, _ = _split_store_key(extra_argv)
         if store_key_present:
             return _run_store_key(store_key_name)
+        install_target, uninstall_target, _ = _split_hook_flags(extra_argv)
+        if install_target is not None or uninstall_target is not None:
+            return _run_hook_setup(install_target, uninstall_target)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
     if args.no_research_persistence:
@@ -4438,6 +4625,8 @@ def _main(
 
     if command_topic == "library feed":
         return _run_library_feed(args, config)
+    if command_topic == "library harvest":
+        return _run_library_harvest(args, config)
     if command_topic == "library search" or command_topic.startswith("library search "):
         return _run_library_search(args, config, topic[len("library search") :].strip())
 

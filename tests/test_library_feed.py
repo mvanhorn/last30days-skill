@@ -679,3 +679,192 @@ def test_brief_write_preserves_hand_edited_page_for_current_entry(tmp_path, monk
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         assert cli.main() == 0
     assert not (tmp_path / "briefs" / "ai-agents-c7760ea1-2026-07-10.html.bak1").exists()
+
+
+FINISHED_BRIEF_HEADING_FREE = """🌐 last30days · Anthropic · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Anthropic developer threads focus on tool use reliability this month.
+
+**KEY PATTERNS from the research:**
+1. Teams praise Claude Code on multi-file refactors.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 12 threads
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+"""
+
+COMPARISON_FINISHED_BRIEF = """🌐 last30days · Codex vs Cursor · Oct 22 to Nov 21, 2026 · v4.5.0
+
+# Codex vs Cursor: What the Community Says (/Last30Days)
+
+Developers split along terminal autonomy versus inline IDE speed.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 15 threads
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+"""
+
+
+def test_scan_library_prefers_finished_brief_over_unsuffixed_raw_and_keeps_client_suffix(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    finished = memory / "finished"
+    finished.mkdir()
+
+    # Unsuffixed raw dump for Anthropic on 2026-11-21 -> superseded by finished brief.
+    (memory / "anthropic-raw-2026-11-21.md").write_text(
+        "# last30days v4.5.0: Anthropic\n\n- Date range: 2026-10-22 to 2026-11-21\n\n## Ranked Evidence Clusters\n\n### 1. Raw cluster\n",
+        encoding="utf-8",
+    )
+    # Client-suffixed raw dump -> must NOT be suppressed.
+    (memory / "anthropic-raw-acme-2026-11-21.md").write_text(
+        "# last30days v4.5.0: Anthropic\n\n- Date range: 2026-10-22 to 2026-11-21\n\n## Ranked Evidence Clusters\n\n### 1. Acme client cluster\n",
+        encoding="utf-8",
+    )
+    # Raw-only topic with no finished brief -> stays visible.
+    (memory / "nvidia-raw-2026-11-21.md").write_text(
+        "# last30days v4.5.0: Nvidia\n\n- Date range: 2026-10-22 to 2026-11-21\n\n## Ranked Evidence Clusters\n\n### 1. Blackwell racks\n",
+        encoding="utf-8",
+    )
+    # Comparison raw dump + finished comparison brief with display heading -> raw suppressed.
+    (memory / "codex-vs-cursor-raw-2026-11-21.md").write_text(
+        "# last30days v4.5.0: Codex vs Cursor\n\n- Date range: 2026-10-22 to 2026-11-21\n\n## Ranked Evidence Clusters\n\n### 1. Raw comparison\n",
+        encoding="utf-8",
+    )
+    (finished / "codex-vs-cursor-2026-11-21.md").write_text(
+        COMPARISON_FINISHED_BRIEF, encoding="utf-8"
+    )
+    # Heading-free finished brief with `What I learned:` prose label.
+    finished_file = finished / "anthropic-2026-11-21.md"
+    finished_file.write_text(FINISHED_BRIEF_HEADING_FREE, encoding="utf-8")
+
+    entries, notes = library.scan_library(memory, tmp_path / "missing-briefings")
+
+    assert notes == []
+    by_name = {entry.source_path.name: entry for entry in entries}
+    assert "anthropic-2026-11-21.md" in by_name
+    assert "anthropic-raw-2026-11-21.md" not in by_name
+    assert "codex-vs-cursor-2026-11-21.md" in by_name
+    assert "codex-vs-cursor-raw-2026-11-21.md" not in by_name
+    assert "anthropic-raw-acme-2026-11-21.md" in by_name
+    assert "nvidia-raw-2026-11-21.md" in by_name
+
+    brief_entry = by_name["anthropic-2026-11-21.md"]
+    assert brief_entry.source_format == "finished-brief"
+    assert brief_entry.topic == "Anthropic"
+    assert brief_entry.published_date == date(2026, 11, 21)
+    assert brief_entry.headline != "What I learned:"
+    assert "tool use reliability" in brief_entry.headline
+    assert "tool use reliability" in brief_entry.summary
+
+    comp_entry = by_name["codex-vs-cursor-2026-11-21.md"]
+    assert comp_entry.topic == "Codex vs Cursor"
+    assert comp_entry.slug == "codex-vs-cursor"
+
+    public_html = html_render.render_library_brief(brief_entry, include_private=False)
+    assert 'class="badge"' in public_html
+    assert "tool use reliability" in public_html
+
+
+def test_library_feed_publish_omits_corpus_tainted_finished_brief(tmp_path, monkeypatch):
+    memory = tmp_path / "memory"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    (finished / "anthropic-2026-11-21.md").write_text(FINISHED_BRIEF_HEADING_FREE, encoding="utf-8")
+    (finished / "secret-brief-2026-11-21.md").write_text(
+        """🌐 last30days · Secret Plan · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Woven private note mentions Project Cobalt alongside public posts.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 3 threads
+├─ 📁 Your files: 1 note
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+""",
+        encoding="utf-8",
+    )
+
+    published_docs: dict[str, str] = {}
+    published_indexes: list[str] = []
+
+    def fake_publish_docs(docs, password=None):
+        published_docs.update(docs)
+        return {k: {"url": f"https://example.invalid/{k}"} for k in docs}
+
+    def fake_publish_html(doc, password=None):
+        published_indexes.append(doc)
+        return {"url": "https://example.invalid/index"}
+
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(html_publish, "publish_html_documents", fake_publish_docs)
+    monkeypatch.setattr(html_publish, "publish_html", fake_publish_html)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "feed", "--publish", "--save-dir", str(memory)],
+    )
+
+    stderr_buf = io.StringIO()
+    with redirect_stdout(io.StringIO()), redirect_stderr(stderr_buf):
+        assert cli.main() == 0
+
+    assert len(published_docs) == 1
+    assert all("Project Cobalt" not in body for body in published_docs.values())
+    assert len(published_indexes) == 1
+    assert "Secret Plan" not in published_indexes[0]
+    assert "Project Cobalt" not in published_indexes[0]
+    assert "Omitted 1 private local-corpus" in stderr_buf.getvalue()
+
+
+def test_structured_comparison_with_badge_and_bounded_corpus_survives_redaction(tmp_path):
+    """Structured engine comparison reports keep public content when corpus blocks are bounded."""
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    comp_path = memory / "codex-vs-cursor-raw-2026-11-21.md"
+    comp_md = """🌐 last30days · Codex vs Cursor · Oct 22 to Nov 21, 2026 · v4.5.0
+
+# Codex vs Cursor: What the Community Says (/Last30Days)
+
+- Date range: 2026-10-22 to 2026-11-21
+
+Public comparison table shows Codex leads terminal automation while Cursor leads inline editing.
+
+<!-- LAST30DAYS_PRIVATE_CORPUS_START -->
+## From your files
+
+Private internal procurement score SECRET_TOKEN_42.
+<!-- LAST30DAYS_PRIVATE_CORPUS_END -->
+"""
+    comp_path.write_text(comp_md, encoding="utf-8")
+
+    assert library.is_unbounded_private_brief(comp_md, source_format="markdown") is False
+    assert library.is_unbounded_private_brief(comp_md) is False
+    sanitized = library.public_markdown(comp_md)
+    assert "Public comparison table shows Codex leads terminal automation" in sanitized
+    assert "SECRET_TOKEN_42" not in sanitized
+
+    entries, notes = library.scan_library(memory, tmp_path / "missing-briefings")
+    assert notes == []
+    assert len(entries) == 1
+    assert entries[0].topic == "Codex vs Cursor"
+    assert entries[0].slug == "codex-vs-cursor"
+
+
+

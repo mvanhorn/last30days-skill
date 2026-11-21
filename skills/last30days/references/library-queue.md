@@ -18,6 +18,14 @@ Relay the dated, topic-grouped matches. This is deterministic offline FTS over t
 
 Relay the generated local `index.html` and `feed.xml` paths. If the user explicitly asks to publish/share the whole library, explain that `ht-ml.app` pages are public by default and may be crawled or indexed, then follow the existing public-vs-password publishing choice. After consent, add `--publish`; for password protection, supply their unique shared password through `LAST30DAYS_PUBLISH_PASSWORD`, never as a visible command-line flag. Relay the printed library URL and local Atom path, and explain that `feed.xml` becomes subscribable when the output directory is hosted on a static host such as GitHub Pages. Never describe the `ht-ml.app` library URL as an Atom subscription URL, and never add `--publish` merely because the user asked to generate or open a local feed.
 
+**LIBRARY HARVEST FAST PATH — this overrides every research/setup step below.** If the user asks to backfill, harvest, or import past finished briefs from local session transcripts ("harvest my past briefs", "backfill my library from transcripts"), do not run host WebSearch resolution, setup, topic preflight, or fresh source research. Run:
+
+```bash
+"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" library harvest --save-dir="${LAST30DAYS_MEMORY_DIR}"
+```
+
+Add `--source <auto|claude|codex|antigravity|gemini|cursor|all>`, `--since YYYY-MM-DD`, or `--dry-run` when requested. This is deterministic and offline (no model calls, no network, no browser cookies); relay the scanned, matched, saved, and duplicate counts plus the `<save_dir>/finished/` destination.
+
 **TOPIC QUEUE FAST PATH — this overrides every research/setup step below.** If the user asks "what's in my topic queue", "what should I talk about next", "what topics haven't I covered", "show my content pipeline", "mark <topic> as covered", "I covered X on the podcast", "we published that article", or similar — even cold, with no research run earlier in this session — do not run WebSearch, setup, topic/backend preflight, or fresh source research. Run the read form:
 
 ```bash

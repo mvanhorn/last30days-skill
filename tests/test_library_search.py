@@ -710,3 +710,89 @@ def test_markdown_save_to_scoped_dir_syncs_a_scoped_index(tmp_path):
         scoped_root / "briefings",
         db_path=scoped_root / ".last30days-library.db",
     )
+
+
+def test_index_entry_upserts_finished_brief_in_o1_and_excludes_corpus_briefs(
+    tmp_path, monkeypatch
+):
+    memory = tmp_path / "memory"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    db_path = tmp_path / "library.db"
+    public_brief = finished / "anthropic-2026-11-21.md"
+    public_brief.write_text(
+        """🌐 last30days · Anthropic · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Developers praise Claude Code reliability on multi-file refactors.
+
+```text
+---
+✅ All agents reported back!
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+""",
+        encoding="utf-8",
+    )
+    private_brief = finished / "secret-2026-11-21.md"
+    private_brief.write_text(
+        """🌐 last30days · Secret Plan · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Confidential Q4 contract negotiation token ZEBRA99 woven into prose.
+
+```text
+---
+✅ All agents reported back!
+├─ 📁 Your files: 1 note
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+""",
+        encoding="utf-8",
+    )
+
+    def _forbid_scan(*_args, **_kwargs):
+        raise AssertionError("index_entry must not invoke scan_library")
+
+    monkeypatch.setattr(library, "scan_library", _forbid_scan)
+
+    assert library_index.index_entry(
+        public_brief, db_path=db_path, source_format="finished-brief"
+    ) is True
+    assert library_index.index_entry(
+        private_brief, db_path=db_path, source_format="finished-brief"
+    ) is False
+
+    public_hits = library_index.search(
+        "refactors",
+        db_path=db_path,
+        store_db_path=tmp_path / "missing-store.db",
+    )
+    assert len(public_hits) == 1
+    assert public_hits[0].topic == "Anthropic"
+    assert public_hits[0].published_date == date(2026, 11, 21)
+
+    private_hits = library_index.search(
+        "ZEBRA99",
+        db_path=db_path,
+        store_db_path=tmp_path / "missing-store.db",
+    )
+    assert private_hits == []
+
+    # Full sync_library also excludes unbounded private corpus briefs.
+    monkeypatch.undo()
+    library_index.sync_library(memory, tmp_path / "missing-briefings", db_path=db_path)
+    assert (
+        library_index.search(
+            "ZEBRA99",
+            db_path=db_path,
+            store_db_path=tmp_path / "missing-store.db",
+        )
+        == []
+    )
+
+

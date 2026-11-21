@@ -26,5 +26,6 @@
     "threads",
     "pinterest",
     "hacker-news"
-  ]
+  ],
+  "hooks": "./.claude-plugin/hooks.json"
 }
