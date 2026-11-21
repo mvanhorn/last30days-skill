@@ -293,6 +293,12 @@ class TestCreatorExpansion:
         for url in hydrated:
             assert shortform_oss.post_date_from_url("tiktok", url) >= FROM
 
+    def test_expansion_off_lists_no_harvested_creators(self):
+        net = FakeNet([tt_url("mattpocockuk", "2025-02-01")],
+                      playlists={"mattpocockuk": self.PLAYLIST})
+        _run_search(net, config={"LAST30DAYS_SHORTFORM_CREATOR_EXPANSION": "off"})
+        assert net.listed_handles() == []
+
     def test_instagram_never_lists_creators(self):
         net = FakeNet([f"https://www.instagram.com/reel/{ig_shortcode('2025-01-10')}/"])
         _run_search(net, kind="instagram")

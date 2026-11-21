@@ -52,6 +52,10 @@ _DEPTH_CREATORS = {"quick": (3, 5), "default": (5, 8), "deep": (8, 12)}
 # page_age, so each switch exists to A/B the recall cost per backend.
 FRESHNESS_ENV = "LAST30DAYS_SHORTFORM_FRESHNESS"
 
+# TikTok creator expansion. LAST30DAYS_SHORTFORM_CREATOR_EXPANSION (env or
+# config): "on" (default) or "off", so the A/B harness can measure its lift.
+EXPANSION_ENV = "LAST30DAYS_SHORTFORM_CREATOR_EXPANSION"
+
 # Instagram media ids carry milliseconds since this epoch in their top bits.
 _IG_EPOCH_MS = 1314220021721
 _IG_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -82,6 +86,12 @@ def _freshness_on(backend: str, config: Dict[str, Any] | None = None) -> bool:
     if value in ("off", "0", "false", "no"):
         return False
     return backend in {part.strip() for part in value.split(",")}
+
+
+def _expansion_on(config: Dict[str, Any] | None = None) -> bool:
+    """True unless creator expansion is switched off."""
+    raw = (config or {}).get(EXPANSION_ENV) or os.environ.get(EXPANSION_ENV) or "on"
+    return str(raw).strip().lower() not in ("off", "0", "false", "no")
 
 
 def post_timestamp_from_url(kind: str, url: str) -> Optional[float]:
@@ -560,7 +570,7 @@ def search(
 
     # Creator expansion (TikTok): every handle seen in discovery, stale
     # videos included, is a lead for in-window, on-topic videos.
-    if kind == "tiktok" and len(urls) < cap:
+    if kind == "tiktok" and len(urls) < cap and _expansion_on(config):
         max_creators, per_creator = _DEPTH_CREATORS.get(depth, _DEPTH_CREATORS["default"])
         handles: List[str] = []
         for u in found:
