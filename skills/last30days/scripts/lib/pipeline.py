@@ -6574,6 +6574,29 @@ def _detail_rate_limits_source(source: str, artifact: dict) -> bool:
     return source != "x" or not bool(artifact.get("_x_backup_not_rate_limited"))
 
 
+def _comment_candidates(items: list[dict], from_date: str, to_date: str) -> list[dict]:
+    """The posts worth paying comment enrichment for: not dated outside the
+    window (an undated post can still be kept) and clearing the shared topic
+    floor.
+
+    Search results arrive before the date and relevance filters run, and the
+    loudest of them are often old or off-topic (a 2022 #bully video for "Kanye
+    West"). Picking the top posts by engagement from the raw list spent every
+    comment call on posts the report then dropped. The dicts are shared, so
+    comments attached here stay on the kept items.
+    """
+    def in_window(item: dict) -> bool:
+        day = str(item.get("date") or "")
+        return not day or from_date <= day <= to_date
+
+    return [
+        item for item in items
+        if in_window(item)
+        and float(item.get("relevance") if item.get("relevance") is not None else 1.0)
+        >= relevance.RELEVANCE_FLOOR
+    ]
+
+
 def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     """Run one stream and retain HTTP failures swallowed by source adapters."""
     # run_started is passed through but not used here; it goes to _retrieve_stream_impl
@@ -7628,7 +7651,10 @@ def _retrieve_stream_impl(
             ):
                 sc_token = config.get("SCRAPECREATORS_API_KEY", "")
                 try:
-                    tiktok.enrich_with_comments(items, token=sc_token, deadline=deadline, cancel=cancel)
+                    tiktok.enrich_with_comments(
+                        _comment_candidates(items, from_date, to_date),
+                        token=sc_token, deadline=deadline, cancel=cancel,
+                    )
                 except http.DeadlineExceeded:
                     result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
@@ -7668,7 +7694,8 @@ def _retrieve_stream_impl(
             items = instagram.parse_instagram_response(result)
             if items and env.is_instagram_comments_available(config):
                 instagram.enrich_with_comments(
-                    items, token=config.get("SCRAPECREATORS_API_KEY", ""),
+                    _comment_candidates(items, from_date, to_date),
+                    token=config.get("SCRAPECREATORS_API_KEY", ""),
                     deadline=ig_deadline, cancel=ig_cancel,
                 )
             if (ig_cancel is not None and ig_cancel.is_set()) or time.monotonic() >= ig_deadline:

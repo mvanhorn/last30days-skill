@@ -2754,6 +2754,43 @@ def _youtube_payload(*_args, **_kwargs):
     ]}
 
 
+def _with_stale_and_off_topic(payload_fn, url_for):
+    def payload(*_args, **_kwargs):
+        data = payload_fn()
+        kept = data["items"][0]
+        data["items"] = [
+            {**kept, "id": "old", "video_id": "old", "url": url_for("old"), "date": "2022-02-03",
+             "engagement": {"views": 50_000_000}, "relevance": 0.9},
+            {**kept, "id": "off", "video_id": "off", "url": url_for("off"),
+             "engagement": {"views": 20_000_000}, "relevance": 0.0},
+            kept,
+        ]
+        return data
+    return payload
+
+
+class TestCommentsSpentOnKeptPosts:
+    """Paid comment calls go to posts that survive the window and topic filters."""
+
+    def test_tiktok_comments_skip_stale_and_off_topic_posts(self):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("comments",))
+        payload = _with_stale_and_off_topic(
+            _tiktok_payload, lambda v: f"https://www.tiktok.com/@dev/video/{v}")
+        with patch("lib.tiktok.search_and_enrich", side_effect=payload), \
+             patch("lib.tiktok.enrich_with_comments") as comments:
+            _memo_stream("tiktok", subquery, dict(_MEMO_SC_CONFIG))
+        assert [i["id"] for i in comments.call_args.args[0]] == ["t1"]
+
+    def test_instagram_comments_skip_stale_and_off_topic_posts(self):
+        [subquery] = _memo_subqueries(["instagram"], labels=("comments",))
+        payload = _with_stale_and_off_topic(
+            _instagram_payload, lambda v: f"https://www.instagram.com/reel/{v}/")
+        with patch("lib.instagram.search_and_enrich", side_effect=payload), \
+             patch("lib.instagram.enrich_with_comments") as comments:
+            _memo_stream("instagram", subquery, dict(_MEMO_SC_CONFIG))
+        assert [i["id"] for i in comments.call_args.args[0]] == ["i1"]
+
+
 class TestSourceFetchMemo:
     def test_three_subquery_streams_fetch_each_source_once(self):
         subqueries = _memo_subqueries(["tiktok", "instagram", "youtube"])
