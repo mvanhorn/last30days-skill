@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/last30days/scripts/capture_brief_hook.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
