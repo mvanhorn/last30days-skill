@@ -9,6 +9,18 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.6.0] - 2026-11-21
+
+### Added
+
+- Silent post-turn finished-brief capture across local agent harnesses (Claude Code via `.claude-plugin/hooks.json`, plus one-command `setup --install-hooks` / `--uninstall-hooks` for Antigravity, Gemini CLI, Codex CLI, Cursor, Grok Build CLI, and skill-only Claude Code installs). Captured briefs save atomically into `<save_dir>/finished/` with content-hash deduplication, owner-only permissions and `## From your files` redaction for `--corpus` runs, O(1) incremental `library.db` indexing, brief-first precedence in `library search` and `library feed`, and offline transcript backfill via `library harvest`.
+- TikTok top comments now come from TikTok's public web comment endpoint, which needs no key and no request signing, for up to 12 of the videos a run keeps instead of ScrapeCreators comments on 3. A "Kanye West" run went from 4 TikTok entries in Top Community Comments to 14, with no ScrapeCreators comment calls. If the endpoint returns nothing, the run falls back to ScrapeCreators comments as before. `LAST30DAYS_TIKTOK_PUBLIC_COMMENTS=off` turns the public endpoint off.
+
+### Fixed
+
+- TikTok and Instagram comments from ScrapeCreators now reach the report. Comment enrichment picked the three loudest posts from the raw search results, before the date window and topic filter ran, so it usually paid for comments on old or off-topic posts the report then dropped (for "Kanye West", a 2022 #bully video), and the kept posts had none. It now picks from posts dated inside the window that clear the topic floor.
+
+
 ## [4.5.0] - 2026-11-21
 
 ### Added
