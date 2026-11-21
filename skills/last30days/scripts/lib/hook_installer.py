@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from . import env
+
 
 SUPPORTED_HARNESSES: tuple[str, ...] = (
     "claude",
@@ -271,6 +273,15 @@ def _resolve_targets(target: str, home: Path) -> list[str]:
     )
 
 
+def _is_hosted_grok_bot(target: str, host_env: str | None) -> bool:
+    resolved_host = (
+        host_env if host_env is not None else os.environ.get(env.X_HOST_VAR, "")
+    ).strip()
+    if env.x_policy({env.X_HOST_VAR: resolved_host}).official_only:
+        return True
+    return target.strip().lower() == env.GROK_BOT_HOST
+
+
 def install_hooks(
     target: str = "all",
     *,
@@ -279,11 +290,10 @@ def install_hooks(
     script_path: Path | None = None,
 ) -> dict[str, Any]:
     """Install silent brief-capture hooks for one or all detected local harnesses."""
-    resolved_host = (host_env if host_env is not None else os.environ.get("LAST30DAYS_HOST", "")).strip().lower()
-    if resolved_host == "grok-bot" or target.strip().lower() == "grok-bot":
+    if _is_hosted_grok_bot(target, host_env):
         return {
             "ok": False,
-            "unsupported_host": "grok-bot",
+            "unsupported_host": env.GROK_BOT_HOST,
             "message": _GROK_BOT_MESSAGE,
             "results": {},
         }
@@ -302,11 +312,10 @@ def uninstall_hooks(
     host_env: str | None = None,
 ) -> dict[str, Any]:
     """Remove silent brief-capture hooks for one or all detected local harnesses."""
-    resolved_host = (host_env if host_env is not None else os.environ.get("LAST30DAYS_HOST", "")).strip().lower()
-    if resolved_host == "grok-bot" or target.strip().lower() == "grok-bot":
+    if _is_hosted_grok_bot(target, host_env):
         return {
             "ok": False,
-            "unsupported_host": "grok-bot",
+            "unsupported_host": env.GROK_BOT_HOST,
             "message": _GROK_BOT_MESSAGE,
             "results": {},
         }

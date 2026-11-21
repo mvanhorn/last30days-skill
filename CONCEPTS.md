@@ -16,6 +16,10 @@ The Python script (`scripts/last30days.py`) the Skill's SKILL.md invokes to do t
 
 The agent runtime that loads Skills and invokes them on the user's behalf. Claude Code is the most common Harness for this Skill but not the only one — Codex, Cursor, GitHub Copilot, Gemini CLI, and the rest of the Agent Skills ecosystem also count. "Multi-harness" describes a Skill that works correctly across every Harness it installs into; features written without multi-harness awareness (e.g., engine flags with no SKILL.md integration, or paths hardcoded to one Harness's install layout) regress on Harnesses other than the one they were tested against.
 
+### Finished brief
+
+The synthesized, human-readable `/last30days` report rendered in chat—bounded by its opening `🌐 last30days` badge and closing fenced engine footer—as distinct from the raw evidence dump (`*-raw*.md`) written by the Engine. Captured Finished briefs live in `<save_dir>/finished/<slug>-YYYY-MM-DD.md` (via silent post-turn harness hooks or offline `library harvest`), use owner-only permissions when tainted by local `--corpus` notes, and take precedence over unsuffixed raw dumps for the same topic and date in `library search` and `library feed`.
+
 ## Research pipeline
 
 ### Primary entity

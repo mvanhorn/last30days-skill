@@ -670,6 +670,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_CORPUS_IN_EXPORT', None),
         ('LAST30DAYS_LIBRARY_OWNER', None),
         ('LAST30DAYS_LIBRARY_CONTEXT', 'on'),
+        ('LAST30DAYS_AUTO_CAPTURE', 'on'),
+        ('LAST30DAYS_HOOK_DEBUG', None),
         ('LAST30DAYS_PUBLISH_PASSWORD', None),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_PIN', None),

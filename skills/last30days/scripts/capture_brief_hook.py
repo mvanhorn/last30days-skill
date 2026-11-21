@@ -219,6 +219,14 @@ def _run_capture() -> None:
 
     from lib import brief_capture, env
 
+    if os.environ.get("LAST30DAYS_AUTO_CAPTURE") is None:
+        file_env, project_env, _ = env._load_config_files(env.ConfigLoadPolicy())
+        cfg_val = project_env.get("LAST30DAYS_AUTO_CAPTURE")
+        if cfg_val is None:
+            cfg_val = file_env.get("LAST30DAYS_AUTO_CAPTURE")
+        if isinstance(cfg_val, str) and cfg_val.strip().lower() in _DISABLED_VALUES:
+            return
+
     save_dir = env.resolve_memory_dir()
     if not save_dir:
         return
