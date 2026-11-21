@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,8 +51,14 @@ def claim_source_map(report: schema.Report) -> dict[str, GroundedClaimText]:
 def brave_search(
     query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
     freshness: str | None = None,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
-    """``freshness`` overrides the request's date-range freshness (e.g. "pm")."""
+    """``freshness`` overrides the request's date-range freshness (e.g. "pm").
+
+    ``deadline_monotonic`` and ``cancel`` bound the request to a caller's run.
+    """
     url = (
         "https://api.search.brave.com/res/v1/web/search?"
         + urllib.parse.urlencode(
@@ -62,7 +69,10 @@ def brave_search(
             }
         )
     )
-    data = http.request("GET", url, headers={"X-Subscription-Token": api_key}, timeout=15)
+    data = http.request(
+        "GET", url, headers={"X-Subscription-Token": api_key}, timeout=15,
+        deadline_monotonic=deadline_monotonic, cancel=cancel,
+    )
     items = []
     for i, r in enumerate((data.get("web", {}).get("results", []))[:count]):
         raw_date = r.get("page_age") or ""

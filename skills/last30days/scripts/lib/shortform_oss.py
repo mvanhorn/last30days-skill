@@ -219,7 +219,7 @@ def _collect(kind: str, raw_urls, dest: List[str], limit: int) -> bool:
 
 def _serper_links(
     query: str, api_key: str, count: int, deadline: float | None = None,
-    fresh: bool = False,
+    fresh: bool = False, cancel: threading.Event | None = None,
 ) -> List[str]:
     body: Dict[str, Any] = {"q": query, "num": min(20, max(count, 10))}
     if fresh:
@@ -230,6 +230,7 @@ def _serper_links(
         headers={"X-API-KEY": api_key},
         json_data=body,
         timeout=_bounded_timeout(15.0, deadline),
+        deadline_monotonic=deadline, cancel=cancel,
         retries=1,
     )
     return [r.get("link", "") for r in (data.get("organic") or []) if isinstance(r, dict)]
@@ -239,6 +240,7 @@ def _exa_links(
     query: str, api_key: str, domain: str, count: int, deadline: float | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[str]:
     body: Dict[str, Any] = {
         "query": query,
@@ -256,12 +258,16 @@ def _exa_links(
         headers={"x-api-key": api_key},
         json_data=body,
         timeout=_bounded_timeout(20.0, deadline),
+        deadline_monotonic=deadline, cancel=cancel,
         retries=1,
     )
     return [r.get("url", "") for r in (data.get("results") or []) if isinstance(r, dict)]
 
 
-def _brave_links(query: str, api_key: str, count: int, fresh: bool = False) -> List[str]:
+def _brave_links(
+    query: str, api_key: str, count: int, fresh: bool = False,
+    deadline: float | None = None, cancel: threading.Event | None = None,
+) -> List[str]:
     from . import grounding
 
     # Wide date window for the result filter: social cards often lack
@@ -269,6 +275,7 @@ def _brave_links(query: str, api_key: str, count: int, fresh: bool = False) -> L
     items, _art = grounding.brave_search(
         query, ("1970-01-01", "2099-12-31"), api_key, count=count,
         freshness="pm" if fresh else None,
+        deadline_monotonic=deadline, cancel=cancel,
     )
     return [i.get("url", "") for i in items]
 
@@ -306,6 +313,7 @@ def discover_urls(
             items = web_search_keyless._search_searxng(
                 q, count, searxng,
                 time_range="month" if relative("searxng") else None,
+                deadline_monotonic=deadline,
             )
             if _collect(kind, (i.get("url", "") for i in items), urls, count):
                 return urls, "searxng"
@@ -325,7 +333,7 @@ def discover_urls(
                 kind,
                 _serper_links(
                     q, config["SERPER_API_KEY"], count, deadline=deadline,
-                    fresh=relative("serper"),
+                    fresh=relative("serper"), cancel=cancel,
                 ),
                 urls,
                 count,
@@ -344,6 +352,7 @@ def discover_urls(
                     q, config["EXA_API_KEY"], "tiktok.com", count, deadline=deadline,
                     start_date=from_date if _freshness_on("exa", config) else None,
                     end_date=None if current or not _freshness_on("exa", config) else to_date,
+                    cancel=cancel,
                 ),
                 urls,
                 count,
@@ -360,7 +369,7 @@ def discover_urls(
                 kind,
                 _brave_links(
                     q, config["BRAVE_API_KEY"], count,
-                    fresh=relative("brave"),
+                    fresh=relative("brave"), deadline=deadline, cancel=cancel,
                 ),
                 urls,
                 count,
@@ -384,6 +393,7 @@ def discover_urls(
             try:
                 items, art = web_search_keyless.keyless_search(
                     q, ("1970-01-01", "2099-12-31"), config, count,
+                    deadline_monotonic=deadline, cancel=cancel,
                 )
                 _collect(kind, (i.get("url", "") for i in items), urls, count)
                 if urls and used == "none":

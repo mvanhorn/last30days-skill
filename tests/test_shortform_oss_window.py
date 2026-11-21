@@ -491,3 +491,49 @@ def test_creator_listing_skips_once_cancelled():
     with mock.patch("lib.subproc.run_with_timeout") as run:
         assert shortform_oss.creator_urls("tiktok", "creator", 3, cancel=cancel) == []
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("cfg", [
+    {"SERPER_API_KEY": "sp"},
+    {"EXA_API_KEY": "ex"},
+    {"BRAVE_API_KEY": "br"},
+    {"LAST30DAYS_SEARXNG_URL": "https://searx.example"},
+])
+def test_every_discovery_request_carries_the_run_deadline(cfg):
+    seen = []
+    cancel = threading.Event()
+
+    def fake_request(method, url, **kw):
+        seen.append(kw)
+        return {}
+
+    def fake_get(url, **kw):
+        seen.append(kw)
+        return {"results": []}
+
+    with mock.patch("lib.http.request", side_effect=fake_request), \
+         mock.patch("lib.http.get", side_effect=fake_get):
+        shortform_oss.discover_urls(
+            "tiktok", "topic", {**cfg, **NATIVE}, 5, deadline=10**12, cancel=cancel,
+        )
+    assert seen and seen[0]["deadline_monotonic"] == 10**12
+
+
+def test_keyless_floor_gets_the_run_deadline_and_cancel():
+    cancel = threading.Event()
+    with mock.patch("lib.web_search_keyless.keyless_search", return_value=([], {})) as floor:
+        shortform_oss.discover_urls("tiktok", "topic", {}, 5, deadline=10**12, cancel=cancel)
+    assert floor.call_args.kwargs["deadline_monotonic"] == 10**12
+    assert floor.call_args.kwargs["cancel"] is cancel
+
+
+def test_keyless_ladder_starts_no_rung_once_cancelled():
+    from lib import web_search_keyless as wsk
+
+    cancel = threading.Event()
+    cancel.set()
+    with mock.patch("lib.http.get_text") as get_text:
+        items, art = wsk.keyless_search("q", ("2026-11-01", "2026-11-21"), {}, 5, cancel=cancel)
+    assert items == []
+    get_text.assert_not_called()
+    assert set(art["keyless_rungs"].values()) == {wsk.SKIPPED}
