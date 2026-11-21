@@ -143,3 +143,15 @@ def test_quotable_counts_items_whose_best_community_comment_clears_the_floor():
     ]
     assert ab.quotable(items) == 2
     assert ab.median_views([_tt("1", 10), _tt("2", 30), _tt("3")]) == 20
+
+
+def test_keyless_arms_read_no_secret_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", "dummy-not-a-key")
+    monkeypatch.setenv("LAST30DAYS_KEYCHAIN_ALIASES", '{"SCRAPECREATORS_API_KEY": "other"}')
+    for arm in ("B", "C", "D"):
+        env = ab.arm_env(arm, str(tmp_path), skip_keychain=False)
+        assert "SCRAPECREATORS_API_KEY" not in env
+        assert env["LAST30DAYS_SKIP_KEYCHAIN"] == "1"
+        assert "LAST30DAYS_KEYCHAIN_ALIASES" not in env
+        assert env["PASSWORD_STORE_DIR"].startswith(str(tmp_path))
+    assert ab.arm_env("A", str(tmp_path), skip_keychain=False)["SCRAPECREATORS_API_KEY"] == "dummy-not-a-key"

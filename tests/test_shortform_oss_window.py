@@ -84,7 +84,7 @@ class FakeNet:
         self.requests.append((method, url, kw))
         return {"organic": [{"link": u} for u in self.links]}
 
-    def run(self, cmd, timeout=None, input_text=None):
+    def run(self, cmd, timeout=None, input_text=None, **_kw):
         self.calls.append((list(cmd), input_text))
         if "--flat-playlist" in cmd:
             handle = _listed_handle(cmd)
@@ -363,3 +363,90 @@ class TestLaneEntryPoints:
             )
         assert result["items"] == []
         assert "date range" in result["error"]
+
+
+class TestHistoricalWindow:
+    """An --as-of window ending in the past must not get "past month" filters."""
+
+    OLD_FROM, OLD_TO = "2024-02-01", "2024-03-01"
+
+    def _discover(self, cfg, to_date):
+        seen = {}
+
+        def fake_request(method, url, **kw):
+            seen.setdefault("request", []).append((method, url, kw))
+            return {}
+
+        def fake_get(url, **kw):
+            seen.setdefault("get", []).append(url)
+            return {"results": []}
+
+        with mock.patch("lib.http.request", side_effect=fake_request), \
+             mock.patch("lib.http.get", side_effect=fake_get), \
+             mock.patch.dict(os.environ, {}):
+            os.environ.pop("LAST30DAYS_SHORTFORM_FRESHNESS", None)
+            shortform_oss.discover_urls(
+                "tiktok", "topic", {**cfg, **NATIVE}, 5,
+                from_date=self.OLD_FROM, to_date=to_date,
+            )
+        return seen
+
+    def test_relative_filters_are_dropped_for_a_past_window(self):
+        serper = self._discover({"SERPER_API_KEY": "sp"}, self.OLD_TO)
+        assert "tbs" not in serper["request"][0][2]["json_data"]
+        brave = self._discover({"BRAVE_API_KEY": "br"}, self.OLD_TO)
+        q = parse_qs(urlparse(brave["request"][0][1]).query)
+        assert q.get("freshness") != ["pm"]
+        searx = self._discover({"LAST30DAYS_SEARXNG_URL": "https://searx.example"}, self.OLD_TO)
+        assert "time_range" not in parse_qs(urlparse(searx["get"][0]).query)
+
+    def test_exa_gets_both_window_bounds_for_a_past_window(self):
+        exa = self._discover({"EXA_API_KEY": "ex"}, self.OLD_TO)
+        body = exa["request"][0][2]["json_data"]
+        assert body["startPublishedDate"].startswith(self.OLD_FROM)
+        assert body["endPublishedDate"].startswith(self.OLD_TO)
+
+    def test_a_window_ending_today_keeps_relative_filters(self):
+        today = datetime.now(timezone.utc).date().isoformat()
+        serper = self._discover({"SERPER_API_KEY": "sp"}, today)
+        assert serper["request"][0][2]["json_data"]["tbs"] == "qdr:m"
+        exa = self._discover({"EXA_API_KEY": "ex"}, today)
+        assert "endPublishedDate" not in exa["request"][0][2]["json_data"]
+
+
+class TestBatchedExtraction:
+    def test_a_timed_out_batch_keeps_the_posts_other_batches_read(self):
+        from lib import subproc
+
+        urls = [tt_url("u", "2026-11-10", low=n) for n in range(1, 10)]
+
+        def fake_run(cmd, timeout=None, input_text=None, **_kw):
+            batch = (input_text or "").split()
+            if urls[0] in batch:
+                raise subproc.SubprocTimeout("slow", started=True)
+            return SimpleNamespace(stdout="\n".join(
+                json.dumps(_raw("tiktok", u, "2026-11-10")) for u in batch))
+
+        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True), \
+             mock.patch("lib.subproc.run_with_timeout", side_effect=fake_run):
+            items = shortform_oss.enrich_urls("tiktok", urls, "topic words")
+        got = {i["url"] for i in items}
+        lost = set(urls[:shortform_oss._ENRICH_BATCH])
+        assert got == set(urls) - lost
+
+    def test_cancel_and_deadline_reach_the_subprocess(self):
+        seen = []
+        cancel = threading.Event()
+
+        def fake_run(cmd, timeout=None, input_text=None, **kw):
+            seen.append(kw)
+            return SimpleNamespace(stdout="")
+
+        with mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=True), \
+             mock.patch("lib.subproc.run_with_timeout", side_effect=fake_run):
+            shortform_oss.enrich_urls(
+                "tiktok", [tt_url("u", "2026-11-10")], "topic",
+                deadline=10**12, cancel=cancel,
+            )
+        assert seen[0]["cancel"] is cancel
+        assert seen[0]["deadline_monotonic"] == 10**12

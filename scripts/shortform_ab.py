@@ -311,8 +311,12 @@ def arm_env(arm: str, keyless_dir: str | None, skip_keychain: bool) -> dict[str,
     for key in SC_KEY_NAMES:
         env.pop(key, None)
     env["LAST30DAYS_CONFIG_DIR"] = keyless_dir or ""
-    if skip_keychain:
-        env["LAST30DAYS_SKIP_KEYCHAIN"] = "1"
+    # Keyless arms read no secret store at all: the Keychain (and any
+    # LAST30DAYS_KEYCHAIN_ALIASES entry) is skipped, and pass(1) points at an
+    # empty store, so no ScrapeCreators key can reload behind the arm.
+    env["LAST30DAYS_SKIP_KEYCHAIN"] = "1"
+    env.pop("LAST30DAYS_KEYCHAIN_ALIASES", None)
+    env["PASSWORD_STORE_DIR"] = os.path.join(keyless_dir or tempfile.gettempdir(), "no-pass-store")
     env["LAST30DAYS_SHORTFORM_FRESHNESS"] = "off" if arm == "B-nofresh" else "on"
     env["LAST30DAYS_SHORTFORM_CREATOR_EXPANSION"] = "off" if arm in ("B", "B-nofresh") else "on"
     if arm == "D":

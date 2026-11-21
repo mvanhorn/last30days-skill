@@ -288,7 +288,7 @@ class TestSshRoutedExtraction:
 
         captured = {}
 
-        def fake_run(cmd, timeout=None, input_text=None):
+        def fake_run(cmd, timeout=None, input_text=None, **_kw):
             captured["cmd"] = cmd
             captured["input"] = input_text
             return SimpleNamespace(stdout="")
@@ -311,7 +311,7 @@ class TestSshRoutedExtraction:
 
         captured = {}
 
-        def fake_run(cmd, timeout=None, input_text=None):
+        def fake_run(cmd, timeout=None, input_text=None, **_kw):
             captured["cmd"] = cmd
             return SimpleNamespace(stdout='{"id": "1234567890", "title": "t"}')
 
@@ -326,7 +326,7 @@ class TestSshRoutedExtraction:
 
         captured = {}
 
-        def fake_run(cmd, timeout=None, input_text=None):
+        def fake_run(cmd, timeout=None, input_text=None, **_kw):
             captured["cmd"] = cmd
             return SimpleNamespace(stdout="")
 

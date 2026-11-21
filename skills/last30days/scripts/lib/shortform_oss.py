@@ -16,6 +16,7 @@ TikTok ``@user`` listing still works and is used for ``creators=``.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -39,6 +40,9 @@ _HASHTAG_RE = re.compile(r"#(\w+)")
 
 _DEPTH_URLS = {"quick": 8, "default": 12, "deep": 20}
 _ENRICH_TIMEOUT = 180
+# Extraction runs in batches of this many URLs, this many batches at a time.
+_ENRICH_BATCH = 4
+_ENRICH_WORKERS = 3
 
 # TikTok creator expansion: (creators listed, videos listed per creator).
 _DEPTH_CREATORS = {"quick": (3, 5), "default": (5, 8), "deep": (8, 12)}
@@ -77,6 +81,22 @@ def _bounded_timeout(base: float, deadline: float | None) -> float:
     if deadline is None:
         return base
     return max(1.0, min(base, deadline - time.monotonic()))
+
+
+# Relative filters (past month) only match a window that ends about today.
+_RELATIVE_FRESHNESS_SLACK_DAYS = 2
+
+
+def _window_is_current(to_date: str | None) -> bool:
+    """True when the window ends near today, so "past month" filters fit it."""
+    if not to_date:
+        return True
+    try:
+        end = date.fromisoformat(to_date)
+    except ValueError:
+        return True
+    today = datetime.now(timezone.utc).date()
+    return end >= today - timedelta(days=_RELATIVE_FRESHNESS_SLACK_DAYS)
 
 
 def _freshness_on(backend: str, config: Dict[str, Any] | None = None) -> bool:
@@ -212,6 +232,7 @@ def _serper_links(
 def _exa_links(
     query: str, api_key: str, domain: str, count: int, deadline: float | None = None,
     start_date: str | None = None,
+    end_date: str | None = None,
 ) -> List[str]:
     body: Dict[str, Any] = {
         "query": query,
@@ -221,6 +242,8 @@ def _exa_links(
     }
     if start_date:
         body["startPublishedDate"] = f"{start_date}T00:00:00.000Z"
+    if end_date:
+        body["endPublishedDate"] = f"{end_date}T23:59:59.999Z"
     data = http.request(
         "POST",
         "https://api.exa.ai/search",
@@ -252,12 +275,21 @@ def discover_urls(
     deadline: float | None = None,
     cancel: threading.Event | None = None,
     from_date: str | None = None,
+    to_date: str | None = None,
 ) -> Tuple[List[str], str]:
     """Return (post_urls, backend_name). Never raises; stops at deadline/cancel.
 
-    ``from_date`` is the window start Exa's freshness filter uses.
+    ``from_date``/``to_date`` bound Exa's published-date filter. The relative
+    "past month" filters (SearXNG, Serper, Brave) count back from today, so
+    they are sent only when the window ends about today; a historical window
+    (``--as-of``) relies on the id-date filter instead.
     """
     urls: List[str] = []
+    current = _window_is_current(to_date)
+
+    def relative(backend: str) -> bool:
+        return current and _freshness_on(backend, config)
+
     used = "none"
     q = discovery_query(kind, query)
 
@@ -266,7 +298,7 @@ def discover_urls(
         try:
             items = web_search_keyless._search_searxng(
                 q, count, searxng,
-                time_range="month" if _freshness_on("searxng", config) else None,
+                time_range="month" if relative("searxng") else None,
             )
             if _collect(kind, (i.get("url", "") for i in items), urls, count):
                 return urls, "searxng"
@@ -286,7 +318,7 @@ def discover_urls(
                 kind,
                 _serper_links(
                     q, config["SERPER_API_KEY"], count, deadline=deadline,
-                    fresh=_freshness_on("serper", config),
+                    fresh=relative("serper"),
                 ),
                 urls,
                 count,
@@ -304,6 +336,7 @@ def discover_urls(
                 _exa_links(
                     q, config["EXA_API_KEY"], "tiktok.com", count, deadline=deadline,
                     start_date=from_date if _freshness_on("exa", config) else None,
+                    end_date=None if current or not _freshness_on("exa", config) else to_date,
                 ),
                 urls,
                 count,
@@ -320,7 +353,7 @@ def discover_urls(
                 kind,
                 _brave_links(
                     q, config["BRAVE_API_KEY"], count,
-                    fresh=_freshness_on("brave", config),
+                    fresh=relative("brave"),
                 ),
                 urls,
                 count,
@@ -494,19 +527,15 @@ def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optiona
     }
 
 
-def enrich_urls(
+def _enrich_batch(
     kind: str,
     urls: List[str],
-    core_topic: str,
-    deadline: float | None = None,
-    cancel: threading.Event | None = None,
-) -> List[Dict[str, Any]]:
-    """yt-dlp --dump-json over a URL list. Never raises; stops at deadline/cancel."""
-    if not urls or _stopped(deadline, cancel):
-        return []
-    if not youtube_yt.is_ytdlp_installed():
-        _log(kind, "yt-dlp not installed; skip OSS enrich")
-        return []
+    deadline: float | None,
+    cancel: threading.Event | None,
+) -> str:
+    """One yt-dlp --dump-json run over ``urls``; stdout, or "" on failure."""
+    if _stopped(deadline, cancel):
+        return ""
     cmd = [
         "yt-dlp",
         "--ignore-config",
@@ -524,32 +553,62 @@ def enrich_urls(
     budget = _bounded_timeout(_ENRICH_TIMEOUT, deadline)
     try:
         result = subproc.run_with_timeout(
-            cmd, timeout=budget, input_text="\n".join(urls) + "\n"
+            cmd, timeout=budget, input_text="\n".join(urls) + "\n",
+            deadline_monotonic=deadline, cancel=cancel,
         )
     except subproc.SubprocTimeout:
-        _log(kind, f"yt-dlp enrich timed out ({budget:.0f}s)")
-        return []
+        _log(kind, f"yt-dlp enrich batch of {len(urls)} timed out ({budget:.0f}s)")
+        return ""
     except (FileNotFoundError, OSError) as e:
         _log(kind, f"yt-dlp enrich failed: {e}")
+        return ""
+    return result.stdout or ""
+
+
+def enrich_urls(
+    kind: str,
+    urls: List[str],
+    core_topic: str,
+    deadline: float | None = None,
+    cancel: threading.Event | None = None,
+) -> List[Dict[str, Any]]:
+    """yt-dlp --dump-json over a URL list. Never raises; stops at deadline/cancel.
+
+    URLs run in small batches, a few at a time, so a timeout or cancel loses
+    only the unfinished batches: posts already read are kept.
+    """
+    if not urls or _stopped(deadline, cancel):
         return []
+    if not youtube_yt.is_ytdlp_installed():
+        _log(kind, "yt-dlp not installed; skip OSS enrich")
+        return []
+    batches = [urls[i:i + _ENRICH_BATCH] for i in range(0, len(urls), _ENRICH_BATCH)]
+    if len(batches) == 1:
+        outputs = [_enrich_batch(kind, batches[0], deadline, cancel)]
+    else:
+        workers = min(_ENRICH_WORKERS, len(batches))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_enrich_batch, kind, b, deadline, cancel) for b in batches]
+            outputs = [f.result() for f in futures]
     items: List[Dict[str, Any]] = []
     seen: set[str] = set()
-    for line in (result.stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        item = _item_from_ytdlp(kind, raw, core_topic)
-        if not item:
-            continue
-        vid = item["video_id"]
-        if vid in seen:
-            continue
-        seen.add(vid)
-        items.append(item)
+    for output in outputs:
+        for line in output.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            item = _item_from_ytdlp(kind, raw, core_topic)
+            if not item:
+                continue
+            vid = item["video_id"]
+            if vid in seen:
+                continue
+            seen.add(vid)
+            items.append(item)
     _log(kind, f"yt-dlp enriched {len(items)}/{len(urls)} posts")
     return items
 
@@ -611,7 +670,8 @@ def search(
                     urls.append(u)
 
     found, backend = discover_urls(
-        kind, topic, config, cap, deadline=deadline, cancel=cancel, from_date=from_date,
+        kind, topic, config, cap, deadline=deadline, cancel=cancel,
+        from_date=from_date, to_date=to_date,
     )
     stale = [u for u in found if _outside_window(kind, u, from_date, to_date)]
     if stale:
