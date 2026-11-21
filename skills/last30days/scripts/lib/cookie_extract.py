@@ -273,13 +273,13 @@ def _query_cookies_db(
             # Build parameterized query — SQLite doesn't support array params,
             # so we build the IN clause with individual placeholders.
             placeholders = ",".join("?" for _ in cookie_names)
+            host = domain.lstrip(".")
             query = (
                 f"SELECT name, value FROM moz_cookies "
-                f"WHERE host LIKE ? AND name IN ({placeholders})"
+                f"WHERE (host = ? OR host LIKE ?) AND name IN ({placeholders})"
             )
-            # domain pattern: match .x.com, x.com, etc.
-            domain_pattern = f"%{domain}"
-            params = [domain_pattern] + list(cookie_names)
+            # Match host-only cookies, domain cookies, and subdomains.
+            params = [host, f"%.{host}"] + list(cookie_names)
 
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
@@ -555,6 +555,8 @@ def extract_cookies(
 ) -> Optional[dict[str, str]]:
     """Extract cookies from the specified browser.
 
+    See extract_cookies_with_source() for selection and permission-error behavior.
+
     Args:
         browser: One of 'firefox', 'chrome', 'brave', 'edge', 'vivaldi',
             'opera', 'arc', 'dia', 'chromium', 'safari', or 'auto'.
@@ -628,15 +630,24 @@ def extract_cookies_with_source(
     Same as extract_cookies() but returns a (cookies, browser_name) tuple
     so callers can track the source.
 
+    Auto mode tries browsers in platform order until one supplies every requested
+    cookie with a nonempty value. If none does, it returns the first partial
+    result without combining cookies from different browsers. A browser's
+    PermissionError does not stop later candidates from being tried.
+
     Args:
         browser: One of 'firefox', 'chrome', 'brave', 'edge', 'vivaldi',
             'opera', 'arc', 'dia', 'chromium', 'safari', or 'auto'.
-        domain: The cookie domain to match (e.g. ".x.com").
+        domain: Bare or dot-prefixed cookie domain (e.g. "x.com" or ".x.com").
         cookie_names: List of cookie names to extract.
 
     Returns:
         Tuple of ({cookie_name: cookie_value}, browser_name) or None.
         browser_name is "firefox-wsl" when cookies came from Windows Firefox via WSL2.
+
+    Raises:
+        PermissionError: The explicitly selected browser denies access, or auto
+            mode encounters a denial and no browser returns even a partial result.
     """
     extractors = {
         "firefox": extract_firefox_cookies,
@@ -674,14 +685,29 @@ def extract_cookies_with_source(
     else:
         order = ["firefox"]
 
+    fallback = None
+    first_denial = None
     for name in order:
-        if name == "firefox":
-            result = _extract_firefox_with_source(domain, cookie_names)
-            if result is not None:
+        try:
+            if name == "firefox":
+                result = _extract_firefox_with_source(domain, cookie_names)
+            else:
+                cookies = extractors[name](domain, cookie_names)
+                result = (cookies, name) if cookies is not None else None
+        except PermissionError as exc:
+            if first_denial is None:
+                first_denial = exc
+            continue
+
+        if result is not None:
+            if has_complete_pair(result[0], cookie_names):
                 return result
-        else:
-            result = extractors[name](domain, cookie_names)
-            if result is not None:
-                return (result, name)
+            if fallback is None:
+                fallback = result
+
+    if fallback is not None:
+        return fallback
+    if first_denial is not None:
+        raise first_denial
 
     return None

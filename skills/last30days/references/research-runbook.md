@@ -176,6 +176,9 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--ticker="{SYMBOL}:{Company}"` | Section B | Topic is a listed company, a person who leads one, or a product or subsidiary of one |
 | `--company="{Name}:{site}"` | Section B | A person's company or a product's maker, listed or not |
 | `--jobs-board={URL}` | Section B | A search showed its job board |
+| `--employer="{Name}[:{domain}]"` | User's words | The user named a working person's employer. Never for a famous figure (paid LinkedIn reads add nothing). Starts a person run: drops name-only evidence; reads the employer's bio (and LinkedIn with `DEEPLINE_API_KEY`). For a company the person leads, use `--company` |
+| `--linkedin={URL}` | User's words | The user supplied the person's LinkedIn URL; trusted as their identity |
+| `--email={address}` | User's words | The user supplied an email. A work domain anchors identity; a personal one only drives the LinkedIn lookup. Never ask for one |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
 | `--github-repo={owner/repo}` | Step 0.5c | Topic is a product / project / open-source tool |
 | `--trustpilot-domain={domain}` | Step 0.5d | Topic is a company / brand / service and `--diagnose` reports `trustpilot_can_run` (the flag also activates the opt-in Trustpilot source) |
@@ -191,6 +194,8 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
 
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.
+
+**Working person:** pass `--employer` when the user names their company, and `--linkedin`/`--email` only as supplied, never asked for. Given a name alone, tell the user an employer would sharpen the result.
 
 ---
 
@@ -539,7 +544,8 @@ Only show lines for platforms where something was resolved. On the Reddit line, 
 
 **Rules for your plan:**
 - Emit 1 to 4 subqueries (more for multi-faceted topics, fewer for simple ones)
-- **CRITICAL: Your PRIMARY subquery MUST include every applicable source from `ACTIVE_SOURCES_LIST`, including installed lanes such as digg, arxiv, techmeme, bluesky, and linkedin.** Leave out only `grounding`, `corpus`, `perplexity` (engine-attached) and `amazon` / `meta_ads` (the engine adds them when `--search` names them; Step 0.5e / 0.5f). For a company or the person who leads it, name `jobs` (unlisted) plus top-level `jobs_queries`: 2-4 product or team terms, not the company name. Never invent an unavailable source. Preserve X whenever it is active. Never omit active Reddit (highest-signal discussion) or active YouTube (unique transcripts + official content). Secondary subqueries can target specific platforms. Above quick depth, an installed lane named in no subquery is added to the primary subquery unless it cannot run (Trustpilot when `trustpilot_can_run` is false); exclusions win.
+- **Primary: include every applicable source from `ACTIVE_SOURCES_LIST`.** Preserve X whenever it is active. Keep active Reddit and YouTube. Never add unavailable sources. Leave out only `grounding`, `corpus`, `perplexity` (engine-attached), `amazon` / `meta_ads` (`--search`, Steps 0.5e / 0.5f), and explicit omissions. For a company or the person who leads it, name `jobs` (unlisted) plus top-level `jobs_queries`: 2-4 product or team terms, not the company name.
+- Above quick depth, an unnamed optional lane is added to the primary subquery unless it cannot run (Trustpilot when `trustpilot_can_run` is false); exclusions win. To avoid backfilling a lane (digg, arxiv, techmeme, bluesky, truthsocial, stocktwits, linkedin, dripstack, devto, telegram, trustpilot), omit it from all subqueries and list it in top-level `"omit_sources": ["arxiv"]`. Never omit a user-requested source.
 - `search_query` should be concise and keyword-heavy - match how content is TITLED on platforms
 - `ranking_query` should read like a natural language question
 - **X disambiguation:** express your disambiguation intent in `ranking_query` (e.g., "What are people saying about Rome the city in Italy, not AS Roma or Rome Odunze?") — do not phrase-quote `search_query` for X or invent X operators; the engine handles X query compilation internally.

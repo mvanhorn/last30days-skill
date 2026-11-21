@@ -75,6 +75,8 @@ class QueryPlan:
     polymarket_hints: dict[str, Any] | None = None
     # The run's own stories, which the jobs lane searches each board for.
     jobs_queries: list[str] = field(default_factory=list)
+    # A person run: the identity gate fails closed even with no anchors.
+    person_run: bool = False
 
 
 @dataclass
@@ -503,6 +505,7 @@ def query_plan_from_dict(payload: dict[str, Any]) -> QueryPlan:
         person_identity_anchors=list(payload.get("person_identity_anchors") or []),
         polymarket_hints=copy.deepcopy(payload.get("polymarket_hints")),
         jobs_queries=list(payload.get("jobs_queries") or []),
+        person_run=bool(payload.get("person_run", False)),
     )
 
 

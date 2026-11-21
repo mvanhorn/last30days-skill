@@ -228,6 +228,97 @@ class CompetitorDiscoveryTests(unittest.TestCase):
             f"Expected Drake and Kendrick Lamar in {results}",
         )
 
+    def test_exa_human_site_keeps_keyword_competitor_path(self):
+        config = {
+            "BRAVE_API_KEY": "brave-key",
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Kanye West",
+                "company_site": "https://kanyewest.com/",
+                "company_source": "exa",
+                "company_peer_discovery": "keyword",
+            },
+        }
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(KANYE_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Kanye West", 2, config)
+        exa.assert_not_called()
+        joined = " ".join(results)
+        self.assertTrue(
+            "Drake" in joined and "Kendrick Lamar" in joined,
+            f"Expected Drake and Kendrick Lamar in {results}",
+        )
+
+    def test_company_led_by_person_skips_exa_company_index(self):
+        config = {
+            "BRAVE_API_KEY": "brave-key",
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Nvidia",
+                "company_site": "https://www.nvidia.com/",
+                "company_via_person": True,
+            },
+        }
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Jensen Huang", 2, config)
+        exa.assert_not_called()
+        self.assertTrue(results)
+
+    def test_exa_non_business_site_keeps_keyword_competitor_path(self):
+        config = {
+            "BRAVE_API_KEY": "brave-key",
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Python",
+                "company_site": "https://python.org/",
+                "company_source": "exa",
+                "company_peer_discovery": "keyword",
+            },
+        }
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search", return_value=(OPENAI_SERP, {}),
+        ):
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Python", 2, config)
+        exa.assert_not_called()
+        self.assertTrue(results)
+
+    def test_exa_food_homonym_keeps_company_competitor_index(self):
+        config = {
+            "EXA_API_KEY": "exa-key",
+            "_company": {
+                "company": "Granola",
+                "company_site": "https://granola.so/",
+                "company_source": "exa",
+            },
+        }
+        exa_items = [
+            {"title": "Otter", "url": "https://otter.ai/"},
+            {"title": "Fireflies", "url": "https://fireflies.ai/"},
+        ]
+        with mock.patch.object(
+            competitors.grounding, "exa_company_search",
+            return_value=(exa_items, {"label": "exa", "category": "company"}),
+        ) as exa, mock.patch.object(
+            competitors.grounding, "web_search",
+        ) as web:
+            with redirect_stderr(io.StringIO()):
+                results = competitors.discover_competitors("Granola", 2, config)
+        exa.assert_called_once()
+        web.assert_not_called()
+        self.assertEqual(results, ["Otter", "Fireflies"])
+
     def test_exa_strips_trailing_and_unbalanced_parentheticals(self):
         config = {"EXA_API_KEY": "exa-key"}
         exa_items = [

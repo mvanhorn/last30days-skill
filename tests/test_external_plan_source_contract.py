@@ -1,9 +1,12 @@
 """Unavailable external-plan sources must never broaden retrieval."""
 
+import json
+import sys
 from unittest.mock import patch
 
 import pytest
 
+import last30days as cli
 from lib import pipeline, planner
 
 
@@ -58,7 +61,7 @@ def test_internal_empty_intersection_retains_fallback():
 def _planned(report):
     """Subquery sources minus the installed/opted-in lanes the engine backfills."""
     return [
-        [s for s in sq.sources if s not in pipeline.HOST_PLAN_BACKFILL_SOURCES]
+        [s for s in sq.sources if s not in planner.HOST_PLAN_BACKFILL_SOURCES]
         for sq in report.query_plan.subqueries
     ]
 
@@ -130,6 +133,69 @@ def test_host_plan_gains_installed_lanes_it_never_named(capsys):
     ]
     assert {"digg", "arxiv"} <= fetched
     assert "digg, arxiv" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("depth", ["default", "deep"])
+def test_host_plan_can_omit_specific_installed_lanes(depth, capsys):
+    plan = dict(plan_with(["reddit"], ["hackernews"]), omit_sources=["arxiv", "devto"])
+    report, fetched = _run_with_plan(
+        "test topic", plan, depth=depth,
+        requested_sources=["reddit", "hackernews", "digg", "arxiv", "devto"],
+    )
+    assert [sq.sources for sq in report.query_plan.subqueries] == [
+        ["reddit", "digg"], ["hackernews"],
+    ]
+    assert fetched == {"reddit", "hackernews", "digg"}
+    assert {"arxiv", "devto"}.isdisjoint(report.query_plan.source_weights)
+    assert "part-0: digg" in capsys.readouterr().err
+
+
+def test_omitted_trustpilot_is_not_probed_or_backfilled():
+    plan = dict(plan_with(["reddit"]), omit_sources=["trustpilot"])
+    with patch.object(pipeline.trustpilot, "can_run_now") as can_run:
+        report, fetched = _run_with_plan("test topic", plan)
+    can_run.assert_not_called()
+    assert "trustpilot" not in report.query_plan.subqueries[0].sources
+    assert "trustpilot" not in fetched
+
+
+@pytest.mark.parametrize("mode", ["--mock", "--diagnose", "--preflight"])
+def test_cli_omission_skips_trustpilot_readiness_check(mode, tmp_path, capsys):
+    plan = dict(plan_with(["reddit"]), omit_sources=["trustpilot"])
+    config = {"EXCLUDE_SOURCES": "digg"}
+    with (
+        patch.object(sys, "argv", [
+            "last30days.py", "test topic", mode, "--no-browser-cookies",
+            "--plan", json.dumps(plan), "--search", "reddit,trustpilot",
+            "--emit", "json", "--save-dir", str(tmp_path),
+        ]),
+        patch.object(cli.env, "get_config", return_value=config),
+        patch.object(pipeline, "which", side_effect=lambda command: command),
+        patch.object(pipeline.trustpilot, "can_run_now", return_value={"can_run": True}) as can_run,
+    ):
+        assert cli.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    can_run.assert_not_called()
+    assert config["EXCLUDE_SOURCES"] == "digg"
+    if mode == "--diagnose":
+        assert not payload["trustpilot_can_run"]
+        assert {"digg", "trustpilot"}.isdisjoint(payload["available_sources"])
+    elif mode == "--preflight":
+        assert {"digg", "trustpilot"}.isdisjoint(payload["network"]["available_sources"])
+
+
+@pytest.mark.parametrize(
+    "omissions", ["arxiv", None, [True], [["arxiv"]], ["arxive"], ["amazon"]],
+)
+def test_host_plan_rejects_invalid_omissions(omissions):
+    with pytest.raises(ValueError, match="omit_sources"):
+        planner.validate_external_plan(dict(plan_with(["reddit"]), omit_sources=omissions))
+
+
+def test_host_plan_rejects_omitting_a_source_named_by_a_subquery():
+    plan = dict(plan_with(["reddit"], ["arxiv"]), omit_sources=["arxiv"])
+    with pytest.raises(ValueError, match="omit_sources.*arxiv"):
+        planner.validate_external_plan(plan)
 
 
 def test_host_plan_lane_named_in_secondary_subquery_is_not_duplicated():

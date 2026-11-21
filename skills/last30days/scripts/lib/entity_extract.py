@@ -164,19 +164,31 @@ def _extract_subreddits(reddit_items: List[Dict[str, Any]]) -> List[str]:
     return [sub for sub, _ in sub_counts.most_common()]
 
 
-def matches_person_identity(item, anchors: list[str], primary_handle: str | None = None) -> bool:
+def matches_person_identity(
+    item, anchors: list[str], primary_handle: str | None = None, *, person_run: bool = False,
+) -> bool:
     """Fail closed for scoped person evidence; a shared name is insufficient.
 
     Only the explicitly resolved X subject may omit the identity anchors.
     Related/discovered handles and other platforms cannot inherit that trust.
+
+    An item the engine fetched from the person's own resolved account carries
+    ``identity_anchor`` in its metadata and passes on that marker. In a person
+    run (``person_run``) the gate stays closed with no anchors at all: only
+    marked items and the resolved X subject's posts pass. Outside a person
+    run, no anchors means no gate.
     """
-    if not anchors:
+    metadata = item.metadata or {}
+    if metadata.get("identity_anchor") is True:
+        return True
+    if not anchors and not person_run:
         return True
     if (item.source == "x" and primary_handle and item.author
             and item.author.lstrip("@").lower() == primary_handle.lstrip("@").lower()):
         return True
+    if not anchors:
+        return False
     parts = [item.title or "", item.body or "", item.snippet or ""]
-    metadata = item.metadata or {}
     transcript = metadata.get("transcript_snippet")
     if isinstance(transcript, str):
         parts.append(transcript)

@@ -1100,6 +1100,13 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
 
 _DEVICE_BASE = "https://api.scrapecreators.com/v1/github/device"
 
+
+def _device_base() -> str:
+    if _DEVICE_BASE != "https://api.scrapecreators.com/v1/github/device":
+        return _DEVICE_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/github/device"
+
 # A GitHub device code is always XXXX-XXXX (uppercase alphanumerics). We validate
 # user_code against this before copying, labeling, or emitting it so a malformed
 # or key-shaped value (e.g. a returning-account server response) is never
@@ -1145,7 +1152,7 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     """
     try:
         body = json.dumps({}).encode()
-        req = Request(f"{_DEVICE_BASE}/code", data=body, method="POST")
+        req = Request(f"{_device_base()}/code", data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         with urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
@@ -1218,7 +1225,7 @@ def poll_device_auth(
 
         try:
             body = json.dumps({"device_code": device_code}).encode()
-            req = Request(f"{_DEVICE_BASE}/token", data=body, method="POST")
+            req = Request(f"{_device_base()}/token", data=body, method="POST")
             req.add_header("Content-Type", "application/json")
             with urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())
@@ -1296,7 +1303,7 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
 
     for attempt in range(_PROFILE_FETCH_ATTEMPTS):
         try:
-            req = Request(f"{_DEVICE_BASE}/profile")
+            req = Request(f"{_device_base()}/profile")
             req.add_header("Authorization", f"Bearer {access_token}")
             with urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())

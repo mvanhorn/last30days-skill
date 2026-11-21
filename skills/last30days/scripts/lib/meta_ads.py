@@ -47,12 +47,49 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import dates, http, log
 
-SC_BASE = "https://api.scrapecreators.com/v1/facebook/adLibrary"
+_DEFAULT_SC_BASE = "https://api.scrapecreators.com/v1/facebook/adLibrary"
+SC_BASE = _DEFAULT_SC_BASE
 
-SEARCH_ADS_URL = f"{SC_BASE}/search/ads"
-SEARCH_COMPANIES_URL = f"{SC_BASE}/search/companies"
-COMPANY_ADS_URL = f"{SC_BASE}/company/ads"
-AD_TRANSCRIPT_URL = f"{SC_BASE}/ad/transcript"
+_DEFAULT_SEARCH_ADS_URL = f"{_DEFAULT_SC_BASE}/search/ads"
+_DEFAULT_SEARCH_COMPANIES_URL = f"{_DEFAULT_SC_BASE}/search/companies"
+_DEFAULT_COMPANY_ADS_URL = f"{_DEFAULT_SC_BASE}/company/ads"
+_DEFAULT_AD_TRANSCRIPT_URL = f"{_DEFAULT_SC_BASE}/ad/transcript"
+
+SEARCH_ADS_URL = _DEFAULT_SEARCH_ADS_URL
+SEARCH_COMPANIES_URL = _DEFAULT_SEARCH_COMPANIES_URL
+COMPANY_ADS_URL = _DEFAULT_COMPANY_ADS_URL
+AD_TRANSCRIPT_URL = _DEFAULT_AD_TRANSCRIPT_URL
+
+
+def _sc_base() -> str:
+    if SC_BASE != _DEFAULT_SC_BASE:
+        return SC_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/facebook/adLibrary"
+
+
+def _search_ads_url() -> str:
+    if SEARCH_ADS_URL != _DEFAULT_SEARCH_ADS_URL:
+        return SEARCH_ADS_URL
+    return f"{_sc_base()}/search/ads"
+
+
+def _search_companies_url() -> str:
+    if SEARCH_COMPANIES_URL != _DEFAULT_SEARCH_COMPANIES_URL:
+        return SEARCH_COMPANIES_URL
+    return f"{_sc_base()}/search/companies"
+
+
+def _company_ads_url() -> str:
+    if COMPANY_ADS_URL != _DEFAULT_COMPANY_ADS_URL:
+        return COMPANY_ADS_URL
+    return f"{_sc_base()}/company/ads"
+
+
+def _ad_transcript_url() -> str:
+    if AD_TRANSCRIPT_URL != _DEFAULT_AD_TRANSCRIPT_URL:
+        return AD_TRANSCRIPT_URL
+    return f"{_sc_base()}/ad/transcript"
 
 DEFAULT_COUNTRY = "US"
 
@@ -661,7 +698,7 @@ def _discover(
     Returns ``(page, runner_ups, top_unmatched, state, strength)``.
     """
     response = _call(
-        SEARCH_ADS_URL,
+        _search_ads_url(),
         {
             "query": topic,
             "country": country,
@@ -681,7 +718,7 @@ def _discover(
         )
         return page, runner_ups, "", RESOLVED, strength
 
-    companies = _call(SEARCH_COMPANIES_URL, {"query": topic}, token, budget)
+    companies = _call(_search_companies_url(), {"query": topic}, token, budget)
     # Reshape company rows into the same shape resolve_page reads, so the
     # fallback gets the identical exact-before-partial tiering. Taking the
     # first name that merely matched would let this path resolve a lookalike
@@ -749,7 +786,7 @@ def _fetch_window(
         if cursor:
             params["cursor"] = cursor
         try:
-            response = _call(COMPANY_ADS_URL, params, token, budget)
+            response = _call(_company_ads_url(), params, token, budget)
         except (_Fatal, _StopFetching) as exc:
             # Whatever the reason, the creatives already fetched were paid for
             # and are valid: a rate limit or expired credential says "stop
@@ -830,7 +867,7 @@ def _add_transcripts(
     for item in candidates:
         try:
             response = _call(
-                AD_TRANSCRIPT_URL,
+                _ad_transcript_url(),
                 {"id": item["id"]},
                 token,
                 budget,

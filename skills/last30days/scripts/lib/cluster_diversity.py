@@ -21,7 +21,8 @@ Rules, applied to the head window (the first ``HEAD_SIZE`` slots):
   non-primary subquery whose titles use that subquery's own search terms
   (``outage`` for ``microsoft outage`` on the topic ``Microsoft``). Headlines
   about one event are often phrased too differently for pairwise similarity,
-  but they keep the event's word.
+  but they keep the event's word. Selected clusters linked by either rule
+  share a single cap.
 - Each non-primary subquery with a cluster that clears the relevance floor
   gets at least one head slot.
 
@@ -219,34 +220,31 @@ def diversify_clusters(
     uncovered = set().union(*covers)
 
     remaining = list(range(len(solid)))
-    picked: list[int] = []
-    # picked index -> every story key it counts toward (its title chain and
-    # its angle), so a story reached by both routes shares one counter.
-    story_of: dict[int, frozenset] = {}
-    story_counts: Counter = Counter()
+    # Picked cluster indices in head order, each mapped to its current story.
+    story_of: dict[int, int] = {}
 
-    def title_duplicate(index: int) -> tuple[float, frozenset | None]:
-        """Highest title similarity to a picked cluster, and its story keys."""
-        best_sim, best_story = 0.0, None
-        for chosen in picked:
+    def story_matches(index: int) -> tuple[float, frozenset[int]]:
+        best_sim = 0.0
+        stories: set[int] = set()
+        angle = angle_of[index]
+        for chosen, story in story_of.items():
             sim = _similarity(texts[index], texts[chosen])
-            if sim > best_sim:
-                best_sim, best_story = sim, story_of[chosen]
-        if best_sim < NEAR_DUPLICATE_SIMILARITY:
-            return best_sim, None
-        return best_sim, best_story
+            best_sim = max(best_sim, sim)
+            if sim >= NEAR_DUPLICATE_SIMILARITY or (
+                angle is not None and angle == angle_of[chosen]
+            ):
+                stories.add(story)
+        return best_sim, frozenset(stories)
 
-    while remaining and len(picked) < head_size:
-        slots_left = head_size - len(picked)
+    while remaining and len(story_of) < head_size:
+        slots_left = head_size - len(story_of)
+        story_counts = Counter(story_of.values())
         options: list[_Option] = []
         for index in remaining:
-            sim, dup_story = title_duplicate(index)
-            keys = set(dup_story or {("cluster", index)})
-            if angle_of[index]:
-                keys.add(("angle", angle_of[index]))
-            if any(story_counts[key] >= story_cap for key in keys):
+            sim, stories = story_matches(index)
+            if 1 + sum(story_counts[story] for story in stories) > story_cap:
                 continue
-            options.append(_Option(index, sim, dup_story is not None, frozenset(keys)))
+            options.append(_Option(index, sim, sim >= NEAR_DUPLICATE_SIMILARITY, stories))
         if not options:
             break
 
@@ -269,16 +267,16 @@ def diversify_clusters(
                 break
 
         choice = _mmr_pick(options, solid)
-        picked.append(choice.index)
-        story_of[choice.index] = choice.story
-        for key in choice.story:
-            story_counts[key] += 1
+        story = min(choice.stories, default=choice.index)
+        for chosen, previous_story in story_of.items():
+            if previous_story in choice.stories:
+                story_of[chosen] = story
+        story_of[choice.index] = story
         uncovered -= covers[choice.index]
         remaining.remove(choice.index)
 
-    picked_set = set(picked)
-    head = [solid[i] for i in picked]
-    tail = [solid[i] for i in range(len(solid)) if i not in picked_set]
+    head = [solid[i] for i in story_of]
+    tail = [solid[i] for i in range(len(solid)) if i not in story_of]
     return head + tail + sunk
 
 
@@ -286,7 +284,7 @@ class _Option(NamedTuple):
     index: int
     similarity: float
     duplicate: bool  # a title near-duplicate of a picked cluster
-    story: frozenset  # every story key the cluster counts toward
+    stories: frozenset[int]
 
 
 def _mmr_pick(options: list[_Option], solid: list[schema.Cluster]) -> _Option:

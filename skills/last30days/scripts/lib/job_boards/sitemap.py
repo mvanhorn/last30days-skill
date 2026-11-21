@@ -16,16 +16,14 @@ titles only, and says so.
 
 from __future__ import annotations
 
-import functools
-import ipaddress
 import re
-import socket
+import socket  # noqa: F401  kept: tests patch name resolution through this module
 import time
 from html import unescape
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from .. import http, jobs, jobs_digest
+from .. import http, jobs, jobs_digest, public_host
 from . import robots
 
 PROVIDER_SITEMAP = "sitemap"
@@ -68,34 +66,12 @@ def _public_url(url: str, host: str) -> bool:
     stays on the company's own site, so a sitemap cannot point the lane at a
     service on the user's network.
     """
-    parsed = urlparse(url)
-    name = (parsed.hostname or "").lower()
-    if parsed.scheme not in ("http", "https") or not name or name == "localhost" or name.endswith(".localhost"):
-        return False
-    if not jobs._same_site(name, host):
-        return False
-    try:
-        return ipaddress.ip_address(name).is_global
-    except ValueError:
-        return _resolves_public(name)
+    return public_host.public_url(url, host, resolves=_resolves_public)
 
 
-@functools.lru_cache(maxsize=256)
-def _resolves_public(name: str) -> bool:
-    """Whether every address ``name`` resolves to is a public one. A name on
-    the company's site that points at a private network (an internal
-    subdomain) is not fetched; a name that does not resolve is not either."""
-    try:
-        answers = socket.getaddrinfo(name, None, proto=socket.IPPROTO_TCP)
-    except (OSError, UnicodeError):
-        return False
-    addresses = set()
-    for answer in answers:
-        try:
-            addresses.add(ipaddress.ip_address(answer[4][0].split("%", 1)[0]))
-        except ValueError:
-            return False
-    return bool(addresses) and all(address.is_global for address in addresses)
+# The shared resolver, kept under this module's name so the check above
+# looks it up here at call time.
+_resolves_public = public_host.resolves_public
 
 
 def _fetch(url: str, deadline: float) -> str | None:
@@ -113,8 +89,7 @@ def _fetch(url: str, deadline: float) -> str | None:
 def _guard(url: str) -> Callable[[str], bool]:
     """The redirect check for a fetch of ``url``: it may be redirected only to
     an address on the same site that is not on a private network."""
-    host = jobs._host(url)
-    return lambda target: _public_url(target, host)
+    return public_host.redirect_guard(url, resolves=_resolves_public)
 
 
 def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
