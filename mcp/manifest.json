@@ -109,7 +109,7 @@
     "apify_api_token": {
       "type": "string",
       "title": "APIFY_API_TOKEN",
-      "description": "Apify API token. Powers TikTok and Instagram Reels search via Apify actors. Get one at https://console.apify.com/account/integrations.",
+      "description": "Legacy Apify API token. Not used by any source: TikTok and Instagram search run on SCRAPECREATORS_API_KEY.",
       "sensitive": true,
       "required": false
     },

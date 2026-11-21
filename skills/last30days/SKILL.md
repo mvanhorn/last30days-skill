@@ -248,7 +248,7 @@ After the response and required citations, stop and wait unless governing instru
 - Does not post, like, or modify content on any platform
 - Cookie reads require explicit consent. The sidecar requires `AGENTCOOKIE=on` or affirmative `BROWSER_CONSENT`. `--preflight` and `--diagnose` do not read browser-cookie values
 - Does not use Codex ChatGPT auth as an OpenAI provider credential
-- Does not share API keys between providers, except the TikTok legacy fallback: when `SCRAPECREATORS_API_KEY` is unset, `APIFY_API_TOKEN` is sent to ScrapeCreators (`get_tiktok_token` in `scripts/lib/env.py`)
+- Does not share API keys between providers (`APIFY_API_TOKEN` is never sent to ScrapeCreators and does not enable TikTok)
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
 - Hacker News and Polymarket are always available (no API key or binary)
