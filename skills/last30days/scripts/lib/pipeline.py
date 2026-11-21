@@ -406,6 +406,17 @@ def _excluded_sources(config: dict[str, Any]) -> set[str]:
     }
 
 
+def with_plan_source_omissions(
+    config: dict[str, Any], plan: dict | None,
+) -> dict[str, Any]:
+    """Apply a validated plan's exclusions without changing shared configuration."""
+    omissions = (plan or {}).get("omit_sources")
+    if not omissions:
+        return config
+    excluded = _excluded_sources(config).union(omissions)
+    return {**config, "EXCLUDE_SOURCES": ",".join(sorted(excluded))}
+
+
 class NoRequestedSourceAvailable(RuntimeError):
     """None of the sources the user asked for with --search is configured."""
 
@@ -2185,7 +2196,10 @@ def diagnose(
         "brightdata_authenticated": brightdata_status["brightdata_authenticated"],
         # Fresh browser session or a cached company record: the host resolves
         # a --trustpilot-domain only then. Local reads; never opens a browser.
-        "trustpilot_can_run": trustpilot.can_run_now(config)["can_run"],
+        "trustpilot_can_run": (
+            "trustpilot" not in _excluded_sources(config)
+            and trustpilot.can_run_now(config)["can_run"]
+        ),
         # safe=True (doctor/--diagnose/--preflight) must stay network-free:
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
@@ -2342,6 +2356,10 @@ def run(
     reddit_threads: reddit_envelope.Envelope | None = None,
 ) -> schema.Report:
     _check_research(config)
+    if external_plan is not None:
+        planner.validate_external_plan(external_plan)
+        config = with_plan_source_omissions(config, external_plan)
+    excluded_sources = _excluded_sources(config)
     # ``suppress_x_host_lane`` is distinct from ``internal_subrun``: comparison
     # entities share the latter and must still honor the connector lane;
     # only discovery enrichment passes set the former.
@@ -2367,7 +2385,6 @@ def run(
         corpus_dirs or config.get("_CORPUS_DIRS"),
         config.get("LAST30DAYS_CORPUS_DIRS"),
     )
-    excluded_sources = _excluded_sources(config)
     corpus_enabled = bool(resolved_corpus_dirs) and "corpus" not in excluded_sources
     corpus_requested = bool(requested_sources and "corpus" in requested_sources)
     if corpus_enabled and requested_sources and "corpus" not in requested_sources:
@@ -2531,8 +2548,6 @@ def run(
 
     if external_plan is not None:
         # External plan provided (e.g., from Claude Code via --plan flag).
-        # Explicit input is a contract: validate it before permissive sanitization.
-        planner.validate_external_plan(external_plan)
         if hiring_signals_mode:
             # Hiring-signals mode always runs the jobs lane. Add it before
             # sanitizing: with a jobs-only source set, sanitize would drop every
@@ -4910,30 +4925,6 @@ def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
         plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
-# Sources that are available only because the user installed their CLI or opted
-# in (INCLUDE_SOURCES, --search, a targeting flag). A host plan that names none
-# of them in any subquery almost always means the host planner never knew to
-# list them, not that it chose to skip them, so they ride the primary subquery.
-# A lane that cannot run this session (Trustpilot with no browser session or
-# cached record) is never added: the host skipped it on purpose.
-# Paid lanes with their own host decision step (amazon, meta_ads) stay out
-# unless this run asked for them (HOST_PLAN_PAID_LANES below);
-# EXCLUDE_SOURCES and --search already filter ``available``.
-HOST_PLAN_BACKFILL_SOURCES = (
-    "digg",
-    "arxiv",
-    "techmeme",
-    "bluesky",
-    "truthsocial",
-    "stocktwits",
-    "linkedin",
-    "dripstack",
-    "devto",
-    "telegram",
-    "trustpilot",
-)
-
-
 # Paid lanes the host requests per run outside the plan (runbook Step 0.5e /
 # 0.5f): source -> (config key of its targeting flag, log label). They join a
 # host plan only when this run asked: the source is in --search, or its
@@ -4990,7 +4981,7 @@ def _ensure_unplanned_lanes_in_host_plan(
     if not plan.subqueries:
         return
     planned = {source for subquery in plan.subqueries for source in subquery.sources}
-    candidates = (*(HOST_PLAN_BACKFILL_SOURCES if installed else ()), *asked)
+    candidates = (*(planner.HOST_PLAN_BACKFILL_SOURCES if installed else ()), *asked)
     missing = []
     for source in candidates:
         if source not in available or source in planned or source in missing:
@@ -5025,7 +5016,7 @@ def _ensure_unplanned_lanes_in_host_plan(
         "Planner",
         "Added installed/opted-in/requested sources absent from every --plan subquery to "
         f"{plan.subqueries[0].label}: {', '.join(missing)} "
-        "(set EXCLUDE_SOURCES to skip them).",
+        "(use EXCLUDE_SOURCES or, for optional lanes, plan omit_sources to skip them).",
         tty_only=False,
     )
 
