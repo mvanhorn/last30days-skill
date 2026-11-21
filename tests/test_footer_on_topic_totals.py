@@ -273,6 +273,8 @@ def test_issue_run_shape_puts_the_subject_account_first():
     # still edge out one 2,000-engagement post (about 7.6), but no longer the
     # subject's own account (about 27).
     assert _voices(report) == "🗣️ Top voices: @Microsoft, @TheCyberSecHub, @mustafasuleyman"
+    stats_line = next(line for line in render.render_compact(report).splitlines() if line.startswith("- X: 15 items |"))
+    assert stats_line.endswith("voices: @Microsoft, @TheCyberSecHub, @mustafasuleyman")
 
 
 def test_names_without_an_at_are_not_ranked_as_handles():
