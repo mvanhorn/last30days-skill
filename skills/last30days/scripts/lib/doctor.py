@@ -1845,10 +1845,20 @@ def render_text(report: Dict[str, Any]) -> str:
         active = [
             f"{name} ({entry['status']})"
             for name, entry in harnesses.items()
-            if entry.get("status") in {"installed", "plugin-bundled"}
+            if entry.get("status") in {"installed", "plugin-active"}
         ]
         finished_count = hooks_info.get("finished_briefs", 0)
-        active_label = ", ".join(active) if active else "none (run `last30days.py setup --install-hooks`)"
+        if active:
+            active_label = ", ".join(active)
+        else:
+            bundled_note = (
+                " (Claude plugin hook available when installed as a plugin)"
+                if (harnesses.get("claude") or {}).get("plugin_bundled_available")
+                else ""
+            )
+            active_label = (
+                f"none active{bundled_note} — run `last30days.py setup --install-hooks`"
+            )
         lines.append("")
         lines.append(f"brief capture hooks: {active_label}; finished briefs: {finished_count}")
 

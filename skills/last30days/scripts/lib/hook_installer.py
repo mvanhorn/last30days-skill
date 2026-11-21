@@ -104,17 +104,18 @@ def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
         Path(staged.name).unlink(missing_ok=True)
 
 
+def _handler_has_marker(handler: object) -> bool:
+    return isinstance(handler, dict) and HOOK_MARKER in str(handler.get("command") or "")
+
+
 def _group_has_marker(group: object) -> bool:
+    if _handler_has_marker(group):
+        return True
     if not isinstance(group, dict):
         return False
-    if HOOK_MARKER in str(group.get("command") or ""):
-        return True
     handlers = group.get("hooks")
     if isinstance(handlers, list):
-        return any(
-            isinstance(handler, dict) and HOOK_MARKER in str(handler.get("command") or "")
-            for handler in handlers
-        )
+        return any(_handler_has_marker(handler) for handler in handlers)
     return False
 
 
@@ -122,9 +123,11 @@ def _install_grouped_event(
     path: Path,
     *,
     event: str,
-    new_group: dict[str, Any],
+    new_handler: dict[str, Any],
+    new_group: dict[str, Any] | None = None,
     extra_top: dict[str, Any] | None = None,
 ) -> str:
+    """Install or update ONLY the matching handler while preserving sibling handlers and group settings."""
     data = _read_json_object(path)
     if extra_top:
         for key, value in extra_top.items():
@@ -139,19 +142,29 @@ def _install_grouped_event(
         hooks[event] = groups
 
     for idx, existing in enumerate(groups):
-        if _group_has_marker(existing):
-            if existing == new_group:
+        if _handler_has_marker(existing):
+            if existing == new_handler:
                 return "already-installed"
-            groups[idx] = new_group
+            groups[idx] = new_handler
             _write_json_atomic(path, data)
             return "updated"
+        if isinstance(existing, dict) and isinstance(existing.get("hooks"), list):
+            child_hooks = existing["hooks"]
+            for h_idx, handler in enumerate(child_hooks):
+                if _handler_has_marker(handler):
+                    if handler == new_handler:
+                        return "already-installed"
+                    child_hooks[h_idx] = new_handler
+                    _write_json_atomic(path, data)
+                    return "updated"
 
-    groups.append(new_group)
+    groups.append(new_group if new_group is not None else new_handler)
     _write_json_atomic(path, data)
     return "installed"
 
 
 def _uninstall_grouped_event(path: Path, *, event: str) -> str:
+    """Remove ONLY the matching handler, keeping sibling handlers and group metadata intact."""
     if not path.is_file():
         return "not-installed"
     data = _read_json_object(path)
@@ -161,10 +174,28 @@ def _uninstall_grouped_event(path: Path, *, event: str) -> str:
     groups = hooks.get(event)
     if not isinstance(groups, list):
         return "not-installed"
-    filtered = [group for group in groups if not _group_has_marker(group)]
-    if len(filtered) == len(groups):
+
+    changed = False
+    kept_groups: list[Any] = []
+    for entry in groups:
+        if _handler_has_marker(entry):
+            changed = True
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+            orig_handlers = entry["hooks"]
+            kept_handlers = [h for h in orig_handlers if not _handler_has_marker(h)]
+            if len(kept_handlers) != len(orig_handlers):
+                changed = True
+                if kept_handlers:
+                    updated_group = dict(entry)
+                    updated_group["hooks"] = kept_handlers
+                    kept_groups.append(updated_group)
+                continue
+        kept_groups.append(entry)
+
+    if not changed:
         return "not-installed"
-    hooks[event] = filtered
+    hooks[event] = kept_groups
     _write_json_atomic(path, data)
     return "removed"
 
@@ -175,29 +206,27 @@ def _install_one(harness: str, home: Path, script: Path) -> dict[str, Any]:
     note = ""
 
     if harness in {"claude", "codex"}:
-        group = {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
-        status = _install_grouped_event(path, event="Stop", new_group=group)
+        handler = {"type": "command", "command": command, "timeout": 5}
+        group = {"hooks": [handler]}
+        status = _install_grouped_event(path, event="Stop", new_handler=handler, new_group=group)
         if harness == "codex":
             note = "Run /hooks inside Codex CLI to trust the newly installed hook."
     elif harness == "gemini":
-        group = {
-            "matcher": "*",
-            "hooks": [
-                {
-                    "name": GEMINI_HOOK_NAME,
-                    "type": "command",
-                    "command": command,
-                    "timeout": 5000,
-                }
-            ],
+        handler = {
+            "name": GEMINI_HOOK_NAME,
+            "type": "command",
+            "command": command,
+            "timeout": 5000,
         }
-        status = _install_grouped_event(path, event="AfterAgent", new_group=group)
+        group = {"matcher": "*", "hooks": [handler]}
+        status = _install_grouped_event(path, event="AfterAgent", new_handler=handler, new_group=group)
     elif harness == "cursor":
-        group = {"command": command}
+        handler = {"command": command}
         status = _install_grouped_event(
             path,
             event="afterAgentResponse",
-            new_group=group,
+            new_handler=handler,
+            new_group=None,
             extra_top={"version": 1},
         )
     elif harness == "antigravity":
@@ -352,17 +381,30 @@ def _is_installed(harness: str, home: Path) -> bool:
     return isinstance(groups, list) and any(_group_has_marker(g) for g in groups)
 
 
-def hook_status(*, home: Path | str | None = None) -> dict[str, dict[str, str]]:
+def hook_status(*, home: Path | str | None = None) -> dict[str, dict[str, Any]]:
     """Read-only inspection of brief-capture hook installation per local harness."""
     base = _home_dir(home)
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
+    plugin_root_env = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    plugin_active = bool(
+        plugin_root_env
+        and (Path(plugin_root_env).expanduser() / ".claude-plugin" / "hooks.json").is_file()
+    )
+    repo_bundled = (
+        Path(__file__).resolve().parents[4] / ".claude-plugin" / "hooks.json"
+    ).is_file()
+
     for harness in SUPPORTED_HARNESSES:
         path = _config_path(harness, home=base)
         installed = _is_installed(harness, base)
-        status = "installed" if installed else "not-installed"
-        if harness == "claude" and not installed:
-            repo_hook = Path(__file__).resolve().parents[4] / ".claude-plugin" / "hooks.json"
-            if repo_hook.is_file():
-                status = "plugin-bundled"
-        out[harness] = {"status": status, "path": str(path)}
+        if installed:
+            status = "installed"
+        elif harness == "claude" and plugin_active:
+            status = "plugin-active"
+        else:
+            status = "not-installed"
+        entry: dict[str, Any] = {"status": status, "path": str(path)}
+        if harness == "claude" and repo_bundled and not installed and not plugin_active:
+            entry["plugin_bundled_available"] = True
+        out[harness] = entry
     return out

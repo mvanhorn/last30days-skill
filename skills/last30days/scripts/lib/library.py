@@ -23,6 +23,8 @@ PRIVATE_CORPUS_END = "<!-- LAST30DAYS_PRIVATE_CORPUS_END -->"
 
 _REPORT_TITLE = re.compile(r"^#\s+last30days(?:\s+v[^:]+)?:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _FIRST_TITLE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_COMPARISON_TITLE_SUFFIX = re.compile(r":\s*What the Community Says\s*\(/Last30Days\)\s*$", re.IGNORECASE)
+_TOPIC_META_COMMENT = re.compile(r"^<!--\s*last30days-topic:\s*(.+?)\s*-->$", re.MULTILINE)
 _BADGE_LINE = re.compile(r"^🌐\s*last30days\b[^\r\n]*$", re.MULTILINE)
 _BADGE_SYNCED_DATE = re.compile(r"\bsynced\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
 _BADGE_VERSION = re.compile(r"^v\d+\.\d+(?:\.\d+)*(?:[-+][A-Za-z0-9._-]+)?$")
@@ -36,6 +38,12 @@ _BADGE_MONTHS = {
     "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 _UNSUFFIXED_RAW_STEM = re.compile(r"^(.+)-raw(?:-\d{4}-\d{2}-\d{2}(?:-\d+)?)?$")
+_PROSE_LABEL_LINE = re.compile(
+    r"^(?:\*\*|__)?(?:what i learned|key patterns(?:\s+from the research)?|best takes|tl;?dr|summary|verdict|bottom line)(?:\*\*|__)?:?(?:\*\*|__)?$",
+    re.IGNORECASE,
+)
+_CORPUS_FOOTER_LINE = re.compile(r"\bYour files\b", re.IGNORECASE)
+_BOLD_FROM_YOUR_FILES = re.compile(r"^\s*(?:\*\*|__)?From your files:?(?:\*\*|__)?\s*$", re.MULTILINE | re.IGNORECASE)
 _DATE_RANGE = re.compile(
     r"^-\s*Date range:\s*\d{4}-\d{2}-\d{2}\s+to\s+(\d{4}-\d{2}-\d{2})\s*$",
     re.MULTILINE | re.IGNORECASE,
@@ -126,7 +134,32 @@ def _public_brief_clusters(match: re.Match[str]) -> str:
     return match["section"] + labels.sub("", match["body"])
 
 
+def has_private_corpus(markdown: str) -> bool:
+    """Return whether a document carries local-corpus markers or citations."""
+    return bool(
+        PRIVATE_CORPUS_START in markdown
+        or _LEGACY_CORPUS_SIGNAL.search(markdown)
+        or _PRIVATE_FRESHNESS_ROW.search(markdown)
+        or "corpus://" in markdown
+        or _CORPUS_FOOTER_LINE.search(markdown)
+        or _BOLD_FROM_YOUR_FILES.search(markdown)
+    )
+
+
+def is_unbounded_private_brief(markdown: str) -> bool:
+    """Return True when a synthesized chat brief carries local-corpus content.
+
+    Chat synthesis combines corpus evidence directly into heading-free prose, so
+    private passages cannot be reliably isolated by heading or marker stripping.
+    Fail closed: keep the brief local-only (0o600) and exclude it from shared
+    FTS indexing and public HTML publishing.
+    """
+    return bool(_BADGE_LINE.search(markdown) and has_private_corpus(markdown))
+
+
 def public_markdown(markdown: str) -> str:
+    if is_unbounded_private_brief(markdown):
+        return ""
     corpus_document = (
         PRIVATE_CORPUS_START in markdown
         or _LEGACY_CORPUS_SIGNAL.search(markdown)
@@ -283,11 +316,12 @@ def scan_library(
 
 
 def _suppress_superseded_raw(entries: dict[str, LibraryEntry]) -> dict[str, LibraryEntry]:
-    """Hide unsuffixed raw dumps when a finished brief covers the same topic and date."""
+    """Hide unsuffixed raw dumps when a public finished brief covers the same topic and date."""
     finished_keys = {
         (entry.slug, entry.published_date)
         for entry in entries.values()
         if entry.source_format == "finished-brief"
+        and not is_unbounded_private_brief(entry.content)
     }
     if not finished_keys:
         return entries
@@ -316,20 +350,38 @@ def _keep_preferred(entries: dict[str, LibraryEntry], entry: LibraryEntry) -> No
 def parse_markdown_file(path: Path, *, source_format: str = "markdown") -> LibraryEntry:
     """Parse one saved Markdown report or finished brief into a LibraryEntry."""
     content = path.read_text(encoding="utf-8")
-    public_content = public_markdown(content)
-    badge_topic, badge_date = _parse_badge_line(public_content)
-    title_match = _REPORT_TITLE.search(public_content) or _FIRST_TITLE.search(public_content)
-    if title_match:
-        topic = _clean_inline(title_match.group(1))
+    unbounded_private = is_unbounded_private_brief(content)
+    parse_source = content if unbounded_private else public_markdown(content)
+    meta_topic_match = _TOPIC_META_COMMENT.search(content)
+    badge_topic, badge_date = _parse_badge_line(parse_source)
+    report_title_match = _REPORT_TITLE.search(parse_source)
+    first_title_match = _FIRST_TITLE.search(parse_source)
+
+    if meta_topic_match:
+        topic = _clean_inline(meta_topic_match.group(1))
+    elif source_format == "finished-brief" and badge_topic:
+        # Preserve the badge topic so comparison display headings like
+        # "# Codex vs Cursor: What the Community Says (/Last30Days)" do not
+        # diverge from the raw report's topic and slug.
+        topic = _clean_inline(badge_topic)
+    elif report_title_match:
+        topic = _clean_inline(report_title_match.group(1))
     elif badge_topic:
         topic = _clean_inline(badge_topic)
+    elif first_title_match:
+        raw_heading = _COMPARISON_TITLE_SUFFIX.sub("", first_title_match.group(1))
+        topic = _clean_inline(raw_heading)
     else:
         raise ValueError("no Markdown title found")
     if not topic:
         raise ValueError("empty Markdown title")
-    published_date = badge_date or _markdown_date(public_content, path)
-    headline = _markdown_headline(public_content) or _brief_prose_headline(public_content) or topic
-    summary = _markdown_summary(public_content) or _brief_prose_summary(public_content) or headline
+    published_date = badge_date or _markdown_date(parse_source, path)
+    if unbounded_private:
+        headline = topic
+        summary = "Private local-corpus brief (stored locally only)."
+    else:
+        headline = _markdown_headline(parse_source) or _brief_prose_headline(parse_source) or topic
+        summary = _markdown_summary(parse_source) or _brief_prose_summary(parse_source) or headline
     return LibraryEntry(
         slug=slugify(topic),
         topic=topic,
@@ -409,11 +461,11 @@ def _brief_prose_paragraph(content: str) -> str:
             continue
         if (
             stripped.startswith("🌐 last30days")
+            or stripped.startswith("<!--")
             or stripped.startswith("#")
             or stripped.startswith("---")
             or stripped.startswith("|")
-            or re.match(r"^\*\*KEY PATTERNS", stripped, re.IGNORECASE)
-            or re.match(r"^KEY PATTERNS", stripped, re.IGNORECASE)
+            or _PROSE_LABEL_LINE.fullmatch(stripped) is not None
         ):
             if para:
                 break
@@ -451,14 +503,14 @@ def _markdown_headline(content: str) -> str:
 
 def _markdown_summary(content: str) -> str:
     learned = re.search(
-        r"^##\s+What I learned\s*$\n+(.+?)(?=\n#{1,3}\s|\n---|\Z)",
+        r"^(?:##\s+What I learned|(?:\*\*|__)?What I learned:?(?:\*\*|__)?)\s*$\n+(.+?)(?=\n#{1,3}\s|\n---|\n```|\Z)",
         content,
         re.MULTILINE | re.DOTALL | re.IGNORECASE,
     )
     if learned:
         for paragraph in re.split(r"\n\s*\n", learned.group(1)):
             cleaned = _clean_inline(paragraph)
-            if cleaned:
+            if cleaned and _PROSE_LABEL_LINE.fullmatch(cleaned) is None:
                 return cleaned[:500]
     evidence = re.search(r"^\s*-\s*Evidence:\s*(.+?)\s*$", content, re.MULTILINE | re.IGNORECASE)
     if evidence:

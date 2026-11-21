@@ -209,7 +209,7 @@ def test_save_finished_brief_is_idempotent_and_suffixes_distinct_content(tmp_pat
     assert fourth.path == third.path
 
 
-def test_corpus_brief_uses_private_permissions_and_public_markdown_strips_section(tmp_path):
+def test_corpus_brief_uses_private_permissions_and_fails_closed_for_public_output(tmp_path):
     brief = brief_capture.extract_finished_brief(CORPUS_BRIEF)
     assert brief is not None
     assert brief.is_private is True
@@ -220,8 +220,89 @@ def test_corpus_brief_uses_private_permissions_and_public_markdown_strips_sectio
         assert stat.S_IMODE(result.path.stat().st_mode) == 0o600
         assert stat.S_IMODE(result.path.parent.stat().st_mode) == 0o700
 
-    sanitized = library.public_markdown(brief.content)
-    assert "Project Falcon" not in sanitized
-    assert "From your files" not in sanitized
-    assert "Public forums focus on Acme's new pricing tier." in sanitized
-    assert "Customers ask for annual billing discounts." in sanitized
+    # Synthesized chat briefs with local corpus markers fail closed for public output.
+    assert library.is_unbounded_private_brief(brief.content) is True
+    assert library.public_markdown(brief.content) == ""
+
+    # Even heading-free woven prose with only a footer `Your files` marker fails closed.
+    woven = """🌐 last30days · Acme Strategy · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Internal Q4 memo notes Project Cobalt launches on Dec 15 alongside public forum rumors.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 6 threads
+├─ 📁 Your files: 1 note
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+"""
+    woven_brief = brief_capture.extract_finished_brief(woven)
+    assert woven_brief is not None
+    assert woven_brief.is_private is True
+    assert library.public_markdown(woven_brief.content) == ""
+
+
+def test_concurrent_saves_do_not_overwrite_distinct_briefs(tmp_path):
+    import concurrent.futures
+
+    briefs = [
+        brief_capture.extract_finished_brief(
+            MODERN_BRIEF.replace("active debate over pricing", f"unique variant {idx}")
+        )
+        for idx in range(6)
+    ]
+    assert all(b is not None for b in briefs)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(
+            pool.map(lambda b: brief_capture.save_finished_brief(b, tmp_path), briefs)
+        )
+
+    assert all(r.status == "saved" for r in results)
+    saved_paths = {r.path for r in results}
+    assert len(saved_paths) == 6
+    saved_contents = {p.read_text(encoding="utf-8") for p in saved_paths}
+    for idx in range(6):
+        assert any(f"unique variant {idx}" in text for text in saved_contents)
+
+
+def test_long_truncated_badge_recovers_full_topic_from_raw_footer(tmp_path):
+    full_topic = (
+        "Comparing open source local vector databases for hybrid retrieval "
+        "in production agent workflows"
+    )
+    raw_path = tmp_path / "comparing-open-source-local-vector-databases-for-hybrid-retrieval-in-production-agent-workflows-raw.md"
+    raw_path.write_text(
+        f"# last30days v4.5.0: {full_topic}\n\n- Date range: 2026-10-22 to 2026-11-21\n",
+        encoding="utf-8",
+    )
+    long_brief_text = f"""🌐 last30days · Comparing open source local vector databases for hybrid... · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Engineers compare Qdrant, LanceDB, and SQLite-vec for hybrid search.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 10 threads
+├─ 🗓️ Oct 22 to Nov 21, 2026
+└─ 📎 Raw results saved to {raw_path}
+---
+```
+"""
+    captured = brief_capture.extract_finished_brief(long_brief_text)
+    assert captured is not None
+    assert captured.topic == full_topic
+    assert captured.slug == library.slugify(full_topic)
+    assert f"<!-- last30days-topic: {full_topic} -->" in captured.content
+
+    saved = brief_capture.save_finished_brief(captured, tmp_path)
+    parsed = library.parse_markdown_file(saved.path, source_format="finished-brief")
+    assert parsed.topic == full_topic
+    assert parsed.slug == library.slugify(full_topic)
+

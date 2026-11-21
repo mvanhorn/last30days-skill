@@ -3964,7 +3964,9 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             f"library feed; preserved the original at {backup.name}\n"
         )
 
+    publishable_entries: list[library.LibraryEntry] = []
     publishable_brief_documents: dict[str, str] = {}
+    omitted_private_briefs = 0
     for entry in entries:
         rendered = html_render.render_library_brief(entry)
         target = rendered_briefs_dir / entry.output_name
@@ -3974,6 +3976,10 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             str(target),
             private=entry.entry_id in private_entries,
         )
+        if library.is_unbounded_private_brief(entry.content):
+            omitted_private_briefs += 1
+            continue
+        publishable_entries.append(entry)
         publishable_brief_documents[entry.entry_id] = html_render.render_library_brief(
             entry, include_private=False
         )
@@ -4013,6 +4019,11 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     )
 
     if args.publish:
+        if omitted_private_briefs:
+            sys.stderr.write(
+                f"[last30days] Omitted {omitted_private_briefs} private local-corpus "
+                "finished brief(s) from public publishing.\n"
+            )
         password = _publish_password_for_args(args, config)
         entry_urls: dict[str, str] = {}
         try:
@@ -4027,7 +4038,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             if batch_error := getattr(brief_results, "error", None):
                 raise batch_error
             published_index = html_render.render_library_index(
-                entries,
+                publishable_entries,
                 entry_urls=entry_urls,
                 feed_url=None,
             )
@@ -4045,7 +4056,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         # Keep the local artifacts useful as a record of the live publication.
         feed_path.write_text(
             feed.render_atom(
-                entries,
+                publishable_entries,
                 library_id=library_id,
                 entry_urls=entry_urls,
                 author=feed_author,
@@ -4053,7 +4064,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             encoding="utf-8",
         )
         index_path.write_text(
-            html_render.render_library_index(entries, entry_urls=entry_urls),
+            html_render.render_library_index(publishable_entries, entry_urls=entry_urls),
             encoding="utf-8",
         )
         sys.stderr.write(f"[last30days] Published library to {index_url}\n")

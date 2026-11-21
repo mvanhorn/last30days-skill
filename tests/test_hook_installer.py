@@ -170,8 +170,7 @@ def test_install_idempotent_and_uninstall_preserves_existing_hooks(tmp_path, har
     removed = hook_installer.uninstall_hooks(harness, home=tmp_path)
     assert removed["ok"] is True
     assert removed["results"][harness]["status"] == "removed"
-    expected_after = "plugin-bundled" if harness == "claude" else "not-installed"
-    assert hook_installer.hook_status(home=tmp_path)[harness]["status"] == expected_after
+    assert hook_installer.hook_status(home=tmp_path)[harness]["status"] == "not-installed"
 
     if harness == "claude":
         data = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
@@ -245,3 +244,67 @@ def test_doctor_reports_brief_capture_hooks_and_finished_count_read_only(tmp_pat
     assert hooks_info["finished_briefs"] == 1
     assert hooks_info["harnesses"]["cursor"]["status"] == "installed"
     assert hooks_info["harnesses"]["codex"]["status"] == "not-installed"
+
+
+def test_shared_group_reinstall_and_uninstall_preserve_sibling_handlers(tmp_path):
+    script = tmp_path / "new_dir" / "capture_brief_hook.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+    cfg = tmp_path / ".gemini" / "settings.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "AfterAgent": [
+                        {
+                            "matcher": "custom-matcher",
+                            "hooks": [
+                                {"name": "keep-sibling", "type": "command", "command": "echo keep-me", "timeout": 1000},
+                                {"name": "last30days-brief-capture", "type": "command", "command": 'python3 "/old/capture_brief_hook.py"', "timeout": 5000},
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    updated = hook_installer.install_hooks("gemini", home=tmp_path, script_path=script)
+    assert updated["results"]["gemini"]["status"] == "updated"
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+    group = data["hooks"]["AfterAgent"][0]
+    assert group["matcher"] == "custom-matcher"
+    assert [h["command"] for h in group["hooks"]] == [
+        "echo keep-me",
+        f'python3 "{script.resolve()}"',
+    ]
+
+    removed = hook_installer.uninstall_hooks("gemini", home=tmp_path)
+    assert removed["results"]["gemini"]["status"] == "removed"
+    data_after = json.loads(cfg.read_text(encoding="utf-8"))
+    assert len(data_after["hooks"]["AfterAgent"]) == 1
+    assert data_after["hooks"]["AfterAgent"][0]["matcher"] == "custom-matcher"
+    assert data_after["hooks"]["AfterAgent"][0]["hooks"] == [
+        {"name": "keep-sibling", "type": "command", "command": "echo keep-me", "timeout": 1000}
+    ]
+
+
+def test_doctor_does_not_claim_inactive_claude_plugin_hook_is_active(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    status = hook_installer.hook_status(home=tmp_path)
+    assert status["claude"]["status"] == "not-installed"
+    assert status["claude"].get("plugin_bundled_available") is True
+
+    report = doctor.build_report({"LAST30DAYS_MEMORY_DIR": str(tmp_path / "memory")})
+    rendered = doctor.render_text(report)
+    assert "none active" in rendered
+    assert "setup --install-hooks" in rendered
+
+    # When CLAUDE_PLUGIN_ROOT points to the active plugin root, status is plugin-active.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO_ROOT))
+    assert hook_installer.hook_status(home=tmp_path)["claude"]["status"] == "plugin-active"
+

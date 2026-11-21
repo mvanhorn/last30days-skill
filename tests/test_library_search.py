@@ -712,26 +712,42 @@ def test_markdown_save_to_scoped_dir_syncs_a_scoped_index(tmp_path):
     )
 
 
-def test_index_entry_upserts_finished_brief_in_o1_without_scanning_and_redacts_corpus(
+def test_index_entry_upserts_finished_brief_in_o1_and_excludes_corpus_briefs(
     tmp_path, monkeypatch
 ):
     memory = tmp_path / "memory"
     finished = memory / "finished"
     finished.mkdir(parents=True)
     db_path = tmp_path / "library.db"
-    brief_path = finished / "anthropic-2026-11-21.md"
-    brief_path.write_text(
+    public_brief = finished / "anthropic-2026-11-21.md"
+    public_brief.write_text(
         """🌐 last30days · Anthropic · Oct 22 to Nov 21, 2026 · v4.5.0
 
+What I learned:
+
 Developers praise Claude Code reliability on multi-file refactors.
-
-## From your files
-
-Confidential Q4 contract negotiation token ZEBRA99.
 
 ```text
 ---
 ✅ All agents reported back!
+└─ 🗓️ Oct 22 to Nov 21, 2026
+---
+```
+""",
+        encoding="utf-8",
+    )
+    private_brief = finished / "secret-2026-11-21.md"
+    private_brief.write_text(
+        """🌐 last30days · Secret Plan · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Confidential Q4 contract negotiation token ZEBRA99 woven into prose.
+
+```text
+---
+✅ All agents reported back!
+├─ 📁 Your files: 1 note
 └─ 🗓️ Oct 22 to Nov 21, 2026
 ---
 ```
@@ -745,8 +761,11 @@ Confidential Q4 contract negotiation token ZEBRA99.
     monkeypatch.setattr(library, "scan_library", _forbid_scan)
 
     assert library_index.index_entry(
-        brief_path, db_path=db_path, source_format="finished-brief"
+        public_brief, db_path=db_path, source_format="finished-brief"
     ) is True
+    assert library_index.index_entry(
+        private_brief, db_path=db_path, source_format="finished-brief"
+    ) is False
 
     public_hits = library_index.search(
         "refactors",
@@ -763,4 +782,17 @@ Confidential Q4 contract negotiation token ZEBRA99.
         store_db_path=tmp_path / "missing-store.db",
     )
     assert private_hits == []
+
+    # Full sync_library also excludes unbounded private corpus briefs.
+    monkeypatch.undo()
+    library_index.sync_library(memory, tmp_path / "missing-briefings", db_path=db_path)
+    assert (
+        library_index.search(
+            "ZEBRA99",
+            db_path=db_path,
+            store_db_path=tmp_path / "missing-store.db",
+        )
+        == []
+    )
+
 

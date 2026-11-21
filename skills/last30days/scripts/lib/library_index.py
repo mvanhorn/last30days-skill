@@ -141,6 +141,8 @@ def index_entry(
         entry = library.parse_markdown_file(source, source_format=source_format)
     except (OSError, UnicodeError, ValueError):
         return False
+    if library.is_unbounded_private_brief(entry.content):
+        return False
     target = Path(db_path).expanduser()
     _ensure_private_directory(target.parent)
     with _connect(target) as conn:
@@ -259,6 +261,8 @@ def _sync_library(
         fts_rows = conn.execute("SELECT count(*) FROM library_fts").fetchone()[0]
         fts_trustworthy = fts_rows >= len(existing) if existing else True
         for entry in entries:
+            if library.is_unbounded_private_brief(entry.content):
+                continue
             current_ids.add(entry.entry_id)
             stat = entry.source_path.stat()
             fingerprint = _fingerprint(_indexable_content(entry.content))
