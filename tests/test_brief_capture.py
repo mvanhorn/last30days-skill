@@ -305,4 +305,7 @@ Engineers compare Qdrant, LanceDB, and SQLite-vec for hybrid search.
     parsed = library.parse_markdown_file(saved.path, source_format="finished-brief")
     assert parsed.topic == full_topic
     assert parsed.slug == library.slugify(full_topic)
+    # Staging temp files are cleaned up after atomic publish.
+    assert list((tmp_path / "finished").glob("*.tmp")) == []
+
 

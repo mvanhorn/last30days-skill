@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -282,24 +284,47 @@ def _ensure_finished_dir(path: Path, *, private: bool) -> None:
 
 
 def _write_exclusive(path: Path, content: str, *, private: bool) -> bool:
-    """Reserve and write ``path`` via O_EXCL; return False if already created concurrently."""
+    """Write full content to a hidden temp file, then link to ``path`` without overwriting.
+
+    Readers scanning ``*.md`` never observe a partial file, and concurrent
+    writers cannot clobber an existing ``path`` because ``os.link`` fails with
+    ``FileExistsError`` if the target already exists.
+    """
     mode = 0o600 if private else 0o644
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
-    except FileExistsError:
-        return False
+    staged_fd, staged_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    staged_path = Path(staged_name)
     try:
         if os.name == "posix":
-            os.fchmod(fd, mode)
-        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(staged_fd, mode)
+        with os.fdopen(staged_fd, "wb") as handle:
             handle.write(content.encode("utf-8"))
-    except BaseException:
+            handle.flush()
         try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    return True
+            os.link(staged_path, path)
+            return True
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            # Filesystems without hard-link support (e.g. some FUSE/FAT mounts):
+            # caller already holds _finished_dir_lock, so re-check before rename.
+            if exc.errno not in {
+                errno.EPERM,
+                errno.ENOTSUP,
+                errno.EOPNOTSUPP,
+                errno.EXDEV,
+                errno.EINVAL,
+            }:
+                raise
+            if path.exists():
+                return False
+            os.replace(staged_path, path)
+            return True
+    finally:
+        staged_path.unlink(missing_ok=True)
 
 
 def _is_meta_segment(segment: str) -> bool:

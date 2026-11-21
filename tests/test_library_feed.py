@@ -833,3 +833,38 @@ Woven private note mentions Project Cobalt alongside public posts.
     assert "Omitted 1 private local-corpus" in stderr_buf.getvalue()
 
 
+def test_structured_comparison_with_badge_and_bounded_corpus_survives_redaction(tmp_path):
+    """Structured engine comparison reports keep public content when corpus blocks are bounded."""
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    comp_path = memory / "codex-vs-cursor-raw-2026-11-21.md"
+    comp_md = """🌐 last30days · Codex vs Cursor · Oct 22 to Nov 21, 2026 · v4.5.0
+
+# Codex vs Cursor: What the Community Says (/Last30Days)
+
+- Date range: 2026-10-22 to 2026-11-21
+
+Public comparison table shows Codex leads terminal automation while Cursor leads inline editing.
+
+<!-- LAST30DAYS_PRIVATE_CORPUS_START -->
+## From your files
+
+Private internal procurement score SECRET_TOKEN_42.
+<!-- LAST30DAYS_PRIVATE_CORPUS_END -->
+"""
+    comp_path.write_text(comp_md, encoding="utf-8")
+
+    assert library.is_unbounded_private_brief(comp_md, source_format="markdown") is False
+    assert library.is_unbounded_private_brief(comp_md) is False
+    sanitized = library.public_markdown(comp_md)
+    assert "Public comparison table shows Codex leads terminal automation" in sanitized
+    assert "SECRET_TOKEN_42" not in sanitized
+
+    entries, notes = library.scan_library(memory, tmp_path / "missing-briefings")
+    assert notes == []
+    assert len(entries) == 1
+    assert entries[0].topic == "Codex vs Cursor"
+    assert entries[0].slug == "codex-vs-cursor"
+
+
+

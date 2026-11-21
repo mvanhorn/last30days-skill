@@ -3976,7 +3976,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
             str(target),
             private=entry.entry_id in private_entries,
         )
-        if library.is_unbounded_private_brief(entry.content):
+        if library.is_unbounded_private_brief(entry.content, source_format=entry.source_format):
             omitted_private_briefs += 1
             continue
         publishable_entries.append(entry)

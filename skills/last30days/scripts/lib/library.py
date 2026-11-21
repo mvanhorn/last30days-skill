@@ -146,14 +146,40 @@ def has_private_corpus(markdown: str) -> bool:
     )
 
 
-def is_unbounded_private_brief(markdown: str) -> bool:
-    """Return True when a synthesized chat brief carries local-corpus content.
+def _is_structured_engine_report(markdown: str) -> bool:
+    """Return True when markdown carries structured engine report markers.
 
-    Chat synthesis combines corpus evidence directly into heading-free prose, so
-    private passages cannot be reliably isolated by heading or marker stripping.
-    Fail closed: keep the brief local-only (0o600) and exclude it from shared
-    FTS indexing and public HTML publishing.
+    Structured engine reports (including saved comparison reports emitted by
+    ``render_comparison_multi``) delimit private corpus sections explicitly via
+    ``PRIVATE_CORPUS_START``/``PRIVATE_CORPUS_END`` and should be redacted in
+    place by ``public_markdown`` rather than excluded wholesale.
     """
+    return bool(
+        _REPORT_TITLE.search(markdown)
+        or (PRIVATE_CORPUS_START in markdown and PRIVATE_CORPUS_END in markdown)
+        or PUBLIC_CLUSTERS_MARKER in markdown
+        or "## Ranked Evidence Clusters" in markdown
+        or "<!-- EVIDENCE FOR SYNTHESIS" in markdown
+        or "# END OF last30days CANONICAL OUTPUT" in markdown
+    )
+
+
+def is_unbounded_private_brief(
+    markdown: str,
+    *,
+    source_format: str | None = None,
+) -> bool:
+    """Return True when a synthesized chat brief carries unbounded local-corpus content.
+
+    Chat synthesis weaves corpus evidence into heading-free prose, so private
+    passages cannot be reliably isolated by heading or marker stripping.
+    Structured engine reports (including comparisons with bounded corpus blocks)
+    are NOT unbounded and keep their in-place redaction behavior.
+    """
+    if source_format is not None and source_format != "finished-brief":
+        return False
+    if _is_structured_engine_report(markdown):
+        return False
     return bool(_BADGE_LINE.search(markdown) and has_private_corpus(markdown))
 
 
@@ -350,7 +376,7 @@ def _keep_preferred(entries: dict[str, LibraryEntry], entry: LibraryEntry) -> No
 def parse_markdown_file(path: Path, *, source_format: str = "markdown") -> LibraryEntry:
     """Parse one saved Markdown report or finished brief into a LibraryEntry."""
     content = path.read_text(encoding="utf-8")
-    unbounded_private = is_unbounded_private_brief(content)
+    unbounded_private = is_unbounded_private_brief(content, source_format=source_format)
     parse_source = content if unbounded_private else public_markdown(content)
     meta_topic_match = _TOPIC_META_COMMENT.search(content)
     badge_topic, badge_date = _parse_badge_line(parse_source)
