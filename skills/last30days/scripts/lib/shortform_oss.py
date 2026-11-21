@@ -338,11 +338,14 @@ def discover_urls(
 
     # The keyless floor follows the same policy the availability gate used:
     # when the host has native search (LAST30DAYS_NATIVE_SEARCH), the floor is
-    # off, so a failed paid rung must not fall through to it either.
+    # off, so a failed paid rung must not fall through to it either. A host
+    # that passed --shortform-urls already searched; the floor (slow, usually
+    # bot-blocked) would only repeat that search worse.
     if not urls and not _stopped(deadline, cancel):
+        from . import shortform_envelope
         from .env import keyless_web_allowed
 
-        if keyless_web_allowed(config):
+        if keyless_web_allowed(config) and shortform_envelope.from_config(config) is None:
             try:
                 items, art = web_search_keyless.keyless_search(
                     q, ("1970-01-01", "2099-12-31"), config, count,

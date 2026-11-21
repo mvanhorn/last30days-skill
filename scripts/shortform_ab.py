@@ -173,6 +173,31 @@ def completeness(items: list[dict[str, Any]]) -> dict[str, float | None]:
     return {field: present[field] / len(items) for field in FIELDS}
 
 
+QUOTABLE_LIKES = 5  # Top Community Comments floor for a platform that counts likes
+
+
+def _comment_likes(comment: dict[str, Any]) -> int:
+    for key in ("digg_count", "likes", "like_count", "comment_like_count", "score"):
+        value = comment.get(key)
+        if isinstance(value, (int, float)):
+            return int(value)
+    return 0
+
+
+def quotable(items: list[dict[str, Any]]) -> int:
+    """Items whose best community comment clears the report's like floor."""
+    count = 0
+    for item in items:
+        comments = item.get("top_comments") or (item.get("metadata") or {}).get("top_comments") or []
+        likes = [_comment_likes(c) for c in comments if isinstance(c, dict) and not c.get("is_uploader")]
+        count += bool(likes) and max(likes) >= QUOTABLE_LIKES
+    return count
+
+
+def median_views(items: list[dict[str, Any]]) -> float | None:
+    return median([(i.get("engagement") or {}).get("views") for i in items])
+
+
 def median(values: list[float | None]) -> float | None:
     clean = [v for v in values if v is not None]
     return statistics.median(clean) if clean else None
@@ -290,6 +315,9 @@ def arm_env(arm: str, keyless_dir: str | None, skip_keychain: bool) -> dict[str,
         env["LAST30DAYS_SKIP_KEYCHAIN"] = "1"
     env["LAST30DAYS_SHORTFORM_FRESHNESS"] = "off" if arm == "B-nofresh" else "on"
     env["LAST30DAYS_SHORTFORM_CREATOR_EXPANSION"] = "off" if arm in ("B", "B-nofresh") else "on"
+    if arm == "D":
+        # A host run: SKILL.md marks the host's own web search as native.
+        env["LAST30DAYS_NATIVE_SEARCH"] = "1"
     return env
 
 
@@ -405,6 +433,8 @@ def score_topic(topic: str, runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
                 "failed": pdata["failed"],
                 "error": pdata["error"],
                 "completeness": completeness(items),
+                "quotable": quotable(items),
+                "median_views": median_views(items),
                 "ids": sorted(ids),
             }
             if baseline and not baseline.get("skipped") and arm != "A":
@@ -450,6 +480,8 @@ def summarize(results: list[dict[str, Any]], arms: list[str]) -> dict[str, Any]:
                 "median_head_recall": median(series(arm, platform, "head_recall")),
                 "failure_rate": (sum(bool(f) for f in failed) / len(failed)) if failed else None,
                 "median_completeness": comp_mean,
+                "median_quotable": median(series(arm, platform, "quotable")),
+                "median_views": median(series(arm, platform, "median_views")),
             }
             if arm != "A" and runs and "A" in arms:
                 # Compare on the topics where both arms ran.
@@ -529,7 +561,9 @@ def render_markdown(meta: dict[str, Any], results: list[dict[str, Any]], summary
         one_liners.append(
             f"- {arm}: TikTok median {_fmt(tk['median_in_window'])} in-window, head recall "
             f"{_fmt(tk['median_head_recall'], True)}, {tk['stale_total']} stale; Instagram median "
-            f"{_fmt(ig['median_in_window'])}, {ig['stale_total']} stale; p90 wall {_fmt(s['p90_wall'])}s"
+            f"{_fmt(ig['median_in_window'])}, {ig['stale_total']} stale; p90 wall {_fmt(s['p90_wall'])}s; "
+            f"TikTok videos with a quotable top comment {_fmt(tk.get('median_quotable'))}, median views "
+            f"{_fmt(tk.get('median_views'))}"
             + (f"; TikTok parity {'PASS' if tk['parity']['pass'] else 'FAIL'}" if tk.get("parity") else "")
         )
     lines += ["", "## One line per arm", "", *one_liners, "", "## Per topic", ""]

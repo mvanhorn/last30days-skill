@@ -131,3 +131,15 @@ def test_host_flags_reach_the_host_arms_only(tmp_path):
         assert flags[0] in ab.arm_command("Claude Code", arm, None, flags)
     for arm in ("B", "B-nofresh"):
         assert flags[0] not in ab.arm_command("Claude Code", arm, None, flags)
+
+
+def test_quotable_counts_items_whose_best_community_comment_clears_the_floor():
+    items = [
+        {"metadata": {"top_comments": [{"digg_count": 31}, {"digg_count": 7}]}},
+        {"metadata": {"top_comments": [{"digg_count": 4}]}},
+        {"metadata": {"top_comments": [{"digg_count": 90, "is_uploader": True}, {"digg_count": 2}]}},
+        {"top_comments": [{"likes": 5}]},
+        {},
+    ]
+    assert ab.quotable(items) == 2
+    assert ab.median_views([_tt("1", 10), _tt("2", 30), _tt("3")]) == 20

@@ -226,6 +226,20 @@ class TestKeylessRungPolicy:
         assert urls == []
         assert backend == "none"
 
+    def test_keyless_rung_is_skipped_when_the_host_passed_urls(self):
+        from lib import shortform_envelope
+
+        env = shortform_envelope.Envelope(
+            path="x.json", sha256="0", topic="topic", tiktok_posts=[], instagram_posts=[],
+            tiktok_creators=[], counters={}, total=0, notes=[],
+        )
+        with mock.patch("lib.web_search_keyless.keyless_search",
+                        side_effect=AssertionError("keyless ran after the host searched")):
+            urls, backend = shortform_oss.discover_urls(
+                "tiktok", "topic", {"_shortform_envelope": env}, 5,
+            )
+        assert (urls, backend) == ([], "none")
+
     def test_keyless_rung_runs_when_policy_allows_it(self):
         canned = ({"url": "https://www.tiktok.com/@u/video/1"},)
         with mock.patch("lib.web_search_keyless.keyless_search",
