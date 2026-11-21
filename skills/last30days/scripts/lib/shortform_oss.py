@@ -42,6 +42,8 @@ _ENRICH_TIMEOUT = 180
 
 # TikTok creator expansion: (creators listed, videos listed per creator).
 _DEPTH_CREATORS = {"quick": (3, 5), "default": (5, 8), "deep": (8, 12)}
+# A creator listing reads this many times the kept count, then keeps the most viewed.
+_CREATOR_LIST_FACTOR = 3
 
 # Discovery freshness. LAST30DAYS_SHORTFORM_FRESHNESS (env or config):
 #   "on" (default) asks every backend for recent results,
@@ -378,11 +380,15 @@ def creator_urls(
     from_date: str | None = None,
     to_date: str | None = None,
 ) -> List[str]:
-    """List recent TikTok posts for ``@handle``. IG user listing is broken — skip.
+    """Most-viewed recent TikTok posts for ``@handle``. IG user listing is
+    broken, so Instagram is skipped.
 
-    Lists ``count`` entries (id and title, one JSON object per line). With a
-    window, ids that decode outside it are dropped; with ``topic``, titles
-    below the shared relevance floor are dropped. Both run before hydration.
+    Lists the newest ``3 * count`` entries (id, title and view count, one JSON
+    object per line; one listing call). With a window, ids that decode outside
+    it are dropped; with ``topic``, titles below the shared relevance floor are
+    dropped. The ``count`` survivors with the most views are returned, so a
+    creator's month is represented by what people actually watched. All of
+    this runs before hydration.
     """
     if kind != "tiktok" or not handle:
         return []
@@ -395,9 +401,9 @@ def creator_urls(
         "--no-warnings",
         "--flat-playlist",
         "--playlist-end",
-        str(count),
+        str(count * _CREATOR_LIST_FACTOR),
         "--print",
-        "%(.{id,title})j",
+        "%(.{id,title,view_count})j",
         f"https://www.tiktok.com/@{handle}",
     ]
     # Same routing as the YouTube source: local yt-dlp, or the SSH host when
@@ -408,7 +414,7 @@ def creator_urls(
     except (subproc.SubprocTimeout, FileNotFoundError, OSError) as e:
         _log(kind, f"creator list @{handle} failed: {e}")
         return []
-    out: List[str] = []
+    out: List[Tuple[int, str]] = []
     for line in (result.stdout or "").splitlines():
         try:
             entry = json.loads(line)
@@ -426,8 +432,11 @@ def creator_urls(
         if (topic and not _creator_is_topic(topic, handle)
                 and _compute_relevance(topic, title) < RELEVANCE_FLOOR):
             continue
-        out.append(url)
-    return out[:count]
+        views = entry.get("view_count")
+        out.append((views if isinstance(views, int) else -1, url))
+    # Stable: equal (or unknown) view counts keep the newest-first listing order.
+    out.sort(key=lambda pair: pair[0], reverse=True)
+    return [url for _views, url in out[:count]]
 
 
 def _post_id(kind: str, url: str) -> str:

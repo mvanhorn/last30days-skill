@@ -270,7 +270,8 @@ class TestCreatorExpansion:
         cmd = next(c for c, _ in net.calls if "--flat-playlist" in c)
         fmt = cmd[cmd.index("--print") + 1]
         assert "id" in fmt and "title" in fmt
-        assert cmd[cmd.index("--playlist-end") + 1] == "8"
+        assert cmd[cmd.index("--playlist-end") + 1] == "24"
+        assert "view_count" in fmt
 
     @pytest.mark.parametrize("depth,creators", [("quick", 3), ("default", 5), ("deep", 8)])
     def test_number_of_listed_creators_is_capped(self, depth, creators):
@@ -286,6 +287,19 @@ class TestCreatorExpansion:
                       playlists={"mattpocockuk": self.PLAYLIST})
         _run_search(net, topic="Matt Pocock")
         assert len(net.hydrated_urls()) == 5
+
+    def test_listing_keeps_the_most_viewed_in_window_videos(self):
+        import json as _json
+        rows = [_json.loads(line) for line in self.PLAYLIST.splitlines()]
+        views = [10, 900, 50, 7000, 300, 99999, 99999, 99999]  # last three are October
+        playlist = "\n".join(_json.dumps({**r, "view_count": v}) for r, v in zip(rows, views))
+        net = FakeNet([], playlists={"mattpocockuk": playlist})
+        with mock.patch("lib.subproc.run_with_timeout", side_effect=net.run):
+            urls = shortform_oss.creator_urls(
+                "tiktok", "mattpocockuk", 3, from_date=FROM, to_date=TO, topic="Matt Pocock",
+            )
+        ids = [u.rsplit("/", 1)[-1] for u in urls]
+        assert ids == [rows[3]["id"], rows[1]["id"], rows[4]["id"]]
 
     def test_creator_is_topic_needs_a_real_match(self):
         assert shortform_oss._creator_is_topic("Sabrina Carpenter", "@sabrinacarpenter")
