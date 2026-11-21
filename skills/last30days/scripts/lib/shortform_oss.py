@@ -345,6 +345,15 @@ def discover_urls(
     return urls[:count], used if urls else "none"
 
 
+def _creator_is_topic(topic: str, handle: str) -> bool:
+    """True when the account is the topic itself (@sabrinacarpenter for
+    "Sabrina Carpenter"): its own captions rarely name it, so its posts are
+    on-topic by authorship."""
+    key = re.sub(r"[^a-z0-9]", "", (topic or "").lower())
+    name = re.sub(r"[^a-z0-9]", "", (handle or "").lstrip("@").lower())
+    return len(key) >= 4 and key in name
+
+
 def creator_urls(
     kind: str,
     handle: str,
@@ -400,7 +409,8 @@ def creator_urls(
         if from_date and to_date and _outside_window(kind, url, from_date, to_date):
             continue
         title = str(entry.get("title") or "")
-        if topic and _compute_relevance(topic, title) < RELEVANCE_FLOOR:
+        if (topic and not _creator_is_topic(topic, handle)
+                and _compute_relevance(topic, title) < RELEVANCE_FLOOR):
             continue
         out.append(url)
     return out[:count]
@@ -460,7 +470,8 @@ def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optiona
         "engagement": engagement,
         "hashtags": hashtags,
         "duration": raw.get("duration"),
-        "relevance": _compute_relevance(core_topic, text, hashtags),
+        "relevance": (1.0 if _creator_is_topic(core_topic, author)
+                      else _compute_relevance(core_topic, text, hashtags)),
         "why_relevant": f"{label}: {text[:60]}" if text else f"{label}: {core_topic}",
         "caption_snippet": snippet,
         "_oss_backend": "yt-dlp",

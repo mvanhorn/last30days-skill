@@ -415,7 +415,7 @@ cat > /tmp/l30d-threads.json <<'THREADS_EOF'
 THREADS_EOF
 ```
 
-**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches like `{TOPIC} site:tiktok.com` and `site:instagram.com reel {TOPIC}`. Keep post and TikTok `@creator` profile URLs (max 40). If any, write `/tmp/l30d-shortform.json` the same way as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls=/tmp/l30d-shortform.json`.
+**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches (`{TOPIC} site:tiktok.com`, `{TOPIC} tiktok creator`, `site:instagram.com reel {TOPIC}`); keep post and `@creator` URLs, even old (max 40). If any, write `/tmp/l30d-shortform.json` as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls=/tmp/l30d-shortform.json`.
 
 **3. TikTok hashtags + creators** - **INFER these from topic knowledge. Never WebSearch for a TikTok account; most people and CEOs have none.**
 

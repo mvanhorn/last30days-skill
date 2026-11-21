@@ -118,3 +118,16 @@ def test_strip_sc_keys_drops_only_scrapecreators_lines():
 def test_slugify():
     assert ab.slugify("Claude Code") == "claude-code"
     assert ab.slugify("  Dubai chocolate!! ") == "dubai-chocolate"
+
+
+def test_host_flags_reach_the_host_arms_only(tmp_path):
+    (tmp_path / "claude-code.host.json").write_text(
+        '{"tiktok_creators": ["@chase_ai_", "promptwarrior"], "tiktok_hashtags": ["#claudecode"]}')
+    flags = ab.host_flags(tmp_path, "Claude Code")
+    assert flags == ["--tiktok-creators=chase_ai_,promptwarrior", "--tiktok-hashtags=claudecode"]
+    assert ab.host_flags(tmp_path, "Labubu") == []
+    assert ab.host_flags(None, "Claude Code") == []
+    for arm in ("A", "C", "D"):
+        assert flags[0] in ab.arm_command("Claude Code", arm, None, flags)
+    for arm in ("B", "B-nofresh"):
+        assert flags[0] not in ab.arm_command("Claude Code", arm, None, flags)

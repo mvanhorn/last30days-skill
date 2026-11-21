@@ -279,6 +279,20 @@ class TestCreatorExpansion:
         _run_search(net, depth=depth)
         assert net.listed_handles() == [f"h{n}" for n in range(creators)]
 
+    def test_topic_account_keeps_every_in_window_video(self):
+        # "Matt Pocock" is @mattpocockuk: its titles never name it, so the
+        # title bar would drop all of them. Authorship makes them on-topic.
+        net = FakeNet([tt_url("mattpocockuk", "2025-02-01")],
+                      playlists={"mattpocockuk": self.PLAYLIST})
+        _run_search(net, topic="Matt Pocock")
+        assert len(net.hydrated_urls()) == 5
+
+    def test_creator_is_topic_needs_a_real_match(self):
+        assert shortform_oss._creator_is_topic("Sabrina Carpenter", "@sabrinacarpenter")
+        assert shortform_oss._creator_is_topic("Sabrina Carpenter", "Sabrina Carpenter")
+        assert not shortform_oss._creator_is_topic("air fryer recipes", "airfryerguy")
+        assert not shortform_oss._creator_is_topic("AI", "aidaily")
+
     def test_explicit_creators_are_not_listed_twice(self):
         net = FakeNet([tt_url("mattpocockuk", "2025-02-01")],
                       playlists={"mattpocockuk": self.PLAYLIST})

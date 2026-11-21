@@ -13,6 +13,11 @@ Arms:
   D          C plus a host-discovered URL envelope (--shortform-urls). Runs only
              when <fixtures-dir>/<topic-slug>.json exists; skipped otherwise.
 
+A host run also passes the TikTok hashtags and creators it infers (runbook
+step 3). When <fixtures-dir>/<topic-slug>.host.json exists ({"tiktok_creators":
+[...], "tiktok_hashtags": [...]}), arms A, C and D get those flags, so the paid
+and keyless lanes start from the same host input.
+
 Keyless arms read a private copy of the user's .env with the ScrapeCreators
 key lines removed (LAST30DAYS_CONFIG_DIR points at it). The copy is deleted
 on exit. Config values are never printed.
@@ -288,7 +293,24 @@ def arm_env(arm: str, keyless_dir: str | None, skip_keychain: bool) -> dict[str,
     return env
 
 
-def arm_command(topic: str, arm: str, fixture: Path | None) -> list[str]:
+def host_flags(fixtures_dir: Path | None, topic: str) -> list[str]:
+    """--tiktok-creators/--tiktok-hashtags from the topic's .host.json sidecar."""
+    if fixtures_dir is None:
+        return []
+    path = fixtures_dir / f"{slugify(topic)}.host.json"
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text())
+    flags: list[str] = []
+    for key, flag in (("tiktok_creators", "--tiktok-creators"), ("tiktok_hashtags", "--tiktok-hashtags")):
+        values = [str(v).strip().lstrip("@#") for v in data.get(key) or [] if str(v).strip()]
+        if values:
+            flags.append(f"{flag}={','.join(values)}")
+    return flags
+
+
+def arm_command(topic: str, arm: str, fixture: Path | None,
+                extra: list[str] | None = None) -> list[str]:
     cmd = [
         sys.executable,
         str(ENGINE),
@@ -301,6 +323,8 @@ def arm_command(topic: str, arm: str, fixture: Path | None) -> list[str]:
     ]
     if arm == "D" and fixture is not None:
         cmd += ["--shortform-urls", str(fixture)]
+    if arm in ("A", "C", "D"):
+        cmd += list(extra or [])
     return cmd
 
 
@@ -317,7 +341,7 @@ def run_arm(topic: str, arm: str, *, keyless_dir: str | None, skip_keychain: boo
         if candidate is None or not candidate.exists():
             return {"arm": arm, "skipped": "no shortform-urls fixture for this topic"}
         fixture = candidate
-    cmd = arm_command(topic, arm, fixture)
+    cmd = arm_command(topic, arm, fixture, host_flags(fixtures_dir, topic))
     started = time.monotonic()
     result: dict[str, Any] = {"arm": arm, "skipped": None, "timed_out": False, "exit_code": None}
     try:
