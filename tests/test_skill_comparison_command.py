@@ -192,7 +192,8 @@ def test_no_web_search_comparison_command_uses_engine_planning(tmp_path, peers):
     assert parsed.emit == "compact"
 
 
-def test_no_web_grok_bot_comparison_passes_connector_posts_without_host_plan(tmp_path):
+@pytest.mark.parametrize("host", ["grok-bot", None], ids=["grok-bot", "opencode"])
+def test_no_web_host_lane_comparison_passes_posts_without_host_plan(tmp_path, host):
     text = reference_text("comparison")
     command = _command(text, "Without host web search")
     command = command.replace("{TOPIC_A} vs {TOPIC_B} vs {TOPIC_C}", "Main Brand vs Peer Brand")
@@ -233,20 +234,21 @@ def test_no_web_grok_bot_comparison_passes_connector_posts_without_host_plan(tmp
     interpreter.chmod(0o755)
     temporary = tmp_path / "temporary plans"
     temporary.mkdir()
+    env = {
+        "PATH": os.defpath,
+        "SKILL_DIR": str(installed),
+        "LAST30DAYS_PYTHON": str(interpreter),
+        "LAST30DAYS_MEMORY_DIR": str(tmp_path / "saved research"),
+        "LAST30DAYS_X_HOST_LANE": "1",
+        "X_POSTS_DIR": str(envelope_dir),
+        "PARENT_TRAP_MARKER": str(parent_trap_marker),
+        "TMPDIR": str(temporary),
+    }
+    if host is not None:
+        env["LAST30DAYS_HOST"] = host
     result = subprocess.run(
         ["bash", "-eC", "-c", command], cwd=tmp_path,
-        env={
-            "PATH": os.defpath,
-            "SKILL_DIR": str(installed),
-            "LAST30DAYS_PYTHON": str(interpreter),
-            "LAST30DAYS_MEMORY_DIR": str(tmp_path / "saved research"),
-            "LAST30DAYS_HOST": "grok-bot",
-            "LAST30DAYS_X_HOST_LANE": "1",
-            "X_POSTS_DIR": str(envelope_dir),
-            "PARENT_TRAP_MARKER": str(parent_trap_marker),
-            "TMPDIR": str(temporary),
-        },
-        text=True, capture_output=True, timeout=15,
+        env=env, text=True, capture_output=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
     call = json.loads(capture.read_text())

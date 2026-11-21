@@ -3,14 +3,16 @@
 import configparser
 import os
 import sqlite3
+import tempfile
 import textwrap
+from contextlib import closing
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
 import pytest
 
-from lib import cookie_extract, env
+from lib import cookie_extract, env, setup_wizard
 from lib.cookie_extract import (
     extract_cookies,
     extract_firefox_cookies,
@@ -19,6 +21,122 @@ from lib.cookie_extract import (
     _find_default_profile,
     _get_firefox_profiles_dir,
 )
+
+
+@pytest.mark.parametrize("domain", [".x.com", "x.com", ".example.test", "example.test"])
+def test_firefox_cookie_host_family_and_requested_names(tmp_path, domain):
+    host = domain.lstrip(".")
+    db = tmp_path / "cookies.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE moz_cookies (host TEXT, name TEXT, value TEXT)")
+        conn.executemany("INSERT INTO moz_cookies VALUES (?, ?, ?)", [
+            (host, "auth_token", "dummy-auth"),
+            ("." + host, "ct0", "dummy-ct0"),
+            ("sub." + host, "sub_cookie", "dummy-sub"),
+            ("not" + host, "near_cookie", "dummy-near"),
+            (host + ".example", "suffix_cookie", "dummy-suffix"),
+            (host, "unrequested", "dummy-other"),
+        ])
+    assert _query_cookies_db(
+        db, domain, ["auth_token", "ct0", "sub_cookie", "near_cookie", "suffix_cookie"],
+    ) == {"auth_token": "dummy-auth", "ct0": "dummy-ct0", "sub_cookie": "dummy-sub"}
+
+
+@pytest.fixture
+def standalone_browsers(monkeypatch):
+    """Replace every browser boundary, including Firefox's source label."""
+    calls = []
+    results = {}
+    order = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium", "firefox", "safari"]
+    monkeypatch.setattr(cookie_extract.platform, "system", lambda: "Darwin")
+
+    def extractor(name):
+        def extract(domain, names):
+            assert domain == ".x.com"
+            assert names == ["auth_token", "ct0"]
+            calls.append(name)
+            result = results.get(name)
+            if isinstance(result, Exception):
+                raise result
+            if name == "firefox" and result is not None:
+                return result, "firefox-wsl"
+            return result
+        return extract
+
+    for name in order:
+        target = "_extract_firefox_with_source" if name == "firefox" else f"extract_{name}_cookies"
+        monkeypatch.setattr(cookie_extract, target, extractor(name))
+    return results, calls, order
+
+
+@pytest.mark.parametrize("first", [{"ct0": "dummy-partial"}, PermissionError("dummy-denial")])
+def test_standalone_auto_continues_to_complete_browser(standalone_browsers, first):
+    results, calls, order = standalone_browsers
+    complete = {"auth_token": "dummy-auth", "ct0": "dummy-complete"}
+    results.update(chrome=first, firefox=complete)
+    assert cookie_extract.extract_cookies_with_source(
+        "auto", ".x.com", ["auth_token", "ct0"],
+    ) == (complete, "firefox-wsl")
+    assert calls == order[:-1]
+
+
+def test_standalone_auto_keeps_first_partial_without_combining_browsers(standalone_browsers):
+    results, calls, order = standalone_browsers
+    partial = {"ct0": "dummy-partial"}
+    results.update(chrome=partial, brave={"auth_token": "dummy-other"}, edge=PermissionError("dummy-denial"))
+    assert cookie_extract.extract_cookies_with_source(
+        "auto", ".x.com", ["auth_token", "ct0"],
+    ) == (partial, "chrome")
+    assert calls == order
+
+
+def test_standalone_auto_raises_first_denial_after_trying_every_browser(standalone_browsers):
+    results, calls, order = standalone_browsers
+    denial = PermissionError("dummy-first-denial")
+    results.update({name: PermissionError("dummy-other-denial") for name in order})
+    results["chrome"] = denial
+    with pytest.raises(PermissionError) as caught:
+        cookie_extract.extract_cookies_with_source("auto", ".x.com", ["auth_token", "ct0"])
+    assert caught.value is denial
+    assert calls == order
+
+
+@pytest.mark.parametrize("later_cookies", [None, {"auth_token": "dummy-auth", "ct0": "dummy-ct0"}])
+def test_standalone_auto_continues_after_cookie_database_read_error(standalone_browsers, later_cookies):
+    results, calls, order = standalone_browsers
+    error = cookie_extract.CookieDatabaseReadError("dummy-read-error")
+    results.update(firefox=error, safari=later_cookies)
+
+    if later_cookies is None:
+        with pytest.raises(cookie_extract.CookieDatabaseReadError) as caught:
+            cookie_extract.extract_cookies_with_source("auto", ".x.com", ["auth_token", "ct0"])
+        assert caught.value is error
+    else:
+        assert cookie_extract.extract_cookies_with_source(
+            "auto", ".x.com", ["auth_token", "ct0"],
+        ) == (later_cookies, "safari")
+    assert calls == order
+
+
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_standalone_auto_other_platforms_only_try_firefox(standalone_browsers, monkeypatch, system):
+    _results, calls, _ = standalone_browsers
+    monkeypatch.setattr(cookie_extract.platform, "system", lambda: system)
+    assert cookie_extract.extract_cookies_with_source("auto", ".x.com", ["auth_token", "ct0"]) is None
+    assert calls == ["firefox"]
+
+
+def test_standalone_explicit_browser_preserves_partial_and_denial(standalone_browsers):
+    results, calls, _ = standalone_browsers
+    partial = {"ct0": "dummy-partial"}
+    results["chrome"] = partial
+    assert cookie_extract.extract_cookies_with_source(
+        "chrome", ".x.com", ["auth_token", "ct0"],
+    ) == (partial, "chrome")
+    results["chrome"] = PermissionError("dummy-denial")
+    with pytest.raises(PermissionError):
+        cookie_extract.extract_cookies_with_source("chrome", ".x.com", ["auth_token", "ct0"])
+    assert calls == ["chrome", "chrome"]
 
 
 def test_firefox_database_permission_denial_survives_extractor(tmp_path):
@@ -181,6 +299,159 @@ def mock_firefox_env(tmp_path):
         return profiles_dir
 
     return _make
+
+
+def simulate_wsl_firefox(monkeypatch, profiles, blocked_database, error_code):
+    monkeypatch.setattr(cookie_extract.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cookie_extract, "_is_wsl", lambda: True)
+    monkeypatch.setattr(cookie_extract, "_get_firefox_profiles_dir", lambda: None)
+    monkeypatch.setattr(cookie_extract, "_get_wsl_firefox_profiles_dir", lambda: profiles)
+    monkeypatch.setattr(env, "REDDIT_SETUP_BROWSERS", ("firefox",))
+    real_connect = sqlite3.connect
+    blocked_uri = blocked_database.resolve().as_uri() + "?mode=ro"
+
+    def connect(database, *args, **kwargs):
+        if database == blocked_uri:
+            error = sqlite3.OperationalError("disk I/O error")
+            error.sqlite_errorcode = error_code
+            raise error
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+
+def test_reddit_setup_reads_committed_windows_firefox_wal_after_shm_error(
+    tmp_path, monkeypatch, mock_firefox_env,
+):
+    profiles = mock_firefox_env(profiles={"abc123.default-release": []})
+    database = profiles / "abc123.default-release" / "cookies.sqlite"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    simulate_wsl_firefox(monkeypatch, profiles, database, sqlite3.SQLITE_IOERR_SHMOPEN)
+
+    with closing(sqlite3.connect(database)) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(
+            "INSERT INTO moz_cookies (name, value, host) VALUES (?, ?, ?)",
+            ("reddit_session", "dummy-committed", ".reddit.com"),
+        )
+        writer.commit()
+        assert database.with_name("cookies.sqlite-wal").stat().st_size > 0
+        writer.execute("UPDATE moz_cookies SET value = 'dummy-uncommitted'")
+
+        assert env.read_reddit_session_cookie({}, "firefox") == ("dummy-committed", "ok")
+        env_path = tmp_path / ".env"
+        result = setup_wizard.run_reddit_session_setup({}, env_path, consent=True)
+
+    assert result["status"] == "found" and result["browser"] == "firefox"
+    assert result["checked"] == [{"browser": "firefox", "result": "ok"}]
+    assert "dummy-committed" not in str(result)
+    assert "REDDIT_FROM_BROWSER=firefox" in env_path.read_text()
+    assert "dummy-committed" not in env_path.read_text()
+    assert list(scratch.iterdir()) == []
+
+
+def test_reddit_setup_reports_unreadable_windows_firefox_database(
+    tmp_path, monkeypatch, mock_firefox_env,
+):
+    profiles = mock_firefox_env()
+    database = profiles / "abc123.default-release" / "cookies.sqlite"
+    simulate_wsl_firefox(monkeypatch, profiles, database, sqlite3.SQLITE_IOERR_SHMOPEN)
+
+    result = setup_wizard.run_reddit_session_setup({}, tmp_path / ".env", consent=True)
+
+    assert result["status"] == "not-found"
+    assert result["checked"] == [{"browser": "firefox", "result": "error"}]
+
+
+def test_windows_firefox_wal_change_rejects_the_copied_pair(monkeypatch, mock_firefox_env):
+    profiles = mock_firefox_env()
+    database = profiles / "abc123.default-release" / "cookies.sqlite"
+    wal = database.with_name("cookies.sqlite-wal")
+    simulate_wsl_firefox(monkeypatch, profiles, database, sqlite3.SQLITE_IOERR_SHMOPEN)
+
+    with closing(sqlite3.connect(database)) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("INSERT INTO moz_cookies (name, value, host) VALUES "
+                       "('reddit_session', 'dummy-old', '.reddit.com')")
+        writer.commit()
+        reads = 0
+        real_open = Path.open
+
+        def open_during_update(path, mode="r", *args, **kwargs):
+            nonlocal reads
+            if path == wal and mode == "rb":
+                reads += 1
+                if reads == 2:
+                    writer.execute("UPDATE moz_cookies SET value = 'dummy-new' "
+                                   "WHERE name = 'reddit_session'")
+                    writer.commit()
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", open_during_update)
+        assert env.read_reddit_session_cookie({}, "firefox") == (None, "error")
+        assert reads == 2
+        assert writer.execute("SELECT value FROM moz_cookies WHERE name = 'reddit_session'").fetchone() == (
+            "dummy-new",
+        )
+
+
+@pytest.mark.parametrize("condition, expected", [
+    ("zeroed-header", (None, "error")),
+    ("truncated-first-frame", (None, "error")),
+    ("truncated-trailing-frame", ("dummy-current", "ok")),
+])
+def test_windows_firefox_wal_recovery_validates_initial_snapshot(
+    monkeypatch, mock_firefox_env, condition, expected,
+):
+    profiles = mock_firefox_env(profiles={
+        "abc123.default-release": [(".reddit.com", "reddit_session", "dummy-checkpointed")],
+    })
+    database = profiles / "abc123.default-release" / "cookies.sqlite"
+    wal = database.with_name("cookies.sqlite-wal")
+    simulate_wsl_firefox(monkeypatch, profiles, database, sqlite3.SQLITE_IOERR_SHMOPEN)
+
+    with closing(sqlite3.connect(database)) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("UPDATE moz_cookies SET value = 'dummy-current'")
+        writer.commit()
+        first_commit = wal.read_bytes()
+        page_size = int.from_bytes(first_commit[8:12], "big")
+        assert len(first_commit) == 32 + 24 + page_size
+        if condition == "truncated-trailing-frame":
+            writer.execute("UPDATE moz_cookies SET value = 'dummy-next'")
+            writer.commit()
+        original = wal.read_bytes()
+        if condition == "zeroed-header":
+            wal.write_bytes(bytes(32) + original[32:])
+        else:
+            wal.write_bytes(original[:-1])
+        try:
+            assert env.read_reddit_session_cookie({}, "firefox") == expected
+        finally:
+            wal.write_bytes(original)
+
+
+def test_failed_windows_firefox_snapshot_does_not_hide_another_profile(
+    monkeypatch, mock_firefox_env,
+):
+    profiles = mock_firefox_env(profiles={
+        "abc123.default-release": [],
+        "xyz789.other": [
+            (".reddit.com", "reddit_session", "dummy-other"),
+            (".x.com", "auth_token", "dummy-auth"),
+            (".x.com", "ct0", "dummy-ct0"),
+        ],
+    })
+    blocked = profiles / "abc123.default-release" / "cookies.sqlite"
+    simulate_wsl_firefox(monkeypatch, profiles, blocked, sqlite3.SQLITE_IOERR_SHMOPEN)
+
+    assert env.read_reddit_session_cookie({}, "firefox") == ("dummy-other", "ok")
+    assert env.extract_browser_credentials({"FROM_BROWSER": "firefox", "BROWSER_CONSENT": "true"}) == {
+        "AUTH_TOKEN": "dummy-auth", "CT0": "dummy-ct0",
+    }
 
 
 class TestExtractFirefoxCookies:

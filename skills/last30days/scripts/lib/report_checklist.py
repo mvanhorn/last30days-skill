@@ -26,6 +26,7 @@ _SUBJECT_POSTS_HEADING = re.compile(r"^## Posts by (@\S+)$", re.MULTILINE)
 _JOBS_DIGEST_HEADING = "## Jobs Digest"
 _PATENT_DIGEST_HEADING = "## Patent Digest"
 _POLYMARKET_HEADING = "## Polymarket Markets"
+_PERSON_PROFILE_HEADING = "## Person Profile"
 # Registers and shapes whose template has no story paragraphs or quote lines.
 _REGISTERS_WITHOUT_QUOTE_LINES = frozenset({"exec"})
 
@@ -199,7 +200,17 @@ def build(
                 f"This output has no `{_PATENT_DIGEST_HEADING}` block, so the report has "
                 "no Patent Secret Signals section."
             )
-        lines.append(f"• {jobs} {patents}")
+        digests = f"• {jobs} {patents}"
+        if _has_heading(rendered, _PERSON_PROFILE_HEADING):
+            # Shares the digest line: the checklist stays a few lines long.
+            digests += (
+                f" This output has a `{_PERSON_PROFILE_HEADING}` block: call the person quiet "
+                "only when it says `LinkedIn: checked` and gives a count of zero LinkedIn posts in "
+                "the window (not `unknown`); otherwise "
+                "name the sources that were not checked. Use no fact from an item that does not "
+                "match the person's identity, and say so when identity is uncertain."
+            )
+        lines.append(digests)
     lines.append(
         "• The fenced footer (```text ... ```) is copied whole, fence included, "
         "after the body and before the invitation."

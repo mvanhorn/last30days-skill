@@ -147,9 +147,17 @@ def exa_search(
     *,
     category: str | None = None,
     objective: str | None = None,
+    deadline_monotonic: float | None = None,
+    retries: int | None = None,
 ) -> tuple[list[dict], dict]:
     """Search Exa. ``date_range`` is omitted for entity lookups and for
-    ``category`` values that reject publication-date filters."""
+    ``category`` values that reject publication-date filters. A caller with a
+    wall-clock budget passes ``deadline_monotonic`` and fewer ``retries``."""
+    limits: dict = {}
+    if deadline_monotonic is not None:
+        limits["deadline_monotonic"] = deadline_monotonic
+    if retries is not None:
+        limits["retries"] = retries
     data = http.request(
         "POST", _EXA_SEARCH_URL,
         headers={"x-api-key": api_key},
@@ -157,6 +165,7 @@ def exa_search(
             query, count, date_range, category=category, objective=objective,
         ),
         timeout=15,
+        **limits,
     )
     items = []
     for i, r in enumerate((data.get("results", []))[:count]):
@@ -208,10 +217,13 @@ def exa_people_search(
     count: int = 5,
     *,
     objective: str | None = None,
+    deadline_monotonic: float | None = None,
+    retries: int | None = None,
 ) -> tuple[list[dict], dict]:
     """Undated ``category=people`` search. Never sends dates or excludeDomains."""
     return exa_search(
         query, None, api_key, count, category="people", objective=objective,
+        deadline_monotonic=deadline_monotonic, retries=retries,
     )
 
 

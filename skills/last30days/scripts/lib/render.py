@@ -23,6 +23,7 @@ from . import (
     library_index,
     meta_ads,
     patent_digest,
+    person,
     polymarket,
     proxy,
     reddit_refs,
@@ -245,6 +246,7 @@ SOURCE_LABELS = {
     "devto": "dev.to",
     "truthsocial": "Truth Social",
     "linkedin": "LinkedIn",
+    "linkedin_profile": "LinkedIn",
     "xiaohongshu": "Xiaohongshu",
     "x": "X",
     "github": "GitHub",
@@ -918,6 +920,10 @@ def render_compact(
     aux_candidates = _auxiliary_candidate_pool(
         evidence_report, visible_clusters, solid_clusters
     )
+    person_block = _person_profile_block(evidence_report)
+    if person_block:
+        lines.extend(person_block)
+        lines.append("")
     hiring_block = (
         []
         if no_solid_evidence
@@ -1859,6 +1865,10 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
             lines.extend(single_row)
             lines.append("")
 
+    person_block = _person_profile_block(evidence_report)
+    if person_block:
+        lines.extend(person_block)
+        lines.append("")
     # The board's digest, as the compact output carries it: the saved file
     # lists only the ranked postings below, so this is where the board is read.
     jobs_digest_block, _digest_urls = _jobs_digest_block(evidence_report)
@@ -2519,6 +2529,205 @@ def _jobs_unreadable_footer_line(report: schema.Report) -> str | None:
     if isinstance(reason, str) and reason.strip():
         line += f" ({_footer_safe(reason, 100)})"
     return line
+
+
+# Per-field caps for the Person Profile's remote text.
+_PERSON_SHORT_CHARS = 120
+_PERSON_HEADLINE_CHARS = 200
+_PERSON_BIO_CHARS = 500
+_PERSON_POST_CHARS = 240
+_PERSON_ROLES_SHOWN = 2
+_PERSON_LINKS_SHOWN = 6
+_PERSON_OLDER_SHOWN = 6
+# Fewer first-party items than this in the window and older activity shows.
+_PERSON_THIN_WINDOW = 3
+_PERSON_DATE = re.compile(r"^\d{4}-\d{2}(?:-\d{2})?$")
+_PERSON_BIO_FENCE = re.compile(r"^\s*<untrusted_content>\s*|\s*</untrusted_content>\s*$")
+_LINKEDIN_STATUS_LINES = {
+    person.LINKEDIN_CHECKED: "LinkedIn: checked",
+    person.LINKEDIN_NO_KEY: "LinkedIn: not checked (no key)",
+}
+
+
+def _person_text(value: object, limit: int) -> str:
+    """Remote text as one inert, capped line: truncated, Markdown escaped,
+    then through the evidence formatter that defangs the engine's sentinels."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    escaped = _escape_markdown_plain_text(_truncate(text, limit))
+    return _format_untrusted_evidence(escaped, len(escaped))
+
+
+def _person_date(value: object) -> str:
+    text = str(value or "").strip()
+    return text if _PERSON_DATE.match(text) else ""
+
+
+def _person_links(profile_artifact: dict, profile: dict, bio: dict) -> list[str]:
+    """Handles and sites the profile or bio page named, each made safe."""
+    links: list[str] = []
+    handles = profile_artifact.get("derived_handles")
+    for key, value in (handles if isinstance(handles, dict) else {}).items():
+        value = str(value or "").strip()
+        if not value:
+            continue
+        if value.lower().startswith(("http://", "https://")):
+            links.append(_markdown_url_link(value))
+        elif key == "x":
+            links.append("X @" + _person_text(value.lstrip("@"), _PERSON_SHORT_CHARS))
+        elif key == "github":
+            links.append("GitHub " + _person_text(value, _PERSON_SHORT_CHARS))
+        else:
+            links.append(_person_text(f"{key} {value}", _PERSON_SHORT_CHARS))
+    for url in [*(bio.get("links") or []), *(profile.get("websites") or [])]:
+        link = _markdown_url_link(url) if isinstance(url, str) else ""
+        if link and link not in links:
+            links.append(link)
+    return [link for link in links if link][:_PERSON_LINKS_SHOWN]
+
+
+def _person_profile_block(report: schema.Report) -> list[str]:
+    """What a person run's own lanes found, printed before the ranked evidence.
+
+    Present only when the run carries the ``person_profile`` artifact. Every
+    field that came from LinkedIn, the employer's site or a post is remote
+    text: each goes through ``_person_text`` with its own cap, and each URL
+    through ``_markdown_url_link``. The LinkedIn line names the one status the
+    run reached; only "checked" makes an in-window post count of zero real.
+    Older posts are listed here and never join the ranked evidence.
+    """
+    profile_artifact = (report.artifacts or {}).get("person_profile")
+    if not isinstance(profile_artifact, dict):
+        return []
+    profile = profile_artifact.get("profile") if isinstance(profile_artifact.get("profile"), dict) else {}
+    bio = profile_artifact.get("bio") if isinstance(profile_artifact.get("bio"), dict) else {}
+    out = ["## Person Profile", ""]
+
+    basis = []
+    # The profile URL is an anchor too, but the match basis below already says
+    # how it was found; listing it again only repeats it.
+    anchors = [
+        _person_text(a, _PERSON_SHORT_CHARS) for a in profile_artifact.get("anchors") or []
+        if not str(a).lower().startswith(("http://", "https://"))
+    ]
+    if any(anchors):
+        basis.append("results kept only when they name " + ", ".join(a for a in anchors if a))
+    # How the LinkedIn URL was found (supplied, or looked up and verified)
+    # is in match_basis; a looked-up URL was not given by the user.
+    basis.extend(
+        text for text in (
+            _person_text(b, _PERSON_HEADLINE_CHARS) for b in profile_artifact.get("match_basis") or []
+        ) if text
+    )
+    if profile_artifact.get("identity_weak") or not basis:
+        line = (
+            "- Identity: uncertain. Nothing beyond the name ties these results to this "
+            "person; adding an employer (`--employer`) or a LinkedIn URL (`--linkedin`) "
+            "would sharpen it."
+        )
+        if basis:
+            line += " Partial basis: " + "; ".join(basis) + "."
+        out.append(line)
+    else:
+        out.append("- Identity basis: " + "; ".join(basis) + ".")
+
+    roles = [role for role in profile.get("current_roles") or [] if isinstance(role, dict)]
+    for role in roles[:_PERSON_ROLES_SHOWN]:
+        title = _person_text(role.get("title"), _PERSON_SHORT_CHARS)
+        company = _person_text(role.get("company"), _PERSON_SHORT_CHARS)
+        text = " at ".join(part for part in (title, company) if part)
+        if text:
+            start = _person_date(role.get("start_date"))
+            out.append(f"- Current role: {text}{f', since {start}' if start else ''} (LinkedIn)")
+    headline = _person_text(profile.get("headline"), _PERSON_HEADLINE_CHARS)
+    if headline:
+        out.append(f"- LinkedIn headline: {headline}")
+
+    # The bio arrives fenced. The fence is dropped rather than copied or
+    # doubled; the text inside is made inert like every other remote field.
+    bio_text = _person_text(
+        _PERSON_BIO_FENCE.sub("", str(bio.get("bio") or "")), _PERSON_BIO_CHARS
+    )
+    if bio_text:
+        source = _markdown_url_link(str(bio.get("url") or ""))
+        out.append(f"- Bio: {bio_text}" + (f" (source: {source})" if source else ""))
+
+    links = _person_links(profile_artifact, profile, bio)
+    if links:
+        out.append(
+            "- Links found on the profile or bio page, not confirmed as this person's: "
+            + ", ".join(links)
+        )
+
+    status = profile_artifact.get("linkedin_status") or person.LINKEDIN_NO_KEY
+    checked = status == person.LINKEDIN_CHECKED
+    line = "- " + _LINKEDIN_STATUS_LINES.get(status, f"LinkedIn: {_person_text(status, 40)}")
+    if not checked:
+        line += "; LinkedIn activity unknown"
+    mismatch = _person_text(profile_artifact.get("linkedin_mismatch"), _PERSON_HEADLINE_CHARS)
+    if mismatch:
+        line += f" ({mismatch})"
+    if profile_artifact.get("timed_out"):
+        line += ". The person lookups timed out before finishing, so some were not fully checked"
+    out.append(line + ".")
+
+    first_party = int(profile_artifact.get("first_party_in_window") or 0)
+    if checked and profile_artifact.get("posts_read"):
+        out.append(
+            f"- LinkedIn posts in the window: {int(profile_artifact.get('in_window_posts') or 0):,}. "
+            f"First-party items in the window (LinkedIn, resolved X and GitHub): {first_party:,}."
+        )
+    elif checked and int(profile_artifact.get("in_window_posts") or 0):
+        out.append(
+            f"- LinkedIn posts in the window: at least {int(profile_artifact.get('in_window_posts') or 0):,}, "
+            "the posts read did not finish. "
+            f"First-party items in the window (LinkedIn, resolved X and GitHub): {first_party:,}."
+        )
+    elif checked:
+        out.append(
+            "- LinkedIn posts in the window: unknown, the posts read did not finish. "
+            f"First-party items in the window (resolved X and GitHub): {first_party:,}."
+        )
+    else:
+        out.append(
+            "- LinkedIn posts in the window: unknown, LinkedIn was not read. "
+            f"First-party items in the window (resolved X and GitHub): {first_party:,}."
+        )
+
+    older = [post for post in profile_artifact.get("older_posts") or [] if isinstance(post, dict)]
+    if older and first_party < _PERSON_THIN_WINDOW:
+        out.append(
+            f"- Older activity on LinkedIn, from before this window opened on {report.range_from} "
+            "and not part of this window's findings:"
+        )
+        for post in older[:_PERSON_OLDER_SHOWN]:
+            parts = [
+                (_person_date(post.get("date")) or "undated")
+                + (" (reshare)" if post.get("is_reshare") else "")
+            ]
+            text = _person_text(post.get("text"), _PERSON_POST_CHARS)
+            link = _markdown_url_link(str(post.get("url") or ""))
+            parts.extend(part for part in (text, link) if part)
+            out.append("  - " + " | ".join(parts))
+
+    counts = profile_artifact.get("dropped_counts")
+    dropped = {
+        str(source): count
+        for source, count in (counts if isinstance(counts, dict) else {}).items()
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0
+    }
+    total = sum(dropped.values())
+    if total:
+        breakdown = ", ".join(
+            f"{_source_label(source)} {count:,}"
+            for source, count in sorted(dropped.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        out.append(
+            f"- Dropped as namesakes: {total:,} item{'s' if total != 1 else ''} that named "
+            f"someone with this name but matched none of this person's anchors ({breakdown})."
+        )
+    return out
 
 
 def _jobs_digest(report: schema.Report) -> dict | None:
@@ -3352,6 +3561,13 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
         [("likes", "likes"), ("comments", "comments")],
     ),
     (
+        "linkedin_profile",
+        "👔",
+        "LinkedIn (their posts)",
+        "post",
+        [("likes", "likes"), ("comments", "comments")],
+    ),
+    (
         "github",
         "🐙",
         "GitHub",
@@ -4070,9 +4286,8 @@ def _render_stats(report: schema.Report) -> list[str]:
             f"- Total evidence: {total_items} item{'s' if total_items != 1 else ''} across "
             f"{len(evidence_sources)} source{'s' if len(evidence_sources) != 1 else ''}"
         )
-    top_voices = _top_voices_overall(
-        evidence_sources, subject_handle=_subject_x_handle(report),
-    )
+    subject_handle = _subject_x_handle(report)
+    top_voices = _top_voices_overall(evidence_sources, subject_handle=subject_handle)
     if top_voices:
         lines.append(f"- Top voices: {', '.join(top_voices)}")
     for source, items in non_empty_sources.items():
@@ -4098,7 +4313,9 @@ def _render_stats(report: schema.Report) -> list[str]:
         engagement_summary = _aggregate_engagement(source, items)
         if engagement_summary:
             parts.append(engagement_summary)
-        actor_summary = _top_actor_summary(source, items)
+        actor_summary = _top_actor_summary(
+            source, items, subject_handle=subject_handle if source == "x" else "",
+        )
         if actor_summary:
             parts.append(actor_summary)
         provenance = report.artifacts.get("x_provenance") if source == "x" else None
@@ -4169,6 +4386,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "bluesky": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
+    "linkedin_profile": [("likes", "likes"), ("comments", "cmt")],
     "polymarket": [],
     "github": [
         ("stars", "stars"),
@@ -4255,28 +4473,28 @@ def _aggregate_engagement(source: str, items: list[schema.SourceItem]) -> str | 
     return _fmt_pairs(totals) or None
 
 
-def _top_actor_summary(source: str, items: list[schema.SourceItem]) -> str | None:
-    actors = _top_actors_for_source(source, items)
-    if not actors:
-        return None
+_BARE_VOICE_HANDLE_SOURCES = {"tiktok", "instagram", "threads"}
+_STATS_VOICE_HANDLE_SOURCES = {"x", "bluesky", "truthsocial"} | _BARE_VOICE_HANDLE_SOURCES
+
+
+def _top_actor_summary(
+    source: str, items: list[schema.SourceItem], *, subject_handle: str = "",
+) -> str | None:
     label = {
         "reddit": "communities",
         "grounding": "domains",
         "youtube": "channels",
         "hackernews": "domains",
     }.get(source, "voices")
-    return f"{label}: {', '.join(actors)}"
-
-
-def _top_actors_for_source(
-    source: str, items: list[schema.SourceItem], limit: int = 3
-) -> list[str]:
-    counts: Counter[str] = Counter()
-    for item in items:
-        actor = _stats_actor(item)
-        if actor:
-            counts[actor] += 1
-    return [actor for actor, _ in counts.most_common(limit)]
+    if source in _STATS_VOICE_HANDLE_SOURCES:
+        actors = _top_voices_overall(
+            {source: items}, limit=3, subject_handle=subject_handle,
+            bare_author_handles=source in _BARE_VOICE_HANDLE_SOURCES,
+        )
+    else:
+        counts = Counter(actor for item in items if (actor := _stats_actor(item)))
+        actors = [actor for actor, _ in counts.most_common(3)]
+    return f"{label}: {', '.join(actors)}" if actors else None
 
 
 # Top voices rank @handles by what their posts earned, not by how many they
@@ -4311,8 +4529,18 @@ def _voice_post_engagement(item: schema.SourceItem) -> int | None:
     return total if found else None
 
 
+def _voice_identity(actor: str, bare_author_handles: bool) -> str:
+    return (actor.lstrip("@") if bare_author_handles else actor).lower()
+
+
+def _is_voice_handle(item: schema.SourceItem, actor: str, bare_author_handles: bool) -> bool:
+    if bare_author_handles:
+        return bool(item.author) and (not item.container or item.container == "Polymarket")
+    return actor.startswith("@")
+
+
 def _rank_voice_handles(
-    items: list[schema.SourceItem], subject_handle: str = "",
+    items: list[schema.SourceItem], subject_handle: str = "", *, bare_author_handles: bool = False,
 ) -> list[str]:
     """Every eligible @handle among ``items``, most engaged first.
 
@@ -4323,14 +4551,14 @@ def _rank_voice_handles(
     metrics at all stays eligible with score 0, since its source does not
     report them. Ties fall back to counted posts, then the handle. Handles
     group case-insensitively (X keeps the supplied case), shown in the first
-    spelling seen.
+    spelling seen. Per-source Stats can also accept an unprefixed author handle.
     """
     posts: dict[str, list[int | None]] = {}
     spelling: dict[str, str] = {}
     for item in items:
         actor = _stats_actor(item)
-        if actor and actor.startswith("@"):
-            key = actor.lower()
+        if actor and _is_voice_handle(item, actor, bare_author_handles):
+            key = _voice_identity(actor, bare_author_handles)
             spelling.setdefault(key, actor)
             posts.setdefault(key, []).append(_voice_post_engagement(item))
     subject = subject_handle.strip().lstrip("@").lower()
@@ -4351,6 +4579,8 @@ def _top_voices_overall(
     items_by_source: dict[str, list[schema.SourceItem]],
     limit: int = 5,
     subject_handle: str = "",
+    *,
+    bare_author_handles: bool = False,
 ) -> list[str]:
     """The ``## Stats`` top voices: the most frequent actors across sources.
 
@@ -4360,21 +4590,27 @@ def _top_voices_overall(
     then filled with the eligible handles in engagement order.
     """
     all_items = [item for items in items_by_source.values() for item in items]
-    ranked_handles = _rank_voice_handles(all_items, subject_handle)
-    eligible = {handle.lower() for handle in ranked_handles}
-    counts: Counter[str] = Counter()
+    ranked_handles = _rank_voice_handles(
+        all_items, subject_handle, bare_author_handles=bare_author_handles,
+    )
+    eligible = {_voice_identity(handle, bare_author_handles) for handle in ranked_handles}
+    counts: Counter[tuple[bool, str]] = Counter()
     for item in all_items:
         actor = _stats_actor(item)
         if not actor:
             continue
-        if actor.startswith("@"):
-            actor = actor.lower()
-            if actor not in eligible or counts[actor] >= _VOICE_POSTS_PER_HANDLE:
-                continue
-        counts[actor] += 1
-    top = [actor for actor, _ in counts.most_common(limit)]
+        is_handle = _is_voice_handle(item, actor, bare_author_handles)
+        if is_handle:
+            actor = _voice_identity(actor, bare_author_handles)
+        key = (is_handle, actor)
+        if is_handle and (actor not in eligible or counts[key] >= _VOICE_POSTS_PER_HANDLE):
+            continue
+        counts[key] += 1
     by_engagement = iter(ranked_handles)
-    return [next(by_engagement) if actor.startswith("@") else actor for actor in top]
+    return [
+        next(by_engagement) if is_handle else actor
+        for (is_handle, actor), _ in counts.most_common(limit)
+    ]
 
 
 def _stats_actor(item: schema.SourceItem) -> str | None:

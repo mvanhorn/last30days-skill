@@ -16,6 +16,13 @@ from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/threads"
 
+
+def _sc_base() -> str:
+    if SCRAPECREATORS_BASE != "https://api.scrapecreators.com/v1/threads":
+        return SCRAPECREATORS_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/threads"
+
 # Depth configurations: how many results to fetch
 DEPTH_CONFIG = {
     "quick":   {"results": 10},
@@ -155,7 +162,7 @@ def search_threads(
 
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/search",
+            f"{_sc_base()}/search",
             params={"query": core_topic},
             headers=http.scrapecreators_headers(token),
             timeout=30,

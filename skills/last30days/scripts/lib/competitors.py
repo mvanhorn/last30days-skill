@@ -16,7 +16,7 @@ import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import dates, grounding, log
+from . import company_resolve, dates, grounding, log
 from .resolve import _has_backend
 
 # Peer cap vs total vs-entity cap (main + peers).
@@ -219,12 +219,14 @@ def _topic_is_company(config: dict, is_company: bool | None) -> bool:
     """True when the topic is already established as a company, not a person."""
     if is_company is False:
         return False
+    company = config.get("_company") if isinstance(config.get("_company"), dict) else {}
+    if company.get("company_via_person"):
+        return False
+    if company.get("company_peer_discovery") == company_resolve.COMPANY_PEER_KEYWORD:
+        return False
     if is_company is True:
         return True
-    company = config.get("_company")
-    if isinstance(company, dict) and company.get("company_via_person"):
-        return False
-    if isinstance(company, dict) and company.get("company"):
+    if company.get("company"):
         return True
     return bool(config.get("_company_signal"))
 

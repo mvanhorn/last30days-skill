@@ -147,6 +147,61 @@ class RenderV3Tests(unittest.TestCase):
 
         self.assertIn("Top voices: @loud, example.com, r/LocalLLaMA, @subject", text)
         self.assertNotIn("@digest", text.split("Top voices:", 1)[1].splitlines()[0])
+        self.assertIn("- X: 14 items | 900likes | voices: @loud, @subject\n", text)
+
+    def test_per_source_stats_preserve_channel_counts_and_limit_the_x_subject_exception(self):
+        def post(source, index, author, likes):
+            return schema.SourceItem(
+                item_id=f"{source}-{index}", source=source, author=author,
+                title="Source item", body="A source item",
+                url=f"https://example.com/{source}/{index}",
+                engagement={"likes": likes},
+            )
+
+        report = sample_report()
+        report.artifacts["resolved"] = {"x_handle": "subject"}
+        report.items_by_source["bluesky"] = [
+            post("bluesky", 1, "subject", 0),
+            post("bluesky", 2, "active", 5),
+        ]
+        report.items_by_source["youtube"] = [
+            post("youtube", 1, "@frequent", 0),
+            post("youtube", 2, "@frequent", 0),
+            post("youtube", 3, "@active", 300),
+        ]
+        report.items_by_source["linkedin"] = [
+            post("linkedin", 1, "@Company", 0),
+            post("linkedin", 2, "@Company", 0),
+            post("linkedin", 3, "Guest author", 300),
+        ]
+
+        text = render.render_compact(report)
+
+        self.assertIn("- Bluesky: 2 items | 5likes | voices: @active\n", text)
+        self.assertIn("- YouTube: 3 items | 300likes | channels: @frequent, @active\n", text)
+        self.assertIn("- LinkedIn: 3 items | 300likes | voices: @Company, Guest author\n", text)
+
+    def test_per_source_stats_rank_bare_usernames_without_ranking_containers(self):
+        for source, label in (("tiktok", "TikTok"), ("instagram", "Instagram"), ("threads", "Threads")):
+            with self.subTest(source=source):
+                report = sample_report()
+
+                def post(index, author, likes, container=None):
+                    return schema.SourceItem(
+                        item_id=f"{source}-{index}", source=source, author=author,
+                        container=container, title="Source item", body="A source item",
+                        url=f"https://example.com/{source}/{index}", engagement={"likes": likes},
+                    )
+
+                report.items_by_source[source] = (
+                    [post(i, "digest", 0) for i in range(4)]
+                    + [post(4, "Signal", 3), post(5, "@signal", 3)]
+                    + [post(6, "Writer", 0, container="@Channel")]
+                )
+
+                text = render.render_compact(report)
+
+                self.assertIn(f"- {label}: 7 items | 6likes | voices: Signal, @Channel\n", text)
 
     def test_render_context_includes_top_clusters(self):
         text = render.render_context(sample_report())

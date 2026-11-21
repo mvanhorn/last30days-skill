@@ -30,6 +30,13 @@ from . import dates, health, http, log, snippet
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/reddit"
 
+
+def _sc_base() -> str:
+    if SCRAPECREATORS_BASE != "https://api.scrapecreators.com/v1/reddit":
+        return SCRAPECREATORS_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/reddit"
+
 # Reddit's highest-upvote content (relationship drama, AITA, viral news) often
 # has near-zero topic overlap. Engagement-only ranking floats it above on-topic
 # posts, especially on bare global searches where no subreddits were resolved
@@ -342,7 +349,7 @@ def _global_search(
     """
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/search",
+            f"{_sc_base()}/search",
             headers=http.scrapecreators_headers(token),
             params={"query": query, "sort": sort, "timeframe": timeframe},
             timeout=30,
@@ -380,7 +387,7 @@ def _subreddit_search(
     """
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/subreddit/search",
+            f"{_sc_base()}/subreddit/search",
             headers=http.scrapecreators_headers(token),
             params={
                 "subreddit": subreddit,
@@ -420,7 +427,7 @@ def fetch_post_comments(
     """
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/post/comments",
+            f"{_sc_base()}/post/comments",
             headers=http.scrapecreators_headers(token),
             params={"url": url},
             timeout=30,

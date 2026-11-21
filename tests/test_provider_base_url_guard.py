@@ -18,6 +18,7 @@ OVERRIDES = [
     ("OPENAI_BASE_URL", providers.OPENAI_RESPONSES_URL),
     ("XAI_BASE_URL", providers.XAI_RESPONSES_URL),
     ("OPENROUTER_BASE_URL", providers.OPENROUTER_URL),
+    ("SCRAPECREATORS_BASE_URL", "https://api.scrapecreators.com"),
 ]
 
 

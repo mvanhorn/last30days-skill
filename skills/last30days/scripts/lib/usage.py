@@ -28,6 +28,7 @@ _PAID_HOSTS = {
     "api.twitter.com": "x",
     "xquik.com": "xquik",
     "api.groq.com": "groq",
+    "code.deepline.com": "deepline",
 }
 
 
@@ -70,7 +71,7 @@ def begin_http(url: str, method: str) -> tuple[str, str, str] | None:
     if provider == "perplexity" and method == "GET":
         return None  # Retrieving an existing background operation does not start another charge.
     if provider is None:
-        for name in ("OPENAI", "XAI", "OPENROUTER"):
+        for name in ("OPENAI", "XAI", "OPENROUTER", "SCRAPECREATORS"):
             override = os.environ.get(f"{name}_BASE_URL")
             if override and urlsplit(override).netloc == parts.netloc:
                 provider = name.lower()

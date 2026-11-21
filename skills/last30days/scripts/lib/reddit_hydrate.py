@@ -241,7 +241,7 @@ def _discussion(item: dict) -> float:
 
 def _attach_comments(
     items: list[dict], depth: str, deadline: Optional[float], now: float,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Archive comment trees for the most-discussed hydrated threads that lack
     comments, within the lane's comment budget. Returns (filled, failed,
     throttled), where throttled counts the failures that were the archive
@@ -300,7 +300,7 @@ def attach_comments(
 ) -> int:
     """Archive comments for ``items`` hydrated with ``comments=False``, within
     the lane's comment budget. Returns how many threads gained comments."""
-    filled, _failed = _attach_comments(items, depth, deadline, time.time() if now is None else now)
+    filled, _failed, _throttled = _attach_comments(items, depth, deadline, time.time() if now is None else now)
     return filled
 
 

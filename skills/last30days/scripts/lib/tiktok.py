@@ -20,6 +20,18 @@ from . import dates, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/tiktok"
 
+
+def _sc_base() -> str:
+    if SCRAPECREATORS_BASE != "https://api.scrapecreators.com/v1/tiktok":
+        return SCRAPECREATORS_BASE
+    from . import env
+    return f"{env.get_scrapecreators_base_url()}/v1/tiktok"
+
+
+def _sc_root() -> str:
+    from . import env
+    return env.get_scrapecreators_base_url()
+
 # Depth configurations: how many results to fetch / captions to extract
 DEPTH_CONFIG = {
     "quick":   {"results_per_page": 10, "max_captions": 3},
@@ -207,7 +219,7 @@ def _hashtag_search(
     _log(f"Hashtag search: #{hashtag}")
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/search/hashtag",
+            f"{_sc_base()}/search/hashtag",
             params={"hashtag": hashtag},
             headers=http.scrapecreators_headers(token),
             timeout=30,
@@ -246,7 +258,7 @@ def _profile_videos(
     """
     _check_budget(deadline, cancel)
     _log(f"Profile videos: @{handle}")
-    profile_url = "https://api.scrapecreators.com/v3/tiktok/profile/videos"
+    profile_url = f"{_sc_root()}/v3/tiktok/profile/videos"
     try:
         data = http.get(
             profile_url,
@@ -301,7 +313,7 @@ def search_tiktok(
 
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/search/keyword",
+            f"{_sc_base()}/search/keyword",
             params={"query": core_topic, "sort_by": "relevance"},
             headers=http.scrapecreators_headers(token),
             timeout=30,
@@ -405,7 +417,7 @@ def fetch_captions(
             # doesn't poison the entire source outcome.
             with http.capture_failures() as _tf:
                 data = http.get(
-                    f"{SCRAPECREATORS_BASE}/video/transcript",
+                    f"{_sc_base()}/video/transcript",
                     params={"url": url},
                     headers=http.scrapecreators_headers(token),
                     timeout=15,
@@ -657,7 +669,7 @@ def _fetch_post_comments(
     _check_budget(deadline, cancel)
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/video/comments",
+            f"{_sc_base()}/video/comments",
             params={"url": post_url, "trim": "true"},
             headers=http.scrapecreators_headers(token),
             timeout=30,

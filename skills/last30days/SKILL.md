@@ -1,6 +1,6 @@
 ---
 name: last30days
-version: "4.3.2"
+version: "4.5.0"
 description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
@@ -70,7 +70,7 @@ metadata:
 ---
 
 
-# last30days v4.3.2: Research Any Topic from the Last 30 Days
+# last30days v4.5.0: Research Any Topic from the Last 30 Days
 
 ## Skill contract
 
@@ -107,18 +107,19 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Hiring intent or an engine `## Hiring Signals`, `## Jobs Digest` or `## Patent Digest` block | Read [references/hiring-signals.md](references/hiring-signals.md) and [references/patent-signals.md](references/patent-signals.md) in full. | Apply the jobs lane and its scoped planning exception; in standard runs, apply each file's section rules. |
 | `--agent` mode or explicit machine-readable JSON | Read [references/agent-mode.md](references/agent-mode.md) in full. | Apply structured output without treating absent consent as permission. |
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
-| Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers during Step 0.55 before planning. |
-| Grok Bot X lane | Read [references/grok-bot-x.md](references/grok-bot-x.md) in full. | Fetch and validate the X envelope before the research engine command. |
+| Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers in Step 0.55. |
+| Grok Bot X lane | Read [references/grok-bot-x.md](references/grok-bot-x.md) in full. | Validate the X envelope. |
+| OpenCode browse lane | Read [references/opencode-browse-lane.md](references/opencode-browse-lane.md) in full. | Before Step 1. |
 | Follow-up on existing research | Read [references/followups.md](references/followups.md) in full. | Answer or re-render existing research; use the explicit cached drill/freshness/queue routes when requested. |
 | HTML/export intent | Read [references/save-html-brief.md](references/save-html-brief.md) in full. | Create the local artifact, then follow its access and explicit publishing choices. |
 
 ## Dispatch before research
 
-Preserve the user's original request while handling setup. Classify library/feed/queue and existing-research follow-ups before entering topic research or setup. Their fast paths skip topic/backend preflight, host WebSearch resolution, and fresh source research; interpreter bootstrap still applies to any engine command. Load the agent-mode reference before the first-run gate when its route applies.
+Preserve the user's original request while handling setup. Classify library/feed/queue and existing-research follow-ups before topic research or setup. Their fast paths skip preflight, host WebSearch resolution, and fresh research; interpreter bootstrap still applies. Load the agent-mode reference before the first-run gate when its route applies.
 
 For library search/feed/queue, run the selected offline procedure and relay its result. Never fall through to fresh research because the library is empty, SQLite lacks FTS5, or a queue name is unknown. An unknown queue-cover name requires listing exact queued names.
 
-Use existing findings for follow-ups unless asked for a new topic, drill, or freshness check. Skip setup. Retain each run's `Follow-up cache ID` in context.
+Use existing findings for follow-ups unless asked for a new topic, drill, or freshness check. Skip setup. Keep each run's `Follow-up cache ID` in context.
 
 For fresh research or discovery, resolve whether the agent session has a usable web-search tool, including a deferred or connector-provided tool. If the host requires loading, selecting, or enabling that tool, do so through the host's mechanism before use. Use the available capability rather than requiring one particular tool name or schema.
 - When host web search is available, use it for applicable pre-research and supplements. Export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine.
@@ -194,7 +195,7 @@ Pass plans on stdin using `--plan -` and a quoted heredoc delimiter that does no
 
 **LAW 9 - QUOTE THE COMMUNITY; NEVER NARRATE THE TOOLING.** When `## Top Community Comments` or `## Best Takes` holds comments or `said` lines the nothing-solid floor kept, the report's best six quotes, verbatim or translated, each get a quote line (synthesis PULLED QUOTE); others may be quoted inline, attributed. Do not create a separate Comments section. Weigh high-vote reactions as substantive signal. Link sources in the paragraph, URLs verbatim; apply governing citations and LAW 8. Never narrate engine mechanics, name collisions, noisy columns, or internal failures in the deliverable. Present supported facts about the subject; engine health belongs in diagnostics.
 
-**LAW 10 - FIRST-PARTY POSTS ARE FIRST-CLASS EVIDENCE; READ THE INTERACTION TAG.** For person topics, weigh the subject's own `from:{handle}` posts (`## Posts by @handle`) as primary signal; quote the standout ones. Do not substitute third-party coverage for the subject's available voice. `interaction:→@handle` denotes the subject's reply/mention and is a relationship signal even at near-zero engagement; repeated personal interactions matter beyond counts. Describe what the interaction shows without narrating tags or scoring mechanisms.
+**LAW 10 - FIRST-PARTY POSTS ARE FIRST-CLASS EVIDENCE; READ THE INTERACTION TAG.** For person topics, weigh the subject's own `from:{handle}` posts (`## Posts by @handle`) as primary signal; quote the standout ones. Do not substitute third-party coverage for the subject's available voice. `interaction:→@handle` denotes the subject's reply/mention and is a relationship signal even at near-zero engagement; repeated personal interactions matter beyond counts. Describe what the interaction shows without narrating tags or scoring mechanisms. With `## Person Profile`: call the person quiet only on `LinkedIn: checked` with no in-window posts, else name the unchecked sources; use no fact from an item that misses their identity; if identity is uncertain, say so.
 
 **LAW 11 - YOU ARE THE JUDGE. THE THREE-COMMAND DISCOVERY PROTOCOL IS MANDATORY ON DISCOVERY/TRENDING RUNS.** The host names topics, flags junk, scores content-worthiness, and writes both angles. Run `--discover --nominate-only`, then `--discover --judgments <file>`, then `--discover --finalize [--angles <file>]`. No external judging key/service is needed. A one-shot heuristic note means the host skipped the protocol, not that judging needs credentials. Before any discovery command, verify the protocol starts with nominate-only, every leg carries the same captured `--save-dir` (including empty), and judgments/angles use the quoted-heredoc temporary-file pattern from `references/discovery.md`. Only the documented fallback after two protocol-leg failures and headless/cron invocation are exempt.
 
@@ -229,9 +230,9 @@ After the response and required citations, stop and wait unless governing instru
 - Legacy: Sends search queries to OpenAI's Responses API (`api.openai.com`) for Reddit discovery (fallback if no SCRAPECREATORS_API_KEY)
 - Sends search queries to X/Twitter via the official X API v2 (`api.x.com`, app-only bearer from `X_BEARER_TOKEN`, sent only in the Authorization header; the engine's default X path on a Grok Bot host next to xAI's API), optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai`), Xquik's API (`xquik.com`), or the official X API v2 via xurl CLI (when installed and authenticated)
 - Accepts host `.json` envelopes as untrusted input: `--x-posts` (posts from the host's X connector; rows validated, citation URLs rebuilt from post ids; no X backend is called) and `--reddit-threads` (thread URLs or ids only; the engine rehydrates each)
-- Sends search queries to Algolia HN Search (`hn.algolia.com`) for Hacker News stories and comments (free, no auth)
+- Sends search queries, free and without auth, to Algolia HN Search (`hn.algolia.com`) and Polymarket Gamma (`gamma-api.polymarket.com`)
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
-- Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction markets (free, no auth)
+- Person runs (`--employer`, `--linkedin`, `--email`) fetch the employer's public pages; with `DEEPLINE_API_KEY` they send the name, employer, and any supplied LinkedIn URL or email to Deepline (`code.deepline.com`), which spends credits
 - Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name; company runs send USPTO patent search (`ppubs.uspto.gov`, no key) the company name
 - Runs `yt-dlp` locally for YouTube search and transcripts (no API key, public data)
 - Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG). When the ScrapeCreators key is missing or returns HTTP 402, TikTok/Instagram fall back to web discovery (SearXNG / Serper / Exa / Brave / keyless) plus `yt-dlp` per-post extract.
@@ -248,7 +249,7 @@ After the response and required citations, stop and wait unless governing instru
 - Does not post, like, or modify content on any platform
 - Cookie reads require explicit consent. The sidecar requires `AGENTCOOKIE=on` or affirmative `BROWSER_CONSENT`. `--preflight` and `--diagnose` do not read browser-cookie values
 - Does not use Codex ChatGPT auth as an OpenAI provider credential
-- Does not share API keys between providers, except the TikTok legacy fallback: when `SCRAPECREATORS_API_KEY` is unset, `APIFY_API_TOKEN` is sent to ScrapeCreators (`get_tiktok_token` in `scripts/lib/env.py`)
+- Does not share API keys between providers (`APIFY_API_TOKEN` is never sent to ScrapeCreators and does not enable TikTok)
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
 - Hacker News and Polymarket are always available (no API key or binary)

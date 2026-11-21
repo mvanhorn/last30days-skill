@@ -529,7 +529,10 @@ def weighted_rrf(
         for rank, item in enumerate(items, start=1):
             # Reject only the unqualified copy before combining its text,
             # provenance, or votes with qualified evidence at the same URL.
-            if not entity_extract.matches_person_identity(item, plan.person_identity_anchors, primary_handle):
+            if not entity_extract.matches_person_identity(
+                item, plan.person_identity_anchors, primary_handle,
+                person_run=getattr(plan, "person_run", False),
+            ):
                 continue
             key = candidate_key(item)
             score = weight / (RRF_K + rank)

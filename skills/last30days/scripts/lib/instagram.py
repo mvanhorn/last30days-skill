@@ -27,6 +27,13 @@ from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com"
 
+
+def _sc_base() -> str:
+    if SCRAPECREATORS_BASE != "https://api.scrapecreators.com":
+        return SCRAPECREATORS_BASE
+    from . import env
+    return env.get_scrapecreators_base_url()
+
 # Depth configurations: how many results to fetch / captions to extract
 DEPTH_CONFIG = {
     "quick":   {"results_per_page": 10, "max_captions": 3},
@@ -130,7 +137,7 @@ def _get_reels_search(
     cancel: threading.Event | None,
 ) -> dict[str, Any]:
     return http.get(
-        f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
+        f"{_sc_base()}/v2/instagram/reels/search",
         params={"query": query},
         headers=http.scrapecreators_headers(token),
         retries=2,
@@ -332,7 +339,7 @@ def _user_reels(
     if _budget_expired(deadline, cancel):
         return []
     _log(f"User reels: @{handle}")
-    reels_url = f"{SCRAPECREATORS_BASE}/v1/instagram/user/reels"
+    reels_url = f"{_sc_base()}/v1/instagram/user/reels"
     try:
         data = http.get(
             reels_url,
@@ -436,7 +443,7 @@ def _google_reel_fallback(
             # with a swallowed 404 once the adapter reports a clean result.
             with http.expected_misses(404):
                 data = http.get(
-                    f"{SCRAPECREATORS_BASE}/v1/google/search",
+                    f"{_sc_base()}/v1/google/search",
                     params={
                         "query": (
                             f"site:instagram.com/reel {topic} "
@@ -518,7 +525,7 @@ def _google_reel_fallback(
             return None
         try:
             payload = http.get(
-                f"{SCRAPECREATORS_BASE}/v1/instagram/post",
+                f"{_sc_base()}/v1/instagram/post",
                 params={"url": url},
                 headers=headers,
                 retries=1,
@@ -771,7 +778,7 @@ def fetch_captions(
             # poison the entire source outcome (#829).
             with http.capture_failures() as _tf:
                 data = http.get(
-                    f"{SCRAPECREATORS_BASE}/v2/instagram/media/transcript",
+                    f"{_sc_base()}/v2/instagram/media/transcript",
                     params={"url": url},
                     headers=http.scrapecreators_headers(token),
                     retries=1,
@@ -1041,7 +1048,7 @@ def _fetch_post_comments(
         return []
     try:
         data = http.get(
-            f"{SCRAPECREATORS_BASE}/v2/instagram/post/comments",
+            f"{_sc_base()}/v2/instagram/post/comments",
             params={"url": post_url},
             headers=http.scrapecreators_headers(token),
             retries=2,

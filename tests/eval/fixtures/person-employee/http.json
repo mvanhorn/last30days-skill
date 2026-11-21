@@ -1,0 +1,254 @@
+{
+  "format": "last30days-http-fixture/v1",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.search.brave.com/res/v1/web/search?q=Dana+Okafor&count=5&freshness=2026-06-10to2026-07-10",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "web": {
+            "results": [
+              {
+                "title": "Dana Okafor on rebuilding Northwind Freight's dispatch network",
+                "url": "https://web.example.test/person-employee/dispatch-network",
+                "description": "Dana Okafor, VP Operations at Northwind Freight, explains how regional cross-docks cut inbound dwell time. Hand-written fixture content.",
+                "page_age": "2026-07-01T00:00:00Z"
+              },
+              {
+                "title": "Northwind Freight adds night-shift dispatch leads under Dana Okafor",
+                "url": "https://web.example.test/person-employee/night-shift",
+                "description": "Northwind Freight is hiring two night-shift dispatch leads who will report to Dana Okafor. Hand-written fixture content.",
+                "page_age": "2026-06-22T00:00:00Z"
+              },
+              {
+                "title": "Chef Dana Okafor opens a twelve-seat tasting counter in Lisbon",
+                "url": "https://web.example.test/person-employee/tasting-counter",
+                "description": "Chef Dana Okafor's new tasting counter in Lisbon serves a seasonal West African menu. Hand-written fixture content.",
+                "page_age": "2026-06-28T00:00:00Z"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://code.deepline.com/api/v2/integrations/limadata_find_person_profiles/execute",
+        "raw": false,
+        "json": {
+          "payload": {
+            "full_name": "Dana Okafor",
+            "company_name": "Northwind Freight",
+            "company_domain": "northwind.example"
+          }
+        }
+      },
+      "response": {
+        "value": {
+          "status": "completed",
+          "result": {
+            "data": {
+              "linkedin_url": "https://www.linkedin.com/in/dana-okafor-fixture"
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://code.deepline.com/api/v2/integrations/harvestapi_get_profile/execute",
+        "raw": false,
+        "json": {
+          "payload": {
+            "url": "https://www.linkedin.com/in/dana-okafor-fixture"
+          }
+        }
+      },
+      "response": {
+        "value": {
+          "status": "completed",
+          "result": {
+            "data": {
+              "element": {
+                "firstName": "Dana",
+                "lastName": "Okafor",
+                "headline": "VP Operations at Northwind Freight",
+                "linkedinUrl": "https://www.linkedin.com/in/dana-okafor-fixture",
+                "publicIdentifier": "dana-okafor-fixture",
+                "about": "Freight operations, dispatch, and carrier relations.",
+                "location": {
+                  "linkedinText": "Columbus, Ohio, United States"
+                },
+                "currentPosition": [
+                  {
+                    "position": "VP Operations",
+                    "companyName": "Northwind Freight",
+                    "companyWebsite": "https://northwind.example",
+                    "startDate": {
+                      "text": "2024-03"
+                    }
+                  }
+                ],
+                "experience": [
+                  {
+                    "position": "VP Operations",
+                    "companyName": "Northwind Freight",
+                    "companyWebsite": "https://northwind.example",
+                    "startDate": {
+                      "text": "2024-03"
+                    }
+                  },
+                  {
+                    "position": "Director of Dispatch",
+                    "companyName": "Northwind Freight",
+                    "companyWebsite": "https://northwind.example",
+                    "startDate": {
+                      "text": "2021-02"
+                    },
+                    "endDate": {
+                      "text": "2024-03"
+                    }
+                  }
+                ],
+                "websites": []
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://code.deepline.com/api/v2/integrations/harvestapi_get_profile_posts/execute",
+        "raw": false,
+        "json": {
+          "payload": {
+            "profile": "https://www.linkedin.com/in/dana-okafor-fixture",
+            "scrapePostedLimit": "year"
+          }
+        }
+      },
+      "response": {
+        "value": {
+          "status": "completed",
+          "result": {
+            "data": {
+              "elements": [
+                {
+                  "id": "7400000000000000101",
+                  "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7400000000000000101/",
+                  "content": "Our third regional cross-dock opened this week. Dwell time on inbound freight is down by a day, and the dispatch team did it without a single missed pickup.",
+                  "postedAt": {
+                    "date": "2026-07-02T15:00:00.000Z"
+                  },
+                  "author": {
+                    "name": "Dana Okafor",
+                    "linkedinUrl": "https://www.linkedin.com/in/dana-okafor-fixture",
+                    "publicIdentifier": "dana-okafor-fixture"
+                  },
+                  "engagement": {
+                    "likes": 214,
+                    "comments": 31,
+                    "shares": 2
+                  }
+                },
+                {
+                  "id": "7400000000000000102",
+                  "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7400000000000000102/",
+                  "content": "Hiring two dispatch leads for the night shift. If you like hard routing problems and calm radios, my messages are open.",
+                  "postedAt": {
+                    "date": "2026-06-18T15:00:00.000Z"
+                  },
+                  "author": {
+                    "name": "Dana Okafor",
+                    "linkedinUrl": "https://www.linkedin.com/in/dana-okafor-fixture",
+                    "publicIdentifier": "dana-okafor-fixture"
+                  },
+                  "engagement": {
+                    "likes": 96,
+                    "comments": 12,
+                    "shares": 2
+                  }
+                },
+                {
+                  "id": "7400000000000000103",
+                  "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7400000000000000103/",
+                  "content": "Spring carrier summit recap: on-time pickup is the metric our carriers asked us to publish, so we will publish it monthly.",
+                  "postedAt": {
+                    "date": "2026-04-03T15:00:00.000Z"
+                  },
+                  "author": {
+                    "name": "Dana Okafor",
+                    "linkedinUrl": "https://www.linkedin.com/in/dana-okafor-fixture",
+                    "publicIdentifier": "dana-okafor-fixture"
+                  },
+                  "engagement": {
+                    "likes": 140,
+                    "comments": 22,
+                    "shares": 2
+                  }
+                },
+                {
+                  "id": "7400000000000000104",
+                  "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7400000000000000104/",
+                  "content": "Peak season playbook, written down for the first time. Shared it with every terminal manager.",
+                  "postedAt": {
+                    "date": "2025-11-20T15:00:00.000Z"
+                  },
+                  "author": {
+                    "name": "Dana Okafor",
+                    "linkedinUrl": "https://www.linkedin.com/in/dana-okafor-fixture",
+                    "publicIdentifier": "dana-okafor-fixture"
+                  },
+                  "engagement": {
+                    "likes": 88,
+                    "comments": 9,
+                    "shares": 2
+                  },
+                  "repostedBy": {
+                    "name": "Dana Okafor"
+                  }
+                },
+                {
+                  "id": "7400000000000000105",
+                  "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7400000000000000105/",
+                  "content": "Two years at the company today. Grateful for the dispatch crew.",
+                  "postedAt": {
+                    "date": "2025-03-01T15:00:00.000Z"
+                  },
+                  "author": {
+                    "name": "Dana Okafor",
+                    "linkedinUrl": "https://www.linkedin.com/in/dana-okafor-fixture",
+                    "publicIdentifier": "dana-okafor-fixture"
+                  },
+                  "engagement": {
+                    "likes": 300,
+                    "comments": 40,
+                    "shares": 2
+                  }
+                }
+              ],
+              "pagination": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://northwind.example/team",
+        "raw": true
+      },
+      "response": {
+        "value": "<!doctype html><html><head><title>Team | Northwind Freight</title></head><body>\n<header><nav><a href=\"/\">Northwind Freight</a> <a href=\"https://x.com/northwindfreight\">X</a></nav></header>\n<main><h1>Our team</h1>\n<ul class=\"team\">\n<li class=\"person\"><h3>Dana Okafor</h3><p>VP Operations</p>\n<p>Dana runs dispatch and carrier relations across the Northwind Freight network, and led the move to regional cross-docks.</p>\n<a href=\"https://x.com/nwf_dana_fx\">X</a> <a href=\"https://github.com/dana-okafor-fixture\">GitHub</a></li>\n<li class=\"person\"><h3>Sam Rivera</h3><p>Head of Finance</p>\n<p>Sam leads finance and planning.</p></li>\n</ul></main>\n<footer><a href=\"https://github.com/northwind-freight\">GitHub</a></footer>\n</body></html>"
+      }
+    }
+  ]
+}

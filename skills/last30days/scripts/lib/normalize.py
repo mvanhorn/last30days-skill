@@ -88,6 +88,7 @@ def normalize_source_items(
         "perplexity": _normalize_grounding,
         "jobs": _normalize_jobs,
         "linkedin": _normalize_linkedin,
+        "linkedin_profile": _normalize_linkedin_profile,
     }
     normalizer = normalizers.get(source)
     if normalizer is None:
@@ -1174,4 +1175,41 @@ def _normalize_linkedin(
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=text[:200],
         metadata={"author_display": author, "is_article": is_article},
+    )
+
+
+def _normalize_linkedin_profile(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for a person run's own LinkedIn posts.
+
+    The posts come from the person's anchored profile, so each carries the
+    identity-anchor marker. A reshare is titled as one, so every surface that
+    prints the title says the person reshared it rather than wrote it.
+    """
+    text = str(item.get("text") or "").strip()
+    author = str(item.get("author") or "").strip()
+    is_reshare = bool(item.get("is_reshare"))
+    title = text[:140] or f"LinkedIn post {index + 1}"
+    if is_reshare:
+        title = f"Reshared: {title}"
+    return _source_item(
+        item_id=str(item.get("id") or f"LP{index + 1}"),
+        source=source,
+        title=title,
+        body=text,
+        url=str(item.get("url") or ""),
+        author=author,
+        container="LinkedIn",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=0.8,
+        why_relevant="The person's own LinkedIn post",
+        snippet=text[:200],
+        metadata={"author_display": author, "identity_anchor": True, "is_reshare": is_reshare},
     )

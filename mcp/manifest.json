@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "last30days-pp-mcp",
   "display_name": "Last30Days",
-  "version": "4.3.2",
+  "version": "4.5.0",
   "description": "Research any topic across Reddit, X, YouTube, Hacker News, Polymarket, GitHub, and the web - last 30 days, scored by upvotes, likes, and real-money prediction-market odds.",
   "author": {
     "name": "Matt Van Horn",
@@ -109,7 +109,7 @@
     "apify_api_token": {
       "type": "string",
       "title": "APIFY_API_TOKEN",
-      "description": "Apify API token. Powers TikTok and Instagram Reels search via Apify actors. Get one at https://console.apify.com/account/integrations.",
+      "description": "Legacy Apify API token. Not used by any source: TikTok and Instagram search run on SCRAPECREATORS_API_KEY.",
       "sensitive": true,
       "required": false
     },

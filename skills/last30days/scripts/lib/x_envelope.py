@@ -86,6 +86,7 @@ COUNTERS = (
 # never becomes a detail string.
 _CONNECTOR_LABEL = "X connector"
 _NATIVE_LABEL = "Grok Bot X"
+_BROWSE_LABEL = "OpenCode Browse"
 DETAIL_CREDITS = f"{_CONNECTOR_LABEL} reported no credits"
 DETAIL_NOT_CONNECTED = f"{_CONNECTOR_LABEL} not connected"
 DETAIL_UNAVAILABLE = f"{_CONNECTOR_LABEL} unavailable"
@@ -95,14 +96,18 @@ DETAIL_PARTIAL = f"{_CONNECTOR_LABEL} returned partial results"
 DETAIL_NOT_PASSED = "connector result not passed"
 
 # The envelope's free-text ``provider`` reaches output only through this
-# allowlist: ``x-native`` (Grok Bot's built-in X tools) gets its own label,
-# and anything else keeps the connector wording.
+# allowlist: ``x-native`` (Grok Bot's built-in X tools) and ``opencode-browse``
+# (OpenCode's paired browse MCP) get their own labels, and anything else keeps
+# the connector wording.
 PROVIDER_NATIVE = "x-native"
+PROVIDER_OPENCODE_BROWSE = "opencode-browse"
 PROVENANCE_NATIVE = "native"
+PROVENANCE_OPENCODE_BROWSE = "opencode-browse"
 PROVENANCE_CONNECTOR = "connector"
 PROVENANCE_LABELS = {
     PROVENANCE_CONNECTOR: _CONNECTOR_LABEL,
     PROVENANCE_NATIVE: _NATIVE_LABEL,
+    PROVENANCE_OPENCODE_BROWSE: _BROWSE_LABEL,
 }
 
 CATEGORY_CREDITS = "credits"
@@ -207,9 +212,12 @@ class Envelope:
 
     @property
     def provenance(self) -> str:
-        """``native`` for a Grok Bot built-in X envelope, else ``connector``."""
-        if self.provider.lower() == PROVIDER_NATIVE:
+        """``native`` / ``opencode-browse`` for a named host lane, else ``connector``."""
+        provider = self.provider.lower()
+        if provider == PROVIDER_NATIVE:
             return PROVENANCE_NATIVE
+        if provider == PROVIDER_OPENCODE_BROWSE:
+            return PROVENANCE_OPENCODE_BROWSE
         return PROVENANCE_CONNECTOR
 
     def outcome(self) -> tuple[schema.RunOutcomeState, str] | None:
@@ -227,8 +235,11 @@ class Envelope:
         return None
 
     def _labelled(self, detail: str) -> str:
-        if self.provenance == PROVENANCE_NATIVE:
+        provenance = self.provenance
+        if provenance == PROVENANCE_NATIVE:
             return detail.replace(_CONNECTOR_LABEL, _NATIVE_LABEL, 1)
+        if provenance == PROVENANCE_OPENCODE_BROWSE:
+            return detail.replace(_CONNECTOR_LABEL, _BROWSE_LABEL, 1)
         return detail
 
     def receipt(self) -> str:
