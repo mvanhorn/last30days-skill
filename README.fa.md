@@ -281,6 +281,7 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 | YouTube | `brew install yt-dlp` | رایگان |
 | Bluesky | گذرواژه برنامه (App password) از bsky.app | رایگان |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + نظرات YouTube | کلید ScrapeCreators | ۱۰,۰۰۰ درخواست رایگان، سپس پرداخت به میزان مصرف (PAYG) |
+| TikTok (و Instagram با پوشش محدود) بدون کلید | `yt-dlp`، وقتی کلید ScrapeCreators تنظیم نشده باشد استفاده می‌شود؛ نتایج کمتر و بدون نظرات | رایگان |
 | Xiaohongshu (RED) | اجرای افزونه ورود به سیستم مرورگر x-mcp یا سرویس `xiaohongshu-mcp` و فعال‌سازی با پرچم `--search xhs` در هر اجرا یا `INCLUDE_SOURCES=xiaohongshu` در `.env`؛ ابزار last30days ابتدا به صورت خودکار `http://localhost:18060` و سپس `http://host.docker.internal:18060` را بررسی می‌کند، یا استفاده از `XIAOHONGSHU_API_BASE` برای آدرس سفارشی | بدون نیاز به کلید API ابزار last30days؛ وابسته به سرویس نشست مرورگر محلی شما |
 | DripStack (خبرنامه‌های مالی ویژه) | اختیاری: `--search dripstack` در هر اجرا، یا `INCLUDE_SOURCES=dripstack` در `.env` | بدون کلید؛ API جستجوی عمومی رایگان |
 | Perplexity Agent API / Search API / Deep Research | کلید Perplexity، یا کلید OpenRouter به عنوان جایگزین Sonar | پرداخت به میزان مصرف؛ کلید مستقیم باعث فعال‌سازی Agent API و پژوهش عمیق پس‌زمینه (Deep Research) می‌شود |

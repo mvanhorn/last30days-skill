@@ -284,6 +284,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 | YouTube | `brew install yt-dlp` | 免费 |
 | Bluesky | 来自 bsky.app 的应用密码 | 免费 |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube 评论 | ScrapeCreators 密钥 | 前 10,000 次调用免费，之后按量付费 |
+| 无密钥的 TikTok（Instagram 覆盖有限） | `yt-dlp`，未设置 ScrapeCreators 密钥时使用；结果较少，不含评论 | 免费 |
 | 小红书（RED） | 运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务，并在单次运行中通过 `--search xhs` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=xiaohongshu`；last30days 会依次自动探测 `http://localhost:18060` 和 `http://host.docker.internal:18060`，也可通过 `XIAOHONGSHU_API_BASE` 指定自定义地址 | last30days 不需要 API 密钥；依赖本地浏览器会话服务 |
 | DripStack（付费金融通讯） | 每次运行通过 `--search dripstack` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=dripstack` | 无需密钥；公共搜索 API 免费 |
 | Perplexity Agent API / Search API / Deep Research | Perplexity 密钥，或作为 Sonar 回退方案的 OpenRouter 密钥 | 按量付费；直接密钥启用 Agent API 和后台 Deep Research |
