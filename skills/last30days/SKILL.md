@@ -107,18 +107,19 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Hiring intent or an engine `## Hiring Signals`, `## Jobs Digest` or `## Patent Digest` block | Read [references/hiring-signals.md](references/hiring-signals.md) and [references/patent-signals.md](references/patent-signals.md) in full. | Apply the jobs lane and its scoped planning exception; in standard runs, apply each file's section rules. |
 | `--agent` mode or explicit machine-readable JSON | Read [references/agent-mode.md](references/agent-mode.md) in full. | Apply structured output without treating absent consent as permission. |
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
-| Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers during Step 0.55 before planning. |
-| Grok Bot X lane | Read [references/grok-bot-x.md](references/grok-bot-x.md) in full. | Fetch and validate the X envelope before the research engine command. |
+| Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers in Step 0.55. |
+| Grok Bot X lane | Read [references/grok-bot-x.md](references/grok-bot-x.md) in full. | Validate the X envelope. |
+| OpenCode browse lane | Read [references/opencode-browse-lane.md](references/opencode-browse-lane.md) in full. | Before Step 1. |
 | Follow-up on existing research | Read [references/followups.md](references/followups.md) in full. | Answer or re-render existing research; use the explicit cached drill/freshness/queue routes when requested. |
 | HTML/export intent | Read [references/save-html-brief.md](references/save-html-brief.md) in full. | Create the local artifact, then follow its access and explicit publishing choices. |
 
 ## Dispatch before research
 
-Preserve the user's original request while handling setup. Classify library/feed/queue and existing-research follow-ups before entering topic research or setup. Their fast paths skip topic/backend preflight, host WebSearch resolution, and fresh source research; interpreter bootstrap still applies to any engine command. Load the agent-mode reference before the first-run gate when its route applies.
+Preserve the user's original request while handling setup. Classify library/feed/queue and existing-research follow-ups before topic research or setup. Their fast paths skip preflight, host WebSearch resolution, and fresh research; interpreter bootstrap still applies. Load the agent-mode reference before the first-run gate when its route applies.
 
 For library search/feed/queue, run the selected offline procedure and relay its result. Never fall through to fresh research because the library is empty, SQLite lacks FTS5, or a queue name is unknown. An unknown queue-cover name requires listing exact queued names.
 
-Use existing findings for follow-ups unless asked for a new topic, drill, or freshness check. Skip setup. Retain each run's `Follow-up cache ID` in context.
+Use existing findings for follow-ups unless asked for a new topic, drill, or freshness check. Skip setup. Keep each run's `Follow-up cache ID` in context.
 
 For fresh research or discovery, resolve whether the agent session has a usable web-search tool, including a deferred or connector-provided tool. If the host requires loading, selecting, or enabling that tool, do so through the host's mechanism before use. Use the available capability rather than requiring one particular tool name or schema.
 - When host web search is available, use it for applicable pre-research and supplements. Export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine.

@@ -1,0 +1,1 @@
+OpenCode agents with a paired `browse` MCP can now read public X posts and Reddit thread links in the user's logged-in browser and pass them through the existing `--x-posts` / `--reddit-threads` host envelopes. The X footer names the lane as "via OpenCode Browse".
