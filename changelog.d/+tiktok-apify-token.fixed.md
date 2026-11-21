@@ -1,0 +1,1 @@
+TikTok no longer falls back to `APIFY_API_TOKEN`: an Apify-only config used to send that token to ScrapeCreators as an API key and mark TikTok ready with no usable credential. TikTok now requires `SCRAPECREATORS_API_KEY` (found by @grain-lu in #1533).

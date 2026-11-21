@@ -2158,16 +2158,18 @@ def is_polymarket_available() -> bool:
 
 
 def is_tiktok_available(config: dict[str, Any]) -> bool:
-    """Check if TikTok source is available (ScrapeCreators or legacy Apify).
+    """Check if TikTok source is available (ScrapeCreators).
 
-    Returns True if SCRAPECREATORS_API_KEY or APIFY_API_TOKEN is set.
+    Returns True if SCRAPECREATORS_API_KEY is set. APIFY_API_TOKEN is not a
+    TikTok credential: it was never wired to an Apify actor, and sending it to
+    ScrapeCreators only produced auth failures.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN'))
+    return bool(config.get('SCRAPECREATORS_API_KEY'))
 
 
 def get_tiktok_token(config: dict[str, Any]) -> str:
-    """Get TikTok API token, preferring ScrapeCreators over legacy Apify."""
-    return config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN') or ''
+    """ScrapeCreators key for TikTok, or '' when unset (no Apify fallback)."""
+    return config.get('SCRAPECREATORS_API_KEY') or ''
 
 
 def _parse_include_sources(config: dict[str, Any]) -> set[str]:
