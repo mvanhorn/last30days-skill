@@ -104,6 +104,12 @@ class _Hermetic:
         self._patches = [
             mock.patch("lib.health.probe_dependency", _probe_dep(probe_map, default_status)),
             mock.patch("lib.env.is_ytdlp_available", return_value=ytdlp_ok),
+            # env.is_ytdlp_available() is a thin wrapper over
+            # youtube_yt.is_ytdlp_installed(). The keyless shortform fallback
+            # probe (is_shortform_oss_available) calls the youtube_yt symbol
+            # directly, so pin that one too or the result depends on whether
+            # the host actually has yt-dlp on PATH.
+            mock.patch("lib.youtube_yt.is_ytdlp_installed", return_value=ytdlp_ok),
             # Never read the real digg-pp-cli's help text. Tests of an older
             # Digg CLI override this.
             mock.patch("lib.digg.cli_searches_all_topics", return_value=True),

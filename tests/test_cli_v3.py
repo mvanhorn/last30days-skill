@@ -192,7 +192,9 @@ class CliV3Tests(unittest.TestCase):
         with (
             mock.patch.object(sys, "argv", [
                 "last30days.py", "best rust async tools",
-                "--search", "telegram,tiktok", "--quick", "--web-backend", "none",
+                # local fork: tiktok runs keyless (shortform_oss), so use two
+                # SC-keyed sources to exercise the none-available exit path.
+                "--search", "telegram,threads", "--quick", "--web-backend", "none",
             ]),
             mock.patch.object(cli.env, "get_config", return_value={}),
             mock.patch.object(cli.pipeline, "diagnose", return_value={}),
@@ -203,7 +205,7 @@ class CliV3Tests(unittest.TestCase):
 
         self.assertEqual(2, result)
         self.assertIn(
-            "None of the sources in --search can run here: telegram, tiktok",
+            "None of the sources in --search can run here: telegram, threads",
             stderr.getvalue(),
         )
         self.assertIn("last30days.py doctor", stderr.getvalue())

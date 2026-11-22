@@ -54,7 +54,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, person, pipeline, proxy, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
+from lib import company_resolve, competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, health, html_render, http, patents, permission_preflight, person, pipeline, proxy, reddit, reddit_arctic, reddit_discover, reddit_envelope, reddit_health, reddit_search, reddit_session, registers, render, report_checklist, schema, shortform_envelope, subproc, ui, web_search_keyless, x_envelope, yahoo_finance
 from lib.private_files import replace_private_text
 
 atexit.register(subproc.cleanup_children)
@@ -968,6 +968,20 @@ def build_parser() -> argparse.ArgumentParser:
             "search ('-' reads stdin). Only each entry's url or id is read; "
             "the engine rehydrates every thread and holds it to the window "
             "and the topic. At most 50 threads; single-topic runs only."
+        ),
+    )
+    parser.add_argument(
+        "--shortform-urls",
+        dest="shortform_urls",
+        metavar="PATH",
+        help=(
+            "Path to a last30days-shortform-urls/1 JSON envelope of TikTok and "
+            "Instagram post URLs and TikTok creator profile URLs the hosting "
+            "model found with its own web search ('-' reads stdin). Only each "
+            "entry's url is read; used only by the keyless TikTok/Instagram "
+            "lane (no ScrapeCreators key, or credits exhausted), which dates, "
+            "hydrates and topic-checks every post itself. At most 40 URLs; "
+            "single-topic runs only."
         ),
     )
     parser.add_argument("--web-backend", default="auto",
@@ -3806,18 +3820,22 @@ def _envelope_digest(
     x_main: x_envelope.Envelope | None,
     comp_plan: dict[str, dict] | None,
     reddit_threads: reddit_envelope.Envelope | None = None,
+    shortform_urls: shortform_envelope.Envelope | None = None,
 ) -> str | None:
     """One digest binding the report cache to every host envelope of the run.
 
-    Without a --reddit-threads envelope this is the X digest unchanged; with
-    one, its file digest is folded in, so a different thread list never
-    replays a report built from another.
+    Without a --reddit-threads or --shortform-urls envelope this is the X
+    digest unchanged; with one, its file digest is folded in, so a different
+    thread or URL list never replays a report built from another.
     """
     x_digest = _x_envelope_digest(x_main, comp_plan)
-    if reddit_threads is None:
+    if reddit_threads is None and shortform_urls is None:
         return x_digest
     parts = [f"x:{x_digest}"] if x_digest else []
-    parts.append(f"reddit:{reddit_threads.sha256}")
+    if reddit_threads is not None:
+        parts.append(f"reddit:{reddit_threads.sha256}")
+    if shortform_urls is not None:
+        parts.append(f"shortform:{shortform_urls.sha256}")
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -4396,6 +4414,7 @@ def _main(
     if args.cached_report and (
         args.emit != "html" or not args.synthesis_file or not args.topic or args.deep_research
         or args.plan or args.competitors_plan or args.x_posts or args.reddit_threads
+        or args.shortform_urls
         or args.discover is not None or args.drill or args.diagnose or args.preflight
         or args.welcome or args.resolve_save_dir or args.resolve_browser_consent
         or args.verify_freshness is True
@@ -4415,7 +4434,8 @@ def _main(
     if args.followup_run is not None and (not cached_followup or not re.fullmatch(r"[0-9a-f]{32}", args.followup_run)):
         parser.error("--followup-run requires a cache ID and --drill or post-run --verify-freshness")
     if cached_followup and any(
-        value is not None for value in (args.x_posts, args.reddit_threads, args.plan, args.competitors_plan)
+        value is not None
+        for value in (args.x_posts, args.reddit_threads, args.shortform_urls, args.plan, args.competitors_plan)
     ):
         parser.error("cached follow-ups use saved evidence and do not accept new plans or envelope files")
     if args.welcome:
@@ -4452,6 +4472,12 @@ def _main(
     if args.reddit_threads is not None and reddit_envelope.looks_inline_json(args.reddit_threads):
         sys.stderr.write(
             "[last30days] --reddit-threads accepts a file path or '-' only (inline "
+            "JSON is not accepted); write the envelope to a .json file and pass its path.\n"
+        )
+        return 2
+    if args.shortform_urls is not None and shortform_envelope.looks_inline_json(args.shortform_urls):
+        sys.stderr.write(
+            "[last30days] --shortform-urls accepts a file path or '-' only (inline "
             "JSON is not accepted); write the envelope to a .json file and pass its path.\n"
         )
         return 2
@@ -5010,6 +5036,12 @@ def _main(
                 "run locally or omit --reddit-threads.\n"
             )
             return 2
+        if args.shortform_urls is not None:
+            sys.stderr.write(
+                "[last30days] --shortform-urls is not supported by the hosted backend; "
+                "run locally or omit --shortform-urls.\n"
+            )
+            return 2
         from lib import hosted
         depth = "deep" if args.deep else "quick" if args.quick else "default"
         try:
@@ -5121,6 +5153,45 @@ def _main(
         except reddit_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
             return 2
+    # Host-found TikTok / Instagram URLs: validated up front like the Reddit
+    # refs. Only the keyless short-form lane reads them.
+    shortform_urls_envelope: shortform_envelope.Envelope | None = None
+    if args.shortform_urls is not None:
+        excluded = {
+            token.strip().lower() for token in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        }
+        searched = [
+            name for name in ("tiktok", "instagram")
+            if name not in excluded and (requested_sources is None or name in requested_sources)
+        ]
+        if not searched:
+            sys.stderr.write(
+                "[last30days] --shortform-urls ignored: TikTok and Instagram are not searched this run.\n"
+            )
+            args.shortform_urls = None
+    if args.shortform_urls is not None:
+        if not topic:
+            sys.stderr.write("[last30days] --shortform-urls requires a research topic.\n")
+            return 2
+        if _comparison_requested(args, topic):
+            sys.stderr.write(
+                "[last30days] --shortform-urls applies to a single-topic run; "
+                "omit it on a comparison run.\n"
+            )
+            return 2
+        try:
+            shortform_urls_envelope = shortform_envelope.read(args.shortform_urls, topic)
+        except shortform_envelope.EnvelopeContractError as exc:
+            sys.stderr.write(f"[last30days] {exc.message}\n")
+            return 2
+        if all(
+            (env.get_tiktok_token(config) if name == "tiktok" else env.get_instagram_token(config))
+            for name in searched
+        ):
+            sys.stderr.write(
+                "[last30days] --shortform-urls: ScrapeCreators is configured, so it stays the "
+                "TikTok/Instagram path; the host URLs are used only if it runs out of credits.\n"
+            )
     if args.diagnose:
         diag = pipeline.diagnose(
             pipeline.with_plan_source_omissions(config, external_plan),
@@ -5172,7 +5243,9 @@ def _main(
         cached = _load_last_report_cache(
             topic,
             ttl_seconds=_report_cache_ttl_seconds(config),
-            x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
+            x_envelope_sha256=_envelope_digest(
+                x_posts_envelope, comp_plan, reddit_threads_envelope, shortform_urls_envelope,
+            ),
             research_options=research_options,
             requested_window=requested_window,
             use_cached_envelopes=args.cached_report,
@@ -5561,6 +5634,7 @@ def _main(
                     if comp_enabled else x_posts_envelope
                 ),
                 reddit_threads=None if comp_enabled else reddit_threads_envelope,
+                shortform_urls=None if comp_enabled else shortform_urls_envelope,
             )
             patents.collect(patent_lane, r)
             r.artifacts["resolved"] = {
@@ -5853,7 +5927,9 @@ def _main(
     if not args.no_research_persistence:
         _write_last_run(
             original_topic, report, entity_reports=entity_reports,
-            x_envelope_sha256=_envelope_digest(x_posts_envelope, comp_plan, reddit_threads_envelope),
+            x_envelope_sha256=_envelope_digest(
+                x_posts_envelope, comp_plan, reddit_threads_envelope, shortform_urls_envelope,
+            ),
             research_options=research_options,
         )
         if _research_store_enabled(args, config):

@@ -736,6 +736,10 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_NATIVE_SEARCH', None),
         # Optional SearXNG instance for the keyless-search fallback rung.
         ('LAST30DAYS_SEARXNG_URL', None),
+        # Keyless TikTok/Instagram lane switches (lib/shortform_oss.py):
+        # discovery freshness (on/off/backend list) and TikTok creator expansion.
+        ('LAST30DAYS_SHORTFORM_FRESHNESS', None),
+        ('LAST30DAYS_SHORTFORM_CREATOR_EXPANSION', None),
         # TikTok top comments from TikTok's public web endpoint (free, no key):
         # on (default) or off. Off puts comment calls back on ScrapeCreators.
         ('LAST30DAYS_TIKTOK_PUBLIC_COMMENTS', None),
@@ -2168,18 +2172,64 @@ def is_polymarket_available() -> bool:
     return True
 
 
-def is_tiktok_available(config: dict[str, Any]) -> bool:
-    """Check if TikTok source is available (ScrapeCreators).
+def shortform_discovery_sources(
+    config: dict[str, Any] | None = None, kind: str = "tiktok",
+) -> list[str]:
+    """Discovery sources armed for the keyless TikTok / Instagram lane, in
+    the order the lane tries them.
 
-    Returns True if SCRAPECREATORS_API_KEY is set. APIFY_API_TOKEN is not a
-    TikTok credential: it was never wired to an Apify actor, and sending it to
-    ScrapeCreators only produced auth failures.
+    Exa only counts for TikTok: its API returns 0 Instagram posts. A host
+    with native web search (LAST30DAYS_NATIVE_SEARCH) counts as "host search":
+    it hands the engine post URLs through --shortform-urls, and it is also
+    why the keyless floor is off there.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY'))
+    cfg = config or {}
+    armed: list[str] = []
+    if (cfg.get('LAST30DAYS_SEARXNG_URL') or '').strip():
+        armed.append("SearXNG")
+    if cfg.get('SERPER_API_KEY'):
+        armed.append("Serper")
+    if kind == 'tiktok' and cfg.get('EXA_API_KEY'):
+        armed.append("Exa")
+    if cfg.get('BRAVE_API_KEY'):
+        armed.append("Brave")
+    if keyless_web_allowed(cfg):
+        armed.append("keyless floor")
+    else:
+        armed.append("host search")
+    return armed
+
+
+def is_shortform_oss_available(
+    config: dict[str, Any] | None = None, kind: str = "tiktok",
+) -> bool:
+    """yt-dlp extract + a discovery source (see ``shortform_discovery_sources``).
+
+    kind is the short-form source ("tiktok" or "instagram"). yt-dlp presence
+    follows the YouTube source's routing: local binary, or
+    LAST30DAYS_YOUTUBE_SSH_HOST with yt-dlp on the remote end. Every host has
+    a discovery source: the keyless floor, or on a native-search host the
+    host's own search through --shortform-urls.
+    """
+    from . import youtube_yt
+    if not youtube_yt.is_ytdlp_installed():
+        return False
+    return bool(shortform_discovery_sources(config, kind))
+
+
+def is_tiktok_available(config: dict[str, Any]) -> bool:
+    """Check if TikTok source is available (ScrapeCreators or OSS fallback).
+
+    Returns True if SCRAPECREATORS_API_KEY is set, or if yt-dlp plus a
+    web-discovery backend can serve the keyless fallback. APIFY_API_TOKEN is
+    not a TikTok search backend (legacy alias only; it was never wired to an
+    Apify actor).
+    """
+    return bool(config.get('SCRAPECREATORS_API_KEY') or is_shortform_oss_available(config))
 
 
 def get_tiktok_token(config: dict[str, Any]) -> str:
-    """ScrapeCreators key for TikTok, or '' when unset (no Apify fallback)."""
+    """ScrapeCreators key for TikTok. Empty means the OSS fallback may run."""
     return config.get('SCRAPECREATORS_API_KEY') or ''
 
 
@@ -2230,12 +2280,15 @@ def is_threads_available(config: dict[str, Any]) -> bool:
 
 
 def is_instagram_available(config: dict[str, Any]) -> bool:
-    """Check if Instagram source is available (ScrapeCreators).
+    """Check if Instagram source is available (ScrapeCreators or OSS fallback).
 
-    Returns True if SCRAPECREATORS_API_KEY is set.
-    Instagram uses the same key as TikTok.
+    Returns True if SCRAPECREATORS_API_KEY is set, or if yt-dlp plus a
+    web-discovery backend can serve the keyless fallback.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY'))
+    return bool(
+        config.get('SCRAPECREATORS_API_KEY')
+        or is_shortform_oss_available(config, "instagram")
+    )
 
 
 def get_instagram_token(config: dict[str, Any]) -> str:

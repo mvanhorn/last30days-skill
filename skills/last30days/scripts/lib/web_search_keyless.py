@@ -38,6 +38,7 @@ from __future__ import annotations
 import html
 import re
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -230,8 +231,13 @@ def keyless_search(
     count: int = 5,
     *,
     freshness: Optional[str] = None,
+    deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[list[dict], dict]:
     """Run keyless web search; returns (items, artifact). Never raises.
+
+    ``deadline_monotonic`` bounds every page fetch, and no further rung starts
+    once it passes or ``cancel`` is set.
 
     ``freshness`` (``day``/``week``/``month``/``year``) asks each HTML rung for
     results from that recent period only. The artifact's ``keyless_rungs``
@@ -243,13 +249,23 @@ def keyless_search(
     used = "ddg"
     ladder = (("brave", _brave_rung),) if _is_reddit_query(query) else ()
     ladder += (("ddg", _ddg_rung), ("startpage", _startpage_rung))
+    bound = {"deadline_monotonic": deadline_monotonic} if deadline_monotonic is not None else {}
+
+    def stopped() -> bool:
+        if cancel is not None and cancel.is_set():
+            return True
+        return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
+
     for rung, search in ladder:
+        if stopped():
+            tried[rung] = SKIPPED
+            continue
         if not RUNG_HEALTH.usable(rung):
             tried[rung] = SKIPPED
             continue
         # A DuckDuckGo anomaly block (202 challenge page on a datacenter IP)
         # falls through to Startpage, which still serves organic results there.
-        items, state = search(query, count, freshness)
+        items, state = search(query, count, freshness, **bound)
         tried[rung] = state
         RUNG_HEALTH.record(rung, state)
         used = rung
@@ -257,8 +273,8 @@ def keyless_search(
             break
     if not items:
         searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
-        if searxng_url:
-            items = _search_searxng(query, count, searxng_url)
+        if searxng_url and not stopped():
+            items = _search_searxng(query, count, searxng_url, **bound)
             used = "searxng"
     # These backends never return a publish date, so normalize's grounding
     # require_date would drop every result. Keep undated links only when the
@@ -278,14 +294,18 @@ def keyless_search(
     return items, artifact
 
 
-def _fetch_page(rung: str, url: str) -> tuple[Optional[str], str]:
+def _fetch_page(
+    rung: str, url: str, deadline_monotonic: Optional[float] = None,
+) -> tuple[Optional[str], str]:
     """One rung's results page: ``(text, "")`` or ``(None, failure state)``.
 
     The transport swallows the status; the failures it records are read back
     here and still forwarded to the caller's failure sink.
     """
     with http.tee_failures() as failures:
-        text = http.get_text(url, accept="text/html", retries=2)
+        text = http.get_text(
+            url, accept="text/html", retries=2, deadline_monotonic=deadline_monotonic,
+        )
     if is_challenge_page(rung, text or ""):
         return None, THROTTLED
     if text:
@@ -312,9 +332,12 @@ def _brave_url(query: str, freshness: Optional[str] = None) -> str:
     return f"{_BRAVE_HTML_URL}?{urlencode(params)}"
 
 
-def _brave_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[list[dict], str]:
+def _brave_rung(
+    query: str, count: int, freshness: Optional[str] = None,
+    deadline_monotonic: Optional[float] = None,
+) -> tuple[list[dict], str]:
     """Rung 0 (Reddit queries): Brave Search's HTML results page, with its state."""
-    text, failed = _fetch_page("brave", _brave_url(query, freshness))
+    text, failed = _fetch_page("brave", _brave_url(query, freshness), deadline_monotonic)
     if text is None:
         return [], failed
     items = parse_brave(text, count)
@@ -382,8 +405,11 @@ def _ddg_url(query: str, freshness: Optional[str] = None) -> str:
     return f"{_DDG_HTML_URL}?{urlencode(params)}"
 
 
-def _ddg_rung(query: str, count: int, freshness: Optional[str] = None) -> tuple[list[dict], str]:
-    text, failed = _fetch_page("ddg", _ddg_url(query, freshness))
+def _ddg_rung(
+    query: str, count: int, freshness: Optional[str] = None,
+    deadline_monotonic: Optional[float] = None,
+) -> tuple[list[dict], str]:
+    text, failed = _fetch_page("ddg", _ddg_url(query, freshness), deadline_monotonic)
     if text is None:
         return [], failed
     items = parse_ddg(text, count)
@@ -420,12 +446,13 @@ def _search_startpage(query: str, count: int, freshness: Optional[str] = None) -
 
 def _startpage_rung(
     query: str, count: int, freshness: Optional[str] = None,
+    deadline_monotonic: Optional[float] = None,
 ) -> tuple[list[dict], str]:
     """Keyless rung 2: Startpage's HTML results page. Unlike DuckDuckGo's HTML
     endpoint (which anomaly-blocks datacenter IPs with a 202 challenge page),
     Startpage returns organic results to a plain browser-UA GET, making it the
     working floor on hosts DuckDuckGo refuses. Never raises."""
-    text, failed = _fetch_page("startpage", _startpage_url(query, freshness))
+    text, failed = _fetch_page("startpage", _startpage_url(query, freshness), deadline_monotonic)
     if text is None:
         return [], failed
     items = parse_startpage(text, count)
@@ -479,11 +506,20 @@ def is_challenge_page(rung: str, text: str) -> bool:
     return bool(text) and any(marker in text for marker in _CHALLENGE_MARKERS.get(rung, ()))
 
 
-def _search_searxng(query: str, count: int, instance_url: str) -> list[dict]:
+def _search_searxng(
+    query: str, count: int, instance_url: str, time_range: str | None = None,
+    deadline_monotonic: float | None = None,
+) -> list[dict]:
     base = instance_url.rstrip("/")
-    url = f"{base}/search?{urlencode({'q': query, 'format': 'json'})}"
+    params = {'q': query, 'format': 'json'}
+    if time_range:
+        params['time_range'] = time_range
+    url = f"{base}/search?{urlencode(params)}"
     try:
-        data = http.get(url, headers={"Accept": "application/json"}, timeout=15, retries=2)
+        data = http.get(
+            url, headers={"Accept": "application/json"}, timeout=15, retries=2,
+            deadline_monotonic=deadline_monotonic,
+        )
     except http.HTTPError:
         return []
     if not isinstance(data, dict):

@@ -527,6 +527,9 @@ def _normalize_shortform_video(
             # True only when the snippet is a spoken-word transcript, not the
             # written description fetch_captions starts from.
             "spoken_caption": bool(item.get("caption_is_transcript")),
+            # Found by the host's own web search (--shortform-urls); the
+            # footer names that lane.
+            "host_search": bool(item.get("_host_found")),
             "top_comments": _remap_comments(
                 item.get("top_comments") or [],
                 # Instagram comments use comment_like_count as the vote field

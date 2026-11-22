@@ -5,6 +5,9 @@ metrics (views, likes, comments, shares), and fetch video transcripts.
 
 Requires SCRAPECREATORS_API_KEY in config. 100 free API calls, then PAYG.
 API docs: https://scrapecreators.com/docs
+
+When the key is missing or ScrapeCreators returns 402, search_and_enrich
+falls back to web discovery + yt-dlp (lib.shortform_oss).
 """
 
 import re
@@ -452,6 +455,7 @@ def search_and_enrich(
     token: str = None,
     hashtags: List[str] | None = None,
     creators: List[str] | None = None,
+    config: Dict[str, Any] | None = None,
     *,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
@@ -460,6 +464,7 @@ def search_and_enrich(
 
     Uses expand_tiktok_queries() to generate multiple search queries,
     runs ScrapeCreators for each, and merges/deduplicates results by video ID.
+    Falls back to web discovery + yt-dlp when the key is missing or 402s.
 
     Args:
         topic: Search topic (raw topic, not planner's narrowed query)
@@ -469,12 +474,15 @@ def search_and_enrich(
         token: ScrapeCreators API key
         hashtags: Optional list of TikTok hashtags to search (without #)
         creators: Optional list of TikTok creator handles to fetch videos from
+        config: Optional env config (discovery keys for the OSS fallback)
         deadline: Shared monotonic deadline for search and enrichment
         cancel: Optional research cancellation event
 
     Returns:
         Dict with 'items' list. Each item has a 'caption_snippet' field.
     """
+    from . import shortform_oss
+
     core_topic = _extract_core_subject(topic)
     seen_ids: Set[str] = set()
     items: List[Dict[str, Any]] = []
@@ -504,29 +512,50 @@ def search_and_enrich(
                         items.append(item)
 
         # Step 1: Multi-query keyword search — run ScrapeCreators for each expanded query
-        queries = expand_tiktok_queries(topic, depth)
-        for q in queries:
-            search_result = search_tiktok(
-                q, from_date, to_date, depth, token, deadline=deadline, cancel=cancel,
-            )
-            if search_result.get("error"):
-                last_error = search_result["error"]
-            for item in search_result.get("items", []):
-                vid = item.get("video_id", "")
-                if vid and vid not in seen_ids:
-                    seen_ids.add(vid)
-                    items.append(item)
+        if token:
+            queries = expand_tiktok_queries(topic, depth)
+            for q in queries:
+                search_result = search_tiktok(
+                    q, from_date, to_date, depth, token, deadline=deadline, cancel=cancel,
+                )
+                if search_result.get("error"):
+                    last_error = search_result["error"]
+                for item in search_result.get("items", []):
+                    vid = item.get("video_id", "")
+                    if vid and vid not in seen_ids:
+                        seen_ids.add(vid)
+                        items.append(item)
     except http.DeadlineExceeded:
         last_error = BUDGET_ERROR
 
     # Sort merged results by views descending
     items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
 
+    # OSS fallback: web discovery + yt-dlp when the key is missing or credits
+    # are exhausted. Bounded by the same deadline/cancel as the paid path.
+    from_oss = False
+    if not items and (not token or shortform_oss.credits_exhausted(last_error)):
+        cfg = config
+        if cfg is None:
+            from . import env as envmod
+            cfg = envmod.get_config()
+        oss = shortform_oss.search(
+            "tiktok", topic, from_date, to_date, depth, cfg, creators=creators,
+            deadline=deadline, cancel=cancel,
+        )
+        items = oss.get("items") or []
+        from_oss = bool(items)
+        if from_oss:
+            last_error = None
+        elif not last_error:
+            last_error = oss.get("error")
+
     if not items:
         return {"items": [], "error": last_error}
 
     # Attach captions as they arrive so a later timeout cannot discard them.
-    if last_error != BUDGET_ERROR:
+    # OSS items already carry caption_snippet from the video description.
+    if not from_oss and last_error != BUDGET_ERROR:
         try:
             fetch_captions(items, token, depth, deadline=deadline, cancel=cancel)
         except http.DeadlineExceeded:

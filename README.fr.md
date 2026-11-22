@@ -286,6 +286,7 @@ Ces plateformes n'ont aucune relation entre elles. X ignore ce que pense Reddit.
 | YouTube | `brew install yt-dlp` | Gratuit |
 | Bluesky | Un mot de passe d'application depuis bsky.app | Gratuit |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + commentaires YouTube | Une clé ScrapeCreators | 10 000 appels gratuits, puis paiement à l'usage |
+| TikTok (et Instagram, couverture limitée) sans clé | `yt-dlp`, utilisé quand aucune clé ScrapeCreators n'est définie ; moins de résultats, sans commentaires | Gratuit |
 | Xiaohongshu (RED) | Faites tourner un plugin de navigateur x-mcp connecté ou un service `xiaohongshu-mcp`, puis activez la source avec `--search xhs` pour une exécution ou `INCLUDE_SOURCES=xiaohongshu` dans `.env` ; last30days teste automatiquement `http://localhost:18060` puis `http://host.docker.internal:18060`, ou utilisez `XIAOHONGSHU_API_BASE` pour une URL personnalisée | Aucune clé API last30days ; dépend de votre service local de session de navigateur |
 | DripStack (newsletters financières premium) | Sur activation : `--search dripstack` pour une exécution, ou `INCLUDE_SOURCES=dripstack` dans `.env` | Aucune clé ; API de recherche publique et gratuite |
 | Perplexity Agent API / Search API / Deep Research | Une clé Perplexity, ou une clé OpenRouter en repli pour Sonar | Paiement à l'usage ; une clé directe active l’Agent API et Deep Research en arrière-plan |

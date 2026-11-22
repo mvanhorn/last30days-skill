@@ -72,6 +72,8 @@ from . import (
     relevance,
     rerank,
     schema,
+    shortform_envelope,
+    shortform_oss,
     signals,
     snippet,
     stocktwits,
@@ -451,8 +453,10 @@ def available_sources(
         config.get("_CORPUS_DIRS"), config.get("LAST30DAYS_CORPUS_DIRS")
     ):
         available.append("corpus")
-    if config.get("SCRAPECREATORS_API_KEY"):
-        available.extend(["tiktok", "instagram"])
+    if env.is_tiktok_available(config):
+        available.append("tiktok")
+    if env.is_instagram_available(config):
+        available.append("instagram")
     if env.get_x_source(config, local_only=local_only):
         available.append("x")
     elif x_envelope or (
@@ -2354,6 +2358,7 @@ def run(
     corpus_all_time: bool = False,
     x_posts: x_envelope.Envelope | None = None,
     reddit_threads: reddit_envelope.Envelope | None = None,
+    shortform_urls: shortform_envelope.Envelope | None = None,
 ) -> schema.Report:
     _check_research(config)
     if external_plan is not None:
@@ -2452,6 +2457,22 @@ def run(
     if reddit_refs_envelope is not None:
         config = dict(config)
         config["_reddit_envelope"] = reddit_refs_envelope
+
+    # Host-found TikTok / Instagram URLs (--shortform-urls). Only the keyless
+    # short-form lane reads them; a run searching neither platform ignores them.
+    if shortform_urls is not None and not any(
+        name not in excluded_sources
+        and (not requested_sources or name in requested_sources)
+        for name in ("tiktok", "instagram")
+    ):
+        log.source_log(
+            "TikTok", "host short-form URLs: envelope ignored (TikTok and Instagram are excluded from this run)",
+            tty_only=False,
+        )
+        shortform_urls = None
+    if shortform_urls is not None:
+        config = dict(config)
+        config["_shortform_envelope"] = shortform_urls
 
     # Gate StockTwits to ticker/crypto topics. Single chokepoint: when False,
     # available_sources() never registers stocktwits, so the planner can't
@@ -7684,6 +7705,7 @@ def _retrieve_stream_impl(
                 token=env.get_tiktok_token(config),
                 hashtags=tiktok_hashtags,
                 creators=tiktok_creators,
+                config=config,
                 deadline=deadline,
                 cancel=cancel,
             )
@@ -7691,6 +7713,7 @@ def _retrieve_stream_impl(
             if (
                 items
                 and env.is_tiktok_comments_available(config)
+                and not items[0].get("_oss_backend")
                 and result.get("error") != tiktok.BUDGET_ERROR
             ):
                 sc_token = config.get("SCRAPECREATORS_API_KEY", "")
@@ -7729,6 +7752,21 @@ def _retrieve_stream_impl(
                         )
                 except http.DeadlineExceeded:
                     result["error"] = tiktok.BUDGET_ERROR
+            elif (
+                items
+                and items[0].get("_oss_backend")
+                and env.is_tiktok_public_comments_on(config)
+                and result.get("error") != tiktok.BUDGET_ERROR
+            ):
+                # Keyless lane: the public endpoint is the only comment source,
+                # and the lane already returns only in-window, on-topic videos.
+                try:
+                    tiktok.enrich_with_comments(
+                        items, token="", max_posts=PUBLIC_COMMENT_POSTS,
+                        deadline=deadline, cancel=cancel, public=True,
+                    )
+                except http.DeadlineExceeded:
+                    result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
 
         return fetch_memo.fetch_once(
@@ -7761,11 +7799,16 @@ def _retrieve_stream_impl(
                 depth=depth,
                 token=env.get_instagram_token(config),
                 ig_creators=ig_creators,
+                config=config,
                 deadline=ig_deadline,
                 cancel=ig_cancel,
             )
             items = instagram.parse_instagram_response(result)
-            if items and env.is_instagram_comments_available(config):
+            if (
+                items
+                and env.is_instagram_comments_available(config)
+                and not items[0].get("_oss_backend")
+            ):
                 instagram.enrich_with_comments(
                     _comment_candidates(items, from_date, to_date, ig_creators, topic=ig_query),
                     token=config.get("SCRAPECREATORS_API_KEY", ""),

@@ -253,7 +253,7 @@ After the response and required citations, stop and wait unless governing instru
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
 - Hacker News and Polymarket are always available (no API key or binary)
-- TikTok and Instagram sources require SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG); `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes it Reddit's primary path.
+- TikTok and Instagram prefer SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG), else `yt-dlp` on public pages found by web search; `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes it Reddit's primary path.
 - Agent hosts invoke the slash-command skill contract; if `--agent` appears in the user's slash-command arguments, treat it as skill-level mode guidance, not a Python CLI flag.
 
 **Bundled scripts:** `scripts/last30days.py` (main research engine), the search, enrichment, and rendering modules in its `lib` folder, and the vendored X search client in `lib/vendor/bird-search` (MIT licensed)

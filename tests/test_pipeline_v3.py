@@ -2754,6 +2754,34 @@ def _youtube_payload(*_args, **_kwargs):
     ]}
 
 
+def _keyless_tiktok_payload(*_args, **_kwargs):
+    payload = _tiktok_payload()
+    payload["items"][0]["_oss_backend"] = "yt-dlp"
+    return payload
+
+
+class TestKeylessTikTokComments:
+    """Keyless TikTok items get top comments from the public endpoint."""
+
+    def _run(self, config):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("keyless",))
+        with patch("lib.tiktok.search_and_enrich", side_effect=_keyless_tiktok_payload), \
+             patch("lib.tiktok.enrich_with_comments") as comments:
+            items, _artifact = _memo_stream("tiktok", subquery, config)
+        return items, comments
+
+    def test_keyless_items_are_enriched_without_a_key(self):
+        items, comments = self._run({})
+        assert items
+        assert comments.call_count == 1
+        assert comments.call_args.kwargs["public"] is True
+        assert comments.call_args.kwargs["token"] == ""
+
+    def test_switch_off_skips_keyless_comments(self):
+        _items, comments = self._run({"LAST30DAYS_TIKTOK_PUBLIC_COMMENTS": "off"})
+        assert comments.call_count == 0
+
+
 def _with_stale_post(payload_fn, url_for):
     def payload(*_args, **_kwargs):
         data = payload_fn()

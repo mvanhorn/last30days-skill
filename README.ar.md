@@ -294,6 +294,7 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 | YouTube | `brew install yt-dlp` | مجاني |
 | Bluesky | كلمة مرور التطبيق من bsky.app | مجاني |
 | TikTok وInstagram وThreads وPinterest وLinkedIn وتعليقات YouTube | مفتاح ScrapeCreators | 10,000 استدعاء مجاني، ثم الدفع حسب الاستخدام |
+| TikTok (وInstagram بتغطية محدودة) دون مفتاح | `yt-dlp`، ويُستخدم عند عدم ضبط مفتاح ScrapeCreators؛ نتائج أقل ودون تعليقات | مجاني |
 | Xiaohongshu (RED) | تشغيل `x-mcp` أو `xiaohongshu-mcp` محليا مع جلسة دخول، ثم اختيار `--search xhs` أو `INCLUDE_SOURCES=xiaohongshu` في `.env`، وتفحص last30days العنوانين `http://localhost:18060` و`http://host.docker.internal:18060` تلقائيا، أو تستخدم `XIAOHONGSHU_API_BASE` لعنوان آخر | لا تحتاج إلى مفتاح API خاص بـlast30days، وتتوقف التكلفة على خدمة جلسة المتصفح المحلية |
 | DripStack | تفعيل `--search dripstack` أو `INCLUDE_SOURCES=dripstack` | API عامة مجانية دون مفتاح |
 | Perplexity Agent API وSearch API وDeep Research | مفتاح Perplexity أو OpenRouter كبديل Sonar | الدفع حسب الاستخدام، ويتيح المفتاح المباشر Agent API وDeep Research في الخلفية |
