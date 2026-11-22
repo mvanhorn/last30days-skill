@@ -36,7 +36,7 @@ npx skills add mvanhorn/last30days-skill -g
 ```
 (`-g` cài đặt toàn cục cho người dùng của bạn, dùng được ở mọi dự án. Bỏ nó đi để giới hạn theo từng dự án.)
 
-Thêm lựa chọn cài đặt (claude.ai bản web, OpenClaw, thủ công) ở mục [Install](#install) bên dưới.
+Thêm lựa chọn cài đặt (claude.ai bản web, OpenClaw, thủ công) ở mục [Cài đặt](#cài-đặt) bên dưới.
 
 Không cần cấu hình. Reddit, HN, Polymarket và GitHub hoạt động ngay lập tức, hồ sơ bằng sáng chế và trang tuyển dụng cũng vậy khi chủ đề của bạn là một công ty. Chạy nó một lần và trình hướng dẫn thiết lập sẽ mở khóa X, YouTube, TikTok, arXiv, Techmeme và hơn nữa trong 30 giây.
 
