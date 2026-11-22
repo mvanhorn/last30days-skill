@@ -1,0 +1,1 @@
+The `store.py search` command no longer crashes on plain text that FTS5 reads as query syntax, such as `claude-code`, `C++` or `what's new`; those queries are now searched as quoted terms, and valid FTS5 queries run as before.

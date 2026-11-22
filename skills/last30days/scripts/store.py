@@ -24,6 +24,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import dedupe, entity_extract, schema
+from lib.library_index import _fts_expression
 from lib.private_files import prepare_private_sqlite_files
 
 DB_DIR = Path.home() / ".local" / "share" / "last30days"
@@ -910,20 +911,31 @@ def get_new_findings(
         conn.close()
 
 
-def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
-    """FTS5 search across all findings with BM25 ranking."""
-    conn = _connect()
-    try:
-        rows = conn.execute(
-            """SELECT f.*, bm25(findings_fts) as rank, t.name as topic_name
+_SEARCH_FINDINGS_SQL = """SELECT f.*, bm25(findings_fts) as rank, t.name as topic_name
                FROM findings_fts
                JOIN findings f ON f.id = findings_fts.rowid
                LEFT JOIN topics t ON t.id = f.topic_id
                WHERE findings_fts MATCH ?
                ORDER BY rank
-               LIMIT ?""",
-            (query, limit),
-        ).fetchall()
+               LIMIT ?"""
+
+
+def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """FTS5 search across all findings with BM25 ranking.
+
+    A query that is valid FTS5 syntax runs as written. Plain text that FTS5
+    cannot parse (``claude-code``, ``C++``, ``what's new``) is searched as
+    quoted terms instead of raising ``sqlite3.OperationalError``.
+    """
+    conn = _connect()
+    try:
+        try:
+            rows = conn.execute(_SEARCH_FINDINGS_SQL, (query, limit)).fetchall()
+        except sqlite3.OperationalError:
+            expression = _fts_expression(query)
+            if not expression:
+                return []
+            rows = conn.execute(_SEARCH_FINDINGS_SQL, (expression, limit)).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

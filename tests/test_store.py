@@ -1520,3 +1520,43 @@ def test_persist_report_with_scoped_store_writes_inside_save_dir(tmp_path, sampl
     # The shared store saw no findings from the scoped run.
     with sqlite3.connect(shared) as conn:
         assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0
+
+
+def _store_search_fixture():
+    topic = store.add_topic("Claude Code")
+    run_id = store.record_run(topic["id"])
+    store.store_findings(run_id, topic["id"], [{
+        "source": "reddit",
+        "source_url": "https://example.test/claude-code-cpp",
+        "source_title": "claude-code release notes: what's new in C++ support",
+        "content": "claude-code adds C++ tooling",
+        "engagement_score": 5,
+    }])
+
+
+@pytest.mark.parametrize("query", ["claude-code", "C++", "what's new", 'release "notes'])
+def test_search_findings_handles_fts5_syntax_characters(temp_db, query):
+    """Plain text with FTS5 operator characters must search, not raise.
+
+    Raw ``MATCH`` parses ``-``, ``+``, ``'`` and ``"`` as query syntax, so
+    these raised ``sqlite3.OperationalError`` out of ``store.py search``.
+    """
+    _store_search_fixture()
+
+    results = store.search_findings(query)
+
+    assert [r["source_url"] for r in results] == ["https://example.test/claude-code-cpp"]
+
+
+def test_search_findings_keeps_valid_fts5_queries(temp_db):
+    _store_search_fixture()
+
+    assert len(store.search_findings("release OR nonexistentword")) == 1
+    assert store.search_findings("release AND nonexistentword") == []
+    assert len(store.search_findings("relea*")) == 1
+
+
+def test_search_findings_with_no_searchable_text_returns_empty(temp_db):
+    _store_search_fixture()
+
+    assert store.search_findings("+++") == []
