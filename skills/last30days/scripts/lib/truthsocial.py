@@ -4,6 +4,7 @@ Uses truthsocial.com/api/v2/search endpoint.
 Requires TRUTHSOCIAL_TOKEN env var (bearer token from browser dev tools).
 """
 
+import html
 import math
 import re
 import sys
@@ -24,11 +25,15 @@ def _log(msg: str):
     log.source_log("TruthSocial", msg, tty_only=False)
 
 
-def _strip_html(html: str) -> str:
-    """Strip HTML tags from Truth Social post content."""
-    text = re.sub(r'<br\s*/?>', '\n', html)
+def _strip_html(content: str) -> str:
+    """Strip HTML tags from Truth Social post content and decode entities.
+
+    Paragraph breaks become newlines like ``<br>`` does. Entities are decoded
+    after the tags are removed, so escaped markup in the post text stays text.
+    """
+    text = re.sub(r'<br\s*/?>|</p>\s*<p[^>]*>', '\n', content)
     text = re.sub(r'<[^>]+>', '', text)
-    return text.strip()
+    return html.unescape(text).strip()
 
 
 def _extract_core_subject(topic: str) -> str:
