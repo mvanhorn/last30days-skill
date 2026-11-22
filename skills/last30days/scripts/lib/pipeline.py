@@ -7697,6 +7697,9 @@ def _retrieve_stream_impl(
             # Leave time to publish collected videos before the outer stream wait expires.
             deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS) - 1.0
             cancel = config.get("_enrich_cancel")
+            # No paid backend (no key, or a pin whose key is missing) leaves the
+            # token empty, so only the keyless lane can run: a pin never sends
+            # the other service's key.
             tiktok_backend = env.get_tiktok_backend(config) or "scrapecreators"
             result = tiktok.search_and_enrich(
                 tiktok_query,
