@@ -925,16 +925,16 @@ def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
 
     A query that is valid FTS5 syntax runs as written. Plain text that FTS5
     cannot parse (``claude-code``, ``C++``, ``what's new``) is searched as
-    quoted terms instead of raising ``sqlite3.OperationalError``.
+    quoted terms instead of raising ``sqlite3.OperationalError``. Text with
+    no searchable terms retries as the empty phrase ``""``, which matches
+    nothing, so a real database error still raises from the retry.
     """
     conn = _connect()
     try:
         try:
             rows = conn.execute(_SEARCH_FINDINGS_SQL, (query, limit)).fetchall()
         except sqlite3.OperationalError:
-            expression = _fts_expression(query)
-            if not expression:
-                return []
+            expression = _fts_expression(query) or '""'
             rows = conn.execute(_SEARCH_FINDINGS_SQL, (expression, limit)).fetchall()
         return [dict(r) for r in rows]
     finally:

@@ -1560,3 +1560,13 @@ def test_search_findings_with_no_searchable_text_returns_empty(temp_db):
     _store_search_fixture()
 
     assert store.search_findings("+++") == []
+
+
+@pytest.mark.parametrize("query", ["+++", "claude-code"])
+def test_search_findings_still_raises_database_errors(temp_db, query):
+    """The parse-error retry must not turn a broken database into ``[]``."""
+    with sqlite3.connect(temp_db) as conn:
+        conn.execute("DROP TABLE findings_fts")
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        store.search_findings(query)
