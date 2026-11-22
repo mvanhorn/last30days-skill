@@ -224,6 +224,10 @@ npx skills update -g
 
 Listez et désinstallez avec `npx skills list -g` et `npx skills remove last30days -g`.
 
+### DeepSeek Harness
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) charge les skills depuis `~/.agents/skills` (ou `$DSH_AGENTS_HOME/skills` si défini). C'est là que l'installation globale `npx skills add mvanhorn/last30days-skill -g` place last30days, donc DSH le trouve sans configuration supplémentaire. Redémarrez DSH après l'installation.
+
 ### claude.ai (web)
 
 1. [Téléchargez `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) depuis la dernière version publiée

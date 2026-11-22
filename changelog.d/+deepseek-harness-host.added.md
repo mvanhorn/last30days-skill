@@ -1,0 +1,1 @@
+DeepSeek Harness is now a documented host: the global `npx skills add -g` install lands in `~/.agents/skills`, which DSH scans, so `/last30days` works there with no extra setup. See README and CONFIGURATION.md.
