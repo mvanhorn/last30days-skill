@@ -1048,6 +1048,10 @@ printf '%s\n' "$TOKEN" | python3 skills/last30days/scripts/last30days.py setup -
 
 Browser sessions are not read on this host, and no login window is opened; `setup` still installs the free CLIs. Doctor prints the resolved host value, so a missing `LAST30DAYS_HOST` export is visible at a glance.
 
+### DeepSeek Harness
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) discovers skills through its `dsh-skill-filesystem` provider, which scans `~/.agents/skills` (`$DSH_AGENTS_HOME/skills` when `DSH_AGENTS_HOME` is set) along with `~/.dsh/skills` and the project's `.agents/skills` and `.dsh/skills`. The global `npx skills add mvanhorn/last30days-skill -g` install already writes to `~/.agents/skills/last30days`, so no DSH-specific install step exists. If you keep skills under a custom agents root, set `DSH_AGENTS_HOME` to the same directory `npx skills` installs into. Restart DSH after installing or updating so the catalog refreshes. DSH's question tool is `ask_user_question`, not `AskUserQuestion`, so first-run onboarding takes the Non-Modal Prose Flow.
+
 ### OpenCode browse MCP
 
 On OpenCode, install the browse Chrome extension and pair the device with the browser agent. When the session exposes the paired `browse` MCP, `browse status` reports the relay and browser; if none is connected, its `nextStep` is shown to the user and research continues with the normal sources. The agent can then read public X posts and Reddit thread links in the user's logged-in browser and pass them to the engine as `last30days-x-posts/1` and `last30days-reddit-threads/1` files (`--x-posts` and `--reddit-threads`). Use `"provider": "opencode-browse"` in the X envelope so the footer reads "via OpenCode Browse"; export `LAST30DAYS_X_HOST_LANE=1` only in the shell where posts came back.
