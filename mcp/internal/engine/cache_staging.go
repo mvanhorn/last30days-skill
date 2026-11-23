@@ -3,12 +3,13 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-func prepareCacheStage(cacheDir, version string) (string, *os.File, error) {
+func prepareCacheStage(src fs.FS, cacheDir, version string) (string, *os.File, error) {
 	publication, err := openPublicationLock(cacheDir, true)
 	if err != nil {
 		return "", nil, fmt.Errorf("engine: lock cache staging: %w", err)
@@ -17,7 +18,7 @@ func prepareCacheStage(cacheDir, version string) (string, *os.File, error) {
 	if err := reclaimCacheStages(cacheDir); err != nil {
 		return "", nil, fmt.Errorf("engine: reclaim cache staging: %w", err)
 	}
-	if sentinelMatches(cacheDir, version) {
+	if verifyCachedTree(src, cacheDir, version) {
 		return "", nil, nil
 	}
 	owner, err := os.CreateTemp(filepath.Dir(cacheDir), filepath.Base(cacheDir)+".tmp-*.lock")
@@ -54,7 +55,7 @@ func reclaimCacheStages(cacheDir string) error {
 			continue
 		}
 		path := filepath.Join(parent, entry.Name())
-		owner, err := os.OpenFile(path, os.O_RDWR, 0o600)
+		owner, err := openNoFollowFile(path, os.O_RDWR, 0o600)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}

@@ -3,13 +3,17 @@ package engine
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
 const cacheLockTimeout = 5 * time.Second
 
 func openPublicationLock(cacheDir string, wait bool) (*os.File, error) {
-	file, err := os.OpenFile(cacheDir+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err := verifyPrivateDir(filepath.Dir(cacheDir)); err != nil {
+		return nil, err
+	}
+	file, err := openNoFollowFile(cacheDir+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

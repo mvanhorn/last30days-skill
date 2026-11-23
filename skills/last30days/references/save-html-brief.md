@@ -126,13 +126,13 @@ Before the `ht-ml.app` choice, tell the user that public pages may be crawled or
 
 Agents should discover the current publishing mechanics for the selected service when needed, including by visiting the service site, rather than hard-coding detailed service-specific instructions in chat. For the built-in `ht-ml.app` path, the engine supports `--publish-html`; on the password-protected branch, pass the shared password through `LAST30DAYS_PUBLISH_PASSWORD` rather than command-line arguments.
 
-When the user chooses the built-in `ht-ml.app` path, restore the saved `HTML_PATH` and `SYNTHESIS_FILE` assignments if the shell changed. Pass the saved HTML path as `--output "$HTML_PATH"` so the engine can write the `.publish.json` companion metadata next to it. On the password-protected branch, pass `LAST30DAYS_PUBLISH_PASSWORD` through the subprocess environment. If the draft is missing, stop before calling the engine and explain that the original synthesis is unavailable.
+When the user chooses the built-in `ht-ml.app` path, restore the saved `HTML_PATH` and `SYNTHESIS_FILE` assignments if the shell changed. Pass the saved HTML path as `--output "$HTML_PATH"` so the engine can write the `.publish.json` companion metadata next to it. On the password-protected branch, set `LAST30DAYS_PUBLISH_PASSWORD` to a non-empty shared password in the subprocess environment; on the public branch, leave `LAST30DAYS_PUBLISH_PASSWORD` unset. If the draft is missing, stop before calling the engine and explain that the original synthesis is unavailable.
 
 ```bash
 (
   [ -f "${SYNTHESIS_FILE:-}" ] || { printf '%s\n' 'The original synthesis draft is unavailable.' >&2; exit 1; }
   trap 'rm -f -- "$SYNTHESIS_FILE"' EXIT
-  LAST30DAYS_PUBLISH_PASSWORD="${PUBLISH_PASSWORD:-}" \
+  LAST30DAYS_PUBLISH_PASSWORD="${LAST30DAYS_PUBLISH_PASSWORD:-${PUBLISH_PASSWORD:-}}" \
   "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
     --emit=html \
     --cached-report \

@@ -191,16 +191,19 @@ func resolveTimeout(explicit time.Duration) time.Duration {
 // `from lib import ...` fails with ModuleNotFoundError. The engine is
 // self-contained and does not need the user's Python module search path.
 func buildEnv(cacheDir string, extra []string) []string {
-	const pyKey = "PYTHONPATH="
+	const (
+		pyKey       = "PYTHONPATH="
+		bytecodeKey = "PYTHONDONTWRITEBYTECODE="
+	)
 	parent := os.Environ()
-	base := make([]string, 0, len(parent)+1+len(extra))
+	base := make([]string, 0, len(parent)+2+len(extra))
 	for _, kv := range parent {
-		if strings.HasPrefix(kv, pyKey) {
+		if strings.HasPrefix(kv, pyKey) || strings.HasPrefix(kv, bytecodeKey) {
 			continue
 		}
 		base = append(base, kv)
 	}
-	base = append(base, pyKey+cacheDir)
+	base = append(base, pyKey+cacheDir, bytecodeKey+"1")
 	base = append(base, extra...)
 	return base
 }

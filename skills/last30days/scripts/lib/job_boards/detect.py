@@ -20,6 +20,8 @@ from html import unescape
 from typing import Any
 from urllib.parse import urlparse
 
+from .. import public_host
+
 PROVIDER_ORACLE = "oracle"
 PROVIDER_JIBE = "jibe"
 PROVIDER_PHENOM = "phenom"
@@ -37,6 +39,10 @@ PLATFORMS = (
 )
 
 _ORACLE_HOST = r"[a-z0-9-]+\.fa(?:\.[a-z0-9-]+)?\.oraclecloud\.com"
+_ORACLE_HOST_RE = re.compile(rf"^{_ORACLE_HOST}$", re.I)
+_SECOND_LEVEL_PUBLIC_LABELS = frozenset({
+    "ac", "co", "com", "edu", "gob", "gov", "mil", "ne", "net", "or", "org",
+})
 _ORACLE_API_ATTRS = re.compile(
     r'data-apibaseurl="(https?://[^"]+)"[^>]*?data-sitenumber="(CX_\d+)"', re.I,
 )
@@ -87,8 +93,13 @@ def eightfold_career_url(html: str) -> str:
 def _oracle(html: str, host: str) -> dict[str, Any] | None:
     match = _ORACLE_API_ATTRS.search(html)
     if match:
-        api_host = page_host(unescape(match.group(1)))
-        if api_host:
+        raw_api_url = unescape(match.group(1))
+        api_host = page_host(raw_api_url)
+        if (
+            api_host
+            and public_host.is_public_address_syntax(raw_api_url)
+            and (_ORACLE_HOST_RE.fullmatch(api_host) or (host and _same_site(api_host, host)))
+        ):
             return {"board": api_host, "site_number": match.group(2)}
     match = _ORACLE_SITE_LINK.search(html)
     if match:
@@ -99,7 +110,12 @@ def _oracle(html: str, host: str) -> dict[str, Any] | None:
     api = re.search(rf"https?://({_ORACLE_HOST})", html, re.I)
     if api:
         return {"board": api.group(1).lower(), "site_number": number.group(1)}
-    if host and "/hcmUI/CandidateExperience" in html and "/hcmRestApi/" in html:
+    if (
+        host
+        and public_host.is_public_address_syntax(f"https://{host}/")
+        and "/hcmUI/CandidateExperience" in html
+        and "/hcmRestApi/" in html
+    ):
         # Served under the company's own host (Dell): the API answers there.
         return {"board": host, "site_number": number.group(1)}
     return None
@@ -111,14 +127,20 @@ def _phenom(html: str, host: str) -> dict[str, Any] | None:
     for match in _PHENOM_BASE.finditer(html):
         base, country, lang = match.groups()
         board = page_host(base)
-        if board and ("phenom" in html.lower()) and (not host or _same_site(board, host)):
+        if (
+            board
+            and public_host.is_public_address_syntax(base)
+            and ("phenom" in html.lower())
+            and bool(host)
+            and _same_site(board, host)
+        ):
             return {"board": board, "country": country, "lang": lang, "base_url": base}
     return None
 
 
 def _eightfold(html: str, host: str) -> dict[str, Any] | None:
     lowered = html.lower()
-    if "eightfold" not in lowered or not host:
+    if "eightfold" not in lowered or not host or not public_host.is_public_address_syntax(f"https://{host}/"):
         return None
     group = _EIGHTFOLD_GROUP.search(html)
     if not group:
@@ -131,7 +153,7 @@ _CANONICAL = re.compile(r'<link[^>]+rel="canonical"[^>]+href="([^"]+)"', re.I)
 
 
 def _jibe(html: str, host: str) -> dict[str, Any] | None:
-    if not host or "jibecdn.com" not in html:
+    if not host or not public_host.is_public_address_syntax(f"https://{host}/") or "jibecdn.com" not in html:
         return None
     # A role's page is under the site's jobs path (``/careers-home/jobs/95802``).
     prefix = ""
@@ -144,7 +166,7 @@ def _jibe(html: str, host: str) -> dict[str, Any] | None:
 
 
 def _talentbrew(html: str, host: str) -> dict[str, Any] | None:
-    if not host or "tbcdn.talentbrew.com" not in html:
+    if not host or not public_host.is_public_address_syntax(f"https://{host}/") or "tbcdn.talentbrew.com" not in html:
         return None
     if "/search-jobs" not in html:
         # A TalentBrew asset on a page that is not the job search itself.
@@ -165,11 +187,25 @@ def _kula(html: str, host: str) -> dict[str, Any] | None:
 
 
 def _same_site(host: str, other: str) -> bool:
-    """Whether two hosts share their last two labels (``careers.adobe.com``
-    and ``www.adobe.com``)."""
-    def base(name: str) -> str:
-        return ".".join(name.lower().removeprefix("www.").split(".")[-2:])
-    return bool(host) and base(host) == base(other)
+    """Whether two hosts belong to the same registrable site (``careers.adobe.com``
+    and ``www.adobe.com``, without equating distinct tenants under ``*.co.uk``)."""
+    h1 = host.rstrip(".").lower()
+    h2 = other.rstrip(".").lower()
+    if not h1 or not h2:
+        return False
+    if public_host._parse_ip_literal(h1) is not None or public_host._parse_ip_literal(h2) is not None:
+        return h1 == h2
+
+    def registrable(name: str) -> str:
+        parts = [p for p in name.removeprefix("www.").split(".") if p]
+        if len(parts) < 2:
+            return ""
+        if len(parts[-1]) == 2 and parts[-2] in _SECOND_LEVEL_PUBLIC_LABELS:
+            return ".".join(parts[-3:]) if len(parts) >= 3 else ""
+        return ".".join(parts[-2:])
+
+    r1 = registrable(h1)
+    return bool(r1) and r1 == registrable(h2)
 
 
 _DETECTORS = {

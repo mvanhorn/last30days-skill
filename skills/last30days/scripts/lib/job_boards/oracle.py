@@ -88,6 +88,7 @@ def read_board(
         return lambda http_deadline: http.get(
             url, headers={"Accept": "application/json"},
             timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+            public_only=True,
         )
 
     return jobs._read_newest_first(
@@ -104,6 +105,7 @@ def fetch_details(items: list[dict[str, Any]], *, deadline: float) -> tuple[int,
         return lambda http_deadline: http.get(
             str(item["detail_url"]), headers={"Accept": "application/json"},
             timeout=jobs.API_TIMEOUT_SECONDS, retries=1, deadline_monotonic=http_deadline,
+            public_only=True,
         )
 
     def text_of(payload: Any) -> tuple[str, str] | None:

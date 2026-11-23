@@ -120,10 +120,63 @@ def _request_origin(url: str) -> tuple[str, str, int]:
 # caller that fetches an address from remote content (a sitemap) refuses a
 # redirect to a private network before it is followed, not after.
 _REDIRECT_GUARD_ATTR = "_last30days_redirect_guard"
+_PUBLIC_ONLY_ATTR = "_last30days_public_only"
+_ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
+
+
+def _check_http_scheme(url: str) -> str:
+    """Return the normalized scheme for an http(s) URL, or raise ValueError."""
+    if not isinstance(url, str) or not url or url != url.strip():
+        raise ValueError("unsupported URL scheme: <empty>")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        raise ValueError("unsupported URL control characters")
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    if scheme not in _ALLOWED_HTTP_SCHEMES:
+        raise ValueError(f"unsupported URL scheme: {scheme or '<empty>'}")
+    return scheme
+
+
+def _build_http_opener(*, bypass_proxy: bool = False) -> urllib.request.OpenerDirector:
+    """Build an OpenerDirector restricted strictly to HTTP(S) — omitting urllib's
+    default FileHandler, FTPHandler, and DataHandler."""
+    opener = urllib.request.OpenerDirector()
+    handlers = [
+        urllib.request.ProxyHandler({}) if bypass_proxy else urllib.request.ProxyHandler(),
+        urllib.request.UnknownHandler(),
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPDefaultErrorHandler(),
+        _StripAuthOnCrossOriginRedirect(),
+        urllib.request.HTTPErrorProcessor(),
+    ]
+    if hasattr(http.client, "HTTPSConnection"):
+        handlers.append(urllib.request.HTTPSHandler())
+    for handler in handlers:
+        opener.add_handler(handler)
+    return opener
 
 
 class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            _check_http_scheme(newurl)
+        except ValueError as exc:
+            raise urllib.error.HTTPError(
+                req.full_url, 403, f"redirect refused: {exc}", headers, fp,
+            ) from exc
+        public_only = bool(getattr(req, _PUBLIC_ONLY_ATTR, False))
+        if public_only:
+            from . import public_host
+
+            allowed = (
+                public_host.public_any_url(newurl)
+                if urllib.request.urlopen is _DEFAULT_URLOPEN
+                else public_host.is_public_address_syntax(newurl)
+            )
+            if not allowed:
+                raise urllib.error.HTTPError(
+                    req.full_url, 403, "redirect refused: non-public address", headers, fp,
+                )
         guard = getattr(req, _REDIRECT_GUARD_ATTR, None)
         if guard is not None and not guard(newurl):
             raise urllib.error.HTTPError(
@@ -134,6 +187,8 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
             return None
         if guard is not None:
             setattr(new, _REDIRECT_GUARD_ATTR, guard)
+        if public_only:
+            setattr(new, _PUBLIC_ONLY_ATTR, True)
         if _request_origin(req.full_url) != _request_origin(new.full_url):
             for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
                 if not store:
@@ -144,18 +199,26 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
-_opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect)
-_direct_opener = urllib.request.build_opener(
-    urllib.request.ProxyHandler({}), _StripAuthOnCrossOriginRedirect
-)
+_opener = _build_http_opener(bypass_proxy=False)
+_direct_opener = _build_http_opener(bypass_proxy=True)
 _DEFAULT_URLOPEN = urllib.request.urlopen
 
 
 def _open_request(req, timeout, *, bypass_proxy=False):
     """Honor test patches of urllib.request.urlopen; otherwise use the strip opener."""
+    url = getattr(req, "full_url", None) or str(req)
+    try:
+        _check_http_scheme(url)
+    except ValueError as exc:
+        raise urllib.error.URLError(str(exc)) from exc
     current = urllib.request.urlopen
     if current is not _DEFAULT_URLOPEN:
         return current(req, timeout=timeout)
+    if getattr(req, _PUBLIC_ONLY_ATTR, False):
+        from . import public_host
+
+        if not public_host.public_any_url(url):
+            raise urllib.error.URLError("refused non-public address")
     opener = _direct_opener if bypass_proxy else _opener
     return opener.open(req, timeout=timeout)
 
@@ -933,6 +996,7 @@ def request(
     return_headers: bool = False,
     redirect_guard: Callable[[str], bool] | None = None,
     sensitive_url: bool = False,
+    public_only: bool = False,
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
@@ -977,6 +1041,17 @@ def request(
         raise ValueError("owned GET does not support proxy bypass")
     if owned_get and return_headers:
         raise ValueError("owned GET does not report response headers")
+    if owned_get and (redirect_guard is not None or public_only):
+        raise ValueError("owned GET does not support redirect_guard or public_only")
+    try:
+        _check_http_scheme(url)
+    except ValueError as exc:
+        _raise(HTTPError(str(exc)))
+    if public_only:
+        from . import public_host
+
+        if not public_host.is_public_address_syntax(url):
+            _raise(HTTPError("Refused non-public URL"))
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
 
@@ -1032,6 +1107,8 @@ def request(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     if redirect_guard is not None:
         setattr(req, _REDIRECT_GUARD_ATTR, redirect_guard)
+    if public_only:
+        setattr(req, _PUBLIC_ONLY_ATTR, True)
 
     def log_request(message: str) -> None:
         if not sensitive_url:
@@ -1373,6 +1450,7 @@ def get_text(
     retry_dns: bool = True,
     landed: Optional[list] = None,
     redirect_guard: Optional[Callable[[str], bool]] = None,
+    public_only: bool = False,
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1414,6 +1492,8 @@ def get_text(
         bounds["return_headers"] = True
     if redirect_guard is not None:
         bounds["redirect_guard"] = redirect_guard
+    if public_only:
+        bounds["public_only"] = True
     try:
         answer = request(
             "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,
