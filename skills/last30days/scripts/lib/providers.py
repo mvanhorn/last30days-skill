@@ -457,9 +457,16 @@ def _resolve_model_pins(config: dict[str, Any], depth: str, provider_name: str) 
 
 def mock_runtime(config: dict[str, Any], depth: str) -> schema.ProviderRuntime:
     """Resolve model pins for mock mode without requiring live credentials."""
-    provider_name = (config.get("LAST30DAYS_REASONING_PROVIDER") or "gemini").lower()
+    provider_name = (config.get("LAST30DAYS_REASONING_PROVIDER") or "gemini").strip().lower()
     if provider_name == "auto":
         provider_name = "gemini"
+    if provider_name in {"local", "off", "none"}:
+        return schema.ProviderRuntime(
+            reasoning_provider="local",
+            planner_model="deterministic",
+            rerank_model="local-score",
+            x_search_backend=_resolve_x_backend(config),
+        )
     if provider_name not in _MODEL_DEFAULTS:
         raise RuntimeError(f"Unsupported reasoning provider: {provider_name}")
 
@@ -475,7 +482,15 @@ def mock_runtime(config: dict[str, Any], depth: str) -> schema.ProviderRuntime:
 
 def resolve_runtime(config: dict[str, Any], depth: str) -> tuple[schema.ProviderRuntime, ReasoningClient | None]:
     """Resolve the reasoning provider and pinned models."""
-    provider_name = (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").lower()
+    provider_name = (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").strip().lower()
+    if provider_name in {"local", "off", "none"}:
+        return schema.ProviderRuntime(
+            reasoning_provider="local",
+            planner_model="deterministic",
+            rerank_model="local-score",
+            x_search_backend=_resolve_x_backend(config),
+        ), None
+
     google_key = config.get("GOOGLE_API_KEY") or config.get("GEMINI_API_KEY") or config.get("GOOGLE_GENAI_API_KEY")
     openai_token = config.get("OPENAI_API_KEY")
     xai_key = config.get("XAI_API_KEY")

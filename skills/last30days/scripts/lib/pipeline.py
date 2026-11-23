@@ -2176,10 +2176,12 @@ def diagnose(
     local_writes: list[dict[str, str]] = []
     if config.get("LAST30DAYS_MEMORY_DIR"):
         local_writes.append({"kind": "report", "path": str(config.get("LAST30DAYS_MEMORY_DIR"))})
+    reasoning_provider_cfg = (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").strip().lower()
+    reasoning_provider_forced_local = reasoning_provider_cfg in {"local", "off", "none"}
     diag = {
         "providers": providers_status,
-        "local_mode": not reasoning_provider_available,
-        "reasoning_provider": (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").lower(),
+        "local_mode": not reasoning_provider_available or reasoning_provider_forced_local,
+        "reasoning_provider": reasoning_provider_cfg,
         # The host-fetched connector lane serves X when no engine backend
         # exists and the model declared the lane.
         "x_backend": x_status["source"] or (

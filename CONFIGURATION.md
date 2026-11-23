@@ -543,11 +543,11 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 2. **OpenAI** - `OPENAI_API_KEY` only. Codex ChatGPT auth at `~/.codex/auth.json` is intentionally not used as an OpenAI provider credential.
 3. **xAI** - `XAI_API_KEY`
 4. **OpenRouter** - `OPENROUTER_API_KEY` (reasoning provider and synchronous Sonar fallback for the Perplexity source)
-5. **Local / deterministic** - always available, lowest quality
+5. **Local / deterministic** - always available, lowest quality (set `LAST30DAYS_REASONING_PROVIDER=local` or `off` to force local scoring even when keys are configured)
 
 Entity and competitor auto-resolution requires a configured Brave, Exa, Serper, or Parallel search backend. OpenRouter and Perplexity credentials alone do not enable auto-resolution. Their Perplexity-source search routes retain their explicit opt-in behavior.
 
-When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist). If one of them is configured anyway, for example `XAI_API_KEY` kept for X search or `OPENROUTER_API_KEY` kept for Perplexity, the engine still sends the topic and the shortlisted titles, snippets, and comments to that provider for reranking and fun scoring, even when you pass `--plan`. To keep that step local, leave all four key families out of every config layer (environment, `.env`, Keychain, `pass`). Local corpus evidence is always scored locally.
+When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist). If one of them is configured anyway, for example `XAI_API_KEY` kept for X search or `OPENROUTER_API_KEY` kept for Perplexity, the engine still sends the topic and the shortlisted titles, snippets, and comments to that provider for reranking and fun scoring, even when you pass `--plan`. To keep that step local without unsetting keys, set `LAST30DAYS_REASONING_PROVIDER=local` (or `off`), or leave all four key families out of every config layer (environment, `.env`, Keychain, `pass`). Local corpus evidence is always scored locally.
 
 ### Agent-hosted runs must pass `--plan`
 
