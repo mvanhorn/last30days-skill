@@ -1,0 +1,1 @@
+`dates.parse_date()` and `dates.timestamp_to_date()` now return `None` instead of raising `OverflowError` or `OSError` on non-finite or out-of-range numeric timestamps, and `parse_date()` now parses naive and Zulu fractional-second ISO 8601 timestamps.

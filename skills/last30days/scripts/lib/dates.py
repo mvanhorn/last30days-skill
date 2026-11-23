@@ -1,5 +1,6 @@
 """Date utilities for last30days skill."""
 
+import math
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Tuple
 
@@ -125,15 +126,21 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime]:
     # Try Unix timestamp (from Reddit)
     try:
         ts = float(date_str)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
     except (ValueError, TypeError):
-        pass
+        ts = None
+    if ts is not None and math.isfinite(ts):
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            pass
 
     # Try ISO formats
     formats = [
         "%Y-%m-%d",
         "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%f",
         "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%S.%f%z",
     ]
@@ -152,12 +159,14 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime]:
 
 def timestamp_to_date(ts: Optional[float]) -> Optional[str]:
     """Convert Unix timestamp to YYYY-MM-DD string."""
-    if ts is None:
+    if ts is None or isinstance(ts, bool):
+        return None
+    if not isinstance(ts, (int, float)) or not math.isfinite(ts):
         return None
     try:
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         return dt.date().isoformat()
-    except (ValueError, TypeError, OSError):
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 

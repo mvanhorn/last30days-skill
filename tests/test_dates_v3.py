@@ -24,15 +24,30 @@ class DatesV3Tests(unittest.TestCase):
         fractional = dates.parse_date("2026-03-16T12:34:56.123456+02:00")
         self.assertEqual("2026-03-16T10:34:56.123456+00:00", fractional.isoformat())
 
+        naive_fractional = dates.parse_date("2026-03-16T12:34:56.123456")
+        self.assertEqual("2026-03-16T12:34:56.123456+00:00", naive_fractional.isoformat())
+
+        zulu_fractional = dates.parse_date("2026-03-16T12:34:56.123456Z")
+        self.assertEqual("2026-03-16T12:34:56.123456+00:00", zulu_fractional.isoformat())
+
     def test_parse_date_rejects_empty_and_invalid_values(self):
         self.assertIsNone(dates.parse_date(None))
         self.assertIsNone(dates.parse_date(""))
         self.assertIsNone(dates.parse_date("not-a-date"))
+        self.assertIsNone(dates.parse_date("99999999999999999"))
+        self.assertIsNone(dates.parse_date("1e20"))
+        self.assertIsNone(dates.parse_date("inf"))
+        self.assertIsNone(dates.parse_date("-inf"))
+        self.assertIsNone(dates.parse_date("nan"))
 
     def test_timestamp_to_date_handles_valid_and_invalid_values(self):
         self.assertEqual("2024-03-15", dates.timestamp_to_date(1710460800))
         self.assertIsNone(dates.timestamp_to_date(None))
         self.assertIsNone(dates.timestamp_to_date("bad"))
+        self.assertIsNone(dates.timestamp_to_date(True))
+        self.assertIsNone(dates.timestamp_to_date(1e20))
+        self.assertIsNone(dates.timestamp_to_date(float("inf")))
+        self.assertIsNone(dates.timestamp_to_date(float("nan")))
 
     def test_get_date_confidence_distinguishes_in_range_and_invalid(self):
         self.assertEqual("high", dates.get_date_confidence("2026-03-10", "2026-03-01", "2026-03-16"))
