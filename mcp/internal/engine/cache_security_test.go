@@ -210,3 +210,43 @@ func TestBuildEnvDisablesPythonBytecodeWrites(t *testing.T) {
 		t.Fatalf("PYTHONDONTWRITEBYTECODE entries = %v, want [PYTHONDONTWRITEBYTECODE=1]", entries)
 	}
 }
+
+func TestWindowsACLPolicyHelpers(t *testing.T) {
+	userSID := "S-1-5-21-1000-2000-3000-1001"
+	otherSID := "S-1-5-21-1000-2000-3000-1002"
+
+	sddl := buildPrivateWindowsSDDL(userSID, windowsAdministratorsSID)
+	wantSDDL := "D:P(A;OICI;FA;;;" + userSID + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	if sddl != wantSDDL {
+		t.Fatalf("buildPrivateWindowsSDDL = %q, want %q", sddl, wantSDDL)
+	}
+
+	for _, trusted := range []string{userSID, windowsSystemSID, windowsAdministratorsSID} {
+		if !isTrustedWindowsTrusteeSID(trusted, userSID, windowsAdministratorsSID) {
+			t.Fatalf("expected %q to be trusted", trusted)
+		}
+	}
+	for _, untrusted := range []string{"", otherSID, "S-1-1-0", "S-1-5-11", "S-1-5-32-545"} {
+		if isTrustedWindowsTrusteeSID(untrusted, userSID, windowsAdministratorsSID) {
+			t.Fatalf("expected %q to be untrusted", untrusted)
+		}
+	}
+
+	const fileReadOnlyMask uint32 = 0x00120089 // FILE_GENERIC_READ
+	if hasUntrustedWindowsWriteAccess(fileReadOnlyMask) {
+		t.Fatalf("read-only mask 0x%08x unexpectedly flagged as writable", fileReadOnlyMask)
+	}
+	for _, writeMask := range []uint32{
+		0x00000002, // FILE_WRITE_DATA
+		0x00000004, // FILE_APPEND_DATA
+		0x00010000, // DELETE
+		0x00040000, // WRITE_DAC
+		0x00080000, // WRITE_OWNER
+		0x40000000, // GENERIC_WRITE
+		0x10000000, // GENERIC_ALL
+	} {
+		if !hasUntrustedWindowsWriteAccess(writeMask) {
+			t.Fatalf("write mask 0x%08x was not flagged as untrusted write access", writeMask)
+		}
+	}
+}

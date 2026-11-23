@@ -106,16 +106,57 @@ def is_public_address_syntax(url: str) -> bool:
     return True
 
 
+class NonPublicAddressError(OSError):
+    """Raised when a host resolves to (or is) a non-public IP address."""
+
+
+def resolve_public_addresses(host: str, port: int) -> list[tuple]:
+    """Resolve ``host`` fresh (never cached) and return TCP addrinfo tuples
+    only if every resolved address is public; otherwise raise
+    :class:`NonPublicAddressError`."""
+    bare = (host or "").strip()
+    if bare.startswith("[") and bare.endswith("]"):
+        bare = bare[1:-1]
+    bare = bare.rstrip(".").lower()
+    if not bare or bare == "localhost" or bare.endswith(".localhost"):
+        raise NonPublicAddressError("refused non-public address")
+    literal = _parse_ip_literal(bare)
+    if literal is not None:
+        if not _is_public_ip(literal):
+            raise NonPublicAddressError("refused non-public address")
+        family = socket.AF_INET6 if isinstance(literal, ipaddress.IPv6Address) else socket.AF_INET
+        sockaddr = (str(literal), port, 0, 0) if family == socket.AF_INET6 else (str(literal), port)
+        return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+    answers = socket.getaddrinfo(bare, port, 0, socket.SOCK_STREAM)
+    if not answers:
+        raise NonPublicAddressError("refused non-public address")
+    verified: list[tuple] = []
+    for family, socktype, proto, canonname, sockaddr in answers:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
+        except ValueError as exc:
+            raise NonPublicAddressError("refused non-public address") from exc
+        if not _is_public_ip(ip):
+            raise NonPublicAddressError("refused non-public address")
+        verified.append((family, socktype, proto, canonname, sockaddr))
+    return verified
+
+
 def public_any_url(url: str, *, resolves: Callable[[str], bool] | None = None) -> bool:
     """Whether ``url`` is an http(s) address with no userinfo whose host is a
-    public IP or resolves exclusively to public IPs (any site)."""
+    public IP or resolves exclusively to public IPs (any site, uncached)."""
     if not is_public_address_syntax(url):
         return False
     name = (urlparse(url).hostname or "").rstrip(".").lower()
     ip = _parse_ip_literal(name)
     if ip is not None:
         return _is_public_ip(ip)
-    return (resolves or resolves_public)(name)
+    if resolves is not None:
+        return resolves(name)
+    try:
+        return bool(resolve_public_addresses(name, 80))
+    except (OSError, UnicodeError):
+        return False
 
 
 def public_url(url: str, host: str, *, resolves: Callable[[str], bool] | None = None) -> bool:

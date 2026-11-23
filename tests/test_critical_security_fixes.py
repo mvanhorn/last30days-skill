@@ -80,9 +80,12 @@ def test_http_redirect_handler_refuses_ftp_and_file_redirects():
 
 
 def test_http_opener_omits_file_ftp_data_handlers():
-    for opener in (http._opener, http._direct_opener):
+    for opener in (http._opener, http._direct_opener, http._public_opener):
         for scheme in ("file", "ftp", "data"):
             assert scheme not in opener.handle_open
+    pub_handlers = {type(h).__name__ for h in http._public_opener.handlers}
+    assert "_PublicHTTPHandler" in pub_handlers
+    assert "_PublicHTTPSHandler" in pub_handlers
 
 
 # --- CRIT-03: jobs.py / public_host.py SSRF, userinfo & redirect guards --------
@@ -153,27 +156,87 @@ def test_jobs_fetches_refuse_private_targets_before_http_and_check_landed():
 
 
 def test_http_public_only_blocks_private_dns_and_private_redirect(monkeypatch):
-    def fake_getaddrinfo(name, *_args, **_kwargs):
+    def fake_getaddrinfo(name, port, *_args, **_kwargs):
         if name == "private.example":
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.0.0.5", port or 443))]
         raise socket.gaierror("unknown")
 
     monkeypatch.setattr(public_host.socket, "getaddrinfo", fake_getaddrinfo)
-    public_host.resolves_public.cache_clear()
-    try:
-        req = Request("https://private.example/careers")
-        setattr(req, http._PUBLIC_ONLY_ATTR, True)
-        with pytest.raises(urllib.error.URLError, match="non-public"):
-            http._open_request(req, timeout=1)
+    req = Request("https://private.example/careers")
+    setattr(req, http._PUBLIC_ONLY_ATTR, True)
+    with pytest.raises(urllib.error.URLError, match="non-public"):
+        http._open_request(req, timeout=1)
 
-        handler = http._StripAuthOnCrossOriginRedirect()
-        pub_req = Request("https://acme.com/careers")
-        setattr(pub_req, http._PUBLIC_ONLY_ATTR, True)
-        with pytest.raises(urllib.error.HTTPError) as exc_info:
-            handler.redirect_request(pub_req, None, 302, "Found", {}, "https://private.example/x")
-        assert exc_info.value.code == 403
-    finally:
-        public_host.resolves_public.cache_clear()
+    handler = http._StripAuthOnCrossOriginRedirect()
+    pub_req = Request("https://acme.com/careers")
+    setattr(pub_req, http._PUBLIC_ONLY_ATTR, True)
+    # Direct private IP redirect is blocked immediately at redirect_request().
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        handler.redirect_request(pub_req, None, 302, "Found", {}, "http://127.0.0.1/x")
+    assert exc_info.value.code == 403
+
+    # DNS-based redirect propagates _PUBLIC_ONLY_ATTR and is blocked at pinned connect time.
+    redirected = handler.redirect_request(pub_req, None, 302, "Found", {}, "https://private.example/x")
+    assert redirected is not None
+    assert getattr(redirected, http._PUBLIC_ONLY_ATTR, False) is True
+    with pytest.raises(urllib.error.URLError, match="non-public"):
+        http._open_request(redirected, timeout=1)
+
+
+def test_http_public_connection_pins_resolved_ip_and_prevents_dns_rebinding(monkeypatch):
+    calls: list[tuple[str, int]] = []
+    connected_addrs: list[tuple] = []
+    tls_hostnames: list[str] = []
+
+    responses = [
+        [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))],
+        [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", 443))],
+    ]
+
+    def rebinding_getaddrinfo(name, port, *_args, **_kwargs):
+        calls.append((name, port))
+        return responses[min(len(calls) - 1, len(responses) - 1)]
+
+    class FakeSocket:
+        def __init__(self, af, socktype, proto):
+            self.af = af
+            self.socktype = socktype
+            self.proto = proto
+            self.closed = False
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def setsockopt(self, *_args):
+            pass
+
+        def connect(self, sockaddr):
+            connected_addrs.append(sockaddr)
+
+        def close(self):
+            self.closed = True
+
+    class FakeContext:
+        def wrap_socket(self, sock, *, server_hostname=None):
+            tls_hostnames.append(server_hostname)
+            return sock
+
+    monkeypatch.setattr(public_host.socket, "getaddrinfo", rebinding_getaddrinfo)
+    monkeypatch.setattr(http.socket, "socket", FakeSocket)
+
+    # First connection resolves once, connects directly to 93.184.216.34, and keeps SNI hostname.
+    conn1 = http._PublicHTTPSConnection("rebind.example", 443, context=FakeContext())
+    conn1.connect()
+    assert calls == [("rebind.example", 443)]
+    assert connected_addrs == [("93.184.216.34", 443)]
+    assert tls_hostnames == ["rebind.example"]
+
+    # Second connection does NOT reuse any cached verdict; rebinding to 127.0.0.1 is refused before connect().
+    conn2 = http._PublicHTTPSConnection("rebind.example", 443, context=FakeContext())
+    with pytest.raises(public_host.NonPublicAddressError):
+        conn2.connect()
+    assert len(calls) == 2
+    assert connected_addrs == [("93.184.216.34", 443)]
 
 
 # --- CRIT-04: env.py untrusted project symlink & non-identifier key leak -------

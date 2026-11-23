@@ -178,10 +178,7 @@ func ensureLocked(src fs.FS, cacheDir, version string) error {
 		return nil
 	}
 	parent := filepath.Dir(cacheDir)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return fmt.Errorf("engine: create cache parent (%s, set %s to override): %w", parent, CacheEnvOverride, err)
-	}
-	if err := verifyPrivateDir(parent); err != nil {
+	if err := ensurePrivateParentDir(parent); err != nil {
 		return fmt.Errorf("engine: unsafe cache parent (%s, set %s to override): %w", parent, CacheEnvOverride, err)
 	}
 	tmpDir, owner, err := prepareCacheStage(src, cacheDir, version)
@@ -275,13 +272,8 @@ func cacheReady(cacheDir, version, expectedDigest string, expectedFiles map[stri
 	defer func() { _ = root.Close() }()
 	for relPath, wantSum := range expectedFiles {
 		nativeRel := filepath.FromSlash(relPath)
-		f, err := root.Open(nativeRel)
+		f, err := openRootRegularNoFollow(root, cacheDir, nativeRel)
 		if err != nil {
-			return false
-		}
-		info, statErr := f.Stat()
-		if statErr != nil || verifyOwnedRegularFile(info, filepath.Join(cacheDir, nativeRel)) != nil {
-			_ = f.Close()
 			return false
 		}
 		h := sha256.New()

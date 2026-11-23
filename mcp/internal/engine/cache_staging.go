@@ -31,7 +31,7 @@ func prepareCacheStage(src fs.FS, cacheDir, version string) (string, *os.File, e
 		err = errors.New("new staging ownership file is already locked")
 	}
 	if err == nil {
-		err = os.Mkdir(stage, 0o700)
+		err = mkdirPrivate(stage)
 	}
 	if err != nil {
 		_ = owner.Close()

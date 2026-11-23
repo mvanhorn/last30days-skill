@@ -137,20 +137,96 @@ def _check_http_scheme(url: str) -> str:
     return scheme
 
 
-def _build_http_opener(*, bypass_proxy: bool = False) -> urllib.request.OpenerDirector:
+def _create_public_connection(
+    address: tuple[str, int],
+    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+    source_address: Any = None,
+) -> socket.socket:
+    """Resolve ``address`` fresh once and connect only to verified public IPs."""
+    from . import public_host
+
+    host, port = address
+    verified = public_host.resolve_public_addresses(host, port)
+    last_err: Optional[OSError] = None
+    for af, socktype, proto, _canonname, sockaddr in verified:
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_err = exc
+            if sock is not None:
+                sock.close()
+    if last_err is not None:
+        raise last_err
+    raise public_host.NonPublicAddressError("refused non-public address")
+
+
+class _PublicHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection pinned to the exact public IP resolved at connect time."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _create_public_connection
+
+    def connect(self):
+        if self._tunnel_host:
+            from . import public_host
+
+            raise public_host.NonPublicAddressError("refused proxied tunnel for public-only request")
+        return super().connect()
+
+
+if hasattr(http.client, "HTTPSConnection"):
+
+    class _PublicHTTPSConnection(http.client.HTTPSConnection):
+        """HTTPSConnection pinned to verified public IPs while preserving TLS SNI/hostname."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = _create_public_connection
+
+        def connect(self):
+            if self._tunnel_host:
+                from . import public_host
+
+                raise public_host.NonPublicAddressError("refused proxied tunnel for public-only request")
+            return super().connect()
+
+
+class _PublicHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PublicHTTPConnection, req)
+
+
+if hasattr(http.client, "HTTPSConnection"):
+
+    class _PublicHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(_PublicHTTPSConnection, req, context=self._context)
+
+
+def _build_http_opener(
+    *, bypass_proxy: bool = False, public_only: bool = False,
+) -> urllib.request.OpenerDirector:
     """Build an OpenerDirector restricted strictly to HTTP(S) — omitting urllib's
     default FileHandler, FTPHandler, and DataHandler."""
     opener = urllib.request.OpenerDirector()
     handlers = [
-        urllib.request.ProxyHandler({}) if bypass_proxy else urllib.request.ProxyHandler(),
+        urllib.request.ProxyHandler({}) if (bypass_proxy or public_only) else urllib.request.ProxyHandler(),
         urllib.request.UnknownHandler(),
-        urllib.request.HTTPHandler(),
+        _PublicHTTPHandler() if public_only else urllib.request.HTTPHandler(),
         urllib.request.HTTPDefaultErrorHandler(),
         _StripAuthOnCrossOriginRedirect(),
         urllib.request.HTTPErrorProcessor(),
     ]
     if hasattr(http.client, "HTTPSConnection"):
-        handlers.append(urllib.request.HTTPSHandler())
+        handlers.append(_PublicHTTPSHandler() if public_only else urllib.request.HTTPSHandler())
     for handler in handlers:
         opener.add_handler(handler)
     return opener
@@ -168,12 +244,7 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
         if public_only:
             from . import public_host
 
-            allowed = (
-                public_host.public_any_url(newurl)
-                if urllib.request.urlopen is _DEFAULT_URLOPEN
-                else public_host.is_public_address_syntax(newurl)
-            )
-            if not allowed:
+            if not public_host.is_public_address_syntax(newurl):
                 raise urllib.error.HTTPError(
                     req.full_url, 403, "redirect refused: non-public address", headers, fp,
                 )
@@ -201,6 +272,7 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
 
 _opener = _build_http_opener(bypass_proxy=False)
 _direct_opener = _build_http_opener(bypass_proxy=True)
+_public_opener = _build_http_opener(bypass_proxy=True, public_only=True)
 _DEFAULT_URLOPEN = urllib.request.urlopen
 
 
@@ -217,8 +289,11 @@ def _open_request(req, timeout, *, bypass_proxy=False):
     if getattr(req, _PUBLIC_ONLY_ATTR, False):
         from . import public_host
 
-        if not public_host.public_any_url(url):
-            raise urllib.error.URLError("refused non-public address")
+        if not public_host.is_public_address_syntax(url):
+            raise urllib.error.URLError(
+                public_host.NonPublicAddressError("refused non-public address")
+            )
+        return _public_opener.open(req, timeout=timeout)
     opener = _direct_opener if bypass_proxy else _opener
     return opener.open(req, timeout=timeout)
 
@@ -1353,6 +1428,10 @@ def request(
                 outcome_state=health.TIMEOUT if wrapped_timeout else health.UNREACHABLE,
             )
             last_error.no_host = _is_no_host(e)
+            from . import public_host
+
+            if isinstance(reason, public_host.NonPublicAddressError):
+                raise_recorded(last_error)
             if _is_dns_failure(e):
                 # DNS resolution failures are transient; expand the retry budget
                 # to MIN_DNS_RETRIES if the caller passed fewer, and use

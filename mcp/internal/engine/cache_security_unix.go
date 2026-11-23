@@ -13,6 +13,17 @@ func cacheParentDir(baseDir string) string {
 	return filepath.Join(filepath.Clean(baseDir), fmt.Sprintf("%s-%d", cacheSubdir, os.Geteuid()))
 }
 
+func mkdirPrivate(path string) error {
+	return os.Mkdir(path, 0o700)
+}
+
+func ensurePrivateParentDir(parent string) error {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return err
+	}
+	return verifyPrivateDir(parent)
+}
+
 func verifyPrivateDir(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -66,6 +77,23 @@ func openNoFollowFile(path string, flag int, perm os.FileMode) (*os.File, error)
 		return nil, err
 	}
 	if err := verifyOwnedRegularFile(info, path); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+func openRootRegularNoFollow(root *os.Root, cacheDir, nativeRel string) (*os.File, error) {
+	file, err := root.OpenFile(nativeRel, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if err := verifyOwnedRegularFile(info, filepath.Join(cacheDir, nativeRel)); err != nil {
 		_ = file.Close()
 		return nil, err
 	}
