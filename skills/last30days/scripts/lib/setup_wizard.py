@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from . import brightdata, health
-from .private_files import write_private_text
+from .private_files import replace_private_text, write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -619,13 +619,23 @@ def _env_line_key(stripped: str) -> str:
     return _env.env_line_key(stripped.split("=", 1)[0])
 
 
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# All characters that Python's str.splitlines() splits on.
+_ENV_LINE_BREAKS_RE = re.compile(r"[\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+# Line breaks plus NUL are disallowed in persisted secret values.
+_ENV_DISALLOWED_KEY_CHARS_RE = re.compile(r"[\x00\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
 def _replace_env_line(env_path: Path, content: str, key_name: str, value: str) -> bool:
     """Rewrite every ``key_name=`` line of ``content`` with ``value`` as a 0o600 secret.
 
-    The new file is written to a sibling temp path opened at 0o600 and moved
-    over the original, so the secret never has a readable window and a
+    The new file is written to an owner-only sibling temp path and atomically
+    moved over the original, so the secret never has a readable window and a
     crash mid-write leaves the old file intact.
     """
+    if not isinstance(key_name, str) or not _ENV_KEY_RE.fullmatch(key_name):
+        return False
+
     def _is_key(stripped: str) -> bool:
         return bool(
             stripped and not stripped.startswith("#") and "=" in stripped
@@ -652,11 +662,7 @@ def _replace_env_line(env_path: Path, content: str, key_name: str, value: str) -
         lines.append(line)
     if not replaced:
         lines.append(new_line)
-    tmp_path = env_path.with_name(env_path.name + ".tmp")
-    fd = os.open(tmp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    os.replace(tmp_path, env_path)
+    replace_private_text(env_path, "\n".join(lines) + "\n")
     try:
         os.chmod(env_path, 0o600)
     except OSError:
@@ -669,15 +675,21 @@ def _format_env_value(value: str) -> str:
 
     env.load_env_file strips a single layer of matching surrounding quotes but
     does NOT process backslash escapes, so we wrap (never escape):
-      - plain tokens (no whitespace, no leading quote): returned unchanged;
-      - values with whitespace/leading quote and no double-quote: double-quoted;
+      - plain tokens (no whitespace, no leading quote or ``#``): returned unchanged;
+      - values with whitespace/leading quote/``#`` and no double-quote: double-quoted;
       - values containing a double-quote but no single-quote: single-quoted;
       - values containing both quote types: returned as-is (best effort; no
         wrapper round-trips through the loader, and tokens never hit this).
-    Newlines are not valid in a single-line env value and are stripped.
+    All characters split by ``str.splitlines()`` and NUL are removed/collapsed
+    so a single value can never inject a second ``KEY=value`` line.
     """
-    value = value.replace("\r", "").replace("\n", " ")
-    needs_quoting = (not value) or value[0] in ("'", '"') or any(c.isspace() for c in value)
+    value = value.replace("\r", "").replace("\x00", "")
+    value = _ENV_LINE_BREAKS_RE.sub(" ", value)
+    needs_quoting = (
+        (not value)
+        or value[0] in ("'", '"', "#")
+        or any(c.isspace() for c in value)
+    )
     if not needs_quoting:
         return value
     if '"' not in value:
@@ -715,6 +727,8 @@ def write_setup_config(
     Returns:
         True if config was written successfully, False on error.
     """
+    if not env_path:
+        return False
     try:
         env_path = Path(env_path)
         env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -735,7 +749,7 @@ def write_setup_config(
         existing_keys: set = set()
         existing_content = ""
         if env_path.exists():
-            existing_content = env_path.read_text(encoding="utf-8")
+            existing_content = env_path.read_text(encoding="utf-8-sig")
             for line in existing_content.splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
@@ -791,9 +805,16 @@ def write_api_key(
 
     Returns:
         True if the key was written or already present, False on error or when
-        ``api_key`` is empty.
+        ``api_key`` is empty or malformed.
     """
-    if not api_key:
+    if (
+        not env_path
+        or not api_key
+        or not isinstance(api_key, str)
+        or not isinstance(key_name, str)
+        or not _ENV_KEY_RE.fullmatch(key_name)
+        or _ENV_DISALLOWED_KEY_CHARS_RE.search(api_key)
+    ):
         return False
     try:
         env_path = Path(env_path)
@@ -801,7 +822,7 @@ def write_api_key(
 
         existing_content = ""
         if env_path.exists():
-            existing_content = env_path.read_text(encoding="utf-8")
+            existing_content = env_path.read_text(encoding="utf-8-sig")
             for line in existing_content.splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:

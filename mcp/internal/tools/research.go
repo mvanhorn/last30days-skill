@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -15,9 +16,18 @@ import (
 )
 
 // Config carries the version string used to namespace the per-user cache.
-// main passes its ldflags-stamped Version here.
+// main passes its ldflags-stamped Version here. EngineFS optionally overrides
+// the embedded Python engine tree (tests use it to inject stub scripts).
 type Config struct {
-	Version string
+	Version  string
+	EngineFS fs.FS
+}
+
+func (c Config) engineFS() (fs.FS, error) {
+	if c.EngineFS != nil {
+		return c.EngineFS, nil
+	}
+	return engine.EngineFS()
 }
 
 // BrowserCookiesEnvOverride is an explicit MCP-layer opt-in. It only removes
@@ -102,7 +112,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 
-		src, err := engine.EngineFS()
+		src, err := cfg.engineFS()
 		if err != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("engine source unavailable: %v", err)), nil
 		}

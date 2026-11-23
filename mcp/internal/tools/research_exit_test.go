@@ -38,12 +38,10 @@ func TestResearchHandlerDegradedExit(t *testing.T) {
 				"import sys\nsys.stdout.buffer.write(%q.encode())\nsys.stderr.buffer.write(%q.encode())\nraise SystemExit(%d)\n",
 				tc.stdout, tc.stderr, tc.code,
 			)
-			if _, err := engine.Ensure(fstest.MapFS{
+			fakeFS := fstest.MapFS{
 				"last30days.py": {Data: []byte(script)},
-			}, cacheRoot, version); err != nil {
-				t.Fatal(err)
 			}
-			handler := makeResearchHandler(Config{Version: version})
+			handler := makeResearchHandler(Config{Version: version, EngineFS: fakeFS})
 			result, err := handler(context.Background(), newCallToolRequest(map[string]any{
 				"topic": "Evidence", "emit": tc.emit,
 			}))

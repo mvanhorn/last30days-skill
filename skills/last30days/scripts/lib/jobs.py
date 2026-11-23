@@ -35,7 +35,7 @@ from html import unescape
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
 
-from . import dates, grounding, health, http, jobs_digest, jobs_story, jobs_teams, log
+from . import dates, grounding, health, http, jobs_digest, jobs_story, jobs_teams, log, public_host
 from .job_boards import detect as board_detect
 from .job_boards import robots as board_robots
 
@@ -1603,7 +1603,12 @@ def _find_careers_page(
             # domain, its failure to answer is not an outage of the lane.
             html, _no_answer = _careers_text(careers_url, guessed=True)
             if html:
-                return html, careers_url, _found_via(careers_url, company, site)
+                budget = _BUDGET.get()
+                landed = (budget.landed.get(careers_url) if budget is not None else None) or careers_url
+                if public_host.is_public_address_syntax(landed) and (
+                    _same_site(_host(landed), _host(careers_url)) or _jobs_host(_host(landed))
+                ):
+                    return html, landed, _found_via(landed, company, site)
 
     return None, None, "search"
 
@@ -1666,7 +1671,7 @@ def _careers_page_at(
     if not (_looks_like_careers_html(html) or _names_board(html, landed)):
         return None, False, url
     page, page_url = _board_page(html, landed, guessed=guessed)
-    return (page, page_url, "site" if named else _found_via(url, company, site)), False, url
+    return (page, page_url, "site" if named else _found_via(landed, company, site)), False, url
 
 
 def _names_board(html: str, url: str) -> bool:
@@ -1727,6 +1732,8 @@ def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
 
 
 def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, bool]:
+    if not public_host.is_public_address_syntax(url):
+        return None, False
     landed: list[str] = []
     budget = _BUDGET.get()
     with http.expected_misses(403, 404):
@@ -1736,7 +1743,7 @@ def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, b
             with http.capture_failures() as failures:
                 html = http.get_text(
                     url, accept="text/html", retries=1, retry_dns=False, landed=landed,
-                    **_bounds(GUESS_TIMEOUT_SECONDS),
+                    public_only=True, **_bounds(GUESS_TIMEOUT_SECONDS),
                 )
             if any(failure.outcome_state == health.TIMEOUT for failure in failures):
                 _note_slow(f"{host} did not answer in {GUESS_TIMEOUT_SECONDS}s")
@@ -1745,7 +1752,8 @@ def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, b
             return html, any(failure.status_code is None for failure in failures)
         with http.tee_failures() as failures:
             html = http.get_text(
-                url, accept="text/html", retries=1, landed=landed, **_bounds(PAGE_TIMEOUT_SECONDS),
+                url, accept="text/html", retries=1, landed=landed, public_only=True,
+                **_bounds(PAGE_TIMEOUT_SECONDS),
             )
     if landed and budget is not None:
         budget.landed[url] = landed[-1]
@@ -1782,14 +1790,25 @@ def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str
     budget = _BUDGET.get()
     pointed = board_detect.eightfold_career_url(html)
     links = _jobs_links(html, url)
-    if pointed and (_same_site(_host(pointed), _host(url)) or _named_jobs_host(_host(pointed), url)):
+    if pointed and public_host.is_public_address_syntax(pointed) and (
+        _same_site(_host(pointed), _host(url)) or _named_jobs_host(_host(pointed), url)
+    ):
         links = [pointed, *(link for link in links if link != pointed)]
     for link in links[:_LINKED_PAGE_LIMIT]:
         if _out_of_time(f"the jobs page {link}"):
             break
         linked, _no_answer = _careers_text(link, guessed=guessed)
         landed = (budget.landed.get(link) if budget is not None else None) or link
-        if linked and _names_board(linked, landed):
+        if not linked or not public_host.is_public_address_syntax(landed):
+            continue
+        landed_host = _host(landed)
+        if not (
+            _same_site(landed_host, _host(url))
+            or _named_jobs_host(landed_host, url)
+            or _jobs_host(landed_host)
+        ):
+            continue
+        if _names_board(linked, landed):
             return linked, landed
     return html, url
 
@@ -1809,23 +1828,23 @@ def _jobs_links(html: str, page_url: str) -> list[str]:
     search, then a jobs host on another domain that carries the site's name
     (``_named_jobs_host``). A link to the page itself or to another page of
     the same kind (a translation of it, "life at") is left out."""
-    page = urlparse(page_url)
+    page_host = _host(page_url)
     ranked: list[tuple[int, str]] = []
     for href in re.findall(r"""href\s*=\s*["']([^"'#\s]+)""", html, flags=re.I):
         link = urljoin(page_url, unescape(href))
-        parsed = urlparse(link)
-        host = parsed.netloc.lower()
-        if parsed.scheme not in ("http", "https"):
+        if not public_host.is_public_address_syntax(link):
             continue
-        if not _same_site(host, page.netloc):
+        parsed = urlparse(link)
+        host = (parsed.hostname or "").rstrip(".").lower()
+        if not _same_site(host, page_host):
             if not _named_jobs_host(host, page_url) or _FILE_LINK.search(parsed.path):
                 continue
             rank = 2
         elif _FILE_LINK.search(parsed.path):
             continue
-        elif host != page.netloc.lower() and _jobs_host(host):
+        elif host != page_host and _jobs_host(host):
             rank = 0
-        elif host == page.netloc.lower() and _JOBS_LINK_WORDS.search(parsed.path):
+        elif host == page_host and _JOBS_LINK_WORDS.search(parsed.path):
             rank = 1
         else:
             continue
@@ -1859,7 +1878,7 @@ def _search_for_careers_url(
         if not isinstance(raw, dict):
             continue
         url = str(raw.get("url") or "").strip()
-        if not url or _is_search_redirect(url):
+        if not url or not public_host.is_public_address_syntax(url) or _is_search_redirect(url):
             # An ad or a search engine's own redirect is no one's careers page.
             continue
         lowered = url.lower()
@@ -1924,9 +1943,12 @@ def _posting_board(url: str) -> str:
 
 def _host(url: str) -> str:
     try:
-        return urlparse(url if "://" in url else f"https://{url}").netloc.lower()
+        parsed = urlparse(url if "://" in url else f"https://{url}")
     except ValueError:
         return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    return (parsed.hostname or "").rstrip(".").lower()
 
 
 def _site_hosts(company: str, site: str = "") -> list[str]:
@@ -2252,7 +2274,7 @@ def read_smartrecruiters_board(
             params["offset"] = str(offset)
         return lambda http_deadline: http.get(
             url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
-            deadline_monotonic=http_deadline,
+            deadline_monotonic=http_deadline, public_only=True,
         )
 
     first = _workday_run([page(0)], deadline, clock)[0]
@@ -2841,10 +2863,12 @@ def role_page_text(
     """A role or sitemap page as text, or None when it is not text the lane
     can decode (a gzip sitemap, a page in another encoding): one such page
     costs its own role, not the whole read."""
+    if not public_host.is_public_address_syntax(url):
+        return None
     try:
         return http.get_text(
             url, accept="text/html,application/xml,*/*", timeout=timeout, retries=1,
-            deadline_monotonic=deadline_monotonic, landed=landed,
+            deadline_monotonic=deadline_monotonic, landed=landed, public_only=True,
             **({"redirect_guard": redirect_guard} if redirect_guard is not None else {}),
         )
     except UnicodeDecodeError:
@@ -3402,6 +3426,7 @@ def search_amazon_story(
     payload = http.get(
         _amazon_url(entry), params=_amazon_params(0, term),
         timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+        public_only=True,
     )
     return parse_amazon_response(payload)[0]
 
@@ -3416,7 +3441,7 @@ def read_amazon_board(
         params = _amazon_params(offset)
         return lambda http_deadline: http.get(
             url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
-            deadline_monotonic=http_deadline,
+            deadline_monotonic=http_deadline, public_only=True,
         )
 
     items, info = _read_newest_first(
@@ -3697,7 +3722,7 @@ def _read_eightfold_generation(
         params = _eightfold_params(entry, offset)
         return lambda http_deadline: http.get(
             url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
-            deadline_monotonic=http_deadline,
+            deadline_monotonic=http_deadline, public_only=True,
         )
 
     items, info = _read_newest_first(
@@ -3734,6 +3759,7 @@ def search_eightfold_story(
             _eightfold_listing_url(entry["board"], api),
             params=_eightfold_params(generation, 0, term),
             timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+            public_only=True,
         )
         return parse_eightfold_response(payload, generation)[0]
 
@@ -3761,7 +3787,7 @@ def fetch_eightfold_details(
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
         return lambda http_deadline: http.get(
             str(item["detail_url"]), timeout=API_TIMEOUT_SECONDS, retries=1,
-            deadline_monotonic=http_deadline,
+            deadline_monotonic=http_deadline, public_only=True,
         )
 
     def text_of(payload: Any) -> tuple[str, str] | None:

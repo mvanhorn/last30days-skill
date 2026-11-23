@@ -18,7 +18,7 @@ import threading
 from typing import Any
 from urllib.parse import urlparse
 
-from .. import http
+from .. import http, public_host
 
 RESPECT_ROBOTS_VAR = "LAST30DAYS_JOBS_RESPECT_ROBOTS"
 TIMEOUT_SECONDS = 5
@@ -91,14 +91,17 @@ def rules_for(host: str, *, deadline_monotonic: float | None = None) -> Rules:
     with _lock:
         if host in _cache:
             return _cache[host]
+    robots_url = f"https://{host}/robots.txt"
+    if not public_host.is_public_address_syntax(robots_url):
+        return Rules("")
     bounds: dict[str, Any] = {}
     if deadline_monotonic is not None:
         bounds["deadline_monotonic"] = deadline_monotonic
     try:
         with http.capture_failures():
             text = http.get_text(
-                f"https://{host}/robots.txt", accept="text/plain", timeout=TIMEOUT_SECONDS,
-                retries=1, retry_dns=False, **bounds,
+                robots_url, accept="text/plain", timeout=TIMEOUT_SECONDS,
+                retries=1, retry_dns=False, public_only=True, **bounds,
             )
     except UnicodeDecodeError:
         text = None

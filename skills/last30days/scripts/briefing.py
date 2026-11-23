@@ -14,6 +14,8 @@ Usage:
 import argparse
 import json
 import os
+import re
+import stat
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -205,21 +207,87 @@ def generate_weekly() -> dict:
     return result
 
 
+_BRIEFING_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _read_briefing_json(candidate: Path, root: Path) -> dict | None:
+    if candidate.is_symlink() or (
+        hasattr(os.path, "isjunction") and os.path.isjunction(candidate)
+    ):
+        return None
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return None
+    if not resolved.is_relative_to(root):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = -1
+    parent_fd = -1
+    try:
+        if (
+            candidate.name
+            and os.open in os.supports_dir_fd
+            and hasattr(os, "O_DIRECTORY")
+            and hasattr(os, "O_NOFOLLOW")
+        ):
+            parent_fd = os.open(
+                root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            fd = os.open(candidate.name, flags, dir_fd=parent_fd)
+        else:
+            fd = os.open(candidate, flags)
+    except OSError:
+        return None
+    finally:
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        handle = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1
+        with handle as f:
+            return json.load(f)
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def show_briefing(date: str = None) -> dict:
     """Load a saved briefing by date."""
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
+    if not isinstance(date, str) or not _BRIEFING_DATE_RE.fullmatch(date):
+        return {
+            "status": "invalid_date",
+            "message": "Invalid date format; expected YYYY-MM-DD.",
+        }
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return {
+            "status": "invalid_date",
+            "message": "Invalid calendar date; expected YYYY-MM-DD.",
+        }
 
-    path = BRIEFS_DIR / f"{date}.json"
-    if not path.exists():
-        # Try weekly
-        path = BRIEFS_DIR / f"{date}-weekly.json"
+    root = BRIEFS_DIR.resolve(strict=False)
+    for filename in (f"{date}.json", f"{date}-weekly.json"):
+        loaded = _read_briefing_json(BRIEFS_DIR / filename, root)
+        if loaded is not None:
+            return loaded
 
-    if not path.exists():
-        return {"status": "not_found", "message": f"No briefing found for {date}."}
-
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    return {"status": "not_found", "message": f"No briefing found for {date}."}
 
 
 def _save_briefing(data: dict, suffix: str = ""):
@@ -258,6 +326,8 @@ def main():
     elif args.command == "show":
         result = show_briefing(date=args.date)
         print(json.dumps(result, indent=2, default=str))
+        if result.get("status") == "invalid_date":
+            sys.exit(2)
 
     else:
         parser.print_help()

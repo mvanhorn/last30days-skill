@@ -115,7 +115,7 @@ def read_board(
     with http.tee_failures() as failures:
         html = http.get_text(
             listing_url(entry), accept="text/html,*/*", timeout=jobs.API_TIMEOUT_SECONDS,
-            retries=2, deadline_monotonic=deadline,
+            retries=2, deadline_monotonic=deadline, public_only=True,
         )
     if html is None and failures:
         # A timeout or HTTP error is reported as one, not as a bad page.

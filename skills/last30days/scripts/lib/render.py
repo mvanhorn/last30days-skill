@@ -301,19 +301,20 @@ def _render_drill_context(report: schema.Report) -> list[str]:
     context = report.artifacts.get("drill_context") or {}
     if not report.drill_of or not context:
         return []
-    titles = context.get("cluster_titles") or [report.drill_of]
+    titles = [_safe_title(str(t)) for t in (context.get("cluster_titles") or [report.drill_of])]
     sources = context.get("sources") or []
     source_text = ", ".join(_source_label(source) for source in sources) or "none"
-    original = context.get("original_summary") or "No cached summary was available."
+    original = _defang_engine_sentinels(str(context.get("original_summary") or "No cached summary was available."))
+    target = _safe_title(str(context.get("target") or report.drill_of))
     lines = [
         "## Drill Follow-up",
         "",
-        f"- Target: {context.get('target') or report.drill_of}",
+        f"- Target: {target}",
         f"- Matched: {', '.join(titles)}",
         "",
         "### Original",
         "",
-        str(original),
+        original,
         "",
         "### Deeper",
         "",
@@ -338,9 +339,11 @@ def _render_library_context(report: schema.Report) -> list[str]:
         "",
     ]
     for item in report.library_context:
-        detail = _truncate(item.summary or item.headline, 220)
+        topic = _safe_title(str(item.topic or ""))
+        published_date = _safe_title(str(item.published_date or ""))
+        detail = _truncate(_safe_title(str(item.summary or item.headline or "")), 220)
         lines.append(
-            f"- You researched **{item.topic}** on {item.published_date} - "
+            f"- You researched **{topic}** on {published_date} - "
             f"key finding then: {detail}"
         )
     lines.append(library_index.LIBRARY_CONTEXT_END)
@@ -702,22 +705,35 @@ def _freshness_table(verdicts: list[schema.FreshnessVerdict], heading: str) -> l
         "| --- | --- | --- | --- |",
     ]
     for verdict in verdicts:
-        claim = " ".join(verdict.claim.splitlines()).replace("|", "\\|")
+        claim = _safe_title(verdict.claim).replace("|", "\\|")
         if verdict.detail:
             # The verifier's detail carries the formatted movement for stale
             # rows and the reason a claim could not be re-checked otherwise.
-            detail = " ".join(verdict.detail.splitlines()).replace("|", "\\|")
+            detail = _safe_title(verdict.detail).replace("|", "\\|")
             claim += f" ({detail})"
-        evidence_label = (
+        raw_label = str(
             verdict.evidence_timestamp or verdict.source_timestamp or "source"
         )
-        evidence = (
-            f"[{evidence_label}]({verdict.evidence_url})"
-            if verdict.evidence_url
-            else evidence_label
+        evidence_label = (
+            _safe_title(raw_label)
+            .replace("|", "\\|")
+            .replace("[", "\\[")
+            .replace("]", "\\]")
         )
+        if verdict.evidence_url:
+            rendered_link = _markdown_url_link(verdict.evidence_url)
+            if rendered_link.startswith("[") and "](" in rendered_link and rendered_link.endswith(")"):
+                safe_dest = rendered_link.rsplit("](", 1)[1][:-1].replace("|", "%7C")
+                evidence = f"[{evidence_label}]({safe_dest})"
+            elif rendered_link:
+                evidence = f"{evidence_label} ({rendered_link.replace('|', '\\|')})"
+            else:
+                evidence = evidence_label
+        else:
+            evidence = evidence_label
+        checked_at = _safe_title(str(verdict.checked_at or "")).replace("|", "\\|")
         lines.append(
-            f"| **{verdict.verdict}** | {claim} | {evidence} | {verdict.checked_at} |"
+            f"| **{_safe_title(str(verdict.verdict))}** | {claim} | {evidence} | {checked_at} |"
         )
     return lines
 
@@ -1769,12 +1785,13 @@ def _sanitize_url_for_single_line_output(url: str) -> str:
     before either the link-safety check or the plain-text fallback below,
     so this closes the injection at the root rather than only for links.
     """
-    return "".join(
+    collapsed = "".join(
         " "
         if ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
         else ch
         for ch in url
     )
+    return _defang_engine_sentinels(collapsed)
 
 
 def _escape_markdown_plain_text(value: str) -> str:
@@ -1960,8 +1977,9 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
             # local_rank_score is 0..1; print it on the report's 0-100 scale
             # (":.0f" of the raw value rendered every item as score:0 or 1).
             score = (item.local_rank_score or 0) * 100.0
+            author_text = _safe_title(str(item.author)) if item.author else ""
             lines.append(
-                f"**{item.item_id}** (score:{score:.0f}) {item.author or ''} ({item.published_at or 'date unknown'}) [{_format_item_engagement(item)}]"
+                f"**{item.item_id}** (score:{score:.0f}) {author_text} ({item.published_at or 'date unknown'}) [{_format_item_engagement(item)}]"
             )
             lines.append(f"  {_safe_title(item.title)}")
             if item.url:
@@ -1969,7 +1987,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                 if rendered_url:
                     lines.append(f"  {rendered_url}")
             if item.container:
-                lines.append(f"  *{item.container}*")
+                lines.append(f"  *{_safe_title(str(item.container))}*")
             if item.snippet:
                 lines.append(
                     f"  {_format_untrusted_evidence(item.snippet, 500, continuation_indent='  ')}"
@@ -2027,7 +2045,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
             if outcome_prices and item.source == "polymarket":
                 question = item.metadata.get("question") or ""
                 if question and question != item.title:
-                    lines.append(f"  Question: {question}")
+                    lines.append(f"  Question: {_safe_title(str(question))}")
                 odds_parts = []
                 for name, price in outcome_prices:
                     if isinstance(price, (int, float)):
@@ -2301,22 +2319,22 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
         for candidate in hooks[:5]:
             source_label = _source_label(candidate.source)
             primary = schema.candidate_primary_item(candidate)
-            author = primary.author if primary else None
+            author = _safe_title(str(primary.author)) if primary and primary.author else None
             if author and candidate.source in ("x", "tiktok", "instagram", "threads"):
                 attribution = f"@{author} on {source_label}"
             elif author and candidate.source == "reddit":
-                container = primary.container if primary else None
+                container = _safe_title(str(primary.container)) if primary and primary.container else None
                 attribution = f"r/{container}" if container else "Reddit"
             else:
                 attribution = source_label
             reason = (
-                f" — {candidate.fun_explanation}"
+                f" — {_safe_title(str(candidate.fun_explanation))}"
                 if candidate.fun_explanation
                 and candidate.fun_explanation != "heuristic-fallback"
                 else ""
             )
             lines.append(
-                f'- "{_truncate(candidate.title, 200)}"'
+                f'- "{_truncate(_safe_title(candidate.title), 200)}"'
                 f" ({attribution}, fun:{candidate.fun_score:.0f}){reason}"
             )
         lines.append("")
@@ -2339,7 +2357,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
         lines.append("## Audience Questions")
         lines.append("")
         for q in questions[:8]:
-            lines.append(f"- {q}")
+            lines.append(f"- {_safe_title(str(q))}")
         lines.append("")
 
     lines.extend([*public_cluster_boundary, "## Source Clusters", ""])
@@ -2377,6 +2395,26 @@ def _extract_audience_questions(candidates: list[schema.Candidate]) -> list[str]
     return questions
 
 
+def _hiring_plain_field(value: Any, limit: int = 120) -> str:
+    """Single-line, sentinel-defanged, link-neutralized metadata text for Hiring Signals."""
+    cleaned = _safe_title(str(value or ""))
+    if not cleaned:
+        return ""
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 3].rstrip() + "..."
+    return cleaned.replace("[", "(").replace("]", ")")
+
+
+def _hiring_role_link(raw_title: Any, raw_url: Any) -> str:
+    title = _safe_title(str(raw_title or "")) or "Job posting"
+    url = _defang_engine_sentinels(str(raw_url or ""))
+    if url:
+        rendered = _markdown_url_link(url, label=title)
+        if rendered:
+            return rendered
+    return _escape_markdown_plain_text(title)
+
+
 def _render_hiring_signals(
     report: schema.Report,
     *,
@@ -2385,7 +2423,7 @@ def _render_hiring_signals(
     summary = report.artifacts.get("hiring_signals")
     if not isinstance(summary, dict):
         return []
-    mode = summary.get("mode") or "standard"
+    mode = _hiring_plain_field(summary.get("mode") or "standard", 40) or "standard"
     rejected_jobs = set(summary.get("rejected_job_keys") or [])
     if candidates is not None or rejected_jobs:
         solid_clusters = _clusters_clearing_relevance_floor(report, report.clusters)
@@ -2428,16 +2466,16 @@ def _render_hiring_signals(
     if not include and mode != "explicit":
         return []
 
+    size_tier = _hiring_plain_field(summary.get("company_size_tier") or "unknown", 60) or "unknown"
     out = [
         "## Hiring Signals",
         "",
-        (
-            f"- Mode: {mode}; company-size tier: "
-            f"{summary.get('company_size_tier') or 'unknown'}"
-        ),
+        f"- Mode: {mode}; company-size tier: {size_tier}",
     ]
     if not signals:
-        reason = summary.get("omitted_reason") or "no reliable hiring signal found"
+        reason = _hiring_plain_field(
+            summary.get("omitted_reason") or "no reliable hiring signal found", 200
+        ) or "no reliable hiring signal found"
         out.append(f"- No reliable hiring signal found: {reason}.")
         return out
 
@@ -2446,18 +2484,23 @@ def _render_hiring_signals(
     )
     for signal in signals[:4]:
         evidence = signal.get("evidence") or []
+        theme = _hiring_plain_field(signal.get("theme") or "hiring theme", 120) or "hiring theme"
+        interpretation = (
+            _hiring_plain_field(
+                signal.get("interpretation") or "possible hiring focus", 200
+            )
+            or "possible hiring focus"
+        )
+        confidence = _hiring_plain_field(signal.get("confidence") or "low", 40) or "low"
         out.append(
-            f"- {signal.get('theme', 'hiring theme')}: "
-            f"{signal.get('interpretation', 'possible hiring focus')} "
-            f"(confidence: {signal.get('confidence', 'low')}; "
+            f"- {theme}: {interpretation} "
+            f"(confidence: {confidence}; "
             f"evidence: {signal.get('evidence_count', len(evidence))} roles)"
         )
         for item in evidence[:3]:
-            title = item.get("title") or "Job posting"
-            url = item.get("url") or ""
-            dept = item.get("department") or ""
-            date = item.get("published_at") or "date unknown"
-            link = f"[{title}]({url})" if url else title
+            link = _hiring_role_link(item.get("title"), item.get("url"))
+            dept = _hiring_plain_field(item.get("department"), 120)
+            date = _hiring_plain_field(item.get("published_at") or "date unknown", 40) or "date unknown"
             detail = " | ".join(part for part in [dept, date] if part)
             out.append(f"  - {link}" + (f" ({detail})" if detail else ""))
 
@@ -2471,13 +2514,17 @@ def _render_hiring_signals(
             "a new capability or expansion of an existing one."
         )
         for cand in strategic[:8]:
-            title = cand.get("title") or "Job posting"
-            url = cand.get("url") or ""
-            flags = ", ".join(cand.get("flags") or [])
-            dept = cand.get("department") or ""
-            location = cand.get("location") or ""
-            date = cand.get("published_at") or "date unknown"
-            link = f"[{title}]({url})" if url else title
+            link = _hiring_role_link(cand.get("title"), cand.get("url"))
+            raw_flags = cand.get("flags") or []
+            clean_flags = [
+                _hiring_plain_field(flag, 60)
+                for flag in raw_flags
+                if _hiring_plain_field(flag, 60)
+            ]
+            flags = ", ".join(clean_flags)
+            dept = _hiring_plain_field(cand.get("department"), 120)
+            location = _hiring_plain_field(cand.get("location"), 120)
+            date = _hiring_plain_field(cand.get("published_at") or "date unknown", 40) or "date unknown"
             detail = " | ".join(part for part in [dept, location, date] if part)
             tag = f" [{flags}]" if flags else ""
             out.append(f"  - {link}{tag}" + (f" ({detail})" if detail else ""))
@@ -2966,7 +3013,13 @@ def _render_candidate(
     # should read even at low engagement, not noise.
     interaction_targets = (candidate.metadata or {}).get("interaction_targets")
     if interaction_targets:
-        detail_parts.append("interaction:→@" + ",@".join(interaction_targets[:2]))
+        safe_targets = [
+            _safe_title(str(target))
+            for target in interaction_targets[:2]
+            if _safe_title(str(target))
+        ]
+        if safe_targets:
+            detail_parts.append("interaction:→@" + ",@".join(safe_targets))
     details = " | ".join(part for part in detail_parts if part)
     lines = [
         f"{prefix} [{schema.candidate_source_label(candidate)}] {_safe_title(candidate.title)}"
@@ -3010,7 +3063,7 @@ def _render_candidate(
         # HN comment lines carry their own link: the candidate URL above is
         # the article, not where the quote was said.
         hn_link = (
-            _comment_link(primary, tc)
+            _sanitize_url_for_single_line_output(_comment_link(primary, tc))
             if primary is not None and primary.source == "hackernews"
             else ""
         )
@@ -4739,17 +4792,20 @@ def _comment_attribution(source: str | None, author: str | None) -> str:
     author is captured, or the legacy ``Comment`` marker when the author is
     missing, empty, deleted, or removed.
     """
-    if not author or author in ("[deleted]", "[removed]"):
+    cleaned = _safe_title(str(author or ""))
+    if not cleaned or cleaned in ("[deleted]", "[removed]"):
         return "Comment"
     prefix = _HANDLE_PREFIX.get(source or "", "")
     # Some sources (YouTube/TikTok) already store the author with a leading '@';
     # strip it before re-prefixing so we don't emit '@@handle'.
-    if prefix and author.startswith(prefix):
-        author = author[len(prefix) :]
+    if prefix and cleaned.startswith(prefix):
+        cleaned = cleaned[len(prefix) :].strip()
+    if not cleaned:
+        return "Comment"
     # A display name with spaces (a YouTube channel, "WSJ Events") is no handle.
-    if any(ch.isspace() for ch in author):
-        return author
-    return f"{prefix}{author}" if prefix else author
+    if any(ch.isspace() for ch in cleaned):
+        return cleaned
+    return f"{prefix}{cleaned}" if prefix else cleaned
 
 
 def _comment_platform_dot(source: str | None) -> str:
@@ -4769,12 +4825,12 @@ def _comment_community(item: schema.SourceItem) -> str:
     """Where a comment or post was said: ``on r/sub`` for Reddit with a known
     subreddit, else ``on <platform>`` (``on YouTube``, ``on Hacker News``)."""
     if item.source == "reddit":
-        subreddit = (item.container or "").strip().removeprefix("r/")
+        subreddit = _safe_title(str(item.container or "")).removeprefix("r/").strip()
         if subreddit:
             return f" on r/{subreddit}"
     if not item.source or item.source in _SOURCES_WITHOUT_A_PLACE:
         return ""
-    return f" on {_source_label(item.source)}"
+    return f" on {_safe_title(_source_label(item.source))}"
 
 
 def _comment_count(score) -> str:
@@ -4979,15 +5035,19 @@ def _render_best_takes(
             if selected_comment_item is not None
             else candidate.source
         )
-        source_label = _source_label(attribution_source)
-        author = attribution_item.author if attribution_item else None
-        attribution = (
-            f"@{author} on {source_label}"
-            if author and attribution_source in ("x", "tiktok", "instagram", "threads")
-            else f"{source_label}"
-        )
+        source_label = _safe_title(_source_label(attribution_source))
+        author = _safe_title(str(attribution_item.author or "")) if attribution_item else ""
+        if author and attribution_source in ("x", "tiktok", "instagram", "threads"):
+            bare = author.lstrip("@").strip()
+            attribution = f"@{bare} on {source_label}" if bare else f"{source_label}"
+        else:
+            attribution = f"{source_label}"
         if author and attribution_source == "reddit":
-            container = attribution_item.container if attribution_item else None
+            container = (
+                _safe_title(str(attribution_item.container or "")).removeprefix("r/").strip()
+                if attribution_item
+                else ""
+            )
             attribution = f"r/{container} comment" if container else "Reddit"
         # fun: is the LLM humor score; flag when crowd votes materially lifted
         # this item's ranking, so a lower-fun item ranking above a higher-fun one
@@ -4995,12 +5055,13 @@ def _render_best_takes(
         crowd_boost = effective - (candidate.fun_score or 0.0)
         crowd_tag = " +crowd" if crowd_boost >= 5.0 else ""
         score_tag = f"(fun:{candidate.fun_score:.0f}{crowd_tag})"
-        reason = (
-            f" -- {candidate.fun_explanation}"
+        clean_reason = (
+            _safe_title(str(candidate.fun_explanation))
             if candidate.fun_explanation
             and candidate.fun_explanation != "heuristic-fallback"
             else ""
         )
+        reason = f" -- {clean_reason}" if clean_reason else ""
         lines.append(
             f'- "{_format_untrusted_evidence(text, 280, continuation_indent="  ")}" '
             f"-- {attribution} {score_tag}{reason}"

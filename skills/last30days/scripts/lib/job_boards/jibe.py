@@ -76,6 +76,7 @@ def read_board(
         return lambda http_deadline: http.get(
             url, headers={"Accept": "application/json"},
             timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+            public_only=True,
         )
 
     return jobs._read_newest_first(
@@ -92,5 +93,6 @@ def search_story(
     payload = http.get(
         listing_url(entry, 1, term), headers={"Accept": "application/json"},
         timeout=jobs.STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+        public_only=True,
     )
     return parse_listing(payload, entry)[0]

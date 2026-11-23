@@ -126,7 +126,8 @@ def cluster_candidates(
     clusters = _merge_entity_clusters(
         clusters,
         candidates,
-        min_shared_entities=2 if "discover-mode" in plan.notes else 1,
+        min_shared_entities=2,
+        topic_entities=entity_extract.extract_text_entities(plan.raw_topic),
     )
 
     return sorted(clusters, key=lambda cluster: cluster.score, reverse=True)
@@ -136,7 +137,9 @@ def _merge_entity_clusters(
     clusters: list[schema.Cluster],
     all_candidates: list[schema.Candidate],
     *,
-    min_shared_entities: int = 1,
+    min_shared_entities: int = 2,
+    topic_entities: set[str] | frozenset[str] = frozenset(),
+    max_cluster_size: int = 3,
 ) -> list[schema.Cluster]:
     """Merge small clusters that cover the same story across different sources.
 
@@ -161,16 +164,18 @@ def _merge_entity_clusters(
                 entities |= entity_extract.extract_text_entities(_candidate_text(cand))
         cluster_entities.append(entities)
 
-    # Only merge clusters with <= 3 items (don't merge already-large clusters)
+    # Track running merged cluster sizes so a small cluster cannot absorb
+    # unbounded unrelated stories past max_cluster_size.
     merged_into: dict[int, int] = {}  # index -> merge target index
+    cluster_sizes = [len(cl.candidate_ids) for cl in clusters]
     for i in range(len(clusters)):
-        if i in merged_into or len(clusters[i].candidate_ids) > 3:
+        if i in merged_into or cluster_sizes[i] >= max_cluster_size:
             continue
+        sources_i = set(clusters[i].sources)
         for j in range(i + 1, len(clusters)):
-            if j in merged_into or len(clusters[j].candidate_ids) > 3:
+            if j in merged_into or cluster_sizes[i] + cluster_sizes[j] > max_cluster_size:
                 continue
             # Require different sources to merge (same-source should already be grouped)
-            sources_i = set(clusters[i].sources)
             sources_j = set(clusters[j].sources)
             if sources_i == sources_j and len(sources_i) == 1:
                 continue
@@ -184,9 +189,20 @@ def _merge_entity_clusters(
                 continue
 
             shared_entities = cluster_entities[i] & cluster_entities[j]
+            if len(shared_entities) < min_shared_entities:
+                continue
+            if topic_entities:
+                non_topic_i = cluster_entities[i] - topic_entities
+                non_topic_j = cluster_entities[j] - topic_entities
+                if (non_topic_i or non_topic_j) and not (shared_entities - topic_entities):
+                    continue
             overlap = entity_extract.entity_overlap(cluster_entities[i], cluster_entities[j])
-            if len(shared_entities) >= min_shared_entities and overlap >= 0.45:
+            if overlap >= 0.45:
                 merged_into[j] = i
+                cluster_sizes[i] += cluster_sizes[j]
+                sources_i |= sources_j
+                if cluster_sizes[i] >= max_cluster_size:
+                    break
 
     if not merged_into:
         return clusters

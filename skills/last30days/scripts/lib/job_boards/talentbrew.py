@@ -94,6 +94,7 @@ def read_board(
         return lambda http_deadline: http.get(
             url, headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"},
             timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+            public_only=True,
         )
 
     return jobs._read_newest_first(
