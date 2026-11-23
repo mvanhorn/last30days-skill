@@ -14,7 +14,11 @@ from typing import Any, Dict, List, Optional
 from . import http, log
 from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
-from .x_api import is_own_post
+from .x_api import build_keyword_query, is_own_post
+
+# An all-operator topic leaves nothing to search. Reported like the other X
+# lanes do (``xurl_x.ERR_EMPTY_QUERY``) instead of settling as no-results.
+ERR_EMPTY_QUERY = "xquik: no searchable keywords left after removing X search operators"
 
 # Per-process probe cache: (state, reason). state is "unset" until probed, then
 # True (funded/working) | False (auth/payment failure) | None (inconclusive).
@@ -43,25 +47,37 @@ def _extract_core_subject(topic: str) -> str:
 def expand_xquik_queries(topic: str, depth: str) -> List[str]:
     """Generate query variants based on depth.
 
+    Every variant is X query syntax, so the topic is compiled through
+    ``x_api.build_keyword_query`` first: bare ``and``/``or``, colon operators
+    (``from:``, ``since:``, ``lang:``), leading ``-`` negation, grouping and
+    quote characters never reach X. Without it a topic like ``from:someone
+    docker`` restricted the search to one account and ``Mission: Impossible``
+    turned a title into a ``mission:`` operator (the gaps #1179 closed for the
+    xurl lane and #1544 for the Bird lane).
+
     Args:
         topic: Research topic
         depth: "quick", "default", or "deep"
 
     Returns:
-        List of query strings (1 for quick, 2 for default, 3 for deep).
+        List of query strings (1 for quick, 2 for default, 3 for deep),
+        empty when the topic carries no searchable keyword.
     """
-    core = _extract_core_subject(topic)
+    safe_topic = build_keyword_query(topic)
+    if not safe_topic:
+        return []
+    core = _extract_core_subject(safe_topic)
     # Anti-bare-generic guard (#607): never let the core collapse to a single
     # bare token when the topic carries more — a lone generic word floods X with
     # off-topic collisions. Fall back to the full multi-word topic as the anchor.
-    topic_clean = topic.strip()
+    topic_clean = safe_topic.strip()
     if len(core.split()) <= 1 and len(topic_clean.split()) > 1 and core.lower() != topic_clean.lower():
         core = topic_clean
     queries = [core]
 
     # Add original topic if meaningfully different
-    if topic.lower().strip() != core.lower().strip():
-        queries.append(topic.strip())
+    if safe_topic.lower() != core.lower():
+        queries.append(topic_clean)
 
     # Add compound term variant for deep searches
     if len(queries) < 3:
@@ -105,6 +121,9 @@ def search_xquik(
 
     cfg = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     queries = expand_xquik_queries(topic, depth)
+    if not queries:
+        _log("topic compiled to an empty query after sanitizing")
+        return {"items": [], "error": ERR_EMPTY_QUERY}
     all_items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
 
