@@ -1,0 +1,1 @@
+GitHub keyword search now matches issue and PR titles. It used to search bodies too, so for topics like "sqlite" or "kubernetes" the page filled with popular issues that only mentioned the word, and the topical floor then dropped all of them, leaving the GitHub section empty.

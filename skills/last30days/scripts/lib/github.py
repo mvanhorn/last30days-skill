@@ -320,7 +320,10 @@ def search_github(
         _log("No GitHub token; using the unauthenticated REST tier (low rate limit)")
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
-    base_q = f"is:public {core} created:{from_date}..{to_date}"
+    # Only results whose title names the topic survive the topical floor, so
+    # search titles: a body search fills the page with popular issues that
+    # merely mention the topic, and the floor then drops all of them.
+    base_q = f"is:public {core} created:{from_date}..{to_date} in:title"
 
     def _search(qualifier: Optional[str]) -> Optional[Dict[str, Any]]:
         q = f"{base_q} {qualifier}" if qualifier else base_q
