@@ -732,6 +732,86 @@ class TestHigh129SessionSingleFlight:
         assert capped.state == reddit_health.OK and capped.refs and not capped.comments
         assert capped_session._discover_cache == {}
 
+    def test_waiting_discover_falls_back_to_partial_posts_when_retry_cannot_fetch(self, monkeypatch):
+        # Case 1: owner gets posts then exhausts shared cap while a waiter is waiting.
+        # Partial result stays uncached, and the waiter keeps the owner's partial posts.
+        owner_started = threading.Event()
+        waiter_waiting = threading.Event()
+        orig_wait = reddit_session._wait_event
+
+        def spy_wait(event, deadline, cancel=None):
+            waiter_waiting.set()
+            return orig_wait(event, deadline, cancel)
+
+        def fake_get_capped(url, _cookie, **_k):
+            owner_started.set()
+            assert waiter_waiting.wait(timeout=5.0)
+            if "type=posts" in url:
+                return 200, POSTS_HTML, False
+            return 200, COMMENTS_HTML, False
+
+        monkeypatch.setattr(http, "reddit_session_get", fake_get_capped)
+        monkeypatch.setattr(reddit_session, "_wait_event", spy_wait)
+        capped = _session(cap=1)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_owner = pool.submit(reddit_session.discover, capped, TOPIC, depth="quick")
+            assert owner_started.wait(timeout=3.0)
+            f_waiter = pool.submit(reddit_session.discover, capped, TOPIC, depth="quick")
+            owner_res = f_owner.result(timeout=5.0)
+            waiter_res = f_waiter.result(timeout=5.0)
+
+        assert owner_res.state == reddit_health.OK and owner_res.refs
+        assert waiter_res.state == reddit_health.OK
+        assert [r.post_id for r in waiter_res.refs] == [r.post_id for r in owner_res.refs]
+        assert waiter_res.refs[0] is not owner_res.refs[0]
+        assert capped._discover_cache == {}
+
+        # Case 2: owner gets posts then comments times out; waiter retries with room
+        # left, its retry errors out empty, so it falls back to the owner's partial
+        # posts (never cached); a later caller with working responses completes & caches.
+        owner_started.clear()
+        waiter_waiting.clear()
+        phase = {"calls": 0}
+
+        def fake_get_retry_fail(url, _cookie, **_k):
+            phase["calls"] += 1
+            if phase["calls"] == 1:
+                owner_started.set()
+                assert waiter_waiting.wait(timeout=5.0)
+                return 200, POSTS_HTML, False
+            if phase["calls"] == 2:
+                # Owner's comments request times out.
+                return None, None, False
+            if phase["calls"] == 3:
+                # Waiter's retry hits a transient error on posts page.
+                return None, None, False
+            if "type=posts" in url:
+                return 200, POSTS_HTML, False
+            if "type=comments" in url:
+                return 200, COMMENTS_HTML, False
+            return 200, NO_COMMENTS_HTML, False
+
+        monkeypatch.setattr(http, "reddit_session_get", fake_get_retry_fail)
+        session = _session()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_owner = pool.submit(reddit_session.discover, session, TOPIC, depth="quick")
+            assert owner_started.wait(timeout=3.0)
+            f_waiter = pool.submit(reddit_session.discover, session, TOPIC, depth="quick")
+            owner_res2 = f_owner.result(timeout=5.0)
+            waiter_res2 = f_waiter.result(timeout=5.0)
+
+        assert owner_res2.state == reddit_health.OK and owner_res2.refs
+        assert waiter_res2.state == reddit_health.OK
+        assert [r.post_id for r in waiter_res2.refs] == [r.post_id for r in owner_res2.refs]
+        assert session._discover_cache == {}
+
+        # Later caller still retries and caches the complete search.
+        monkeypatch.setattr(reddit_session, "_wait_event", orig_wait)
+        complete_res = reddit_session.discover(session, TOPIC, depth="quick")
+        assert complete_res.state == reddit_health.OK and complete_res.comments
+        assert len(session._discover_cache) == 1
+
     def test_parallel_session_fetch_coalesces_same_url_and_respects_waiter_cancel(self, monkeypatch):
         started = threading.Event()
         release = threading.Event()

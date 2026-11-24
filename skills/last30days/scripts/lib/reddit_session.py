@@ -712,8 +712,11 @@ def discover(
         _log(f"session search failed: {type(exc).__name__}")
         return Discovery(state=ERROR)
     key = (str(topic or ""), depth, window, _effective_named(session))
+    fallback: Optional[Discovery] = None
     for _round in range(2):
         if not session.alive:
+            if fallback is not None and session.state != EXPIRED:
+                return fallback
             return Discovery(state=session.state)
         if cancel is not None and cancel.is_set():
             return Discovery(state=ERROR)
@@ -728,11 +731,20 @@ def discover(
                 session._discover_inflight[key] = slot
         if not owner:
             if not _wait_event(slot.done, deadline, cancel):
-                return Discovery(state=ERROR)
+                if cancel is not None and cancel.is_set():
+                    return Discovery(state=ERROR)
+                return fallback if fallback is not None else Discovery(state=ERROR)
             if slot.result is not None and (
                 slot.cacheable or slot.result.state in (EXPIRED, THROTTLED)
             ):
                 return copy.deepcopy(slot.result)
+            if slot.result is not None and slot.result.refs and slot.result.state == reddit_health.OK:
+                fallback = copy.deepcopy(slot.result)
+            if fallback is not None and (
+                not session.room()
+                or (deadline is not None and deadline - time.monotonic() < 1)
+            ):
+                return fallback
             continue
         found = Discovery()
         cancelled = False
@@ -768,8 +780,10 @@ def discover(
                 slot.done.set()
         if found.dropped_private:
             _log(f"dropped {found.dropped_private} over-18, private or quarantined results")
+        if not found.refs and not cancelled and found.state != EXPIRED and fallback is not None:
+            return fallback
         return found
-    return Discovery(state=ERROR)
+    return fallback if fallback is not None else Discovery(state=ERROR)
 
 
 def _discover(
