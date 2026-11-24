@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -269,6 +270,58 @@ func TestFormatRunErrorHandlesNilResult(t *testing.T) {
 	msg := formatRunError(errors.New("boom"), nil)
 	if msg != "boom" {
 		t.Fatalf("nil result: got %q, want %q", msg, "boom")
+	}
+}
+
+func TestFormatRunErrorCapsOversizedStderr(t *testing.T) {
+	// Place multi-byte UTF-8 runes across the 16 KiB boundary and end with a
+	// recognizable marker to verify both cap enforcement and UTF-8 safety.
+	prefix := strings.Repeat("é", maxErrorStderrBytes) // 2 bytes/rune => 32 KiB
+	tailMarker := "\nTraceback: final error line\n"
+	res := &engine.RunResult{
+		Stderr: []byte(prefix + tailMarker),
+	}
+	msg := formatRunError(errors.New("boom"), res)
+	if !strings.Contains(msg, "boom") {
+		t.Fatalf("error missing base message: %q", msg[:min(len(msg), 120)])
+	}
+	if !strings.Contains(msg, "truncated, showing last") {
+		t.Fatalf("error missing truncation notice: %q", msg[:min(len(msg), 120)])
+	}
+	if !strings.HasSuffix(msg, tailMarker) {
+		t.Fatalf("error lost trailing traceback: %q", msg[max(0, len(msg)-80):])
+	}
+	if len(msg) > maxErrorStderrBytes+256 {
+		t.Fatalf("formatted error length = %d, exceeds bounded ceiling", len(msg))
+	}
+	if !utf8.ValidString(msg) {
+		t.Fatal("formatted error split a UTF-8 rune at truncation boundary")
+	}
+}
+
+func TestFormatRunErrorNotesPreTruncatedStderr(t *testing.T) {
+	res := &engine.RunResult{
+		Stderr:          []byte("\x80\xa9final diagnostic\n"),
+		StderrTruncated: true,
+	}
+	msg := formatRunError(errors.New("boom"), res)
+	if !strings.Contains(msg, "truncated, showing last 17 bytes") || !strings.Contains(msg, "final diagnostic") {
+		t.Fatalf("unexpected pre-truncated message: %q", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Fatalf("pre-truncated message left orphaned UTF-8 continuation bytes: %q", msg)
+	}
+}
+
+func TestIsDegradedReportRejectsTruncatedStdout(t *testing.T) {
+	res := &engine.RunResult{
+		Stdout:          []byte("Evidence\n\n---\n" + canonicalOutputEnd + "\n"),
+		Stderr:          []byte(strictExitPrefix + "x\n"),
+		StdoutTruncated: true,
+		ExitCode:        strictExitCode,
+	}
+	if isDegradedReport(res, engine.ErrStdoutLimitExceeded, "compact") {
+		t.Fatal("isDegradedReport accepted truncated stdout")
 	}
 }
 

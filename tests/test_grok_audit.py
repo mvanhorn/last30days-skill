@@ -308,6 +308,7 @@ def test_doctor_reports_cached_verdict_without_a_subprocess(monkeypatch, tmp_pat
         raise AssertionError("doctor's grok probe must not spawn a process")
 
     monkeypatch.setattr(sp, "run", no_subprocess)
+    monkeypatch.setattr(grok_audit.subproc, "run_with_timeout", no_subprocess)
     finding = _probe(monkeypatch, binary)
     assert finding.status == status
     assert text in finding.detail
@@ -379,3 +380,67 @@ def test_unwritable_decompression_target_is_unresolved_not_raised(monkeypatch, t
     platform_bin.mkdir(parents=True)
     (platform_bin / "grok.br").write_bytes(b"compressed")
     assert grok_audit.resolve_native(str(launcher)) is None
+
+
+def test_audit_child_registers_with_subproc_cleanup(tmp_path):
+    """Audit subprocesses run via subproc.run_with_timeout so engine SIGTERM
+    (subproc.cleanup_children) terminates an in-flight audit child too."""
+    import threading
+    from lib import subproc
+
+    pid_file = tmp_path / "audit.pid"
+    fake_grok = tmp_path / "grok"
+    fake_grok.write_text(
+        f"#!/bin/sh\n"
+        f"printf '%s' \"$$\" > \"{pid_file}\"\n"
+        f"sleep 30\n",
+        encoding="utf-8",
+    )
+    fake_grok.chmod(0o755)
+
+    worker = threading.Thread(
+        target=lambda: grok_audit._run_child(str(fake_grok), permissive=False, deadline=time.monotonic() + 30),
+        daemon=True,
+    )
+    worker.start()
+
+    try:
+        deadline = time.monotonic() + 5.0
+        child_pid = 0
+        while time.monotonic() < deadline:
+            if pid_file.exists():
+                raw = pid_file.read_text(encoding="utf-8").strip()
+                if raw.isdigit():
+                    child_pid = int(raw)
+                    break
+            time.sleep(0.02)
+        assert child_pid > 0, "fake grok audit child did not start"
+
+        with subproc._child_pids_lock:
+            registered = child_pid in subproc._child_pids
+        assert registered, f"grok audit pid {child_pid} was not registered with subproc"
+
+        subproc.cleanup_children(grace=0.5)
+        worker.join(timeout=5.0)
+        assert not worker.is_alive(), "grok_audit._run_child did not return after cleanup_children"
+
+        kill_deadline = time.monotonic() + 2.0
+        alive = True
+        while time.monotonic() < kill_deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                alive = False
+                break
+            time.sleep(0.02)
+        assert not alive, f"grok audit pid {child_pid} survived subproc.cleanup_children()"
+    finally:
+        with subproc._child_pids_lock:
+            subproc._shutting_down = False
+        if pid_file.exists():
+            raw = pid_file.read_text(encoding="utf-8").strip()
+            if raw.isdigit():
+                try:
+                    os.kill(int(raw), 9)
+                except OSError:
+                    pass

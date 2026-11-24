@@ -125,7 +125,7 @@ def test_grok_charge_without_usd_remains_unknown(journal, tmp_path, monkeypatch)
         assert cmd[:3] == ["/dummy/grok", "-p", "topic"]
         return subprocess.CompletedProcess(cmd, 0, "{}", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", run)
     assert grok_x._invoke("topic", 1) == {"text": "{}"}
     assert len(calls) == 2
     assert usage.read_journal(journal)["cost_unknown"] == 1

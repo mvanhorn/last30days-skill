@@ -106,7 +106,7 @@ def test_by_lane_does_not_and_the_topic_by_default(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, json.dumps(posts), "")
 
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/dummy/grok")
-    monkeypatch.setattr(grok_x.subprocess, "run", run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", run)
     for options in ({}, {"and_topic": True}):
         items, revoked = grok_x.search_handles(
             ["steipete"], "Peter Steinberger", "2026-07-14", "2026-08-13", **options
