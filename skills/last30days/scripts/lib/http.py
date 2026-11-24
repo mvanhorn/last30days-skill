@@ -902,16 +902,17 @@ def _content_length(headers) -> Optional[int]:
 
 def _read_bounded(stream, max_bytes: int, *, truncate: bool = False) -> bytes:
     if not truncate:
-        declared = _content_length(getattr(stream, "headers", None))
-        if declared is not None and declared > max_bytes:
+        declared = (
+            stream.length
+            if isinstance(stream, http.client.HTTPResponse)
+            else _content_length(getattr(stream, "headers", None))
+        )
+        if isinstance(declared, int) and not isinstance(declared, bool) and declared > max_bytes:
             raise ResponseTooLarge(
                 f"Response Content-Length {declared} exceeds limit of {max_bytes} bytes"
             )
     limit = max_bytes if truncate else max_bytes + 1
-    try:
-        data = stream.read(limit)
-    except TypeError:
-        data = stream.read()
+    data = stream.read(limit)
     if data is None:
         return b""
     if truncate:

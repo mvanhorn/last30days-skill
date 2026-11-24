@@ -32,6 +32,25 @@ MAX_META_BYTES = 256 * 1024
 _STREAM_CHUNK_BYTES = 64 * 1024
 _MAX_HEADER_COUNT = 256
 _MAX_HEADER_BYTES = 64 * 1024
+_PRIORITY_RESPONSE_HEADERS = frozenset({
+    "retry-after",
+    "x-l30d-charge-credits",
+    "x-l30d-session",
+    "x-l30d-deadline",
+    "x-rate-limit-retry-after-seconds",
+    "x-ratelimit-reset",
+    "x-ratelimit-remaining",
+    "x-ratelimit-used",
+    "x-rate-limit-remaining",
+    "x-rate-limit-reset",
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "location",
+    "etag",
+    "last-modified",
+    "mcp-session-id",
+})
 
 
 class GetTimeout(TimeoutError):
@@ -82,24 +101,39 @@ def _error_from_record(record):
 def _serialize_headers(raw_headers) -> list[list[str]]:
     if not raw_headers:
         return []
+    priority: list[tuple[str, str]] = []
+    other: list[tuple[str, str]] = []
+    for key, value in raw_headers.items():
+        k = str(key)
+        v = str(value)
+        if k.lower() in _PRIORITY_RESPONSE_HEADERS:
+            priority.append((k, v))
+        else:
+            other.append((k, v))
     pairs: list[list[str]] = []
     used = 0
-    for key, value in raw_headers.items():
+    for k, v in (*priority, *other):
         if len(pairs) >= _MAX_HEADER_COUNT:
             break
-        pair = [str(key), str(value)]
+        pair = [k, v]
         # Measure actual ASCII JSON-encoded length (ensure_ascii=True) so
         # \uXXXX escaping cannot expand metadata past MAX_META_BYTES and
         # stdout stays pure ASCII on Windows cp1252 under python -I.
         entry_len = len(json.dumps(pair)) + 2
         if used + entry_len > _MAX_HEADER_BYTES:
+            if k.lower() in _PRIORITY_RESPONSE_HEADERS:
+                continue
             break
         used += entry_len
         pairs.append(pair)
     return pairs
 
 
-def _declared_content_length(headers) -> int | None:
+def _declared_content_length(response) -> int | None:
+    if isinstance(response, http_client.HTTPResponse):
+        length = response.length
+        return length if isinstance(length, int) and not isinstance(length, bool) and length >= 0 else None
+    headers = getattr(response, "headers", None)
     if not headers or not hasattr(headers, "get"):
         return None
     raw = headers.get("Content-Length")
@@ -126,7 +160,7 @@ def _check_incomplete_read(response, *, truncate: bool) -> None:
 
 def _stream_body_to_file(response, body_path: str, limit: int, *, truncate: bool) -> None:
     if not truncate:
-        declared = _declared_content_length(getattr(response, "headers", None))
+        declared = _declared_content_length(response)
         if declared is not None and declared > limit:
             raise ResponseTooLarge(
                 f"Response Content-Length {declared} exceeds limit of {limit} bytes"
@@ -152,7 +186,7 @@ def _stream_body_to_file(response, body_path: str, limit: int, *, truncate: bool
 
 def _read_body_inline(response, limit: int, *, truncate: bool) -> bytes:
     if not truncate:
-        declared = _declared_content_length(getattr(response, "headers", None))
+        declared = _declared_content_length(response)
         if declared is not None and declared > limit:
             raise ResponseTooLarge(
                 f"Response Content-Length {declared} exceeds limit of {limit} bytes"
@@ -322,8 +356,14 @@ def _main():
         result = {"error": _error_record(exc)}
     encoded = json.dumps(result)
     if len(encoded) > MAX_META_BYTES and "headers" in result:
-        result["headers"] = []
+        result["headers"] = [
+            pair for pair in result["headers"]
+            if pair[0].lower() in _PRIORITY_RESPONSE_HEADERS
+        ]
         encoded = json.dumps(result)
+        if len(encoded) > MAX_META_BYTES:
+            result["headers"] = []
+            encoded = json.dumps(result)
     sys.stdout.write(encoded)
 
 

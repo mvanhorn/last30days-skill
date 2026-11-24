@@ -100,8 +100,10 @@ def test_http_request_rejects_oversized_chunked_stream_without_reading_all():
         _stop_server(server, thread)
 
 
-def test_http_request_handles_zero_arg_read_stub_within_and_over_limit():
-    class ZeroArgResp:
+def test_http_request_passes_bounded_read_size_and_never_falls_back_unbounded():
+    observed_sizes: list[int] = []
+
+    class SizedResp:
         status = 200
         headers = {}
 
@@ -114,15 +116,60 @@ def test_http_request_handles_zero_arg_read_stub_within_and_over_limit():
         def __exit__(self, *_args):
             return False
 
-        def read(self):
-            return self._payload
+        def read(self, size=-1):
+            observed_sizes.append(size)
+            return self._payload[:size] if size >= 0 else self._payload
 
-    with patch("lib.http.urllib.request.urlopen", return_value=ZeroArgResp(b"hello")):
+    with patch("lib.http.urllib.request.urlopen", return_value=SizedResp(b"hello")):
         assert http.request("GET", "https://example.com/ok", raw=True, retries=1, max_bytes=10) == "hello"
+    assert observed_sizes == [11]
 
-    with patch("lib.http.urllib.request.urlopen", return_value=ZeroArgResp(b"0123456789X")):
+    with patch("lib.http.urllib.request.urlopen", return_value=SizedResp(b"0123456789X")):
         with pytest.raises(http.ResponseTooLarge):
             http.request("GET", "https://example.com/big", raw=True, retries=3, max_bytes=10)
+
+    class ZeroArgResp:
+        status = 200
+        headers = {}
+        unbounded_called = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            self.unbounded_called = True
+            return b"should-not-run"
+
+    zero_arg = ZeroArgResp()
+    with patch("lib.http.urllib.request.urlopen", return_value=zero_arg):
+        with pytest.raises(TypeError):
+            http.request("GET", "https://example.com/zero", raw=True, retries=1, max_bytes=10)
+    assert zero_arg.unbounded_called is False
+
+
+def test_http_head_request_allows_large_content_length_header():
+    class HeadHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "999999999")
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+
+    server, thread, base = _start_server(HeadHandler)
+    try:
+        body, headers = http.request(
+            "HEAD", f"{base}/large.bin", raw=True, retries=1, max_bytes=1024, return_headers=True,
+        )
+        assert body == ""
+        assert headers.get("content-length") == "999999999"
+    finally:
+        _stop_server(server, thread)
 
 
 def test_http_request_truncates_oversized_error_body_and_preserves_status():
@@ -446,6 +493,19 @@ def test_bounded_get_serialize_headers_caps_control_char_expansion():
     assert len(encoded) < bounded_get.MAX_META_BYTES
 
 
+def test_bounded_get_serialize_headers_preserves_priority_headers_after_junk():
+    raw_headers = {f"X-Junk-{i}": "J" * 1024 for i in range(300)}
+    raw_headers["Retry-After"] = "42"
+    raw_headers["X-L30D-Charge-Credits"] = "1.5"
+    raw_headers["X-RateLimit-Reset"] = "30"
+    serialized = dict(bounded_get._serialize_headers(raw_headers))
+    assert serialized.get("Retry-After") == "42"
+    assert serialized.get("X-L30D-Charge-Credits") == "1.5"
+    assert serialized.get("X-RateLimit-Reset") == "30"
+    assert len(serialized) <= bounded_get._MAX_HEADER_COUNT
+    assert len(json.dumps(list(serialized.items()))) <= bounded_get._MAX_HEADER_BYTES + 16
+
+
 def test_bounded_get_main_writes_pure_ascii_json_safe_for_windows_cp1252(monkeypatch):
     class NonCp1252Response:
         status = 200
@@ -754,6 +814,24 @@ def test_robots_parser_enforces_rule_sitemap_and_line_length_caps():
     assert len(rules.paths) <= robots.MAX_PATHS
     assert len(rules.sitemaps) <= robots.MAX_SITEMAPS
     assert all(len(pat) <= robots.MAX_LINE_LENGTH for _, pat in rules.rules)
+
+
+def test_robots_parser_discards_incomplete_trailing_line_cut_by_max_chars(monkeypatch):
+    # Cut lands right in the middle of "Disallow: /private/secret" -> ".../pri".
+    # The incomplete line must be discarded rather than blocking "/pricing".
+    prefix = "User-agent: *\nDisallow: /admin\n"
+    cut_line = "Disallow: /private/secret\n"
+    monkeypatch.setattr(robots, "MAX_ROBOTS_CHARS", len(prefix) + len("Disallow: /pri"))
+    rules = robots.Rules(prefix + cut_line)
+    assert rules.allows("/admin/panel") is False
+    assert rules.allows("/pricing") is True
+    assert all(pat != "/pri" for _, pat in rules.rules)
+
+    # A complete line ending right at MAX_ROBOTS_CHARS (next char is '\n') is kept.
+    monkeypatch.setattr(robots, "MAX_ROBOTS_CHARS", len(prefix) + len("Disallow: /private/secret"))
+    exact_rules = robots.Rules(prefix + cut_line)
+    assert exact_rules.allows("/private/secret") is False
+    assert exact_rules.allows("/pricing") is True
 
 
 # ---------------------------------------------------------------------------

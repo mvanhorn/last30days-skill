@@ -50,7 +50,20 @@ class Rules:
         agents: list[str] = []
         in_rules = False
         applies = False
-        bounded = (text or "")[:MAX_ROBOTS_CHARS]
+        raw_text = text or ""
+        if len(raw_text) > MAX_ROBOTS_CHARS:
+            bounded = raw_text[:MAX_ROBOTS_CHARS]
+            if (
+                bounded
+                and bounded[-1] not in ("\n", "\r")
+                and raw_text[MAX_ROBOTS_CHARS] not in ("\n", "\r")
+            ):
+                # Discard a trailing line cut mid-rule by MAX_ROBOTS_CHARS so a
+                # shortened Allow/Disallow prefix never takes effect.
+                last_nl = max(bounded.rfind("\n"), bounded.rfind("\r"))
+                bounded = bounded[:last_nl] if last_nl != -1 else ""
+        else:
+            bounded = raw_text
         for line_count, raw in enumerate(bounded.splitlines()):
             if line_count >= MAX_LINES:
                 break
