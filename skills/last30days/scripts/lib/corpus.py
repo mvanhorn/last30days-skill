@@ -9,8 +9,10 @@ objects for the shared relevance/fusion pipeline.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+import selectors
 import signal
 import subprocess
 import threading
@@ -21,7 +23,7 @@ from pathlib import Path
 from shutil import which
 from typing import Any, Iterable
 
-from . import entity_extract, log, relevance, schema
+from . import entity_extract, log, relevance, schema, subproc
 
 SOURCE = "corpus"
 SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf"}
@@ -310,6 +312,56 @@ def _terminate_pdf_proc(
         pass
 
 
+def _stdout_selectable_fd(stream: Any) -> int | None:
+    if os.name == "nt" or stream is None:
+        return None
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, io.UnsupportedOperation, TypeError, ValueError):
+        return None
+    if not isinstance(fd, int) or fd < 0:
+        return None
+    try:
+        os.set_blocking(fd, False)
+    except (AttributeError, OSError):
+        return None
+    return fd
+
+
+def _read_stdout_selector(
+    fd: int,
+    *,
+    max_bytes: int,
+    deadline: float,
+) -> tuple[list[bytes], bool, bool]:
+    """Drain up to ``max_bytes`` from a non-blocking POSIX pipe fd before ``deadline``.
+
+    Returns ``(chunks, truncated, timed_out)`` with no background thread, so a
+    detached grandchild holding the write end open can never leak a blocked
+    reader thread or pipe fd after timeout.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while total < max_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return chunks, False, True
+            events = selector.select(timeout=remaining)
+            if not events:
+                return chunks, False, True
+            try:
+                chunk = os.read(fd, min(_PDF_READ_CHUNK_BYTES, max_bytes - total))
+            except BlockingIOError:
+                continue
+            if not chunk:
+                return chunks, False, False
+            chunks.append(chunk)
+            total += len(chunk)
+    return chunks, True, False
+
+
 def _extract_pdf_text(path: Path, pdftotext: str) -> str:
     cmd = [pdftotext, "-enc", "UTF-8", "--", str(path), "-"]
     max_bytes = MAX_TEXT_CHARS * 4
@@ -326,8 +378,10 @@ def _extract_pdf_text(path: Path, pdftotext: str) -> str:
     chunks: list[bytes] = []
     truncated = False
     read_error: list[BaseException] = []
+    reader: threading.Thread | None = None
     reader_started = False
     kill_wait_attempted = False
+    registered = False
 
     def _force_kill_and_reap() -> None:
         nonlocal kill_wait_attempted
@@ -340,40 +394,59 @@ def _extract_pdf_text(path: Path, pdftotext: str) -> str:
         except subprocess.TimeoutExpired:
             pass
 
-    def _drain_stdout() -> None:
-        nonlocal truncated
-        assert proc.stdout is not None
-        total = 0
-        try:
-            while total < max_bytes:
-                chunk = proc.stdout.read(min(_PDF_READ_CHUNK_BYTES, max_bytes - total))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-            if total >= max_bytes:
-                truncated = True
-        except BaseException as exc:
-            read_error.append(exc)
-        finally:
-            try:
-                proc.stdout.close()
-            except OSError:
-                pass
-
-    reader = threading.Thread(target=_drain_stdout, daemon=True)
     try:
-        reader.start()
-        reader_started = True
+        subproc.register_child_pid(proc.pid)
+        registered = True
 
-        remaining = deadline - time.monotonic()
-        reader.join(timeout=max(0.0, remaining))
-        if reader.is_alive():
-            _force_kill_and_reap()
-            reader.join(timeout=0.5)
-            raise subprocess.TimeoutExpired(cmd, timeout)
+        fd = _stdout_selectable_fd(proc.stdout)
+        if fd is not None:
+            chunks, truncated, timed_out = _read_stdout_selector(
+                fd,
+                max_bytes=max_bytes,
+                deadline=deadline,
+            )
+            if timed_out:
+                _force_kill_and_reap()
+                raise subprocess.TimeoutExpired(cmd, timeout)
+        else:
+            def _drain_stdout() -> None:
+                nonlocal truncated
+                assert proc.stdout is not None
+                total = 0
+                try:
+                    while total < max_bytes:
+                        chunk = proc.stdout.read(min(_PDF_READ_CHUNK_BYTES, max_bytes - total))
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        total += len(chunk)
+                    if total >= max_bytes:
+                        truncated = True
+                except BaseException as exc:
+                    read_error.append(exc)
+                finally:
+                    try:
+                        proc.stdout.close()
+                    except OSError:
+                        pass
+
+            reader = threading.Thread(target=_drain_stdout, daemon=True)
+            reader.start()
+            reader_started = True
+
+            remaining = deadline - time.monotonic()
+            reader.join(timeout=max(0.0, remaining))
+            if reader.is_alive():
+                _force_kill_and_reap()
+                reader.join(timeout=0.5)
+                raise subprocess.TimeoutExpired(cmd, timeout)
 
         if truncated:
+            if fd is not None and proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except OSError:
+                    pass
             if proc.poll() is None:
                 _terminate_pdf_proc(proc, own_group=own_group, force=False)
                 try:
@@ -403,9 +476,14 @@ def _extract_pdf_text(path: Path, pdftotext: str) -> str:
         return b"".join(chunks).decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
     finally:
         _force_kill_and_reap()
-        # Only close proc.stdout when the reader thread is not still blocked in
-        # BufferedReader.read(); otherwise close() deadlocks on its internal lock.
-        if proc.stdout is not None and (not reader_started or not reader.is_alive()):
+        if registered:
+            subproc.unregister_child_pid(proc.pid)
+        # On the selector path no reader thread exists; on the Windows/mock
+        # fallback path, close only when no reader thread is still blocked in
+        # BufferedReader.read() to avoid deadlocking on its internal lock.
+        if proc.stdout is not None and (
+            reader is None or not reader_started or not reader.is_alive()
+        ):
             try:
                 proc.stdout.close()
             except OSError:

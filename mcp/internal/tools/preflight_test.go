@@ -199,3 +199,121 @@ func TestXAPIAutoOptInDoesNotOverrideDotenvPin(t *testing.T) {
 		t.Errorf("preflight available_sources = %#v; .env LAST30DAYS_X_BACKEND=bird pin was overridden by MCP xapi opt-in", payload.Network.AvailableSources)
 	}
 }
+
+func TestXAPIAutoOptInHandlesAutoBackendAndMissingNodeWithCookies(t *testing.T) {
+	cacheDir, err := filepath.Abs("../../../skills/last30days/scripts")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("LAST30DAYS_X_BACKEND=auto still enables xapi", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("LAST30DAYS_CONFIG_DIR", filepath.Join(home, "config"))
+		t.Setenv("LAST30DAYS_SKIP_KEYCHAIN", "1")
+		t.Setenv(BrowserCookiesEnvOverride, "")
+		t.Setenv("X_BEARER_TOKEN", "dummy-mcp-bearer-token")
+		t.Setenv("LAST30DAYS_X_BACKEND", "auto")
+		t.Setenv("LAST30DAYS_X_API_OPT_IN", "")
+		t.Setenv("XAI_API_KEY", "")
+		t.Setenv("XQUIK_API_KEY", "")
+		t.Setenv("AUTH_TOKEN", "")
+		t.Setenv("CT0", "")
+
+		res, runErr := engine.Run(context.Background(), engine.RunOptions{
+			CacheDir: cacheDir,
+			Args:     preflightRunArgs("json", ""),
+			ExtraEnv: researchExtraEnv(),
+		})
+		if runErr != nil {
+			t.Fatalf("preflight run failed: %v\nstderr:\n%s", runErr, string(res.Stderr))
+		}
+		var payload struct {
+			Network struct {
+				AvailableSources []string `json:"available_sources"`
+			} `json:"network"`
+		}
+		if err := json.Unmarshal(res.Stdout, &payload); err != nil {
+			t.Fatalf("parse preflight json: %v\nstdout:\n%s", err, string(res.Stdout))
+		}
+		if !slices.Contains(payload.Network.AvailableSources, "x") {
+			t.Errorf("preflight available_sources = %#v; want 'x' enabled when LAST30DAYS_X_BACKEND=auto", payload.Network.AvailableSources)
+		}
+	})
+
+	t.Run("AUTH_TOKEN+CT0 without node on PATH falls back to xapi", func(t *testing.T) {
+		home := t.TempDir()
+		emptyBin := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("LAST30DAYS_CONFIG_DIR", filepath.Join(home, "config"))
+		t.Setenv("LAST30DAYS_SKIP_KEYCHAIN", "1")
+		t.Setenv(BrowserCookiesEnvOverride, "")
+		t.Setenv("X_BEARER_TOKEN", "dummy-mcp-bearer-token")
+		t.Setenv("LAST30DAYS_X_BACKEND", "")
+		t.Setenv("LAST30DAYS_X_API_OPT_IN", "")
+		t.Setenv("XAI_API_KEY", "")
+		t.Setenv("XQUIK_API_KEY", "")
+		t.Setenv("AUTH_TOKEN", "dummy-auth")
+		t.Setenv("CT0", "dummy-ct0")
+
+		// Override PATH only for the child Python process so engine.Run resolves
+		// Python 3.12+ normally while shutil.which("node") inside Python is None.
+		res, runErr := engine.Run(context.Background(), engine.RunOptions{
+			CacheDir: cacheDir,
+			Args:     preflightRunArgs("json", ""),
+			ExtraEnv: append(researchExtraEnv(), "PATH="+emptyBin),
+		})
+		if runErr != nil {
+			t.Fatalf("preflight run failed: %v\nstderr:\n%s", runErr, string(res.Stderr))
+		}
+		var payload struct {
+			Network struct {
+				AvailableSources []string `json:"available_sources"`
+			} `json:"network"`
+		}
+		if err := json.Unmarshal(res.Stdout, &payload); err != nil {
+			t.Fatalf("parse preflight json: %v\nstdout:\n%s", err, string(res.Stdout))
+		}
+		if !slices.Contains(payload.Network.AvailableSources, "x") {
+			t.Errorf("preflight available_sources = %#v; want 'x' via xapi fallback when cookies lack node", payload.Network.AvailableSources)
+		}
+	})
+
+	t.Run("explicit process-env LAST30DAYS_X_BACKEND=bird pin still suppresses xapi", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("LAST30DAYS_CONFIG_DIR", filepath.Join(home, "config"))
+		t.Setenv("LAST30DAYS_SKIP_KEYCHAIN", "1")
+		t.Setenv(BrowserCookiesEnvOverride, "")
+		t.Setenv("X_BEARER_TOKEN", "dummy-mcp-bearer-token")
+		t.Setenv("LAST30DAYS_X_BACKEND", "bird")
+		t.Setenv("LAST30DAYS_X_API_OPT_IN", "")
+		t.Setenv("XAI_API_KEY", "")
+		t.Setenv("XQUIK_API_KEY", "")
+		t.Setenv("AUTH_TOKEN", "")
+		t.Setenv("CT0", "")
+
+		res, runErr := engine.Run(context.Background(), engine.RunOptions{
+			CacheDir: cacheDir,
+			Args:     preflightRunArgs("json", ""),
+			ExtraEnv: researchExtraEnv(),
+		})
+		if runErr != nil {
+			t.Fatalf("preflight run failed: %v\nstderr:\n%s", runErr, string(res.Stderr))
+		}
+		var payload struct {
+			Network struct {
+				AvailableSources []string `json:"available_sources"`
+			} `json:"network"`
+		}
+		if err := json.Unmarshal(res.Stdout, &payload); err != nil {
+			t.Fatalf("parse preflight json: %v\nstdout:\n%s", err, string(res.Stdout))
+		}
+		if slices.Contains(payload.Network.AvailableSources, "x") {
+			t.Errorf("preflight available_sources = %#v; explicit LAST30DAYS_X_BACKEND=bird pin was overridden", payload.Network.AvailableSources)
+		}
+	})
+}

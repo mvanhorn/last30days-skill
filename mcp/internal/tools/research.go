@@ -254,20 +254,17 @@ func researchExtraEnv() []string {
 	return extra
 }
 
-// shouldAutoEnableXAPI opts into the xapi backend when X_BEARER_TOKEN is
-// explicitly configured in the MCP host environment without an explicit
-// LAST30DAYS_X_BACKEND override or a higher-priority X credential.
+// shouldAutoEnableXAPI opts into xapi as the tail fallback of Python's default
+// X chain when X_BEARER_TOKEN is explicitly provided in the MCP host
+// environment and LAST30DAYS_X_API_OPT_IN is not already set explicitly.
+// Python still honors explicit LAST30DAYS_X_BACKEND pins (while treating "auto"
+// as unpinned) and prefers usable higher-priority backends (bird when node and
+// cookies work, xai, xurl, xquik) ahead of xapi.
 func shouldAutoEnableXAPI() bool {
 	if !hasExplicitEnvValue("X_BEARER_TOKEN") {
 		return false
 	}
-	if hasExplicitEnvValue("LAST30DAYS_X_BACKEND") {
-		return false
-	}
-	if hasExplicitEnvValue("XAI_API_KEY") || hasExplicitEnvValue("XQUIK_API_KEY") {
-		return false
-	}
-	if hasExplicitEnvValue("AUTH_TOKEN") && hasExplicitEnvValue("CT0") {
+	if hasExplicitEnvValue("LAST30DAYS_X_API_OPT_IN") {
 		return false
 	}
 	return true

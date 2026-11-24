@@ -160,7 +160,7 @@
     "last30days_x_backend": {
       "type": "string",
       "title": "LAST30DAYS_X_BACKEND",
-      "description": "Optional X search backend override (xapi, xai, bird, xurl, xquik, grok). Leave blank for automatic selection (uses xapi when X_BEARER_TOKEN is configured without a higher-priority X backend such as XAI_API_KEY, XQUIK_API_KEY, or AUTH_TOKEN+CT0).",
+      "description": "Optional X search backend override (xapi, xai, bird, xurl, xquik, grok). Leave blank or set to auto for automatic selection (uses xapi when X_BEARER_TOKEN is configured without a usable higher-priority X backend such as XAI_API_KEY, XQUIK_API_KEY, or AUTH_TOKEN+CT0).",
       "sensitive": false,
       "required": false
     }

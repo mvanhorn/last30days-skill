@@ -327,6 +327,7 @@ func TestIsDegradedReportRejectsTruncatedStdout(t *testing.T) {
 
 func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
 	t.Setenv("X_BEARER_TOKEN", "")
+	t.Setenv("LAST30DAYS_X_API_OPT_IN", "")
 	t.Setenv("LAST30DAYS_X_BACKEND", "")
 	t.Setenv("XAI_API_KEY", "")
 	t.Setenv("XQUIK_API_KEY", "")
@@ -342,13 +343,21 @@ func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
 
 func TestResearchExtraEnvXAPIAutoOptIn(t *testing.T) {
 	cases := []struct {
-		name      string
-		env       map[string]string
-		wantXAPI  bool
+		name     string
+		env      map[string]string
+		wantXAPI bool
 	}{
 		{
-			name:     "bearer set without backend or higher-priority key opts into xapi",
+			name:     "bearer set opts into xapi fallback",
 			env:      map[string]string{"X_BEARER_TOKEN": "dummy-bearer"},
+			wantXAPI: true,
+		},
+		{
+			name: "LAST30DAYS_X_BACKEND=auto still passes xapi opt-in",
+			env: map[string]string{
+				"X_BEARER_TOKEN":       "dummy-bearer",
+				"LAST30DAYS_X_BACKEND": "auto",
+			},
 			wantXAPI: true,
 		},
 		{
@@ -366,44 +375,44 @@ func TestResearchExtraEnvXAPIAutoOptIn(t *testing.T) {
 			wantXAPI: false,
 		},
 		{
-			name: "explicit backend override is preserved",
+			name: "explicit LAST30DAYS_X_API_OPT_IN=0 disables auto opt-in",
 			env: map[string]string{
-				"X_BEARER_TOKEN":       "dummy-bearer",
-				"LAST30DAYS_X_BACKEND": "bird",
+				"X_BEARER_TOKEN":          "dummy-bearer",
+				"LAST30DAYS_X_API_OPT_IN": "0",
 			},
 			wantXAPI: false,
 		},
 		{
-			name: "higher-priority xai key suppresses xapi auto opt-in",
-			env: map[string]string{
-				"X_BEARER_TOKEN": "dummy-bearer",
-				"XAI_API_KEY":    "dummy-xai",
-			},
-			wantXAPI: false,
-		},
-		{
-			name: "higher-priority xquik key suppresses xapi auto opt-in",
-			env: map[string]string{
-				"X_BEARER_TOKEN": "dummy-bearer",
-				"XQUIK_API_KEY":  "dummy-xquik",
-			},
-			wantXAPI: false,
-		},
-		{
-			name: "static bird cookies suppress xapi auto opt-in",
+			name: "cookies present still pass xapi opt-in so Python falls back if node is absent",
 			env: map[string]string{
 				"X_BEARER_TOKEN": "dummy-bearer",
 				"AUTH_TOKEN":     "dummy-auth",
 				"CT0":            "dummy-ct0",
 			},
-			wantXAPI: false,
+			wantXAPI: true,
+		},
+		{
+			name: "explicit backend pin still delegates pin enforcement to Python",
+			env: map[string]string{
+				"X_BEARER_TOKEN":       "dummy-bearer",
+				"LAST30DAYS_X_BACKEND": "bird",
+			},
+			wantXAPI: true,
+		},
+		{
+			name: "higher-priority xai key still delegates precedence to Python",
+			env: map[string]string{
+				"X_BEARER_TOKEN": "dummy-bearer",
+				"XAI_API_KEY":    "dummy-xai",
+			},
+			wantXAPI: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, key := range []string{
-				"X_BEARER_TOKEN", "LAST30DAYS_X_BACKEND",
+				"X_BEARER_TOKEN", "LAST30DAYS_X_API_OPT_IN", "LAST30DAYS_X_BACKEND",
 				"XAI_API_KEY", "XQUIK_API_KEY", "AUTH_TOKEN", "CT0",
 			} {
 				t.Setenv(key, "")

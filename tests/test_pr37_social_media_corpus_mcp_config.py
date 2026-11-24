@@ -29,7 +29,7 @@ from unittest import mock
 
 import pytest
 
-from lib import backends, bluesky, corpus, doctor, env, health, http, linkedin, pipeline, youtube_yt
+from lib import backends, bluesky, corpus, doctor, env, health, http, linkedin, pipeline, subproc, youtube_yt
 from lib.subproc import SubprocResult
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -251,6 +251,91 @@ class TestHigh180BlueskySessionConcurrency:
 
         assert create_calls == 1
         assert all("error" not in r and len(r["posts"]) == 1 for r in results)
+
+    def test_concurrent_failed_create_session_shares_error_and_allows_later_retry(self) -> None:
+        create_calls = 0
+        create_lock = threading.Lock()
+        start_barrier = threading.Barrier(6)
+        fail_first = True
+
+        def fake_request(method, url, **kwargs):
+            nonlocal create_calls
+            if url == bluesky.BSKY_SESSION_URL:
+                with create_lock:
+                    create_calls += 1
+                    should_fail = fail_first
+                if should_fail:
+                    time.sleep(0.08)
+                    raise http.HTTPError("HTTP 503: Service Unavailable", 503, "")
+                return {"accessJwt": "tok-recovered", "refreshJwt": "ref-recovered"}
+            assert kwargs["headers"] == {"Authorization": "Bearer tok-recovered"}
+            return {"posts": [{"uri": "at://did/app.bsky.feed.post/ok", "author": {"handle": "u"}, "record": {"text": "ok"}}]}
+
+        cfg = {"BSKY_HANDLE": "alice.bsky.social", "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop"}
+
+        def worker(idx: int):
+            start_barrier.wait(timeout=5)
+            return bluesky.search_bluesky(f"topic {idx}", "2026-08-01", "2026-09-01", config=cfg)
+
+        with mock.patch.object(bluesky.http, "request", side_effect=fake_request):
+            start = time.monotonic()
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                results = list(pool.map(worker, range(6)))
+            elapsed = time.monotonic() - start
+
+            assert create_calls == 1
+            assert elapsed < 1.0
+            assert all(r["posts"] == [] and "503" in r["error"] for r in results)
+            assert bluesky._inflight_logins == {}
+
+            # A subsequent search after the in-flight attempt completes tries again.
+            fail_first = False
+            later = bluesky.search_bluesky("later", "2026-08-01", "2026-09-01", config=cfg)
+
+        assert create_calls == 2
+        assert "error" not in later
+        assert len(later["posts"]) == 1
+
+    def test_singleflight_clears_slot_and_wakes_waiters_on_leader_base_exception(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def aborting_request(method, url, **kwargs):
+            entered.set()
+            release.wait(timeout=5)
+            raise KeyboardInterrupt("simulated abort")
+
+        with mock.patch.object(bluesky.http, "request", side_effect=aborting_request):
+            leader_exc: list[BaseException] = []
+            waiter_result: list[tuple] = []
+
+            def run_leader() -> None:
+                try:
+                    bluesky._create_session("alice.bsky.social", "abcd-efgh-ijkl-mnop")
+                except BaseException as exc:
+                    leader_exc.append(exc)
+
+            def run_waiter() -> None:
+                entered.wait(timeout=5)
+                waiter_result.append(
+                    bluesky._create_session("alice.bsky.social", "abcd-efgh-ijkl-mnop")
+                )
+
+            t1 = threading.Thread(target=run_leader)
+            t2 = threading.Thread(target=run_waiter)
+            t1.start()
+            t2.start()
+            entered.wait(timeout=5)
+            time.sleep(0.05)
+            release.set()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert not t1.is_alive() and not t2.is_alive()
+        assert len(leader_exc) == 1 and isinstance(leader_exc[0], KeyboardInterrupt)
+        assert waiter_result[0][0] is None
+        assert "KeyboardInterrupt" in (waiter_result[0][1] or "")
+        assert bluesky._inflight_logins == {}
 
     def test_concurrent_401_single_use_refresh_rotation_reuses_fresh_token(self) -> None:
         cfg = {"BSKY_HANDLE": "alice.bsky.social", "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop"}
@@ -631,12 +716,24 @@ time.sleep(30)
         monkeypatch.setattr(corpus, "PDF_TIMEOUT_SECONDS", 0.2)
 
         descendant_pids: list[int] = []
+        spawned: list[subprocess.Popen] = []
+        real_popen = subprocess.Popen
+
+        def tracking_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(corpus.subprocess, "Popen", tracking_popen)
+        threads_before = threading.active_count()
         try:
             start = time.monotonic()
             with pytest.raises(subprocess.TimeoutExpired):
                 corpus._extract_pdf_text(pdf, str(fake_bin))
             elapsed = time.monotonic() - start
-            assert elapsed < 3.0, f"_extract_pdf_text hung for {elapsed:.2f}s"
+            assert elapsed < 2.0, f"_extract_pdf_text hung for {elapsed:.2f}s"
+            assert spawned and spawned[-1].stdout is not None and spawned[-1].stdout.closed
+            assert threading.active_count() == threads_before
             if pid_file.exists():
                 descendant_pids.append(int(pid_file.read_text(encoding="utf-8").strip()))
                 pid_file.unlink()
@@ -651,9 +748,11 @@ time.sleep(30)
                 cache_dir=tmp_path / "cache",
             )
             elapsed = time.monotonic() - start
-            assert elapsed < 3.0, f"corpus.search hung for {elapsed:.2f}s"
+            assert elapsed < 2.0, f"corpus.search hung for {elapsed:.2f}s"
             assert [item.title for item in result.items] == ["good"]
             assert any("TimeoutExpired" in note for note in result.notes)
+            assert spawned[-1].stdout is not None and spawned[-1].stdout.closed
+            assert threading.active_count() == threads_before
             if pid_file.exists():
                 descendant_pids.append(int(pid_file.read_text(encoding="utf-8").strip()))
         finally:
@@ -662,6 +761,106 @@ time.sleep(30)
                     os.kill(pid, signal.SIGKILL)
                 except OSError:
                     pass
+
+    def test_pdftotext_registers_with_subproc_and_cleanup_children_kills_it(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        started_flag = tmp_path / "started.txt"
+        fake_bin = _write_fake_pdftotext(
+            tmp_path,
+            f"""
+import pathlib, time
+pathlib.Path({str(started_flag)!r}).write_text("ready", encoding="utf-8")
+time.sleep(30)
+""",
+        )
+        pdf = tmp_path / "cancel-me.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        registered: list[int] = []
+        unregistered: list[int] = []
+        orig_reg = subproc.register_child_pid
+        orig_unreg = subproc.unregister_child_pid
+
+        def spy_reg(pid: int) -> None:
+            registered.append(pid)
+            orig_reg(pid)
+
+        def spy_unreg(pid: int) -> None:
+            unregistered.append(pid)
+            orig_unreg(pid)
+
+        monkeypatch.setattr(subproc, "register_child_pid", spy_reg)
+        monkeypatch.setattr(subproc, "unregister_child_pid", spy_unreg)
+        monkeypatch.setattr(corpus, "PDF_TIMEOUT_SECONDS", 15.0)
+        monkeypatch.setattr(subproc, "_shutting_down", False)
+
+        outcome: list[BaseException] = []
+
+        def run_extract() -> None:
+            try:
+                corpus._extract_pdf_text(pdf, str(fake_bin))
+            except BaseException as exc:
+                outcome.append(exc)
+
+        worker = threading.Thread(target=run_extract)
+        worker.start()
+        try:
+            wait_until = time.monotonic() + 5.0
+            while not started_flag.exists() and time.monotonic() < wait_until:
+                time.sleep(0.02)
+            assert started_flag.exists()
+            assert len(registered) == 1
+            assert registered[0] in subproc._child_pids
+
+            start = time.monotonic()
+            subproc.cleanup_children(grace=0.3)
+            worker.join(timeout=5.0)
+            elapsed = time.monotonic() - start
+        finally:
+            subproc._shutting_down = False
+
+        assert not worker.is_alive()
+        assert elapsed < 3.0
+        assert len(outcome) == 1 and isinstance(outcome[0], subprocess.CalledProcessError)
+        assert unregistered == registered
+        assert registered[0] not in subproc._child_pids
+
+    def test_pdftotext_fallback_supports_mock_popen_without_fileno(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        pdf = tmp_path / "mocked.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        class _FakeProc:
+            def __init__(self, payload: bytes, returncode: int = 0) -> None:
+                self.pid = 999991
+                self.stdout = io.BytesIO(payload)
+                self.returncode: int | None = None
+                self._final_rc = returncode
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def wait(self, timeout=None) -> int:
+                self.returncode = self._final_rc
+                return self._final_rc
+
+            def terminate(self) -> None:
+                self.returncode = -15
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        fake_proc = _FakeProc(b"MCP servers mocked stream \xff\xfe ok")
+        monkeypatch.setattr(corpus.subprocess, "Popen", lambda *a, **k: fake_proc)
+        monkeypatch.setattr(subproc, "register_child_pid", lambda _pid: None)
+        monkeypatch.setattr(subproc, "unregister_child_pid", lambda _pid: None)
+
+        extracted = corpus._extract_pdf_text(pdf, "/usr/bin/pdftotext")
+        assert "MCP servers mocked stream" in extracted
+        assert "\ufffd" in extracted
+        assert fake_proc.stdout.closed
 
     def test_pdftotext_cleans_up_child_when_reader_thread_start_fails(
         self, tmp_path: Path, monkeypatch
@@ -679,6 +878,7 @@ time.sleep(30)
             return proc
 
         monkeypatch.setattr(corpus.subprocess, "Popen", tracking_popen)
+        monkeypatch.setattr(corpus, "_stdout_selectable_fd", lambda _stream: None)
         monkeypatch.setattr(
             corpus.threading.Thread,
             "start",
@@ -826,3 +1026,41 @@ class TestHigh221And222McpManifestConfig:
             assert res_pin.active_backend is None
             assert doctor._x_record(cfg_pin).get("active_backend") is None
             assert pipeline.diagnose(cfg_pin, safe=True)["x_backend"] is None
+
+            # LAST30DAYS_X_BACKEND=auto is treated as unpinned -> xapi activates cleanly.
+            cfg_auto = {**cfg_bearer, "LAST30DAYS_X_BACKEND": "auto"}
+            assert env.x_backend_chain(cfg_auto, local_only=True) == ["xapi"]
+            assert env.get_x_source_status(cfg_auto)["source"] == "xapi"
+            assert backends.resolve("x", cfg_auto).active_backend == "xapi"
+            assert doctor._x_record(cfg_auto)["active_backend"] == "xapi"
+            assert pipeline.diagnose(cfg_auto, safe=True)["x_backend"] == "xapi"
+
+            # AUTH_TOKEN+CT0 present without node (bird unavailable) falls back to xapi.
+            cfg_cookies_no_node = {
+                **cfg_bearer,
+                "AUTH_TOKEN": "dummy-auth",
+                "CT0": "dummy-ct0",
+            }
+            assert env.x_backend_chain(cfg_cookies_no_node, local_only=True) == ["xapi"]
+            assert env.get_x_source_status(cfg_cookies_no_node)["source"] == "xapi"
+            assert backends.resolve("x", cfg_cookies_no_node).active_backend == "xapi"
+            assert doctor._x_record(cfg_cookies_no_node)["active_backend"] == "xapi"
+            assert pipeline.diagnose(cfg_cookies_no_node, safe=True)["x_backend"] == "xapi"
+
+    def test_high222_report_cache_key_changes_when_x_api_opt_in_toggles(self, monkeypatch) -> None:
+        import last30days as cli
+
+        args = cli.build_parser().parse_args(["MCP servers", "--emit=html"])
+        cfg = {"X_BEARER_TOKEN": "dummy-bearer"}
+
+        monkeypatch.delenv(env.X_API_OPT_IN_VAR, raising=False)
+        opts_off = cli._cache_research_options(args, cfg)
+
+        monkeypatch.setenv(env.X_API_OPT_IN_VAR, "1")
+        opts_on_1 = cli._cache_research_options(args, cfg)
+
+        monkeypatch.setenv(env.X_API_OPT_IN_VAR, "true")
+        opts_on_true = cli._cache_research_options(args, cfg)
+
+        assert opts_off["config_sha256"] != opts_on_1["config_sha256"]
+        assert opts_on_1["config_sha256"] == opts_on_true["config_sha256"]
