@@ -1733,6 +1733,178 @@ def test_greptile_r9_yes_other_child_market_verifies_with_same_yes_rule(monkeypa
     assert verdicts[1].current_value == 0.35
 
 
+def test_greptile_r10_closed_unsettled_market_does_not_mark_old_odds_current(monkeypatch):
+    """Greptile R10 P1 (4682403571):
+    A closed child market that stopped trading before settling still carries its
+    pre-close odds (e.g. 60%/40%). Neither the empty-display fallback nor the
+    market_values map may mark a saved 60% claim current without 0/1 settlement
+    proof; a settled closed sibling (0%/100%) still verifies."""
+    from lib import normalize
+
+    initial_event = {
+        "id": "718",
+        "slug": "closed-unsettled-vs-settled",
+        "title": "Three-way race?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {**_binary_submarket("Will Alice win?", "Alice", 0.60), "id": "m-alice"},
+            {**_binary_submarket("Will Bob win?", "Bob", 0.25), "id": "m-bob"},
+            {**_binary_submarket("Will Carol win?", "Carol", 0.15), "id": "m-carol"},
+        ],
+    }
+    [parsed] = polymarket.parse_polymarket_response({"events": [initial_event]})
+    assert parsed["outcome_prices"] == [("Alice", 0.60), ("Bob", 0.25), ("Carol", 0.15)]
+    assert parsed["outcome_market_ids"] == ["m-alice", "m-bob", "m-carol"]
+    [saved_item] = normalize.normalize_source_items(
+        "polymarket", [parsed], "2026-10-25", "2026-11-24",
+    )
+
+    # Scenario A: No display rows (Carol open w/ zero liquidity), Alice closed
+    # before settling at old 60%/40% odds, Bob settled at 0%/100%.
+    mixed_closed_event = {
+        **initial_event,
+        "markets": [
+            {
+                **_binary_submarket("Will Alice win?", "Alice", 0.60, closed=True),
+                "id": "m-alice",
+                "liquidity": "0",
+            },
+            {
+                **_binary_submarket("Will Bob win?", "Bob", 0.0, closed=True),
+                "id": "m-bob",
+                "liquidity": "0",
+            },
+            {
+                **_binary_submarket("Will Carol win?", "Carol", 0.15),
+                "id": "m-carol",
+                "liquidity": "0",
+            },
+        ],
+    }
+    calls: list[int] = []
+    monkeypatch.setattr(
+        polymarket.http, "request", lambda *_a, **_k: calls.append(1) or mixed_closed_event,
+    )
+    with pytest.raises(polymarket.DatumNotFound) as exc_info:
+        polymarket.refetch_datum(saved_item, "Alice")
+    assert exc_info.value.snapshot is not None
+    assert exc_info.value.snapshot["market_values"] == {"m-bob": 0.0}
+    assert polymarket.refetch_datum(saved_item, "Bob")["value"] == 0.0
+
+    calls.clear()
+    verdicts = freshness.verify_report(
+        _report(saved_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == [
+        "unsupported",  # Alice: closed but unsettled 60%/40% must NOT pass as current
+        "stale",        # Bob: settled 0%/100% verifies 25% -> 0%
+        "unsupported",  # Carol: open with zero liquidity
+        "unsupported",  # end_date
+    ]
+    assert verdicts[1].current_value == 0.0
+
+    # Scenario B: Closed market with 0/1 prices but umaResolutionStatus='proposed'
+    # (not yet finalized) is also rejected, while 'resolved' is accepted.
+    proposed_vs_resolved_event = {
+        **initial_event,
+        "markets": [
+            {
+                **_binary_submarket("Will Alice win?", "Alice", 1.0, closed=True),
+                "id": "m-alice",
+                "liquidity": "0",
+                "umaResolutionStatus": "proposed",
+            },
+            {
+                **_binary_submarket("Will Bob win?", "Bob", 0.0, closed=True),
+                "id": "m-bob",
+                "liquidity": "0",
+                "umaResolutionStatus": "resolved",
+            },
+            {
+                **_binary_submarket("Will Carol win?", "Carol", 0.15),
+                "id": "m-carol",
+                "liquidity": "0",
+            },
+        ],
+    }
+    calls.clear()
+    monkeypatch.setattr(
+        polymarket.http,
+        "request",
+        lambda *_a, **_k: calls.append(1) or proposed_vs_resolved_event,
+    )
+    verdicts_uma = freshness.verify_report(
+        _report(saved_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts_uma] == [
+        "unsupported",
+        "stale",
+        "unsupported",
+        "unsupported",
+    ]
+    assert verdicts_uma[1].current_value == 0.0
+
+
+def test_greptile_r10_omitted_question_still_verifies_by_unique_market_id(monkeypatch):
+    """Greptile R10 P2 (4682403585):
+    If Gamma omits or blanks 'question' on a child market while returning its
+    unique market ID and usable Yes price, refetch_datum and cached
+    verify_report must still verify the saved market_id claim."""
+    from lib import normalize
+
+    initial_event = {
+        "id": "719",
+        "slug": "omitted-question-recheck",
+        "title": "Two-market race?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {**_binary_submarket("Will Alice win?", "Alice", 0.60), "id": "m-alice"},
+            {**_binary_submarket("Will Bob win?", "Bob", 0.35), "id": "m-bob"},
+        ],
+    }
+    [parsed] = polymarket.parse_polymarket_response({"events": [initial_event]})
+    assert parsed["outcome_market_ids"] == ["m-alice", "m-bob"]
+    [saved_item] = normalize.normalize_source_items(
+        "polymarket", [parsed], "2026-10-25", "2026-11-24",
+    )
+
+    alice_no_q = {**_binary_submarket("Will Alice win?", "Alice", 0.60), "id": "m-alice"}
+    alice_no_q.pop("question")
+    bob_blank_q = {**_binary_submarket("", "Bob", 0.45), "id": "m-bob"}
+    updated_event = {
+        **initial_event,
+        "markets": [alice_no_q, bob_blank_q],
+    }
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        polymarket.http, "request", lambda *_a, **_k: calls.append(1) or updated_event,
+    )
+    assert polymarket.refetch_datum(saved_item, "Alice")["value"] == 0.60
+    assert polymarket.refetch_datum(saved_item, "Bob")["value"] == 0.45
+
+    calls.clear()
+    verdicts = freshness.verify_report(
+        _report(saved_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == ["current", "stale", "current"]
+    assert verdicts[0].current_value == 0.60
+    assert verdicts[1].current_value == 0.45
+
+
 
 
 

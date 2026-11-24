@@ -2103,6 +2103,35 @@ def _saved_outcome_market_id(item: Any, datum_key: str) -> Optional[str]:
     return key_to_mid.get(_normalize_snapshot_key(datum_key))
 
 
+def _is_settled_closed_market(
+    market: Dict[str, Any],
+    pairs: List[tuple],
+) -> bool:
+    """Return True only when a closed market carries a finalized 0/1 settlement.
+
+    A market that stopped trading before oracle settlement can still report its
+    last pre-close odds (e.g. 60%/40%) while ``closed`` is True. Accepting
+    those prices would falsely mark stale saved odds ``current``.
+    """
+    if not market.get("closed", False):
+        return False
+    uma_status = str(market.get("umaResolutionStatus") or "").strip().lower()
+    if uma_status and uma_status != "resolved":
+        return False
+    if len(pairs) < 2:
+        return False
+    raw_outcomes = [
+        name for name in _json_list(market.get("outcomes"))
+        if name is not None and str(name).strip()
+    ]
+    if raw_outcomes and len(pairs) != len(raw_outcomes):
+        return False
+    prices = [price for _name, price in pairs]
+    return all(price in (0.0, 1.0) for price in prices) and sum(
+        1 for price in prices if price == 1.0
+    ) == 1
+
+
 class DatumNotFound(KeyError):
     """The event re-fetched, but it no longer prices this one datum.
 
@@ -2214,21 +2243,22 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         clean_mid = _market_id(m)
         if clean_mid:
             all_mid_counts[clean_mid] = all_mid_counts.get(clean_mid, 0) + 1
-    eligible_market_ids = (
-        {id(m) for m in live_event_markets}
-        if (not has_active or event_open)
-        else set()
-    )
     market_values: dict[str, Any] = {}
     for m in all_dict_markets:
-        if id(m) not in eligible_market_ids and not m.get("closed", False):
-            continue
-        if not m.get("question"):
+        is_live_open = (
+            event_open
+            and m.get("active", True)
+            and not m.get("closed", False)
+            and _safe_float(m.get("liquidity")) > 0
+        )
+        if not is_live_open and not m.get("closed", False):
             continue
         clean_mid = _market_id(m)
         if not clean_mid or all_mid_counts.get(clean_mid) != 1:
             continue
         pairs = _parse_outcome_prices(m)
+        if not is_live_open and not _is_settled_closed_market(m, pairs):
+            continue
         yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
         if yes_price is not None:
             market_values[clean_mid] = yes_price
