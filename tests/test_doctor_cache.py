@@ -529,7 +529,7 @@ class CacheWriteFailureWarns(_CacheDirCase):
         with _Hermetic() as h:
             stdout, stderr = io.StringIO(), io.StringIO()
             with mock.patch.object(
-                Path, "write_text", side_effect=OSError("disk full")
+                doctor.private_files, "replace_private_text", side_effect=OSError("disk full")
             ), redirect_stdout(stdout), redirect_stderr(stderr):
                 rc = doctor.run({}, emit_json=True, cached=False)
         self.assertEqual(0, rc, "cache write failure must never be fatal")

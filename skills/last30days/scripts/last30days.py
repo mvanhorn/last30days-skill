@@ -4110,6 +4110,37 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
     )
 
 
+def _preflight_has_perplexity_key_for_research(
+    args: argparse.Namespace,
+    topic: str,
+    extra_argv: list[str],
+    config: dict[str, Any],
+) -> bool:
+    """Whether a real research run with ``args`` would see a direct PERPLEXITY_API_KEY.
+
+    ``--preflight`` inspects with ``load_secret_stores=True``, whereas a real
+    research run on an agent host without ``--plan`` skips Keychain/``pass``
+    before hosted dispatch.
+    """
+    if not config.get("PERPLEXITY_API_KEY"):
+        return False
+    research_args = argparse.Namespace(**vars(args))
+    research_args.preflight = False
+    research_args.diagnose = False
+    research_policy = _config_policy_for_args(
+        research_args, topic or "preflight", extra_argv
+    )
+    if research_policy.load_secret_stores:
+        return True
+    no_store_policy = env.ConfigLoadPolicy(
+        browser_cookies="off",
+        allow_project_config=research_policy.allow_project_config,
+        inspect_ignored_project_config=False,
+        load_secret_stores=False,
+    )
+    return bool(env.get_config(policy=no_store_policy).get("PERPLEXITY_API_KEY"))
+
+
 def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> int:
     """Generate the local research index/feed and optionally publish it."""
     from lib import feed, html_publish, library
@@ -4839,6 +4870,17 @@ def _main(
         requested_sources = resolve_requested_sources(args.search, config)
         preflight_config = pipeline.with_plan_source_omissions(config, external_plan)
         diag = pipeline.diagnose(preflight_config, requested_sources, safe=True)
+        hosted_bypassed = bool(
+            args.cached_report
+            or args.mock
+            or args.record_fixtures
+            or args.discover is not None
+            or args.drill
+            or (
+                args.perplexity_search_type is not None
+                and _preflight_has_perplexity_key_for_research(args, topic, extra_argv, config)
+            )
+        )
         preflight = permission_preflight.build(
             preflight_config,
             diag,
@@ -4847,6 +4889,8 @@ def _main(
                 None if args.no_research_persistence else args.preflight_report_on_save_dir
             ),
             requested_sources=requested_sources,
+            deep_research=bool(getattr(args, "deep_research", False)),
+            local_only_run=hosted_bypassed,
         )
         _add_preflight_research_writes(preflight, args, config)
         if args.emit == "json":

@@ -1677,7 +1677,7 @@ def _inject_bird_credentials(config: dict[str, Any]) -> None:
 # label is the cookie source recorded in ``_AUTH_TOKEN_SOURCE``).
 _X_METHOD_LABELS = {
     "xai": "xai",
-    "xurl": "oauth2",  # xurl CLI (official X API v2, OAuth2, free developer app)
+    "xurl": "bearer",  # xurl CLI (official X API v2, app-only bearer, free developer app)
     "xapi": "bearer",
     "xquik": "api_key",
 }

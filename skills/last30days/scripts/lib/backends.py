@@ -394,24 +394,26 @@ def _probe_xapi(config: Dict[str, Any]) -> BackendFinding:
 
 
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
-    """xurl = official X API v2 CLI (OAuth2). Free lane; LOCAL-ONLY probe.
+    """xurl = official X API v2 CLI (app-only bearer). Free lane; LOCAL-ONLY probe.
 
     Doctor's no-network guarantee forbids the live ``xurl whoami`` check
-    (``xurl_x.is_available()`` — an authenticated X API call, reserved for
-    research time). This probe keys on local evidence instead: the binary
-    on PATH plus xurl's on-disk token store (~/.xurl). Stored credentials
-    read as OK with an explicit "not live-verified" caveat; an unreadable
+    (``xurl_x.is_available()`` — reserved for research time). This probe keys
+    on local evidence instead: the binary on PATH plus xurl's on-disk token
+    store (~/.xurl/auth.yml or legacy ~/.xurl). Stored app-only bearer
+    credentials read as OK with an explicit "not live-verified" caveat; a store
+    holding only OAuth user tokens without ``bearer_token`` is reported as
+    MISSING because ``xurl_x.search_x`` pins ``--auth app``; an unreadable
     token store is a typed ERROR (broken, not unconfigured).
     """
     from . import xurl_x
 
-    requires = "xurl CLI installed + OAuth2 login"
+    requires = "xurl CLI installed + app-only bearer auth"
     if which("xurl") is None:
         return BackendFinding(
             name="xurl",
             status=health.MISSING,
             detail="xurl CLI not found on PATH",
-            prescription="npm install -g xurl && xurl auth oauth2 login",
+            prescription="npm install -g @xdevplatform/xurl && xurl auth app-only <bearer-token>",
             requires=requires,
         )
     store_status, store_detail = xurl_x.stored_auth_status()
@@ -420,7 +422,7 @@ def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
             name="xurl",
             status=health.OK,
             detail=(
-                "installed; stored OAuth2 credentials present; "
+                "installed; stored app-only bearer credentials present; "
                 "auth not live-verified (no network)"
             ),
             requires=requires,
@@ -430,14 +432,25 @@ def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
             name="xurl",
             status=health.ERROR,
             detail=store_detail,
-            prescription="xurl auth oauth2 login",
+            prescription="xurl auth app-only <bearer-token>",
+            requires=requires,
+        )
+    if "oauth user tokens only" in str(store_detail).lower():
+        return BackendFinding(
+            name="xurl",
+            status=health.MISSING,
+            detail=(
+                "xurl token store has OAuth user tokens only; "
+                "search requires app-only bearer auth"
+            ),
+            prescription="xurl auth app-only <bearer-token>",
             requires=requires,
         )
     return BackendFinding(
         name="xurl",
         status=health.MISSING,
         detail="xurl installed but not authenticated",
-        prescription="xurl auth oauth2 login",
+        prescription="xurl auth app-only <bearer-token>",
         requires=requires,
     )
 
@@ -544,7 +557,7 @@ _X_REQUIRES: Dict[str, str] = {
     "xai": "XAI_API_KEY (xAI/Grok live search)",
     "grok": "grok CLI installed + signed in (opt-in only; pin to enable)",
     "bird": "X browser cookies (AUTH_TOKEN/CT0) + node",
-    "xurl": "xurl CLI installed + OAuth2 login",
+    "xurl": "xurl CLI installed + app-only bearer auth",
     "xquik": "XQUIK_API_KEY (xquik.com)",
     "xapi": "X_BEARER_TOKEN (X API v2)",
 }

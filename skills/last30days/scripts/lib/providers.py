@@ -10,7 +10,7 @@ import sys
 import time
 from threading import Event
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from . import env, http, proxy, schema
 
@@ -19,7 +19,9 @@ GEMINI_PRO = "gemini-3.1-pro-preview"
 OPENAI_DEFAULT = "gpt-5.4-nano"
 XAI_DEFAULT = "grok-4.20-0309-non-reasoning"
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+_GEMINI_MODEL_RE = re.compile(r"gemini-([0-9]+)(?:\.([0-9]+))?(?:-[A-Za-z0-9._-]+)?", re.ASCII)
+_GEMINI_MODEL_SEGMENT_RE = re.compile(r"[A-Za-z0-9._-]+", re.ASCII)
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 XAI_RESPONSES_URL = "https://api.x.ai/v1/responses"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -261,6 +263,7 @@ class GeminiClient(ReasoningClient):
         tools: list[dict[str, Any]] | None = None,
         response_mime_type: str | None = None,
     ) -> dict[str, Any]:
+        safe_model = _validate_gemini_model_segment(model)
         body: dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0},
@@ -269,11 +272,24 @@ class GeminiClient(ReasoningClient):
             body["generationConfig"]["responseMimeType"] = response_mime_type
         if tools:
             body["tools"] = tools
+        url = GEMINI_URL.format(model=safe_model)
+        expected_origin = http._request_origin(url)
+
+        def _same_origin_redirect(newurl: str) -> bool:
+            try:
+                return http._request_origin(newurl) == expected_origin
+            except ValueError:
+                return False
+
         return self._post(
-            GEMINI_URL.format(model=model, api_key=self.api_key),
+            url,
             body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
             timeout=90,
+            redirect_guard=_same_origin_redirect,
         )
 
     def generate_text(
@@ -567,8 +583,22 @@ def _resolve_x_backend(config: dict[str, Any]) -> str | None:
     return env.get_x_source(config)
 
 
+def _validate_gemini_model_segment(model: str) -> str:
+    """Validate and percent-encode a Gemini model name used as a URL path segment."""
+    if (
+        not isinstance(model, str)
+        or not _GEMINI_MODEL_SEGMENT_RE.fullmatch(model)
+        or model in {".", ".."}
+        or ".." in model
+    ):
+        raise ValueError(f"Invalid Gemini model name: {model!r}")
+    return quote(model, safe="")
+
+
 def _is_gemini_31_or_newer(model: str) -> bool:
-    match = re.match(r"gemini-(\d+)(?:\.(\d+))?(?:-|$)", model)
+    if not isinstance(model, str) or ".." in model:
+        return False
+    match = _GEMINI_MODEL_RE.fullmatch(model)
     if not match:
         return False
     return (int(match.group(1)), int(match.group(2) or 0)) >= (3, 1)
