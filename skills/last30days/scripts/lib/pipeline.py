@@ -2361,6 +2361,10 @@ def run(
     shortform_urls: shortform_envelope.Envelope | None = None,
 ) -> schema.Report:
     _check_research(config)
+    # Isolate run-scoped mutations (_financial_topic, envelopes, resolved
+    # endpoints, lane budgets) from the caller's dict so concurrent callers
+    # (comparison fan-out, discovery enrichment) never race or leak state.
+    config = dict(config)
     if external_plan is not None:
         planner.validate_external_plan(external_plan)
         config = with_plan_source_omissions(config, external_plan)

@@ -167,16 +167,14 @@ def test_no_browser_cookies_overrides_setup_cookie_flag(monkeypatch):
 
 
 def test_diagnose_overrides_setup_cookie_flag(monkeypatch):
-    seen: dict[str, object] = {}
+    parser = cli.build_parser()
+    args, extra = parser.parse_known_args(["--diagnose", "setup", "--allow-browser-cookies"])
+    assert cli._config_policy_for_args(args, "setup", extra).browser_cookies == "plan_only"
+    assert cli._setup_has_fresh_browser_consent(args, extra) is False
 
-    def fake_get_config(*, policy):
-        seen["policy"] = policy
-        return {}
-
-    with mock.patch.object(cli.env, "get_config", side_effect=fake_get_config), \
-         mock.patch("lib.setup_wizard.run_auto_setup", return_value={"cookies_found": {}}) as setup, \
-         mock.patch("lib.setup_wizard.write_setup_config", return_value=True), \
-         mock.patch("lib.setup_wizard.get_setup_status_text", return_value="ok"), \
+    with mock.patch.object(cli.env, "get_config", side_effect=AssertionError("setup --diagnose must not load config")), \
+         mock.patch("lib.setup_wizard.run_auto_setup", side_effect=AssertionError("setup must not run under --diagnose")), \
+         mock.patch("lib.setup_wizard.write_setup_config", side_effect=AssertionError("setup must not write under --diagnose")), \
          mock.patch.object(
              sys,
              "argv",
@@ -185,10 +183,9 @@ def test_diagnose_overrides_setup_cookie_flag(monkeypatch):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            assert cli.main() == 0
+            assert cli.main() == 2
 
-    assert seen["policy"].browser_cookies == "plan_only"
-    assert setup.call_args.kwargs["allow_browser_cookies"] is False
+    assert "--diagnose cannot be combined" in stderr.getvalue()
 
 
 def test_research_run_defaults_to_browser_cookie_read():
