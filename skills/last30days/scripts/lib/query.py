@@ -166,7 +166,12 @@ def infer_query_intent(topic: str) -> str:
     return "breaking_news"
 
 
-_COMPOUND_BRAND_TOKEN = r'(?:[A-Z][A-Za-z0-9]*|[a-z]+[A-Z][A-Za-z0-9]*)'
+# Mixed-case brand token (requires at least one lowercase letter so ALL-CAPS
+# generic acronyms like "VPN", "CRM", "AI" never form false phrases such as
+# "Best VPN" or "Top CRM") plus optional non-leading model/version suffix tokens
+# like "R1", "V3", "M4" (e.g. "DeepSeek R1").
+_COMPOUND_BRAND_TOKEN = r'(?:[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*|[a-z]+[A-Z][A-Za-z0-9]*)'
+_COMPOUND_VERSION_TOKEN = r'[A-Z][0-9][A-Za-z0-9]*'
 _COMPOUND_BRAND_TOKEN_RE = re.compile(rf'^{_COMPOUND_BRAND_TOKEN}$')
 # Unicode- and symbol-safe boundaries: reject mid-word slices across non-ASCII
 # letters (\w), dotted brands (Next.JS), straight/curly apostrophes (O'Reilly,
@@ -174,10 +179,12 @@ _COMPOUND_BRAND_TOKEN_RE = re.compile(rf'^{_COMPOUND_BRAND_TOKEN}$')
 # (C++, C#), while still allowing trailing sentence punctuation like periods
 # not followed by a word character.
 _COMPOUND_CAPITALIZED_RUN_RE = re.compile(
-    rf"(?<![\w'.\u2019+#&-])(?:{_COMPOUND_BRAND_TOKEN}\s+)+{_COMPOUND_BRAND_TOKEN}(?![\w'\u2019+#&-]|\.\w)"
+    rf"(?<![\w'.\u2019+#&-]){_COMPOUND_BRAND_TOKEN}"
+    rf"(?:\s+(?:{_COMPOUND_BRAND_TOKEN}|{_COMPOUND_VERSION_TOKEN}))+"
+    rf"(?![\w'\u2019+#&-]|\.\w)"
 )
 COMPOUND_ENTITY_PHRASE_RE = re.compile(
-    rf'^{_COMPOUND_BRAND_TOKEN}(?:\s+{_COMPOUND_BRAND_TOKEN}){{1,2}}$'
+    rf"^{_COMPOUND_BRAND_TOKEN}(?:\s+(?:{_COMPOUND_BRAND_TOKEN}|{_COMPOUND_VERSION_TOKEN})){{1,2}}$"
 )
 _COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
     'i', 'you', 'we', 'my', 'your', 'our', 'me', 'can', 'do', 'did',
@@ -190,93 +197,77 @@ _COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
     'practice', 'production',
     'case', 'cases',
 })
-# Leading words that commonly open real multi-word brand names ("New Balance",
-# "New York Times", "On Running", "On Running Cloudmonster") and stay intact
-# unless paired directly with an ALL-CAPS generic acronym ("New VPN for travel").
-_BRAND_LEADING_WORDS = frozenset({'new', 'on'})
-_BEST_BRAND_SECOND_WORDS = frozenset({'buy', 'western'})
-# All other edge noise words (recommendation/superlative/question/grammar
-# prompt fillers such as "best", "top", "good", "great", "free", "the", "for")
-# trim unconditionally from the start of a capitalized run so recommendation
-# queries like "Best VPN for travel" or "Top CRM for startups" never quote
-# prompt filler.
-_STRICT_LEADING_NOISE = _COMPOUND_EDGE_NOISE - _BRAND_LEADING_WORDS
-_PROMPT_ONLY_NOISE = _STRICT_LEADING_NOISE - frozenset({'the', 'best'})
+# Question, action, and research/meta words that never open a brand name and
+# are always trimmed from the start of a capitalized run.
+_UNAMBIGUOUS_LEADING_PROMPT_WORDS = frozenset({
+    'how', 'what', 'which', 'who', 'why', 'when', 'where',
+    'does', 'do', 'did', 'should', 'could', 'would', 'can',
+    'is', 'are', 'was', 'were',
+    'i', 'you', 'we', 'my', 'your', 'our', 'me',
+    'using', 'uses', 'use',
+    'latest', 'trending', 'trendiest', 'hottest', 'popular', 'viral',
+    'install', 'installing', 'configure', 'deploy', 'setup', 'debug', 'fix',
+    'compare', 'versus', 'vs', 'comparison',
+    'alternative', 'alternatives',
+    'review', 'reviews', 'guide', 'tutorial', 'tutorials',
+    'tips', 'tricks', 'recommendations', 'advice',
+    'news', 'update', 'updates',
+})
+_QUESTION_STARTERS = frozenset({'how', 'what', 'which', 'who', 'why', 'when', 'where'})
+# Soft leading fillers trimmed only when 3+ words remain (e.g. "Best GitHub
+# Actions" -> "GitHub Actions", "Best React Native Tips" -> "React Native"),
+# keeping 2-word brands ("Best Buy", "Best Egg", "The Verge") and "New"/"On"-
+# prefixed multi-word brands ("New Balance", "New York Times", "On Running",
+# "On Running Cloudmonster") intact.
+_SOFT_LEADING_NOISE = (
+    _COMPOUND_EDGE_NOISE - _UNAMBIGUOUS_LEADING_PROMPT_WORDS - frozenset({'new', 'on'})
+)
 _TITLE_CASE_CONNECTORS = frozenset({
     'a', 'an', 'the', 'for', 'of', 'in', 'on', 'to', 'with', 'and', 'or', 'vs',
 })
 _ENTITY_JOINERS = frozenset({'and', 'or', 'vs'})
-_THE_OF_PHRASE_RE = re.compile(r"^\s+of\b", re.IGNORECASE)
 
 
 def _is_capitalized_or_brand(tok: str) -> bool:
     return tok[0].isupper() or _COMPOUND_BRAND_TOKEN_RE.fullmatch(tok) is not None
 
 
-def _is_title_case_word(word: str) -> bool:
-    """True for mixed-case Title-Case words ('Buy', 'Verge'), False for ALL-CAPS ('VPN')."""
-    return bool(word) and word[0].isupper() and not word.isupper()
-
-
-def _should_preserve_leading_word(
-    words: List[str],
-    match: re.Match[str],
-    topic: str,
-) -> bool:
-    """Keep leading noise words only when they open a real multi-word brand
-    ('New Balance', 'On Running', 'The Verge', 'Best Buy', 'Best Western')
-    rather than generic/recommendation phrases ('The Future of AI agents',
-    'Best VPN for travel', 'Best Camera deals', 'Best Laptops', 'The Best VPN')."""
-    if len(words) < 2:
-        return False
-    first = words[0].lower()
-    if first in _BRAND_LEADING_WORDS:
-        return not (len(words) == 2 and words[1].isupper())
-    if first == 'best':
-        return len(words) == 2 and words[1].lower() in _BEST_BRAND_SECOND_WORDS
-    if first == 'the':
-        if not (
-            len(words) == 2
-            and _is_title_case_word(words[1])
-            and words[1].lower() not in _COMPOUND_EDGE_NOISE
-        ):
-            return False
-        after = topic[match.end():]
-        return not _THE_OF_PHRASE_RE.match(after)
-    return False
-
-
 def _is_title_cased_prompt(topic: str) -> bool:
-    """True when a 4+ word topic uses Title Case across the whole prompt,
-    leaving no case signal to distinguish proper nouns from prompt framing.
+    """True when a topic uses Title Case across the whole prompt, leaving no
+    case signal to distinguish proper nouns from prompt framing.
 
-    Recognizes both strict every-word Title Case ("Best AI Coding Tools For
-    Python Developers") and standard English Title Case with lowercase minor
-    connectors ("Best AI Coding Tools for Python Developers"), while keeping
-    short brand-plus-subject queries ("The Verge on AI") and bare multi-entity
-    pairs ("Claude Code and React Native", "New Balance vs On Running",
-    "Best Buy vs Target") eligible.
+    Recognizes:
+    - 4+ word strict every-word Title Case ("Best AI Coding Tools For Python
+      Developers", "Hermes Agent Actual Use Cases")
+    - 3+ word Title-Cased question/how-to prompts starting with a question word
+      ("How to Install Docker", "What Is Docker")
+    - Standard English Title Case with lowercase minor connectors and at least
+      4 capitalized words ("Best AI Coding Tools for Python Developers"), while
+      keeping short brand-plus-subject queries ("The Verge on AI") and bare
+      entity comparisons/lists ("Claude Code and React Native", "New Balance vs
+      On Running", "Best Buy vs Target") eligible.
     """
     alpha_words = [
         tok for tok in re.findall(r"\w+(?:['\u2019-]\w+)*", topic)
         if tok[0].isalpha()
     ]
-    if len(alpha_words) < 4:
+    if len(alpha_words) < 3:
         return False
-    if all(_is_capitalized_or_brand(tok) for tok in alpha_words):
+    all_capped = all(_is_capitalized_or_brand(tok) for tok in alpha_words)
+    if all_capped and len(alpha_words) >= 4:
         return True
     lowercase_words = [tok for tok in alpha_words if not _is_capitalized_or_brand(tok)]
     if not all(tok in _TITLE_CASE_CONNECTORS for tok in lowercase_words):
         return False
-    # All non-connector words are capitalized. Require at least 4 capitalized
-    # words so short queries like "The Verge on AI" stay eligible, and keep
-    # bare entity comparisons/lists ("and"/"or"/"vs") eligible unless they
-    # carry prompt-only framing noise.
+    if alpha_words[0].lower() in _QUESTION_STARTERS:
+        return True
+    if len(alpha_words) < 4:
+        return False
     non_connector_words = [tok for tok in alpha_words if tok not in _TITLE_CASE_CONNECTORS]
     if len(non_connector_words) < 4:
         return False
     if all(tok in _ENTITY_JOINERS for tok in lowercase_words) and not any(
-        tok.lower() in _PROMPT_ONLY_NOISE for tok in non_connector_words
+        tok.lower() in _UNAMBIGUOUS_LEADING_PROMPT_WORDS for tok in non_connector_words
     ):
         return False
     return True
@@ -288,12 +279,15 @@ def extract_compound_terms(topic: str) -> List[str]:
     Identifies:
     - Hyphenated terms: "multi-agent", "vc-backed"
     - Short capitalized/brand multi-word names (2-3 words): "Claude Code",
-      "React Native", "GitHub Actions", "MacBook Pro", "iPhone Pro",
-      "New Balance", "On Running", "Best Buy", "The Verge"
+      "React Native", "GitHub Actions", "MacBook Pro", "DeepSeek R1",
+      "iPhone Pro", "New Balance", "On Running", "Best Buy", "Best Egg",
+      "The Verge"
 
-    Anchored to full word boundaries so PascalCase/camelCase brands are never
-    sliced mid-word, and skips full Title-Cased prompts or runs longer than 3
-    words after trimming noise/intent-modifier edges.
+    Anchored to full Unicode/symbol-safe word boundaries so PascalCase and
+    camelCase brands are never sliced mid-word, requires mixed-case brand
+    tokens (avoiding ALL-CAPS generic phrases like "Best VPN" / "Top CRM"),
+    and skips full Title-Cased prompts or runs longer than 3 words after
+    trimming noise/intent-modifier edges.
     """
     terms: List[str] = []
 
@@ -307,10 +301,9 @@ def extract_compound_terms(topic: str) -> List[str]:
     # Word-bounded capitalized / brand sequences (2-3 words after edge trim)
     for match in _COMPOUND_CAPITALIZED_RUN_RE.finditer(topic):
         words = match.group().split()
-        while (
-            words
-            and words[0].lower() in _COMPOUND_EDGE_NOISE
-            and not _should_preserve_leading_word(words, match, topic)
+        while words and (
+            words[0].lower() in _UNAMBIGUOUS_LEADING_PROMPT_WORDS
+            or (len(words) > 2 and words[0].lower() in _SOFT_LEADING_NOISE)
         ):
             words.pop(0)
         while words and words[-1].lower() in _COMPOUND_EDGE_NOISE:
