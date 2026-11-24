@@ -229,9 +229,8 @@ def _title_matches_query(title: str, query: str, author: str = "") -> bool:
         return True
     stripped = _HN_PREFIXES.sub("", title).strip()
     check_text = stripped.lower()
-    # Normalise the query the same way search_hackernews does so post-filter
-    # tokens line up with what Algolia actually saw.
-    query_words = [w for w in _flatten_query_for_algolia(query.lower()).split() if w]
+    # Algolia uses double quotes for phrase syntax. Titles contain the words.
+    query_words = _flatten_query_for_algolia(query.lower().replace('"', " ")).split()
     if not query_words:
         return True
     for word in query_words:

@@ -442,6 +442,20 @@ def test_parse_hackernews_response_prefix_filtering():
     assert items[0]["id"] == "1"
 
 
+def test_parse_hackernews_response_keeps_quoted_topic_matches():
+    response = {
+        "hits": [
+            create_mock_hit(title="Show HN: Claude Code now supports X", object_id="1"),
+            create_mock_hit(title="Show HN: My unrelated decoder", object_id="2"),
+        ]
+    }
+
+    items = hackernews.parse_hackernews_response(response, query='"Claude Code"')
+
+    assert [item["id"] for item in items] == ["1"]
+    assert not hackernews._title_matches_query("Email artists", '"ai ts"')
+
+
 def test_parse_hackernews_response_empty_response():
     """Test handling of empty response."""
     response = {"hits": []}
