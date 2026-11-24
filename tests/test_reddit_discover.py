@@ -194,25 +194,25 @@ def test_a_rung_taken_out_keeps_its_cause_in_the_floor_rungs():
 
 class TestWebFloorDeadline:
     def test_threads_from_the_first_query_survive_a_spent_deadline(self):
-        import time
-
+        clock = [100.0]
         hits = [_hit("https://www.reddit.com/r/Kanye/comments/abc123/x/", "Kanye one")]
         stub, calls = _search_stub({"site:reddit.com Kanye West": hits})
-        deadline = time.monotonic() + 0.05
 
         def slow_first(query, date_range, config, count=5, **kwargs):
             out = stub(query, date_range, config, count, **kwargs)
-            time.sleep(0.1)  # the deadline passes during the first query
+            clock[0] = 110.0
             return out
 
         partial = reddit_discover.WebFloor()
-        floor = reddit_discover.web_refs(
-            "Kanye West", subreddits=["hiphopheads"], search=slow_first,
-            deadline=deadline, floor=partial,
-        )
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+            floor = reddit_discover.web_refs(
+                "Kanye West", subreddits=["hiphopheads"], search=slow_first,
+                deadline=110.0, floor=partial, config={},
+            )
         assert floor is partial
         assert len(calls) == 1
         assert [r.post_id for r in partial.refs] == ["abc123"]
+        assert partial.timed_out
 
 
 class TestSearxngConfigHandoff:
@@ -664,6 +664,21 @@ class TestSearxngConfigHandoff:
         assert "SCRAPECREATORS_BASE_URL" not in os.environ
         assert os.environ.get("LAST30DAYS_SEARXNG_URL") == "${user_config.searxng_url}"
 
+    def test_standalone_url_uses_global_value_when_trusted_project_has_a_placeholder(self, tmp_path, monkeypatch):
+        env.CONFIG_FILE.write_text("LAST30DAYS_SEARXNG_URL=https://global.example\n", encoding="utf-8")
+        project_env = tmp_path / ".claude" / "last30days.env"
+        project_env.parent.mkdir()
+        project_env.write_text("LAST30DAYS_SEARXNG_URL=${user_config.searxng_url}\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("LAST30DAYS_TRUST_PROJECT_CONFIG", "1")
+        monkeypatch.delenv("LAST30DAYS_SEARXNG_URL", raising=False)
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", return_value=self._searxng_payload()) as sx:
+            floor = reddit_discover.web_refs("IQ3 quantization")
+
+        assert [ref.post_id for ref in floor.refs] == ["1sx9abc"]
+        assert sx.call_args.args[0].startswith("https://global.example/search?")
+
     def test_memoized_answers_are_reused_across_calls_with_config(self):
         cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
         calls = []
@@ -846,6 +861,16 @@ class TestSearxngConfigHandoff:
         assert not items and not seen_urls
         expected = health.RATE_LIMITED if mode == "sc-first-429" else health.TIMEOUT
         assert artifact.get("_source_outcome", {}).get("state") == expected
+
+    def test_public_first_backfill_clean_miss_is_not_a_timeout(self):
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 200.0}
+        with mock.patch("time.monotonic", return_value=100.0):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=lambda *args, **kwargs: {}, html_fetch=lambda *args, **kwargs: "",
+            )
+
+        assert not items and not seen_urls
+        assert "_source_outcome" not in artifact
 
     @pytest.mark.parametrize("sc_primary", [False, True], ids=["public-primary", "sc-primary"])
     def test_pipeline_keeps_site_hit_without_late_searxng_on_either_primary_path(self, sc_primary):
