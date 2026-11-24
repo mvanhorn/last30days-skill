@@ -11,14 +11,10 @@ from pathlib import Path
 _WINDOWS_SHARING_VIOLATION = 32
 _IS_JUNCTION = getattr(os.path, "isjunction", None)
 _GETEUID = getattr(os, "geteuid", None)
-_OS_OPEN = os.open
-_OS_FSTAT = os.fstat
-_OS_CLOSE = os.close
+_OS_LSTAT = os.lstat
+_OS_READLINK = os.readlink
 _OS_GETCWD = os.getcwd
-_O_RDONLY = os.O_RDONLY
-_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
-_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_MAX_SYMLINK_HOPS = 40
 
 
 def _group_writable_by_other_user(st: os.stat_result, euid: int) -> bool:
@@ -50,42 +46,29 @@ def _group_writable_by_other_user(st: os.stat_result, euid: int) -> bool:
     return True
 
 
-def _fstat_directory_nofollow(directory: Path) -> os.stat_result:
-    """Open ``directory`` without following symlinks and return its ``fstat`` result."""
-    try:
-        fd = _OS_OPEN(directory, _O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise OSError(errno.ELOOP, f"Refusing to follow symlink directory: {directory}") from exc
-        raise
-    try:
-        st = _OS_FSTAT(fd)
-    finally:
-        _OS_CLOSE(fd)
+def _is_writable_by_others(st: os.stat_result, euid: int) -> bool:
+    return bool(st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(st, euid)
+
+
+def _stat_directory_nofollow(directory: Path) -> os.stat_result:
+    """Stat ``directory`` without following symlinks or requiring read/list permission."""
+    st = _OS_LSTAT(directory)
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(errno.ELOOP, f"Refusing to follow symlink directory: {directory}")
     if not stat.S_ISDIR(st.st_mode):
         raise OSError(f"Expected a directory for private file: {directory}")
     return st
 
 
-def _reject_non_root_parent_symlinks(parent: Path) -> None:
-    """Reject any non-root symlink component along ``parent`` before resolving it."""
-    abs_parent = parent if parent.is_absolute() else Path(_OS_GETCWD()) / parent
-    parts = abs_parent.parts
-    if not parts:
-        return
-    current = Path(parts[0])
-    for part in parts[1:]:
-        if part in ("", "."):
-            continue
-        current = current / part
-        if part == "..":
-            continue
-        st = current.lstat()
-        if stat.S_ISLNK(st.st_mode) and st.st_uid != 0:
-            raise OSError(
-                errno.ELOOP,
-                f"Refusing to follow non-root symlink in private directory path: {current}",
-            )
+def _check_ancestor_dir(directory: Path, st: os.stat_result, euid: int) -> None:
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Expected a directory ancestor for private file: {directory}")
+    if st.st_uid not in (euid, 0):
+        raise OSError(f"Refusing to use directory under untrusted owner: {directory}")
+    if _is_writable_by_others(st, euid) and not (st.st_mode & stat.S_ISVTX):
+        raise OSError(
+            f"Refusing to use directory under writable non-sticky ancestor: {directory}"
+        )
 
 
 def _verify_private_directory_chain(parent: Path, *, allow_root_owner: bool = False) -> None:
@@ -93,24 +76,82 @@ def _verify_private_directory_chain(parent: Path, *, allow_root_owner: bool = Fa
     if _GETEUID is None:
         return
     euid = _GETEUID()
-    parent_st = _fstat_directory_nofollow(parent)
+    parent_st = _stat_directory_nofollow(parent)
     allowed_parent_uids = (euid, 0) if allow_root_owner else (euid,)
     if parent_st.st_uid not in allowed_parent_uids:
         raise OSError(f"Refusing to use private directory owned by another user: {parent}")
-    if (parent_st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(parent_st, euid):
+    if _is_writable_by_others(parent_st, euid):
         raise OSError(f"Refusing to use private directory writable by other users: {parent}")
 
     for ancestor in parent.parents:
-        anc_st = _fstat_directory_nofollow(ancestor)
-        if anc_st.st_uid not in (euid, 0):
-            raise OSError(f"Refusing to use directory under untrusted owner: {ancestor}")
-        writable_by_others = bool(anc_st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(
-            anc_st, euid
-        )
-        if writable_by_others and not (anc_st.st_mode & stat.S_ISVTX):
-            raise OSError(
-                f"Refusing to use directory under writable non-sticky ancestor: {ancestor}"
-            )
+        anc_st = _stat_directory_nofollow(ancestor)
+        _check_ancestor_dir(ancestor, anc_st, euid)
+
+
+def _resolve_trusted_parent_dir(parent: Path, *, allow_root_owner: bool = False) -> Path:
+    """Resolve ``parent`` hop-by-hop, allowing only trusted symlinks in trusted directories."""
+    if _GETEUID is None:
+        return parent.resolve()
+    euid = _GETEUID()
+    abs_parent = parent if parent.is_absolute() else Path(_OS_GETCWD()) / parent
+    anchor = abs_parent.anchor or "/"
+    pending = list(abs_parent.parts[1:])
+    current = Path(anchor)
+    current_st = _stat_directory_nofollow(current)
+    _check_ancestor_dir(current, current_st, euid)
+    hops = 0
+
+    while pending:
+        part = pending.pop(0)
+        if not part or part == ".":
+            continue
+        if part == "..":
+            current = current.parent
+            current_st = _stat_directory_nofollow(current)
+            _check_ancestor_dir(current, current_st, euid)
+            continue
+
+        candidate = current / part
+        cand_st = _OS_LSTAT(candidate)
+        if stat.S_ISLNK(cand_st.st_mode):
+            if _is_writable_by_others(current_st, euid):
+                raise OSError(
+                    errno.ELOOP,
+                    f"Refusing to follow symlink in directory writable by other users: {candidate}",
+                )
+            if cand_st.st_uid not in (euid, 0):
+                raise OSError(
+                    errno.ELOOP,
+                    f"Refusing to follow symlink owned by another user: {candidate}",
+                )
+            if current_st.st_uid not in (euid, 0):
+                raise OSError(
+                    errno.ELOOP,
+                    f"Refusing to follow symlink in untrusted directory: {candidate}",
+                )
+
+            hops += 1
+            if hops > _MAX_SYMLINK_HOPS:
+                raise OSError(errno.ELOOP, f"Too many symbolic links in private path: {parent}")
+
+            link_target = Path(_OS_READLINK(candidate))
+            if link_target.is_absolute():
+                target_anchor = link_target.anchor or "/"
+                pending = list(link_target.parts[1:]) + pending
+                current = Path(target_anchor)
+                current_st = _stat_directory_nofollow(current)
+                _check_ancestor_dir(current, current_st, euid)
+            else:
+                pending = list(link_target.parts) + pending
+            continue
+
+        if pending:
+            _check_ancestor_dir(candidate, cand_st, euid)
+        current = candidate
+        current_st = cand_st
+
+    _verify_private_directory_chain(current, allow_root_owner=allow_root_owner)
+    return current
 
 
 def _reject_symlink_or_nonregular(path: Path) -> None:
@@ -133,9 +174,9 @@ def _resolve_parent_only(path: Path, *, allow_root_owner: bool = False) -> Path:
     if path.name in ("", ".", ".."):
         raise OSError(f"Expected a regular private file path: {path}")
     _reject_symlink_or_nonregular(path)
-    _reject_non_root_parent_symlinks(path.parent)
-    resolved_parent = path.parent.resolve()
-    _verify_private_directory_chain(resolved_parent, allow_root_owner=allow_root_owner)
+    resolved_parent = _resolve_trusted_parent_dir(
+        path.parent, allow_root_owner=allow_root_owner
+    )
     resolved = resolved_parent / path.name
     _reject_symlink_or_nonregular(resolved)
     return resolved

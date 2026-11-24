@@ -991,29 +991,19 @@ def test_high054_replace_private_text_rejects_symlink_and_preserves_target(tmp_p
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX directory permissions and symlinks")
 def test_high054_replace_private_text_uses_resolved_parent_and_rejects_untrusted_dirs(tmp_path: Path):
-    # Symlinked parent directory owned by non-root user -> rejected without writing.
-    real_dir = tmp_path / "real"
-    real_dir.mkdir(mode=0o700)
-    symlink_dir = tmp_path / "sym-parent"
-    symlink_dir.symlink_to(real_dir, target_is_directory=True)
-    with pytest.raises(OSError, match="symlink"):
-        private_files.replace_private_text(symlink_dir / "settings.env", "A=1\n")
-    assert not (real_dir / "settings.env").exists()
+    from types import SimpleNamespace
 
-    # World-writable parent -> rejected.
-    world_dir = tmp_path / "world"
-    world_dir.mkdir()
-    world_dir.chmod(0o777)
-    try:
-        with pytest.raises(OSError, match="writable by other users"):
-            private_files.replace_private_text(world_dir / "settings.env", "A=1\n")
-    finally:
-        world_dir.chmod(0o700)
+    # 1. User-owned dotfiles symlink inside a private user-owned directory pointing to a
+    # private destination MUST succeed and write via the canonical resolved destination.
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    dotfiles_cfg = home / "dotfiles" / ".config" / "last30days"
+    dotfiles_cfg.mkdir(parents=True, mode=0o700)
+    (home / "dotfiles").chmod(0o700)
+    (home / "dotfiles" / ".config").chmod(0o700)
+    cfg_link = home / ".config"
+    cfg_link.symlink_to(home / "dotfiles" / ".config", target_is_directory=True)
 
-    # Path with `..` resolves to the canonical verified parent for BOTH staging and os.replace.
-    sub = real_dir / "sub"
-    sub.mkdir(mode=0o700)
-    unnormalized = sub / ".." / "settings.env"
     seen_destinations: list[Path] = []
     real_replace = os.replace
 
@@ -1022,11 +1012,99 @@ def test_high054_replace_private_text_uses_resolved_parent_and_rejects_untrusted
         return real_replace(src, dst)
 
     with patch.object(private_files.os, "replace", side_effect=spy_replace):
+        private_files.replace_private_text(cfg_link / "last30days" / ".env", "API_KEY=ok\n")
+
+    expected_env = dotfiles_cfg.resolve() / ".env"
+    assert seen_destinations == [expected_env]
+    assert expected_env.read_text(encoding="utf-8") == "API_KEY=ok\n"
+
+    # 2. User-owned symlink in a trusted dir pointing to a world-writable destination -> rejected.
+    world_target = tmp_path / "world-target"
+    world_target.mkdir()
+    world_target.chmod(0o777)
+    bad_link = home / "bad-link"
+    bad_link.symlink_to(world_target, target_is_directory=True)
+    try:
+        with pytest.raises(OSError, match="writable"):
+            private_files.replace_private_text(bad_link / "settings.env", "A=1\n")
+        assert not (world_target / "settings.env").exists()
+    finally:
+        world_target.chmod(0o700)
+
+    # 3. Symlink sitting inside a world-writable (even sticky) directory -> rejected (even as root).
+    sticky_shared = tmp_path / "sticky-shared"
+    sticky_shared.mkdir()
+    sticky_shared.chmod(0o1777)
+    real_dir = home / "real"
+    real_dir.mkdir(mode=0o700)
+    shared_sym = sticky_shared / "sym-parent"
+    shared_sym.symlink_to(real_dir, target_is_directory=True)
+    try:
+        with pytest.raises(OSError, match="writable by other users"):
+            private_files.replace_private_text(shared_sym / "settings.env", "A=1\n")
+        assert not (real_dir / "settings.env").exists()
+    finally:
+        sticky_shared.chmod(0o700)
+
+    # 4. Symlink owned by another non-root user inside a trusted dir -> rejected (even as root).
+    other_sym = home / "other-owner-link"
+    other_sym.symlink_to(real_dir, target_is_directory=True)
+    real_lstat = os.lstat
+    foreign_uid = os.geteuid() + 1000
+
+    def fake_lstat(p):
+        st = real_lstat(p)
+        if Path(p) == other_sym:
+            return SimpleNamespace(
+                st_mode=st.st_mode,
+                st_uid=foreign_uid,
+                st_gid=st.st_gid,
+            )
+        return st
+
+    with patch.object(private_files, "_OS_LSTAT", side_effect=fake_lstat):
+        with pytest.raises(OSError, match="owned by another user"):
+            private_files.replace_private_text(other_sym / "settings.env", "A=1\n")
+    assert not (real_dir / "settings.env").exists()
+
+    # 5. Path with `..` resolves to the canonical verified parent for BOTH staging and os.replace.
+    sub = real_dir / "sub"
+    sub.mkdir(mode=0o700)
+    unnormalized = sub / ".." / "settings.env"
+    seen_destinations.clear()
+    with patch.object(private_files.os, "replace", side_effect=spy_replace):
         private_files.replace_private_text(unnormalized, "OK=1\n")
 
     expected = real_dir.resolve() / "settings.env"
     assert seen_destinations == [expected]
     assert expected.read_text(encoding="utf-8") == "OK=1\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX traverse-only directory test")
+def test_high053_traverse_only_ancestor_directory_allows_sqlite_and_private_writes(tmp_path: Path):
+    ancestor = tmp_path / "traverse-only"
+    ancestor.mkdir(mode=0o700)
+    private_dir = ancestor / "store-dir"
+    private_dir.mkdir(mode=0o700)
+    db_path = private_dir / "research.db"
+    db_path.write_bytes(b"")
+    text_path = private_dir / "state.json"
+
+    # Mode 0o111 (execute/traverse only, no read/list permission).
+    ancestor.chmod(0o111)
+    try:
+        resolved = private_files.prepare_private_sqlite_files(db_path, create=False)
+        assert resolved == db_path.parent.resolve() / db_path.name
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+        written = private_files.write_private_text(text_path, "traverse-ok", encoding="utf-8")
+        assert written == len("traverse-ok")
+        assert text_path.read_text(encoding="utf-8") == "traverse-ok"
+
+        private_files.replace_private_text(text_path, "traverse-replaced")
+        assert text_path.read_text(encoding="utf-8") == "traverse-replaced"
+    finally:
+        ancestor.chmod(0o700)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX directory and group checks")
@@ -1066,11 +1144,37 @@ def test_high053_shared_primary_gid_and_store_connect_blocked_before_sqlite_open
     finally:
         world_dir.chmod(0o700)
 
-    # 3. Non-root symlinked parent dir fails before sqlite3.connect.
+    # 3. Symlink inside a world-writable/sticky dir fails before sqlite3.connect (root-safe).
     owned_dir = tmp_path / "owned-store"
     owned_dir.mkdir(mode=0o700)
-    sym_parent = tmp_path / "sym-store"
-    sym_parent.symlink_to(owned_dir, target_is_directory=True)
-    with patch.object(store.sqlite3, "connect", side_effect=AssertionError("sqlite3.connect must not run")):
-        with pytest.raises(OSError, match="symlink"):
-            store._connect(sym_parent / "research.db")
+    sticky_dir = tmp_path / "sticky-store-parent"
+    sticky_dir.mkdir()
+    sticky_dir.chmod(0o1777)
+    sym_in_shared = sticky_dir / "sym-store"
+    sym_in_shared.symlink_to(owned_dir, target_is_directory=True)
+    try:
+        with patch.object(store.sqlite3, "connect", side_effect=AssertionError("sqlite3.connect must not run")):
+            with pytest.raises(OSError, match="writable by other users"):
+                store._connect(sym_in_shared / "research.db")
+    finally:
+        sticky_dir.chmod(0o700)
+
+    # 4. Symlink owned by another non-root user fails before sqlite3.connect (root-safe).
+    sym_foreign = tmp_path / "foreign-sym-store"
+    sym_foreign.symlink_to(owned_dir, target_is_directory=True)
+    real_lstat = os.lstat
+
+    def fake_lstat(p):
+        st = real_lstat(p)
+        if Path(p) == sym_foreign:
+            return SimpleNamespace(
+                st_mode=st.st_mode,
+                st_uid=euid + 1000,
+                st_gid=st.st_gid,
+            )
+        return st
+
+    with patch.object(private_files, "_OS_LSTAT", side_effect=fake_lstat), \
+         patch.object(store.sqlite3, "connect", side_effect=AssertionError("sqlite3.connect must not run")):
+        with pytest.raises(OSError, match="owned by another user"):
+            store._connect(sym_foreign / "research.db")
