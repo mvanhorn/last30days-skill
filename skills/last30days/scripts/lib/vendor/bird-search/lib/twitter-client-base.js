@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { isValidCookieValue, isValidHeaderValue, redactSecrets } from './cookies.js';
 import { runtimeQueryIds } from './runtime-query-ids.js';
 import { QUERY_IDS, TARGET_QUERY_ID_OPERATIONS } from './twitter-client-constants.js';
 import { normalizeQuoteDepth } from './twitter-client-utils.js';
@@ -13,12 +14,21 @@ export class TwitterClientBase {
     clientDeviceId;
     clientUserId;
     constructor(options) {
-        if (!options.cookies.authToken || !options.cookies.ct0) {
+        const cookies = options?.cookies;
+        if (!cookies?.authToken || !cookies?.ct0) {
             throw new Error('Both authToken and ct0 cookies are required');
         }
-        this.authToken = options.cookies.authToken;
-        this.ct0 = options.cookies.ct0;
-        this.cookieHeader = options.cookies.cookieHeader || `auth_token=${this.authToken}; ct0=${this.ct0}`;
+        if (!isValidCookieValue(cookies.authToken) || !isValidCookieValue(cookies.ct0)) {
+            throw new Error('Invalid auth_token/ct0 format');
+        }
+        if (cookies.cookieHeader !== undefined && cookies.cookieHeader !== null && cookies.cookieHeader !== '') {
+            if (!isValidHeaderValue(cookies.cookieHeader)) {
+                throw new Error('Invalid auth_token/ct0 format');
+            }
+        }
+        this.authToken = cookies.authToken;
+        this.ct0 = cookies.ct0;
+        this.cookieHeader = cookies.cookieHeader || `auth_token=${this.authToken}; ct0=${this.ct0}`;
         this.userAgent =
             options.userAgent ||
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -26,6 +36,9 @@ export class TwitterClientBase {
         this.quoteDepth = normalizeQuoteDepth(options.quoteDepth);
         this.clientUuid = randomUUID();
         this.clientDeviceId = randomUUID();
+    }
+    redactError(message) {
+        return redactSecrets(message, [this.authToken, this.ct0, this.cookieHeader]);
     }
     async sleep(ms) {
         await new Promise((resolve) => setTimeout(resolve, ms));

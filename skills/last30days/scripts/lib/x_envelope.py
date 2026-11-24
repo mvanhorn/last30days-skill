@@ -38,6 +38,7 @@ field value; the envelope's raw ``error`` text reaches stderr only under
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -341,17 +342,43 @@ def _category(raw: str) -> str:
     return token[:40]
 
 
-def _clean_text(value: str) -> str:
-    """Strip C0/C1 controls (newlines and tabs survive) and defang markup.
+_MAX_UNESCAPE_PASSES = 3
+_ENTITY_PREFIX_RE = re.compile(
+    r"&(?=(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);?)"
+)
 
-    Envelope text is model-written and post-authored, so the two Markdown
-    constructs that stay active in the saved report are neutralised without
-    hiding the characters: a link tail ``](`` becomes ``]\\(`` (renders as
-    the same text, never as a link) and an HTML comment opener ``<!--``
-    becomes ``<! --`` (never a comment, so a pasted META marker cannot be
-    promoted). Raw tags are left to the HTML renderer's escaping.
+
+def _clean_text(value: str) -> str:
+    """Unescape HTML entities, strip C0/C1 controls (newlines and tabs survive),
+    and defang markup.
+
+    Envelope text is model-written and post-authored, so HTML entities are
+    decoded (bounded iterative unescape) before control-character stripping and
+    defanging. Any remaining entity layers past the pass cap are neutralized so
+    downstream ``html.unescape`` cannot re-introduce ``<!--``, ``](``, or
+    control bytes. The two Markdown constructs that stay active in the saved
+    report are neutralised without hiding the characters: a link tail ``](``
+    becomes ``]\\(`` (renders as the same text, never as a link) and an HTML
+    comment opener ``<!--`` becomes ``<! --`` (never a comment, so a pasted
+    META marker cannot be promoted). Raw tags are left to the HTML renderer's
+    escaping.
     """
-    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = value
+    for _ in range(_MAX_UNESCAPE_PASSES):
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = _CONTROL_TEXT_RE.sub("", text)
+        if "&" not in text:
+            break
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
+    else:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = _CONTROL_TEXT_RE.sub("", text)
+        if "&" in text and html.unescape(text) != text:
+            text = _ENTITY_PREFIX_RE.sub("& ", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _CONTROL_TEXT_RE.sub("", text)
     return text.replace("](", "]\\(").replace("<!--", "<! --")
 
