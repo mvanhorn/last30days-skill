@@ -16,7 +16,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 import urllib.error
 from urllib.parse import urlsplit
 import urllib.request
@@ -285,6 +285,7 @@ def get(
     max_bytes: int = MAX_RESPONSE_BYTES,
     public_only: bool | None = None,
     redirect_policy: dict[str, Any] | None = None,
+    on_start: Callable[[], None] | None = None,
 ):
     """Run one GET in a child process killed at the deadline.
 
@@ -350,6 +351,7 @@ def get(
                 cancel=cancel,
                 cleanup_grace=CLEANUP_GRACE_SECONDS,
                 capture_limit_bytes=MAX_META_BYTES,
+                on_pid=(lambda _pid: on_start()) if on_start is not None else None,
             )
         except subproc.SubprocTimeout as exc:
             raise GetTimeout("GET exceeded operation deadline or was cancelled", started=exc.started) from exc

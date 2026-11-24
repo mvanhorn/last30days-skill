@@ -830,8 +830,12 @@ class TestSearxngConfigHandoff:
         from lib import reddit_keyless
 
         clock = [100.0]
-        exhausted_at = 128.0 if mode == "public-first-backfill" else 173.0
-        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": 200.0}
+        # public-first without a key ends at 200 - 15 = 185 (web cutoff 177); the SC-first
+        # public fallback keeps the flat 20s margin (ends 180, cutoff 172).
+        exhausted_at = {"public-first-backfill": 128.0, "public-first": 178.0}.get(mode, 173.0)
+        # The public-first lane with a paid key ends at 170 - 10.5 - 24.5 = 135 (cutoff 127).
+        budget = 170.0 if mode == "public-first-backfill" else 200.0
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": budget}
         if mode != "public-first":
             cfg["SCRAPECREATORS_API_KEY"] = "sc-dummy-key"
         if mode.startswith("sc-first"):
@@ -881,9 +885,16 @@ class TestSearxngConfigHandoff:
         from lib import reddit_keyless
 
         clock = [100.0]
+        lanes = []
         thread = "https://www.reddit.com/r/LocalLLaMA/comments/paid123/"
-        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 200.0,
+        # 170s budget: the free lane ends at 170 - 10.5 - 24.5 = 135 (see the lanes assertion).
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 170.0,
                "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        real_lane = reddit_keyless.lane_deadline
+
+        def record_lane(deadline):
+            lanes.append(deadline)
+            return real_lane(deadline)
 
         def blocked_html(*args, **kwargs):
             http._record_failure(http.HTTPError("HTTP 403: HTML rung blocked", 403))
@@ -900,11 +911,13 @@ class TestSearxngConfigHandoff:
 
         with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
              mock.patch.object(reddit_keyless, "_within", side_effect=run_inline), \
+             mock.patch.object(reddit_keyless, "lane_deadline", side_effect=record_lane), \
              mock.patch.object(reddit_keyless.reddit_search, "_blocked_reason", "offline 403"):
             items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
                 cfg, sc_search=sc_search, html_fetch=blocked_html,
             )
 
+        assert lanes == [135.0]
         assert clock[0] == 128.0 and not seen_urls
         assert [item["url"] for item in items] == ([thread] if backfill == "result" else [])
         assert artifact.get("_source_outcome", {}).get("state") == state
@@ -917,8 +930,15 @@ class TestSearxngConfigHandoff:
 
         clock = [100.0]
         marks = []
+        lanes = []
         thread = "https://www.reddit.com/r/LocalLLaMA/comments/paid123/"
-        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 200.0}
+        # 170s budget: the free lane ends at 170 - 10.5 - 24.5 = 135 (see the lanes assertion).
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 170.0}
+        real_lane = reddit_keyless.lane_deadline
+
+        def record_lane(deadline):
+            lanes.append(deadline)
+            return real_lane(deadline)
 
         def web_floor_finishes_inside_margin(*args, **kwargs):
             # It starts with 4s left, so its own cutoff (133.4) is never reached;
@@ -940,10 +960,11 @@ class TestSearxngConfigHandoff:
             marks.append((path, state))
             return real_mark(path, state)
 
-        with mock.patch("time.monotonic", side_effect=lambda: clock[0]),              mock.patch.object(reddit_keyless, "_within", side_effect=run_inline),              mock.patch.object(reddit_keyless, "_web_floor", side_effect=web_floor_finishes_inside_margin),              mock.patch.object(reddit_keyless, "_mark", side_effect=record_mark),              mock.patch.object(reddit_keyless.reddit_search, "_blocked_reason", "offline 403"):
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]),              mock.patch.object(reddit_keyless, "_within", side_effect=run_inline),              mock.patch.object(reddit_keyless, "lane_deadline", side_effect=record_lane),              mock.patch.object(reddit_keyless, "_web_floor", side_effect=web_floor_finishes_inside_margin),              mock.patch.object(reddit_keyless, "_mark", side_effect=record_mark),              mock.patch.object(reddit_keyless.reddit_search, "_blocked_reason", "offline 403"):
             items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(cfg, sc_search=sc_search)
 
         # Every asked path finished and failed. Only the return margin was crossed.
+        assert lanes == [135.0]
         assert clock[0] == 133.2 and not seen_urls
         assert ("web", health.TIMEOUT) not in marks
         assert [item["url"] for item in items] == ([thread] if backfill == "result" else [])
@@ -952,6 +973,32 @@ class TestSearxngConfigHandoff:
             assert outcome is None
         else:
             assert outcome["state"] == health.UNREACHABLE and "search blocked" in outcome["detail"]
+
+    @pytest.mark.parametrize("margin_crossed", [False, True], ids=["in-margin", "past-margin"])
+    def test_incomplete_empty_backfill_keeps_its_note_ahead_of_the_margin_timeout(self, margin_crossed):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        note = "Reddit ScrapeCreators backfill stopped at its deadline before completing"
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 170.0}
+
+        def web_floor(*args, **kwargs):
+            clock[0] = 133.2 if margin_crossed else 100.0  # 133.2 is inside the 135 lane's 2s margin
+            return []
+
+        def run_inline(_wait_until, _stage, _default, call, /, *args, **kwargs):
+            return call(*args, **kwargs)
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(reddit_keyless, "_within", side_effect=run_inline), \
+             mock.patch.object(reddit_keyless, "_web_floor", side_effect=web_floor):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=lambda *a, **k: {"items": [], "incomplete": True, "incomplete_note": note},
+            )
+
+        assert not items and not seen_urls
+        outcome = artifact["_source_outcome"]
+        assert outcome["state"] == health.TIMEOUT and outcome["detail"] == note
 
     @pytest.mark.parametrize("sc_primary", [False, True], ids=["public-primary", "sc-primary"])
     def test_pipeline_keeps_site_hit_without_late_searxng_on_either_primary_path(self, sc_primary):

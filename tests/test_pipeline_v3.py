@@ -962,10 +962,11 @@ class TestPinnedGithubPersonAuthority(unittest.TestCase):
 
         report = pipeline.run(
             topic="octocat",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            config={"GITHUB_TOKEN": "dummy-token"},
             depth="default",
             requested_sources=["github"],
-            mock=True,
+            mock=False,
+            web_backend="none",
             external_plan=plan,
             github_user="octocat",
         )
@@ -1003,10 +1004,11 @@ class TestPinnedGithubPersonAuthority(unittest.TestCase):
 
         report = pipeline.run(
             topic="octocat",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            config={"GITHUB_TOKEN": "dummy-token"},
             depth="default",
             requested_sources=["github"],
-            mock=True,
+            mock=False,
+            web_backend="none",
             external_plan=plan,
             github_user="octocat",
         )
@@ -1071,10 +1073,11 @@ class TestPinnedGithubProjectSurvivesDateWindow(unittest.TestCase):
         ), patch("lib.pipeline._retrieve_stream", return_value=([], {})):
             return pipeline.run(
                 topic="Ghostty terminal",
-                config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                config={},
                 depth="default",
                 requested_sources=["github"],
-                mock=True,
+                mock=False,
+                web_backend="none",
                 external_plan=self._PLAN,
                 github_repos=["ghostty-org/ghostty"],
             )
@@ -3620,7 +3623,7 @@ class DiggQuoteEnrichmentByCliShapeTests(unittest.TestCase):
 
         calls: list[list[str]] = []
 
-        def cli(cmd, *, timeout, env=None, on_pid=None):
+        def cli(cmd, *, timeout, env=None, on_pid=None, deadline_monotonic=None, cancel=None):
             calls.append(list(cmd))
             return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
 

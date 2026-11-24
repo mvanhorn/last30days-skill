@@ -361,6 +361,13 @@ class RetrievalBundle:
     # what a healthy-looking run lost without branding the source partial.
     detail_by_source: dict[str, str] = field(default_factory=dict)
     lane_state_by_source: dict[str, RunOutcomeState] = field(default_factory=dict)
+    # Hard failures recorded via record_failure, kept separate from promoted
+    # lane_state_by_source entries so a sibling stream delivering items can
+    # revert a promoted lane state back to OK while hard failures stick.
+    failed_sources: set[str] = field(default_factory=set)
+    # Most specific raw failure state recorded via record_failure per source,
+    # preserved even when items_by_source causes source_status to show PARTIAL.
+    failure_state_by_source: dict[str, RunOutcomeState] = field(default_factory=dict)
     # The raw rows of the company's job board, kept until ranking is done so
     # the Jobs Digest can add the roles the run ranked highest. Never rendered.
     jobs_board_rows: list[dict[str, Any]] = field(default_factory=list)
@@ -383,22 +390,64 @@ class RetrievalBundle:
         """Record a failure, preserving already-returned items as partial.
 
         AUTH_FAILED is preserved even when items exist, since the re-login
-        signal shouldn't be downgraded to generic PARTIAL guidance.
+        signal shouldn't be downgraded to generic PARTIAL guidance. Repeat
+        calls never downgrade an existing AUTH_FAILED or more-specific failure
+        state per ``health.FAILURE_SPECIFICITY``.
         """
         count = len(self.items_by_source.get(source, []))
+        previous = self.source_status.get(source)
+        prev_is_hard = (
+            source in self.failed_sources
+            or (
+                previous is not None
+                and previous.state not in (health.OK, NO_RESULTS)
+                and previous.fix_hint is not None
+            )
+        )
+        prev_raw = self.failure_state_by_source.get(source)
+        if prev_raw is None and prev_is_hard and previous is not None:
+            prev_raw = previous.state
+
+        if prev_is_hard and prev_raw is not None:
+            prev_rank = health.FAILURE_SPECIFICITY.get(prev_raw, 9)
+            new_rank = health.FAILURE_SPECIFICITY.get(state, 9)
+            if prev_raw == AUTH_FAILED or prev_rank <= new_rank:
+                winning_raw = prev_raw
+                winning_detail = (
+                    (previous.detail if previous and previous.detail else None)
+                    or detail
+                )
+                winning_attempted = (
+                    (previous.attempted if previous is not None else False)
+                    or attempted
+                )
+            else:
+                winning_raw = state
+                winning_detail = detail
+                winning_attempted = attempted
+        else:
+            winning_raw = state
+            winning_detail = detail
+            winning_attempted = attempted
+
+        self.failed_sources.add(source)
+        self.failure_state_by_source[source] = winning_raw
         # Preserve AUTH_FAILED even when items exist: it's an actionable signal
         # (re-login needed) that shouldn't be downgraded to PARTIAL.
-        if state == AUTH_FAILED:
+        if winning_raw == AUTH_FAILED:
             outcome_state: RunOutcomeState = AUTH_FAILED
         else:
-            outcome_state = PARTIAL if count else state
-        self.errors_by_source.setdefault(source, detail)
+            outcome_state = PARTIAL if count else winning_raw
+        if prev_is_hard:
+            self.errors_by_source[source] = winning_detail
+        else:
+            self.errors_by_source.setdefault(source, winning_detail)
         self.source_status[source] = SourceOutcome(
             source=source,
             state=outcome_state,
             items_returned=count,
-            attempted=attempted,
-            detail=detail,
+            attempted=winning_attempted,
+            detail=winning_detail,
             fix_hint="doctor",
         )
 
@@ -422,9 +471,18 @@ class RetrievalBundle:
             detail = f"{existing}; {detail}"
         self.detail_by_source[source] = detail
         if state:
-            self.lane_state_by_source[source] = state
+            prev_lane_state = self.lane_state_by_source.get(source)
+            if (
+                prev_lane_state is None
+                or health.FAILURE_SPECIFICITY.get(state, 9)
+                < health.FAILURE_SPECIFICITY.get(prev_lane_state, 9)
+            ):
+                self.lane_state_by_source[source] = state
         current = self.source_status.get(source)
-        if current and current.state in (health.OK, NO_RESULTS):
+        if current and (
+            current.state in (health.OK, NO_RESULTS)
+            or source not in self.failed_sources
+        ):
             current.detail = detail
             current.lane_failure_state = self.lane_state_by_source.get(source)
 
@@ -433,7 +491,8 @@ class RetrievalBundle:
         self.items_by_source_and_query.setdefault((label, source), []).extend(items)
         self.items_by_source.setdefault(source, []).extend(items)
         previous = self.source_status.get(source)
-        state: RunOutcomeState = health.OK if items else NO_RESULTS
+        has_items = bool(self.items_by_source[source])
+        state: RunOutcomeState = health.OK if (items or has_items) else NO_RESULTS
         detail = None
         fix_hint = None
         if previous and previous.state == health.OK and not items:
@@ -444,18 +503,28 @@ class RetrievalBundle:
         if state in (health.OK, NO_RESULTS):
             detail = self.detail_by_source.get(source)
             lane_state = self.lane_state_by_source.get(source)
-            if state == NO_RESULTS and lane_state and not self.items_by_source[source]:
+            if state == NO_RESULTS and lane_state and not has_items:
                 # Nothing delivered and sub-requests failed: that is the
                 # failure, not a clean empty result.
                 state = lane_state
-        if previous and previous.state not in (health.OK, NO_RESULTS):
+        prev_is_hard = (
+            source in self.failed_sources
+            or (
+                previous is not None
+                and previous.state not in (health.OK, NO_RESULTS)
+                and previous.fix_hint is not None
+            )
+        )
+        if prev_is_hard and previous is not None and previous.state not in (health.OK, NO_RESULTS):
             # Preserve AUTH_FAILED state even when items are added: it's an
             # actionable signal (re-login needed) that shouldn't be downgraded
-            # to PARTIAL. Other failure states become PARTIAL when items exist.
+            # to PARTIAL. Other hard failure states become PARTIAL when items
+            # exist. Promoted lane_state values are not hard failures and
+            # revert to OK as soon as any sibling stream delivers items.
             if previous.state == AUTH_FAILED:
                 state = AUTH_FAILED
             else:
-                state = PARTIAL if self.items_by_source[source] else previous.state
+                state = PARTIAL if has_items else previous.state
             detail = previous.detail
             fix_hint = previous.fix_hint
         self.source_status[source] = SourceOutcome(
