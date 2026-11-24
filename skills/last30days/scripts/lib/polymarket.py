@@ -885,6 +885,7 @@ def _own_outcome_labels(
     outcome_questions: List[Optional[str]],
     outcome_markets: List[Dict[str, Any]],
     sibling_names: Optional[List[str]] = None,
+    sibling_group_titles: Optional[List[str]] = None,
 ) -> List[tuple]:
     """Give each sub-market of an event a label of its own.
 
@@ -893,13 +894,14 @@ def _own_outcome_labels(
     or prices of one subject: every "Will Waymo operate in N cities ..."
     market came out as "Waymo". A subject name is replaced by the label
     Polymarket gives that sub-market (``groupItemTitle``: "San Francisco
-    49ers", "12-15", "Denver, CO") when that label is its own. A subject that
-    repeats within the event, or is a bare article, is replaced by that label
-    even so, or by the whole question when it has none or the label repeats.
+    49ers", "12-15", "Denver, CO") when that label is its own across the
+    event's child markets. A subject that repeats within the event, or is a
+    bare article, is replaced by that label even so, or by the whole question
+    when it has none or the label repeats.
 
-    ``sibling_names`` are the names of every sub-market of the event, priced
-    or not, so a subject still counts as repeated when the book check leaves
-    only one of its brackets.
+    ``sibling_names`` and ``sibling_group_titles`` cover every sub-market of
+    the event, priced or above-floor or not, so a subject or ``groupItemTitle``
+    still counts as repeated when filtering leaves only one of its markets.
 
     Only subject names are replaced, and the order is kept, so every name an
     older build saved still reads its own market through
@@ -921,11 +923,12 @@ def _own_outcome_labels(
         " ".join(str(market.get("groupItemTitle") or "").split()) for market in outcome_markets
     ]
     title_counts: Dict[str, int] = {}
-    for title in group_titles:
-        title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
+    for title in group_titles if sibling_group_titles is None else sibling_group_titles:
+        if title:
+            title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
     labels = [
         title
-        if change or (is_subject and title and title_counts[title.casefold()] == 1)
+        if change or (is_subject and title and title_counts.get(title.casefold(), 0) == 1)
         else name
         for name, change, is_subject, title in zip(names, relabel, subjects, group_titles)
     ]
@@ -935,7 +938,11 @@ def _own_outcome_labels(
     return [
         (
             _whole_question_name(question)
-            if change and (not label or taken[label.casefold()] > 1)
+            if change and (
+                not label
+                or taken[label.casefold()] > 1
+                or title_counts.get(label.casefold(), 0) > 1
+            )
             else label,
             price,
         )
@@ -1652,6 +1659,7 @@ def parse_polymarket_response(
         )
         impossible_set = False
         sibling_names: Optional[List[str]] = None
+        sibling_group_titles: Optional[List[str]] = None
         if top_outcomes_are_binary and len(active_markets) > 1:
             synth_outcomes = []
             for m in active_markets:
@@ -1668,6 +1676,11 @@ def parse_polymarket_response(
                     synth_outcomes.append((q, yes_price, m))
             sibling_names = [
                 _shorten_question(m["question"]) for m in active_markets if m.get("question")
+            ]
+            sibling_group_titles = [
+                " ".join(str(m.get("groupItemTitle") or "").split())
+                for m in active_markets
+                if m.get("question")
             ]
             if synth_outcomes:
                 synth_outcomes.sort(key=lambda x: x[1], reverse=True)
@@ -1763,33 +1776,12 @@ def parse_polymarket_response(
         relevance = min(1.0, match_strength * (0.75 + 0.25 * market_quality))
 
         # After the ordering above, which reads the subject names.
-        # When verification pulls in sub-floor markets on an active event,
-        # also keep the labels a display-filtered parse (>= RACE_PRICE_FLOOR)
-        # would have saved so a sub-floor sibling sharing groupItemTitle
-        # cannot invalidate an already-saved label.
-        display_outcome_prices: Optional[List[tuple]] = None
-        if (
-            include_all_outcomes
-            and not include_closed
-            and outcome_questions
-            and outcome_questions[0] is not None
-        ):
-            display_rows = [
-                (pair, question, market)
-                for pair, question, market in zip(
-                    outcome_prices, outcome_questions, outcome_markets
-                )
-                if pair[1] >= RACE_PRICE_FLOOR
-            ]
-            if display_rows and len(display_rows) < len(outcome_prices):
-                display_outcome_prices = _own_outcome_labels(
-                    [pair for pair, _q, _m in display_rows],
-                    [question for _pair, question, _m in display_rows],
-                    [market for _pair, _q, market in display_rows],
-                    sibling_names,
-                )
         outcome_prices = _own_outcome_labels(
-            outcome_prices, outcome_questions, outcome_markets, sibling_names,
+            outcome_prices,
+            outcome_questions,
+            outcome_markets,
+            sibling_names,
+            sibling_group_titles,
         )
         if entity is not None and entity.price is None:
             headline = None
@@ -1845,8 +1837,6 @@ def parse_polymarket_response(
             "relevance": round(relevance, 2),
             "why_relevant": f"Prediction market: {title[:60]}",
         }
-        if display_outcome_prices is not None:
-            item["display_outcome_prices"] = display_outcome_prices
         if entity is not None:
             item["selection_score"] = score
             item["selection_tier"] = tier
@@ -1893,18 +1883,13 @@ def _normalize_snapshot_key(key: str) -> str:
     return key.strip().casefold()
 
 
-def resolve_snapshot_value(
+def _resolve_value_in_map(
     values: Dict[str, Any],
     datum_key: str,
     *,
     blocked_repeats: frozenset[str] = frozenset(),
     allow_occurrence_zero: bool = True,
 ) -> Any:
-    """Resolve ``datum_key`` against a snapshot ``values`` map.
-
-    Shared by both ``refetch_datum`` (direct fetch) and ``freshness._lookup_cached_datum``
-    (cached hit) so direct and cached verification always produce identical results.
-    """
     if not values:
         return None
     if datum_key == "end_date" or not allow_occurrence_zero:
@@ -1950,6 +1935,38 @@ def resolve_snapshot_value(
             return normalized_values[occ0_key]
     elif has_suffix and occurrence == 0 and base in normalized_values:
         return normalized_values[base]
+    return None
+
+
+def resolve_snapshot_value(
+    values: Dict[str, Any],
+    datum_key: str,
+    *,
+    legacy_values: Optional[Dict[str, Any]] = None,
+    blocked_repeats: frozenset[str] = frozenset(),
+    allow_occurrence_zero: bool = True,
+) -> Any:
+    """Resolve ``datum_key`` against current ``values`` first, then ``legacy_values``.
+
+    Shared by both ``refetch_datum`` (direct fetch) and ``freshness._lookup_cached_datum``
+    (cached hit) so direct and cached verification always produce identical results
+    and legacy cut names never shadow a current outcome name.
+    """
+    value = _resolve_value_in_map(
+        values,
+        datum_key,
+        blocked_repeats=blocked_repeats,
+        allow_occurrence_zero=allow_occurrence_zero,
+    )
+    if value is not None:
+        return value
+    if legacy_values and datum_key != "end_date" and allow_occurrence_zero:
+        return _resolve_value_in_map(
+            legacy_values,
+            datum_key,
+            blocked_repeats=blocked_repeats,
+            allow_occurrence_zero=allow_occurrence_zero,
+        )
     return None
 
 
@@ -2088,14 +2105,9 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     values: dict[str, Any] = {}
     outcome_pairs = refreshed.get("outcome_prices") or []
     _record_outcome_values(values, outcome_pairs, overwrite=True)
-    # Preserve display-filtered (>= RACE_PRICE_FLOOR) labels saved before
-    # verification pulled in sub-floor siblings that share a groupItemTitle.
-    display_pairs = refreshed.get("display_outcome_prices") or []
-    if display_pairs:
-        _record_outcome_values(values, display_pairs, overwrite=False)
     # Reports saved by older builds hold each market under its old cut name.
-    # The same snapshot answers later claims on this event, so it carries
-    # those names too, numbered the way the old names repeated.
+    # Keep them in a separate map so legacy cut names are tried only after
+    # current names (including occurrence-0 collapse on current names).
     questions = refreshed.get("outcome_questions") or []
     legacy_pairs = [
         (
@@ -2104,7 +2116,8 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         )
         for (name, price), question in zip(outcome_pairs, questions)
     ]
-    _record_outcome_values(values, legacy_pairs, overwrite=False)
+    legacy_values: dict[str, Any] = {}
+    _record_outcome_values(legacy_values, legacy_pairs, overwrite=True)
     # A repeated name is told apart by its rank among the priced markets. When
     # the book check drops one market carrying that name, the ranks shift and a
     # saved occurrence could read a sibling's price, so repeated names of a
@@ -2120,9 +2133,10 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         question = str(market["question"])
         dropped_names.add(_shorten_question(question).strip().casefold())
         dropped_names.add(_legacy_shorten_question(question).strip().casefold())
-    for key in [k for k in values if "\x1f" in k]:
-        if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_names:
-            del values[key]
+    for mapping in (values, legacy_values):
+        for key in [k for k in mapping if "\x1f" in k]:
+            if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_names:
+                del mapping[key]
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
@@ -2130,11 +2144,13 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     value = resolve_snapshot_value(
         values,
         datum_key,
+        legacy_values=legacy_values,
         blocked_repeats=blocked_repeats,
         allow_occurrence_zero=(datum_key != "end_date"),
     )
     snapshot = {
         "values": values,
+        "legacy_values": legacy_values,
         "blocked_repeats": sorted(blocked_repeats),
         "url": str(getattr(item, "url", "")),
         "timestamp": event.get("updatedAt"),

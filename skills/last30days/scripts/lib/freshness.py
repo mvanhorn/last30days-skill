@@ -35,6 +35,7 @@ class RefetchedDatum:
     url: str
     timestamp: str | None = None
     values: dict[str, Any] | None = None
+    legacy_values: dict[str, Any] | None = None
     blocked_repeats: frozenset[str] = frozenset()
 
 
@@ -282,6 +283,11 @@ def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url
             url=str(value.get("url") or fallback_url),
             timestamp=value.get("timestamp"),
             values=value.get("values") if isinstance(value.get("values"), dict) else None,
+            legacy_values=(
+                value.get("legacy_values")
+                if isinstance(value.get("legacy_values"), dict)
+                else None
+            ),
             blocked_repeats=_coerce_blocked_repeats(value.get("blocked_repeats")),
         )
     return RefetchedDatum(value=value, url=fallback_url)
@@ -443,10 +449,12 @@ def _lookup_cached_datum(
     """Resolve ``claim.datum_key`` from a cached snapshot using refetch_datum semantics."""
     cached_key, cached_datum = cached
     values = cached_datum.values
-    if values:
+    legacy_values = cached_datum.legacy_values
+    if values or legacy_values:
         value = polymarket.resolve_snapshot_value(
-            values,
+            values or {},
             claim.datum_key,
+            legacy_values=legacy_values,
             blocked_repeats=cached_datum.blocked_repeats,
             allow_occurrence_zero=(claim.datum_kind == "polymarket_probability"),
         )
@@ -456,6 +464,7 @@ def _lookup_cached_datum(
                 url=cached_datum.url,
                 timestamp=cached_datum.timestamp,
                 values=values,
+                legacy_values=legacy_values,
                 blocked_repeats=cached_datum.blocked_repeats,
             )
         return None
@@ -709,6 +718,11 @@ def verify_report(
                         url=str(snapshot.get("url") or claim.source_url),
                         timestamp=snapshot.get("timestamp"),
                         values=dict(snapshot.get("values") or {}),
+                        legacy_values=(
+                            dict(snapshot.get("legacy_values") or {})
+                            if isinstance(snapshot.get("legacy_values"), dict)
+                            else None
+                        ),
                         blocked_repeats=_coerce_blocked_repeats(snapshot.get("blocked_repeats")),
                     ),
                 )

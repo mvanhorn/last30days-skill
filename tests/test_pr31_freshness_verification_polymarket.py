@@ -943,11 +943,14 @@ def test_greptile1_book_dropped_repeat_still_blocked_on_cached_lookup(monkeypatc
     assert [v.verdict for v in verdicts] == ["current", "unsupported", "unsupported"]
 
 
-def test_greptile2_extra_subfloor_outcome_does_not_invalidate_saved_group_title(monkeypatch):
-    """Two child markets sharing groupItemTitle='OpenAI' with different subjects:
-    the report saved the 0.60 market under 'OpenAI' (excluding the 0.002 market).
-    Refetch pulls in the 0.002 market, which switches full labels to subjects,
-    but must still resolve saved 'OpenAI' -> 0.60 AND the sub-floor market -> 0.002."""
+def test_greptile2_shared_group_title_uses_subject_so_swapped_prices_never_switch_markets(
+    monkeypatch,
+):
+    """Two child markets sharing groupItemTitle='OpenAI' (GPT-5 at 0.60, Sora 2 at 0.002):
+    full-event collision detection labels GPT-5 unambiguously as 'GPT-5' even during
+    display parsing, so verification tracks GPT-5 accurately whether unchanged or swapped,
+    and an older saved claim with ambiguous 'OpenAI' returns unsupported instead of
+    silently attributing Sora 2's swapped price to GPT-5."""
     event = {
         "id": "703",
         "slug": "ai-launches",
@@ -961,20 +964,10 @@ def test_greptile2_extra_subfloor_outcome_does_not_invalidate_saved_group_title(
             _binary_submarket("Will Claude 5 win the benchmark?", "Anthropic", 0.40),
         ],
     }
-    # Confirm a normal display parse saves the 0.60 market under "OpenAI".
+    # Display parse detects the full-event groupItemTitle collision and saves "GPT-5" (not "OpenAI").
     [display_item] = polymarket.parse_polymarket_response({"events": [event]})
-    assert ("OpenAI", 0.60) in display_item["outcome_prices"]
+    assert display_item["outcome_prices"] == [("GPT-5", 0.60), ("Anthropic", 0.40)]
 
-    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
-    item = SimpleNamespace(metadata={"event_id": "703"}, url="", item_id="pm-703")
-
-    assert polymarket.refetch_datum(item, "OpenAI")["value"] == 0.60
-    assert polymarket.refetch_datum(item, "GPT-5")["value"] == 0.60
-    assert polymarket.refetch_datum(item, "Sora 2")["value"] == 0.002
-    assert polymarket.refetch_datum(item, "Anthropic")["value"] == 0.40
-
-    # End-to-end verify_report on the display-saved report confirms current (not unsupported),
-    # and detects movement when the live price changes.
     saved = _item(
         "polymarket",
         title=display_item["title"],
@@ -984,6 +977,13 @@ def test_greptile2_extra_subfloor_outcome_does_not_invalidate_saved_group_title(
             "outcome_prices": [list(pair) for pair in display_item["outcome_prices"]],
         },
     )
+
+    # Unchanged prices -> both current, and sub-floor Sora 2 is also directly refetchable.
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+    item = SimpleNamespace(metadata={"event_id": "703"}, url="", item_id="pm-703")
+    assert polymarket.refetch_datum(item, "GPT-5")["value"] == 0.60
+    assert polymarket.refetch_datum(item, "Sora 2")["value"] == 0.002
+    assert polymarket.refetch_datum(item, "Anthropic")["value"] == 0.40
     verdicts = freshness.verify_report(
         _report(saved),
         checked_at="2026-11-24T12:05:00Z",
@@ -991,22 +991,104 @@ def test_greptile2_extra_subfloor_outcome_does_not_invalidate_saved_group_title(
     )
     assert [v.verdict for v in verdicts] == ["current", "current"]
 
-    moved_event = {
+    # Swapped prices (GPT-5 drops to 0.002, Sora 2 rises to 0.60):
+    # GPT-5 claim must be stale (60% -> 0.2%), NOT current!
+    swapped_event = {
         **event,
         "markets": [
-            _binary_submarket("Will GPT-5 win the benchmark?", "OpenAI", 0.55),
-            _binary_submarket("Will Sora 2 win the benchmark?", "OpenAI", 0.002),
+            _binary_submarket("Will GPT-5 win the benchmark?", "OpenAI", 0.002),
+            _binary_submarket("Will Sora 2 win the benchmark?", "OpenAI", 0.60),
             _binary_submarket("Will Claude 5 win the benchmark?", "Anthropic", 0.40),
         ],
     }
-    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: moved_event)
-    moved_verdicts = freshness.verify_report(
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: swapped_event)
+    swapped_verdicts = freshness.verify_report(
         _report(saved),
         checked_at="2026-11-24T12:05:00Z",
         refetchers={"polymarket": polymarket.refetch_datum},
     )
-    assert [v.verdict for v in moved_verdicts] == ["stale", "current"]
-    assert moved_verdicts[0].current_value == 0.55
+    assert [v.verdict for v in swapped_verdicts] == ["stale", "current"]
+    assert swapped_verdicts[0].current_value == 0.002
+
+    # A pre-PR saved claim carrying ambiguous "OpenAI" on this 2-market event
+    # must return unsupported rather than reading Sora 2's swapped 0.60 as current.
+    legacy_saved = _item(
+        "polymarket",
+        title=display_item["title"],
+        url="https://polymarket.com/event/ai-launches",
+        metadata={"event_id": "703", "outcome_prices": [["OpenAI", 0.60]]},
+    )
+    legacy_verdicts = freshness.verify_report(
+        _report(legacy_saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert [v.verdict for v in legacy_verdicts] == ["unsupported"]
+
+
+def test_greptile_current_name_occurrence_zero_beats_legacy_cut_repeats(monkeypatch):
+    """When current outcome 'Apple' is unique (0.70) while two other markets shorten to
+    'Apple' under legacy rules (0.20, 0.10), BOTH direct refetch_datum and cached
+    verify_report must resolve 'Apple\\x1f0' to current 'Apple' (0.70), while truly
+    legacy-only keys still resolve from legacy_values."""
+    event = {
+        "id": "707",
+        "slug": "apple-markets",
+        "title": "Apple milestones?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            # Current label: "Apple" (unique groupItemTitle); legacy cut: "Tim Cook"
+            _binary_submarket("Will Tim Cook remain CEO of the company?", "Apple", 0.70),
+            # Current labels: "$4T", "$5T"; legacy cuts: both "Apple"
+            _binary_submarket("Will Apple reach a $4T market cap?", "$4T", 0.20),
+            _binary_submarket("Will Apple reach a $5T market cap?", "$5T", 0.10),
+            # Legacy-only cut: "OldCut" (distinct from current label "Milestone")
+            _binary_submarket("Will OldCut win the legacy milestone?", "Milestone", 0.30),
+        ],
+    }
+    calls: list[int] = []
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event)
+    item = SimpleNamespace(metadata={"event_id": "707"}, url="", item_id="pm-707")
+
+    # Direct fetch: Apple\x1f0 resolves to current "Apple" (0.70), NOT legacy "$4T" (0.20).
+    assert polymarket.refetch_datum(item, "Apple\x1f0")["value"] == 0.70
+    # Truly legacy-only keys still resolve via legacy_values.
+    assert polymarket.refetch_datum(item, "OldCut")["value"] == 0.30
+    assert polymarket.refetch_datum(item, "Tim Cook")["value"] == 0.70
+
+    # Cached hit after "Milestone" fetches first: identical resolution via shared helper.
+    calls.clear()
+    saved = _item(
+        "polymarket",
+        title="Apple milestones?",
+        url="https://polymarket.com/event/apple-markets",
+        metadata={
+            "event_id": "707",
+            "outcome_prices": [
+                ["Milestone", 0.30],
+                ["Apple", 0.70],
+                ["Apple", 0.25],
+                ["OldCut", 0.30],
+            ],
+        },
+    )
+    verdicts = freshness.verify_report(
+        _report(saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    # Milestone -> 0.30 (current); Apple\x1f0 -> current Apple 0.70 (current);
+    # Apple\x1f1 -> legacy Apple\x1f1 0.10 (stale); OldCut -> legacy 0.30 (current).
+    assert verdicts[0].verdict == "current"
+    assert verdicts[1].verdict == "current"
+    assert verdicts[1].current_value == 0.70
+    assert verdicts[2].verdict == "stale"
+    assert verdicts[2].current_value == 0.10
+    assert verdicts[3].verdict == "current"
+    assert verdicts[3].current_value == 0.30
 
 
 def test_greptile3_bad_price_on_top_binary_market_does_not_hide_valid_siblings():
