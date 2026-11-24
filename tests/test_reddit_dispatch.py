@@ -109,6 +109,31 @@ def _stream(config):
     )
 
 
+def test_sc_primary_keeps_captured_public_failure_at_the_fallback_cutoff():
+    clock = [100.0]
+    failure = http.HTTPError("HTTP 429: public listing rate-limited", status_code=429)
+
+    def public_search(*args, **kwargs):
+        clock[0] = 179.0  # Less than two seconds remain in the public lane.
+        http._record_failure(failure)
+        return []
+
+    config = {
+        "SCRAPECREATORS_API_KEY": "sc-dummy-key",
+        env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+        "_research_deadline": 200.0,
+    }
+    with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+         mock.patch("lib.reddit.search_and_enrich_memo", return_value={}), \
+         mock.patch("lib.reddit_public.search_reddit_public", side_effect=public_search):
+        items, artifact = _stream(config)
+
+    assert items == []
+    outcome = artifact["_source_outcome"]
+    assert outcome["state"] == health.RATE_LIMITED
+    assert outcome["detail"] == str(failure)
+
+
 def _sc_402(*_args, **_kwargs):
     # Mirrors the real transport: http records the failure in the run's
     # capture sink, then raises.

@@ -1309,6 +1309,11 @@ def capture_failures():
         _failure_sink.reset(token)
 
 
+def has_captured_failures() -> bool:
+    """Check the current failure sink without replacing or consuming it."""
+    return bool(_failure_sink.get())
+
+
 @contextmanager
 def tee_failures():
     """Observe failures locally WITHOUT hiding them from the enclosing sink.

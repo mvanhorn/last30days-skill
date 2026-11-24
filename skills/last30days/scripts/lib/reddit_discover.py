@@ -9,7 +9,7 @@ subreddit listings, share links and other hosts are not threads and are
 dropped. Each ref keeps the result's title and date, which stand in only when
 no hydrator can fill the thread.
 
-An entity gets at most :data:`MAX_QUERIES_PER_ENTITY` web queries per run:
+An entity gets at most :data:`MAX_QUERIES_PER_ENTITY` distinct web queries per run:
 the topic, and the topic with the top resolved subreddit as a hint. Repeat
 calls for the same topic (one per subquery, or per comparison entity) reuse
 the answers already fetched instead of asking again.
@@ -28,9 +28,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
-from . import http, web_search_keyless
+from . import env, http, web_search_keyless
 from .reddit_refs import ThreadRef, canonical_thread
 
 MAX_QUERIES_PER_ENTITY = 2
@@ -110,20 +110,71 @@ class BarResult:
         return f"{len(self.dropped)} of {total} threads dropped for not naming the topic ({label})"
 
 
-# Per-run memo: topic key -> {query: event set once the answer is in}, and
-# topic key -> {query: results}. A second caller asking a query in flight
-# waits for the first one's answer instead of asking again.
+# Per-run memo: topic key -> {query: completion event or None for a retryable
+# miss}, and topic key -> {query: results}. A second caller asking a query in
+# flight waits for the first one's answer instead of asking again.
+# Direct callers that omit ``config`` load user-approved settings once per run
+# without reading browser cookies, untrusted project files, or secret stores.
+_DISCOVER_CONFIG_POLICY = env.ConfigLoadPolicy(
+    browser_cookies="off",
+    allow_project_config=False,
+    inspect_ignored_project_config=False,
+    load_secret_stores=False,
+)
 _LOCK = threading.Lock()
-_ASKED: dict[str, dict[str, threading.Event]] = {}
+_CONFIG_LOAD_LOCK = threading.Lock()
+_ASKED: dict[str, dict[str, Optional[threading.Event]]] = {}
 _ANSWERS: dict[str, dict[str, list[dict]]] = {}
+_SEARXNG_URL: Optional[str] = None
+_RUN_GENERATION = 0
 _WAIT_SECONDS = 30.0
 
 
 def reset_run_state() -> None:
-    """Forget the queries this run asked (call between runs in one process)."""
+    """Forget the queries and SearXNG setting this run asked (call between runs in one process)."""
+    global _SEARXNG_URL, _RUN_GENERATION
     with _LOCK:
         _ASKED.clear()
         _ANSWERS.clear()
+        _SEARXNG_URL = None
+        _RUN_GENERATION += 1
+
+
+def _normalize_searxng_url(config: Optional[Mapping[str, Any]]) -> str:
+    """Extract trimmed LAST30DAYS_SEARXNG_URL or '' when absent/unsubstituted."""
+    if not isinstance(config, Mapping):
+        return ""
+    raw = config.get("LAST30DAYS_SEARXNG_URL")
+    if not isinstance(raw, str) or env.is_unsubstituted_template(raw):
+        return ""
+    return raw.strip()
+
+
+def _standalone_searxng_url(generation: int) -> Optional[str]:
+    """Load the approved URL; return '' if absent or None if unavailable."""
+    global _SEARXNG_URL
+    with _LOCK:
+        if generation != _RUN_GENERATION:
+            return None
+        if _SEARXNG_URL is not None:
+            return _SEARXNG_URL
+    with _CONFIG_LOAD_LOCK:
+        with _LOCK:
+            if generation != _RUN_GENERATION:
+                return None
+            if _SEARXNG_URL is not None:
+                return _SEARXNG_URL
+        try:
+            loaded = env.get_config(policy=_DISCOVER_CONFIG_POLICY)
+        except Exception as exc:
+            _log(f"config load failed: {type(exc).__name__}")
+            return None
+        url = _normalize_searxng_url(loaded)
+        with _LOCK:
+            if generation != _RUN_GENERATION:
+                return None
+            _SEARXNG_URL = url
+            return url
 
 
 def _log(msg: str) -> None:
@@ -169,40 +220,60 @@ def _clean_title(title: str) -> str:
 
 
 def _ask(
-    topic_key: str, query: str, search: SearchFn, date_range: tuple[str, str],
-    freshness: Optional[str],
+    generation: int, topic_key: str, query: str, search: SearchFn, date_range: tuple[str, str],
+    freshness: Optional[str], config: Optional[Mapping[str, Any]] = None,
+    deadline: Optional[float] = None,
 ) -> tuple[Optional[list[dict]], dict]:
     """One web query, memoized per run and capped per entity.
 
-    Returns ``(None, {})`` when the entity's query budget is spent.
+    Returns ``(None, {})`` when the entity's query budget is spent or the run ends.
     """
     with _LOCK:
+        if generation != _RUN_GENERATION:
+            return None, {}
         asked = _ASKED.setdefault(topic_key, {})
         done = asked.get(query)
         owner = done is None
         if owner:
-            if len(asked) >= MAX_QUERIES_PER_ENTITY:
+            if query not in asked and len(asked) >= MAX_QUERIES_PER_ENTITY:
                 return None, {}
             done = asked[query] = threading.Event()
     if not owner:
         done.wait(_WAIT_SECONDS)
         with _LOCK:
+            if generation != _RUN_GENERATION:
+                return None, {}
             return list(_ANSWERS.get(topic_key, {}).get(query, [])), {}
     items: list[dict] = []
     artifact: dict = {}
+    url: Optional[str] = ""
     try:
+        url = (
+            _standalone_searxng_url(generation) if config is None else _normalize_searxng_url(config)
+        )
+        with _LOCK:
+            if generation != _RUN_GENERATION:
+                return None, {}
+        search_config = {"LAST30DAYS_SEARXNG_URL": url} if url else {}
+        extra = {"deadline_monotonic": deadline} if deadline is not None else {}
         # The web rungs' failures are the floor's own health, not the Reddit
         # source's: keep them out of the stream's failure sink.
         with http.capture_failures():
             items, artifact = search(
-                query, date_range, {}, count=RESULTS_PER_QUERY, freshness=freshness,
+                query, date_range, search_config,
+                count=RESULTS_PER_QUERY, freshness=freshness, **extra,
             )
     except Exception as exc:  # the floor must never break the lane
         _log(f"web search failed: {type(exc).__name__}: {exc}")
     finally:
         with _LOCK:
-            _ANSWERS.setdefault(topic_key, {})[query] = list(items or [])
-        done.set()
+            if generation == _RUN_GENERATION:
+                if url is None and not items:
+                    # Let this query try again without freeing its slot for a new hint.
+                    asked[query] = None
+                else:
+                    _ANSWERS.setdefault(topic_key, {})[query] = list(items or [])
+            done.set()
     return list(items or []), artifact or {}
 
 
@@ -215,6 +286,7 @@ def web_refs(
     search: Optional[SearchFn] = None,
     deadline: Optional[float] = None,
     floor: Optional[WebFloor] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> WebFloor:
     """Thread refs for ``topic`` from keyless web search. Never raises.
 
@@ -224,6 +296,8 @@ def web_refs(
     ``deadline`` (``time.monotonic()``). ``floor`` is filled in place after
     each query, so a caller that stops waiting keeps the threads found so far.
     """
+    with _LOCK:
+        generation = _RUN_GENERATION
     floor = floor if floor is not None else WebFloor()
     topic = " ".join(str(topic or "").split())
     if not topic:
@@ -237,7 +311,10 @@ def web_refs(
         if deadline is not None and time.monotonic() >= deadline:
             _log("web floor stopped at its deadline; later queries skipped")
             break
-        items, artifact = _ask(topic.lower(), query, search, date_range, freshness)
+        items, artifact = _ask(
+            generation, topic.lower(), query, search, date_range, freshness,
+            config=config, deadline=deadline,
+        )
         if items is None:
             continue
         for item in items:

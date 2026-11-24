@@ -49,7 +49,7 @@ import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from . import http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
@@ -307,6 +307,7 @@ def _web_floor(
     from_date: Optional[str],
     to_date: Optional[str],
     deadline: Optional[float],
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
     reddit_health.seed_web_rungs()
@@ -321,6 +322,7 @@ def _web_floor(
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
             floor=partial, **discover_kw,
+            **({"config": config} if config is not None else {}),
         )
         floor = (
             found.snapshot()
@@ -558,6 +560,7 @@ def _discover(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     # The host's own thread refs come first (best-first, KTD12): they cost
     # only hydration, and every other layer merges into them by thread id.
@@ -602,6 +605,7 @@ def _discover(
     else:
         web_posts = _web_floor(
             topic, depth, subreddits, dedicated_subreddits, from_date, to_date, deadline,
+            **({"config": config} if config is not None else {}),
         )
 
     # Dedicated lane: the entity's home subs are wholly on-topic. Pull
@@ -897,6 +901,7 @@ def search_and_enrich(
     depth: str = "default",
     subreddits: Optional[List[str]] = None,
     dedicated_subreddits: Optional[List[str]] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Full keyless Reddit pipeline: discover then enrich.
 
@@ -908,6 +913,7 @@ def search_and_enrich(
         subreddits: Optional pre-resolved broad/category subreddit names (no r/)
         dedicated_subreddits: Optional entity-home subreddit names (no r/) pulled
             in full (top+hot+new) and exempt from the relevance floor.
+        config: Optional pre-loaded per-run config mapping.
 
     Returns:
         List of normalized item dicts matching the reddit_public output shape,
@@ -918,6 +924,7 @@ def search_and_enrich(
     posts = _discover(
         topic, depth, subreddits, dedicated_subreddits, from_date=from_date, to_date=to_date,
         **({"deadline": deadline} if deadline is not None else {}),
+        **({"config": config} if config is not None else {}),
     )
     if not posts:
         return []

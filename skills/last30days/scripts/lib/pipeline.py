@@ -7224,6 +7224,12 @@ def _retrieve_stream_impl(
         reddit_query = raw_topic or subquery.search_query
         dedicated_subreddits = config.get("_dedicated_subreddits") or None
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
+        # Leave time to hand back the public lane's partial results.
+        research_deadline = config.get("_research_deadline")
+        public_deadline = (
+            research_deadline - REDDIT_LANE_RETURN_MARGIN_SECONDS
+            if research_deadline is not None else None
+        )
         if env.reddit_scrapecreators_primary(config):
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             if config.get("_reddit_envelope") is not None:
@@ -7254,10 +7260,11 @@ def _retrieve_stream_impl(
                 )
             public_failure: Exception | None = None
             try:
-                public_results = reddit_public.search_reddit_public(
-                    reddit_query, from_date, to_date, depth=depth,
-                    subreddits=subreddits,
-                )
+                with reddit_keyless.lane_deadline(public_deadline):
+                    public_results = reddit_public.search_reddit_public(
+                        reddit_query, from_date, to_date, depth=depth,
+                        subreddits=subreddits, config=config,
+                    )
                 if public_results:
                     if primary_failure is not None:
                         state = reddit.classify_run_failure(str(primary_failure))
@@ -7284,6 +7291,12 @@ def _retrieve_stream_impl(
                     f"Reddit primary and fallback produced no results after failure: {failure}",
                     state,
                 )
+            # Leave recorded failures from either search to the stream's resolver.
+            if reddit_keyless._out_of_time(public_deadline) and not http.has_captured_failures():
+                return [], _outcome_artifact(
+                    health.TIMEOUT,
+                    "Reddit had no time left in the run's budget before it found threads",
+                )
             return [], {}
 
         # Default: public Reddit first (free). ScrapeCreators backfills when the
@@ -7293,13 +7306,10 @@ def _retrieve_stream_impl(
         min_items = env.reddit_sc_min_items(config)
         public_results: list[dict] = []
         public_failure: Exception | None = None
-        # The lane returns what it has before the stream wait gives up on
-        # it; a lane still running then is reported as a timeout with nothing.
-        research_deadline = config.get("_research_deadline")
+        # The public-first path also reserves time for a possible backfill.
         lane_deadline = (
-            research_deadline - REDDIT_LANE_RETURN_MARGIN_SECONDS
-            - (REDDIT_SC_BACKFILL_RESERVE_SECONDS if has_sc_key else 0.0)
-            if research_deadline is not None else None
+            public_deadline - REDDIT_SC_BACKFILL_RESERVE_SECONDS
+            if public_deadline is not None and has_sc_key else public_deadline
         )
         lane_notes: list[str] = []
         lane_paths: dict[str, str] = {}
@@ -7320,6 +7330,7 @@ def _retrieve_stream_impl(
                 public_results = reddit_public.search_reddit_public(
                     reddit_query, from_date, to_date, depth=depth,
                     subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
+                    config=config,
                 ) or []
         except Exception as exc:
             public_failure = exc
