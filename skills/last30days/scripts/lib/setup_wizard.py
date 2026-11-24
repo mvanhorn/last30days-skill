@@ -1270,7 +1270,7 @@ def _read_bounded_json_dict(resp: Any) -> Optional[Dict[str, Any]]:
         return None
     try:
         parsed = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError, ValueError, TypeError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
@@ -1496,19 +1496,31 @@ _PROFILE_ERROR_BODY_LIMIT = 200
 _PROFILE_ERROR_READ_LIMIT = 65536
 
 
-def _redact_json_value(value: Any, *, secrets: Tuple[str, ...] = ()) -> Any:
-    """Recursively redact sensitive keys and scrub string values in parsed JSON."""
+_MAX_JSON_REDACT_DEPTH = 8
+
+
+def _redact_json_value(
+    value: Any,
+    *,
+    secrets: Tuple[str, ...] = (),
+    depth: int = 0,
+) -> Any:
+    """Recursively redact sensitive keys/names and scrub string values in parsed JSON."""
+    if depth >= _MAX_JSON_REDACT_DEPTH:
+        return "[REDACTED]"
     if isinstance(value, dict):
-        return {
-            k: (
+        redacted: Dict[str, Any] = {}
+        for k, v in value.items():
+            is_secret_key = isinstance(k, str) and k.strip().lower() in _SECRET_FIELD_NAMES
+            safe_key = _scrub_error_text(str(k), secrets=secrets)
+            redacted[safe_key] = (
                 "[REDACTED]"
-                if isinstance(k, str) and k.strip().lower() in _SECRET_FIELD_NAMES
-                else _redact_json_value(v, secrets=secrets)
+                if is_secret_key
+                else _redact_json_value(v, secrets=secrets, depth=depth + 1)
             )
-            for k, v in value.items()
-        }
+        return redacted
     if isinstance(value, list):
-        return [_redact_json_value(item, secrets=secrets) for item in value]
+        return [_redact_json_value(item, secrets=secrets, depth=depth + 1) for item in value]
     if isinstance(value, str):
         return _scrub_error_text(value, secrets=secrets)
     return value
@@ -1522,9 +1534,10 @@ def _http_error_detail(
 ) -> str:
     """Build a diagnosable HTTPError string including a scrubbed, truncated body.
 
-    JSON dict bodies are parsed, recursively redacted, and reduced to safe
-    summary fields before serialization. Non-JSON bodies with unclosed secret
-    quotes are omitted rather than risking partial credential leaks.
+    JSON dict bodies are parsed, recursively redacted (keys and values), and
+    reduced to safe summary fields before serialization. Deeply nested JSON
+    that triggers ``RecursionError`` or non-JSON bodies with unclosed secret
+    quotes fall back to the scrubbed HTTP status/reason alone.
     """
     base = _scrub_error_text(
         f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": "),
@@ -1546,16 +1559,28 @@ def _http_error_detail(
         return base
     try:
         parsed = json.loads(text)
+    except RecursionError:
+        return base
     except (json.JSONDecodeError, ValueError, TypeError):
         parsed = None
-    if isinstance(parsed, dict):
-        redacted = _redact_json_value(parsed, secrets=secrets)
-        summary = {
-            key: redacted[key]
-            for key in _SAFE_ERROR_SUMMARY_KEYS
-            if key in redacted
-        }
-        text = json.dumps(summary or redacted, ensure_ascii=False)
+    if isinstance(parsed, (dict, list)):
+        try:
+            redacted = _redact_json_value(parsed, secrets=secrets)
+            if isinstance(redacted, dict):
+                summary = {
+                    key: redacted[key]
+                    for key in _SAFE_ERROR_SUMMARY_KEYS
+                    if key in redacted
+                }
+                payload = summary or redacted
+            else:
+                payload = redacted
+            text = _scrub_error_text(
+                json.dumps(payload, ensure_ascii=False),
+                secrets=secrets,
+            )
+        except (RecursionError, ValueError, TypeError):
+            return base
     else:
         if _UNCLOSED_SECRET_QUOTE_RE.search(text):
             return base

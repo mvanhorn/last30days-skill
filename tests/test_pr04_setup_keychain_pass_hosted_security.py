@@ -641,6 +641,98 @@ def test_http_error_detail_redacts_escaped_quotes_in_json_and_omits_unclosed_sec
     assert "body=" not in res_unclosed["detail"]
 
 
+def test_http_error_detail_handles_deeply_nested_json_and_scrubs_json_dict_keys(caplog):
+    # 1. Deeply nested JSON (within 64 KiB) must never crash with RecursionError
+    #    and must preserve 5xx retries on both Python 3.12 and 3.13+.
+    deep_list = (b"[" * 20000) + (b"]" * 20000)
+    deep_obj = (b'{"a":' * 5000) + b'"deep_secret_value"' + (b"}" * 5000)
+    for payload in (deep_list, deep_obj):
+        attempts = {"n": 0}
+
+        def fake_deep_500(_req, timeout=15, data=payload):
+            attempts["n"] += 1
+            raise urllib.error.HTTPError(
+                "https://api.scrapecreators.com/v1/github/device/profile",
+                500,
+                "Internal Server Error",
+                {},
+                io.BytesIO(data),
+            )
+
+        with mock.patch("lib.setup_wizard.time.sleep"), \
+             mock.patch("lib.setup_wizard.urlopen", side_effect=fake_deep_500):
+            res = setup_wizard.fetch_api_key("gho_deep_retry_tok")
+
+        assert res["ok"] is False
+        assert res["reason"] == "upstream_error"
+        assert res["http_status"] == 500
+        assert attempts["n"] == setup_wizard._PROFILE_FETCH_ATTEMPTS
+        assert "deep_secret_value" not in res["detail"]
+        assert ("body=" not in res["detail"]) or ("[REDACTED]" in res["detail"])
+
+    # Explicit RecursionError from json.loads must fall back cleanly to status/reason alone.
+    rec_attempts = {"n": 0}
+
+    def fake_rec_500(_req, timeout=15):
+        rec_attempts["n"] += 1
+        raise urllib.error.HTTPError(
+            "https://api.scrapecreators.com/v1/github/device/profile",
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(b'{"a":{"b":1}}'),
+        )
+
+    with mock.patch("lib.setup_wizard.time.sleep"), \
+         mock.patch("lib.setup_wizard.json.loads", side_effect=RecursionError("max recursion")), \
+         mock.patch("lib.setup_wizard.urlopen", side_effect=fake_rec_500):
+        rec_res = setup_wizard.fetch_api_key("gho_deep_retry_tok")
+    assert rec_res["ok"] is False
+    assert rec_res["reason"] == "upstream_error"
+    assert rec_attempts["n"] == setup_wizard._PROFILE_FETCH_ATTEMPTS
+    assert "body=" not in rec_res["detail"]
+
+    # Moderate deep nesting parses but is capped at _MAX_JSON_REDACT_DEPTH.
+    nested_20 = (b'{"a":' * 20) + b'"deep_secret_value"' + (b"}" * 20)
+    err_20 = urllib.error.HTTPError(
+        "https://api.scrapecreators.com/v1/github/device/profile",
+        500,
+        "Internal Server Error",
+        {},
+        io.BytesIO(nested_20),
+    )
+    detail_20 = setup_wizard._http_error_detail(err_20)
+    assert "deep_secret_value" not in detail_20
+    assert "[REDACTED]" in detail_20
+
+    # 2. Submitted access_token used as a top-level or nested JSON key must never leak.
+    submitted_tok = "opaque_keyname_secret_7777"
+    for payload_dict in (
+        {submitted_tok: "bad"},
+        {"detail": {submitted_tok: "x"}},
+    ):
+        caplog.clear()
+        raw_body = json.dumps(payload_dict).encode("utf-8")
+
+        def fake_401(_req, timeout=15, data=raw_body):
+            raise urllib.error.HTTPError(
+                "https://api.scrapecreators.com/v1/github/device/profile",
+                401,
+                "Unauthorized",
+                {},
+                io.BytesIO(data),
+            )
+
+        with caplog.at_level("WARNING", logger=setup_wizard.logger.name), \
+             mock.patch("lib.setup_wizard.urlopen", side_effect=fake_401):
+            res = setup_wizard.fetch_api_key(submitted_tok)
+
+        combined = json.dumps(res) + "\n" + caplog.text
+        assert res["ok"] is False
+        assert res["http_status"] == 401
+        assert submitted_tok not in combined
+
+
 def test_fetch_api_key_scrubs_access_token_and_secrets_from_http_error_bodies(caplog):
     opaque_token = "opaque_tok_9876543210_SECRET"
     # Place token across the 200-char boundary to prove scrubbing happens before truncation.
