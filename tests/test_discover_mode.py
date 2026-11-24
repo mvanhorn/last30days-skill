@@ -600,7 +600,7 @@ def test_domain_digg_discovery_searches_instead_of_reading_top(monkeypatch):
     items, error = _fetch_digg_discovery("crypto", keyword_gate=True)
 
     assert error is None
-    assert [cmd[1:3] for cmd in calls] == [["search", "crypto"]]
+    assert [(cmd[1], cmd[-2], cmd[-1]) for cmd in calls] == [("search", "--", "crypto")]
     assert [item["title"] for item in items] == ["Bitcoin crypto rally accelerates"]
 
 

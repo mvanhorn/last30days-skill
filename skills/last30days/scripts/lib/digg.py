@@ -43,6 +43,7 @@ alone.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -186,6 +187,43 @@ QUERY_MAX_CHARS = 120
 _all_topic_search: Optional[bool] = None
 _all_topic_search_lock = threading.Lock()
 
+# Strict allowlist for upstream Digg cluster IDs (short slugs and UUIDs).
+# Must start with an alphanumeric character so IDs can never be option-shaped
+# or inject path segments / query strings into https://di.gg/ai/{id}.
+_CLUSTER_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+_KNOWN_SEARCH_FLAGS = frozenset({"--topic", "--since", "--agent", "--limit", "--sort"})
+_UNKNOWN_FLAG_RE = re.compile(r"unknown flag:\s*(--[a-z0-9-]+)", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,15}://)[^\s/?#]+@")
+
+
+def _scrub_url_userinfo(text: str) -> str:
+    return _URL_USERINFO_RE.sub(r"\1", text) if text else text
+
+# Keep only OS, cache/config-dir, locale, TLS, and proxy settings.
+# Never inherit unrelated provider secrets or runtime-injection vars like NODE_OPTIONS.
+_CHILD_ENV_ALLOWLIST = frozenset({
+    "PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA",
+    "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+    "XDG_STATE_HOME", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC",
+    "PATHEXT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "TZ", "NO_COLOR", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+})
+
+
+def _child_env() -> Dict[str, str]:
+    """Allowlisted child environment for digg-pp-cli."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() in _CHILD_ENV_ALLOWLIST or name.upper().startswith("LC_")
+    }
+
+
+def _is_valid_cluster_id(value: Any) -> bool:
+    """True when ``value`` is a safe Digg cluster slug or UUID."""
+    return isinstance(value, str) and bool(_CLUSTER_ID_RE.fullmatch(value))
+
 
 def _log(msg: str) -> None:
     log.source_log("Digg", msg, tty_only=False)
@@ -273,10 +311,10 @@ def cli_searches_all_topics() -> Optional[bool]:
             return _all_topic_search
         try:
             result = subproc.run_with_timeout(
-                [CLI_BIN, "search", "--help"], timeout=HELP_TIMEOUT
+                [CLI_BIN, "search", "--help"], timeout=HELP_TIMEOUT, env=_child_env()
             )
         except (subproc.SubprocTimeout, OSError) as exc:
-            _log(f"search --help failed: {exc}")
+            _log(f"search --help failed: {_scrub_url_userinfo(str(exc))}")
             return None
         if result.returncode != 0:
             _log(f"search --help exit {result.returncode}")
@@ -330,7 +368,6 @@ def _build_search_args(
     return [
         CLI_BIN,
         "search",
-        query,
         *sections,
         "--since",
         f"{since_days}d",
@@ -338,6 +375,8 @@ def _build_search_args(
         "--limit",
         str(limit),
         *(["--sort", "score"] if by_score else []),
+        "--",
+        query,
     ]
 
 
@@ -382,15 +421,18 @@ def _merge_search_results(relevance: List[Any], by_score: List[Any]) -> List[Any
 
 
 def _build_posts_args(cluster_url_id: str, posts_per: int) -> List[str]:
+    if not _is_valid_cluster_id(cluster_url_id):
+        raise ValueError(f"invalid Digg cluster_url_id: {cluster_url_id!r}")
     return [
         CLI_BIN,
         "posts",
-        cluster_url_id,
         "--agent",
         "--by",
         "rank",
         "--limit",
         str(posts_per),
+        "--",
+        cluster_url_id,
     ]
 
 
@@ -458,7 +500,8 @@ def outdated_cli_error(error: Optional[str]) -> Optional[str]:
     and carries the pinned install command, which replaces the old binary.
     Kept under the 140-character outcome note limit in render.
     """
-    if "unknown flag" not in (error or "").lower():
+    match = _UNKNOWN_FLAG_RE.search(error or "")
+    if not match or match.group(1).lower() not in _KNOWN_SEARCH_FLAGS:
         return None
     return f"{CLI_BIN} is outdated and rejected the search; upgrade: {health.helper_upgrade_cmd('digg')}"
 
@@ -489,18 +532,21 @@ def _invoke_cli(
     if cleanup_grace is not None:
         bounds["cleanup_grace"] = cleanup_grace
     try:
-        result = subproc.run_with_timeout(cmd, timeout=timeout, **bounds)
+        result = subproc.run_with_timeout(cmd, timeout=timeout, env=_child_env(), **bounds)
     except subproc.SubprocTimeout as exc:
-        _log(f"Timeout: {exc}")
-        return {"results": [], "error": str(exc)}, ""
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Timeout: {msg}")
+        return {"results": [], "error": msg}, ""
     except FileNotFoundError as exc:
-        _log(f"Binary missing: {exc}")
-        return {"results": [], "error": str(exc)}, ""
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Binary missing: {msg}")
+        return {"results": [], "error": msg}, ""
     except OSError as exc:
-        _log(f"Spawn failed: {exc}")
-        return {"results": [], "error": str(exc)}, ""
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Spawn failed: {msg}")
+        return {"results": [], "error": msg}, ""
 
-    stderr = result.stderr or ""
+    stderr = _scrub_url_userinfo(result.stderr or "")
     if result.returncode != 0:
         snippet = stderr.strip().splitlines()[:1]
         first = snippet[0] if snippet else f"exit {result.returncode}"
@@ -513,8 +559,9 @@ def _invoke_cli(
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        _log(f"JSON decode failed: {exc}")
-        return {"results": [], "error": f"json decode: {exc}"}, stderr
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"JSON decode failed: {msg}")
+        return {"results": [], "error": f"json decode: {msg}"}, stderr
 
     if not isinstance(data, dict):
         return {"results": []}, stderr
@@ -716,6 +763,8 @@ def is_upgrade_note(detail: Optional[str]) -> bool:
 
 
 def _build_url(cluster_url_id: str) -> str:
+    if not _is_valid_cluster_id(cluster_url_id):
+        raise ValueError(f"invalid Digg cluster_url_id: {cluster_url_id!r}")
     return f"https://di.gg/ai/{cluster_url_id}"
 
 
@@ -757,7 +806,16 @@ def _parse_story(
     Returns None for a story published before ``from_date`` or whose URL is
     not a web link.
     """
-    cluster_url_id = str(story["clusterUrlId"])
+    cluster_url_id = str(story.get("clusterUrlId") or "").strip()
+    if not _is_valid_cluster_id(cluster_url_id):
+        _log(f"dropped story with invalid clusterUrlId: {cluster_url_id!r}")
+        return None
+    raw_cluster_id = str(story.get("clusterId") or "").strip()
+    if raw_cluster_id and not _is_valid_cluster_id(raw_cluster_id):
+        _log(f"dropped invalid clusterId: {raw_cluster_id!r}")
+        cluster_id = ""
+    else:
+        cluster_id = raw_cluster_id
     url = str(story.get("url") or "").strip()
     if not _is_safe_http_url(url):
         # The URL is rendered into a link in the report, so a non-web
@@ -787,7 +845,7 @@ def _parse_story(
 
     return {
         "id": cluster_url_id,
-        "cluster_id": str(story.get("clusterId") or ""),
+        "cluster_id": cluster_id,
         "topic": str(story.get("topic") or ""),
         "title": title or f"Digg cluster {position + 1}",
         "url": url,
@@ -832,8 +890,12 @@ def parse_digg_response(
     for i, cluster in enumerate(raw):
         if not isinstance(cluster, dict):
             continue
-        cluster_url_id = cluster.get("clusterUrlId")
-        if not cluster_url_id:
+        raw_cluster_url_id = cluster.get("clusterUrlId")
+        if not raw_cluster_url_id:
+            continue
+        cluster_url_id = str(raw_cluster_url_id).strip()
+        if not _is_valid_cluster_id(cluster_url_id):
+            _log(f"dropped cluster with invalid clusterUrlId: {raw_cluster_url_id!r}")
             continue
         if cluster.get("url"):
             story = _parse_story(cluster, i, query, window_start)
@@ -857,9 +919,9 @@ def parse_digg_response(
 
         items.append(
             {
-                "id": str(cluster_url_id),
+                "id": cluster_url_id,
                 "title": title or f"Digg cluster {i + 1}",
-                "url": _build_url(str(cluster_url_id)),
+                "url": _build_url(cluster_url_id),
                 "tldr": tldr,
                 "author": "",
                 "date": date_str,
@@ -970,7 +1032,11 @@ def fetch_top_posts(cluster_url_id: str, posts_per: int = POSTS_PER_CLUSTER) -> 
     """
     if posts_per <= 0:
         return []
-    cmd = _build_posts_args(cluster_url_id, posts_per)
+    cleaned_id = str(cluster_url_id or "").strip()
+    if not _is_valid_cluster_id(cleaned_id):
+        _log(f"skipping posts fetch for invalid cluster_url_id: {cluster_url_id!r}")
+        return []
+    cmd = _build_posts_args(cleaned_id, posts_per)
     response = _run_cli(cmd, timeout=POSTS_TIMEOUT)
     raw = response.get("results") or []
     out: List[Dict[str, Any]] = []
@@ -1080,7 +1146,9 @@ def match_key(url: Any) -> Optional[str]:
 
 
 def _build_sources_args(cluster_id: str) -> List[str]:
-    return [CLI_BIN, "posts", cluster_id, "--agent", "--limit", str(SOURCES_PER_STORY)]
+    if not _is_valid_cluster_id(cluster_id):
+        raise ValueError(f"invalid Digg cluster_id: {cluster_id!r}")
+    return [CLI_BIN, "posts", "--agent", "--limit", str(SOURCES_PER_STORY), "--", cluster_id]
 
 
 def _digg_score(item: Any) -> Optional[float]:
@@ -1148,7 +1216,11 @@ def fetch_story_sources(
         cluster_id = (getattr(item, "metadata", None) or {}).get(STORY_ID_KEY)
         score = _digg_score(item)
         if cluster_id and score is not None:
-            scored[str(cluster_id)] = max(score, scored.get(str(cluster_id), score))
+            cleaned_id = str(cluster_id).strip()
+            if not _is_valid_cluster_id(cleaned_id):
+                _log(f"skipping sources fetch for invalid cluster_id: {cluster_id!r}")
+                continue
+            scored[cleaned_id] = max(score, scored.get(cleaned_id, score))
     chosen = sorted(scored, key=lambda key: (-scored[key], key))[:budget]
     if not chosen:
         return {}

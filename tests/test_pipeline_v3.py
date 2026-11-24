@@ -3318,7 +3318,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         def run(cmd, *, timeout, **_bounds):
             calls.append(list(cmd))
             rows = []
-            if cmd[2] == self.TOP_STORY:
+            if cmd[-1] == self.TOP_STORY:
                 rows = [
                     {
                         "kind": "webpage", "body": "", "xUrl": _DIGG_ARTICLE,
@@ -3359,9 +3359,8 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         self.assertGreater(hn["HN1"].final_score, rerank._final_score(unmarked))
         self.assertEqual(5, len(calls))
         for call in calls:
-            self.assertEqual(["digg-pp-cli", "posts"], call[:2])
-            self.assertEqual(["--agent", "--limit", "40"], call[3:])
-        self.assertIn(self.TOP_STORY, [call[2] for call in calls])
+            self.assertEqual(["digg-pp-cli", "posts", "--agent", "--limit", "40", "--"], call[:-1])
+        self.assertIn(self.TOP_STORY, [call[-1] for call in calls])
         top_story = next(
             item for item in report.items_by_source["digg"] if item.item_id == "story2"
         )
@@ -3372,7 +3371,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         report = self._run("default", self._cli(calls), digg_only_on_retry=True)
 
         self.assertEqual(5, len(calls))
-        self.assertIn(self.TOP_STORY, [call[2] for call in calls])
+        self.assertIn(self.TOP_STORY, [call[-1] for call in calls])
         self.assertEqual(
             "https://digg.com/science/story2",
             self._hn(report)["HN1"].metadata["digg_story"]["url"],
@@ -3429,8 +3428,8 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         }
 
         def cli(cmd, *, timeout, **_bounds):
-            calls.append(cmd[2])
-            rows = [article] if cmd[2].startswith("99999999") else []
+            calls.append(cmd[-1])
+            rows = [article] if cmd[-1].startswith("99999999") else []
             return subproc.SubprocResult(
                 returncode=0, stdout=_json.dumps({"meta": {}, "results": rows}), stderr="",
             )
@@ -3452,7 +3451,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
 
     def _fetch_sources(self, config, seen: list, *, bundle=None, depth: str = "default"):
         def run(cmd, *, timeout, **kwargs):
-            seen.append({"story": cmd[2], "timeout": timeout, **kwargs})
+            seen.append({"story": cmd[-1], "timeout": timeout, **kwargs})
             return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
 
         with patch("lib.digg.shutil.which", return_value="/fake/digg-pp-cli"), \
@@ -3543,7 +3542,7 @@ class DiggStoryConfirmationRunTests(unittest.TestCase):
         clock = [1000.0]
 
         def slow_run(cmd, *, timeout, **kwargs):
-            calls.append(cmd[2])
+            calls.append(cmd[-1])
             timeouts.append(timeout)
             clock[0] += call_seconds
             return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
@@ -3639,7 +3638,7 @@ class DiggQuoteEnrichmentByCliShapeTests(unittest.TestCase):
             "posts": [],
         }])
         self.assertEqual(
-            [["digg-pp-cli", "posts", "abc123xy", "--agent", "--by", "rank", "--limit", "5"]],
+            [["digg-pp-cli", "posts", "--agent", "--by", "rank", "--limit", "5", "--", "abc123xy"]],
             calls,
         )
 
