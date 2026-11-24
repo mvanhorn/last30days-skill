@@ -308,16 +308,7 @@ class TestHigh124PublicSearchUrlSafety:
 class TestHigh128HydratorResilienceAndExpiry:
     def test_malformed_thread_json_preserves_prior_privacy_drop_and_continues(self, monkeypatch):
         priv_body = _thread_json("1priv01", subreddit="secretclub", subreddit_type="private")
-        # Valid JSON whose null data triggers AttributeError inside reddit_enrich.parse_thread_data.
-        malformed_body = json.dumps([
-            {"data": {"children": [{"data": {
-                "id": "1mal002", "subreddit": "Ghostty", "subreddit_type": "public",
-                "title": "Ghostty terminal malformed", "score": 5, "num_comments": 1,
-                "created_utc": IN_WINDOW_UTC, "permalink": "/r/Ghostty/comments/1mal002/t/",
-                "selftext": None,
-            }}]}},
-            {"data": None},
-        ])
+        malformed_body = _thread_json("1mal002", subreddit="Ghostty", subreddit_type="public")
         good_body = _thread_json("1good03", subreddit="Ghostty", subreddit_type="public")
 
         def fake_get(url, _cookie, **_k):
@@ -329,8 +320,20 @@ class TestHigh128HydratorResilienceAndExpiry:
                 return 200, good_body, False
             return 404, "", False
 
+        real_parse = reddit_enrich.parse_thread_data
+
+        def failing_parse(data):
+            if (
+                isinstance(data, list)
+                and data
+                and data[0]["data"]["children"][0]["data"].get("id") == "1mal002"
+            ):
+                raise TypeError("simulated unexpected parser failure")
+            return real_parse(data)
+
         logs: list[str] = []
         monkeypatch.setattr(http, "reddit_session_get", fake_get)
+        monkeypatch.setattr(reddit_enrich, "parse_thread_data", failing_parse)
         monkeypatch.setattr(reddit_session, "_log", logs.append)
         # Even if Arctic Shift holds a copy of 1priv01, DROP must block resurrection.
         monkeypatch.setattr(
