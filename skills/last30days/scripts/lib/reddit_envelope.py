@@ -46,6 +46,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 from urllib.parse import urlsplit
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
 from . import env, log, reddit_discover, reddit_hydrate
 from .reddit_refs import UNKNOWN, ThreadRef, canonical_thread
 
@@ -322,21 +327,107 @@ def _log(msg: str) -> None:
 
 def _stat(path: Path) -> os.stat_result:
     """Seam for tests: the size and type check runs before any read."""
-    return os.stat(path)
+    return os.lstat(path)
 
 
-def _protected_roots() -> list[Path]:
+def _raw_protected_roots() -> list[Path]:
     roots: list[Path] = []
     for candidate in (env.CONFIG_DIR, getattr(env, "CONFIG_FILE", None)):
         if candidate:
             roots.append(Path(candidate))
     for store in _CREDENTIAL_STORES:
         roots.append(Path(store).expanduser())
-    return [Path(os.path.realpath(root)) for root in roots]
+    return roots
+
+
+def _protected_roots() -> list[Path]:
+    return [Path(os.path.realpath(root)) for root in _raw_protected_roots()]
+
+
+_DARWIN_F_GETPATH = 50
+_DARWIN_MAXPATHLEN = 1024
+
+
+def _norm_parts(path: Path) -> tuple[str, ...]:
+    if sys.platform == "darwin":
+        return tuple(part.casefold() for part in path.parts)
+    if sys.platform == "win32":
+        return tuple(os.path.normcase(part) for part in path.parts)
+    return path.parts
+
+
+def _is_under(path: Path, roots: Iterable[Path]) -> bool:
+    p_parts = _norm_parts(path)
+    for root in roots:
+        r_parts = _norm_parts(root)
+        if r_parts and len(p_parts) >= len(r_parts) and p_parts[:len(r_parts)] == r_parts:
+            return True
+    return False
 
 
 def _inside_protected(real: Path) -> bool:
-    return any(real == root or root in real.parents for root in _protected_roots())
+    return _is_under(real, _protected_roots())
+
+
+def _win32_fd_real_path(fd: int) -> Optional[Path]:
+    """Canonical path of an open Windows file descriptor via ``GetFinalPathNameByHandleW``."""
+    try:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(fd)
+        kernel32 = ctypes.windll.kernel32
+        get_path = kernel32.GetFinalPathNameByHandleW
+        get_path.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
+        get_path.restype = ctypes.c_uint32
+        needed = get_path(handle, None, 0, 0)
+        if not needed:
+            return None
+        buf = ctypes.create_unicode_buffer(needed + 1)
+        written = get_path(handle, buf, len(buf), 0)
+        if not written or written >= len(buf):
+            return None
+        raw = buf.value
+    except (AttributeError, ImportError, OSError, ValueError):
+        return None
+    if raw.startswith("\\\\?\\UNC\\"):
+        raw = "\\\\" + raw[8:]
+    elif raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    if not raw:
+        return None
+    try:
+        return Path(os.path.realpath(raw))
+    except (OSError, ValueError):
+        return None
+
+
+def _fd_real_path(fd: int) -> Optional[Path]:
+    """Canonical path of an open descriptor (Windows handle, macOS ``F_GETPATH``, Linux ``/proc/self/fd``)."""
+    if sys.platform == "win32":
+        return _win32_fd_real_path(fd)
+    target: Optional[str] = None
+    if sys.platform == "darwin" and fcntl is not None:
+        f_getpath = getattr(fcntl, "F_GETPATH", _DARWIN_F_GETPATH)
+        try:
+            raw = fcntl.fcntl(fd, f_getpath, b"\x00" * _DARWIN_MAXPATHLEN)
+        except (OSError, ValueError):
+            return None
+        if isinstance(raw, (bytes, bytearray)):
+            target = os.fsdecode(bytes(raw).split(b"\x00", 1)[0])
+        elif isinstance(raw, str):
+            target = raw.split("\x00", 1)[0]
+    else:
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            return None
+    if not target or not target.startswith("/"):
+        return None
+    try:
+        return Path(os.path.realpath(target))
+    except (OSError, ValueError):
+        return None
 
 
 def _normalize_topic(value: Any) -> str:
@@ -396,11 +487,24 @@ def _entry_ref(entry: Any, counters: dict[str, int]) -> Optional[ThreadRef]:
 
 def _read_bytes(raw_path: str, fail: Callable[[str], EnvelopeContractError]) -> bytes:
     if raw_path == STDIN:
-        data = sys.stdin.buffer.read(MAX_BYTES + 1)
+        try:
+            stream = sys.stdin.buffer
+            data = stream.read(MAX_BYTES + 1)
+        except (OSError, AttributeError, ValueError) as exc:
+            raise fail(f"cannot be read ({type(exc).__name__})") from None
+        if not isinstance(data, (bytes, bytearray)):
+            raise fail("cannot be read (TypeError)")
         if len(data) > MAX_BYTES:
             raise fail(f"exceeds the {MAX_BYTES // 1024} KiB limit")
-        return data
-    real = Path(os.path.realpath(raw_path))
+        return bytes(data)
+    try:
+        abs_path = Path(os.path.abspath(raw_path))
+        real = Path(os.path.realpath(raw_path))
+    except (OSError, ValueError) as exc:
+        raise fail(f"cannot be read ({type(exc).__name__})") from None
+    raw_roots = [Path(os.path.abspath(root)) for root in _raw_protected_roots()]
+    if _is_under(abs_path, raw_roots) or _inside_protected(real):
+        raise fail("is inside a configuration or credential directory")
     try:
         info = _stat(real)
     except OSError as exc:
@@ -409,16 +513,42 @@ def _read_bytes(raw_path: str, fail: Callable[[str], EnvelopeContractError]) -> 
         raise fail("is not a regular file")
     if real.suffix.lower() != ".json":
         raise fail("must be a .json file")
-    if _inside_protected(real):
-        raise fail("is inside a configuration or credential directory")
     if info.st_size > MAX_BYTES:
         raise fail(f"exceeds the {MAX_BYTES // 1024} KiB limit")
+    open_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
-        # One open, one bounded read: a file that grows or is replaced after
-        # the size check still cannot load more than the limit.
-        with open(real, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        # Open without following a raced symlink or blocking on a raced FIFO,
+        # then confirm the opened descriptor is the same regular file.
+        fd = os.open(real, open_flags)
+        handle = None
+        try:
+            finfo = os.fstat(fd)
+            if not stat.S_ISREG(finfo.st_mode):
                 raise fail("is not a regular file")
+            if (finfo.st_dev, finfo.st_ino) != (info.st_dev, info.st_ino):
+                raise fail("changed while being read")
+            fd_real = _fd_real_path(fd)
+            if fd_real is None:
+                raise fail("could not be verified safely")
+            if _inside_protected(fd_real):
+                raise fail("is inside a configuration or credential directory")
+            if finfo.st_size > MAX_BYTES:
+                raise fail(f"exceeds the {MAX_BYTES // 1024} KiB limit")
+            handle = os.fdopen(fd, "rb")
+        except BaseException:
+            if handle is None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
+        with handle:
             data = handle.read(MAX_BYTES + 1)
     except OSError as exc:
         raise fail(f"cannot be read ({type(exc).__name__})") from None

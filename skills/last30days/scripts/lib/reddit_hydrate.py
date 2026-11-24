@@ -108,13 +108,20 @@ def _merge_refs(refs: Iterable[ThreadRef]) -> dict[str, ThreadRef]:
                 post_id=ref.post_id, url=ref.url, subreddit=ref.subreddit,
                 provenance=set(ref.provenance), matched_comment=ref.matched_comment,
                 title=ref.title, date=ref.date,
+                matched_comment_verified=ref.matched_comment_verified,
             )
             continue
         current.provenance |= ref.provenance
         current.subreddit = current.subreddit or ref.subreddit
         current.title = current.title or ref.title
         current.date = current.date or ref.date
-        current.matched_comment = current.matched_comment or ref.matched_comment
+        if current.matched_comment is None and ref.matched_comment is not None:
+            current.matched_comment = ref.matched_comment
+            current.matched_comment_verified = ref.matched_comment_verified
+        elif current.matched_comment is not None and ref.matched_comment is not None:
+            current.matched_comment_verified = (
+                current.matched_comment_verified or ref.matched_comment_verified
+            )
         if ref.subreddit and "/r/" not in current.url:
             current.url = ref.url
     return by_id
@@ -192,7 +199,12 @@ def _finish(post: dict, ref: ThreadRef, topic: str) -> dict:
     post.setdefault("metadata", {})["post_id"] = ref.post_id
     post["provenance"] = sorted(ref.provenance)
     matched = ref.matched_comment
-    if matched is not None and matched.created_utc:
+    engagement_source = post.get("engagement_source")
+    is_archive_or_unhydrated = engagement_source in (ARCTIC, ARCTIC_PENDING, UNKNOWN)
+    allow_matched = ref.matched_comment_verified or (
+        not is_archive_or_unhydrated and "session" not in ref.provenance
+    )
+    if matched is not None and matched.created_utc and allow_matched:
         from . import dates
 
         post["matched_comment"] = {
@@ -442,6 +454,12 @@ def hydrate(
         for pid, post in found.items():
             if pid in by_id:
                 label_archive_post(post, now)
+                ref = by_id[pid]
+                actual_sub = str(post.get("subreddit") or "").strip().lower()
+                ref_sub = str(ref.subreddit or "").strip().lower()
+                if ref.matched_comment is not None and (not actual_sub or actual_sub != ref_sub):
+                    ref.matched_comment_verified = False
+                    ref.matched_comment = None
                 posts[pid] = post
         if found:
             served.add("arctic")
