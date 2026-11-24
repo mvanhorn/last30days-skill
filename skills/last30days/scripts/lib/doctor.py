@@ -47,6 +47,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import time
 import urllib.error
@@ -2203,6 +2204,43 @@ def _report_shape_ok(report: Any) -> bool:
     return True
 
 
+_MAX_DOCTOR_CACHE_BYTES = 4 * 1024 * 1024
+
+
+def _read_cache_text(path: Path) -> str:
+    """Read the doctor cache file without following symlinks/FIFOs and with a size cap."""
+    target = Path(path)
+    if os.name == "posix":
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        fd = os.open(target, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular cache file: {target}")
+            if st.st_size > _MAX_DOCTOR_CACHE_BYTES:
+                raise ValueError("Doctor cache exceeds size limit")
+            with os.fdopen(fd, "rb") as stream:
+                fd = -1
+                data = stream.read(_MAX_DOCTOR_CACHE_BYTES + 1)
+        finally:
+            if fd != -1:
+                os.close(fd)
+        if len(data) > _MAX_DOCTOR_CACHE_BYTES:
+            raise ValueError("Doctor cache exceeds size limit")
+        return data.decode("utf-8")
+    private_files._reject_symlink_or_nonregular(target)
+    with target.open("rb") as stream:
+        data = stream.read(_MAX_DOCTOR_CACHE_BYTES + 1)
+    if len(data) > _MAX_DOCTOR_CACHE_BYTES:
+        raise ValueError("Doctor cache exceeds size limit")
+    return data.decode("utf-8")
+
+
 def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return the cached report when present, well-formed, and within TTL.
 
@@ -2217,8 +2255,7 @@ def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if path is None:
         return None
     try:
-        private_files._reject_symlink_or_nonregular(path)
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_cache_text(path))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -2242,13 +2279,13 @@ def _cache_secret_values(config: Dict[str, Any]) -> set[str]:
     cfg = config or {}
     for var in _SECRET_CONFIG_VARS:
         value = cfg.get(var)
-        if isinstance(value, str) and value and not proxy.is_sentinel(value):
+        if isinstance(value, str) and len(value) >= 4 and not proxy.is_sentinel(value):
             secrets.add(value)
     env_api_key = env.read_secret_env("LAST30DAYS_API_KEY")
-    if isinstance(env_api_key, str) and env_api_key and not proxy.is_sentinel(env_api_key):
+    if isinstance(env_api_key, str) and len(env_api_key) >= 4 and not proxy.is_sentinel(env_api_key):
         secrets.add(env_api_key)
     for value in http.config_secret_values(cfg):
-        if value and not proxy.is_sentinel(value):
+        if len(value) >= 4 and not proxy.is_sentinel(value):
             secrets.add(value)
     return secrets
 

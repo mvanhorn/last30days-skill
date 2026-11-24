@@ -46,9 +46,7 @@ JSON never names a non-official backend there unless it is pinned.
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -397,70 +395,21 @@ def _probe_xapi(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
-_YAML_EMPTY_VALUES = frozenset({"", "''", '""', "null", "~", "{}"})
-_BEARER_KEY_LINE_RE = re.compile(r"^(\s*)['\"]?bearer_token['\"]?\s*:\s*(.*)$")
-
-
-def _json_has_bearer_token(obj: Any) -> bool:
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if key == "bearer_token":
-                if isinstance(value, str) and value.strip():
-                    return True
-                if isinstance(value, dict) and any(
-                    isinstance(subval, str) and subval.strip()
-                    for subval in value.values()
-                ):
-                    return True
-            elif _json_has_bearer_token(value):
-                return True
-    elif isinstance(obj, list):
-        return any(_json_has_bearer_token(item) for item in obj)
-    return False
-
-
-def _content_has_bearer_token(content: str) -> bool:
-    stripped = content.lstrip()
-    if stripped.startswith(("{", "[")):
-        try:
-            return _json_has_bearer_token(json.loads(content))
-        except (ValueError, TypeError):
-            pass
-    lines = content.splitlines()
-    for idx, line in enumerate(lines):
-        if line.lstrip().startswith("#"):
-            continue
-        match = _BEARER_KEY_LINE_RE.match(line)
-        if not match:
-            continue
-        indent = len(match.group(1))
-        rest = match.group(2).split("#", 1)[0].strip()
-        if rest.lower() not in _YAML_EMPTY_VALUES:
-            return True
-        if rest:
-            continue
-        for child in lines[idx + 1 :]:
-            child_stripped = child.strip()
-            if not child_stripped or child_stripped.startswith("#"):
-                continue
-            child_indent = len(child) - len(child.lstrip())
-            if child_indent <= indent:
-                break
-            if ":" in child_stripped:
-                child_val = child_stripped.split(":", 1)[1].split("#", 1)[0].strip()
-                if child_val.lower() not in _YAML_EMPTY_VALUES:
-                    return True
-    return False
-
-
 def _xurl_store_lacks_bearer(store_detail: str) -> bool:
     """Return True when a real on-disk xurl token store has no app-only bearer token."""
+    from . import xurl_x
+
     if " in " not in store_detail:
         return False
     candidate = Path(store_detail.rsplit(" in ", 1)[-1].strip())
     try:
         if os.name == "posix":
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
             fd = os.open(candidate, flags)
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -474,10 +423,11 @@ def _xurl_store_lacks_bearer(store_detail: str) -> bool:
         else:
             if not candidate.is_file():
                 return False
-            content = candidate.read_text(encoding="utf-8", errors="replace")[:65536]
+            with candidate.open("r", encoding="utf-8", errors="replace") as stream:
+                content = stream.read(65536)
     except OSError:
         return False
-    return not _content_has_bearer_token(content)
+    return not xurl_x._content_has_bearer_token(content)
 
 
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
@@ -530,6 +480,17 @@ def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
             name="xurl",
             status=health.ERROR,
             detail=store_detail,
+            prescription="xurl auth app-only <bearer-token>",
+            requires=requires,
+        )
+    if "oauth user tokens only" in str(store_detail).lower():
+        return BackendFinding(
+            name="xurl",
+            status=health.MISSING,
+            detail=(
+                "xurl token store has OAuth user tokens only; "
+                "search requires app-only bearer auth"
+            ),
             prescription="xurl auth app-only <bearer-token>",
             requires=requires,
         )

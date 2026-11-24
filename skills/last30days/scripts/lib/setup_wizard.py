@@ -1722,8 +1722,12 @@ def _device_handle_fallback_dir() -> Path:
     if os.name == "posix":
         uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
         return Path(tempfile.gettempdir()) / f"last30days-{uid}"
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
-    return Path(base) / "last30days"
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "last30days"
+    raw_user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+    safe_user = re.sub(r"[^A-Za-z0-9._-]", "_", raw_user).strip("._-") or "user"
+    return Path(tempfile.gettempdir()) / f"last30days-{safe_user}"
 
 
 def _device_handle_path() -> Path:
@@ -2023,9 +2027,14 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
     )
 
     def _cleanup() -> None:
+        if _handle is not None:
+            return
         try:
             target = _device_handle_path()
-            private_files._reject_symlink_or_nonregular(target)
+            if os.name == "posix":
+                target = private_files._resolve_parent_only(target)
+            else:
+                private_files._reject_symlink_or_nonregular(target)
             target.unlink()
         except Exception:
             pass

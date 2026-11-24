@@ -314,7 +314,7 @@ class DiagnoseXurlAuthWiring(unittest.TestCase):
         return json.loads(out)
 
     def test_new_layout_auth_yml_makes_xurl_the_reported_backend(self):
-        payload = self._diagnose_with_store("access_token: dummy-not-real\n")
+        payload = self._diagnose_with_store("bearer_token:\n  bearer: dummy-not-real\n")
         self.assertEqual("xurl", payload["x_backend"])
         self.assertIn("x", payload["available_sources"])
 

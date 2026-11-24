@@ -31,6 +31,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from urllib.request import Request
+
 import pytest
 
 import last30days as cli
@@ -40,6 +42,7 @@ from lib import (
     doctor,
     env,
     health,
+    http as http_mod,
     permission_preflight,
     pipeline,
     private_files,
@@ -908,3 +911,183 @@ class TestHigh075GeminiProviderHardening:
     )
     def test_gemini_valid_31_plus_models_accepted(self, valid_model):
         assert providers._is_gemini_31_or_newer(valid_model) is True
+
+    def test_http_cross_origin_auth_headers_strips_x_goog_api_key(self):
+        assert "x-goog-api-key" in http_mod._CROSS_ORIGIN_AUTH_HEADERS
+        handler = http_mod._StripAuthOnCrossOriginRedirect()
+        req = Request(
+            "https://generativelanguage.googleapis.com/v1beta/models/m:generateContent",
+            headers={"X-Goog-Api-Key": "dummy-secret-075"},
+        )
+        cross = handler.redirect_request(
+            req, None, 302, "Found", {}, "https://attacker.example/steal"
+        )
+        cross_headers = {
+            k.lower(): v
+            for store in (cross.headers, getattr(cross, "unredirected_hdrs", {}))
+            for k, v in store.items()
+        }
+        assert "x-goog-api-key" not in cross_headers
+
+        same = handler.redirect_request(
+            req,
+            None,
+            302,
+            "Found",
+            {},
+            "https://generativelanguage.googleapis.com/v1beta/models/other:generateContent",
+        )
+        same_headers = {
+            k.lower(): v
+            for store in (same.headers, getattr(same, "unredirected_hdrs", {}))
+            for k, v in store.items()
+        }
+        assert same_headers.get("x-goog-api-key") == "dummy-secret-075"
+
+    @pytest.mark.parametrize(
+        "bad_model",
+        [
+            "gemini-٣.١",
+            "gemini-٣.١-flash",
+            ".",
+            "..",
+            "%2e%2e",
+            "gemini-3.1-flash\u0085",
+            "gemini-3.1-flash\u00a0",
+            "gemini-3.1-flash\u2028",
+        ],
+    )
+    def test_gemini_model_rejects_unicode_digits_dots_and_control_chars(self, bad_model):
+        assert providers._is_gemini_31_or_newer(bad_model) is False
+        client = providers.GeminiClient("dummy-key")
+        with pytest.raises(ValueError, match="Invalid Gemini model name"):
+            client.generate_text(bad_model, "hello")
+
+    def test_gemini_redirect_guard_handles_malformed_port_without_value_error(self):
+        client = providers.GeminiClient("dummy-key")
+        captured: dict = {}
+
+        def fake_post(url, body, *, headers=None, timeout=None, redirect_guard=None, **kwargs):
+            captured["redirect_guard"] = redirect_guard
+            return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+        with mock.patch.object(providers.http, "post", side_effect=fake_post):
+            client.generate_text("gemini-3.1-flash-lite", "hello")
+
+        assert captured["redirect_guard"]("https://generativelanguage.googleapis.com:99999/x") is False
+
+
+class TestReviewRound2Regressions:
+    """Regressions for PR 13 adversarial review findings."""
+
+    def test_cli_corpus_flag_disclosed_in_preflight_and_disables_hosted_mode(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        notes = tmp_path / "cli-notes"
+        notes.mkdir()
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://hosted.example/api/v1")
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-key-r2")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["last30days.py", "--preflight", "--emit=json", "--corpus", str(notes)],
+        )
+        assert cli.main() == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["local_reads"]["corpus_dirs"] == [str(notes.resolve())]
+        assert payload["network"]["hosted_mode"] is False
+        assert "hosted" not in payload["network"]["available_sources"]
+
+    @pytest.mark.parametrize(
+        "store_content",
+        [
+            "apps:\n  app:\n    bearer_token: []\n    oauth2_tokens:\n      me:\n        access_token: tok\n",
+            "apps:\n  app:\n    bearer_token:\n      bearer: null\n      type: app\n    oauth2_tokens:\n      me:\n        access_token: tok\n",
+            json.dumps({"bearer_token": {"bearer": None, "type": "app"}, "oauth2_tokens": {"me": {"access_token": "tok"}}}),
+        ],
+    )
+    def test_xurl_oauth2_only_rejected_consistently_across_all_surfaces(self, tmp_path, store_content):
+        store = tmp_path / ".xurl" / "auth.yml"
+        store.parent.mkdir(exist_ok=True)
+        store.write_text(store_content, encoding="utf-8")
+
+        assert env._X_METHOD_LABELS["xurl"] == "bearer"
+        with mock.patch("lib.xurl_x.token_store_path", return_value=store), \
+             mock.patch("lib.xurl_x.shutil.which", side_effect=lambda n: "/usr/bin/xurl" if n == "xurl" else None), \
+             mock.patch("lib.backends.which", side_effect=lambda n: "/usr/bin/xurl" if n == "xurl" else None):
+            assert xurl_x.stored_auth_status()[0] == xurl_x.AUTH_MISSING
+            assert xurl_x.has_stored_auth() is False
+            assert env.get_x_source({"LAST30DAYS_HOST": "grok-bot"}, local_only=True) is None
+            assert env.get_x_source_status({"LAST30DAYS_HOST": "grok-bot"}, probe=False)["xurl_available"] is False
+            assert doctor._x_auth_path({"LAST30DAYS_HOST": "grok-bot"})["armed"] is False
+            finding = backends._probe_xurl({})
+            assert finding.status == health.MISSING
+            assert "app-only bearer" in finding.detail.lower()
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO check")
+    def test_xurl_store_and_doctor_cache_do_not_block_on_fifo(self, tmp_path, monkeypatch):
+        fifo_dir = tmp_path / ".xurl"
+        fifo_dir.mkdir()
+        fifo_store = fifo_dir / "auth.yml"
+        os.mkfifo(fifo_store)
+        with mock.patch("lib.xurl_x.token_store_path", return_value=fifo_store):
+            status, _ = xurl_x.stored_auth_status()
+        assert status == xurl_x.AUTH_MISSING
+        with pytest.raises(OSError, match="regular"):
+            xurl_x._read_token_store_text(fifo_store)
+        assert backends._xurl_store_lacks_bearer(f"stored creds in {fifo_store}") is False
+
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        os.mkfifo(cfg_dir / doctor.CACHE_FILENAME)
+        monkeypatch.setattr(env, "CONFIG_DIR", cfg_dir)
+        assert doctor.read_cached_report({}) is None
+
+    def test_doctor_cache_short_secret_values_do_not_disable_caching_and_size_cap_enforced(
+        self, tmp_path, monkeypatch
+    ):
+        cfg_dir = tmp_path / "cfg"
+        monkeypatch.setattr(env, "CONFIG_DIR", cfg_dir)
+        report = TestHigh071DoctorCacheHardening._sample_report("ok")
+        assert doctor._write_cache(
+            report,
+            {
+                "BRIGHTDATA_API_KEY": "ok",
+                "LAST30DAYS_PUBLISH_PASSWORD": "1",
+                "LAST30DAYS_API_KEY": "yes",
+            },
+        ) is True
+        assert doctor.read_cached_report(
+            {
+                "BRIGHTDATA_API_KEY": "ok",
+                "LAST30DAYS_PUBLISH_PASSWORD": "1",
+                "LAST30DAYS_API_KEY": "yes",
+            }
+        ) is not None
+
+        # Oversized cache file (>4 MiB) is ignored safely.
+        cache_file = cfg_dir / doctor.CACHE_FILENAME
+        cache_file.write_bytes(b" " * (doctor._MAX_DOCTOR_CACHE_BYTES + 16))
+        assert doctor.read_cached_report({}) is None
+
+    def test_in_memory_poll_does_not_unlink_disk_handle_and_windows_temp_has_user_suffix(
+        self, tmp_path, monkeypatch
+    ):
+        sentinel = tmp_path / "existing-handle.json"
+        sentinel.write_text('{"device_code": "keep"}', encoding="utf-8")
+        with mock.patch.object(setup_wizard, "_device_handle_path", return_value=sentinel), \
+             mock.patch.object(setup_wizard, "poll_device_auth", return_value=None):
+            res = setup_wizard.run_github_poll(
+                timeout=1,
+                _handle={"device_code": "mem-only", "interval": 1, "user_code": "ABCD-1234"},
+            )
+        assert res["status"] == "timeout"
+        assert sentinel.exists()
+
+        monkeypatch.setattr(env, "CONFIG_FILE", None)
+        monkeypatch.setattr(setup_wizard, "os", _NtOs())
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setenv("USERNAME", "Alice/Bob")
+        path = setup_wizard._device_handle_path()
+        assert path.parent == Path(tempfile.gettempdir()) / "last30days-Alice_Bob"
+        assert path.name == "github-device-handle.json"

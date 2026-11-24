@@ -96,10 +96,17 @@ def _configured_corpus_dirs(
         return []
     if requested_sources and "corpus" not in requested_sources:
         return []
+    cli_dirs = config.get("_CORPUS_DIRS")
+    if isinstance(cli_dirs, str):
+        cli_list: list[str] | None = [cli_dirs]
+    elif cli_dirs:
+        cli_list = [str(item) for item in cli_dirs if str(item).strip()]
+    else:
+        cli_list = None
     raw = config.get("LAST30DAYS_CORPUS_DIRS")
-    if not raw:
+    if not cli_list and not raw:
         return []
-    return [str(path) for path in corpus.resolve_directories(None, raw)]
+    return [str(path) for path in corpus.resolve_directories(cli_list, raw)]
 
 
 def _active_secret_stores(config_source: str, *, hosted_mode: bool) -> list[str]:

@@ -20,7 +20,8 @@ OPENAI_DEFAULT = "gpt-5.4-nano"
 XAI_DEFAULT = "grok-4.20-0309-non-reasoning"
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-_GEMINI_MODEL_RE = re.compile(r"gemini-(\d+)(?:\.(\d+))?(?:-[A-Za-z0-9._-]+)?")
+_GEMINI_MODEL_RE = re.compile(r"gemini-([0-9]+)(?:\.([0-9]+))?(?:-[A-Za-z0-9._-]+)?", re.ASCII)
+_GEMINI_MODEL_SEGMENT_RE = re.compile(r"[A-Za-z0-9._-]+", re.ASCII)
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 XAI_RESPONSES_URL = "https://api.x.ai/v1/responses"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -273,6 +274,13 @@ class GeminiClient(ReasoningClient):
             body["tools"] = tools
         url = GEMINI_URL.format(model=safe_model)
         expected_origin = http._request_origin(url)
+
+        def _same_origin_redirect(newurl: str) -> bool:
+            try:
+                return http._request_origin(newurl) == expected_origin
+            except ValueError:
+                return False
+
         return self._post(
             url,
             body,
@@ -281,7 +289,7 @@ class GeminiClient(ReasoningClient):
                 "x-goog-api-key": self.api_key,
             },
             timeout=90,
-            redirect_guard=lambda newurl: http._request_origin(newurl) == expected_origin,
+            redirect_guard=_same_origin_redirect,
         )
 
     def generate_text(
@@ -579,10 +587,9 @@ def _validate_gemini_model_segment(model: str) -> str:
     """Validate and percent-encode a Gemini model name used as a URL path segment."""
     if (
         not isinstance(model, str)
-        or not model
+        or not _GEMINI_MODEL_SEGMENT_RE.fullmatch(model)
+        or model in {".", ".."}
         or ".." in model
-        or any(ch in model for ch in "/\\?#")
-        or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in model)
     ):
         raise ValueError(f"Invalid Gemini model name: {model!r}")
     return quote(model, safe="")
