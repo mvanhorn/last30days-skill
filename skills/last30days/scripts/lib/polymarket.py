@@ -1844,6 +1844,11 @@ def parse_polymarket_response(
             if not include_all_outcomes:
                 top_outcomes = []
 
+        outcome_market_ids = (
+            [_market_id(m) for m in outcome_markets[: len(top_outcomes)]]
+            if top_outcomes and outcome_questions and outcome_questions[0] is not None
+            else []
+        )
         item = {
             "event_id": event_id,
             "title": title,
@@ -1851,6 +1856,7 @@ def parse_polymarket_response(
             "url": url,
             "outcome_prices": top_outcomes,
             "outcome_questions": outcome_questions[: len(top_outcomes)],
+            **({"outcome_market_ids": outcome_market_ids} if outcome_market_ids else {}),
             "outcomes_remaining": remaining,
             "headline": headline,
             "odds": odds,
@@ -2049,6 +2055,54 @@ def _record_outcome_values(
             existing_norm.add(norm_key)
 
 
+def _saved_outcome_market_id(item: Any, datum_key: str) -> Optional[str]:
+    """Return the saved sub-market ID aligned with ``datum_key`` on ``item``, if present."""
+    if datum_key == "end_date":
+        return None
+    metadata = getattr(item, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    outcome_pairs = metadata.get("outcome_prices")
+    outcome_market_ids = metadata.get("outcome_market_ids")
+    if (
+        not isinstance(outcome_pairs, (list, tuple))
+        or not isinstance(outcome_market_ids, (list, tuple))
+        or len(outcome_pairs) != len(outcome_market_ids)
+    ):
+        return None
+    valid: List[Tuple[str, str]] = []
+    for pair, raw_mid in zip(outcome_pairs, outcome_market_ids):
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        name, value = pair
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        try:
+            numeric = float(value)
+        except OverflowError:
+            continue
+        if not math.isfinite(numeric):
+            continue
+        key = str(name).strip()
+        if not key:
+            continue
+        valid.append((key, str(raw_mid or "").strip()))
+    counts: Dict[str, int] = {}
+    for key, _mid in valid:
+        norm = key.casefold()
+        counts[norm] = counts.get(norm, 0) + 1
+    seen: Dict[str, int] = {}
+    key_to_mid: Dict[str, str] = {}
+    for key, mid in valid:
+        norm = key.casefold()
+        occ = seen.get(norm, 0)
+        seen[norm] = occ + 1
+        full_key = f"{norm}\x1f{occ}" if counts[norm] > 1 else norm
+        if mid:
+            key_to_mid[full_key] = mid
+    return key_to_mid.get(_normalize_snapshot_key(datum_key))
+
+
 class DatumNotFound(KeyError):
     """The event re-fetched, but it no longer prices this one datum.
 
@@ -2206,12 +2260,12 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
             if group_title:
                 dropped_current.add(group_title.casefold())
         dropped_legacy.add(_legacy_shorten_question(question).strip().casefold())
-    # If another child market could have claimed a legacy cut name via its
-    # groupItemTitle (only when it has a question subject), shortened subject,
-    # or current label, an older report could have saved that other market
-    # under that label. Drop such cross-market ambiguous labels from
-    # legacy_values so verification returns unsupported instead of switching
-    # markets.
+    # If another child market could have claimed a label via its current label,
+    # shortened subject, legacy cut, or groupItemTitle (only when it has a
+    # question subject), an older report without outcome_market_ids could have
+    # saved that other market under that label. Purge such cross-market
+    # ambiguous labels from both values and legacy_values so label-only
+    # verification returns unsupported instead of switching markets.
     active_question_markets = [
         m
         for m in markets
@@ -2219,34 +2273,75 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         and m.get("question")
         and (not has_active or (m.get("active", True) and not m.get("closed", False)))
     ]
+    refreshed_market_ids = refreshed.get("outcome_market_ids") or []
+    market_values: dict[str, Any] = {}
+    if refreshed_market_ids and len(refreshed_market_ids) == len(outcome_pairs):
+        all_mid_counts: dict[str, int] = {}
+        for m in active_question_markets:
+            clean_mid = _market_id(m)
+            if clean_mid:
+                all_mid_counts[clean_mid] = all_mid_counts.get(clean_mid, 0) + 1
+        refreshed_mid_counts: dict[str, int] = {}
+        for raw_mid in refreshed_market_ids:
+            clean_mid = str(raw_mid or "").strip()
+            if clean_mid:
+                refreshed_mid_counts[clean_mid] = refreshed_mid_counts.get(clean_mid, 0) + 1
+        for (_name, price), raw_mid in zip(outcome_pairs, refreshed_market_ids):
+            clean_mid = str(raw_mid or "").strip()
+            if (
+                clean_mid
+                and refreshed_mid_counts.get(clean_mid) == 1
+                and all_mid_counts.get(clean_mid, 1) == 1
+            ):
+                market_values[clean_mid] = price
+
+    ambiguous_current: set[str] = set()
     ambiguous_legacy: set[str] = set()
     if len(active_question_markets) > 1:
+        current_owners: dict[str, set[int]] = {}
         legacy_owners: dict[str, set[int]] = {}
-        other_owners: dict[str, set[int]] = {}
+        possible_owners: dict[str, set[int]] = {}
         for idx, market in enumerate(active_question_markets):
             question = str(market["question"])
+            current_name = (sibling_labels.get(id(market)) or "").strip().casefold()
+            if current_name:
+                current_owners.setdefault(current_name, set()).add(idx)
             legacy_name = _legacy_shorten_question(question).strip().casefold()
             if legacy_name:
                 legacy_owners.setdefault(legacy_name, set()).add(idx)
-            other_names = {
+            possible_names = {
+                current_name,
+                legacy_name,
                 _shorten_question(question).strip().casefold(),
-                (sibling_labels.get(id(market)) or "").strip().casefold(),
             }
             if _question_subject(question.strip().rstrip("?")) is not None:
-                other_names.add(
+                possible_names.add(
                     " ".join(str(market.get("groupItemTitle") or "").split()).casefold()
                 )
-            other_names.discard("")
-            for name in other_names:
-                other_owners.setdefault(name, set()).add(idx)
+            possible_names.discard("")
+            for name in possible_names:
+                possible_owners.setdefault(name, set()).add(idx)
+        ambiguous_current = {
+            name
+            for name, owners in current_owners.items()
+            if possible_owners.get(name, set()) - owners
+        }
         ambiguous_legacy = {
             name
             for name, owners in legacy_owners.items()
-            if other_owners.get(name, set()) - owners
+            if possible_owners.get(name, set()) - owners
         }
-    for key in [k for k in values if "\x1f" in k]:
-        if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_current:
+    for key in list(values):
+        if key == "end_date":
+            continue
+        base = (
+            key.rsplit("\x1f", 1)[0].strip().casefold()
+            if "\x1f" in key
+            else key.strip().casefold()
+        )
+        if base in ambiguous_current or ("\x1f" in key and base in dropped_current):
             del values[key]
+    dropped_current.update(ambiguous_current)
     for key in list(legacy_values):
         base = (
             key.rsplit("\x1f", 1)[0].strip().casefold()
@@ -2261,17 +2356,22 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
 
     blocked_current = frozenset(dropped_current)
     blocked_legacy = frozenset(dropped_legacy)
-    value = resolve_snapshot_value(
-        values,
-        datum_key,
-        legacy_values=legacy_values,
-        blocked_repeats=blocked_current,
-        legacy_blocked_repeats=blocked_legacy,
-        allow_occurrence_zero=(datum_key != "end_date"),
-    )
+    saved_market_id = _saved_outcome_market_id(item, datum_key)
+    if saved_market_id:
+        value = market_values.get(saved_market_id)
+    else:
+        value = resolve_snapshot_value(
+            values,
+            datum_key,
+            legacy_values=legacy_values,
+            blocked_repeats=blocked_current,
+            legacy_blocked_repeats=blocked_legacy,
+            allow_occurrence_zero=(datum_key != "end_date"),
+        )
     snapshot = {
         "values": values,
         "legacy_values": legacy_values,
+        "market_values": market_values,
         "blocked_repeats": sorted(blocked_current),
         "legacy_blocked_repeats": sorted(blocked_legacy),
         "url": str(getattr(item, "url", "")),

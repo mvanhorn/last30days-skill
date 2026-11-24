@@ -27,6 +27,7 @@ class Claim:
     datum_kind: str
     datum_key: str
     original_value: Any
+    datum_market_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class RefetchedDatum:
     timestamp: str | None = None
     values: dict[str, Any] | None = None
     legacy_values: dict[str, Any] | None = None
+    market_values: dict[str, Any] | None = None
     blocked_repeats: frozenset[str] = frozenset()
     legacy_blocked_repeats: frozenset[str] | None = None
 
@@ -83,6 +85,8 @@ def _claim(
     key: str,
     value: Any,
     text: str,
+    *,
+    datum_market_id: str | None = None,
 ) -> Claim:
     item = grounded.item
     return Claim(
@@ -96,6 +100,7 @@ def _claim(
         datum_kind=kind,
         datum_key=key,
         original_value=value,
+        datum_market_id=datum_market_id,
     )
 
 
@@ -107,8 +112,15 @@ def extract_claims(report: schema.Report) -> list[Claim]:
         item = grounded.item
         if item.source == "polymarket":
             outcome_pairs = item.metadata.get("outcome_prices") or []
-            valid_pairs: list[tuple[str, float]] = []
-            for pair in outcome_pairs:
+            raw_market_ids = item.metadata.get("outcome_market_ids")
+            aligned_market_ids = (
+                raw_market_ids
+                if isinstance(raw_market_ids, (list, tuple))
+                and len(raw_market_ids) == len(outcome_pairs)
+                else None
+            )
+            valid_pairs: list[tuple[str, float, str | None]] = []
+            for idx, pair in enumerate(outcome_pairs):
                 if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                     continue
                 name, value = pair
@@ -123,10 +135,15 @@ def extract_claims(report: schema.Report) -> list[Claim]:
                 key = str(name).strip()
                 if not key:
                     continue
-                valid_pairs.append((key, numeric))
-            outcome_counts = Counter(key.casefold() for key, _value in valid_pairs)
+                market_id = (
+                    str(aligned_market_ids[idx] or "").strip() or None
+                    if aligned_market_ids is not None
+                    else None
+                )
+                valid_pairs.append((key, numeric, market_id))
+            outcome_counts = Counter(key.casefold() for key, _value, _mid in valid_pairs)
             seen_outcomes: dict[str, int] = defaultdict(int)
-            for key, numeric in valid_pairs:
+            for key, numeric, market_id in valid_pairs:
                 normalized_key = key.casefold()
                 occurrence = seen_outcomes[normalized_key]
                 seen_outcomes[normalized_key] += 1
@@ -142,6 +159,7 @@ def extract_claims(report: schema.Report) -> list[Claim]:
                         datum_key,
                         numeric,
                         f"{item.title}: {key} is {numeric * 100:g}%",
+                        datum_market_id=market_id,
                     )
                 )
             end_date = item.metadata.get("end_date")
@@ -288,6 +306,11 @@ def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url
             legacy_values=(
                 value.get("legacy_values")
                 if isinstance(value.get("legacy_values"), dict)
+                else None
+            ),
+            market_values=(
+                value.get("market_values")
+                if isinstance(value.get("market_values"), dict)
                 else None
             ),
             blocked_repeats=_coerce_blocked_repeats(value.get("blocked_repeats")),
@@ -455,6 +478,24 @@ def _lookup_cached_datum(
 ) -> RefetchedDatum | None:
     """Resolve ``claim.datum_key`` from a cached snapshot using refetch_datum semantics."""
     cached_key, cached_datum = cached
+    if (
+        claim.datum_kind == "polymarket_probability"
+        and claim.datum_market_id
+        and cached_datum.market_values is not None
+    ):
+        value = cached_datum.market_values.get(claim.datum_market_id)
+        if value is not None:
+            return RefetchedDatum(
+                value=value,
+                url=cached_datum.url,
+                timestamp=cached_datum.timestamp,
+                values=cached_datum.values,
+                legacy_values=cached_datum.legacy_values,
+                market_values=cached_datum.market_values,
+                blocked_repeats=cached_datum.blocked_repeats,
+                legacy_blocked_repeats=cached_datum.legacy_blocked_repeats,
+            )
+        return None
     values = cached_datum.values
     legacy_values = cached_datum.legacy_values
     if values or legacy_values:
@@ -473,6 +514,7 @@ def _lookup_cached_datum(
                 timestamp=cached_datum.timestamp,
                 values=values,
                 legacy_values=legacy_values,
+                market_values=cached_datum.market_values,
                 blocked_repeats=cached_datum.blocked_repeats,
                 legacy_blocked_repeats=cached_datum.legacy_blocked_repeats,
             )
@@ -731,6 +773,11 @@ def verify_report(
                         legacy_values=(
                             dict(snapshot.get("legacy_values") or {})
                             if isinstance(snapshot.get("legacy_values"), dict)
+                            else None
+                        ),
+                        market_values=(
+                            dict(snapshot.get("market_values") or {})
+                            if isinstance(snapshot.get("market_values"), dict)
                             else None
                         ),
                         blocked_repeats=_coerce_blocked_repeats(snapshot.get("blocked_repeats")),

@@ -1044,90 +1044,11 @@ def test_greptile2_shared_group_title_uses_subject_so_swapped_prices_never_switc
 
 
 def test_greptile_current_name_occurrence_zero_beats_legacy_cut_repeats(monkeypatch):
-    """When current outcome 'Apple' is unique (0.70) while two other markets shorten to
-    'Apple' under legacy rules (0.20, 0.10), BOTH direct refetch_datum and cached
-    verify_report must resolve 'Apple\\x1f0' to current 'Apple' (0.70), while truly
-    legacy-only keys still resolve from legacy_values."""
-    event = {
-        "id": "707",
-        "slug": "apple-markets",
-        "title": "Apple milestones?",
-        "active": True,
-        "closed": False,
-        "updatedAt": "2026-11-24T12:00:00Z",
-        "markets": [
-            # Current label: "Apple" (unique groupItemTitle); legacy cut: "Tim Cook"
-            _binary_submarket("Will Tim Cook remain CEO of the company?", "Apple", 0.70),
-            # Current labels: "$4T", "$5T"; legacy cuts: both "Apple"
-            _binary_submarket("Will Apple reach a $4T market cap?", "$4T", 0.20),
-            _binary_submarket("Will Apple reach a $5T market cap?", "$5T", 0.10),
-            # Legacy-only cut: "OldCut" (distinct from current label "Milestone")
-            _binary_submarket("Will OldCut win the legacy milestone?", "Milestone", 0.30),
-        ],
-    }
-    calls: list[int] = []
-    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event)
-    item = SimpleNamespace(metadata={"event_id": "707"}, url="", item_id="pm-707")
-
-    # Direct fetch: Apple\x1f0 resolves to current "Apple" (0.70), NOT legacy "$4T" (0.20).
-    assert polymarket.refetch_datum(item, "Apple\x1f0")["value"] == 0.70
-    # Truly legacy-only keys still resolve via legacy_values.
-    assert polymarket.refetch_datum(item, "OldCut")["value"] == 0.30
-    assert polymarket.refetch_datum(item, "Tim Cook")["value"] == 0.70
-
-    # Cached hit after "Milestone" fetches first: identical resolution via shared helper.
-    calls.clear()
-    saved = _item(
-        "polymarket",
-        title="Apple milestones?",
-        url="https://polymarket.com/event/apple-markets",
-        metadata={
-            "event_id": "707",
-            "outcome_prices": [
-                ["Milestone", 0.30],
-                ["Apple", 0.70],
-                ["Apple", 0.25],
-                ["OldCut", 0.30],
-            ],
-        },
-    )
-    verdicts = freshness.verify_report(
-        _report(saved),
-        checked_at="2026-11-24T12:05:00Z",
-        refetchers={"polymarket": polymarket.refetch_datum},
-    )
-    assert len(calls) == 1
-    # Milestone -> 0.30 (current); Apple\x1f0 -> current Apple 0.70 (current);
-    # Apple\x1f1 -> unsupported (current namespace owns 'Apple', never leaks into legacy '$5T');
-    # OldCut -> legacy 0.30 (current).
-    assert verdicts[0].verdict == "current"
-    assert verdicts[1].verdict == "current"
-    assert verdicts[1].current_value == 0.70
-    assert verdicts[2].verdict == "unsupported"
-    assert verdicts[3].verdict == "current"
-    assert verdicts[3].current_value == 0.30
-
-    # A book-dropped market whose legacy cut is 'Apple' (but whose current label is '$5T')
-    # must NOT block current 'Apple\x1f0'.
-    dropped_legacy_event = {
-        **event,
-        "markets": [
-            _binary_submarket("Will Tim Cook remain CEO of the company?", "Apple", 0.70),
-            _binary_submarket("Will Apple reach a $4T market cap?", "$4T", 0.20),
-            {
-                **_binary_submarket("Will Apple reach a $5T market cap?", "$5T", 0.10),
-                "bestBid": 0.01,
-                "bestAsk": 0.99,
-                "spread": 0.98,
-            },
-            _binary_submarket("Will OldCut win the legacy milestone?", "Milestone", 0.30),
-        ],
-    }
-    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: dropped_legacy_event)
-    assert polymarket.refetch_datum(item, "Apple\x1f0")["value"] == 0.70
-
-    # Also verify resolve_snapshot_value directly prioritizes current values over legacy_values
-    # even when legacy_values carries Apple\x1f0 / Apple\x1f1 alongside current Apple.
+    """Verify current-over-legacy namespace precedence in resolve_snapshot_value AND
+    that cross-market ambiguous labels without outcome_market_ids fail closed while
+    new reports carrying outcome_market_ids resolve directly by market ID."""
+    # Direct unit test on resolve_snapshot_value: current Apple wins over legacy Apple\x1f0,
+    # and Apple\x1f1 does not leak into legacy_values when current namespace owns 'Apple'.
     assert (
         polymarket.resolve_snapshot_value(
             {"Apple": 0.70},
@@ -1144,6 +1065,73 @@ def test_greptile_current_name_occurrence_zero_beats_legacy_cut_repeats(monkeypa
         )
         is None
     )
+
+    event = {
+        "id": "707",
+        "slug": "apple-markets",
+        "title": "Apple milestones?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {**_binary_submarket("Will Tim Cook remain CEO of the company?", "Apple", 0.70), "id": "m-tim"},
+            {**_binary_submarket("Will Apple reach a $4T market cap?", "$4T", 0.20), "id": "m-4t"},
+            {**_binary_submarket("Will Apple reach a $5T market cap?", "$5T", 0.10), "id": "m-5t"},
+            {**_binary_submarket("Will OldCut win the legacy milestone?", "Milestone", 0.30), "id": "m-old"},
+        ],
+    }
+    calls: list[int] = []
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event)
+    item_no_ids = SimpleNamespace(metadata={"event_id": "707"}, url="", item_id="pm-707")
+
+    # Without outcome_market_ids, 'Apple' is cross-market ambiguous across m-tim (groupItemTitle)
+    # and m-4t/m-5t (legacy cut) -> unsupported; unambiguous legacy cuts ('OldCut', 'Tim Cook') resolve.
+    with pytest.raises(polymarket.DatumNotFound):
+        polymarket.refetch_datum(item_no_ids, "Apple")
+    with pytest.raises(polymarket.DatumNotFound):
+        polymarket.refetch_datum(item_no_ids, "Apple\x1f0")
+    assert polymarket.refetch_datum(item_no_ids, "OldCut")["value"] == 0.30
+    assert polymarket.refetch_datum(item_no_ids, "Tim Cook")["value"] == 0.70
+
+    # With outcome_market_ids (new report), 'Apple' resolves directly via m-tim -> 0.70
+    # identically on direct refetch_datum and cached verify_report, even if m-5t is book-dropped.
+    calls.clear()
+    saved_with_ids = _item(
+        "polymarket",
+        title="Apple milestones?",
+        url="https://polymarket.com/event/apple-markets",
+        metadata={
+            "event_id": "707",
+            "outcome_prices": [["Milestone", 0.30], ["Apple", 0.70], ["$4T", 0.20]],
+            "outcome_market_ids": ["m-old", "m-tim", "m-4t"],
+        },
+    )
+    verdicts = freshness.verify_report(
+        _report(saved_with_ids),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == ["current", "current", "current"]
+    assert verdicts[1].current_value == 0.70
+
+    dropped_legacy_event = {
+        **event,
+        "markets": [
+            {**_binary_submarket("Will Tim Cook remain CEO of the company?", "Apple", 0.70), "id": "m-tim"},
+            {**_binary_submarket("Will Apple reach a $4T market cap?", "$4T", 0.20), "id": "m-4t"},
+            {
+                **_binary_submarket("Will Apple reach a $5T market cap?", "$5T", 0.10),
+                "id": "m-5t",
+                "bestBid": 0.01,
+                "bestAsk": 0.99,
+                "spread": 0.98,
+            },
+            {**_binary_submarket("Will OldCut win the legacy milestone?", "Milestone", 0.30), "id": "m-old"},
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: dropped_legacy_event)
+    assert polymarket.refetch_datum(saved_with_ids, "Apple")["value"] == 0.70
 
 
 def test_greptile_r3_three_market_subject_group_title_cross_collision(monkeypatch):
@@ -1406,13 +1394,23 @@ def test_greptile_r5_unused_group_title_on_non_subject_question_does_not_block_s
     assert verdicts[1].current_value == 0.35
 
 
-def test_greptile_r6_non_subject_group_titles_still_count_for_title_uniqueness(monkeypatch):
-    """Greptile R6 P1 (4681850135):
-    title_counts in _sibling_outcome_labels must count groupItemTitle across ALL
-    sibling markets (matching origin/main) so 'Will Alice win?' (groupItemTitle='Bob')
-    and 'Will Bob win?' (groupItemTitle='Winner') keep 'Alice' and 'Bob' when two
-    'Does ...' siblings share 'Bob' and 'Winner'. Rechecking saved 'Bob' must read
-    Bob's 0.35 odds, not Alice's 0.60."""
+def test_greptile_r6_and_r7_market_id_matching_and_legacy_cross_market_ambiguity(monkeypatch):
+    """Greptile R6 (4681850135) + R7 (4681961728):
+    - 'Will Alice win?' (groupItemTitle='Bob', 0.60)
+    - 'Will Bob win?' (groupItemTitle='Winner', 0.35)
+    - 'Does X qualify?' (groupItemTitle='Bob', 0.002)
+    - 'Does Y qualify?' (groupItemTitle='Winner', 0.002)
+    1. New parser keeps 'Alice' and 'Bob' AND records outcome_market_ids (preserved
+       through normalize.normalize_source_items).
+    2. New reports (with outcome_market_ids) match directly by market ID, verifying
+       'Bob' -> 0.35 (current) and returning unsupported if that market ID disappears
+       (never falling back to Alice).
+    3. Older reports (without outcome_market_ids) treat 'Bob' as ambiguous because
+       an older display parse (filtering out 0.002 'Does ...' siblings) could have
+       saved Alice's 0.60 under 'Bob', so both direct fetch and cached lookup return
+       unsupported instead of marking Alice stale against Bob's 0.35."""
+    from lib import normalize
+
     event = {
         "id": "714",
         "slug": "alice-bob-does",
@@ -1421,38 +1419,83 @@ def test_greptile_r6_non_subject_group_titles_still_count_for_title_uniqueness(m
         "closed": False,
         "updatedAt": "2026-11-24T12:00:00Z",
         "markets": [
-            _binary_submarket("Will Alice win?", "Bob", 0.60),
-            _binary_submarket("Will Bob win?", "Winner", 0.35),
-            _binary_submarket("Does X qualify?", "Bob", 0.20),
-            _binary_submarket("Does Y qualify?", "Winner", 0.15),
+            {**_binary_submarket("Will Alice win?", "Bob", 0.60), "id": "m-alice"},
+            {**_binary_submarket("Will Bob win?", "Winner", 0.35), "id": "m-bob"},
+            {**_binary_submarket("Does X qualify?", "Bob", 0.002), "id": "m-x"},
+            {**_binary_submarket("Does Y qualify?", "Winner", 0.002), "id": "m-y"},
         ],
     }
-    [parsed] = polymarket.parse_polymarket_response({"events": [event]}, include_all_outcomes=True)
-    assert dict(parsed["outcome_prices"]) == {
-        "Alice": 0.60,
-        "Bob": 0.35,
-        "Does X qualify": 0.20,
-        "Does Y qualify": 0.15,
-    }
+    [parsed] = polymarket.parse_polymarket_response({"events": [event]})
+    assert parsed["outcome_prices"] == [("Alice", 0.60), ("Bob", 0.35)]
+    assert parsed["outcome_market_ids"] == ["m-alice", "m-bob"]
 
-    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
-    item = SimpleNamespace(metadata={"event_id": "714"}, url="", item_id="pm-714")
-    assert polymarket.refetch_datum(item, "Bob")["value"] == 0.35
-    assert polymarket.refetch_datum(item, "Alice")["value"] == 0.60
-
-    saved = _item(
-        "polymarket",
-        title="Tournament outcomes?",
-        url="https://polymarket.com/event/alice-bob-does",
-        metadata={"event_id": "714", "outcome_prices": [["Alice", 0.60], ["Bob", 0.35]]},
+    # normalize preserves outcome_market_ids in SourceItem.metadata.
+    [normalized_item] = normalize.normalize_source_items(
+        "polymarket", [parsed], "2026-10-25", "2026-11-24",
     )
-    verdicts = freshness.verify_report(
-        _report(saved),
+    assert normalized_item.metadata["outcome_market_ids"] == ["m-alice", "m-bob"]
+
+    calls: list[int] = []
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event)
+
+    # New report (with outcome_market_ids): direct refetch AND cached verify_report
+    # both match by market ID -> Alice 0.60 (current), Bob 0.35 (current).
+    assert polymarket.refetch_datum(normalized_item, "Bob")["value"] == 0.35
+    assert polymarket.refetch_datum(normalized_item, "Alice")["value"] == 0.60
+    calls.clear()
+    new_verdicts = freshness.verify_report(
+        _report(normalized_item),
         checked_at="2026-11-24T12:05:00Z",
         refetchers={"polymarket": polymarket.refetch_datum},
     )
-    assert [v.verdict for v in verdicts] == ["current", "current"]
-    assert verdicts[1].current_value == 0.35
+    assert len(calls) == 1
+    assert [v.verdict for v in new_verdicts] == ["current", "current", "current"]
+    assert new_verdicts[0].current_value == 0.60
+    assert new_verdicts[1].current_value == 0.35
+
+    # If Bob's specific sub-market is dropped (wide book), market_id lookup fails closed
+    # to unsupported rather than falling back to a label collision.
+    bob_dropped_event = {
+        **event,
+        "markets": [
+            event["markets"][0],
+            {**event["markets"][1], "bestBid": 0.01, "bestAsk": 0.99, "spread": 0.98},
+            event["markets"][2],
+            event["markets"][3],
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: bob_dropped_event)
+    dropped_verdicts = freshness.verify_report(
+        _report(normalized_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert [v.verdict for v in dropped_verdicts] == ["current", "unsupported", "current"]
+
+    # Older report (NO outcome_market_ids): 'Bob' could have been Alice (0.60 via
+    # groupItemTitle when 0.002 'Does ...' siblings were omitted) -> unsupported on
+    # BOTH direct fetch and cached lookup, while unambiguous 'Alice' still resolves!
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event)
+    item_no_ids = SimpleNamespace(metadata={"event_id": "714"}, url="", item_id="pm-714")
+    with pytest.raises(polymarket.DatumNotFound):
+        polymarket.refetch_datum(item_no_ids, "Bob")
+    assert polymarket.refetch_datum(item_no_ids, "Alice")["value"] == 0.60
+
+    calls.clear()
+    old_saved = _item(
+        "polymarket",
+        title="Tournament outcomes?",
+        url="https://polymarket.com/event/alice-bob-does",
+        metadata={"event_id": "714", "outcome_prices": [["Alice", 0.60], ["Bob", 0.60]]},
+    )
+    old_verdicts = freshness.verify_report(
+        _report(old_saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in old_verdicts] == ["current", "unsupported"]
+
 
 
 

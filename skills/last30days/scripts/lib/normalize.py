@@ -1108,6 +1108,11 @@ def _normalize_polymarket(
             "question": question,
             "end_date": item.get("end_date"),
             "outcome_prices": item.get("outcome_prices") or [],
+            **(
+                {"outcome_market_ids": item["outcome_market_ids"]}
+                if item.get("outcome_market_ids")
+                else {}
+            ),
             "outcomes_remaining": item.get("outcomes_remaining"),
             # The market and price that stand for the event in the footer.
             **({"headline": item["headline"]} if item.get("headline") else {}),
