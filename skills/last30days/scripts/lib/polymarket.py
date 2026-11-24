@@ -971,7 +971,15 @@ ODDS_LINE_OUTCOMES = 3
 
 
 def _market_id(market: Dict[str, Any]) -> str:
-    return str(market.get("id") or market.get("conditionId") or "").strip()
+    for key in ("id", "conditionId", "slug"):
+        value = str(market.get(key) or "").strip()
+        if value:
+            return value
+    question = " ".join(str(market.get("question") or "").split())
+    group = " ".join(str(market.get("groupItemTitle") or "").split())
+    if question and group:
+        return f"{question}\x1f{group}"
+    return question or group
 
 
 def _parse_clob_token_ids(market: Dict[str, Any]) -> List[str]:

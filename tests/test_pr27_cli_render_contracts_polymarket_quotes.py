@@ -377,7 +377,7 @@ class TestHigh012DefaultMemoryDirNormalization:
 
         assert pipeline.is_scoped_save_dir(None) is False
         assert pipeline.is_scoped_save_dir("") is False
-        assert pipeline.is_scoped_save_dir("   ") is False
+        assert pipeline.is_scoped_save_dir("   ") is True
         assert pipeline.is_scoped_save_dir(default_dir) is False
         assert pipeline.is_scoped_save_dir(str(default_dir) + os.sep) is False
         assert pipeline.is_scoped_save_dir(str(default_dir / "." / ".." / "Last30Days")) is False
@@ -499,9 +499,12 @@ class TestHigh012DefaultMemoryDirNormalization:
         assert saved.is_file()
         assert sync_calls == [((default_dir.resolve(),), {})]
 
-    def test_whitespace_only_save_dir_normalizes_to_default_consistently(
-        self, tmp_path: Path, monkeypatch
+    def test_whitespace_only_save_dir_rejected_explicitly_and_never_uses_shared_data(
+        self, tmp_path: Path, monkeypatch, capsys
     ):
+        from lib import env as env_mod
+        from lib import html_publish
+
         default_dir = tmp_path / "Documents" / "Last30Days"
         default_dir.mkdir(parents=True)
         work_dir = tmp_path / "cwd"
@@ -510,75 +513,81 @@ class TestHigh012DefaultMemoryDirNormalization:
         monkeypatch.setattr(library, "DEFAULT_MEMORY_DIR", default_dir)
         monkeypatch.setattr(cli.env, "get_config", lambda **_k: {})
 
-        assert pipeline.normalize_save_dir("   ") is None
-        assert pipeline.is_scoped_save_dir("   ") is False
-        assert cli._scoped_store_db(argparse.Namespace(save_dir="   ")) is None
-
-        # 1. library search via LAST30DAYS_MEMORY_DIR="   " scans DEFAULT_MEMORY_DIR, never "   "
-        search_kwargs: dict[str, Path] = {}
-
-        def fake_sync_and_search(query, *, memory_dir, briefs_dir, db_path, store_db_path):
-            search_kwargs["memory_dir"] = Path(memory_dir)
-            search_kwargs["briefs_dir"] = Path(briefs_dir)
-            search_kwargs["db_path"] = Path(db_path)
-            search_kwargs["store_db_path"] = Path(store_db_path)
-            return [], mock.Mock(notes=[], rebuilt=False)
-
-        monkeypatch.setattr(library_index, "sync_and_search", fake_sync_and_search)
-        monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "   ")
-        monkeypatch.setattr(sys, "argv", ["last30days.py", "library", "search", "MCP"])
-        assert cli.main() == 0
-        assert search_kwargs["memory_dir"].resolve() == default_dir.resolve()
-        assert search_kwargs["briefs_dir"] == library.DEFAULT_BRIEFS_DIR
-        assert search_kwargs["db_path"] == library_index.DEFAULT_LIBRARY_DB
-        assert search_kwargs["store_db_path"] == library_index.DEFAULT_STORE_DB
-        assert not (work_dir / "   ").exists()
-
-        # 2. library feed --publish with --save-dir "   " writes into DEFAULT_MEMORY_DIR, never "   "
-        from lib import html_publish
-
-        scanned: list[tuple[Path, Path]] = []
-
-        def fake_scan_library(memory_dir, briefs_dir):
-            scanned.append((Path(memory_dir), Path(briefs_dir)))
-            return [], []
-
-        monkeypatch.setattr(library, "scan_library", fake_scan_library)
-        monkeypatch.setattr(
-            html_publish,
-            "publish_html_documents",
-            lambda docs, password=None: {},
+        # 1. Core helpers reject or fail closed on whitespace-only values.
+        assert pipeline.is_blank_save_dir("   ") is True
+        assert pipeline.is_blank_save_dir("") is False
+        assert pipeline.is_blank_save_dir(None) is False
+        assert pipeline.is_scoped_save_dir("   ") is True
+        assert (
+            pipeline.library_context_index_path({"LAST30DAYS_LIBRARY_CONTEXT": "on"}, "   ")
+            is None
         )
-        monkeypatch.setattr(
-            html_publish,
-            "publish_html",
-            lambda html, password=None: {"url": "https://example.test/lib"},
-        )
-        monkeypatch.delenv("LAST30DAYS_MEMORY_DIR", raising=False)
-        args_feed = cli.build_parser().parse_args(
-            ["library", "feed", "--publish", "--save-dir", "   "]
-        )
-        assert cli._run_library_feed(args_feed, {}) == 0
-        assert scanned == [(default_dir, library.DEFAULT_BRIEFS_DIR)]
-        assert (default_dir / "index.html").is_file()
-        assert not (work_dir / "   ").exists()
-
-        # 3. save_output rejects whitespace-only path instead of creating a literal "   " folder
+        with pytest.raises(ValueError, match="whitespace-only"):
+            cli._scoped_store_db(argparse.Namespace(save_dir="   "))
+        with pytest.raises(ValueError, match="whitespace-only"):
+            env_mod.resolve_memory_dir("   ")
         with pytest.raises(ValueError, match="non-empty save_dir"):
             cli.save_output(_make_report("Blank"), "md", "   ")
         assert not (work_dir / "   ").exists()
 
-        # 4. _load_library_context with save_dir="   " uses DEFAULT_MEMORY_DIR, never "   "
-        ctx_sync: list[tuple[Path, Path, Path]] = []
+        # 2. --resolve-save-dir rejects whitespace-only flag and env var with exit 2.
+        monkeypatch.setattr(
+            sys, "argv", ["last30days.py", "--resolve-save-dir", "--save-dir", "   "]
+        )
+        assert cli.main() == 2
+        assert "whitespace-only" in capsys.readouterr().err
+
+        monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "   ")
+        monkeypatch.setattr(sys, "argv", ["last30days.py", "--resolve-save-dir"])
+        assert cli.main() == 2
+        assert "whitespace-only" in capsys.readouterr().err
+
+        # 3. library search via LAST30DAYS_MEMORY_DIR="   " exits 2 without syncing/reading shared DB.
+        monkeypatch.setattr(
+            library_index,
+            "sync_and_search",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("sync_and_search must not run")),
+        )
+        monkeypatch.setattr(sys, "argv", ["last30days.py", "library", "search", "MCP"])
+        assert cli.main() == 2
+        assert "whitespace-only" in capsys.readouterr().err
+
+        # 4. library feed --publish with --save-dir "   " exits 2 and publishes/writes nothing.
+        monkeypatch.delenv("LAST30DAYS_MEMORY_DIR", raising=False)
+        monkeypatch.setattr(
+            library,
+            "scan_library",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("scan_library must not run")),
+        )
+        monkeypatch.setattr(
+            html_publish,
+            "publish_html",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("publish_html must not run")),
+        )
+        args_feed = cli.build_parser().parse_args(
+            ["library", "feed", "--publish", "--save-dir", "   "]
+        )
+        assert cli._run_library_feed(args_feed, {}) == 2
+        assert "whitespace-only" in capsys.readouterr().err
+        assert not (default_dir / "index.html").exists()
+        assert not (work_dir / "   ").exists()
+
+        # 5. library harvest with --save-dir "   " exits 2.
+        args_harvest = cli.build_parser().parse_args(
+            ["library", "harvest", "--save-dir", "   "]
+        )
+        assert cli._run_library_harvest(args_harvest, {}) == 2
+        assert "whitespace-only" in capsys.readouterr().err
+
+        # 6. _load_library_context with save_dir="   " is a safe no-op (never touches shared DB).
         monkeypatch.setattr(
             pipeline.library_index,
             "sync_library",
-            lambda m, b, *, db_path: ctx_sync.append((Path(m), Path(b), Path(db_path))),
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("sync_library must not run")),
         )
-        monkeypatch.setattr(pipeline.library_index, "search", lambda *a, **k: [])
-        pipeline._load_library_context(
+        contexts, err = pipeline._load_library_context(
             topic="MCP",
-            config={"LAST30DAYS_LIBRARY_CONTEXT": "on", "LAST30DAYS_MEMORY_DIR": "   "},
+            config={"LAST30DAYS_LIBRARY_CONTEXT": "on"},
             mock=False,
             internal_subrun=False,
             x_handle=None,
@@ -586,9 +595,49 @@ class TestHigh012DefaultMemoryDirNormalization:
             github_repos=None,
             save_dir="   ",
         )
-        assert ctx_sync == [
-            (default_dir, library.DEFAULT_BRIEFS_DIR, library_index.DEFAULT_LIBRARY_DB)
-        ]
+        assert contexts == []
+        assert err is None
+
+    def test_trailing_space_save_dir_preserved_verbatim(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from lib import env as env_mod
+
+        default_dir = tmp_path / "Documents" / "Last30Days"
+        default_dir.mkdir(parents=True)
+        trailing_dir = tmp_path / "client dir "
+        stripped_dir = tmp_path / "client dir"
+        monkeypatch.setattr(library, "DEFAULT_MEMORY_DIR", default_dir)
+
+        raw = str(trailing_dir)
+        assert pipeline.is_blank_save_dir(raw) is False
+        assert pipeline.is_scoped_save_dir(raw) is True
+        assert env_mod.resolve_memory_dir(raw) == str(trailing_dir.absolute())
+        assert pipeline.scoped_store_db_path(raw) == trailing_dir.resolve() / "research.db"
+        assert pipeline.library_context_index_path(
+            {"LAST30DAYS_LIBRARY_CONTEXT": "on"}, raw
+        ) == trailing_dir.resolve() / ".last30days-library.db"
+
+        # Saving writes to the exact directory with the trailing space, not the stripped sibling.
+        monkeypatch.setattr(library_index, "sync_library", lambda *a, **k: None)
+        saved = cli.save_output(_make_report("Space Topic"), "md", raw)
+        assert saved.parent == trailing_dir.resolve()
+        assert saved.is_file()
+        assert not stripped_dir.exists()
+
+        # library feed scans and writes into the exact trailing-space directory as a scoped library.
+        scanned: list[tuple[Path, Path]] = []
+
+        def fake_scan(memory_dir, briefs_dir):
+            scanned.append((Path(memory_dir), Path(briefs_dir)))
+            return [], []
+
+        monkeypatch.setattr(library, "scan_library", fake_scan)
+        args_feed = cli.build_parser().parse_args(["library", "feed", "--save-dir", raw])
+        assert cli._run_library_feed(args_feed, {}) == 0
+        assert scanned == [(trailing_dir, trailing_dir / "briefings")]
+        assert (trailing_dir / "index.html").is_file()
+        assert not stripped_dir.exists()
 
     def test_existing_legacy_default_memory_research_db_is_preserved_on_upgrade(
         self, tmp_path: Path, monkeypatch
@@ -908,6 +957,119 @@ class TestHigh041PolymarketMatchedPart:
         assert "San Francisco 49ers 50%, #1 of 2 (up 1 pt today)" in outcomes_line
         assert "U 10.5 at 50% (down 1 pt today)" in outcomes_line
         assert "O 10.5" not in outcomes_line
+
+    def test_49ers_win_total_without_ids_or_tokens_prints_once_and_tied_siblings_stay_separate(
+        self,
+    ):
+        # Matches real eval fixtures (tests/eval/fixtures/entity-markets/http.json) where
+        # markets carry NO id, conditionId, slug, or clobTokenIds.
+        event = {
+            "id": "totals-no-ids",
+            "title": "Pro Football: 2026 Regular Season Win Totals",
+            "slug": "totals-no-ids",
+            "active": True,
+            "closed": False,
+            "negRisk": False,
+            "volume1mo": 1000,
+            "liquidity": 10000,
+            "updatedAt": "2026-11-16T00:00:00Z",
+            "markets": [
+                {
+                    "question": "Will the Baltimore Ravens win more than 11.5 games in the 2026 NFL Regular Season?",
+                    "groupItemTitle": "Baltimore Ravens",
+                    "outcomes": '["O 11.5", "U 11.5"]',
+                    "outcomePrices": '["0.0585", "0.9415"]',
+                    "volume": 8806.7,
+                    "liquidity": 5000,
+                    "endDate": "2027-03-01T00:00:00Z",
+                    "active": True,
+                    "closed": False,
+                },
+                {
+                    "question": "Will the San Francisco 49ers win more than 10.5 games in the 2026 NFL Regular Season?",
+                    "groupItemTitle": "San Francisco 49ers",
+                    "outcomes": '["O 10.5", "U 10.5"]',
+                    "outcomePrices": '["0.935", "0.065"]',
+                    "volume": 3555.76,
+                    "liquidity": 5000,
+                    "endDate": "2027-03-01T00:00:00Z",
+                    "active": True,
+                    "closed": False,
+                },
+            ],
+        }
+        [parsed] = polymarket.parse_polymarket_response(
+            {"events": [event]},
+            topic="49ers",
+            to_date="2026-11-16",
+            hints=polymarket.PolymarketHints.coerce(
+                {"kind": "team", "aliases": ["San Francisco 49ers"]}
+            ),
+        )
+        assert parsed["matched_market"]["market_id"] == parsed["odds"]["parts"][0]["market_id"]
+        assert parsed["matched_market"]["outcome_id"] == "O 10.5"
+        assert parsed["odds"]["parts"][0]["outcome_id"] == "O 10.5"
+        assert parsed["odds"]["parts"][1]["outcome_id"] == "U 10.5"
+
+        [norm] = normalize.normalize_source_items(
+            "polymarket", [parsed], "2026-10-17", "2026-11-16"
+        )
+        line = render._polymarket_odds_line(norm, "2026")
+        assert "San Francisco 49ers 93.5%" not in line
+        assert "O 10.5 at 94%" in line
+        assert "U 10.5 at 6.5%" in line
+        assert line.count("94%") + line.count("93.5%") == 1
+
+        # Distinct sub-markets without id/conditionId tied at 50%/50% stay separate.
+        tied_race = {
+            "id": "race-no-ids",
+            "title": "MVP Winner 2026",
+            "slug": "mvp-2026",
+            "active": True,
+            "closed": False,
+            "negRisk": True,
+            "volume1mo": 50000,
+            "liquidity": 20000,
+            "updatedAt": "2026-11-16T00:00:00Z",
+            "markets": [
+                {
+                    "question": "Will Alice Smith win MVP 2026?",
+                    "groupItemTitle": "Alice Smith",
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.50", "0.50"]',
+                    "volume": 30000,
+                    "liquidity": 10000,
+                    "oneWeekPriceChange": 0.04,
+                    "endDate": "2027-03-01T00:00:00Z",
+                    "active": True,
+                    "closed": False,
+                },
+                {
+                    "question": "Will Bob Jones win MVP 2026?",
+                    "groupItemTitle": "Bob Jones",
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.50", "0.50"]',
+                    "volume": 20000,
+                    "liquidity": 10000,
+                    "oneWeekPriceChange": -0.02,
+                    "endDate": "2027-03-01T00:00:00Z",
+                    "active": True,
+                    "closed": False,
+                },
+            ],
+        }
+        [parsed_race] = polymarket.parse_polymarket_response(
+            {"events": [tied_race]},
+            topic="Bob Jones",
+            to_date="2026-11-16",
+        )
+        [norm_race] = normalize.normalize_source_items(
+            "polymarket", [parsed_race], "2026-10-17", "2026-11-16"
+        )
+        race_line = render._polymarket_odds_line(norm_race, "2026")
+        assert race_line.count("Bob Jones") == 1
+        assert "Bob Jones at 50% (down 2 pts this week)" in race_line
+        assert "Alice Smith at 50% (up 4 pts this week)" in race_line
 
 
 # ---------------------------------------------------------------------------

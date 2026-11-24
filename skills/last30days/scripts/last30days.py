@@ -335,10 +335,9 @@ def save_output(
     render_fn: Callable[[Path], str] | None = None,
 ) -> Path:
     from datetime import datetime
-    normalized_save_dir = pipeline.normalize_save_dir(save_dir)
-    if normalized_save_dir is None:
+    if save_dir is None or str(save_dir) == "" or pipeline.is_blank_save_dir(save_dir):
         raise ValueError("save_output requires a non-empty save_dir")
-    path = Path(normalized_save_dir).expanduser().resolve()
+    path = Path(save_dir).expanduser().resolve()
     slug = slugify(topic_override or report.topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
@@ -621,6 +620,15 @@ def read_synthesis_file(path: str) -> str:
         raise SystemExit(2)
 
 
+def _validate_save_dir(save_dir: Path | str | None) -> int | None:
+    if pipeline.is_blank_save_dir(save_dir):
+        sys.stderr.write(
+            "[last30days] --save-dir / LAST30DAYS_MEMORY_DIR cannot be whitespace-only.\n"
+        )
+        return 2
+    return None
+
+
 def _is_scoped_save_dir(save_dir: Path | str | None) -> bool:
     """True when ``save_dir`` is set and resolves to a dir other than DEFAULT_MEMORY_DIR."""
     return pipeline.is_scoped_save_dir(save_dir)
@@ -641,21 +649,14 @@ def _add_preflight_library_writes(
 ) -> None:
     from lib import library_index
 
-    raw_save_dir = args.save_dir
-    norm_save_dir = pipeline.normalize_save_dir(raw_save_dir)
-    norm_on_save_dir = pipeline.normalize_save_dir(args.preflight_report_on_save_dir)
-    on_save = bool(norm_on_save_dir and not norm_save_dir)
-    save_dir = (
-        norm_on_save_dir
-        if on_save
-        else ("" if raw_save_dir == "" else norm_save_dir)
-    )
+    on_save = bool(args.preflight_report_on_save_dir and not args.save_dir)
+    save_dir = args.preflight_report_on_save_dir if on_save else args.save_dir
     local, conditional = preflight["local_writes"], preflight["conditional_writes"]
     context_db = None if args.mock else pipeline.library_context_index_path(config, save_dir)
     if context_db is not None:
         write = {"kind": "library_index_on_save" if on_save else "library_index", "path": str(context_db)}
         (conditional if on_save else local).append(write)
-    if save_dir and args.emit != "html":
+    if save_dir and not pipeline.is_blank_save_dir(save_dir) and args.emit != "html":
         markdown_db = library_index.saved_report_index_path(Path(save_dir).expanduser().resolve())
         if markdown_db != context_db:
             conditional.append({"kind": "library_index_on_markdown_save", "path": str(markdown_db)})
@@ -2185,6 +2186,9 @@ def _run_cached_freshness(
     comp_emit_exit = _validate_comparison_emit(args, is_comparison=bool(entity_reports))
     if comp_emit_exit is not None:
         return comp_emit_exit
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     _verify_report_set(report, entity_reports, allow_network=not args.mock)
     if _update_cached_freshness(cached):
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
@@ -2522,13 +2526,12 @@ def _emit_and_save_discovery_report(
     if args.output:
         output_path = save_rendered_output(rendered, args.output)
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
-    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
-    if normalized_save_dir:
+    if args.save_dir and not pipeline.is_blank_save_dir(args.save_dir):
         save_path = _save_discovery_output(
             rendered,
             domain=domain or "trending",
             emit=args.emit,
-            save_dir=normalized_save_dir,
+            save_dir=args.save_dir,
             suffix=args.save_suffix or "",
         )
         sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
@@ -3126,6 +3129,9 @@ def _render_save_and_print(
     comp_emit_exit = _validate_comparison_emit(args, is_comparison=bool(entity_reports))
     if comp_emit_exit is not None:
         return comp_emit_exit
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
     try:
         audience = _audience_register_for_run(args, config, entity_reports)
@@ -3139,14 +3145,13 @@ def _render_save_and_print(
     # have to be overridden away from the leading entity's report. Compute the
     # gate once so the footer-display and save-output paths can't disagree.
     is_comparison_html = bool(entity_reports) and args.emit == "html"
-    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
     footer_save_path = None
     if args.output:
         footer_save_path = compute_output_path_display(args.output)
-    elif normalized_save_dir:
+    elif args.save_dir:
         save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
         footer_save_path = compute_save_path_display(
-            normalized_save_dir, save_topic_for_display, args.save_suffix or "", args.emit
+            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
         )
 
     if entity_reports:
@@ -3184,7 +3189,7 @@ def _render_save_and_print(
             publish_companion_paths.append(output_path)
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
         sys.stderr.flush()
-    if normalized_save_dir:
+    if args.save_dir:
         # Save the main topic's raw file (single-entity or comparison main).
         # Bind the render to the path save_output actually allocates so the
         # saved report and stdout agree even when collision fallback is used.
@@ -3224,7 +3229,7 @@ def _render_save_and_print(
         save_path = save_output(
             report,
             args.emit,
-            normalized_save_dir,
+            args.save_dir,
             suffix=args.save_suffix or "",
             synthesis_md=synthesis_md,
             topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
@@ -3242,7 +3247,7 @@ def _render_save_and_print(
         if entity_reports and len(entity_reports) > 1:
             for label, entity_report in entity_reports[1:]:
                 peer_path = save_output(
-                    entity_report, args.emit, normalized_save_dir,
+                    entity_report, args.emit, args.save_dir,
                     suffix=args.save_suffix or "",
                     synthesis_md=synthesis_md,
                     json_profile=args.json_profile,
@@ -4187,13 +4192,11 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         )
         return 2
 
-    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
-    scoped = _is_scoped_save_dir(normalized_save_dir)
-    memory_dir = (
-        Path(normalized_save_dir).expanduser()
-        if normalized_save_dir is not None
-        else library.DEFAULT_MEMORY_DIR
-    )
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
+    scoped = _is_scoped_save_dir(args.save_dir)
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
     output_dir = memory_dir.resolve()
     # Scoped libraries (--save-dir) must not mix in the global briefing
     # archive: a client-specific or publishable feed pulling unrelated default
@@ -4378,15 +4381,13 @@ def _run_library_search(
         )
         return 2
 
-    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
-    scoped = _is_scoped_save_dir(normalized_save_dir)
-    memory_dir = (
-        Path(normalized_save_dir).expanduser()
-        if normalized_save_dir is not None
-        else library.DEFAULT_MEMORY_DIR
-    )
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
+    scoped = _is_scoped_save_dir(args.save_dir)
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
     store_db = (
-        pipeline.scoped_store_db_path(normalized_save_dir)
+        pipeline.scoped_store_db_path(args.save_dir)
         or library_index.DEFAULT_STORE_DB
     )
     try:
@@ -4446,18 +4447,16 @@ def _run_library_harvest(
             )
             return 2
 
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     if args.save_dir == "":
         sys.stderr.write(
             "[last30days] saving is disabled (--save-dir / LAST30DAYS_MEMORY_DIR is empty); "
             "pass --save-dir <dir> to run library harvest.\n"
         )
         return 2
-    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
-    memory_dir = (
-        Path(normalized_save_dir).expanduser()
-        if normalized_save_dir is not None
-        else library.DEFAULT_MEMORY_DIR
-    )
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
 
     try:
         result = transcript_harvest.harvest_transcripts(
@@ -4732,7 +4731,11 @@ def _main(
     command_topic = "" if args.research_only or args.cached_report else topic.lower()
     _validate_extra_argv(parser, command_topic, extra_argv)
     if args.resolve_save_dir:
-        print(env.resolve_memory_dir(args.save_dir))
+        try:
+            print(env.resolve_memory_dir(args.save_dir))
+        except ValueError as exc:
+            sys.stderr.write(f"[last30days] {exc}\n")
+            return 2
         return 0
     if args.resolve_browser_consent:
         granted = not args.no_browser_cookies and env.has_recorded_browser_consent()
@@ -4900,8 +4903,9 @@ def _main(
     if args.save_dir is None:
         env_val = os.environ.get("LAST30DAYS_MEMORY_DIR")
         args.save_dir = env_val if env_val is not None else config.get("LAST30DAYS_MEMORY_DIR")
-    if args.save_dir is not None and args.save_dir != "":
-        args.save_dir = pipeline.normalize_save_dir(args.save_dir)
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
 
     # Surface SSH-routing config as an env var so library modules (e.g.
     # youtube_yt) can read it without taking a config dependency. This
