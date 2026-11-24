@@ -8,7 +8,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from . import http, log, providers, x_api
+from . import health, http, log, providers, x_api
 
 
 def _safe_text(val) -> str:
@@ -49,6 +49,9 @@ _STATUS_URL_RE = re.compile(
 )
 _SNOWFLAKE_FLOOR = datetime(2010, 11, 4, tzinfo=timezone.utc)
 _CLAIMED_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+# Matches x_envelope.MAX_ENGAGEMENT_COUNT so huge JSON integers cannot overflow
+# float conversion during downstream ranking (signals.log1p_safe / schema).
+MAX_ENGAGEMENT_COUNT = 1_000_000_000_000
 _PLACEHOLDER_HANDLES = frozenset({
     "i", "unknown", "n/a", "na", "none", "null", "user", "example",
     "anonymous", "placeholder", "handle",
@@ -80,9 +83,12 @@ def _safe_int(value: Any) -> Optional[int]:
     if isinstance(value, float) and not math.isfinite(value):
         return None
     try:
-        return max(0, int(value))
+        parsed = int(value)
     except (TypeError, ValueError, OverflowError):
         return None
+    if parsed < 0 or parsed > MAX_ENGAGEMENT_COUNT:
+        return None
+    return parsed
 
 
 def _safe_relevance(value: Any) -> float:
@@ -300,27 +306,30 @@ def parse_x_response(
                 break
 
     if not output_text:
-        response_preview = str(response)[:200] if response else "(empty)"
         raise http.HTTPError(
-            f"xAI API returned empty response (no output text found; response preview: {response_preview})"
+            "xAI API returned empty response (no output text found)",
+            outcome_state=health.SCHEMA_DRIFT,
         )
 
     # Extract JSON from the response
     json_match = re.search(r'\{[\s\S]*"items"[\s\S]*\}', output_text)
     if not json_match:
         raise http.HTTPError(
-            f"xAI API returned output without valid JSON items structure (output: {output_text[:200]})"
+            "xAI API returned output without valid JSON items structure",
+            outcome_state=health.SCHEMA_DRIFT,
         )
     try:
         data = json.loads(json_match.group(), parse_constant=_reject_constant)
         raw_items = data.get("items", []) if isinstance(data, dict) else None
     except (json.JSONDecodeError, ValueError, RecursionError):
         raise http.HTTPError(
-            f"xAI API returned valid output but invalid JSON structure (output: {output_text[:200]})"
+            "xAI API returned invalid JSON structure",
+            outcome_state=health.SCHEMA_DRIFT,
         )
     if not isinstance(raw_items, list):
         raise http.HTTPError(
-            f"xAI API returned valid output but invalid JSON structure (output: {output_text[:200]})"
+            "xAI API returned invalid JSON items structure",
+            outcome_state=health.SCHEMA_DRIFT,
         )
 
     # Validate and clean items
@@ -348,25 +357,33 @@ def parse_x_response(
         if (not is_anonymous_url and not url_handle) or not post_id:
             continue
 
-        raw_author = item.get("author_handle")
-        if raw_author is not None and raw_author != "":
-            if not isinstance(raw_author, str):
-                continue
-            if raw_author.strip():
-                author_handle = x_api._clean_handle(raw_author)
-                if not author_handle or author_handle.lower() in _PLACEHOLDER_HANDLES:
-                    continue
-                if not is_anonymous_url and author_handle.lower() != url_handle.lower():
-                    continue
-                handle = author_handle
-            else:
-                if is_anonymous_url or url_handle.lower() in _PLACEHOLDER_HANDLES:
-                    continue
-                handle = url_handle
+        if is_anonymous_url:
+            # /i/status/<id> and /i/web/status/<id> do not identify the author;
+            # keep the ID-only URL and leave author_handle unknown so an
+            # unverified model-supplied handle cannot miscredit another account.
+            handle = ""
+            canonical_url = f"https://x.com/i/status/{post_id}"
         else:
-            if is_anonymous_url or url_handle.lower() in _PLACEHOLDER_HANDLES:
+            if url_handle.lower() in _PLACEHOLDER_HANDLES:
                 continue
-            handle = url_handle
+            raw_author = item.get("author_handle")
+            if raw_author is not None and raw_author != "":
+                if not isinstance(raw_author, str):
+                    continue
+                if raw_author.strip():
+                    author_handle = x_api._clean_handle(raw_author)
+                    if (
+                        not author_handle
+                        or author_handle.lower() in _PLACEHOLDER_HANDLES
+                        or author_handle.lower() != url_handle.lower()
+                    ):
+                        continue
+                    handle = author_handle
+                else:
+                    handle = url_handle
+            else:
+                handle = url_handle
+            canonical_url = f"https://x.com/{handle}/status/{post_id}"
 
         if post_id in seen_ids:
             continue
@@ -405,7 +422,7 @@ def parse_x_response(
         clean_items.append({
             "id": f"X{len(clean_items) + 1}",
             "text": _safe_text(item.get("text", "")).strip()[:500],
-            "url": f"https://x.com/{handle}/status/{post_id}",
+            "url": canonical_url,
             "author_handle": handle,
             "date": snowflake_date.isoformat(),
             "engagement": engagement,
@@ -415,6 +432,9 @@ def parse_x_response(
 
     if kept_ids and x_api._looks_generated(kept_ids):
         _log("rejected xAI response: post ids form a near-uniform sequence (generated, not retrieved)")
-        return []
+        raise http.HTTPError(
+            "xAI x_search returned rejected synthetic post sequence",
+            outcome_state=health.SCHEMA_DRIFT,
+        )
 
     return clean_items

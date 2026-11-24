@@ -66,6 +66,9 @@ MAX_ROWS_TOTAL = 1000
 MAX_TEXT_CHARS = 10_000
 MAX_AGE_SECONDS = 6 * 60 * 60
 MAX_ID_DIGITS = 20
+# Realistic upper bound for engagement counts so huge JSON integers cannot
+# overflow float conversion during downstream ranking (signals.log1p_safe).
+MAX_ENGAGEMENT_COUNT = 1_000_000_000_000
 
 LANES = ("topic", "from", "mention", "related")
 STATUSES = ("ok", "partial", "error")
@@ -405,15 +408,18 @@ def _clean_text(value: str) -> str:
     return text.replace("](", "]\\(").replace("<!--", "<! --")
 
 
-def _int(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
+def _int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
     if isinstance(value, float) and not math.isfinite(value):
-        return 0
+        return None
     try:
-        return max(0, int(value))
+        parsed = int(value)
     except (TypeError, ValueError, OverflowError):
-        return 0
+        return None
+    if parsed < 0 or parsed > MAX_ENGAGEMENT_COUNT:
+        return None
+    return parsed
 
 
 def _reject_constant(token: str) -> Any:

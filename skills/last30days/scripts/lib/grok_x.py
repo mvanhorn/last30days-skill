@@ -44,9 +44,10 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import auth_safety, grok_audit, health, http, log, subproc, usage
 from .dates import x_date_filters
@@ -913,7 +914,7 @@ _CRED_KEY_PATTERN = (
 )
 _KV_CRED_KEY_PATTERN = (
     r"refresh_token|access_token|id_token|auth_token|ct0|token|"
-    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password"
+    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password|key"
 )
 _JSON_CRED_RE = re.compile(
     rf'((["\'])(?:{_CRED_KEY_PATTERN})\2\s*:\s*")((?:[^"\\\r\n]|\\.)*)(")',
@@ -933,11 +934,57 @@ _KV_CRED_RE = re.compile(
 )
 _HTTP_401_RE = re.compile(r"\b(?:http(?:/[\d.]+)?|status)\s*[:=]?\s*401\b", re.IGNORECASE)
 _CONTROL_DEBUG_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_SECRET_STORE_KEY_NAMES = frozenset({
+    "key", "refresh_token", "access_token", "id_token", "auth_token", "ct0",
+    "token", "api_key", "xai_api_key", "x-api-key", "authorization",
+    "bearer", "jwt", "cookie", "secret", "password",
+})
 
 
-def _scrub_cli_output(text: str) -> str:
+def _extract_store_secrets(obj: Any, out: List[str]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in _SECRET_STORE_KEY_NAMES and isinstance(v, str):
+                val = v.strip()
+                if len(val) >= 6:
+                    out.append(val)
+            else:
+                _extract_store_secrets(v, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _extract_store_secrets(item, out)
+
+
+def _collect_auth_secrets(store_path: Optional[Path] = None) -> List[str]:
+    """Collect active Grok credential values so debug logs always redact opaque tokens."""
+    secrets: List[str] = []
+    env_key = (os.environ.get("XAI_API_KEY") or "").strip()
+    if len(env_key) >= 6:
+        secrets.append(env_key)
+    for candidate in (store_path, token_store_path()):
+        if candidate is None:
+            continue
+        try:
+            if not candidate.is_file():
+                continue
+            data = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError, TypeError):
+            continue
+        _extract_store_secrets(data, secrets)
+        break
+    expanded: List[str] = []
+    seen: set[str] = set()
+    for secret in secrets:
+        for variant in (secret, urllib.parse.quote(secret, safe="")):
+            if len(variant) >= 6 and variant not in seen:
+                seen.add(variant)
+                expanded.append(variant)
+    return expanded
+
+
+def _scrub_cli_output(text: str, extra_secrets: Iterable[str] = ()) -> str:
     """Redact credentials, cookies, JWTs, API keys, and control chars for debug logs."""
-    scrubbed = auth_safety.scrub_secrets(text or "")
+    scrubbed = auth_safety.scrub_secrets(text or "", extra_secrets)
     scrubbed = _COOKIE_HEADER_RE.sub(r"\1<redacted>", scrubbed)
     scrubbed = _JWT_RE.sub("<redacted>", scrubbed)
     scrubbed = _API_KEY_RE.sub("<redacted>", scrubbed)
@@ -967,6 +1014,8 @@ def _classify_exit_error(returncode: int, combined_output: str) -> Dict[str, Any
             error_msg = f"grok CLI exited {returncode}: forbidden"
     elif state == health.TIMEOUT:
         error_msg = f"grok CLI exited {returncode}: timed out"
+    elif state == health.SCHEMA_DRIFT:
+        error_msg = f"grok CLI exited {returncode}: invalid JSON or unexpected response schema"
     elif state == health.UNREACHABLE:
         error_msg = f"grok CLI exited {returncode}: connection error"
     else:
@@ -1024,6 +1073,8 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
                     "no_retry": True,
                 }
             child_home = _stage_child_home(workdir)
+            store = token_store_path()
+            staged_store = Path(child_home) / store.parent.name / store.name
             agent_file = _write_agent_profile(workdir)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -1038,6 +1089,11 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
                 cwd=workdir,
                 env=_subprocess_env(child_home),
             )
+            debug_secrets = (
+                _collect_auth_secrets(staged_store)
+                if result.returncode != 0 and log.is_debug()
+                else []
+            )
     except FileNotFoundError:
         return {"error": "grok CLI not found on PATH"}
     except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
@@ -1050,7 +1106,7 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
     if result.returncode != 0:
         combined = f"{result.stderr or ''}\n{result.stdout or ''}"
         if log.is_debug():
-            scrubbed = _scrub_cli_output(combined).strip()
+            scrubbed = _scrub_cli_output(combined, extra_secrets=debug_secrets).strip()
             if scrubbed:
                 _log(f"grok CLI exited {result.returncode} (debug output): {scrubbed[:500]}")
         return _classify_exit_error(result.returncode, combined)

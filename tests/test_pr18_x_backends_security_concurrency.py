@@ -27,7 +27,7 @@ from unittest import mock
 
 import pytest
 
-from lib import grok_audit, grok_x, health, http, pipeline, x_api, x_envelope, xai_x
+from lib import grok_audit, grok_x, health, http, pipeline, signals, x_api, x_envelope, xai_x
 
 
 WINDOW = ("2026-07-14", "2026-08-13")
@@ -304,7 +304,7 @@ class TestHigh137GrokXCliErrorHandling:
             f"Cookie: auth_token=COOKIE_AUTH_AAA; ct0=COOKIE_CT0_BBB\n"
             f"Set-Cookie: session=SETCOOKIE_CCC; HttpOnly\n"
             f"auth_token=\"QUOTED_AUTH_DDD\" ct0='QUOTED_CT0_EEE' x-api-key=\"QUOTED_XAPI_FFF\"\n"
-            f"jwt=RAW_JWT_GGG bearer=RAW_BEARER_HHH\n"
+            f"jwt=RAW_JWT_GGG bearer=RAW_BEARER_HHH key=OPAQUE_PLAIN_KEY_LLL\n"
             f"{{'auth_token': 'PYDICT_AUTH_III', 'access_token': 'PYDICT_ACC_JJJ', 'ct0': 'PYDICT_CT0_KKK'}}\n"
             f"token={unsigned_jwt} trailing\n"
             f"bare {unsigned_jwt} after\n"
@@ -319,6 +319,7 @@ class TestHigh137GrokXCliErrorHandling:
             "QUOTED_XAPI_FFF",
             "RAW_JWT_GGG",
             "RAW_BEARER_HHH",
+            "OPAQUE_PLAIN_KEY_LLL",
             "PYDICT_AUTH_III",
             "PYDICT_ACC_JJJ",
             "PYDICT_CT0_KKK",
@@ -328,12 +329,41 @@ class TestHigh137GrokXCliErrorHandling:
             assert secret not in scrubbed, f"{secret} leaked in {scrubbed!r}"
         assert "trailing" in scrubbed and "after" in scrubbed
 
+    def test_debug_logging_redacts_unlabeled_opaque_credential_from_auth_store(
+        self, monkeypatch, tmp_path,
+    ):
+        opaque = "opaque_session_credential_99887766"
+        store = tmp_path / ".grok" / "auth.json"
+        store.parent.mkdir(parents=True)
+        store.write_text(json.dumps({"iss::cid": {"key": opaque, "refresh_token": "rt_opaque_55443322"}}), encoding="utf-8")
+        monkeypatch.setattr(grok_x, "token_store_path", lambda: store)
+        monkeypatch.setenv("LAST30DAYS_DEBUG", "1")
+        monkeypatch.setattr(
+            grok_x.subproc, "run_with_timeout",
+            lambda cmd, **kw: subprocess.CompletedProcess(
+                cmd, 1, "", f"unexpected failure echoing {opaque} and rt_opaque_55443322"
+            ),
+        )
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            response = grok_x._invoke("test prompt", 30)
+        assert response == {"error": "grok CLI exited 1"}
+        logged = err_buf.getvalue()
+        assert opaque not in logged
+        assert "rt_opaque_55443322" not in logged
+        assert "<redacted>" in logged
+
     def test_classify_exit_error_uses_status_boundary_for_401_vs_forbidden(self):
         # Line/offset number 401 alongside a 403/forbidden error must not misclassify as http 401.
         res_403 = grok_x._classify_exit_error(1, "error at line 401: forbidden access")
         assert res_403 == {"error": "grok CLI exited 1: forbidden"}
         res_401 = grok_x._classify_exit_error(1, "upstream returned HTTP 401")
         assert res_401 == {"error": "grok CLI exited 1: http 401"}
+
+    def test_classify_exit_error_preserves_schema_drift_on_invalid_json(self):
+        res = grok_x._classify_exit_error(1, "failed to parse response: invalid json from backend")
+        assert res == {"error": "grok CLI exited 1: invalid JSON or unexpected response schema"}
+        assert http.classify_failure(message=res["error"]) == health.SCHEMA_DRIFT
 
     def test_auth_revocation_in_stdout_detected_even_when_stderr_is_nonempty(self, monkeypatch):
         secret = "xai-SECRETTOKEN123456"
@@ -545,15 +575,15 @@ class TestHigh142XEnvelopeNonFiniteJson:
             x_envelope.read(path, window, "ai agents")
         assert "is not valid JSON" in exc_info.value.message
 
-    def test_overflowing_exponent_1e309_clamps_cleanly_without_overflow_error(self, tmp_path):
+    def test_overflowing_exponent_1e309_and_huge_ints_become_unknown_without_crashing_ranking(self, tmp_path):
         payload = _make_envelope_payload()
         row = payload["calls"][0]["posts"][0]
         row["quotes"] = 42
         raw = (
             json.dumps(payload)
-            .replace('"likes": 10', '"likes": 1e309', 1)
-            .replace('"reposts": 2', '"reposts": -1e309', 1)
-            .replace('"replies": 1', '"replies": 1e500', 1)
+            .replace('"likes": 10', f'"likes": {"9" * 400}', 1)
+            .replace('"reposts": 2', '"reposts": 1e309', 1)
+            .replace('"replies": 1', '"replies": -1e309', 1)
         )
         path = tmp_path / "overflow.json"
         path.write_text(raw, encoding="utf-8")
@@ -562,14 +592,25 @@ class TestHigh142XEnvelopeNonFiniteJson:
         envelope = x_envelope.read(path, window, "ai agents")
         assert envelope.accepted == 1
         eng = envelope.topic_items[0]["engagement"]
-        assert eng == {"likes": 0, "reposts": 0, "replies": 0, "quotes": 42}
+        assert eng == {"likes": None, "reposts": None, "replies": None, "quotes": 42}
+        # Downstream ranking (log1p_safe + normalize) must never raise OverflowError.
+        assert signals.log1p_safe(eng["likes"]) == 0.0
+        normalized = pipeline._normalize_score_dedupe(
+            "x", envelope.topic_items, window[0], window[1],
+            freshness_mode="balanced_recent", ranking_query="ai agents",
+        )
+        assert len(normalized) == 1
 
-    def test_int_helper_rejects_non_finite_floats(self):
-        assert x_envelope._int(float("inf")) == 0
-        assert x_envelope._int(float("-inf")) == 0
-        assert x_envelope._int(float("nan")) == 0
-        assert x_envelope._int(True) == 0
-        assert x_envelope._int(-10) == 0
+    def test_int_helper_bounds_and_rejects_non_finite_or_huge_values(self):
+        assert x_envelope._int(float("inf")) is None
+        assert x_envelope._int(float("-inf")) is None
+        assert x_envelope._int(float("nan")) is None
+        assert x_envelope._int(10**400) is None
+        assert x_envelope._int(x_envelope.MAX_ENGAGEMENT_COUNT + 1) is None
+        assert x_envelope._int(x_envelope.MAX_ENGAGEMENT_COUNT) == x_envelope.MAX_ENGAGEMENT_COUNT
+        assert x_envelope._int(True) is None
+        assert x_envelope._int(-10) is None
+        assert x_envelope._int(0) == 0
         assert x_envelope._int(7) == 7
 
 
@@ -625,11 +666,6 @@ class TestHigh143XaiXProvenanceValidation:
                 "url": f"https://x.com/unknown/status/{IN_WINDOW_ID}",
                 "author_handle": "unknown",
             },
-            # /i/status/<id> without author_handle -> rejected
-            {
-                "text": "anonymous",
-                "url": f"https://x.com/i/status/{IN_WINDOW_ID}",
-            },
         ])
         items = xai_x.parse_x_response(resp, *WINDOW)
         assert len(items) == 1
@@ -637,60 +673,68 @@ class TestHigh143XaiXProvenanceValidation:
         assert items[0]["author_handle"] == "Steipete"
         assert items[0]["date"] == "2026-08-12"
 
-    def test_i_status_and_i_web_status_canonicalization_and_reject_i_author(self):
+    def test_anonymous_i_status_and_i_web_status_never_credit_unverified_author(self):
+        id1 = IN_WINDOW_ID
+        id2 = _snowflake("2026-08-11", low=777)
+        id3 = _snowflake("2026-08-10", low=888)
         resp = _xai_wrap([
             {
-                "text": "from /i/status",
-                "url": f"https://x.com/i/status/{IN_WINDOW_ID}",
+                "text": "from /i/status with unverified handle",
+                "url": f"https://x.com/i/status/{id1}",
                 "author_handle": "@steipete",
             },
             {
-                "text": "from /i/web/status",
-                "url": f"https://x.com/i/web/status/{_snowflake('2026-08-11', low=777)}",
+                "text": "from /i/web/status with unverified handle",
+                "url": f"https://x.com/i/web/status/{id2}",
                 "author_handle": "alice",
             },
-            # /i/web/status without author_handle -> rejected
             {
-                "text": "anonymous web status",
-                "url": f"https://x.com/i/web/status/{_snowflake('2026-08-10', low=888)}",
-            },
-            # author_handle='i' on /i/status or /i/web/status -> rejected
-            {
-                "text": "spoofed i handle",
-                "url": f"https://x.com/i/status/{_snowflake('2026-08-09', low=999)}",
+                "text": "from /i/status with i handle",
+                "url": f"https://x.com/i/status/{id3}",
                 "author_handle": "i",
-            },
-            {
-                "text": "spoofed uppercase I handle",
-                "url": f"https://x.com/i/web/status/{_snowflake('2026-08-08', low=1111)}",
-                "author_handle": "@I",
             },
         ])
         items = xai_x.parse_x_response(resp, *WINDOW)
-        assert [(i["author_handle"], i["url"].startswith(f"https://x.com/{i['author_handle']}/status/")) for i in items] == [
-            ("steipete", True),
-            ("alice", True),
+        assert [(i["author_handle"], i["url"]) for i in items] == [
+            ("", f"https://x.com/i/status/{id1}"),
+            ("", f"https://x.com/i/status/{id2}"),
+            ("", f"https://x.com/i/status/{id3}"),
         ]
 
-    def test_huge_int_relevance_and_non_finite_or_oversized_int_json(self):
-        # 10**400 triggers OverflowError in float(value); _safe_relevance must fall back cleanly.
+    def test_huge_int_engagement_and_relevance_do_not_overflow_ranking_and_bad_json_is_schema_drift(self):
+        # 10**400 triggers OverflowError in float(value); both _safe_int and _safe_relevance bound it.
         assert xai_x._safe_relevance(10**400) == 0.5
-        resp_huge_rel = {
+        assert xai_x._safe_int(10**400) is None
+        assert xai_x._safe_int(xai_x.MAX_ENGAGEMENT_COUNT + 1) is None
+        assert xai_x._safe_int(xai_x.MAX_ENGAGEMENT_COUNT) == xai_x.MAX_ENGAGEMENT_COUNT
+        resp_huge = {
             "output": [{
                 "type": "message",
                 "content": [{
                     "type": "output_text",
                     "text": (
                         f'{{"items": [{{"text": "ok", "url": "https://x.com/steipete/status/{IN_WINDOW_ID}", '
-                        f'"author_handle": "steipete", "relevance": {"9" * 400}}}]}}'
+                        f'"author_handle": "steipete", '
+                        f'"engagement": {{"likes": {"9" * 400}, "reposts": 5}}, '
+                        f'"relevance": {"9" * 400}}}]}}'
                     ),
                 }],
             }]
         }
-        items = xai_x.parse_x_response(resp_huge_rel, *WINDOW)
-        assert len(items) == 1 and items[0]["relevance"] == 0.5
+        items = xai_x.parse_x_response(resp_huge, *WINDOW)
+        assert len(items) == 1
+        assert items[0]["relevance"] == 0.5
+        assert items[0]["engagement"]["likes"] is None
+        assert items[0]["engagement"]["reposts"] == 5
+        assert signals.log1p_safe(items[0]["engagement"]["likes"]) == 0.0
+        normalized = pipeline._normalize_score_dedupe(
+            "x", items, WINDOW[0], WINDOW[1],
+            freshness_mode="balanced_recent", ranking_query="ok",
+        )
+        assert len(normalized) == 1
 
-        # Non-standard JSON constants (NaN/Infinity/-Infinity) and >4300-digit ints raise http.HTTPError.
+        # Non-standard JSON constants (NaN/Infinity/-Infinity) and >4300-digit ints raise SCHEMA_DRIFT
+        # without echoing raw model text (so rate-limit/auth words inside bad JSON never mislabel it).
         for bad_literal in ("NaN", "Infinity", "-Infinity", "9" * 4501):
             bad_resp = {
                 "output": [{
@@ -698,14 +742,32 @@ class TestHigh143XaiXProvenanceValidation:
                     "content": [{
                         "type": "output_text",
                         "text": (
-                            f'{{"items": [{{"text": "bad", "url": "https://x.com/steipete/status/{IN_WINDOW_ID}", '
+                            f'{{"items": [{{"text": "HTTP 429 rate limit HTTP 401 unauthorized", '
+                            f'"url": "https://x.com/steipete/status/{IN_WINDOW_ID}", '
                             f'"author_handle": "steipete", "relevance": {bad_literal}}}]}}'
                         ),
                     }],
                 }]
             }
-            with pytest.raises(http.HTTPError):
+            with pytest.raises(http.HTTPError) as exc_info:
                 xai_x.parse_x_response(bad_resp, *WINDOW)
+            assert exc_info.value.outcome_state == health.SCHEMA_DRIFT
+            assert "429" not in str(exc_info.value) and "401" not in str(exc_info.value)
+
+        # Unstructured text mentioning rate-limit / auth errors also maps cleanly to SCHEMA_DRIFT.
+        no_json_resp = {
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "HTTP 429 rate limit exceeded"}]}]
+        }
+        with pytest.raises(http.HTTPError) as exc_info:
+            xai_x.parse_x_response(no_json_resp, *WINDOW)
+        assert exc_info.value.outcome_state == health.SCHEMA_DRIFT
+        assert "429" not in str(exc_info.value)
+
+        # Empty output maps to SCHEMA_DRIFT without echoing response preview.
+        with pytest.raises(http.HTTPError) as exc_info:
+            xai_x.parse_x_response({"output": [], "secret": "HTTP 401 unauthorized"}, *WINDOW)
+        assert exc_info.value.outcome_state == health.SCHEMA_DRIFT
+        assert "401" not in str(exc_info.value)
 
     def test_claimed_date_regex_is_ascii_only_and_date_is_always_ascii_snowflake(self):
         assert xai_x._CLAIMED_DATE_RE.fullmatch("2025-01-01") is not None
@@ -757,7 +819,7 @@ class TestHigh143XaiXProvenanceValidation:
         assert [i["author_handle"] for i in items] == ["steipete"]
         assert xai_x.parse_x_response(resp, from_date="not-a-date", to_date="2026-08-13") == []
 
-    def test_rejects_near_uniform_generated_snowflake_sequence(self):
+    def test_rejects_near_uniform_generated_snowflake_sequence_as_schema_drift_error(self, monkeypatch):
         base = int(_snowflake("2026-08-01"))
         step = 715_000_000_000_000
         raw_items = [
@@ -768,7 +830,19 @@ class TestHigh143XaiXProvenanceValidation:
             }
             for i in range(6)
         ]
-        assert xai_x.parse_x_response(_xai_wrap(raw_items), *WINDOW) == []
+        wrapped = _xai_wrap(raw_items)
+        with pytest.raises(http.HTTPError) as exc_info:
+            xai_x.parse_x_response(wrapped, *WINDOW)
+        assert exc_info.value.outcome_state == health.SCHEMA_DRIFT
+
+        # _attempt_x_backend surfaces a SCHEMA_DRIFT error so the X chain can fail over.
+        monkeypatch.setattr(pipeline.xai_x, "search_x", lambda *a, **k: wrapped)
+        items, detail, state = pipeline._attempt_x_backend(
+            "xai", "topic", WINDOW[0], WINDOW[1], "quick", {"XAI_API_KEY": "xai-dummy"},
+        )
+        assert items == []
+        assert "synthetic post sequence" in detail
+        assert state == health.SCHEMA_DRIFT
 
     def test_pipeline_forwards_window_to_xai_parse_x_response(self, monkeypatch):
         raw_response = _xai_wrap([
