@@ -4,6 +4,9 @@ import { TWITTER_API_BASE } from './twitter-client-constants.js';
 import { buildSearchFeatures } from './twitter-client-features.js';
 import { extractCursorFromInstructions, parseTweetsFromInstructions } from './twitter-client-utils.js';
 const RAW_QUERY_MISSING_REGEX = /must be defined/i;
+const DEFAULT_UNLIMITED_MAX_PAGES = 20;
+const DEFAULT_FINITE_MAX_PAGES_CEILING = 10;
+const SKIP_BODY_ON_404 = new Set([404]);
 function isQueryIdMismatch(payload) {
     try {
         const parsed = JSON.parse(payload);
@@ -50,7 +53,25 @@ export function withSearch(Base) {
             let cursor = options.cursor;
             let nextCursor;
             let pagesFetched = 0;
-            const { includeRaw = false, maxPages, product = 'Latest' } = options;
+            const { includeRaw = false, maxPages, product = 'Latest', pageDelayMs = 0 } = options;
+            if (maxPages !== undefined) {
+                if (typeof maxPages !== 'number' || !Number.isFinite(maxPages)) {
+                    return { success: false, error: 'Invalid maxPages' };
+                }
+                if (maxPages <= 0) {
+                    return { success: true, tweets: [], nextCursor: cursor };
+                }
+            }
+            const unlimited = limit === Number.POSITIVE_INFINITY;
+            const effectiveMaxPages = maxPages !== undefined
+                ? Math.floor(maxPages)
+                : unlimited
+                    ? DEFAULT_UNLIMITED_MAX_PAGES
+                    : Math.min(DEFAULT_FINITE_MAX_PAGES_CEILING, Math.ceil(limit / pageSize) + 2);
+            if (effectiveMaxPages <= 0) {
+                return { success: true, tweets: [], nextCursor: cursor };
+            }
+            const seenCursors = new Set(cursor ? [cursor] : []);
             const redact = (msg) =>
                 typeof this.redactError === 'function' ? this.redactError(msg) : redactSecrets(msg);
             const fetchPage = async (pageCount, pageCursor) => {
@@ -73,18 +94,22 @@ export function withSearch(Base) {
                     });
                     const url = `${TWITTER_API_BASE}/${queryId}/SearchTimeline?${params.toString()}`;
                     try {
-                        const response = await this.fetchWithTimeout(url, {
-                            method: 'POST',
-                            headers: this.getHeaders(),
-                            body: JSON.stringify({ features, queryId }),
-                        });
+                        const response = await this.fetchTextWithTimeout(
+                            url,
+                            {
+                                method: 'POST',
+                                headers: this.getHeaders(),
+                                body: JSON.stringify({ features, queryId }),
+                            },
+                            { skipBodyStatuses: SKIP_BODY_ON_404 },
+                        );
                         if (response.status === 404) {
                             had404 = true;
                             lastError = `HTTP ${response.status}`;
                             continue;
                         }
                         if (!response.ok) {
-                            const text = await response.text();
+                            const text = response.text;
                             const shouldRefreshQueryIds = (response.status === 400 || response.status === 422) && isQueryIdMismatch(text);
                             return {
                                 success: false,
@@ -92,7 +117,7 @@ export function withSearch(Base) {
                                 had404: had404 || shouldRefreshQueryIds,
                             };
                         }
-                        const data = (await response.json());
+                        const data = JSON.parse(response.text);
                         if (data.errors && data.errors.length > 0) {
                             const shouldRefreshQueryIds = data.errors.some((error) => error?.extensions?.code === 'GRAPHQL_VALIDATION_FAILED');
                             return {
@@ -108,6 +133,7 @@ export function withSearch(Base) {
                     }
                     catch (error) {
                         lastError = redact(error instanceof Error ? error.message : String(error));
+                        return { success: false, error: lastError, had404: false };
                     }
                 }
                 return { success: false, error: lastError ?? 'Unknown error fetching search results', had404 };
@@ -127,11 +153,16 @@ export function withSearch(Base) {
                 }
                 return { success: false, error: firstAttempt.error };
             };
-            const unlimited = limit === Number.POSITIVE_INFINITY;
             while (unlimited || tweets.length < limit) {
+                if (pagesFetched > 0 && pageDelayMs > 0 && typeof this.sleep === 'function') {
+                    await this.sleep(pageDelayMs);
+                }
                 const pageCount = unlimited ? pageSize : Math.min(pageSize, limit - tweets.length);
                 const page = await fetchWithRefresh(pageCount, cursor);
                 if (!page.success) {
+                    if (tweets.length > 0) {
+                        return { success: false, error: page.error, tweets, nextCursor: cursor };
+                    }
                     return { success: false, error: page.error };
                 }
                 pagesFetched += 1;
@@ -148,11 +179,12 @@ export function withSearch(Base) {
                     }
                 }
                 const pageCursor = page.cursor;
-                if (!pageCursor || pageCursor === cursor || page.tweets.length === 0 || added === 0) {
+                if (!pageCursor || seenCursors.has(pageCursor) || page.tweets.length === 0 || added === 0) {
                     nextCursor = undefined;
                     break;
                 }
-                if (maxPages && pagesFetched >= maxPages) {
+                seenCursors.add(pageCursor);
+                if (pagesFetched >= effectiveMaxPages) {
                     nextCursor = pageCursor;
                     break;
                 }

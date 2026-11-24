@@ -1,8 +1,16 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 const DEFAULT_CACHE_FILENAME = 'query-ids-cache.json';
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
+const DEFAULT_REFRESH_TIMEOUT_MS = 15_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const DEFAULT_MAX_BUNDLES = 30;
+const DEFAULT_MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const ALLOWED_DISCOVERY_HOSTS = new Set(['x.com', 'abs.twimg.com']);
 const DISCOVERY_PAGES = [
     'https://x.com/?lang=en',
     'https://x.com/explore',
@@ -39,13 +47,224 @@ const HEADERS = {
     Accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
 };
-async function fetchText(fetchImpl, url) {
-    const response = await fetchImpl(url, { headers: HEADERS });
-    if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status} for ${url}: ${body.slice(0, 120)}`);
+export function createAbortError(reason) {
+    if (reason instanceof Error) {
+        return reason;
     }
-    return response.text();
+    const message = typeof reason === 'string' && reason ? reason : 'The operation was aborted';
+    const err = new Error(message);
+    err.name = 'AbortError';
+    return err;
+}
+export async function raceWithAbort(promise, signal) {
+    if (!signal) {
+        return promise;
+    }
+    if (signal.aborted) {
+        promise.catch(() => {});
+        throw createAbortError(signal.reason);
+    }
+    promise.catch(() => {});
+    let onAbort;
+    const abortPromise = new Promise((_, reject) => {
+        onAbort = () => reject(createAbortError(signal.reason));
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+        return await Promise.race([promise, abortPromise]);
+    }
+    finally {
+        signal.removeEventListener('abort', onAbort);
+    }
+}
+export function validateDiscoveryUrl(rawUrl) {
+    let parsed;
+    try {
+        parsed = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
+    }
+    catch {
+        throw new Error(`Invalid discovery URL: ${String(rawUrl)}`);
+    }
+    if (parsed.protocol !== 'https:') {
+        throw new Error(`Blocked non-HTTPS discovery URL: ${parsed.protocol}`);
+    }
+    if (parsed.username || parsed.password) {
+        throw new Error('Blocked discovery URL with credentials');
+    }
+    if (parsed.port !== '') {
+        throw new Error(`Blocked discovery URL with non-default port: ${parsed.port}`);
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (!ALLOWED_DISCOVERY_HOSTS.has(host)) {
+        throw new Error(`Blocked discovery URL host: ${host}`);
+    }
+    return parsed;
+}
+export async function readResponseTextBounded(response, maxBytes, signal, { truncateOnLimit = false } = {}) {
+    if (signal?.aborted) {
+        await response.body?.cancel().catch(() => {});
+        throw createAbortError(signal.reason);
+    }
+    const contentLengthHeader = response.headers?.get?.('content-length');
+    if (!truncateOnLimit && contentLengthHeader) {
+        const declared = Number.parseInt(contentLengthHeader, 10);
+        if (Number.isFinite(declared) && declared > maxBytes) {
+            await response.body?.cancel().catch(() => {});
+            throw new Error(`Response exceeded ${maxBytes} byte limit`);
+        }
+    }
+    if (response.body && typeof response.body.getReader === 'function') {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let totalBytes = 0;
+        let text = '';
+        const onAbort = () => {
+            reader.cancel().catch(() => {});
+        };
+        if (signal) {
+            signal.addEventListener('abort', onAbort, { once: true });
+        }
+        try {
+            while (true) {
+                const { done, value } = await raceWithAbort(reader.read(), signal);
+                if (signal?.aborted) {
+                    throw createAbortError(signal.reason);
+                }
+                if (done) {
+                    break;
+                }
+                if (value && value.byteLength > 0) {
+                    if (totalBytes + value.byteLength > maxBytes) {
+                        if (truncateOnLimit) {
+                            const remaining = Math.max(0, maxBytes - totalBytes);
+                            if (remaining > 0) {
+                                text += decoder.decode(value.subarray(0, remaining), { stream: true });
+                            }
+                            await reader.cancel().catch(() => {});
+                            break;
+                        }
+                        await reader.cancel().catch(() => {});
+                        throw new Error(`Response exceeded ${maxBytes} byte limit`);
+                    }
+                    totalBytes += value.byteLength;
+                    text += decoder.decode(value, { stream: true });
+                }
+            }
+            if (signal?.aborted) {
+                throw createAbortError(signal.reason);
+            }
+            text += decoder.decode();
+            return text;
+        }
+        finally {
+            if (signal) {
+                signal.removeEventListener('abort', onAbort);
+            }
+            try {
+                reader.releaseLock();
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    if (typeof response.text === 'function') {
+        const text = await raceWithAbort(response.text(), signal);
+        if (signal?.aborted) {
+            throw createAbortError(signal.reason);
+        }
+        if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+            if (truncateOnLimit) {
+                return text.slice(0, maxBytes);
+            }
+            throw new Error(`Response exceeded ${maxBytes} byte limit`);
+        }
+        return text;
+    }
+    return '';
+}
+async function fetchText(fetchImpl, url, opts = {}) {
+    const fetchTimeoutMs = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    const maxBytes = opts.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+    const deadlineMs = opts.deadlineMs;
+    const callerSignal = opts.signal;
+
+    let currentUrl = validateDiscoveryUrl(url).toString();
+    const controller = new AbortController();
+    let timeoutId = null;
+    const onCallerAbort = () => controller.abort(callerSignal.reason);
+    if (callerSignal) {
+        if (callerSignal.aborted) {
+            throw createAbortError(callerSignal.reason);
+        }
+        callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+    const remainingMs = deadlineMs !== undefined ? deadlineMs - Date.now() : fetchTimeoutMs;
+    const effectiveTimeoutMs = Math.min(fetchTimeoutMs, remainingMs);
+    if (!Number.isFinite(effectiveTimeoutMs) || effectiveTimeoutMs <= 0) {
+        if (callerSignal) {
+            callerSignal.removeEventListener('abort', onCallerAbort);
+        }
+        throw createAbortError('Discovery refresh timed out');
+    }
+    timeoutId = setTimeout(() => {
+        controller.abort(createAbortError(`Discovery request timed out after ${effectiveTimeoutMs}ms`));
+    }, effectiveTimeoutMs);
+
+    try {
+        let redirects = 0;
+        while (true) {
+            const response = await raceWithAbort(
+                fetchImpl(currentUrl, {
+                    headers: HEADERS,
+                    redirect: 'manual',
+                    signal: controller.signal,
+                }),
+                controller.signal,
+            );
+            if (response.url) {
+                try {
+                    validateDiscoveryUrl(response.url);
+                }
+                catch (err) {
+                    await response.body?.cancel().catch(() => {});
+                    throw err;
+                }
+            }
+            if (REDIRECT_STATUSES.has(response.status)) {
+                await response.body?.cancel().catch(() => {});
+                const location = response.headers?.get?.('location');
+                if (!location) {
+                    throw new Error(`HTTP ${response.status} redirect without Location for ${currentUrl}`);
+                }
+                if (redirects >= maxRedirects) {
+                    throw new Error(`Too many redirects while fetching ${url}`);
+                }
+                currentUrl = validateDiscoveryUrl(new URL(location, currentUrl)).toString();
+                redirects += 1;
+                continue;
+            }
+            if (!response.ok) {
+                const body = await readResponseTextBounded(
+                    response,
+                    512,
+                    controller.signal,
+                    { truncateOnLimit: true },
+                ).catch(() => '');
+                throw new Error(`HTTP ${response.status} for ${currentUrl}: ${body.slice(0, 120)}`);
+            }
+            return await readResponseTextBounded(response, maxBytes, controller.signal);
+        }
+    }
+    finally {
+        if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+        }
+        if (callerSignal) {
+            callerSignal.removeEventListener('abort', onCallerAbort);
+        }
+    }
 }
 function resolveDefaultCachePath() {
     const override = process.env.BIRD_QUERY_IDS_CACHE;
@@ -102,24 +321,66 @@ async function readSnapshotFromDisk(cachePath) {
         return null;
     }
 }
-async function writeSnapshotToDisk(cachePath, snapshot) {
-    await mkdir(path.dirname(cachePath), { recursive: true });
-    await writeFile(cachePath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+export async function writeFileAtomicPrivate(targetPath, content) {
+    const dir = path.dirname(targetPath);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const dirStat = await lstat(dir);
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+        throw new Error('Refusing to write cache inside symlink or non-directory');
+    }
+    try {
+        const targetStat = await lstat(targetPath);
+        if (targetStat.isSymbolicLink() || !targetStat.isFile()) {
+            throw new Error('Refusing to overwrite symlink or non-regular cache file');
+        }
+    }
+    catch (err) {
+        if (err?.code !== 'ENOENT') {
+            throw err;
+        }
+    }
+    const tempName = `.${path.basename(targetPath)}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+    const tempPath = path.join(dir, tempName);
+    try {
+        await writeFile(tempPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+        if (process.platform !== 'win32') {
+            await chmod(tempPath, 0o600).catch(() => {});
+        }
+        await rename(tempPath, targetPath);
+    }
+    catch (err) {
+        await unlink(tempPath).catch(() => {});
+        throw err;
+    }
 }
-async function discoverBundles(fetchImpl) {
+async function writeSnapshotToDisk(cachePath, snapshot) {
+    await writeFileAtomicPrivate(cachePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+}
+async function discoverBundles(fetchImpl, opts = {}) {
+    const maxBundles = opts.maxBundles ?? DEFAULT_MAX_BUNDLES;
+    const deadlineMs = opts.deadlineMs;
     const bundles = new Set();
     for (const page of DISCOVERY_PAGES) {
+        if (bundles.size >= maxBundles) {
+            break;
+        }
+        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+            break;
+        }
         try {
-            const html = await fetchText(fetchImpl, page);
+            const html = await fetchText(fetchImpl, page, opts);
             for (const match of html.matchAll(BUNDLE_URL_REGEX)) {
                 bundles.add(match[0]);
+                if (bundles.size >= maxBundles) {
+                    break;
+                }
             }
         }
         catch {
             // ignore discovery page failures; other pages often work
         }
     }
-    const discovered = [...bundles];
+    const discovered = [...bundles].slice(0, maxBundles);
     if (discovered.length === 0) {
         throw new Error('No client bundles discovered; x.com layout may have changed.');
     }
@@ -154,18 +415,30 @@ function extractOperations(bundleContents, bundleLabel, targets, discovered) {
         }
     }
 }
-async function fetchAndExtract(fetchImpl, bundleUrls, targets) {
+async function fetchAndExtract(fetchImpl, bundleUrls, targets, opts = {}) {
+    const maxBundles = opts.maxBundles ?? DEFAULT_MAX_BUNDLES;
+    const deadlineMs = opts.deadlineMs;
+    const cappedUrls = bundleUrls.slice(0, maxBundles);
     const discovered = new Map();
     const CONCURRENCY = 6;
-    for (let i = 0; i < bundleUrls.length; i += CONCURRENCY) {
-        const chunk = bundleUrls.slice(i, i + CONCURRENCY);
+    for (let i = 0; i < cappedUrls.length; i += CONCURRENCY) {
+        if (discovered.size === targets.size) {
+            break;
+        }
+        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+            break;
+        }
+        const chunk = cappedUrls.slice(i, i + CONCURRENCY);
         await Promise.all(chunk.map(async (url) => {
             if (discovered.size === targets.size) {
                 return;
             }
+            if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+                return;
+            }
             const label = url.split('/').at(-1) ?? url;
             try {
-                const js = await fetchText(fetchImpl, url);
+                const js = await fetchText(fetchImpl, url, opts);
                 extractOperations(js, label, targets, discovered);
             }
             catch {
@@ -181,6 +454,11 @@ async function fetchAndExtract(fetchImpl, bundleUrls, targets) {
 export function createRuntimeQueryIdStore(options = {}) {
     const fetchImpl = options.fetchImpl ?? fetch;
     const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    const defaultFetchTimeoutMs = options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    const defaultRefreshTimeoutMs = options.refreshTimeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS;
+    const defaultMaxBytes = options.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    const defaultMaxBundles = options.maxBundles ?? DEFAULT_MAX_BUNDLES;
+    const defaultMaxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
     const cachePath = options.cachePath ? path.resolve(options.cachePath) : resolveDefaultCachePath();
     let memorySnapshot = null;
     let loadOnce = null;
@@ -229,9 +507,18 @@ export function createRuntimeQueryIdStore(options = {}) {
             if (!opts.force && current?.isFresh) {
                 return current;
             }
+            const refreshTimeoutMs = opts.refreshTimeoutMs ?? defaultRefreshTimeoutMs;
+            const fetchOpts = {
+                fetchTimeoutMs: opts.fetchTimeoutMs ?? defaultFetchTimeoutMs,
+                maxBytes: opts.maxBytes ?? defaultMaxBytes,
+                maxBundles: opts.maxBundles ?? defaultMaxBundles,
+                maxRedirects: opts.maxRedirects ?? defaultMaxRedirects,
+                deadlineMs: Date.now() + refreshTimeoutMs,
+                signal: opts.signal,
+            };
             const targets = new Set(operationNames);
-            const bundleUrls = await discoverBundles(fetchImpl);
-            const discovered = await fetchAndExtract(fetchImpl, bundleUrls, targets);
+            const bundleUrls = await discoverBundles(fetchImpl, fetchOpts);
+            const discovered = await fetchAndExtract(fetchImpl, bundleUrls, targets, fetchOpts);
             if (discovered.size === 0) {
                 return current ?? null;
             }
@@ -254,8 +541,14 @@ export function createRuntimeQueryIdStore(options = {}) {
                     bundles: bundleUrls.map((url) => url.split('/').at(-1) ?? url),
                 },
             };
-            await writeSnapshotToDisk(cachePath, snapshot);
             memorySnapshot = snapshot;
+            try {
+                await writeSnapshotToDisk(cachePath, snapshot);
+            }
+            catch {
+                // Keep the refreshed snapshot in memory on read-only filesystems
+                // or unwritable cache paths.
+            }
             return getSnapshotInfo();
         })().finally(() => {
             refreshInFlight = null;

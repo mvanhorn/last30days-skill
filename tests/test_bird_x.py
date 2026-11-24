@@ -464,7 +464,7 @@ class TestXFromAndAboutLanes(unittest.TestCase):
         from lib import bird_x
         captured = []
 
-        def fake_run(cmd, timeout=None, env=None):
+        def fake_run(cmd, timeout=None, env=None, **_kwargs):
             self.assertEqual("--", cmd[-2])
             captured.append(cmd[-1])  # the query string arg after `--`
             return self._result([])
@@ -479,7 +479,7 @@ class TestXFromAndAboutLanes(unittest.TestCase):
         from lib import bird_x
         captured = []
 
-        def fake_run(cmd, timeout=None, env=None):
+        def fake_run(cmd, timeout=None, env=None, **_kwargs):
             self.assertEqual("--", cmd[-2])
             captured.append(cmd[-1])
             return self._result([])
@@ -635,7 +635,7 @@ class TestTopicSearchReadsTopTab(unittest.TestCase):
     def test_top_flag_reaches_the_bird_command_line(self):
         cmds = []
 
-        def fake_run(cmd, timeout=None, env=None):
+        def fake_run(cmd, timeout=None, env=None, **_kwargs):
             cmds.append(cmd)
             return self._result()
 

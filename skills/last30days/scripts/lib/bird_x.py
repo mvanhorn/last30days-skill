@@ -99,21 +99,36 @@ _SUBPROCESS_ENV_ALLOWLIST = (
     "http_proxy", "https_proxy", "no_proxy",
     # X session cookies the vendored client reads from the environment
     "AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0",
-    # Browser-cookie disable flag the client reads (cookies.js envFlagEnabled)
-    "LAST30DAYS_DISABLE_BROWSER_COOKIES",
+    # Browser-cookie consent/disable flags the client reads (cookies.js)
+    "LAST30DAYS_DISABLE_BROWSER_COOKIES", "FROM_BROWSER", "BROWSER_CONSENT",
 )
+
+_BIRD_CAPTURE_LIMIT_BYTES = 8 * 1024 * 1024
+
+
+def _set_credentials_only(auth_token: Optional[str], ct0: Optional[str]) -> None:
+    """Update injected AUTH_TOKEN/CT0 without altering browser-failover state."""
+    _record_secret(_credentials.get('AUTH_TOKEN'))
+    _record_secret(_credentials.get('CT0'))
+    if auth_token:
+        _record_secret(auth_token)
+        _credentials['AUTH_TOKEN'] = auth_token
+    else:
+        _credentials.pop('AUTH_TOKEN', None)
+    if ct0:
+        _record_secret(ct0)
+        _credentials['CT0'] = ct0
+    else:
+        _credentials.pop('CT0', None)
 
 
 def set_credentials(auth_token: Optional[str], ct0: Optional[str]):
     """Inject AUTH_TOKEN/CT0 from .env config so Node subprocesses can use them."""
-    if auth_token:
-        _record_secret(_credentials.get('AUTH_TOKEN'))
-        _record_secret(auth_token)
-        _credentials['AUTH_TOKEN'] = auth_token
-    if ct0:
-        _record_secret(_credentials.get('CT0'))
-        _record_secret(ct0)
-        _credentials['CT0'] = ct0
+    global _session_browser, _next_session
+    with _session_lock:
+        _set_credentials_only(auth_token, ct0)
+        _session_browser = None
+        _next_session = None
 
 
 # Browser-session failover: the browser that supplied the current session and
@@ -426,7 +441,15 @@ def get_bird_status() -> Dict[str, Any]:
     }
 
 
-def _invoke_bird_subprocess(query: str, count: int, timeout: int, top: bool = False):
+def _invoke_bird_subprocess(
+    query: str,
+    count: int,
+    timeout: int,
+    top: bool = False,
+    *,
+    deadline: Optional[float] = None,
+    cancel: Any = None,
+):
     """Invoke the vendored bird-search.mjs subprocess once.
 
     Returns (result, error_dict). If error_dict is non-None, treat it as the
@@ -435,9 +458,11 @@ def _invoke_bird_subprocess(query: str, count: int, timeout: int, top: bool = Fa
     and `result` is the SubprocResult; the caller decides whether to retry
     based on the result.stdout content.
     """
+    timeout_ms = max(1000, int(timeout * 1000))
     cmd = [
         "node", str(_BIRD_SEARCH_MJS),
         "--count", str(count),
+        "--timeout-ms", str(timeout_ms),
         "--json",
     ]
     if top:
@@ -449,8 +474,13 @@ def _invoke_bird_subprocess(query: str, count: int, timeout: int, top: bool = Fa
             cmd,
             timeout=timeout,
             env=_subprocess_env(),
+            cancel=cancel,
+            deadline_monotonic=deadline,
+            capture_limit_bytes=_BIRD_CAPTURE_LIMIT_BYTES,
         )
     except subproc.SubprocTimeout:
+        if cancel is not None and cancel.is_set():
+            return None, {"error": "bird: research cancelled", "items": []}
         return None, {"error": f"Search timed out after {timeout}s", "items": []}
     except Exception as e:
         return None, {"error": _scrub_credentials(str(e)), "items": []}
@@ -520,7 +550,7 @@ def _run_bird_search(
                 )
                 if nxt:
                     auth_token, ct0, browser = nxt
-                    set_credentials(auth_token, ct0)
+                    _set_credentials_only(auth_token, ct0)
                     _session_browser_update(browser)
                     log.source_log(
                         "X/bird",
@@ -609,7 +639,14 @@ def _run_bird_search_once(
                 return _invalid_json_error(
                     attempt, last_decode_error, budget_exhausted=True,
                 )
-        result, terminal_error = _invoke_bird_subprocess(query, count, attempt_timeout, top=top)
+        result, terminal_error = _invoke_bird_subprocess(
+            query,
+            count,
+            attempt_timeout,
+            top=top,
+            deadline=deadline,
+            cancel=cancel,
+        )
         if terminal_error is not None:
             return terminal_error
 
@@ -878,6 +915,8 @@ def search_handles(
     Returns:
         List of raw item dicts (same format as parse_bird_response output).
     """
+    if not handles:
+        return []
     core_topic = _extract_core_subject(topic) if topic else None
     date_filters = _date_filters(from_date, to_date)
 
@@ -894,19 +933,32 @@ def search_handles(
         # Always unfiltered: pull the timeline, rank by topic relevance below.
         query = f"from:{handle} {date_filters}"
 
+        timeout_ms = max(1000, int(timeout * 1000))
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
             "--count", str(count_per),
+            "--timeout-ms", str(timeout_ms),
             "--json",
             "--",
             query,
         ]
 
         try:
-            result = subproc.run_with_timeout(cmd, timeout=timeout, env=_subprocess_env())
+            result = subproc.run_with_timeout(
+                cmd,
+                timeout=timeout,
+                env=_subprocess_env(),
+                cancel=cancel,
+                deadline_monotonic=deadline,
+                capture_limit_bytes=_BIRD_CAPTURE_LIMIT_BYTES,
+            )
         except subproc.SubprocTimeout:
-            _log(f"Handle search timed out for @{handle}")
-            _note(f"@{handle}: bird-search timed out after 15s")
+            if cancel is not None and cancel.is_set():
+                _log(f"Handle search cancelled for @{handle}")
+                _note(f"@{handle}: bird-search cancelled")
+            else:
+                _log(f"Handle search timed out for @{handle}")
+                _note(f"@{handle}: bird-search timed out after {timeout}s")
             return []
         except OSError as e:
             err = _scrub_credentials(str(e))
@@ -981,6 +1033,8 @@ def search_mentions(
     Returns:
         List of raw item dicts (same format as parse_bird_response output).
     """
+    if not handles:
+        return []
     date_filters = _date_filters(from_date, to_date)
 
     def _note(msg: str) -> None:
@@ -994,18 +1048,31 @@ def search_mentions(
             return []
         handle = handle.lstrip("@")
         query = f"@{handle} {date_filters}"
+        timeout_ms = max(1000, int(timeout * 1000))
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
             "--count", str(count_per),
+            "--timeout-ms", str(timeout_ms),
             "--json",
             "--",
             query,
         ]
         try:
-            result = subproc.run_with_timeout(cmd, timeout=timeout, env=_subprocess_env())
+            result = subproc.run_with_timeout(
+                cmd,
+                timeout=timeout,
+                env=_subprocess_env(),
+                cancel=cancel,
+                deadline_monotonic=deadline,
+                capture_limit_bytes=_BIRD_CAPTURE_LIMIT_BYTES,
+            )
         except subproc.SubprocTimeout:
-            _log(f"Mention search timed out for @{handle}")
-            _note(f"@{handle}: bird-search timed out after 15s")
+            if cancel is not None and cancel.is_set():
+                _log(f"Mention search cancelled for @{handle}")
+                _note(f"@{handle}: bird-search cancelled")
+            else:
+                _log(f"Mention search timed out for @{handle}")
+                _note(f"@{handle}: bird-search timed out after {timeout}s")
             return []
         except OSError as e:
             err = _scrub_credentials(str(e))

@@ -826,7 +826,7 @@ class TestHigh155CliOptionBoundary:
     def test_python_invocations_place_flags_before_double_dash_and_query_after(self):
         cmds = []
 
-        def fake_run(cmd, timeout=None, env=None):
+        def fake_run(cmd, timeout=None, env=None, **_kwargs):
             cmds.append(cmd)
             return SubprocResult(returncode=0, stdout="[]", stderr="")
 
