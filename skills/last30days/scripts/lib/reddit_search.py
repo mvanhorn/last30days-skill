@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
-from . import http, reddit_listing
+from . import http, reddit_listing, reddit_refs
 from .relevance import token_overlap_relevance
 
 BASE = "https://www.reddit.com"
@@ -305,7 +305,7 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
             counts.setdefault(label, int(number))
         score, num_comments = counts.get("vote", 0), counts.get("comment", 0)
 
-        posts.append({
+        post_item: Dict[str, Any] = {
             "id": "",
             "title": title,
             "url": url,
@@ -324,7 +324,10 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
             "relevance": round(token_overlap_relevance(query, title), 3) if query else 0.0,
             "why_relevant": "Reddit search",
             "metadata": {"post_id": post_id},
-        })
+        }
+        if "vote" in counts:
+            post_item["engagement_source"] = reddit_refs.LIVE
+        posts.append(post_item)
     return posts, _next_cursor(html_text)
 
 

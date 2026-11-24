@@ -71,12 +71,23 @@ _CAMEL_BOT = re.compile(r"[a-z0-9]Bot\d*$")
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
-_COMMENT_START = re.compile(r"<shreddit-comment(?=[\s>])[^>]*>")
-_TOTAL_COMMENTS = re.compile(r'total-comments="(\d+)"')
-_PARA = re.compile(r"<p[^>]*>(.*?)</p>", re.S)
+_COMMENT_START = re.compile(r"<shreddit-comment(?=[\s>])[^>]*>", re.IGNORECASE)
+_TOTAL_COMMENTS = re.compile(r'(?<![A-Za-z0-9_.:-])total-comments="(\d+)"', re.IGNORECASE)
+_PARA = re.compile(r"<p(?=[\s>])[^>]*?(?<!/)>(.*?)</p\s*>", re.S | re.IGNORECASE)
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
-_NEXT_RTJSON = re.compile(r'id="t1_[A-Za-z0-9]+-(?:comment|post)-rtjson-content"')
+_NEXT_RTJSON = re.compile(
+    r'(?<![A-Za-z0-9_.:-])id\s*=\s*(?:"([A-Za-z0-9_]+)-(?:comment|post)-rtjson-content"'
+    r"|\'([A-Za-z0-9_]+)-(?:comment|post)-rtjson-content\')",
+    re.IGNORECASE,
+)
+_BODY_BOUNDARY = re.compile(
+    r"<div(?=[\s>/])[^>]*>"
+    r"|</div\s*>"
+    r"|<shreddit-comment(?=[\s>])"
+    r"|</shreddit-comment\s*>",
+    re.IGNORECASE,
+)
 _CHALLENGE_MARKERS = re.compile(
     r"js-challenge|challenge-form|please wait for verification|"
     r"checking that your connection is secure|blocked by network security|"
@@ -86,7 +97,8 @@ _CHALLENGE_MARKERS = re.compile(
 _OP_ATTR_NAMES = ("is-op", "is-submitter", "is_op", "is_submitter")
 _TAG_HEAD = re.compile(r"^<\s*[^\s>/]+")
 _TAG_ATTR = re.compile(
-    r'([A-Za-z_:][A-Za-z0-9_.:-]*)(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+)))?'
+    r'(?<![A-Za-z0-9_.:-])([A-Za-z_:][A-Za-z0-9_.:-]*)'
+    r'(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+)))?'
 )
 
 
@@ -138,10 +150,26 @@ def _svc_url(subreddit: str, post_id: str) -> str:
 
 def _attr(tag: str, name: str) -> str:
     # HTML attribute names are case-insensitive: the server partial emits
-    # ``thingId``, a DOM round-trip serializes it as ``thingid``. Match the name
-    # either way; the value keeps its case.
-    m = re.search(rf'\b{name}="([^"]*)"', tag, re.IGNORECASE)
-    return _html.unescape(m.group(1)) if m else ""
+    # ``thingId``, a DOM round-trip serializes it as ``thingid``. Match the exact
+    # attribute name (not hyphenated suffixes such as ``data-author`` or
+    # ``hide-score``) either way; the value keeps its case.
+    if not tag or not name:
+        return ""
+    wanted = name.lower()
+    body = _TAG_HEAD.sub("", tag.strip())
+    if body.endswith(">"):
+        body = body[:-1]
+    for m in _TAG_ATTR.finditer(body):
+        if m.group(1).lower() != wanted:
+            continue
+        raw = (
+            m.group(2)
+            if m.group(2) is not None
+            else (m.group(3) if m.group(3) is not None else m.group(4))
+        )
+        if raw is not None:
+            return _html.unescape(raw)
+    return ""
 
 
 def _bool_attr(tag: str, names: tuple[str, ...]) -> Optional[bool]:
@@ -173,23 +201,66 @@ def _iso_to_date(value: str) -> Optional[str]:
         return None
 
 
+def _find_body_div_start(html_text: str, thing_id: str) -> Optional[int]:
+    """Return the index right after the opening body ``<div>`` for ``thing_id``."""
+    escaped = re.escape(thing_id)
+    for suffix in ("post-rtjson-content", "comment-rtjson-content"):
+        pattern = re.compile(
+            rf'<div(?=[\s>])[^>]*?(?<![A-Za-z0-9_.:-])id\s*=\s*'
+            rf'(?:"{escaped}-{suffix}"|\'{escaped}-{suffix}\')[^>]*>',
+            re.IGNORECASE,
+        )
+        for m in pattern.finditer(html_text):
+            if not m.group(0).rstrip().endswith("/>"):
+                return m.end()
+    return None
+
+
 def _body_for(html_text: str, thing_id: str) -> str:
     """Extract a comment's text body, anchored on its unique thingId.
 
-    The body div id embeds the comment's thingId, so this assigns body→comment
-    correctly even for nested replies. The slice is bounded by the next
-    comment's rtjson anchor to avoid swallowing child-comment text.
+    The body div id embeds the comment's thingId (``-post-rtjson-content`` or
+    ``-comment-rtjson-content``), so this assigns body→comment correctly even
+    for nested replies. The slice is bounded by the matching closing ``</div>``
+    (tracking nested ``<div>`` elements), ``<shreddit-comment>`` boundaries,
+    and any other comment's rtjson anchor so deleted/removed child comments or
+    UI footers are never concatenated into the parent body.
     """
-    if not thing_id:
+    if not html_text or not thing_id:
         return ""
-    anchor = f'id="{thing_id}-post-rtjson-content"'
-    idx = html_text.find(anchor)
-    if idx == -1:
+    start = _find_body_div_start(html_text, thing_id)
+    if start is None:
         return ""
-    window = html_text[idx + len(anchor): idx + len(anchor) + 8000]
-    nxt = _NEXT_RTJSON.search(window)
-    if nxt:
-        window = window[: nxt.start()]
+    window = html_text[start: start + 8000]
+    thing_lower = thing_id.lower()
+    depth = 1
+    cut = len(window)
+    for m in _BODY_BOUNDARY.finditer(window):
+        tok = m.group(0)
+        lower = tok.lower()
+        if lower.startswith("</div"):
+            depth -= 1
+            if depth == 0:
+                cut = m.start()
+                break
+        elif lower.startswith("<div"):
+            rt = _NEXT_RTJSON.search(tok)
+            if rt:
+                other_id = (rt.group(1) or rt.group(2) or "").lower()
+                if other_id != thing_lower:
+                    cut = m.start()
+                    break
+            if not tok.rstrip().endswith("/>"):
+                depth += 1
+        else:
+            cut = m.start()
+            break
+    window = window[:cut]
+    for m in _NEXT_RTJSON.finditer(window):
+        other_id = (m.group(1) or m.group(2) or "").lower()
+        if other_id != thing_lower:
+            window = window[: m.start()]
+            break
     paras = _PARA.findall(window)
     if not paras:
         return ""

@@ -42,7 +42,12 @@ TIMEFRAME = "month"
 MAX_WORKERS = 4
 LISTING_TIMEOUT = 15
 
-_POST_CARD = re.compile(r"<shreddit-post(?=[\s>])[^>]*>")
+_POST_CARD = re.compile(r"<shreddit-post(?=[\s>])[^>]*>", re.IGNORECASE)
+_TAG_HEAD = re.compile(r"^<\s*[^\s>/]+")
+_TAG_ATTR = re.compile(
+    r'(?<![A-Za-z0-9_.:-])([A-Za-z_:][A-Za-z0-9_.:-]*)'
+    r'(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+)))?'
+)
 _BLOCK_MARKERS = (
     "verify you are human",
     "confirm you are a human",
@@ -84,8 +89,23 @@ def _matches_discovery_domain(domain: str, text: str) -> bool:
 
 
 def _attr(tag: str, name: str) -> Optional[str]:
-    m = re.search(rf'\b{name}="([^"]*)"', tag)
-    return _html.unescape(m.group(1)) if m else None
+    if not tag or not name:
+        return None
+    wanted = name.lower()
+    body = _TAG_HEAD.sub("", tag.strip())
+    if body.endswith(">"):
+        body = body[:-1]
+    for m in _TAG_ATTR.finditer(body):
+        if m.group(1).lower() != wanted:
+            continue
+        raw = (
+            m.group(2)
+            if m.group(2) is not None
+            else (m.group(3) if m.group(3) is not None else m.group(4))
+        )
+        if raw is not None:
+            return _html.unescape(raw)
+    return None
 
 
 def _to_date(value: Optional[str]) -> Optional[str]:
@@ -137,8 +157,11 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
         permalink = _attr(tag, "permalink") or ""
         if "/comments/" not in permalink:
             continue
+        score_raw = _attr(tag, "score")
+        has_live_score = False
         try:
-            score = int(_attr(tag, "score") or 0)
+            score = int(score_raw or 0)
+            has_live_score = score_raw is not None and score_raw.strip() != ""
         except ValueError:
             score = 0
         try:
@@ -151,7 +174,7 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
         created = _attr(tag, "created-timestamp")
         url = f"https://www.reddit.com{permalink}"
 
-        posts.append({
+        card: Dict[str, Any] = {
             "id": "",
             "title": title,
             "url": url,
@@ -170,7 +193,10 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
             "relevance": round(token_overlap_relevance(query, title), 3) if query else 0.0,
             "why_relevant": "Reddit listing",
             "metadata": {"post_id": _post_id(permalink)},
-        })
+        }
+        if has_live_score:
+            card["engagement_source"] = reddit_refs.LIVE
+        posts.append(card)
     return posts
 
 
@@ -246,16 +272,20 @@ def _fetch_one_with_status(
         # retry_429 records a terminal miss into the pipeline sink (issue #899)
         # and retries a 429 once through the limiter (issue #985). Empty
         # dedicated-subreddit fragments can be valid; r/all cannot be empty.
-        text, error = http.reddit_keyless_get_text_retry_429(
-            _listing_url(subreddit, sort, timeframe),
-            timeout=LISTING_TIMEOUT,
-            accept="text/html",
-            validate=lambda body: _listing_body_problem(subreddit, body),
-        )
+        with http.tee_failures() as local_failures:
+            text, error = http.reddit_keyless_get_text_retry_429(
+                _listing_url(subreddit, sort, timeframe),
+                timeout=LISTING_TIMEOUT,
+                accept="text/html",
+                validate=lambda body: _listing_body_problem(subreddit, body),
+            )
         if text is None:
+            if not local_failures:
+                http._record_failure(http.HTTPError(error or "no response"))
             return [], (error or "no response")
         return parse_cards(text, query), None
     except Exception as e:
+        http._record_failure(e if isinstance(e, http.HTTPError) else http.HTTPError(str(e)))
         _log(f"listing fetch failed r/{subreddit} {sort}: {e}")
         return [], str(e)
 
@@ -303,7 +333,11 @@ def fetch_listings(
                 wait = max(0.0, min(wait, deadline - time.monotonic()))
             try:
                 all_posts.extend(future.result(timeout=wait))
-            except (Exception, FuturesTimeoutError) as e:
+            except FuturesTimeoutError as e:
+                http._record_failure(http.DeadlineExceeded())
+                _log(f"listing future failed: {e or 'still running at the deadline'}")
+            except Exception as e:
+                http._record_failure(e if isinstance(e, http.HTTPError) else http.HTTPError(str(e)))
                 _log(f"listing future failed: {e or 'still running at the deadline'}")
     finally:
         # Under a deadline a feed still queued or running is not waited for.

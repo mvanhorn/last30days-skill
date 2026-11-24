@@ -201,11 +201,157 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
+_TIMED_OUT = object()
+
+
 def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
+    engagement = post.setdefault("engagement", {})
     post["score"] = scored["score"]
-    post["num_comments"] = scored["num_comments"]
-    post.setdefault("engagement", {})["score"] = scored["score"]
-    post["engagement"]["num_comments"] = scored["num_comments"]
+    engagement["score"] = scored["score"]
+    counts = [
+        v for v in (
+            post.get("num_comments"),
+            engagement.get("num_comments"),
+            scored.get("num_comments"),
+        )
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+    num_comments = int(max(counts)) if counts else 0
+    post["num_comments"] = num_comments
+    engagement["num_comments"] = num_comments
+
+
+def _listing_timeframe(from_date: Optional[str], to_date: Optional[str]) -> str:
+    from .reddit import _window_to_time_filter
+    return _window_to_time_filter(from_date or "", to_date or "")
+
+
+def _is_listing_block_failure(failure: Any) -> bool:
+    if getattr(failure, "status_code", None) == 403:
+        return True
+    msg = str(failure).lower()
+    return "reddit listing interstitial" in msg or "blocked by network security" in msg
+
+
+def _classify_listing_state(
+    posts: List[Dict[str, Any]],
+    failures: List[Any],
+    *,
+    timed_out: bool = False,
+    failed: bool = False,
+) -> str:
+    if posts:
+        return reddit_health.OK
+    snapshot = list(failures)
+    statuses = {getattr(f, "status_code", None) for f in snapshot}
+    if any(_is_listing_block_failure(f) for f in snapshot):
+        return reddit_health.BLOCKED
+    if 429 in statuses:
+        return reddit_health.THROTTLED
+    if snapshot or timed_out or failed:
+        return reddit_health.ERROR
+    return reddit_health.EMPTY
+
+
+def _combine_listing_states(states: List[str], has_posts: bool) -> str:
+    if has_posts or reddit_health.OK in states:
+        return reddit_health.OK
+    if reddit_health.EMPTY in states:
+        return reddit_health.EMPTY
+    if states and all(s == reddit_health.THROTTLED for s in states):
+        return reddit_health.THROTTLED
+    if reddit_health.BLOCKED in states:
+        return reddit_health.BLOCKED
+    if reddit_health.THROTTLED in states:
+        return reddit_health.THROTTLED
+    return reddit_health.ERROR
+
+
+def _scored_listings_with_state(
+    subreddits: List[str],
+    depth: str = "default",
+    query: str = "",
+    sorts: Optional[List[str]] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    deadline: Optional[float] = None,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Scored subreddit listings plus health state: shreddit partials, arctic-shift supplement.
+
+    The shreddit ``community-more-posts`` partials 403 from datacenter IPs
+    (and any host Reddit decides to block). Shreddit is tried first; arctic-
+    shift supplements with any posts shreddit missed. Individual sort lanes
+    can fail silently (shreddit's ``fetch_listings`` flattens results without
+    exposing per-sort status), so arctic is called for all requested subreddits
+    and merged via deduplication. Both calls run inside
+    ``http.capture_failures()`` so listing HTTP failures stay isolated from the
+    outer stream sink while still classifying listing health accurately. Never
+    raises.
+    """
+    timeframe = _listing_timeframe(from_date, to_date)
+    posts: List[Dict[str, Any]] = []
+    timed_out = False
+    failed = False
+    with http.capture_failures() as failures:
+        try:
+            shreddit_res = _within(
+                deadline, "subreddit listing", _TIMED_OUT,
+                reddit_listing.fetch_listings, subreddits, depth=depth, query=query, sorts=sorts,
+                timeframe=timeframe,
+                **_stage_deadline(deadline),
+            )
+        except Exception as exc:  # defensive: listings must never break the pipeline
+            _log(f"shreddit listing fetch failed: {exc}")
+            failed = True
+        else:
+            if shreddit_res is _TIMED_OUT:
+                timed_out = True
+            elif shreddit_res:
+                posts = list(shreddit_res)
+
+        arctic_posts: List[Dict[str, Any]] = []
+
+        # Supplement with arctic for all requested subreddits. Shreddit's per-sort
+        # success/failure is opaque, so arctic provides coverage for any failed
+        # sort lanes (e.g., hot/new failing while top succeeded). Deduplication
+        # ensures no redundant posts when shreddit fully succeeded.
+        if subreddits and _out_of_time(deadline):
+            _log("arctic-shift supplement skipped: lane budget spent")
+        elif subreddits:
+            try:
+                arctic_res = _within(
+                    deadline, "arctic-shift supplement", _TIMED_OUT,
+                    reddit_arctic.fetch_listings,
+                    subreddits, depth=depth, query=query, sorts=sorts,
+                    from_date=from_date, to_date=to_date,
+                    **_stage_deadline(deadline, "lane_deadline"),
+                )
+            except Exception as exc:  # the fallback must never break the pipeline
+                _log(f"arctic-shift listing supplement failed: {exc}")
+                failed = True
+            else:
+                if arctic_res is _TIMED_OUT:
+                    timed_out = True
+                elif arctic_res:
+                    arctic_posts = list(arctic_res)
+            if arctic_posts:
+                # An archive count on a fresh post is not a settled score yet.
+                now = time.time()
+                for p in arctic_posts:
+                    reddit_hydrate.label_archive_post(p, now)
+                # Merge and dedupe by URL — shreddit posts take priority.
+                seen = {p["url"] for p in posts}
+                added = 0
+                for p in arctic_posts:
+                    if p["url"] not in seen:
+                        seen.add(p["url"])
+                        posts.append(p)
+                        added += 1
+                if added:
+                    _log(f"arctic-shift supplement: {added} new posts from {len(arctic_posts)} arctic results")
+
+    state = _classify_listing_state(posts, failures, timed_out=timed_out, failed=failed)
+    return posts, state
 
 
 def _scored_listings(
@@ -217,58 +363,40 @@ def _scored_listings(
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
-    """Scored subreddit listings: shreddit partials, arctic-shift supplement.
-
-    The shreddit ``community-more-posts`` partials 403 from datacenter IPs
-    (and any host Reddit decides to block). Shreddit is tried first; arctic-
-    shift supplements with any posts shreddit missed. Individual sort lanes
-    can fail silently (shreddit's ``fetch_listings`` flattens results without
-    exposing per-sort status), so arctic is called for all requested subreddits
-    and merged via deduplication. This ensures fresh posts sought through
-    ``hot`` or ``new`` are recovered even when only ``top`` succeeded. Never
-    raises.
-    """
-    posts = _within(
-        deadline, "subreddit listing", [],
-        reddit_listing.fetch_listings, subreddits, depth=depth, query=query, sorts=sorts,
-        **_stage_deadline(deadline),
+    """Scored subreddit listings: shreddit partials, arctic-shift supplement. Never raises."""
+    posts, _state = _scored_listings_with_state(
+        subreddits, depth=depth, query=query, sorts=sorts,
+        from_date=from_date, to_date=to_date, deadline=deadline,
     )
-    arctic_posts: List[Dict[str, Any]] = []
-
-    # Supplement with arctic for all requested subreddits. Shreddit's per-sort
-    # success/failure is opaque, so arctic provides coverage for any failed
-    # sort lanes (e.g., hot/new failing while top succeeded). Deduplication
-    # ensures no redundant posts when shreddit fully succeeded.
-    if subreddits and _out_of_time(deadline):
-        _log("arctic-shift supplement skipped: lane budget spent")
-    elif subreddits:
-        try:
-            arctic_posts = _within(
-                deadline, "arctic-shift supplement", [],
-                reddit_arctic.fetch_listings,
-                subreddits, depth=depth, query=query, sorts=sorts,
-                from_date=from_date, to_date=to_date,
-                **_stage_deadline(deadline, "lane_deadline"),
-            )
-        except Exception as exc:  # the fallback must never break the pipeline
-            _log(f"arctic-shift listing supplement failed: {exc}")
-            arctic_posts = []
-        if arctic_posts:
-            # An archive count on a fresh post is not a settled score yet.
-            now = time.time()
-            for p in arctic_posts:
-                reddit_hydrate.label_archive_post(p, now)
-            # Merge and dedupe by URL — shreddit posts take priority.
-            seen = {p["url"] for p in posts}
-            added = 0
-            for p in arctic_posts:
-                if p["url"] not in seen:
-                    seen.add(p["url"])
-                    posts.append(p)
-                    added += 1
-            if added:
-                _log(f"arctic-shift supplement: {added} new posts from {len(arctic_posts)} arctic results")
     return posts
+
+
+_ORIG_SCORED_LISTINGS = _scored_listings
+
+
+def _call_scored_listings(
+    subreddits: List[str],
+    *,
+    depth: str = "default",
+    query: str = "",
+    sorts: Optional[List[str]] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    deadline: Optional[float] = None,
+) -> tuple[List[Dict[str, Any]], str]:
+    if _scored_listings is _ORIG_SCORED_LISTINGS:
+        return _scored_listings_with_state(
+            subreddits, depth=depth, query=query, sorts=sorts,
+            from_date=from_date, to_date=to_date, deadline=deadline,
+        )
+    result = _scored_listings(
+        subreddits, depth=depth, query=query, sorts=sorts,
+        from_date=from_date, to_date=to_date, deadline=deadline,
+    )
+    if isinstance(result, tuple) and len(result) == 2:
+        return result
+    posts = list(result or [])
+    return posts, (reddit_health.OK if posts else reddit_health.EMPTY)
 
 
 # Reserve up to 8s (capped at 40% of remaining budget) before the lane deadline
@@ -607,12 +735,14 @@ def _discover(
     # Dedicated lane: the entity's home subs are wholly on-topic. Pull
     # top+hot+new (real scores from the listing) and mark them floor-exempt so
     # an on-topic post whose title lacks the entity name is never dropped.
+    listing_states: List[str] = []
     dedicated_posts: List[Dict[str, Any]] = []
     if dedicated_subreddits:
-        dedicated_posts = _scored_listings(
+        dedicated_posts, dedicated_state = _call_scored_listings(
             dedicated_subreddits, depth=depth, query=topic, sorts=DEDICATED_SORTS,
             from_date=from_date, to_date=to_date, deadline=deadline,
         )
+        listing_states.append(dedicated_state)
         for p in dedicated_posts:
             p["dedicated"] = True
             p.setdefault("provenance", ["listing"])
@@ -621,18 +751,20 @@ def _discover(
     # Targeted run: the caller chose these subreddits, so their listing cards
     # are on-topic; include them as scored discovery. A bare run fetches no
     # listings, so high-upvote off-topic posts cannot flood the results.
-    listing_posts = (
-        _scored_listings(
+    listing_posts: List[Dict[str, Any]] = []
+    if subreddits and not _out_of_time(deadline):
+        listing_posts, targeted_state = _call_scored_listings(
             subreddits, depth=depth, query=topic, from_date=from_date, to_date=to_date,
             deadline=deadline,
         )
-        if subreddits and not _out_of_time(deadline)
-        else []
-    )
+        listing_states.append(targeted_state)
     for p in listing_posts:
         p.setdefault("provenance", ["listing"])
-    if subreddits or dedicated_subreddits:
-        _mark("listing", reddit_health.OK if listing_posts or dedicated_posts else reddit_health.EMPTY)
+    if listing_states:
+        _mark(
+            "listing",
+            _combine_listing_states(listing_states, bool(listing_posts or dedicated_posts)),
+        )
     _log(
         f"Tier 1 (site search) {len(search_posts)} posts; host {len(host_posts)}; "
         f"web floor {len(web_posts)}; "
@@ -709,12 +841,14 @@ def _discover(
             **_stage_deadline(deadline),
         )
         filled = 0
+        now = time.time()
         for p in merged:
             if p.get("engagement", {}).get("score") or p.get("engagement_source"):
                 continue
             pid = reddit_listing._post_id(p["url"])
             if pid in scores:
                 _apply_scores(p, scores[pid])
+                reddit_hydrate.label_archive_post(p, now)
                 filled += 1
         if filled:
             _log(f"arctic-shift backfilled {filled} post scores")
