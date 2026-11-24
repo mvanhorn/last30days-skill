@@ -692,6 +692,56 @@ class TestHigh105FusionMultiItemIntegrity:
         assert comment_copy.metadata["top_comments"][0]["author"] == "alice"
         assert thread_copy.metadata["top_comments"][0]["author"] == "bob"
 
+    def test_lower_scoring_reddit_duplicate_merge_isolates_caller_comment_dicts(self):
+        url = "https://www.reddit.com/r/ghostty/comments/iso123/update/"
+        high = self._item(
+            "R1",
+            "reddit",
+            url,
+            "Ghostty update",
+            rel=0.9,
+            fresh=90,
+            qual=0.6,
+            engagement={"score": 300, "num_comments": 20},
+            metadata={
+                "engagement_source": reddit_refs.LIVE,
+                "top_comments": [
+                    {"id": "c1", "score": 90, "author": "alice", "excerpt": "first comment", "depth": 0}
+                ],
+            },
+        )
+        low = self._item(
+            "R2",
+            "reddit",
+            url,
+            "Ghostty update",
+            rel=0.3,
+            fresh=60,
+            qual=0.6,
+            engagement={"score": 100, "num_comments": 10},
+            metadata={
+                "engagement_source": reddit_refs.ARCTIC,
+                "top_comments": [
+                    {"id": "c2", "score": 40, "author": "bob", "excerpt": "second comment", "depth": 0}
+                ],
+            },
+        )
+        plan = _plan("ghostty", ["reddit"])
+        streams = {("primary", "reddit"): [high], ("secondary", "reddit"): [low]}
+        [cand] = fusion.weighted_rrf(streams, plan, pool_limit=10)
+        fused_comments = cand.source_items[0].metadata["top_comments"]
+        assert [c["id"] for c in fused_comments] == ["c1", "c2"]
+        for c in fused_comments:
+            c["author"] = "corrupted"
+        assert high.metadata["top_comments"][0]["author"] == "alice"
+        assert low.metadata["top_comments"][0]["author"] == "bob"
+
+        # Direct merge_source_items also copies comment dicts returned by union_comments.
+        merged = fusion.merge_source_items(high, low)
+        for c in merged.metadata["top_comments"]:
+            c["excerpt"] = "overwritten"
+        assert low.metadata["top_comments"][0]["excerpt"] == "second comment"
+
 
 # ---------------------------------------------------------------------------
 # HIGH-106: Recompute engagement_score, longer enrichment strings, no input mutation
@@ -1176,16 +1226,266 @@ class TestHigh107GroundingRedditCommentsAndDates:
         # Valid top-level comments on the small threads clear the scaled floor (2) and use 'upvotes'.
         assert any(
             "Hermes Agent works reliably on small workflows." in ln
-            and "alice" in ln
-            and "3 upvotes" in ln
+            and "🟠 u/alice on r/python · 3 upvotes" in ln
             for ln in lines
         )
         assert any(
             "Second reply on Hermes Agent memory behavior." in ln
-            and "bob" in ln
-            and "2 upvotes" in ln
+            and "🟠 u/bob on r/python · 2 upvotes" in ln
             for ln in lines
         )
+
+    def test_fused_unenriched_and_arctic_web_copies_keep_reddit_quote_checks_and_byline(self):
+        short_url = "https://redd.it/fus123"
+        bare_web = schema.SourceItem(
+            item_id="W1",
+            source="grounding",
+            title="Hermes Agent on redd.it",
+            body="Hermes Agent on redd.it",
+            url=short_url,
+            published_at="2026-10-20",
+            date_confidence="high",
+            metadata={"date_window_basis": "server_bounds"},
+        )
+        arctic_web = schema.SourceItem(
+            item_id="W2",
+            source="grounding",
+            title="Hermes Agent on redd.it",
+            body="Hermes Agent on redd.it",
+            url=short_url,
+            published_at="2026-10-20",
+            date_confidence="high",
+            metadata={
+                "enriched_via": "arctic",
+                "reddit_thread_score": 40,
+                "reddit_subreddit": "LocalLLaMA",
+                "top_comments": [
+                    {
+                        "id": "off1",
+                        "score": 90,
+                        "author": "tangent",
+                        "excerpt": "Completely unrelated baking recipe talk.",
+                        "depth": 1,
+                    },
+                    {
+                        "id": "ok1",
+                        "score": 3,
+                        "author": "alice",
+                        "excerpt": "Hermes Agent runs smoothly on local hardware.",
+                        "depth": 0,
+                    },
+                    {
+                        "id": "zero1",
+                        "score": 0,
+                        "author": "nobody",
+                        "excerpt": "Hermes Agent zero-vote reply must be dropped.",
+                        "depth": 0,
+                    },
+                ],
+            },
+        )
+        merged = fusion.merge_source_items(bare_web, arctic_web)
+        assert merged.source == "grounding"
+        assert merged.metadata["enriched_via"] == "arctic"
+        assert merged.metadata["reddit_thread_score"] == 40
+        assert merged.metadata["reddit_subreddit"] == "LocalLLaMA"
+
+        # A Reddit URL web item WITHOUT enriched_via still triggers Reddit quote checks + fallback byline.
+        untagged_reddit_web = schema.SourceItem(
+            item_id="W3",
+            source="grounding",
+            title="Hermes Agent short link",
+            body="Hermes Agent short link",
+            url="https://redd.it/untag9",
+            published_at="2026-10-20",
+            date_confidence="high",
+            metadata={
+                "top_comments": [
+                    {
+                        "id": "off2",
+                        "score": 70,
+                        "author": "offuser",
+                        "excerpt": "Unrelated movie review nested reply.",
+                        "depth": 1,
+                    },
+                    {
+                        "id": "ok2",
+                        "score": 12,
+                        "author": "bob",
+                        "excerpt": "Hermes Agent handles tool calls cleanly.",
+                        "depth": 0,
+                    },
+                ],
+            },
+        )
+        assert render._comment_source(untagged_reddit_web) == "reddit"
+
+        report = schema.Report(
+            topic="Hermes Agent",
+            range_from="2026-10-01",
+            range_to="2026-10-31",
+            generated_at="2026-10-31T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("local", "m", "m"),
+            query_plan=_plan("Hermes Agent", ["grounding"]),
+            clusters=[],
+            ranked_candidates=[
+                schema.Candidate(
+                    candidate_id=si.url, item_id=si.item_id, source="grounding",
+                    title=si.title, url=si.url, snippet=si.snippet,
+                    subquery_labels=["primary"], native_ranks={"primary:grounding": idx},
+                    local_relevance=0.8, freshness=80, engagement=None,
+                    source_quality=1.0, rrf_score=0.02, sources=["grounding"],
+                    source_items=[si], final_score=60.0 - idx,
+                )
+                for idx, si in enumerate([merged, untagged_reddit_web], start=1)
+            ],
+            items_by_source={"grounding": [merged, untagged_reddit_web]},
+            errors_by_source={},
+        )
+        lines = render._render_top_comments(report, limit=10)
+        joined = "\n".join(lines)
+        assert "baking recipe" not in joined
+        assert "zero-vote reply" not in joined
+        assert "movie review" not in joined
+        assert any(
+            "Hermes Agent runs smoothly on local hardware." in ln
+            and "🟠 u/alice on r/LocalLLaMA · 3 upvotes" in ln
+            for ln in lines
+        )
+        assert any(
+            "Hermes Agent handles tool calls cleanly." in ln
+            and "🟠 u/bob on Reddit · 12 upvotes" in ln
+            for ln in lines
+        )
+
+    def test_same_reddit_thread_capped_at_two_quotes_across_native_and_web_copies(self):
+        thread_url = "https://www.reddit.com/r/python/comments/cap123/hermes_agent/"
+        native_reddit = schema.SourceItem(
+            item_id="R1",
+            source="reddit",
+            title="Hermes Agent release thread",
+            body="Hermes Agent release thread",
+            url=thread_url,
+            container="python",
+            published_at="2026-10-20",
+            date_confidence="high",
+            engagement={"score": 200, "num_comments": 40},
+            metadata={
+                "top_comments": [
+                    {"id": "n1", "score": 80, "author": "native_one", "excerpt": "Native top comment about Hermes Agent speed.", "depth": 0},
+                    {"id": "n2", "score": 45, "author": "native_two", "excerpt": "Native second comment about Hermes Agent setup.", "depth": 0},
+                ]
+            },
+        )
+        web_reddit = schema.SourceItem(
+            item_id="W1",
+            source="grounding",
+            title="Hermes Agent release thread",
+            body="Hermes Agent release thread",
+            url=thread_url,
+            published_at="2026-10-20",
+            date_confidence="high",
+            metadata={
+                "enriched_via": "arctic",
+                "reddit_thread_score": 200,
+                "reddit_subreddit": "python",
+                "top_comments": [
+                    {"id": "w1", "score": 70, "author": "web_one", "excerpt": "Web Arctic comment one on Hermes Agent.", "depth": 0},
+                    {"id": "w2", "score": 35, "author": "web_two", "excerpt": "Web Arctic comment two on Hermes Agent.", "depth": 0},
+                ],
+            },
+        )
+
+        # Case 1: Both items fused into the same candidate -> native Reddit's 2 comments win, total capped at 2.
+        fused_cand = schema.Candidate(
+            candidate_id=thread_url,
+            item_id="R1",
+            source="reddit",
+            title="Hermes Agent release thread",
+            url=thread_url,
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.9,
+            freshness=80,
+            engagement=60,
+            source_quality=0.6,
+            rrf_score=0.03,
+            sources=["reddit", "grounding"],
+            source_items=[native_reddit, web_reddit],
+            final_score=70.0,
+        )
+        report_fused = schema.Report(
+            topic="Hermes Agent",
+            range_from="2026-10-01",
+            range_to="2026-10-31",
+            generated_at="2026-10-31T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("local", "m", "m"),
+            query_plan=_plan("Hermes Agent", ["reddit", "grounding"]),
+            clusters=[],
+            ranked_candidates=[fused_cand],
+            items_by_source={"reddit": [native_reddit], "grounding": [web_reddit]},
+            errors_by_source={},
+        )
+        fused_lines = render._render_top_comments(report_fused, limit=10)
+        quote_lines_fused = [ln for ln in fused_lines if ln.startswith("- ")]
+        assert len(quote_lines_fused) == 2
+        assert any("native_one" in ln for ln in quote_lines_fused)
+        assert any("native_two" in ln for ln in quote_lines_fused)
+        assert not any("web_one" in ln or "web_two" in ln for ln in quote_lines_fused)
+
+        # Case 2: Two separate candidates referencing the same Reddit thread -> still capped at 2 quotes total.
+        cand_a = schema.Candidate(
+            candidate_id="cand-native",
+            item_id="R1",
+            source="reddit",
+            title="Hermes Agent release thread",
+            url=thread_url,
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.9,
+            freshness=80,
+            engagement=60,
+            source_quality=0.6,
+            rrf_score=0.03,
+            sources=["reddit"],
+            source_items=[native_reddit],
+            final_score=70.0,
+        )
+        cand_b = schema.Candidate(
+            candidate_id="cand-web",
+            item_id="W1",
+            source="grounding",
+            title="Hermes Agent release thread",
+            url=thread_url,
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:grounding": 1},
+            local_relevance=0.8,
+            freshness=80,
+            engagement=None,
+            source_quality=1.0,
+            rrf_score=0.02,
+            sources=["grounding"],
+            source_items=[web_reddit],
+            final_score=65.0,
+        )
+        report_split = schema.Report(
+            topic="Hermes Agent",
+            range_from="2026-10-01",
+            range_to="2026-10-31",
+            generated_at="2026-10-31T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("local", "m", "m"),
+            query_plan=_plan("Hermes Agent", ["reddit", "grounding"]),
+            clusters=[],
+            ranked_candidates=[cand_a, cand_b],
+            items_by_source={"reddit": [native_reddit], "grounding": [web_reddit]},
+            errors_by_source={},
+        )
+        split_lines = render._render_top_comments(report_split, limit=10)
+        quote_lines_split = [ln for ln in split_lines if ln.startswith("- ")]
+        assert len(quote_lines_split) == 2
 
 
 # ---------------------------------------------------------------------------

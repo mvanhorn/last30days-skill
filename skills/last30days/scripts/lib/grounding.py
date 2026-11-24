@@ -655,6 +655,9 @@ def _enrich_reddit_items(
                 and math.isfinite(thread_score)
             ):
                 item["reddit_thread_score"] = thread_score
+        subreddit = str(thread.get("subreddit") or ref.subreddit or "").strip().removeprefix("r/")
+        if subreddit:
+            item["reddit_subreddit"] = subreddit
         top = thread.get("top_comments") or []
         if top:
             enriched_comments: list[dict] = []

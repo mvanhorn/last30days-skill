@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import re
 from collections.abc import Iterable
 
@@ -139,6 +140,25 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
     reddit = existing.source == "reddit" and incoming.source == "reddit"
     if reddit:
         _merge_reddit_fields(existing, incoming)
+    in_meta = incoming.metadata or {}
+    for meta_key in ("enriched_via", "reddit_subreddit"):
+        val = in_meta.get(meta_key)
+        if val and not existing.metadata.get(meta_key):
+            existing.metadata[meta_key] = val
+    theirs_rts = in_meta.get("reddit_thread_score")
+    if (
+        isinstance(theirs_rts, (int, float))
+        and not isinstance(theirs_rts, bool)
+        and math.isfinite(theirs_rts)
+    ):
+        mine_rts = existing.metadata.get("reddit_thread_score")
+        if (
+            not isinstance(mine_rts, (int, float))
+            or isinstance(mine_rts, bool)
+            or not math.isfinite(mine_rts)
+            or theirs_rts > mine_rts
+        ):
+            existing.metadata["reddit_thread_score"] = theirs_rts
     for key in _ENRICHMENT_KEYS:
         if reddit and key == "top_comments":
             continue
@@ -215,9 +235,12 @@ def _merge_reddit_fields(existing: schema.SourceItem, incoming: schema.SourceIte
             existing.metadata.pop("engagement_source", None)
     theirs_comments = incoming.metadata.get("top_comments") or []
     if theirs_comments:
-        existing.metadata["top_comments"] = reddit_refs.union_comments(
-            existing.metadata.get("top_comments") or [], theirs_comments,
-        )
+        existing.metadata["top_comments"] = [
+            dict(c) if isinstance(c, dict) else c
+            for c in reddit_refs.union_comments(
+                existing.metadata.get("top_comments") or [], theirs_comments,
+            )
+        ]
         sources = {
             existing.metadata.get("comments_source"), incoming.metadata.get("comments_source"),
         } - {None, ""}
@@ -682,7 +705,7 @@ def weighted_rrf(
                 seen_source_items[key][item_key] = new_primary
                 attached = new_primary
             else:
-                merge_source_items(existing_item, item)
+                merge_source_items(existing_item, _clone_source_item(item))
                 attached = existing_item
             candidate.engagement = _candidate_engagement_from_items(candidate.source_items)
             candidate.metadata.setdefault("provenance", []).append(

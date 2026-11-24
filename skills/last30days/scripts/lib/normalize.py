@@ -1153,6 +1153,9 @@ def _normalize_grounding(
         and math.isfinite(reddit_thread_score)
     ):
         metadata["reddit_thread_score"] = reddit_thread_score
+    reddit_subreddit = str(item.get("reddit_subreddit") or "").strip().removeprefix("r/")
+    if reddit_subreddit:
+        metadata["reddit_subreddit"] = reddit_subreddit
     return _source_item(
         item_id=str(item.get("id") or f"W{index + 1}"),
         source=source,
