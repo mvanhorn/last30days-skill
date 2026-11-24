@@ -7433,10 +7433,10 @@ def _retrieve_stream_impl(
                 + "".join(f"; {failed}" for failed in failed_paths),
             )
         merged = _merge_reddit_items(public_results, sc_items)
-        if not merged and free_failed:
-            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
         if not merged and free_timed_out:
             return [], _reddit_timeout_artifact()
+        if not merged and free_failed:
+            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
         if public_failure is not None:
             state = reddit.classify_run_failure(str(public_failure))
             return merged, _outcome_artifact(

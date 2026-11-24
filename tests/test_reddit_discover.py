@@ -872,6 +872,45 @@ class TestSearxngConfigHandoff:
         assert not items and not seen_urls
         assert "_source_outcome" not in artifact
 
+    @pytest.mark.parametrize("backfill, state", [
+        ("empty", health.TIMEOUT),
+        ("rate-limited", health.RATE_LIMITED),
+        ("result", None),
+    ])
+    def test_public_cutoff_precedes_failed_paths_after_backfill(self, backfill, state):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        thread = "https://www.reddit.com/r/LocalLLaMA/comments/paid123/"
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 200.0,
+               "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+
+        def blocked_html(*args, **kwargs):
+            http._record_failure(http.HTTPError("HTTP 403: HTML rung blocked", 403))
+            clock[0] = 128.0  # Past the discovery cutoff (127), before the lane deadline (135).
+            return None
+
+        def sc_search(*args, **kwargs):
+            if backfill == "rate-limited":
+                http._record_failure(http.HTTPError("HTTP 429: paid backfill throttled", 429))
+            return {"items": [_hit(thread)] if backfill == "result" else []}
+
+        def run_inline(_wait_until, _stage, _default, call, /, *args, **kwargs):
+            return call(*args, **kwargs)
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(reddit_keyless, "_within", side_effect=run_inline), \
+             mock.patch.object(reddit_keyless.reddit_search, "_blocked_reason", "offline 403"):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=sc_search, html_fetch=blocked_html,
+            )
+
+        assert clock[0] == 128.0 and not seen_urls
+        assert [item["url"] for item in items] == ([thread] if backfill == "result" else [])
+        assert artifact.get("_source_outcome", {}).get("state") == state
+        if backfill == "rate-limited":
+            assert artifact["_source_outcome"]["detail"] == "HTTP 429: paid backfill throttled"
+
     @pytest.mark.parametrize("sc_primary", [False, True], ids=["public-primary", "sc-primary"])
     def test_pipeline_keeps_site_hit_without_late_searxng_on_either_primary_path(self, sc_primary):
         from lib import reddit_keyless
