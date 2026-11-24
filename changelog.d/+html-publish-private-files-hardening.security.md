@@ -1,0 +1,1 @@
+Hardened HTML rendering against URL-scheme, template-placeholder, and marker/footer attribute injection, restricted hosted HTML publishing to strict HTTPS without redirects, and eliminated symlink/TOCTOU/non-atomic-write vulnerabilities in private file and SQLite helpers.
