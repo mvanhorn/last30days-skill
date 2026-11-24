@@ -15,14 +15,16 @@ import ast
 import io
 import json
 import os
+import stat
 import subprocess
+import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from lib import backends, brightdata, doctor, env, grok_x, health, log, pipeline, providers, ui
+from lib import backends, brightdata, doctor, env, grok_x, health, log, pipeline, providers, trustpilot, ui
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -292,6 +294,32 @@ class TestHigh056WindowsCmdHealthProbe:
         assert res.state == health.OK
         assert run_mock.call_args.args[0] == [resolved, "--version"]
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd batch execution test")
+    def test_probe_dependency_runs_real_windows_cmd_in_dir_with_spaces(self, tmp_path, monkeypatch):
+        spaced_dir = tmp_path / "dir with spaces"
+        spaced_dir.mkdir()
+        shim = spaced_dir / "fakecli.cmd"
+        shim.write_text("@echo off\r\necho fakecli 1.2.3\r\n", encoding="ascii")
+        existing_path = os.environ.get("PATH", "")
+        monkeypatch.setenv("PATH", f"{spaced_dir}{os.pathsep}{existing_path}")
+        probe = health.probe_dependency("fakecli")
+        assert probe.status == health.OK
+        assert probe.ok is True
+        assert "1.2.3" in probe.detail
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable path-with-spaces test")
+    def test_probe_dependency_runs_real_posix_binary_in_dir_with_spaces(self, tmp_path, monkeypatch):
+        spaced_dir = tmp_path / "dir with spaces"
+        spaced_dir.mkdir()
+        binary = spaced_dir / "fakecli"
+        binary.write_text("#!/bin/sh\necho fakecli 1.2.3\n", encoding="utf-8")
+        binary.chmod(binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        monkeypatch.setenv("PATH", f"{spaced_dir}{os.pathsep}/bin{os.pathsep}/usr/bin")
+        probe = health.probe_dependency("fakecli")
+        assert probe.status == health.OK
+        assert probe.ok is True
+        assert "1.2.3" in probe.detail
+
 
 # ---------------------------------------------------------------------------
 # HIGH-070: X pin diagnostics in doctor.py and env.py
@@ -327,7 +355,8 @@ class TestHigh070XPinDiagnostics:
             "_BROWSER_COOKIE_MODE": "plan_only",
             "XAI_API_KEY": "dummy-xai-key",
         }
-        with _HermeticDoctor(), mock.patch("lib.bird_x.is_bird_installed", return_value=True):
+        with _HermeticDoctor(probe_map={"node": health.OK}), \
+             mock.patch("lib.bird_x.is_bird_installed", return_value=True):
             assert env.x_pending_browser_auth(config, local_only=True) is True
             record = doctor._x_record(config)
 
@@ -338,6 +367,37 @@ class TestHigh070XPinDiagnostics:
         assert "browser cookies" in record["note"].lower()
         assert record["fix"] == ""
         assert record["detail"] == ""
+
+    @pytest.mark.parametrize(
+        "extra_cfg",
+        [
+            {"LAST30DAYS_X_BACKEND": "bird", "XAI_API_KEY": "dummy-xai-key"},
+            {},
+        ],
+    )
+    def test_pending_bird_with_broken_node_is_never_marked_ready(self, extra_cfg):
+        """node on PATH (is_bird_installed=True) but probe_dependency('node') fails -> BROKEN, not OK."""
+        config = {
+            "FROM_BROWSER": "chrome",
+            "BROWSER_CONSENT": "true",
+            "_BROWSER_COOKIE_MODE": "plan_only",
+            **extra_cfg,
+        }
+        with _HermeticDoctor(probe_map={"node": health.BROKEN}), \
+             mock.patch("lib.bird_x.is_bird_installed", return_value=True):
+            record = doctor._x_record(config)
+            auth_path = doctor._x_auth_path(config)
+
+        assert record["status"] == health.BROKEN
+        assert record["tier"] == doctor.TIER_ERROR
+        assert record["active_backend"] is None
+        assert "will use: bird" not in (record.get("note") or "")
+        assert "node" in record["detail"].lower()
+        assert "reinstall node" in record["fix"].lower()
+        bird_entry = next(b for b in record["backends"] if b["name"] == "bird")
+        assert bird_entry["status"] == health.BROKEN
+        if not extra_cfg:
+            assert auth_path["armed"] is False
 
     def test_pinned_bird_with_broken_node_keeps_broken_error_even_with_from_browser(self):
         config = {
@@ -582,6 +642,67 @@ class TestHigh072DoctorPipelineParityAndExclude:
         assert payload["sources"]["reddit"]["status"] == "excluded"
         assert payload["sources"]["hackernews"]["status"] == "excluded"
 
+    @pytest.mark.parametrize("token", ["web", "grounding"])
+    def test_web_and_grounding_exclusion_parity_between_doctor_and_pipeline(self, token):
+        config = {"BRAVE_API_KEY": "dummy-brave", "EXCLUDE_SOURCES": token}
+        assert {"web", "grounding"} <= env.exclude_sources(config)
+        assert {"web", "grounding"} <= pipeline._excluded_sources(config)
+        assert "grounding" not in pipeline.available_sources(config)
+        with _HermeticDoctor():
+            report = doctor.build_report(config)
+        web_rec = report["sources"]["web"]
+        assert web_rec["status"] == "excluded"
+        assert web_rec["tier"] == doctor.TIER_OFF
+        assert web_rec["audit_state"] == doctor.AUDIT_COULD_BE_ON
+        assert f"({token})" in web_rec["note"]
+        assert f"remove {token} from EXCLUDE_SOURCES" in web_rec["fix"]
+
+    def test_excluded_xiaohongshu_never_contacts_service_in_doctor_or_pipeline(self):
+        config = {
+            "XIAOHONGSHU_API_BASE": "http://localhost:18060",
+            "INCLUDE_SOURCES": "xiaohongshu",
+            "EXCLUDE_SOURCES": "xiaohongshu",
+        }
+        with mock.patch(
+            "lib.env.is_xiaohongshu_available",
+            side_effect=AssertionError("excluded xiaohongshu must never be probed"),
+        ) as xhs_probe:
+            avail_live = pipeline.available_sources(config)
+            with _HermeticDoctor():
+                avail_local = pipeline.available_sources(config, local_only=True)
+                report = doctor.build_report(config)
+        xhs_probe.assert_not_called()
+        assert "xiaohongshu" not in avail_live
+        assert "xiaohongshu" not in avail_local
+        assert report["sources"]["xiaohongshu"]["status"] == "excluded"
+        assert report["sources"]["xiaohongshu"]["tier"] == doctor.TIER_OFF
+
+    def test_trustpilot_no_browser_reports_disabled_instead_of_login_fix(self, monkeypatch):
+        config = {
+            "INCLUDE_SOURCES": "trustpilot",
+            trustpilot.NO_BROWSER_ENV: "1",
+        }
+        with _HermeticDoctor(probe_map={"trustpilot-pp-cli": health.OK}), \
+             mock.patch("lib.trustpilot.can_run_now") as can_run:
+            rec = doctor._trustpilot_record(config)
+        can_run.assert_not_called()
+        assert rec["status"] == "excluded"
+        assert rec["tier"] == doctor.TIER_OFF
+        assert trustpilot.NO_BROWSER_ENV in rec["note"]
+        assert trustpilot.NO_BROWSER_ENV in rec["fix"]
+        assert "auth login" not in rec["fix"]
+        assert doctor._config_fingerprint({"INCLUDE_SOURCES": "trustpilot"}) != (
+            doctor._config_fingerprint(config)
+        )
+
+        # Also honored when set only in process environment.
+        monkeypatch.setenv(trustpilot.NO_BROWSER_ENV, "1")
+        with _HermeticDoctor(probe_map={"trustpilot-pp-cli": health.OK}):
+            env_rec = doctor._trustpilot_record({"INCLUDE_SOURCES": "trustpilot"})
+        assert env_rec["status"] == "excluded"
+        assert trustpilot.NO_BROWSER_ENV in env_rec["note"]
+        assert "auth login" not in env_rec["fix"]
+
 
 # ---------------------------------------------------------------------------
 # HIGH-074: Pin whitespace stripping, Grok Bot explicit pin, parallel-mcp
@@ -800,3 +921,32 @@ class TestHigh076ProviderTextExtraction:
         }
         with mock.patch.object(providers.http, "post", return_value=openai_resp):
             assert openai.generate_json(providers.OPENAI_DEFAULT, "score") == {"scores": [30]}
+
+    def test_extract_openai_text_survives_non_hashable_type_values(self):
+        outer_non_hashable = {
+            "output": [
+                {"type": ["reasoning"], "content": [{"type": {"kind": "x"}, "text": ""}]},
+                {
+                    "type": {"role": "assistant"},
+                    "content": [
+                        {"type": ["meta"], "text": "fallback-part"},
+                        {"type": "output_text", "text": '{"ok": true}'},
+                    ],
+                },
+            ]
+        }
+        assert providers.extract_openai_text(outer_non_hashable) == '{"ok": true}'
+
+        fallback_only = {
+            "choices": [
+                {
+                    "type": ["choice"],
+                    "message": {
+                        "content": [
+                            {"type": {"kind": "x"}, "text": "valid"},
+                        ]
+                    },
+                }
+            ]
+        }
+        assert providers.extract_openai_text(fallback_only) == "valid"

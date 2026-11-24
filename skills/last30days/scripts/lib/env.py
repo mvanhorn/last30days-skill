@@ -2405,15 +2405,37 @@ def _parse_include_sources(config: dict[str, Any]) -> set[str]:
     return {s.strip().lower() for s in raw.split(',') if s.strip()}
 
 
+_EXCLUDE_SOURCE_ALIASES: dict[str, tuple[str, ...]] = {
+    'web': ('grounding',),
+    'grounding': ('web',),
+}
+
+
 def _parse_exclude_sources(config: dict[str, Any]) -> set[str]:
     """Parse EXCLUDE_SOURCES config value into a set of lowercase source names."""
     raw = config.get('EXCLUDE_SOURCES') or ''
-    return {s.strip().lower() for s in raw.split(',') if s.strip()}
+    return {s.strip().lower() for s in str(raw).split(',') if s.strip()}
 
 
 def exclude_sources(config: dict[str, Any]) -> set[str]:
-    """Public view of the parsed EXCLUDE_SOURCES set."""
-    return _parse_exclude_sources(config)
+    """Public view of EXCLUDE_SOURCES with canonical web/grounding alias parity."""
+    raw = _parse_exclude_sources(config)
+    expanded = set(raw)
+    for token in raw:
+        expanded.update(_EXCLUDE_SOURCE_ALIASES.get(token, ()))
+    return expanded
+
+
+def excluded_source_token(source: str, config: dict[str, Any]) -> str | None:
+    """Return the configured EXCLUDE_SOURCES token matching ``source``, or None."""
+    raw = _parse_exclude_sources(config)
+    key = (source or '').strip().lower()
+    if key in raw:
+        return key
+    for alias in _EXCLUDE_SOURCE_ALIASES.get(key, ()):
+        if alias in raw:
+            return alias
+    return None
 
 
 def include_sources(config: dict[str, Any]) -> set[str]:

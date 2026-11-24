@@ -677,12 +677,12 @@ def _extract_openai_content_parts(content: list[Any]) -> str:
         if not isinstance(part, dict):
             continue
         part_type = part.get("type")
-        if part_type in _OPENAI_REASONING_PART_TYPES or part.get("thought") is True:
+        if (isinstance(part_type, str) and part_type in _OPENAI_REASONING_PART_TYPES) or part.get("thought") is True:
             continue
         text = part.get("text")
         if not isinstance(text, str) or not text:
             continue
-        if part_type in _OPENAI_TEXT_PART_TYPES:
+        if isinstance(part_type, str) and part_type in _OPENAI_TEXT_PART_TYPES:
             preferred.append(text)
         else:
             fallback.append(text)
@@ -713,7 +713,8 @@ def extract_openai_text(payload: dict[str, Any]) -> str:
             continue
         if not isinstance(item, dict):
             continue
-        if item.get("type") in _OPENAI_REASONING_PART_TYPES or item.get("thought") is True:
+        item_type = item.get("type")
+        if (isinstance(item_type, str) and item_type in _OPENAI_REASONING_PART_TYPES) or item.get("thought") is True:
             continue
         item_text = item.get("text")
         if isinstance(item_text, str) and item_text.strip():

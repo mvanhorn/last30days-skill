@@ -629,6 +629,26 @@ def _x_record(config):
                 )
                 record["fix"] = env.X_COOKIE_ACCESS_FIX
                 return record
+            node = health.probe_dependency("node")
+            if node.status != health.OK:
+                node_status = (
+                    node.status if node.status in TIER_BY_STATUS else health.ERROR
+                )
+                record["status"] = node_status
+                record["tier"] = TIER_BY_STATUS[node_status]
+                record["detail"] = node.detail
+                record["fix"] = node.prescription
+                record["requires"] = (
+                    bird_finding.get("requires")
+                    if bird_finding is not None and bird_finding.get("requires")
+                    else "X browser cookies (AUTH_TOKEN/CT0) + node"
+                )
+                record["note"] = ""
+                if bird_finding is not None:
+                    bird_finding["status"] = node_status
+                    bird_finding["detail"] = node.detail
+                    bird_finding["fix"] = node.prescription
+                return record
             record["status"] = health.OK
             record["tier"] = TIER_BY_STATUS[health.OK]
             record["detail"] = ""
@@ -924,6 +944,17 @@ def _trustpilot_record(config):
             detail=record["detail"],
             fix="add trustpilot to INCLUDE_SOURCES (or request it via --search trustpilot)",
             note="CLI installed; opt-in, never auto-activates",
+        )
+    if not trustpilot._harvest_allowed(config):
+        return _record(
+            status="excluded",
+            requires=requires,
+            detail=record["detail"],
+            fix=f"unset {trustpilot.NO_BROWSER_ENV} (or set it to 0) to allow Trustpilot",
+            note=(
+                f"disabled by {trustpilot.NO_BROWSER_ENV}; research runs skip "
+                "Trustpilot even with a fresh browser session"
+            ),
         )
     state = trustpilot.can_run_now(config)
     if state["session_fresh"]:
@@ -1371,7 +1402,10 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     policy = env.x_policy(config)
     if not policy.official_only:
         has_key = bool(config.get("XAI_API_KEY") or config.get("XQUIK_API_KEY"))
-        cookie = bool(env.x_pending_browser_auth(config, local_only=True))
+        cookie = bool(
+            env.x_pending_browser_auth(config, local_only=True)
+            and health.probe_dependency("node").status == health.OK
+        )
         if has_key and proxy.is_sentinel(config.get("XAI_API_KEY")) and not config.get("XQUIK_API_KEY"):
             note = "xAI via API key (verified, cookie-free; paid per call)"
         elif has_key:
@@ -1648,17 +1682,11 @@ def _permissions_block(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _is_excluded(source: str, excluded: set[str]) -> bool:
-    if source in excluded:
-        return True
-    return source == "web" and "grounding" in excluded
+    return source in excluded
 
 
-def _excluded_record(source: str, excluded: set[str]) -> Dict[str, Any]:
-    token = (
-        source
-        if source in excluded
-        else ("grounding" if source == "web" and "grounding" in excluded else source)
-    )
+def _excluded_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    token = env.excluded_source_token(source, config) or source
     descriptor = backends.DESCRIPTORS.get(source)
     extra: Dict[str, Any] = {}
     if descriptor is not None:
@@ -1688,7 +1716,7 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
 
     def _build_one(name: str) -> Dict[str, Any]:
         if _is_excluded(name, excluded):
-            return _excluded_record(name, excluded)
+            return _excluded_record(name, config)
         try:
             return _SOURCE_BUILDERS[name](config)
         except Exception as exc:  # one bad probe must not blank the report
@@ -2290,6 +2318,7 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
         "pins": {var: str(config.get(var) or "") for var in _FINGERPRINT_PIN_VARS},
         "include_sources": str(config.get("INCLUDE_SOURCES") or ""),
         "exclude_sources": str(config.get("EXCLUDE_SOURCES") or ""),
+        "trustpilot_no_browser": _cfg_or_env(trustpilot.NO_BROWSER_ENV),
         "telegram_sources": _cfg_or_env("TELEGRAM_SOURCES"),
         "xiaohongshu_api_base": str(config.get("XIAOHONGSHU_API_BASE") or ""),
         "native_search": _cfg_or_env("LAST30DAYS_NATIVE_SEARCH"),

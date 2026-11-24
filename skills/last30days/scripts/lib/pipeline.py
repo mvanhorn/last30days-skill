@@ -691,11 +691,7 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
 
 
 def _excluded_sources(config: dict[str, Any]) -> set[str]:
-    return {
-        source.strip().lower()
-        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
-        if source.strip()
-    }
+    return env.exclude_sources(config)
 
 
 def with_plan_source_omissions(
@@ -763,7 +759,7 @@ def available_sources(
         # diagnose() precomputes the predicate and passes it via x_pending to
         # avoid evaluating it twice in one diagnose() call.
         if x_pending is None:
-            x_pending = env.x_pending_browser_auth(config)
+            x_pending = env.x_pending_browser_auth(config, local_only=local_only)
         if x_pending:
             available.append("x")
     if which("yt-dlp") or env.is_youtube_sc_available(config):
@@ -869,10 +865,15 @@ def available_sources(
         or (requested_sources and "meta_ads" in requested_sources)
     ):
         available.append("meta_ads")
+    exclude = _excluded_sources(config)
     if (
-        "xiaohongshu" in include_sources
-        or (requested_sources and "xiaohongshu" in requested_sources)
-    ) and env.is_xiaohongshu_available(config):
+        "xiaohongshu" not in exclude
+        and (
+            "xiaohongshu" in include_sources
+            or (requested_sources and "xiaohongshu" in requested_sources)
+        )
+        and env.is_xiaohongshu_available(config)
+    ):
         available.append("xiaohongshu")
     # Threads: opt-in via INCLUDE_SOURCES (same pattern as perplexity/linkedin).
     # Was auto-on with the key; gated so the onboarding "Everything" tier is a
@@ -898,7 +899,6 @@ def available_sources(
             available.append("telegram")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.
-    exclude = _excluded_sources(config)
     if exclude:
         available = [s for s in available if s not in exclude]
     return available
