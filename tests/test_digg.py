@@ -266,7 +266,8 @@ def test_search_digg_passes_since_30d(monkeypatch):
     assert "--since" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--since") + 1] == "30d"
     assert "--agent" in captured["cmd"]
-    assert captured["cmd"][:3] == [digg.CLI_BIN, "search", "openclaw"]
+    assert captured["cmd"][:2] == [digg.CLI_BIN, "search"]
+    assert captured["cmd"][-2:] == ["--", "openclaw"]
     assert captured["cmd"][captured["cmd"].index("--topic") + 1] == "ai,tech"
 
 
@@ -485,8 +486,8 @@ def test_enrich_with_top_posts_attaches_posts(monkeypatch):
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
 
     def fake_run(cmd, *, timeout, env=None, on_pid=None):
-        # cmd = ['digg-pp-cli', 'posts', '<urlId>', '--agent', '--by', 'rank', '--limit', '3']
-        cluster_url_id = cmd[2]
+        # cmd = ['digg-pp-cli', 'posts', '--agent', '--by', 'rank', '--limit', '3', '--', '<urlId>']
+        cluster_url_id = cmd[-1]
         return _stdout_for(
             {
                 "results": [
@@ -572,7 +573,7 @@ def test_enrich_source_items_attaches_to_survivors(monkeypatch):
         digg.subproc,
         "run_with_timeout",
         lambda cmd, *, timeout, env=None, on_pid=None: _stdout_for(
-            {"results": [_post(username=f"u_{cmd[2]}")]}
+            {"results": [_post(username=f"u_{cmd[-1]}")]}
         ),
     )
     items = [
@@ -600,7 +601,7 @@ def test_enrich_source_items_falls_back_to_item_id(monkeypatch):
     captured = {}
 
     def fake_run(cmd, *, timeout, env=None, on_pid=None):
-        captured["cluster_id"] = cmd[2]
+        captured["cluster_id"] = cmd[-1]
         return _stdout_for({"results": [_post()]})
 
     monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
@@ -898,7 +899,6 @@ def test_old_cli_gets_the_ai_and_tech_call_unchanged(monkeypatch):
         [
             "digg-pp-cli",
             "search",
-            "openai",
             "--topic",
             "ai,tech",
             "--since",
@@ -906,6 +906,8 @@ def test_old_cli_gets_the_ai_and_tech_call_unchanged(monkeypatch):
             "--agent",
             "--limit",
             "20",
+            "--",
+            "openai",
         ]
     ]
 
@@ -1074,7 +1076,7 @@ def test_new_cli_search_names_no_topic_and_no_sort(monkeypatch):
     )
     out = digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
     assert _search_calls(calls) == [
-        ["digg-pp-cli", "search", "exoplanet", "--since", "30d", "--agent", "--limit", "20"]
+        ["digg-pp-cli", "search", "--since", "30d", "--agent", "--limit", "20", "--", "exoplanet"]
     ]
     assert len(out["results"]) == 1
     assert digg.upgrade_note(out) is None
@@ -1105,7 +1107,7 @@ def test_search_help_is_read_once_per_run(monkeypatch):
     digg.search_digg("anthropic", "2026-10-12", "2026-11-11")
     help_calls = [cmd for cmd in calls if "--help" in cmd]
     assert help_calls == [["digg-pp-cli", "search", "--help"]]
-    assert [cmd[2] for cmd in _search_calls(calls)] == ["openai", "anthropic"]
+    assert [cmd[-1] for cmd in _search_calls(calls)] == ["openai", "anthropic"]
     assert all("--topic" in cmd for cmd in _search_calls(calls))
 
 
@@ -1246,11 +1248,11 @@ def _candidate_for(*items):
 
 
 def _sources_cli(answers: dict, calls: list):
-    """A CLI whose ``posts <uuid>`` answers come from ``answers`` by UUID."""
+    """A CLI whose ``posts ... -- <uuid>`` answers come from ``answers`` by UUID."""
 
     def fake_run(cmd, *, timeout, env=None, on_pid=None):
         calls.append(list(cmd))
-        return _stdout_for(answers.get(cmd[2], _sources_answer()))
+        return _stdout_for(answers.get(cmd[-1], _sources_answer()))
 
     return fake_run
 
@@ -1497,13 +1499,13 @@ def test_item_citing_two_sources_names_the_story_with_the_higher_digg_score():
 ])
 def test_all_topic_query_is_fitted_to_the_length_the_cli_accepts(topic, sent):
     args = digg._build_search_args(topic, 10, all_topics=True)
-    assert args[2] == sent
-    assert digg.QUERY_MIN_CHARS <= len(args[2]) <= digg.QUERY_MAX_CHARS
+    assert args[-2:] == ["--", sent]
+    assert digg.QUERY_MIN_CHARS <= len(args[-1]) <= digg.QUERY_MAX_CHARS
 
 
 def test_older_cli_query_is_sent_as_given():
-    assert digg._build_search_args("AI", 10, all_topics=False)[2] == "AI"
-    assert digg._build_search_args("a" * 200, 10, all_topics=False)[2] == "a" * 200
+    assert digg._build_search_args("AI", 10, all_topics=False)[-2:] == ["--", "AI"]
+    assert digg._build_search_args("a" * 200, 10, all_topics=False)[-2:] == ["--", "a" * 200]
 
 
 def _five_stories():
@@ -1561,7 +1563,7 @@ def test_default_depth_fetches_the_8_top_scored_stories_four_at_a_time(monkeypat
     stories = _stories(10)
     digg.fetch_story_sources(stories, "default")
     assert sorted(calls) == sorted(
-        ["digg-pp-cli", "posts", uuid, "--agent", "--limit", "40"]
+        ["digg-pp-cli", "posts", "--agent", "--limit", "40", "--", uuid]
         for uuid in _by_score(stories)[:8]
     )
     assert running["most"] == 4
@@ -1583,10 +1585,10 @@ def test_fetched_sources_come_back_by_score_then_id_whatever_finishes_first(monk
 
     def fake_run(cmd, *, timeout, env=None, on_pid=None):
         # The top story's call ends last, the lowest one's first.
-        if cmd[2] == order[0]:
+        if cmd[-1] == order[0]:
             others_done.wait(1)
         with lock:
-            finished.append(cmd[2])
+            finished.append(cmd[-1])
             if len(finished) == len(order) - 1:
                 others_done.set()
         return _stdout_for(_sources_answer(_source_row()))
@@ -1895,8 +1897,8 @@ def test_failed_help_probe_keeps_the_items_without_the_upgrade_note(monkeypatch,
     assert digg.upgrade_note(out) is None
     # The call both CLIs accept.
     assert _search_calls(calls) == [
-        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
-         "--since", "30d", "--agent", "--limit", "20"]
+        ["digg-pp-cli", "search", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20", "--", "exoplanet"]
     ]
 
     digg.search_digg("exoplanet", "2026-10-12", "2026-11-11")
@@ -2019,7 +2021,7 @@ def test_cancel_during_the_fetch_stops_the_calls_not_yet_started(monkeypatch):
     stories = _stories(10)
     digg.fetch_story_sources(stories, "default", cancel=cancel)
     assert len(calls) == 4
-    assert {call[2] for call in calls} == set(_by_score(stories)[:4])
+    assert {call[-1] for call in calls} == set(_by_score(stories)[:4])
 
 
 def test_deadline_two_seconds_away_caps_every_call_and_leaves_no_worker_running(monkeypatch):
@@ -2119,7 +2121,7 @@ def test_comparison_run_fetches_its_share_of_the_story_budget(
 
 # === Research search: most relevant stories plus the highest-scored ones ===
 
-_RELEVANCE_ARGS = ["digg-pp-cli", "search", "exoplanet", "--since", "30d", "--agent", "--limit"]
+_RELEVANCE_ARGS = ["digg-pp-cli", "search", "--since", "30d", "--agent", "--limit"]
 
 
 def _research_cli(relevance, score, calls: list, seen: list | None = None, help_text=_NEW_SEARCH_HELP):
@@ -2133,7 +2135,7 @@ def _research_cli(relevance, score, calls: list, seen: list | None = None, help_
         if "--help" in cmd:
             return subproc.SubprocResult(returncode=0, stdout=help_text, stderr="")
         if seen is not None:
-            seen.append(kwargs)
+            seen.append({k: v for k, v in kwargs.items() if k != "env"})
         answer = score if "--sort" in cmd else relevance
         return answer() if callable(answer) else _stdout_for(answer)
 
@@ -2159,8 +2161,8 @@ def test_research_search_asks_for_the_most_relevant_and_the_highest_scored(monke
     answer = _live_envelope(_story())
     out = _research_search(monkeypatch, _research_cli(answer, answer, calls), depth=depth)
     assert _search_calls(calls) == [
-        [*_RELEVANCE_ARGS, size],
-        [*_RELEVANCE_ARGS, size, "--sort", "score"],
+        [*_RELEVANCE_ARGS, size, "--", "exoplanet"],
+        [*_RELEVANCE_ARGS, size, "--sort", "score", "--", "exoplanet"],
     ]
     assert len(out["results"]) == 1
     assert "error" not in out
@@ -2171,7 +2173,7 @@ def test_quick_research_search_is_one_call_of_8_with_no_sort(monkeypatch):
     calls: list = []
     answer = _live_envelope(_story())
     _research_search(monkeypatch, _research_cli(answer, answer, calls), depth="quick", from_date="2026-11-04")
-    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "8"]]
+    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "8", "--", "exoplanet"]]
 
 
 def test_research_search_on_the_older_cli_is_the_one_ai_and_tech_call(monkeypatch):
@@ -2182,8 +2184,8 @@ def test_research_search_on_the_older_cli_is_the_one_ai_and_tech_call(monkeypatc
         from_date="2026-11-04",
     )
     assert _search_calls(calls) == [
-        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
-         "--since", "30d", "--agent", "--limit", "20"]
+        ["digg-pp-cli", "search", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20", "--", "exoplanet"]
     ]
     assert digg.upgrade_note(out) == digg.UPGRADE_NOTE
 
@@ -2195,8 +2197,8 @@ def test_research_search_after_a_failed_help_probe_is_the_one_ai_and_tech_call(m
         monkeypatch, _cli_with_failing_help(help_failure, _live_envelope(_story()), calls)
     )
     assert _search_calls(calls) == [
-        ["digg-pp-cli", "search", "exoplanet", "--topic", "ai,tech",
-         "--since", "30d", "--agent", "--limit", "20"]
+        ["digg-pp-cli", "search", "--topic", "ai,tech",
+         "--since", "30d", "--agent", "--limit", "20", "--", "exoplanet"]
     ]
 
 
@@ -2397,9 +2399,9 @@ def test_pipeline_research_stream_makes_both_calls_with_the_runs_bounds(monkeypa
         mock=False,
     )
     assert _search_calls(calls) == [
-        ["digg-pp-cli", "search", "exoplanet bounds", "--since", "8d", "--agent", "--limit", "50"],
-        ["digg-pp-cli", "search", "exoplanet bounds", "--since", "8d", "--agent", "--limit", "50",
-         "--sort", "score"],
+        ["digg-pp-cli", "search", "--since", "8d", "--agent", "--limit", "50", "--", "exoplanet bounds"],
+        ["digg-pp-cli", "search", "--since", "8d", "--agent", "--limit", "50",
+         "--sort", "score", "--", "exoplanet bounds"],
     ]
     # The score call's deadline is earlier, so its answer can be handed
     # back before the run's own deadline.
@@ -2428,7 +2430,7 @@ def test_discovery_digg_search_stays_one_call_of_20(monkeypatch):
         "digg", plan, from_date="2026-11-04", to_date="2026-11-11",
         depth="default", mock=False, config={},
     )
-    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "20"]]
+    assert _search_calls(calls) == [[*_RELEVANCE_ARGS, "20", "--", "exoplanet"]]
 
 
 def test_score_call_ends_before_the_run_deadline_so_the_relevance_stories_are_kept(monkeypatch):

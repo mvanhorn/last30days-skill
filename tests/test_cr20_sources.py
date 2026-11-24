@@ -155,7 +155,7 @@ def trustpilot_cli(monkeypatch):
         elif cmd[1] == "search":
             data = {"hits": [{"displayName": "Currys", "domain": "currys.co.uk", "numberOfReviews": 100}]}
         else:
-            data = {"name": "Selected company", "domain": cmd[2], "reviewCount": 100}
+            data = {"name": "Selected company", "domain": cmd[-1], "reviewCount": 100}
         return subproc.SubprocResult(returncode=0, stdout=json.dumps(data), stderr="")
 
     monkeypatch.setattr(trustpilot, "_is_available", lambda: True)
@@ -175,7 +175,7 @@ def trustpilot_cli(monkeypatch):
 def test_trustpilot_domain_topics_reach_the_cli_intact(trustpilot_cli, topic, domain):
     response = trustpilot.search_trustpilot(topic, "2026-10-01", "2026-10-22")
     items = trustpilot.parse_trustpilot_response(response, query=topic)
-    assert [call[2] for call in trustpilot_cli if call[1] == "info"] == [domain]
+    assert [call[-1] for call in trustpilot_cli if call[1] == "info"] == [domain]
     assert [item["url"] for item in items] == [f"https://www.trustpilot.com/review/{domain}"]
     assert not [call for call in trustpilot_cli if call[1] == "search"]
 
@@ -185,15 +185,15 @@ def test_trustpilot_explicit_domain_overrides_the_topic(trustpilot_cli):
         "currys.co.uk", "2026-10-01", "2026-10-22", explicit_domain="www.woolworths.com.au"
     )
     assert response["results"][0]["domain"] == "www.woolworths.com.au"
-    assert [call[2] for call in trustpilot_cli if call[1] == "info"] == ["www.woolworths.com.au"]
+    assert [call[-1] for call in trustpilot_cli if call[1] == "info"] == ["www.woolworths.com.au"]
     assert not [call for call in trustpilot_cli if call[1] == "search"]
 
 
 def test_trustpilot_company_names_still_resolve_through_search(trustpilot_cli):
     response = trustpilot.search_trustpilot("Currys", "2026-10-01", "2026-10-22")
     assert response["results"][0]["domain"] == "currys.co.uk"
-    assert [call[2] for call in trustpilot_cli if call[1] == "search"] == ["Currys"]
-    assert [call[2] for call in trustpilot_cli if call[1] == "info"] == ["currys.co.uk"]
+    assert [call[-1] for call in trustpilot_cli if call[1] == "search"] == ["Currys"]
+    assert [call[-1] for call in trustpilot_cli if call[1] == "info"] == ["currys.co.uk"]
 
 
 @pytest.mark.parametrize("count", [1, 3])

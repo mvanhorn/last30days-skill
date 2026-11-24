@@ -99,6 +99,30 @@ _DOMAIN_RE = re.compile(
     r"(?:\.[a-z]{2,63})*(?![\w-]|\.[\w-])"
 )
 
+# Strict hostname allowlist for explicit / resolved domains passed to the CLI.
+# Uses \Z (not $) so trailing newlines cannot sneak past validation.
+_STRICT_DOMAIN_RE = re.compile(
+    r"\A(?=.{1,253}\Z)"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"(?:[A-Za-z]{2,63}|[Xx][Nn]--[A-Za-z0-9](?:[A-Za-z0-9-]{0,57}[A-Za-z0-9])?)\Z"
+)
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,15}://)[^\s/?#]+@")
+
+
+def _scrub_url_userinfo(text: str) -> str:
+    return _URL_USERINFO_RE.sub(r"\1", text) if text else text
+
+# Keep only OS, cache/config-dir, locale, TLS, and proxy settings.
+# Never inherit unrelated provider secrets or runtime-injection vars like NODE_OPTIONS.
+_CHILD_ENV_ALLOWLIST = frozenset({
+    "PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA",
+    "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+    "XDG_STATE_HOME", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC",
+    "PATHEXT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "TZ", "NO_COLOR", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+})
+
 # Generic tokens that disqualify a short capitalized phrase from being a brand.
 _GENERIC_TOKENS = {
     "ai", "best", "top", "vs", "review", "reviews", "guide", "tutorial",
@@ -152,6 +176,35 @@ def _harvest_allowed(config: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
+def _child_env() -> Dict[str, str]:
+    """Allowlisted child environment for trustpilot-pp-cli."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() in _CHILD_ENV_ALLOWLIST or name.upper().startswith("LC_")
+    }
+
+
+def _is_safe_cli_arg(value: Any) -> bool:
+    """True when ``value`` is a non-empty positional CLI arg that cannot be parsed as an option."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or text.startswith("-"):
+        return False
+    return not any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text)
+
+
+def _is_valid_domain(value: Any) -> bool:
+    """True when ``value`` is a strict DNS hostname without whitespace, control chars, or leading '-'."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or text.startswith("-"):
+        return False
+    return bool(_STRICT_DOMAIN_RE.fullmatch(text))
+
+
 def is_brand_shaped(topic: str) -> bool:
     """True when the topic looks like a company/brand Trustpilot can resolve.
 
@@ -160,7 +213,7 @@ def is_brand_shaped(topic: str) -> bool:
     "ChowNow", "Nothing Phone", and "OpenAI" through while keeping "AI coding
     agents", "agent memory", and "Golden State Warriors" out.
     """
-    if not topic or not topic.strip():
+    if not _is_safe_cli_arg(topic):
         return False
     text = topic.strip()
     if _DOMAIN_RE.search(text.lower()):
@@ -184,7 +237,10 @@ def _company_identifier(topic: str) -> str:
 
 
 def _build_info_args(identifier: str) -> List[str]:
-    return [CLI_BIN, "info", identifier, "--agent"]
+    cleaned = (identifier or "").strip() if isinstance(identifier, str) else ""
+    if not _is_safe_cli_arg(cleaned):
+        raise ValueError(f"invalid Trustpilot identifier: {identifier!r}")
+    return [CLI_BIN, "info", "--agent", "--", cleaned]
 
 
 def _normalize_name(text: str) -> str:
@@ -225,7 +281,7 @@ def _select_search_hit(topic: str, hits: List[Any]) -> Optional[str]:
             continue
         domain = str(hit.get("domain") or hit.get("identifyingName") or "").strip()
         name = str(hit.get("displayName") or hit.get("name") or "").strip()
-        if not domain or _normalize_name(name) != want:
+        if not _is_valid_domain(domain) or _normalize_name(name) != want:
             continue
         try:
             count = int(hit.get("numberOfReviews") or 0)
@@ -235,7 +291,7 @@ def _select_search_hit(topic: str, hits: List[Any]) -> Optional[str]:
     if not matching:
         top = next(
             (str(h.get("domain") or "").strip() for h in hits
-             if isinstance(h, dict) and h.get("domain")),
+             if isinstance(h, dict) and _is_valid_domain(str(h.get("domain") or "").strip())),
             "",
         )
         if top:
@@ -272,7 +328,11 @@ def _search_domain(
     error, malformed JSON) returns None WITHOUT caching, so one flaky search
     does not suppress resolution for this topic for the rest of the process.
     """
-    key = _normalize_name(topic)
+    cleaned = (topic or "").strip() if isinstance(topic, str) else ""
+    if not _is_safe_cli_arg(cleaned):
+        _log(f"rejecting unsafe search topic: {topic!r}")
+        return None
+    key = _normalize_name(cleaned)
     if not key:
         return None
     with _domain_cache_lock:
@@ -281,7 +341,7 @@ def _search_domain(
     if session_ready is not None and not session_ready():
         return None
     data = _run_cli(
-        [CLI_BIN, "search", topic.strip(), "--limit", "5", "--agent"],
+        [CLI_BIN, "search", "--limit", "5", "--agent", "--", cleaned],
         timeout=SEARCH_TIMEOUT,
     )
     if not isinstance(data, dict) or "error" in data:
@@ -369,19 +429,23 @@ def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
     if not _is_available():
         return {"error": f"{CLI_BIN} not on PATH"}
     try:
-        result = subproc.run_with_timeout(cmd, timeout=timeout)
+        result = subproc.run_with_timeout(cmd, timeout=timeout, env=_child_env())
     except subproc.SubprocTimeout as exc:
-        _log(f"Timeout: {exc}")
-        return {"error": str(exc)}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Timeout: {msg}")
+        return {"error": msg}
     except FileNotFoundError as exc:
-        _log(f"Binary missing: {exc}")
-        return {"error": str(exc)}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Binary missing: {msg}")
+        return {"error": msg}
     except OSError as exc:
-        _log(f"Spawn failed: {exc}")
-        return {"error": str(exc)}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Spawn failed: {msg}")
+        return {"error": msg}
 
     if result.returncode != 0:
-        snippet = (result.stderr or "").strip().splitlines()[:1]
+        stderr = _scrub_url_userinfo(result.stderr or "")
+        snippet = stderr.strip().splitlines()[:1]
         first = snippet[0] if snippet else f"exit {result.returncode}"
         # A --local miss is the normal "nothing cached" answer, and the CLI's
         # message for it suggests a command that opens a browser.
@@ -395,8 +459,9 @@ def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        _log(f"JSON decode failed: {exc}")
-        return {"error": f"json decode: {exc}"}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"JSON decode failed: {msg}")
+        return {"error": f"json decode: {msg}"}
     return data if isinstance(data, dict) else {}
 
 
@@ -427,7 +492,11 @@ def search_trustpilot(
     fetched and the result carries ``needs_session`` and ``SESSION_NEEDED``
     under ``skipped``: an expected skip, not an error.
     """
-    explicit_domain = (explicit_domain or "").strip() or None
+    raw_explicit = (explicit_domain or "").strip() if isinstance(explicit_domain, str) else ""
+    if raw_explicit and not _is_valid_domain(raw_explicit):
+        _log(f"rejecting invalid explicit domain: {raw_explicit!r}")
+        return {"results": []}
+    explicit_domain = raw_explicit or None
     user_domain = bool(explicit_domain) and not domain_is_hint
     # Only a USER-set domain proves brand intent and bypasses the brand-shape
     # gate. An auto-resolved hint must not widen activation beyond
@@ -476,6 +545,9 @@ def search_trustpilot(
             identifier = resolved_domain or identifier
             if not session_ready():
                 return without_session(resolved_domain)
+    if not _is_safe_cli_arg(identifier):
+        _log(f"rejecting unsafe identifier: {identifier!r}")
+        return {"results": []}
     _log(f"info '{identifier}'")
     data = _run_cli(_build_info_args(identifier), timeout=SEARCH_TIMEOUT)
     if ("error" in data or not data) and explicit_domain and domain_is_hint:
@@ -486,7 +558,7 @@ def search_trustpilot(
         # sequential SEARCH_TIMEOUT-bound subprocesses.
         if time.monotonic() - started < SEARCH_TIMEOUT:
             resolved = _search_domain(topic, session_ready)
-            if resolved and resolved != identifier and session_ready():
+            if resolved and _is_valid_domain(resolved) and resolved != identifier and session_ready():
                 _log(f"hint '{identifier}' missed; retrying via search as '{resolved}'")
                 data = _run_cli(_build_info_args(resolved), timeout=SEARCH_TIMEOUT)
     if "error" in data or not data:
@@ -518,11 +590,15 @@ def _cache_age(info: Dict[str, Any]) -> Optional[tuple[str, Optional[str]]]:
 def _cached_info(identifier: str) -> Optional[Dict[str, Any]]:
     """The CLI's cached company record for a domain, labelled with its age.
 
-    ``info <domain> --local`` reads the local store and needs no session, so
-    it never opens a browser. None when nothing usable is cached.
+    ``info --local --agent -- <domain>`` reads the local store and needs no
+    session, so it never opens a browser. None when nothing usable is cached.
     """
+    cleaned = (identifier or "").strip() if isinstance(identifier, str) else ""
+    if not _is_valid_domain(cleaned):
+        _log(f"rejecting invalid cached-info domain: {identifier!r}")
+        return None
     data = _run_cli(
-        [CLI_BIN, "info", identifier, "--local", "--agent"], timeout=LOCAL_READ_TIMEOUT
+        [CLI_BIN, "info", "--local", "--agent", "--", cleaned], timeout=LOCAL_READ_TIMEOUT
     )
     if not isinstance(data, dict) or not data or "error" in data:
         return None

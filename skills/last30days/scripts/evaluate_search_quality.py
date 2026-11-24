@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -560,12 +561,17 @@ def run_last30days(repo_dir: Path, topic: str, *, search: str, timeout_seconds: 
     engine = repo_dir / "skills" / "last30days" / "scripts" / "last30days.py"
     if not engine.exists():
         engine = repo_dir / "scripts" / "last30days.py"
-    cmd = [sys.executable, str(engine), topic, "--emit=json"]
+    engine_text = engine.read_text(encoding="utf-8") if engine.exists() else None
+    cmd = [sys.executable, str(engine), "--emit=json"]
+    # Prevent topics like "setup" or "library ..." from invoking administrative
+    # subcommands whenever the checked-out engine supports --research-only.
+    if engine_text is None or "--research-only" in engine_text:
+        cmd.append("--research-only")
     # Current engines default to the stable agent export, while older revisions
     # used by the evaluator implicitly emit the raw report and do not recognize
     # --json-profile. Request raw explicitly whenever the checked-out engine
     # supports the selector.
-    if not engine.exists() or "--json-profile" in engine.read_text(encoding="utf-8"):
+    if engine_text is None or "--json-profile" in engine_text:
         cmd.append("--json-profile=raw")
     if search:
         cmd.extend(["--search", search])
@@ -573,6 +579,7 @@ def run_last30days(repo_dir: Path, topic: str, *, search: str, timeout_seconds: 
         cmd.append("--quick")
     if mock:
         cmd.append("--mock")
+    cmd.extend(["--", topic])
     result = subprocess.run(
         cmd,
         cwd=repo_dir,
@@ -597,14 +604,33 @@ def run_last30days(repo_dir: Path, topic: str, *, search: str, timeout_seconds: 
 
 
 def create_worktree(rev: str) -> Path:
-    worktree_dir = Path(tempfile.mkdtemp(prefix="last30days-eval-"))
-    subprocess.run(
-        ["git", "worktree", "add", "--detach", str(worktree_dir), rev],
+    if not isinstance(rev, str) or not rev.strip() or rev != rev.strip():
+        raise ValueError(f"Invalid git revision: {rev!r}")
+    if rev.startswith("-") or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in rev):
+        raise ValueError(f"Invalid git revision: {rev!r}")
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}"],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
     )
+    commit_sha = resolved.stdout.strip()
+    if not commit_sha or commit_sha.startswith("-"):
+        raise ValueError(f"Could not resolve git revision to a commit: {rev!r}")
+    worktree_dir = Path(tempfile.mkdtemp(prefix="last30days-eval-"))
+    try:
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(worktree_dir), commit_sha],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except BaseException:
+        remove_worktree(worktree_dir)
+        shutil.rmtree(worktree_dir, ignore_errors=True)
+        raise
     return worktree_dir
 
 

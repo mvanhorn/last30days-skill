@@ -31,10 +31,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import quote as _url_quote
 
 from . import log, subproc, usage
 
@@ -101,10 +103,39 @@ def is_installed() -> bool:
     return shutil.which(CLI_BIN) is not None
 
 
+# Pattern-based redaction for credentials echoed by the CLI on stderr even
+# when authenticated via credentials.json rather than BRIGHTDATA_API_KEY.
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,15}://)[^\s/?#]+@")
+_BEARER_RE = re.compile(r"(?i)\b(Bearer)\s+[^\s,;\"']+")
+_BASIC_AUTH_RE = re.compile(r"(?i)\b(Authorization\s*:\s*Basic)\s+[^\s,;\"']+")
+_JSON_SECRET_RE = re.compile(
+    r'(?i)(["\'](?:[A-Za-z0-9_-]*_)?(?:api[_-]?key|access[_-]?token|auth[_-]?token|token)["\']\s*:\s*)'
+    r'(?:"(?:[^"\\\r\n]|\\.)*"|\'(?:[^\'\\\r\n]|\\.)*\')'
+)
+_KV_SECRET_RE = re.compile(
+    r'(?i)((?<![A-Za-z0-9-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|token)\s*[:=]\s*)'
+    r'(?:"(?:[^"\\\r\n]|\\.)*"|\'(?:[^\'\\\r\n]|\\.)*\'|[^\s,;\"\']+)'
+)
+_SPACED_SECRET_RE = re.compile(
+    r"(?i)((?<![A-Za-z0-9-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|token)\s+)"
+    r"(?!(?:is|was|are|has|have|expired|invalid|missing|required|rejected|"
+    r"denied|failed|error|not|for|from|in|to|of)\b)"
+    r"(?:\"(?:[^\"\\\r\n]|\\.){4,}\"|'(?:[^'\\\r\n]|\\.){4,}'|[^\s,;\"']{6,})"
+)
+
+# Windows batch shims (.cmd/.bat) trigger cmd.exe via CreateProcessW even with
+# shell=False (CVE-2024-24576). Unwrap @brightdata/cli to [node, entry.js] and
+# fail closed whenever a batch shim would receive cmd.exe metacharacters.
+_BATCH_SUFFIXES = (".cmd", ".bat")
+_UNSAFE_CMD_ARG_RE = re.compile(r'[\s"&|%^\<\>\(\)!\r\n]')
+
+
 def _api_key(config: Optional[Dict[str, Any]]) -> str:
-    if not config:
-        return ""
-    return str(config.get(API_KEY_ENV) or "").strip()
+    if config:
+        explicit = str(config.get(API_KEY_ENV) or "").strip()
+        if explicit:
+            return explicit
+    return str(os.environ.get(API_KEY_ENV) or "").strip()
 
 
 def has_credentials(config: Optional[Dict[str, Any]] = None) -> bool:
@@ -140,11 +171,90 @@ def gate_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, bool]:
     }
 
 
+def _find_node_entrypoint(shim_path: Path) -> Optional[Path]:
+    """Locate @brightdata/cli's JS entrypoint relative to a Windows .cmd/.bat shim."""
+    candidate_roots = (
+        shim_path.parent / "node_modules" / "@brightdata" / "cli",
+        shim_path.parent.parent / "lib" / "node_modules" / "@brightdata" / "cli",
+    )
+    for pkg_dir in candidate_roots:
+        if not pkg_dir.is_dir():
+            continue
+        try:
+            pkg_root = pkg_dir.resolve()
+        except OSError:
+            continue
+        rel_candidates: List[str] = []
+        pkg_json = pkg_root / "package.json"
+        if pkg_json.is_file():
+            try:
+                manifest = json.loads(pkg_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, ValueError):
+                manifest = {}
+            bin_field = manifest.get("bin") if isinstance(manifest, dict) else None
+            if isinstance(bin_field, str) and bin_field.strip():
+                rel_candidates.append(bin_field.strip())
+            elif isinstance(bin_field, dict):
+                entry = bin_field.get(CLI_BIN)
+                if isinstance(entry, str) and entry.strip():
+                    rel_candidates.append(entry.strip())
+        rel_candidates.append("dist/index.js")
+        for rel in rel_candidates:
+            rel_norm = rel.replace("\\", "/")
+            if not rel_norm or "\x00" in rel_norm or Path(rel_norm).is_absolute():
+                continue
+            try:
+                candidate = (pkg_root / rel_norm).resolve()
+            except OSError:
+                continue
+            if (
+                candidate.is_relative_to(pkg_root)
+                and candidate.is_file()
+                and candidate.suffix.lower() not in _BATCH_SUFFIXES
+            ):
+                return candidate
+    return None
+
+
+def _find_node_binary(shim_dir: Path) -> Optional[str]:
+    """Locate a direct (non-batch) Node.js executable for running a JS entrypoint."""
+    for name in ("node.exe", "node"):
+        sibling = shim_dir / name
+        if sibling.is_file() and (
+            name == "node.exe" or os.name == "nt" or os.access(sibling, os.X_OK)
+        ):
+            return str(sibling)
+    node_bin = shutil.which("node")
+    if node_bin and not node_bin.lower().endswith(_BATCH_SUFFIXES):
+        return node_bin
+    return None
+
+
+def _resolve_cli_command(binary: str) -> List[str]:
+    """Return the argv prefix for invoking ``binary`` without cmd.exe when possible."""
+    if not binary.lower().endswith(_BATCH_SUFFIXES):
+        return [binary]
+    shim_path = Path(binary)
+    entry = _find_node_entrypoint(shim_path)
+    if entry is not None:
+        node_bin = _find_node_binary(shim_path.parent)
+        if node_bin is not None:
+            return [node_bin, str(entry)]
+    return [binary]
+
+
+def _has_unsafe_cmd_args(args: Sequence[str]) -> bool:
+    """True if any argument contains whitespace or cmd.exe metacharacters."""
+    return any(_UNSAFE_CMD_ARG_RE.search(arg) for arg in args)
+
+
 def _build_args(
     dataset_id: str,
     record: Dict[str, Any],
     *,
     cli_timeout: int,
+    binary: str = CLI_BIN,
+    command_prefix: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Assemble a ``pipelines run`` invocation (CLI >= 0.4.0).
 
@@ -160,8 +270,9 @@ def _build_args(
     The record goes in as ``--input`` JSON so numbers keep their type: the
     API rejects ``"1"`` for a number field.
     """
+    prefix = list(command_prefix) if command_prefix is not None else [binary]
     return [
-        CLI_BIN,
+        *prefix,
         "pipelines",
         "run",
         dataset_id,
@@ -184,21 +295,43 @@ def _child_env(api_key: str) -> Dict[str, str]:
         name: value for name, value in os.environ.items()
         if name.upper() in _CHILD_ENV_ALLOWLIST
     }
-    key = api_key or os.environ.get(API_KEY_ENV)
+    key = str(api_key or "").strip() or str(os.environ.get(API_KEY_ENV) or "").strip()
     return {**child_env, API_KEY_ENV: key} if key else child_env
 
 
-def _scrub(text: str, secret: str) -> str:
-    """Remove a secret from text before it is logged or returned.
+def _scrub(text: str, secret: str = "") -> str:
+    """Remove secrets and auth tokens from text before it is logged or returned.
 
     Defense in depth for the passthrough paths: the stderr lines this
     module deliberately surfaces are auth and quota failures, which are
     exactly the messages a CLI is most likely to echo the rejected
     credential back in.
     """
-    if not secret or not text:
+    if not text:
         return text
-    return text.replace(secret, "***")
+    scrubbed = text
+    ambient = os.environ.get(API_KEY_ENV) or ""
+    raw_candidates = {
+        candidate
+        for raw in (secret, ambient)
+        if isinstance(raw, str)
+        for candidate in (raw, raw.strip())
+        if candidate and candidate.strip()
+    }
+    candidates = set(raw_candidates)
+    for candidate in raw_candidates:
+        encoded = _url_quote(candidate, safe="")
+        if encoded:
+            candidates.add(encoded)
+    for candidate in sorted(candidates, key=len, reverse=True):
+        scrubbed = scrubbed.replace(candidate, "***")
+    scrubbed = _URL_USERINFO_RE.sub(r"\1***@", scrubbed)
+    scrubbed = _BEARER_RE.sub(r"\1 ***", scrubbed)
+    scrubbed = _BASIC_AUTH_RE.sub(r"\1 ***", scrubbed)
+    scrubbed = _JSON_SECRET_RE.sub(r'\1"***"', scrubbed)
+    scrubbed = _KV_SECRET_RE.sub(r"\1***", scrubbed)
+    scrubbed = _SPACED_SECRET_RE.sub(r"\1***", scrubbed)
+    return scrubbed
 
 
 def _extract_records(payload: Any) -> List[Dict[str, Any]]:
@@ -247,25 +380,42 @@ def run_pipeline(
     Returns:
         ``{"records": [...]}`` on success, else ``{"records": [], "error": str}``.
     """
-    if not is_installed():
+    resolved = shutil.which(CLI_BIN)
+    if resolved is None:
         return {"records": [], "error": f"{CLI_BIN} not on PATH"}
 
     cli_timeout = max(5, int(timeout) - _CLI_TIMEOUT_MARGIN)
     key = _api_key(config)
-    cmd = _build_args(dataset_id, record, cli_timeout=cli_timeout)
+    command_prefix = _resolve_cli_command(resolved)
+    cmd = _build_args(
+        dataset_id,
+        record,
+        cli_timeout=cli_timeout,
+        command_prefix=command_prefix,
+    )
+    if cmd and cmd[0].lower().endswith(_BATCH_SUFFIXES) and _has_unsafe_cmd_args(cmd[1:]):
+        err = (
+            f"cannot safely invoke {CLI_BIN} via Windows batch shim without "
+            "the @brightdata/cli Node entrypoint"
+        )
+        _log(err)
+        return {"records": [], "error": err}
 
     try:
         usage.begin("brightdata")
         result = subproc.run_with_timeout(cmd, timeout=timeout, env=_child_env(key))
     except subproc.SubprocTimeout as exc:
-        _log(f"Timeout: {exc}")
-        return {"records": [], "error": str(exc)}
+        msg = _scrub(str(exc), key)
+        _log(f"Timeout: {msg}")
+        return {"records": [], "error": msg}
     except FileNotFoundError as exc:
-        _log(f"Binary missing: {exc}")
-        return {"records": [], "error": str(exc)}
+        msg = _scrub(str(exc), key)
+        _log(f"Binary missing: {msg}")
+        return {"records": [], "error": msg}
     except OSError as exc:
-        _log(f"Spawn failed: {exc}")
-        return {"records": [], "error": str(exc)}
+        msg = _scrub(str(exc), key)
+        _log(f"Spawn failed: {msg}")
+        return {"records": [], "error": msg}
 
     stderr = _scrub(result.stderr or "", key)
     _passthrough_warnings(stderr)
@@ -286,8 +436,9 @@ def run_pipeline(
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        _log(f"JSON decode failed: {exc}")
-        return {"records": [], "error": f"json decode: {exc}"}
+        msg = _scrub(str(exc), key)
+        _log(f"JSON decode failed: {msg}")
+        return {"records": [], "error": f"json decode: {msg}"}
 
     return {"records": _extract_records(payload)}
 
