@@ -192,21 +192,27 @@ def top_comment_vote_signal(candidate: schema.Candidate) -> float:
 # _youtube_engagement, _tiktok_engagement). Digg uses these weights only when
 # the story carries a Digg Score (see _digg_engagement).
 ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
-    "x":            [("likes", 0.55), ("reposts", 0.25), ("replies", 0.15), ("quotes", 0.05)],
-    "instagram":    [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
-    "hackernews":   [("points", 0.55), ("comments", 0.45)],
-    "devto":        [("reactions", 0.60), ("comments", 0.40)],
-    "bluesky":      [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
-    "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
-    "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
-    "digg":         [("digg_score", 0.50), ("postCount", 0.30), ("uniqueAuthors", 0.20)],
-    "trustpilot":   [("reviews", 1.0)],
-    "amazon":       [("ratings", 1.0)],
+    "x":                [("likes", 0.55), ("reposts", 0.25), ("replies", 0.15), ("quotes", 0.05)],
+    "threads":          [("likes", 0.55), ("reposts", 0.25), ("replies", 0.15), ("quotes", 0.05)],
+    "instagram":        [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
+    "hackernews":       [("points", 0.55), ("comments", 0.45)],
+    "devto":            [("reactions", 0.60), ("comments", 0.40)],
+    "github":           [("reactions", 0.60), ("comments", 0.40)],
+    "bluesky":          [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
+    "truthsocial":      [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
+    "pinterest":        [("saves", 0.70), ("comments", 0.30)],
+    "linkedin":         [("likes", 0.55), ("comments", 0.30), ("reposts", 0.15)],
+    "linkedin_profile": [("likes", 0.55), ("comments", 0.30), ("shares", 0.15)],
+    "xiaohongshu":      [("likes", 0.50), ("favorites", 0.30), ("comments", 0.20)],
+    "polymarket":       [("volume", 0.60), ("liquidity", 0.40)],
+    "digg":             [("digg_score", 0.50), ("postCount", 0.30), ("uniqueAuthors", 0.20)],
+    "trustpilot":       [("reviews", 1.0)],
+    "amazon":           [("ratings", 1.0)],
     # Meta publishes reach and spend only for political and issue ads, so a
     # commercial creative has no audience signal at all. How many variants a
     # brand cut of one creative is the closest honest proxy for how hard it is
     # pushing that message.
-    "meta_ads":     [("variants", 1.0)],
+    "meta_ads":         [("variants", 1.0)],
 }
 
 
@@ -274,13 +280,26 @@ def _instagram_engagement(item: schema.SourceItem) -> float | None:
     return (0.45 * views) + (0.27 * likes) + (0.18 * comments) + (0.10 * top_comment)
 
 
+def _is_engagement_slot(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _generic_engagement(item: schema.SourceItem) -> float | None:
     if not item.engagement:
         return None
-    values = [logged for v in item.engagement.values() if (logged := log1p_safe(v)) > 0]
-    if not values:
+    # Divide by all numeric/None schema fields rather than only positive ones
+    # so increasing a secondary count from 0/None to 1 never drops the average.
+    slots = [log1p_safe(v) for v in item.engagement.values() if _is_engagement_slot(v)]
+    if not slots or not any(slots):
         return None
-    return sum(values) / len(values)
+    return sum(slots) / len(slots)
 
 
 def engagement_raw(item: schema.SourceItem) -> float | None:
@@ -468,20 +487,29 @@ _VIDEO_ENGAGEMENT_FLOOR_SOURCES = {"tiktok", "instagram"}
 _VIDEO_ENGAGEMENT_FLOOR_VIEWS = 1000
 
 
-def _passes_engagement_floor(item: schema.SourceItem, sole_source: bool) -> bool:
+def _numeric_views(item: schema.SourceItem) -> float:
+    if not item.engagement:
+        return 0.0
+    raw = item.engagement.get("views")
+    if raw is None or isinstance(raw, bool):
+        return 0.0
+    try:
+        numeric = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return numeric if math.isfinite(numeric) else 0.0
+
+
+def _passes_engagement_floor(item: schema.SourceItem) -> bool:
     """Check whether a TikTok/Instagram item meets the minimum view floor.
 
     Items from sources not in _VIDEO_ENGAGEMENT_FLOOR_SOURCES always pass.
-    If the item's source is the *only* source represented in the batch
-    (sole_source=True), all items pass so we never return an empty result
-    for a whole source.
+    Empty-batch protection is handled by ``prune_low_relevance``'s
+    ``filtered or items`` fallback rather than a per-source bypass.
     """
     if item.source not in _VIDEO_ENGAGEMENT_FLOOR_SOURCES:
         return True
-    if sole_source:
-        return True
-    views = item.engagement.get("views") or 0 if item.engagement else 0
-    return views >= _VIDEO_ENGAGEMENT_FLOOR_VIEWS
+    return _numeric_views(item) >= _VIDEO_ENGAGEMENT_FLOOR_VIEWS
 
 
 def prune_low_relevance(
@@ -502,7 +530,8 @@ def prune_low_relevance(
     signal.
 
     TikTok and Instagram items with fewer than 1000 views are pruned
-    (unless they are the only source represented in the batch).
+    (falling back to keeping all items when nothing passes and
+    ``passing_only`` is False).
 
     ``first_party_handles`` names accounts this run is explicitly searching
     (the subject of the topic). Their own posts are exempt from the floor: a
@@ -521,7 +550,6 @@ def prune_low_relevance(
     at parse and is exempt the same way; ``polymarket.filter_items_against_topic``
     is its topic bar.
     """
-    sources_present = {item.source for item in items}
     first_party = {
         h.strip().lstrip("@").lower()
         for h in (first_party_handles or ())
@@ -575,8 +603,7 @@ def prune_low_relevance(
         ):
             if rel < minimum * 1.5:
                 return False
-        sole_source = sources_present == {item.source}
-        if not _passes_engagement_floor(item, sole_source):
+        if not _passes_engagement_floor(item):
             return False
         return True
 

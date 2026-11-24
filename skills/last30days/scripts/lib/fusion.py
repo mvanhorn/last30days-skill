@@ -32,15 +32,28 @@ def _candidate_sort_key(c: schema.Candidate) -> tuple:
 
 
 def _normalize_url(url: str) -> str:
-    """Normalize URL for dedup: lowercase host, strip www/old/m prefixes, remove tracking params."""
-    parsed = urlparse(url.strip())
+    """Normalize URL for dedup: lowercase scheme/host, strip www/old/m prefixes,
+    drop fragments and utm_* params, and sort remaining query parameters."""
+    cleaned = url.strip()
+    try:
+        parsed = urlparse(cleaned)
+    except ValueError:
+        return cleaned
     netloc = parsed.netloc.lower()
-    for prefix in ("www.", "old.", "m."):
-        if netloc.startswith(prefix):
-            netloc = netloc[len(prefix):]
-    # Strip tracking params
-    params = parse_qs(parsed.query)
-    clean_params = {k: v for k, v in params.items() if not k.lower().startswith("utm_")}
+    changed = True
+    while changed:
+        changed = False
+        for prefix in ("www.", "old.", "m."):
+            if netloc.startswith(prefix):
+                netloc = netloc[len(prefix):]
+                changed = True
+    # Strip tracking params and canonicalize parameter order.
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    clean_params = sorted(
+        (k, sorted(v) if len(v) > 1 else v)
+        for k, v in params.items()
+        if not k.lower().startswith("utm_")
+    )
     query = urlencode(clean_params, doseq=True)
     return urlunparse((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", query, ""))
 
@@ -286,12 +299,33 @@ def _merge_reddit_fields(
     theirs_score = (incoming.engagement or {}).get("score")
     mine_rank = reddit_refs.score_rank(mine_source)
     theirs_rank = reddit_refs.score_rank(theirs_source)
-    numeric = isinstance(theirs_score, (int, float)) and not isinstance(theirs_score, bool)
-    take = theirs_rank > mine_rank or (
-        theirs_rank == mine_rank
-        and numeric
-        and not (isinstance(mine_score, (int, float)) and not isinstance(mine_score, bool) and mine_score >= theirs_score)
+    mine_numeric = (
+        isinstance(mine_score, (int, float))
+        and not isinstance(mine_score, bool)
+        and math.isfinite(mine_score)
     )
+    theirs_numeric = (
+        isinstance(theirs_score, (int, float))
+        and not isinstance(theirs_score, bool)
+        and math.isfinite(theirs_score)
+    )
+    live_rank = reddit_refs.score_rank(reddit_refs.LIVE)
+    if mine_numeric and theirs_numeric:
+        take = theirs_rank > mine_rank or (
+            theirs_rank == mine_rank and theirs_score > mine_score
+        )
+    elif not mine_numeric and theirs_numeric:
+        take = (
+            mine_source != reddit_refs.ARCTIC_PENDING
+            or theirs_rank >= live_rank
+        )
+    elif not mine_numeric and not theirs_numeric:
+        take = (
+            theirs_source == reddit_refs.ARCTIC_PENDING
+            and mine_source != reddit_refs.ARCTIC_PENDING
+        )
+    else:
+        take = False
     if take:
         existing.engagement["score"] = theirs_score
         if theirs_source:

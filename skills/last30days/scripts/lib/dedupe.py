@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from . import cjk, schema
+from . import cjk, fusion, reddit_refs, schema
 
 STOPWORDS = frozenset(
     {
@@ -109,34 +109,63 @@ def item_text(item: schema.SourceItem) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def _url_dedupe_key(item: schema.SourceItem) -> tuple[str, str] | None:
+    """Normalized ``(source, identity_url)`` for exact-URL deduplication, or None."""
+    if item.source == "hackernews":
+        hn_url = (item.metadata or {}).get("hn_url")
+        if hn_url and str(hn_url).strip():
+            return (item.source, fusion._normalize_url(str(hn_url)))
+    url = (item.url or "").strip()
+    if not url:
+        return None
+    if item.source == "reddit":
+        thread = reddit_refs.thread_key(url)
+        if thread:
+            return (item.source, thread)
+    return (item.source, fusion._normalize_url(url))
+
+
+def _is_url_only_dedupe(item: schema.SourceItem) -> bool:
+    return item.source == "jobs" or (
+        item.source == "polymarket" and bool((item.metadata or {}).get("matched_market"))
+    )
+
+
 def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list[schema.SourceItem]:
-    """Remove near-duplicates while keeping earlier, better-scored items.
+    """Remove exact-URL and near-duplicate items while keeping earlier, better-scored items.
 
-    Jobs are deduped by exact URL only: distinct postings on the same careers
-    board share heavy boilerplate (company intro, "TL;DR", benefits) that trips
-    fuzzy text similarity and collapses unrelated roles (a 26-role board fell to
-    7). A unique posting URL is an unambiguous identity, so use it instead.
+    Every source first deduplicates by normalized ``(source, url)`` (using
+    ``hn_url`` for Hacker News and canonical ``thread_key`` for Reddit),
+    including items with empty text.
 
-    Polymarket events that carry a matched market are deduped by event URL for
-    the same reason: "Pro Football: 2027 Champion" and "Pro Football: 2027
-    NFC Champion" share most of their text but are different questions.
+    Jobs are deduped by normalized URL only: distinct postings on the same
+    careers board share heavy boilerplate (company intro, "TL;DR", benefits)
+    that trips fuzzy text similarity and collapses unrelated roles (a 26-role
+    board fell to 7). A unique posting URL is an unambiguous identity, so use
+    it instead.
+
+    Polymarket events that carry a matched market are deduped by normalized
+    event URL only for the same reason: "Pro Football: 2027 Champion" and
+    "Pro Football: 2027 NFC Champion" share most of their text but are
+    different questions. Unmatched Polymarket items share the same URL set so
+    mixed matched/unmatched copies of one event never survive together.
     """
     kept: list[schema.SourceItem] = []
     kept_prepared: list[_PreparedText] = []
     seen_urls: set[tuple[str, str]] = set()
     for item in items:
-        if item.source == "jobs" or (
-            item.source == "polymarket" and (item.metadata or {}).get("matched_market")
-        ):
-            url = (item.url or "").strip()
-            if url and (item.source, url) in seen_urls:
-                continue
-            if url:
-                seen_urls.add((item.source, url))
+        url_key = _url_dedupe_key(item)
+        if url_key is not None and url_key in seen_urls:
+            continue
+        if _is_url_only_dedupe(item):
+            if url_key is not None:
+                seen_urls.add(url_key)
             kept.append(item)
             continue
         text = item_text(item)
         if not text:
+            if url_key is not None:
+                seen_urls.add(url_key)
             kept.append(item)
             continue
         prep = _PreparedText(text)
@@ -146,6 +175,8 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
                 is_duplicate = True
                 break
         if not is_duplicate:
+            if url_key is not None:
+                seen_urls.add(url_key)
             kept.append(item)
             kept_prepared.append(prep)
     return kept
