@@ -1,6 +1,7 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
 import http.client
+import io
 import ipaddress
 import json
 from collections import OrderedDict
@@ -137,6 +138,7 @@ def _request_origin(url: str) -> tuple[str, str, int]:
 _REDIRECT_GUARD_ATTR = "_last30days_redirect_guard"
 _PUBLIC_ONLY_ATTR = "_last30days_public_only"
 _LOCAL_BRIDGE_ONLY_ATTR = "_last30days_local_bridge_only"
+_IP_VALIDATOR_ATTR = "_last30days_ip_validator"
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
 
 _LOCAL_BRIDGE_BLOCKED_IPS = frozenset({
@@ -359,14 +361,134 @@ if hasattr(http.client, "HTTPSConnection"):
             return self.do_open(_LocalBridgeHTTPSConnection, req, context=self._context)
 
 
+def _resolve_validated_addresses(
+    host: str,
+    port: int,
+    ip_validator: Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool],
+) -> list[tuple]:
+    """Resolve ``host`` fresh once and accept only when every resolved IP passes ``ip_validator``."""
+    from . import public_host
+
+    raw_host = (host or "").strip()
+    if raw_host.startswith("[") and raw_host.endswith("]"):
+        raw_host = raw_host[1:-1]
+    dns_host = raw_host.lower()
+    bare = dns_host.removesuffix(".")
+    if not bare or bare.startswith(".") or bare.endswith(".") or ".." in bare:
+        raise public_host.NonPublicAddressError("refused disallowed address")
+    literal = public_host._parse_ip_literal(bare)
+    if literal is not None:
+        if not ip_validator(literal):
+            raise public_host.NonPublicAddressError("refused disallowed address")
+        family = socket.AF_INET6 if isinstance(literal, ipaddress.IPv6Address) else socket.AF_INET
+        sockaddr = (str(literal), port, 0, 0) if family == socket.AF_INET6 else (str(literal), port)
+        return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+    # Preserve any single trailing dot for DNS lookup so search-domain expansion cannot redirect it.
+    answers = socket.getaddrinfo(dns_host, port, 0, socket.SOCK_STREAM)
+    if not answers:
+        raise public_host.NonPublicAddressError("refused disallowed address")
+    verified: list[tuple] = []
+    for family, socktype, proto, canonname, sockaddr in answers:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
+        except ValueError as exc:
+            raise public_host.NonPublicAddressError("refused disallowed address") from exc
+        if not ip_validator(ip):
+            raise public_host.NonPublicAddressError("refused disallowed address")
+        verified.append((family, socktype, proto, canonname, sockaddr))
+    return verified
+
+
+def _make_validated_connection(
+    ip_validator: Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool],
+):
+    def _create_validated_connection(
+        address: tuple[str, int],
+        timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address: Any = None,
+    ) -> socket.socket:
+        return _create_pinned_connection(
+            address,
+            lambda host, port: _resolve_validated_addresses(host, port, ip_validator),
+            timeout=timeout,
+            source_address=source_address,
+        )
+
+    return _create_validated_connection
+
+
+class _ValidatedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(
+        self,
+        ip_validator: Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool],
+    ):
+        super().__init__()
+        create_conn = _make_validated_connection(ip_validator)
+
+        class _ValidatedHTTPConnection(http.client.HTTPConnection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._create_connection = create_conn
+
+            def connect(self):
+                if self._tunnel_host:
+                    from . import public_host
+
+                    raise public_host.NonPublicAddressError(
+                        "refused proxied tunnel for IP-validated request"
+                    )
+                return super().connect()
+
+        self._conn_cls = _ValidatedHTTPConnection
+
+    def http_open(self, req):
+        return self.do_open(self._conn_cls, req)
+
+
+if hasattr(http.client, "HTTPSConnection"):
+
+    class _ValidatedHTTPSHandler(urllib.request.HTTPSHandler):
+        def __init__(
+            self,
+            ip_validator: Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool],
+        ):
+            super().__init__()
+            create_conn = _make_validated_connection(ip_validator)
+
+            class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self._create_connection = create_conn
+
+                def connect(self):
+                    if self._tunnel_host:
+                        from . import public_host
+
+                        raise public_host.NonPublicAddressError(
+                            "refused proxied tunnel for IP-validated request"
+                        )
+                    return super().connect()
+
+            self._conn_cls = _ValidatedHTTPSConnection
+
+        def https_open(self, req):
+            return self.do_open(self._conn_cls, req, context=self._context)
+
+
 def _build_http_opener(
-    *, bypass_proxy: bool = False, public_only: bool = False, local_bridge_only: bool = False,
+    *,
+    bypass_proxy: bool = False,
+    public_only: bool = False,
+    local_bridge_only: bool = False,
+    ip_validator: Optional[Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool]] = None,
 ) -> urllib.request.OpenerDirector:
     """Build an OpenerDirector restricted strictly to HTTP(S) — omitting urllib's
     default FileHandler, FTPHandler, and DataHandler."""
     opener = urllib.request.OpenerDirector()
-    pinned = public_only or local_bridge_only
-    if public_only:
+    pinned = public_only or local_bridge_only or ip_validator is not None
+    if ip_validator is not None:
+        http_handler = _ValidatedHTTPHandler(ip_validator)
+    elif public_only:
         http_handler = _PublicHTTPHandler()
     elif local_bridge_only:
         http_handler = _LocalBridgeHTTPHandler()
@@ -381,7 +503,9 @@ def _build_http_opener(
         urllib.request.HTTPErrorProcessor(),
     ]
     if hasattr(http.client, "HTTPSConnection"):
-        if public_only:
+        if ip_validator is not None:
+            handlers.append(_ValidatedHTTPSHandler(ip_validator))
+        elif public_only:
             handlers.append(_PublicHTTPSHandler())
         elif local_bridge_only:
             handlers.append(_LocalBridgeHTTPSHandler())
@@ -453,6 +577,16 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
                 raise urllib.error.HTTPError(
                     req.full_url, 403, "redirect refused: non-public address", headers, fp,
                 )
+        ip_validator = getattr(req, _IP_VALIDATOR_ATTR, None)
+        if ip_validator is not None:
+            from . import public_host
+
+            target_host = (urlsplit(newurl).hostname or "").strip().rstrip(".").lower()
+            literal = public_host._parse_ip_literal(target_host) if target_host else None
+            if literal is not None and not ip_validator(literal):
+                raise urllib.error.HTTPError(
+                    req.full_url, 403, "redirect refused: disallowed IP address", headers, fp,
+                )
         guard = getattr(req, _REDIRECT_GUARD_ATTR, None)
         if guard is not None and not guard(newurl):
             raise urllib.error.HTTPError(
@@ -467,6 +601,8 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
             setattr(new, _PUBLIC_ONLY_ATTR, True)
         if local_bridge_only:
             setattr(new, _LOCAL_BRIDGE_ONLY_ATTR, True)
+        if ip_validator is not None:
+            setattr(new, _IP_VALIDATOR_ATTR, ip_validator)
         if _request_origin(req.full_url) != _request_origin(new.full_url):
             for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
                 if not store:
@@ -494,7 +630,10 @@ def _open_request(req, timeout, *, bypass_proxy=False):
     current = urllib.request.urlopen
     if current is not _DEFAULT_URLOPEN:
         return current(req, timeout=timeout)
-    if getattr(req, _PUBLIC_ONLY_ATTR, False):
+    public_only = bool(getattr(req, _PUBLIC_ONLY_ATTR, False))
+    local_bridge_only = bool(getattr(req, _LOCAL_BRIDGE_ONLY_ATTR, False))
+    ip_validator = getattr(req, _IP_VALIDATOR_ATTR, None)
+    if public_only and ip_validator is None:
         from . import public_host
 
         if not public_host.is_public_address_syntax(url):
@@ -502,8 +641,29 @@ def _open_request(req, timeout, *, bypass_proxy=False):
                 public_host.NonPublicAddressError("refused non-public address")
             )
         return _public_opener.open(req, timeout=timeout)
-    if getattr(req, _LOCAL_BRIDGE_ONLY_ATTR, False):
+    if local_bridge_only and ip_validator is None:
         return _local_bridge_opener.open(req, timeout=timeout)
+    if ip_validator is not None:
+        if local_bridge_only:
+            raise ValueError("local_bridge_only and ip_validator are mutually exclusive")
+        effective_validator = ip_validator
+        if public_only:
+            from . import public_host
+
+            if not public_host.is_public_address_syntax(url):
+                raise urllib.error.URLError(
+                    public_host.NonPublicAddressError("refused non-public address")
+                )
+
+            def _combined_validator(addr):
+                return public_host._is_public_ip(addr) and bool(ip_validator(addr))
+
+            effective_validator = _combined_validator
+        return _build_http_opener(
+            bypass_proxy=True,
+            public_only=public_only,
+            ip_validator=effective_validator,
+        ).open(req, timeout=timeout)
     opener = _direct_opener if bypass_proxy else _opener
     return opener.open(req, timeout=timeout)
 
@@ -1063,7 +1223,18 @@ def _content_length(headers) -> Optional[int]:
     return value if value >= 0 else None
 
 
-def _read_bounded(stream, max_bytes: int, *, truncate: bool = False) -> bytes:
+_READ_CHUNK_BYTES = 65_536
+
+
+def _read_bounded(
+    stream,
+    max_bytes: int,
+    *,
+    truncate: bool = False,
+    cancel: Optional[threading.Event] = None,
+) -> bytes:
+    if cancel is not None and cancel.is_set():
+        raise DeadlineExceeded()
     if not truncate:
         declared = (
             stream.length
@@ -1075,7 +1246,30 @@ def _read_bounded(stream, max_bytes: int, *, truncate: bool = False) -> bytes:
                 f"Response Content-Length {declared} exceeds limit of {max_bytes} bytes"
             )
     limit = max_bytes if truncate else max_bytes + 1
-    data = stream.read(limit)
+    reader = (
+        stream.fp
+        if isinstance(stream, urllib.error.HTTPError)
+        and isinstance(getattr(stream, "fp", None), io.IOBase)
+        else stream
+    )
+    if cancel is not None and isinstance(reader, io.IOBase) and hasattr(reader, "read1"):
+        chunks: list[bytes] = []
+        total = 0
+        while total < limit:
+            if cancel.is_set():
+                raise DeadlineExceeded()
+            chunk = reader.read1(min(_READ_CHUNK_BYTES, limit - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if cancel.is_set():
+            raise DeadlineExceeded()
+        data = b"".join(chunks)
+    else:
+        data = stream.read(limit)
+        if cancel is not None and cancel.is_set():
+            raise DeadlineExceeded()
     if data is None:
         return b""
     if truncate:
@@ -1334,6 +1528,8 @@ def request(
     public_only: bool = False,
     local_bridge_only: bool = False,
     max_bytes: Optional[int] = None,
+    decode_errors: str = "strict",
+    ip_validator: Optional[Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool]] = None,
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
@@ -1375,6 +1571,8 @@ def request(
     """
     if max_bytes is not None and max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
+    if decode_errors not in ("strict", "replace", "ignore"):
+        raise ValueError(f"unsupported decode_errors mode: {decode_errors!r}")
     effective_max_bytes = MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
     if owned_get and (method != "GET" or json_data is not None):
         raise ValueError("owned transport requires a bodyless GET")
@@ -1386,8 +1584,10 @@ def request(
         raise ValueError("owned GET does not report response headers")
     if public_only and local_bridge_only:
         raise ValueError("public_only and local_bridge_only are mutually exclusive")
-    if owned_get and (redirect_guard is not None or public_only or local_bridge_only):
-        raise ValueError("owned GET does not support redirect_guard, public_only, or local_bridge_only")
+    if local_bridge_only and ip_validator is not None:
+        raise ValueError("local_bridge_only and ip_validator are mutually exclusive")
+    if owned_get and (redirect_guard is not None or public_only or local_bridge_only or ip_validator is not None):
+        raise ValueError("owned GET does not support redirect_guard, public_only, local_bridge_only, or ip_validator")
     try:
         _check_http_scheme(url)
     except ValueError as exc:
@@ -1460,6 +1660,8 @@ def request(
         setattr(req, _PUBLIC_ONLY_ATTR, True)
     if local_bridge_only:
         setattr(req, _LOCAL_BRIDGE_ONLY_ATTR, True)
+    if ip_validator is not None:
+        setattr(req, _IP_VALIDATOR_ATTR, ip_validator)
 
     from . import auth_safety
 
@@ -1504,6 +1706,9 @@ def request(
     def sleep_before_retry(delay: float) -> bool:
         """Sleep only when the full delay fits inside the caller's deadline."""
         nonlocal last_error
+        if cancel is not None and cancel.is_set():
+            last_error = deadline_error()
+            return False
         if deadline_monotonic is not None:
             remaining = deadline_monotonic - time.monotonic()
             if remaining <= 0 or delay >= remaining:
@@ -1535,7 +1740,9 @@ def request(
                     response_headers.url = final if isinstance(final, str) else ""
                 return (
                     response.status,
-                    _read_bounded(response, effective_max_bytes).decode('utf-8'),
+                    _read_bounded(
+                        response, effective_max_bytes, cancel=cancel,
+                    ).decode('utf-8', errors=decode_errors),
                     None,
                 )
         except urllib.error.HTTPError as error:
@@ -1543,7 +1750,9 @@ def request(
             # inside the same deadline-protected worker before classification.
             body = None
             try:
-                raw_error = _read_bounded(error, MAX_ERROR_BODY_BYTES, truncate=True)
+                raw_error = _read_bounded(
+                    error, MAX_ERROR_BODY_BYTES, truncate=True, cancel=cancel,
+                )
                 body = raw_error.decode(
                     'utf-8',
                     errors='replace' if len(raw_error) == MAX_ERROR_BODY_BYTES else 'strict',
@@ -1596,7 +1805,7 @@ def request(
                 elif error is not None:
                     decoded = body.decode("utf-8", errors="replace")
                 else:
-                    decoded = body.decode("utf-8")
+                    decoded = body.decode("utf-8", errors=decode_errors)
             except UnicodeDecodeError:
                 if error is None:
                     raise
@@ -1667,7 +1876,7 @@ def request(
                     usage.finish(charge, json.loads(body))
                 except (ValueError, TypeError):
                     pass
-            if (
+            if (cancel is not None and cancel.is_set()) or (
                 deadline_monotonic is not None
                 and time.monotonic() >= deadline_monotonic
             ):
@@ -1849,11 +2058,14 @@ def get_text(
     accept: str = "*/*",
     headers: Optional[Dict[str, str]] = None,
     deadline_monotonic: float | None = None,
+    cancel: Optional[threading.Event] = None,
     retry_dns: bool = True,
     landed: Optional[list] = None,
     redirect_guard: Optional[Callable[[str], bool]] = None,
     public_only: bool = False,
     max_bytes: Optional[int] = None,
+    decode_errors: str = "strict",
+    ip_validator: Optional[Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool]] = None,
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1890,6 +2102,8 @@ def get_text(
     bounds: Dict[str, Any] = {}
     if deadline_monotonic is not None:
         bounds["deadline_monotonic"] = deadline_monotonic
+    if cancel is not None:
+        bounds["cancel"] = cancel
     if not retry_dns:
         bounds["retry_dns"] = False
     if landed is not None:
@@ -1900,6 +2114,10 @@ def get_text(
         bounds["public_only"] = True
     if max_bytes is not None:
         bounds["max_bytes"] = max_bytes
+    if decode_errors != "strict":
+        bounds["decode_errors"] = decode_errors
+    if ip_validator is not None:
+        bounds["ip_validator"] = ip_validator
     try:
         answer = request(
             "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,
@@ -1954,11 +2172,18 @@ class RateLimiter:
         with self._lock:
             return self._waiting
 
-    def acquire(self) -> None:
+    def acquire(
+        self,
+        *,
+        deadline_monotonic: Optional[float] = None,
+        cancel: Optional[threading.Event] = None,
+    ) -> None:
         """Consume one token, blocking only when the bucket is empty."""
         queued = False
         try:
             while True:
+                if cancel is not None and cancel.is_set():
+                    raise DeadlineExceeded()
                 with self._lock:
                     now = time.monotonic()
                     # Clamp elapsed to >= 0: a backward clock reading must never
@@ -1966,14 +2191,29 @@ class RateLimiter:
                     elapsed = max(0.0, now - self._last)
                     self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
                     self._last = now
+                    if deadline_monotonic is not None and now >= deadline_monotonic:
+                        raise DeadlineExceeded()
                     if self._tokens >= 1.0:
                         self._tokens -= 1.0
                         return
+                    wait = (1.0 - self._tokens) / self.rate
+                    if deadline_monotonic is not None:
+                        remaining = deadline_monotonic - now
+                        if remaining <= 0 or wait > remaining:
+                            raise DeadlineExceeded()
+                        sleep_for = min(wait, remaining)
+                    else:
+                        sleep_for = wait
                     if not queued:
                         self._waiting += 1
                         queued = True
-                    wait = (1.0 - self._tokens) / self.rate
-                (self._sleep or time.sleep)(wait)
+                if self._sleep is not None:
+                    self._sleep(min(sleep_for, 0.05) if cancel is not None else sleep_for)
+                elif cancel is not None:
+                    if cancel.wait(min(sleep_for, 0.05)):
+                        raise DeadlineExceeded()
+                else:
+                    time.sleep(sleep_for)
         finally:
             if queued:
                 with self._lock:

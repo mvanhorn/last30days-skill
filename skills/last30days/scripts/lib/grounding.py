@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -432,17 +433,34 @@ def web_search(
     date_range: tuple[str, str],
     config: dict,
     backend: str = "auto",
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
     """Run web search with the specified or auto-detected backend."""
     if backend != "auto":
-        return _web_search_with(backend, query, date_range, config)
+        return _web_search_with(
+            backend,
+            query,
+            date_range,
+            config,
+            deadline_monotonic=deadline_monotonic,
+            cancel=cancel,
+        )
     tried: set[str] = set()
     while True:
         chosen = configured_backend(config) or (
             "keyless" if env.keyless_web_allowed(config) else "none"
         )
         try:
-            return _web_search_with(chosen, query, date_range, config)
+            return _web_search_with(
+                chosen,
+                query,
+                date_range,
+                config,
+                deadline_monotonic=deadline_monotonic,
+                cancel=cancel,
+            )
         except Exception:
             # The service has no key for this proxied provider: try the next
             # backend instead of failing the web source.
@@ -456,9 +474,22 @@ def _web_search_with(
     query: str,
     date_range: tuple[str, str],
     config: dict,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
     items: list[dict] = []
     artifact: dict = {}
+    effective_deadline = (
+        deadline_monotonic
+        if deadline_monotonic is not None
+        else config.get("_research_deadline")
+    )
+    effective_cancel = (
+        cancel
+        if cancel is not None
+        else config.get("_enrich_cancel")
+    )
     if backend == "brave":
         key = config.get("BRAVE_API_KEY")
         if not key:
@@ -482,24 +513,61 @@ def _web_search_with(
     elif backend == "parallel-mcp":
         # The MCP client is not behind the http.request proxy seam, so it
         # never receives the proxy-lane placeholder.
+        mcp_kwargs: dict = {}
+        if effective_deadline is not None:
+            mcp_kwargs["deadline_monotonic"] = min(
+                effective_deadline,
+                time.monotonic() + parallel_mcp._DEFAULT_SEARCH_TIMEOUT,
+            )
+        if effective_cancel is not None:
+            mcp_kwargs["cancel"] = effective_cancel
         items, artifact = parallel_mcp.search(
-            query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY"))
+            query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY")),
+            **mcp_kwargs,
         )
     elif backend == "keyless":
-        items, artifact = web_search_keyless.keyless_search(query, date_range, config)
+        keyless_kwargs: dict = {}
+        if effective_deadline is not None:
+            keyless_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            keyless_kwargs["cancel"] = effective_cancel
+        items, artifact = web_search_keyless.keyless_search(
+            query, date_range, config, **keyless_kwargs,
+        )
     elif backend != "none":
         raise ValueError(f"Unsupported web backend: {backend!r}")
     else:
         return [], {}
-    if items and not _reddit_excluded(config):
+    enrich_deadline = _reddit_enrich_deadline(effective_deadline)
+    budget_stopped = bool(
+        (effective_cancel is not None and effective_cancel.is_set())
+        or (enrich_deadline is not None and time.monotonic() >= enrich_deadline)
+    )
+    if items and not _reddit_excluded(config) and not budget_stopped:
         # Reddit enrichment is a best-effort secondary fetch on already-retrieved
         # web results. Isolate its HTTP failures in a throwaway capture sink so a
         # reddit.com fetch failure (e.g. a 403 on a datacenter IP) is not
         # attributed to the web/grounding source itself — which would otherwise
         # discard the successfully retrieved results and report the source failed.
+        enrich_kwargs: dict = {}
+        if effective_deadline is not None:
+            enrich_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            enrich_kwargs["cancel"] = effective_cancel
         with http.capture_failures():
-            items = _enrich_reddit_items(items)
+            items = _enrich_reddit_items(items, **enrich_kwargs)
     return items, artifact
+
+
+# Reserve headroom before the outer run deadline so optional Reddit enrichment
+# never crowds the stream future timeout and causes retrieved web results to be discarded.
+_REDDIT_ENRICH_HEADROOM_SECONDS = 3.0
+
+
+def _reddit_enrich_deadline(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        return None
+    return deadline_monotonic - _REDDIT_ENRICH_HEADROOM_SECONDS
 
 
 def _reddit_excluded(config: dict) -> bool:
@@ -513,7 +581,12 @@ def _reddit_excluded(config: dict) -> bool:
     return any(s.strip().lower() == "reddit" for s in raw)
 
 
-def _enrich_reddit_items(items: list[dict]) -> list[dict]:
+def _enrich_reddit_items(
+    items: list[dict],
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+) -> list[dict]:
     """Enrich web search results that are Reddit threads with body and comments.
 
     Claude Code's WebFetch blocks reddit.com, so the model can't retrieve
@@ -528,6 +601,11 @@ def _enrich_reddit_items(items: list[dict]) -> list[dict]:
     """
     from . import reddit_hydrate, reddit_refs
 
+    enrich_deadline = _reddit_enrich_deadline(deadline_monotonic)
+    if (cancel is not None and cancel.is_set()) or (
+        enrich_deadline is not None and time.monotonic() >= enrich_deadline
+    ):
+        return items
     refs_by_item: list[tuple[dict, reddit_refs.ThreadRef]] = []
     for item in items:
         ref = reddit_refs.canonical_thread(str(item.get("url") or ""))
@@ -536,8 +614,17 @@ def _enrich_reddit_items(items: list[dict]) -> list[dict]:
             refs_by_item.append((item, ref))
     if not refs_by_item:
         return items
+    hydrate_kwargs: dict = {}
+    if enrich_deadline is not None:
+        hydrate_kwargs["deadline"] = enrich_deadline
     try:
-        hydrated = reddit_hydrate.hydrate([ref for _item, ref in refs_by_item])
+        hydrated = reddit_hydrate.hydrate(
+            [ref for _item, ref in refs_by_item],
+            **hydrate_kwargs,
+        )
+    except (http.DeadlineExceeded, TimeoutError) as exc:
+        sys.stderr.write(f"[Web] Reddit enrichment timed out: {exc}\n")
+        return items
     except Exception as exc:  # enrichment is best-effort on results already in hand
         sys.stderr.write(f"[Web] Reddit enrichment failed: {exc}\n")
         return items

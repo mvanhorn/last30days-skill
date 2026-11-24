@@ -34,6 +34,7 @@ _VALID_TLD_RE = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{2,59}")
 # Conservative timeout: Jina renders the page server-side, so it is slower than
 # a plain GET, but we are the floor tier and must not stall the pipeline.
 DEFAULT_FETCH_TIMEOUT = 30
+_MAX_MARKDOWN_BYTES = 4 * 1024 * 1024
 
 
 @dataclass
@@ -146,6 +147,8 @@ def fetch_markdown(
             accept="text/plain",
             public_only=True,
             redirect_guard=_reader_redirect_guard,
+            max_bytes=_MAX_MARKDOWN_BYTES,
+            decode_errors="replace",
         )
     except UnicodeDecodeError:
         return KeylessFetchResult(url=url, ok=False, reason="decode-error")

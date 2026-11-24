@@ -36,14 +36,16 @@ source-health layer can report it.
 from __future__ import annotations
 
 import html
+import ipaddress
 import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Mapping, Optional
-from urllib.parse import parse_qs, urlencode, urlparse
+from html.parser import HTMLParser
+from typing import Any, Mapping, Optional
+from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunsplit
 
-from . import http
+from . import health, http, log, public_host
 
 KEYLESS_BACKEND = "keyless"
 
@@ -53,56 +55,40 @@ _DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 # results when both are present.
 _KEYLESS_RELEVANCE = 0.6
 
-_TAG_RE = re.compile(r"<[^>]+>")
-# Strip <style>/<script> blocks *including their contents* before dropping tags,
-# so inline CSS/JS text (e.g. Startpage's emotion styles) never leaks into a
-# title or snippet.
-_STYLE_SCRIPT_RE = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
-_RESULT_A_RE = re.compile(
-    r'class="result__a"[^>]*href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>',
-    re.IGNORECASE | re.DOTALL,
-)
-_SNIPPET_RE = re.compile(
-    r'class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
-    re.IGNORECASE | re.DOTALL,
-)
+_MAX_SERP_BYTES = 2 * 1024 * 1024
+_MAX_SEARXNG_BYTES = 2 * 1024 * 1024
+
+_BLOCKED_SEARXNG_HOSTS = frozenset({
+    "metadata.google.internal",
+    "metadata.goog",
+    "instance-data",
+})
+_AWS_IPV6_IMDS = ipaddress.IPv6Address("fd00:ec2::254")
+_ALIBABA_IMDS = ipaddress.IPv4Address("100.100.100.200")
+
+# Single-character-class opening-tag and attribute patterns: [^<>]* never
+# crosses a tag boundary, keeping all SERP scans linear even on malformed HTML.
+_A_TAG_RE = re.compile(r"<a\b[^<>]*>", re.IGNORECASE)
+_DIV_TAG_RE = re.compile(r"<div\b[^<>]*>", re.IGNORECASE)
+_H2_TAG_RE = re.compile(r"<h2\b[^<>]*>", re.IGNORECASE)
+_P_TAG_RE = re.compile(r"<p\b[^<>]*>", re.IGNORECASE)
+_CLOSE_A_RE = re.compile(r"</a\s*>", re.IGNORECASE)
+_CLOSE_DIV_RE = re.compile(r"</div\s*>", re.IGNORECASE)
+_CLOSE_H2_RE = re.compile(r"</h2\s*>", re.IGNORECASE)
+_CLOSE_P_RE = re.compile(r"</p\s*>", re.IGNORECASE)
+_CLASS_ATTR_RE = re.compile(r'\bclass="(?P<cls>[^"]*)"', re.IGNORECASE)
+_HREF_ATTR_RE = re.compile(r'\bhref="(?P<href>[^"]+)"', re.IGNORECASE)
+_HTTP_HREF_ATTR_RE = re.compile(r'\bhref="(?P<href>https?://[^"]+)"', re.IGNORECASE)
+_DATA_TYPE_WEB_RE = re.compile(r'\bdata-type="web"', re.IGNORECASE)
+_BRAVE_SNIPPET_CLASS_RE = re.compile(r"^(?:content|inline-qa-question)\b", re.IGNORECASE)
 
 _STARTPAGE_HTML_URL = "https://www.startpage.com/sp/search"
-# Startpage marks each organic hit with an <a class="result-title result-link …"
-# href="<target>">…<h2 …>title</h2></a>, and the description in a following
-# <p class="…description…">. Class names carry hashed emotion suffixes, so match
-# on the stable "result-title" / "description" substrings.
-_SP_RESULT_RE = re.compile(
-    r'<a\b[^>]*class="[^"]*result-title[^"]*"[^>]*href="(?P<href>https?://[^"]+)"[^>]*>(?P<inner>.*?)</a>',
-    re.IGNORECASE | re.DOTALL,
-)
-_SP_H2_RE = re.compile(r"<h2\b[^>]*>(?P<title>.*?)</h2>", re.IGNORECASE | re.DOTALL)
-_SP_DESC_RE = re.compile(
-    r'<p\b[^>]*class="[^"]*description[^"]*"[^>]*>(?P<snippet>.*?)</p>',
-    re.IGNORECASE | re.DOTALL,
-)
-
-
 _BRAVE_HTML_URL = "https://search.brave.com/search"
-# Each organic Brave hit is a <div class="snippet …" data-type="web"> block whose
-# first anchor is the result link, with the title in a "search-snippet-title"
-# div and the age ("2 weeks ago -") in the first t-secondary span of its body.
-# The inline comment cards under a Reddit hit repeat the thread link; only the
-# block's first anchor is read.
-_BRAVE_BLOCK_RE = re.compile(
-    r'<div\b[^>]*class="snippet\b[^"]*"[^>]*data-type="web"[^>]*>', re.IGNORECASE,
-)
-_BRAVE_LINK_RE = re.compile(r'<a\b[^>]*href="(?P<href>https?://[^"]+)"', re.IGNORECASE)
-_BRAVE_TITLE_RE = re.compile(
-    r'<div\b[^>]*class="[^"]*search-snippet-title[^"]*"[^>]*>(?P<title>.*?)</div>',
-    re.IGNORECASE | re.DOTALL,
-)
+
+# Bounded character class with no overlapping whitespace quantifiers:
+# _brave_date strips surrounding whitespace and trailing dashes in Python.
 _BRAVE_AGE_RE = re.compile(
-    r'<span class="t-secondary">\s*(?P<age>[^<]*?)\s*-?\s*</span>', re.IGNORECASE,
-)
-_BRAVE_SNIPPET_RE = re.compile(
-    r'<div\b[^>]*class="(?:content|inline-qa-question)\b[^"]*"[^>]*>(?P<snippet>.*?)</div>',
-    re.IGNORECASE | re.DOTALL,
+    r'<span class="t-secondary">(?P<age>[^<]{1,120})</span>', re.IGNORECASE,
 )
 _RELATIVE_AGE_RE = re.compile(
     r"^(?P<n>\d+)\s+(?P<unit>minute|hour|day|week|month|year)s?\s+ago", re.IGNORECASE,
@@ -203,9 +189,196 @@ def _domain(url: str) -> str:
         return ""
 
 
+class _TextStripper(HTMLParser):
+    """Single-pass O(N) HTML-to-text stripper that drops <style>/<script> contents."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._skip_depths = {"style": 0, "script": 0}
+        self._skip_active = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in self._skip_depths:
+            self._skip_depths[tag_lower] += 1
+            self._skip_active += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in self._skip_depths and self._skip_depths[tag_lower] > 0:
+            self._skip_depths[tag_lower] -= 1
+            self._skip_active -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_active == 0:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        return "".join(self._parts).strip()
+
+
 def _strip_html(fragment: str) -> str:
-    without_blocks = _STYLE_SCRIPT_RE.sub("", fragment or "")
-    return html.unescape(_TAG_RE.sub("", without_blocks)).strip()
+    if not fragment:
+        return ""
+    parser = _TextStripper()
+    parser.feed(fragment)
+    parser.close()
+    return parser.text()
+
+
+def _is_blocked_searxng_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Reject link-local/cloud-metadata, unspecified, and multicast IP addresses.
+
+    Loopback (127.0.0.0/8, ::1) and RFC1918 private LAN addresses are allowed
+    so self-hosted local/Docker/homelab SearXNG instances continue to work.
+    """
+    if addr.is_link_local or addr.is_unspecified or addr.is_multicast:
+        return True
+    if addr == _AWS_IPV6_IMDS or addr == _ALIBABA_IMDS:
+        return True
+    if isinstance(addr, ipaddress.IPv6Address):
+        for embedded in (
+            addr.ipv4_mapped,
+            addr.sixtofour,
+            addr.teredo[1] if addr.teredo else None,
+        ):
+            if embedded is not None and _is_blocked_searxng_ip(embedded):
+                return True
+        if addr in public_host._NAT64_WELL_KNOWN or addr in public_host._NAT64_LOCAL:
+            embedded = ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+            if _is_blocked_searxng_ip(embedded):
+                return True
+    return False
+
+
+def _is_allowed_searxng_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return not _is_blocked_searxng_ip(addr)
+
+
+def _normalize_searxng_host(host: str) -> str:
+    """Normalize a SearXNG hostname via IDNA to canonical ASCII, or '' if invalid."""
+    raw = (host or "").strip()
+    if not raw or "%" in raw:
+        return ""
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return ""
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    if ":" in raw:
+        return raw.lower().rstrip(".") if raw.isascii() else ""
+    try:
+        normalized = raw.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return ""
+    if not normalized or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in normalized):
+        return ""
+    return normalized
+
+
+def _is_blocked_searxng_host(host: str) -> bool:
+    normalized = _normalize_searxng_host(host)
+    if not normalized:
+        return True
+    if (
+        normalized in _BLOCKED_SEARXNG_HOSTS
+        or normalized.endswith(".metadata.google.internal")
+        or normalized.endswith(".metadata.goog")
+    ):
+        return True
+    ip = public_host._parse_ip_literal(normalized)
+    if ip is not None:
+        return _is_blocked_searxng_ip(ip)
+    return False
+
+
+def _validate_searxng_url(instance_url: str) -> Optional[tuple[str, tuple[str, str, int]]]:
+    """Validate LAST30DAYS_SEARXNG_URL and return ``(normalized_base, origin)`` or None."""
+    if not isinstance(instance_url, str):
+        return None
+    text = instance_url.strip()
+    if not text or "\\" in text or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return None
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        return None
+    if parts.username is not None or parts.password is not None:
+        return None
+    if "%" in parts.netloc:
+        return None
+    if parts.query or parts.fragment:
+        return None
+    host = _normalize_searxng_host(parts.hostname or "")
+    if not host or _is_blocked_searxng_host(host):
+        return None
+    effective_port = port if port is not None else (443 if scheme == "https" else 80)
+    origin = (scheme, host, effective_port)
+    base_path = parts.path.rstrip("/")
+    netloc_host = f"[{host}]" if ":" in host else host
+    netloc = f"{netloc_host}:{port}" if port is not None else netloc_host
+    normalized = urlunsplit((scheme, netloc, base_path, "", ""))
+    return normalized, origin
+
+
+def _rung_redirect_guard(url: str):
+    """Allow redirects only over HTTPS to the same public search rung host."""
+    expected_host = (urlsplit(url).hostname or "").strip().lower().rstrip(".")
+
+    def _guard(target: str) -> bool:
+        if not isinstance(target, str) or not target or target != target.strip():
+            return False
+        if "\\" in target or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in target):
+            return False
+        if not public_host.is_public_address_syntax(target):
+            return False
+        try:
+            parts = urlsplit(target)
+            port = parts.port
+        except ValueError:
+            return False
+        if parts.scheme.lower() != "https":
+            return False
+        if parts.username is not None or parts.password is not None:
+            return False
+        if port not in (None, 443):
+            return False
+        host = (parts.hostname or "").strip().lower().rstrip(".")
+        return bool(expected_host) and host == expected_host
+
+    return _guard
+
+
+def _searxng_redirect_guard(origin: tuple[str, str, int]):
+    """Allow SearXNG redirects only within the exact configured origin."""
+    def _guard(target: str) -> bool:
+        if not isinstance(target, str) or not target or target != target.strip():
+            return False
+        if "\\" in target or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in target):
+            return False
+        try:
+            parts = urlsplit(target)
+            port = parts.port
+        except ValueError:
+            return False
+        scheme = parts.scheme.lower()
+        if scheme not in ("http", "https"):
+            return False
+        if parts.username is not None or parts.password is not None:
+            return False
+        if "%" in parts.netloc:
+            return False
+        host = _normalize_searxng_host(parts.hostname or "")
+        if not host or _is_blocked_searxng_host(host):
+            return False
+        effective_port = port if port is not None else (443 if scheme == "https" else 80)
+        return (scheme, host, effective_port) == origin
+
+    return _guard
 
 
 def _unwrap_ddg_redirect(href: str) -> str:
@@ -249,33 +422,40 @@ def keyless_search(
     used = "ddg"
     ladder = (("brave", _brave_rung),) if _is_reddit_query(query) else ()
     ladder += (("ddg", _ddg_rung), ("startpage", _startpage_rung))
-    bound = {"deadline_monotonic": deadline_monotonic} if deadline_monotonic is not None else {}
+    bound: dict[str, Any] = {}
+    if deadline_monotonic is not None:
+        bound["deadline_monotonic"] = deadline_monotonic
+    if cancel is not None:
+        bound["cancel"] = cancel
 
     def stopped() -> bool:
         if cancel is not None and cancel.is_set():
             return True
         return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
 
-    for rung, search in ladder:
-        if stopped():
-            tried[rung] = SKIPPED
-            continue
-        if not RUNG_HEALTH.usable(rung):
-            tried[rung] = SKIPPED
-            continue
-        # A DuckDuckGo anomaly block (202 challenge page on a datacenter IP)
-        # falls through to Startpage, which still serves organic results there.
-        items, state = search(query, count, freshness, **bound)
-        tried[rung] = state
-        RUNG_HEALTH.record(rung, state)
-        used = rung
-        if items:
-            break
-    if not items:
-        searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
-        if searxng_url and not stopped():
-            items = _search_searxng(query, count, searxng_url, **bound)
-            used = "searxng"
+    searxng_attempted = False
+    with http.tee_failures() as run_failures:
+        for rung, search in ladder:
+            if stopped():
+                tried[rung] = SKIPPED
+                continue
+            if not RUNG_HEALTH.usable(rung):
+                tried[rung] = SKIPPED
+                continue
+            # A DuckDuckGo anomaly block (202 challenge page on a datacenter IP)
+            # falls through to Startpage, which still serves organic results there.
+            items, state = search(query, count, freshness, **bound)
+            tried[rung] = state
+            RUNG_HEALTH.record(rung, state)
+            used = rung
+            if items:
+                break
+        if not items:
+            searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
+            if searxng_url and not stopped():
+                searxng_attempted = True
+                items = _search_searxng(query, count, searxng_url, **bound)
+                used = "searxng"
     # These backends never return a publish date, so normalize's grounding
     # require_date would drop every result. Keep undated links only when the
     # window reaches today; a historical window can't vouch for them.
@@ -290,22 +470,50 @@ def keyless_search(
         "keyless_rungs": tried,
     }
     if not items:
-        artifact["reason"] = "keyless-search-unavailable"
+        budget_exhausted = stopped() or any(
+            isinstance(failure, http.DeadlineExceeded) for failure in run_failures
+        )
+        if budget_exhausted:
+            artifact["reason"] = "keyless-search-timeout"
+            artifact["_source_outcome"] = {
+                "state": health.TIMEOUT,
+                "detail": "Keyless web search cancelled or timed out",
+                "attempted": searxng_attempted or any(state != SKIPPED for state in tried.values()),
+            }
+        else:
+            artifact["reason"] = "keyless-search-unavailable"
     return items, artifact
 
 
 def _fetch_page(
-    rung: str, url: str, deadline_monotonic: Optional[float] = None,
+    rung: str,
+    url: str,
+    deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[Optional[str], str]:
     """One rung's results page: ``(text, "")`` or ``(None, failure state)``.
 
     The transport swallows the status; the failures it records are read back
     here and still forwarded to the caller's failure sink.
     """
+    extra: dict[str, Any] = {}
+    if cancel is not None:
+        extra["cancel"] = cancel
     with http.tee_failures() as failures:
-        text = http.get_text(
-            url, accept="text/html", retries=2, deadline_monotonic=deadline_monotonic,
-        )
+        try:
+            text = http.get_text(
+                url,
+                accept="text/html",
+                retries=2,
+                deadline_monotonic=deadline_monotonic,
+                public_only=True,
+                redirect_guard=_rung_redirect_guard(url),
+                max_bytes=_MAX_SERP_BYTES,
+                decode_errors="replace",
+                **extra,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return None, ERROR
     if is_challenge_page(rung, text or ""):
         return None, THROTTLED
     if text:
@@ -335,9 +543,12 @@ def _brave_url(query: str, freshness: Optional[str] = None) -> str:
 def _brave_rung(
     query: str, count: int, freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[list[dict], str]:
     """Rung 0 (Reddit queries): Brave Search's HTML results page, with its state."""
-    text, failed = _fetch_page("brave", _brave_url(query, freshness), deadline_monotonic)
+    text, failed = _fetch_page(
+        "brave", _brave_url(query, freshness), deadline_monotonic, cancel=cancel,
+    )
     if text is None:
         return [], failed
     items = parse_brave(text, count)
@@ -359,32 +570,75 @@ def _brave_date(age: str, now: datetime) -> Optional[str]:
     return None
 
 
+def _tag_class(tag: str) -> str:
+    match = _CLASS_ATTR_RE.search(tag)
+    return match.group("cls") if match else ""
+
+
+def _brave_block_starts(text: str) -> list[int]:
+    starts: list[int] = []
+    for match in _DIV_TAG_RE.finditer(text):
+        tag = match.group(0)
+        if not _DATA_TYPE_WEB_RE.search(tag):
+            continue
+        cls = _tag_class(tag)
+        if cls and re.match(r"^snippet\b", cls, re.IGNORECASE):
+            starts.append(match.start())
+    return starts
+
+
 def parse_brave(text: str, count: int, now: Optional[datetime] = None) -> list[dict]:
     """Organic results from a Brave Search HTML page, each with its date when shown."""
     now = now or datetime.now(timezone.utc)
-    starts = [m.start() for m in _BRAVE_BLOCK_RE.finditer(text or "")]
+    text = text or ""
+    starts = _brave_block_starts(text)
     items: list[dict] = []
     seen: set[str] = set()
     for idx, start in enumerate(starts):
         if len(items) >= count:
             break
         block = text[start:starts[idx + 1] if idx + 1 < len(starts) else len(text)]
-        link = _BRAVE_LINK_RE.search(block)
-        if not link:
+        target = ""
+        for a_match in _A_TAG_RE.finditer(block):
+            href_match = _HTTP_HREF_ATTR_RE.search(a_match.group(0))
+            if href_match:
+                target = html.unescape(href_match.group("href"))
+                break
+        if not target or target in seen:
             continue
-        target = html.unescape(link.group("href"))
-        if target in seen:
-            continue
-        title_match = _BRAVE_TITLE_RE.search(block)
-        title = _strip_html(title_match.group("title")) if title_match else ""
+        title = ""
+        snippet = ""
+        tried_title = False
+        tried_snippet = False
+        div_pos = 0
+        while div_pos < len(block) and not (tried_title and tried_snippet):
+            div_match = _DIV_TAG_RE.search(block, div_pos)
+            if div_match is None:
+                break
+            div_pos = div_match.end()
+            cls = _tag_class(div_match.group(0))
+            if not cls:
+                continue
+            cls_lower = cls.lower()
+            if not tried_title and "search-snippet-title" in cls_lower:
+                tried_title = True
+                close = _CLOSE_DIV_RE.search(block, div_match.end())
+                if close is None:
+                    break
+                title = _strip_html(block[div_match.end():close.start()])
+                div_pos = close.end()
+            elif not tried_snippet and _BRAVE_SNIPPET_CLASS_RE.match(cls):
+                tried_snippet = True
+                close = _CLOSE_DIV_RE.search(block, div_match.end())
+                if close is None:
+                    break
+                raw_snippet = block[div_match.end():close.start()]
+                snippet = " ".join(_strip_html(
+                    _BRAVE_AGE_RE.sub("", raw_snippet, count=1)
+                ).split())
+                div_pos = close.end()
         if not title:
             continue
-        snippet_match = _BRAVE_SNIPPET_RE.search(block)
-        snippet = ""
-        if snippet_match:
-            snippet = " ".join(_strip_html(
-                _BRAVE_AGE_RE.sub("", snippet_match.group("snippet"), count=1)
-            ).split())
         age = _BRAVE_AGE_RE.search(block)
         seen.add(target)
         item = _to_item(len(items), title, target, snippet)
@@ -408,8 +662,11 @@ def _ddg_url(query: str, freshness: Optional[str] = None) -> str:
 def _ddg_rung(
     query: str, count: int, freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[list[dict], str]:
-    text, failed = _fetch_page("ddg", _ddg_url(query, freshness), deadline_monotonic)
+    text, failed = _fetch_page(
+        "ddg", _ddg_url(query, freshness), deadline_monotonic, cancel=cancel,
+    )
     if text is None:
         return [], failed
     items = parse_ddg(text, count)
@@ -424,18 +681,47 @@ def parse_ddg(text: str, count: int) -> list[dict]:
     # some result anchors (video/news modules) have no snippet, so a global
     # zip would shift every later snippet onto the wrong result. Take the first
     # snippet that falls between this anchor and the next one.
-    matches = list(_RESULT_A_RE.finditer(text))
-    for idx, match in enumerate(matches):
+    anchors: list[tuple[int, int, str, str]] = []
+    pos = 0
+    while pos < len(text):
+        match = _A_TAG_RE.search(text, pos)
+        if match is None:
+            break
+        pos = match.end()
+        tag = match.group(0)
+        if "result__a" not in tag.lower():
+            continue
+        cls = _tag_class(tag)
+        if "result__a" not in cls.lower().split():
+            continue
+        href_match = _HREF_ATTR_RE.search(tag)
+        if not href_match:
+            continue
+        close = _CLOSE_A_RE.search(text, match.end())
+        if close is None:
+            break
+        anchors.append((match.start(), close.end(), href_match.group("href"), text[match.end():close.start()]))
+        pos = close.end()
+    for idx, (_start, end, raw_href, raw_title) in enumerate(anchors):
         if len(items) >= count:
             break
-        target = _unwrap_ddg_redirect(match.group("href"))
+        target = _unwrap_ddg_redirect(raw_href)
         if not target.startswith("http"):
             continue
-        next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        window = text[match.end():next_start]
-        snippet_match = _SNIPPET_RE.search(window)
-        snippet = _strip_html(snippet_match.group("snippet")) if snippet_match else ""
-        title = _strip_html(match.group("title"))
+        next_start = anchors[idx + 1][0] if idx + 1 < len(anchors) else len(text)
+        snippet = ""
+        for s_match in _A_TAG_RE.finditer(text, end, next_start):
+            s_tag = s_match.group(0)
+            if "result__snippet" not in s_tag.lower():
+                continue
+            s_cls = _tag_class(s_tag)
+            if "result__snippet" not in s_cls.lower().split():
+                continue
+            s_close = _CLOSE_A_RE.search(text, s_match.end(), next_start)
+            if s_close is not None:
+                snippet = _strip_html(text[s_match.end():s_close.start()])
+            break
+        title = _strip_html(raw_title)
         items.append(_to_item(len(items), title, target, snippet))
     return items
 
@@ -447,12 +733,15 @@ def _search_startpage(query: str, count: int, freshness: Optional[str] = None) -
 def _startpage_rung(
     query: str, count: int, freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[list[dict], str]:
     """Keyless rung 2: Startpage's HTML results page. Unlike DuckDuckGo's HTML
     endpoint (which anomaly-blocks datacenter IPs with a 202 challenge page),
     Startpage returns organic results to a plain browser-UA GET, making it the
     working floor on hosts DuckDuckGo refuses. Never raises."""
-    text, failed = _fetch_page("startpage", _startpage_url(query, freshness), deadline_monotonic)
+    text, failed = _fetch_page(
+        "startpage", _startpage_url(query, freshness), deadline_monotonic, cancel=cancel,
+    )
     if text is None:
         return [], failed
     items = parse_startpage(text, count)
@@ -471,20 +760,55 @@ def parse_startpage(text: str, count: int) -> list[dict]:
     """Organic results from a Startpage HTML results page."""
     text = text or ""
     items: list[dict] = []
-    result_matches = list(_SP_RESULT_RE.finditer(text))
-    for idx, match in enumerate(result_matches):
+    results: list[tuple[int, int, str, str]] = []
+    pos = 0
+    while pos < len(text):
+        match = _A_TAG_RE.search(text, pos)
+        if match is None:
+            break
+        pos = match.end()
+        tag = match.group(0)
+        if "result-title" not in tag.lower():
+            continue
+        cls = _tag_class(tag)
+        if "result-title" not in cls.lower():
+            continue
+        href_match = _HTTP_HREF_ATTR_RE.search(tag)
+        if not href_match:
+            continue
+        close = _CLOSE_A_RE.search(text, match.end())
+        if close is None:
+            break
+        results.append((match.start(), close.end(), href_match.group("href"), text[match.end():close.start()]))
+        pos = close.end()
+    for idx, (_start, end, raw_href, inner) in enumerate(results):
         if len(items) >= count:
             break
-        target = html.unescape(match.group("href"))
+        target = html.unescape(raw_href)
         if not target.startswith("http"):
             continue
-        h2 = _SP_H2_RE.search(match.group("inner"))
-        title = _strip_html(h2.group("title") if h2 else match.group("inner"))
+        h2_open = _H2_TAG_RE.search(inner)
+        if h2_open is not None:
+            h2_close = _CLOSE_H2_RE.search(inner, h2_open.end())
+            raw_title = inner[h2_open.end():h2_close.start()] if h2_close is not None else inner
+        else:
+            raw_title = inner
+        title = _strip_html(raw_title)
         if not title:
             continue
-        next_start = result_matches[idx + 1].start() if idx + 1 < len(result_matches) else len(text)
-        desc = _SP_DESC_RE.search(text, match.end(), next_start)
-        snippet = _strip_html(desc.group("snippet")) if desc else ""
+        next_start = results[idx + 1][0] if idx + 1 < len(results) else len(text)
+        snippet = ""
+        for p_match in _P_TAG_RE.finditer(text, end, next_start):
+            p_tag = p_match.group(0)
+            if "description" not in p_tag.lower():
+                continue
+            p_cls = _tag_class(p_tag)
+            if "description" not in p_cls.lower():
+                continue
+            p_close = _CLOSE_P_RE.search(text, p_match.end(), next_start)
+            if p_close is not None:
+                snippet = _strip_html(text[p_match.end():p_close.start()])
+            break
         items.append(_to_item(len(items), title, target, snippet))
     return items
 
@@ -509,31 +833,61 @@ def is_challenge_page(rung: str, text: str) -> bool:
 def _search_searxng(
     query: str, count: int, instance_url: str, time_range: str | None = None,
     deadline_monotonic: float | None = None,
+    cancel: Optional[threading.Event] = None,
 ) -> list[dict]:
-    base = instance_url.rstrip("/")
+    validated = _validate_searxng_url(instance_url)
+    if validated is None:
+        log.source_log(
+            "Web",
+            "Ignoring invalid or blocked LAST30DAYS_SEARXNG_URL",
+            tty_only=False,
+        )
+        return []
+    base, origin = validated
     params = {'q': query, 'format': 'json'}
     if time_range:
         params['time_range'] = time_range
     url = f"{base}/search?{urlencode(params)}"
+    extra: dict[str, Any] = {}
+    if cancel is not None:
+        extra["cancel"] = cancel
     try:
         data = http.get(
-            url, headers={"Accept": "application/json"}, timeout=15, retries=2,
+            url,
+            headers={"Accept": "application/json"},
+            timeout=15,
+            retries=2,
             deadline_monotonic=deadline_monotonic,
+            redirect_guard=_searxng_redirect_guard(origin),
+            ip_validator=_is_allowed_searxng_ip,
+            max_bytes=_MAX_SEARXNG_BYTES,
+            decode_errors="replace",
+            **extra,
         )
-    except http.HTTPError:
+    except (http.HTTPError, UnicodeDecodeError, ValueError):
         return []
     if not isinstance(data, dict):
         return []
+    raw_results = data.get("results")
+    if not isinstance(raw_results, list):
+        return []
     items: list[dict] = []
-    for i, r in enumerate(data.get("results", [])):
+    for i, r in enumerate(raw_results):
         if len(items) >= count:
             break
         if not isinstance(r, dict):
             continue
-        target = r.get("url", "")
-        if not target.startswith("http"):
+        target = r.get("url")
+        if not isinstance(target, str) or not target.startswith(("http://", "https://")):
             continue
-        items.append(_to_item(i, r.get("title", ""), target, r.get("content", "")))
+        title = r.get("title")
+        content = r.get("content")
+        items.append(_to_item(
+            i,
+            title if isinstance(title, str) else str(title or ""),
+            target,
+            content if isinstance(content, str) else str(content or ""),
+        ))
     return items
 
 
