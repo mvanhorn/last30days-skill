@@ -2556,14 +2556,48 @@ def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
     return max(4, min(16, stream_count or 1))
 
 
+def normalize_save_dir(save_dir: Path | str | None) -> str | None:
+    """Strip whitespace from a configured save directory; empty/blank becomes None."""
+    if save_dir is None:
+        return None
+    text = str(save_dir).strip()
+    return text or None
+
+
 def is_scoped_save_dir(save_dir: Path | str | None) -> bool:
     """True when ``save_dir`` points to a directory other than DEFAULT_MEMORY_DIR."""
-    if not save_dir or (isinstance(save_dir, str) and not save_dir.strip()):
+    normalized = normalize_save_dir(save_dir)
+    if normalized is None:
         return False
-    return (
-        Path(save_dir).expanduser().resolve()
-        != Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve()
-    )
+    try:
+        return (
+            Path(normalized).expanduser().resolve()
+            != Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve()
+        )
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return True
+
+
+def scoped_store_db_path(save_dir: Path | str | None) -> Path | None:
+    """Return the scoped research.db path, or None to use the shared default store.
+
+    When ``save_dir`` resolves to ``DEFAULT_MEMORY_DIR``, preserve an existing
+    legacy ``DEFAULT_MEMORY_DIR/research.db`` created by earlier builds rather
+    than abandoning its saved findings and discovery queue.
+    """
+    normalized = normalize_save_dir(save_dir)
+    if normalized is None:
+        return None
+    try:
+        resolved = Path(normalized).expanduser().resolve()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return Path(normalized).expanduser() / "research.db"
+    candidate = resolved / "research.db"
+    if is_scoped_save_dir(resolved):
+        return candidate
+    if candidate.is_file():
+        return candidate
+    return None
 
 
 def library_context_index_path(
@@ -2574,8 +2608,10 @@ def library_context_index_path(
         return None
     if path := config.get("_LAST30DAYS_LIBRARY_DB"):
         return Path(path).expanduser()
-    if is_scoped_save_dir(save_dir):
-        return Path(save_dir).expanduser().resolve() / ".last30days-library.db"
+    normalized = normalize_save_dir(save_dir)
+    if is_scoped_save_dir(normalized):
+        assert normalized is not None
+        return Path(normalized).expanduser().resolve() / ".last30days-library.db"
     return library_index.DEFAULT_LIBRARY_DB
 
 
@@ -2597,11 +2633,13 @@ def _load_library_context(
     if db_path is None:
         return [], None
 
-    scoped = is_scoped_save_dir(save_dir)
+    normalized_save_dir = normalize_save_dir(save_dir)
+    scoped = is_scoped_save_dir(normalized_save_dir)
+    configured_memory_dir = normalize_save_dir(config.get("LAST30DAYS_MEMORY_DIR"))
     memory_dir = (
-        save_dir
-        if save_dir is not None
-        else config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
+        normalized_save_dir
+        if normalized_save_dir is not None
+        else configured_memory_dir or library.DEFAULT_MEMORY_DIR
     )
     briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or (
         Path(memory_dir).expanduser() / "briefings"
@@ -2613,9 +2651,8 @@ def _load_library_context(
         # Scoped runs read only a store inside the save dir (usually absent);
         # the shared store would leak other scopes' sightings into this one.
         store_db = (
-            Path(memory_dir).expanduser().resolve() / "research.db"
-            if scoped
-            else library_index.DEFAULT_STORE_DB
+            scoped_store_db_path(normalized_save_dir)
+            or library_index.DEFAULT_STORE_DB
         )
     queries = [topic, x_handle or "", github_user or "", *(github_repos or [])]
     queries = list(dict.fromkeys(value.strip() for value in queries if value and value.strip()))

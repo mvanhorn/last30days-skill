@@ -3468,6 +3468,46 @@ def _polymarket_names_topic(item: schema.SourceItem, topic: str) -> bool:
     )
 
 
+def _polymarket_footer_entry(
+    item: schema.SourceItem,
+) -> tuple[str, str, str, str] | None:
+    """Extract ``(name, pct, question, label)`` for a priced footer market, or None."""
+    headline = _polymarket_headline(item)
+    if headline:
+        question, price, label = headline
+        pct = _format_polymarket_pct(price)
+        if pct is None:
+            return None
+        name = _polymarket_phrase(question)
+        if not name:
+            return None
+        return (f"{name}: {label}" if label else name, pct, question, label)
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    raw_outcomes = metadata.get("outcome_prices")
+    outcome_prices = raw_outcomes if isinstance(raw_outcomes, (list, tuple)) else []
+    lead_match = next(
+        (
+            (entry[0], pct)
+            for entry in outcome_prices
+            if isinstance(entry, (list, tuple))
+            and len(entry) == 2
+            and (pct := _format_polymarket_pct(entry[1])) is not None
+        ),
+        None,
+    )
+    if lead_match is None:
+        return None
+    lead_name, pct = lead_match
+    lead_name_str = "" if lead_name is None else str(lead_name)
+
+    question = str(metadata.get("question") or item.title or "").strip()
+    name, is_descriptor = _polymarket_market_name(question, lead_name_str)
+    if not name:
+        return None
+    label = "" if is_descriptor else lead_name_str.strip()
+    return (name, pct, question, label)
+
+
 def _polymarket_top_markets(
     items: list[schema.SourceItem], limit: int = 3, topic: str = "",
 ) -> list[str]:
@@ -3479,82 +3519,47 @@ def _polymarket_top_markets(
     listed. An item saved by an older build carries no chosen market and is
     named the older way: ['UK visit 5.5%', 'blocked from entering 36%'].
     """
+    if limit <= 0:
+        return []
     items = [item for item in items if isinstance(item.metadata, dict)]
     if topic:
         items = [item for item in items if _polymarket_names_topic(item, topic)]
     sorted_items = polymarket.by_selection(items)
 
+    # Extract priced entries BEFORE claiming a series slot so an unpriced or
+    # impossible_set market in a recurring count series never blocks the next
+    # priced market in that same series.
     # One market per series first, a substantive question before a recurring
     # count bracket ("# tweets this week"); a count series is never repeated,
     # and another rung of a substantive ladder only fills a slot left over.
-    firsts: list[schema.SourceItem] = []
-    repeats: list[schema.SourceItem] = []
+    firsts: list[tuple[schema.SourceItem, tuple[str, str, str, str]]] = []
+    repeats: list[tuple[schema.SourceItem, tuple[str, str, str, str]]] = []
     seen_series: set[str] = set()
     for item in sorted_items:
+        entry = _polymarket_footer_entry(item)
+        if entry is None:
+            continue
         metadata = item.metadata if isinstance(item.metadata, dict) else {}
         texts = (item.title or "", str(metadata.get("question") or ""))
         counted = polymarket.is_count_series(*texts)
         series = polymarket.series_key(*texts)
         if series and series in seen_series:
             if not counted:
-                repeats.append(item)
+                repeats.append((item, entry))
             continue
         seen_series.add(series)
-        firsts.append(item)
-    firsts.sort(key=lambda it: polymarket.is_count_series(
-        it.title or "",
-        str((it.metadata if isinstance(it.metadata, dict) else {}).get("question") or ""),
+        firsts.append((item, entry))
+    firsts.sort(key=lambda pair: polymarket.is_count_series(
+        pair[0].title or "",
+        str((pair[0].metadata if isinstance(pair[0].metadata, dict) else {}).get("question") or ""),
     ))
-    sorted_items = firsts + repeats
-
-    if limit <= 0:
-        return []
 
     # (name, pct, question, label when the name is not the bare descriptor)
     markets: list[tuple[str, str, str, str]] = []
     seen_markets: set[tuple[str, str]] = set()
-    for item in sorted_items:
+    for _item, (name, pct, question, label) in firsts + repeats:
         if len(markets) >= limit:
             break
-        headline = _polymarket_headline(item)
-        if headline:
-            question, price, label = headline
-            pct = _format_polymarket_pct(price)
-            if pct is None:
-                continue
-            name = _polymarket_phrase(question)
-            if not name:
-                continue
-            entry_name = f"{name}: {label}" if label else name
-            key = (_polymarket_name_key(question), _polymarket_name_key(entry_name))
-            if key in seen_markets:
-                continue
-            seen_markets.add(key)
-            markets.append((entry_name, pct, question, label))
-            continue
-        metadata = item.metadata if isinstance(item.metadata, dict) else {}
-        raw_outcomes = metadata.get("outcome_prices")
-        outcome_prices = raw_outcomes if isinstance(raw_outcomes, (list, tuple)) else []
-        lead_match = next(
-            (
-                (entry[0], pct)
-                for entry in outcome_prices
-                if isinstance(entry, (list, tuple))
-                and len(entry) == 2
-                and (pct := _format_polymarket_pct(entry[1])) is not None
-            ),
-            None,
-        )
-        if lead_match is None:
-            continue
-        lead_name, pct = lead_match
-        lead_name_str = "" if lead_name is None else str(lead_name)
-
-        question = str(metadata.get("question") or item.title or "").strip()
-        name, is_descriptor = _polymarket_market_name(question, lead_name_str)
-        if not name:
-            continue
-        label = "" if is_descriptor else lead_name_str.strip()
         key = (_polymarket_name_key(question), _polymarket_name_key(name))
         if key in seen_markets:
             continue
@@ -5774,14 +5779,37 @@ def _polymarket_matched_part(
         return None
     if not math.isfinite(scaled_price):
         return None
+    def _norm_id(value: object) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
     label = " ".join(str(matched.get("label") or "").split())
     norm_label = label.casefold()
-    same = None
-    if norm_label:
+    matched_market_id = _norm_id(matched.get("market_id"))
+    matched_outcome_id = _norm_id(matched.get("outcome_id"))
+
+    def _ids_present(entry: dict) -> bool:
+        return bool(matched_market_id and _norm_id(entry.get("market_id")))
+
+    def _ids_match(entry: dict) -> bool:
+        if not _ids_present(entry):
+            return False
+        if _norm_id(entry.get("market_id")) != matched_market_id:
+            return False
+        entry_outcome_id = _norm_id(entry.get("outcome_id"))
+        if matched_outcome_id and entry_outcome_id:
+            return entry_outcome_id == matched_outcome_id
+        return True
+
+    same = next(
+        (entry for entry in entries if isinstance(entry, dict) and _ids_match(entry)),
+        None,
+    )
+    if same is None and norm_label:
         same = next(
             (
                 entry for entry in entries
                 if isinstance(entry, dict)
+                and not _ids_present(entry)
                 and " ".join(str(entry.get("label") or "").split()).casefold() == norm_label
             ),
             None,
@@ -5791,6 +5819,7 @@ def _polymarket_matched_part(
             (
                 entry for entry in entries
                 if isinstance(entry, dict)
+                and not _ids_present(entry)
                 and not " ".join(str(entry.get("label") or "").split())
                 and _is_finite_number(entry.get("price"))
                 and float(entry.get("price")) == float(price)

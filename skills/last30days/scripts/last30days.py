@@ -335,7 +335,10 @@ def save_output(
     render_fn: Callable[[Path], str] | None = None,
 ) -> Path:
     from datetime import datetime
-    path = Path(save_dir).expanduser().resolve()
+    normalized_save_dir = pipeline.normalize_save_dir(save_dir)
+    if normalized_save_dir is None:
+        raise ValueError("save_output requires a non-empty save_dir")
+    path = Path(normalized_save_dir).expanduser().resolve()
     slug = slugify(topic_override or report.topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
@@ -625,10 +628,7 @@ def _is_scoped_save_dir(save_dir: Path | str | None) -> bool:
 
 def _scoped_store_db(args: argparse.Namespace) -> Path | None:
     """Scoped runs write findings inside the save dir, matching scoped reads."""
-    save_dir = getattr(args, "save_dir", None)
-    if _is_scoped_save_dir(save_dir):
-        return Path(save_dir).expanduser().resolve() / "research.db"
-    return None
+    return pipeline.scoped_store_db_path(getattr(args, "save_dir", None))
 
 
 def _research_store_enabled(args: argparse.Namespace, config: dict[str, object]) -> bool:
@@ -641,8 +641,15 @@ def _add_preflight_library_writes(
 ) -> None:
     from lib import library_index
 
-    on_save = bool(args.preflight_report_on_save_dir and not args.save_dir)
-    save_dir = args.preflight_report_on_save_dir if on_save else args.save_dir
+    raw_save_dir = args.save_dir
+    norm_save_dir = pipeline.normalize_save_dir(raw_save_dir)
+    norm_on_save_dir = pipeline.normalize_save_dir(args.preflight_report_on_save_dir)
+    on_save = bool(norm_on_save_dir and not norm_save_dir)
+    save_dir = (
+        norm_on_save_dir
+        if on_save
+        else ("" if raw_save_dir == "" else norm_save_dir)
+    )
     local, conditional = preflight["local_writes"], preflight["conditional_writes"]
     context_db = None if args.mock else pipeline.library_context_index_path(config, save_dir)
     if context_db is not None:
@@ -2515,12 +2522,13 @@ def _emit_and_save_discovery_report(
     if args.output:
         output_path = save_rendered_output(rendered, args.output)
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
-    if args.save_dir:
+    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
+    if normalized_save_dir:
         save_path = _save_discovery_output(
             rendered,
             domain=domain or "trending",
             emit=args.emit,
-            save_dir=args.save_dir,
+            save_dir=normalized_save_dir,
             suffix=args.save_suffix or "",
         )
         sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
@@ -3131,13 +3139,14 @@ def _render_save_and_print(
     # have to be overridden away from the leading entity's report. Compute the
     # gate once so the footer-display and save-output paths can't disagree.
     is_comparison_html = bool(entity_reports) and args.emit == "html"
+    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
     footer_save_path = None
     if args.output:
         footer_save_path = compute_output_path_display(args.output)
-    elif args.save_dir:
+    elif normalized_save_dir:
         save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
         footer_save_path = compute_save_path_display(
-            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
+            normalized_save_dir, save_topic_for_display, args.save_suffix or "", args.emit
         )
 
     if entity_reports:
@@ -3175,7 +3184,7 @@ def _render_save_and_print(
             publish_companion_paths.append(output_path)
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
         sys.stderr.flush()
-    if args.save_dir:
+    if normalized_save_dir:
         # Save the main topic's raw file (single-entity or comparison main).
         # Bind the render to the path save_output actually allocates so the
         # saved report and stdout agree even when collision fallback is used.
@@ -3215,7 +3224,7 @@ def _render_save_and_print(
         save_path = save_output(
             report,
             args.emit,
-            args.save_dir,
+            normalized_save_dir,
             suffix=args.save_suffix or "",
             synthesis_md=synthesis_md,
             topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
@@ -3233,7 +3242,7 @@ def _render_save_and_print(
         if entity_reports and len(entity_reports) > 1:
             for label, entity_report in entity_reports[1:]:
                 peer_path = save_output(
-                    entity_report, args.emit, args.save_dir,
+                    entity_report, args.emit, normalized_save_dir,
                     suffix=args.save_suffix or "",
                     synthesis_md=synthesis_md,
                     json_profile=args.json_profile,
@@ -4178,8 +4187,13 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         )
         return 2
 
-    scoped = _is_scoped_save_dir(args.save_dir)
-    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
+    scoped = _is_scoped_save_dir(normalized_save_dir)
+    memory_dir = (
+        Path(normalized_save_dir).expanduser()
+        if normalized_save_dir is not None
+        else library.DEFAULT_MEMORY_DIR
+    )
     output_dir = memory_dir.resolve()
     # Scoped libraries (--save-dir) must not mix in the global briefing
     # archive: a client-specific or publishable feed pulling unrelated default
@@ -4364,8 +4378,17 @@ def _run_library_search(
         )
         return 2
 
-    scoped = _is_scoped_save_dir(args.save_dir)
-    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
+    scoped = _is_scoped_save_dir(normalized_save_dir)
+    memory_dir = (
+        Path(normalized_save_dir).expanduser()
+        if normalized_save_dir is not None
+        else library.DEFAULT_MEMORY_DIR
+    )
+    store_db = (
+        pipeline.scoped_store_db_path(normalized_save_dir)
+        or library_index.DEFAULT_STORE_DB
+    )
     try:
         matches, synced = library_index.sync_and_search(
             query,
@@ -4380,10 +4403,7 @@ def _run_library_search(
             # A scoped search must never merge in the shared store: one
             # client's sightings would leak into another client's scope. A
             # scoped store is read only if it exists inside the save dir.
-            store_db_path=(
-                memory_dir.resolve() / "research.db"
-                if scoped else library_index.DEFAULT_STORE_DB
-            ),
+            store_db_path=store_db,
         )
     except library_index.LibrarySearchUnavailable as exc:
         sys.stderr.write(f"[last30days] Library search unavailable: {exc}.\n")
@@ -4432,7 +4452,12 @@ def _run_library_harvest(
             "pass --save-dir <dir> to run library harvest.\n"
         )
         return 2
-    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    normalized_save_dir = pipeline.normalize_save_dir(args.save_dir)
+    memory_dir = (
+        Path(normalized_save_dir).expanduser()
+        if normalized_save_dir is not None
+        else library.DEFAULT_MEMORY_DIR
+    )
 
     try:
         result = transcript_harvest.harvest_transcripts(
@@ -4875,6 +4900,8 @@ def _main(
     if args.save_dir is None:
         env_val = os.environ.get("LAST30DAYS_MEMORY_DIR")
         args.save_dir = env_val if env_val is not None else config.get("LAST30DAYS_MEMORY_DIR")
+    if args.save_dir is not None and args.save_dir != "":
+        args.save_dir = pipeline.normalize_save_dir(args.save_dir)
 
     # Surface SSH-routing config as an env var so library modules (e.g.
     # youtube_yt) can read it without taking a config dependency. This

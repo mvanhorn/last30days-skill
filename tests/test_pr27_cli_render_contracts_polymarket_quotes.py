@@ -22,7 +22,7 @@ from unittest import mock
 import pytest
 
 import last30days as cli
-from lib import library, library_index, pipeline, render, schema
+from lib import library, library_index, normalize, pipeline, polymarket, render, schema
 
 
 def _make_item(
@@ -499,6 +499,126 @@ class TestHigh012DefaultMemoryDirNormalization:
         assert saved.is_file()
         assert sync_calls == [((default_dir.resolve(),), {})]
 
+    def test_whitespace_only_save_dir_normalizes_to_default_consistently(
+        self, tmp_path: Path, monkeypatch
+    ):
+        default_dir = tmp_path / "Documents" / "Last30Days"
+        default_dir.mkdir(parents=True)
+        work_dir = tmp_path / "cwd"
+        work_dir.mkdir()
+        monkeypatch.chdir(work_dir)
+        monkeypatch.setattr(library, "DEFAULT_MEMORY_DIR", default_dir)
+        monkeypatch.setattr(cli.env, "get_config", lambda **_k: {})
+
+        assert pipeline.normalize_save_dir("   ") is None
+        assert pipeline.is_scoped_save_dir("   ") is False
+        assert cli._scoped_store_db(argparse.Namespace(save_dir="   ")) is None
+
+        # 1. library search via LAST30DAYS_MEMORY_DIR="   " scans DEFAULT_MEMORY_DIR, never "   "
+        search_kwargs: dict[str, Path] = {}
+
+        def fake_sync_and_search(query, *, memory_dir, briefs_dir, db_path, store_db_path):
+            search_kwargs["memory_dir"] = Path(memory_dir)
+            search_kwargs["briefs_dir"] = Path(briefs_dir)
+            search_kwargs["db_path"] = Path(db_path)
+            search_kwargs["store_db_path"] = Path(store_db_path)
+            return [], mock.Mock(notes=[], rebuilt=False)
+
+        monkeypatch.setattr(library_index, "sync_and_search", fake_sync_and_search)
+        monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "   ")
+        monkeypatch.setattr(sys, "argv", ["last30days.py", "library", "search", "MCP"])
+        assert cli.main() == 0
+        assert search_kwargs["memory_dir"].resolve() == default_dir.resolve()
+        assert search_kwargs["briefs_dir"] == library.DEFAULT_BRIEFS_DIR
+        assert search_kwargs["db_path"] == library_index.DEFAULT_LIBRARY_DB
+        assert search_kwargs["store_db_path"] == library_index.DEFAULT_STORE_DB
+        assert not (work_dir / "   ").exists()
+
+        # 2. library feed --publish with --save-dir "   " writes into DEFAULT_MEMORY_DIR, never "   "
+        from lib import html_publish
+
+        scanned: list[tuple[Path, Path]] = []
+
+        def fake_scan_library(memory_dir, briefs_dir):
+            scanned.append((Path(memory_dir), Path(briefs_dir)))
+            return [], []
+
+        monkeypatch.setattr(library, "scan_library", fake_scan_library)
+        monkeypatch.setattr(
+            html_publish,
+            "publish_html_documents",
+            lambda docs, password=None: {},
+        )
+        monkeypatch.setattr(
+            html_publish,
+            "publish_html",
+            lambda html, password=None: {"url": "https://example.test/lib"},
+        )
+        monkeypatch.delenv("LAST30DAYS_MEMORY_DIR", raising=False)
+        args_feed = cli.build_parser().parse_args(
+            ["library", "feed", "--publish", "--save-dir", "   "]
+        )
+        assert cli._run_library_feed(args_feed, {}) == 0
+        assert scanned == [(default_dir, library.DEFAULT_BRIEFS_DIR)]
+        assert (default_dir / "index.html").is_file()
+        assert not (work_dir / "   ").exists()
+
+        # 3. save_output rejects whitespace-only path instead of creating a literal "   " folder
+        with pytest.raises(ValueError, match="non-empty save_dir"):
+            cli.save_output(_make_report("Blank"), "md", "   ")
+        assert not (work_dir / "   ").exists()
+
+        # 4. _load_library_context with save_dir="   " uses DEFAULT_MEMORY_DIR, never "   "
+        ctx_sync: list[tuple[Path, Path, Path]] = []
+        monkeypatch.setattr(
+            pipeline.library_index,
+            "sync_library",
+            lambda m, b, *, db_path: ctx_sync.append((Path(m), Path(b), Path(db_path))),
+        )
+        monkeypatch.setattr(pipeline.library_index, "search", lambda *a, **k: [])
+        pipeline._load_library_context(
+            topic="MCP",
+            config={"LAST30DAYS_LIBRARY_CONTEXT": "on", "LAST30DAYS_MEMORY_DIR": "   "},
+            mock=False,
+            internal_subrun=False,
+            x_handle=None,
+            github_user=None,
+            github_repos=None,
+            save_dir="   ",
+        )
+        assert ctx_sync == [
+            (default_dir, library.DEFAULT_BRIEFS_DIR, library_index.DEFAULT_LIBRARY_DB)
+        ]
+
+    def test_existing_legacy_default_memory_research_db_is_preserved_on_upgrade(
+        self, tmp_path: Path, monkeypatch
+    ):
+        default_dir = tmp_path / "Documents" / "Last30Days"
+        default_dir.mkdir(parents=True)
+        monkeypatch.setattr(library, "DEFAULT_MEMORY_DIR", default_dir)
+
+        # Clean DEFAULT_MEMORY_DIR without research.db -> unified shared store (None).
+        args = argparse.Namespace(save_dir=str(default_dir))
+        assert cli._scoped_store_db(args) is None
+
+        # Existing legacy DEFAULT_MEMORY_DIR/research.db -> preserved across store & search.
+        legacy_db = default_dir / "research.db"
+        legacy_db.write_bytes(b"")
+        assert cli._scoped_store_db(args) == legacy_db.resolve()
+
+        captured_store: list[Path] = []
+
+        def fake_sync_and_search(query, *, memory_dir, briefs_dir, db_path, store_db_path):
+            captured_store.append(Path(store_db_path))
+            return [], mock.Mock(notes=[], rebuilt=False)
+
+        monkeypatch.setattr(library_index, "sync_and_search", fake_sync_and_search)
+        search_args = cli.build_parser().parse_args(
+            ["library", "search", "MCP", "--save-dir", str(default_dir)]
+        )
+        assert cli._run_library_search(search_args, {}, "MCP") == 0
+        assert captured_store == [legacy_db.resolve()]
+
 
 # ---------------------------------------------------------------------------
 # HIGH-041: _polymarket_matched_part label-first match & displayed [:3] slice
@@ -660,6 +780,135 @@ class TestHigh041PolymarketMatchedPart:
         # Withheld odds path also rejects bool rank.
         assert render._polymarket_odds_line(item, "2026") == ""
 
+    def test_49ers_win_total_alternate_label_prints_once_while_distinct_ids_stay_separate(
+        self,
+    ):
+        # Live parser flow: matched_market uses "San Francisco 49ers" while odds["parts"]
+        # labels the same outcome "O 10.5". Both share (market_id, outcome_id), so 93.5%/94%
+        # must NOT be printed twice.
+        event = {
+            "id": "totals",
+            "title": "Pro Football: 2026 Regular Season Win Totals",
+            "slug": "totals",
+            "active": True,
+            "closed": False,
+            "negRisk": False,
+            "volume1mo": 1000,
+            "liquidity": 10000,
+            "updatedAt": "2026-11-16T00:00:00Z",
+            "markets": [
+                {
+                    "id": "m-ravens",
+                    "question": "Will the Baltimore Ravens win more than 11.5 games in the 2026 NFL Regular Season?",
+                    "groupItemTitle": "Baltimore Ravens",
+                    "outcomes": '["O 11.5", "U 11.5"]',
+                    "outcomePrices": '["0.0585", "0.9415"]',
+                    "clobTokenIds": '["tok-rav-o", "tok-rav-u"]',
+                    "volume": "8806.7",
+                    "volumeNum": 8806.7,
+                    "liquidity": "5000",
+                    "endDate": "2027-03-01T00:00:00Z",
+                    "active": True,
+                    "closed": False,
+                },
+                {
+                    "id": "m-49ers",
+                    "question": "Will the San Francisco 49ers win more than 10.5 games in the 2026 NFL Regular Season?",
+                    "groupItemTitle": "San Francisco 49ers",
+                    "outcomes": '["O 10.5", "U 10.5"]',
+                    "outcomePrices": '["0.935", "0.065"]',
+                    "clobTokenIds": '["tok-sf-o", "tok-sf-u"]',
+                    "volume": "3555.76",
+                    "volumeNum": 3555.76,
+                    "liquidity": "5000",
+                    "endDate": "2027-03-01T00:00:00Z",
+                    "active": True,
+                    "closed": False,
+                },
+            ],
+        }
+        [parsed] = polymarket.parse_polymarket_response(
+            {"events": [event]},
+            topic="49ers",
+            to_date="2026-11-16",
+            hints=polymarket.PolymarketHints.coerce(
+                {"kind": "team", "aliases": ["San Francisco 49ers"]}
+            ),
+        )
+        assert parsed["matched_market"]["market_id"] == "m-49ers"
+        assert parsed["matched_market"]["outcome_id"] == "tok-sf-o"
+        assert parsed["odds"]["parts"][0]["market_id"] == "m-49ers"
+        assert parsed["odds"]["parts"][0]["outcome_id"] == "tok-sf-o"
+        assert parsed["odds"]["parts"][1]["outcome_id"] == "tok-sf-u"
+
+        [norm] = normalize.normalize_source_items(
+            "polymarket", [parsed], "2026-10-17", "2026-11-16"
+        )
+        line = render._polymarket_odds_line(norm, "2026")
+        assert "San Francisco 49ers 93.5%" not in line
+        assert "O 10.5 at 94%" in line
+        assert "U 10.5 at 6.5%" in line
+        assert line.count("94%") + line.count("93.5%") == 1
+
+        # Distinct markets with tied 25% prices and distinct IDs never collide.
+        tied_item = _make_item(
+            "pm-tied-ids",
+            source="polymarket",
+            title="Award Winner",
+            metadata={
+                "odds": {
+                    "kind": "outcomes",
+                    "subject": "Award Winner",
+                    "parts": [
+                        {"label": "Alice", "price": 0.25, "move": [4.0, "today"], "market_id": "m-alice"},
+                        {"label": "Bob", "price": 0.25, "move": [-2.0, "today"], "market_id": "m-bob"},
+                    ],
+                },
+                "matched_market": {
+                    "label": "Bob",
+                    "price": 0.25,
+                    "contender": True,
+                    "rank": 2,
+                    "race_size": 10,
+                    "market_id": "m-bob",
+                },
+            },
+        )
+        tied_line = render._polymarket_odds_line(tied_item, "2026")
+        assert tied_line.count("Bob") == 1
+        assert "Bob 25%, #2 of 10 (down 2 pts today)" in tied_line
+        assert "Alice at 25% (up 4 pts today)" in tied_line
+
+        # Same market with tied 50%/50% outcomes matches ONLY the matching outcome_id.
+        tied_outcomes = _make_item(
+            "pm-tied-outcomes",
+            source="polymarket",
+            title="Win Total",
+            metadata={
+                "odds": {
+                    "kind": "outcomes",
+                    "subject": "Win Total",
+                    "parts": [
+                        {"label": "U 10.5", "price": 0.50, "move": [-1.0, "today"], "market_id": "m-sf", "outcome_id": "tok-u"},
+                        {"label": "O 10.5", "price": 0.50, "move": [1.0, "today"], "market_id": "m-sf", "outcome_id": "tok-o"},
+                    ],
+                },
+                "matched_market": {
+                    "label": "San Francisco 49ers",
+                    "price": 0.50,
+                    "contender": True,
+                    "rank": 1,
+                    "race_size": 2,
+                    "market_id": "m-sf",
+                    "outcome_id": "tok-o",
+                },
+            },
+        )
+        outcomes_line = render._polymarket_odds_line(tied_outcomes, "2026")
+        assert "San Francisco 49ers 50%, #1 of 2 (up 1 pt today)" in outcomes_line
+        assert "U 10.5 at 50% (down 1 pt today)" in outcomes_line
+        assert "O 10.5" not in outcomes_line
+
 
 # ---------------------------------------------------------------------------
 # HIGH-042: _polymarket_top_markets skips unpriced/impossible/dupes before limit
@@ -682,37 +931,40 @@ class TestHigh042PolymarketTopMarketsNoPreSlice:
             "outcome_prices": [] if outcome_prices is None else outcome_prices,
             "headline": headline,
         }
-        return _make_item(
+        item = _make_item(
             item_id,
             source="polymarket",
             title=question,
             url=f"https://polymarket.com/event/{item_id}",
             metadata=meta,
         )
+        item.engagement = {"volume": volume}
+        return item
 
     def test_unpriced_and_impossible_set_items_do_not_consume_footer_slots(self):
+        # Deliberately unsorted input so polymarket.by_selection must sort by engagement["volume"].
         items = [
-            self._pm_item("unpriced-1", "Will Acme close at ___?", outcome_prices=[], volume=900),
-            self._pm_item("unpriced-2", "Will Acme hit ___?", outcome_prices=[], volume=800),
-            self._pm_item("unpriced-3", "Will Acme trade at ___?", outcome_prices=[], volume=700),
-            self._pm_item(
-                "priced-1",
-                "Will Acme IPO in 2026?",
-                headline={"question": "Will Acme IPO in 2026?", "price": 0.42, "label": ""},
-                volume=600,
-            ),
-            self._pm_item(
-                "priced-2",
-                "Will Acme ship v2 in 2026?",
-                headline={"question": "Will Acme ship v2 in 2026?", "price": 0.65, "label": ""},
-                volume=500,
-            ),
             self._pm_item(
                 "priced-3",
                 "Will Acme acquire Beta in 2026?",
                 headline={"question": "Will Acme acquire Beta in 2026?", "price": 0.18, "label": ""},
                 volume=400,
             ),
+            self._pm_item("unpriced-2", "Will Acme hit ___?", outcome_prices=[], volume=800),
+            self._pm_item(
+                "priced-1",
+                "Will Acme IPO in 2026?",
+                headline={"question": "Will Acme IPO in 2026?", "price": 0.42, "label": ""},
+                volume=600,
+            ),
+            self._pm_item("unpriced-1", "Will Acme close at ___?", outcome_prices=[], volume=900),
+            self._pm_item(
+                "priced-2",
+                "Will Acme ship v2 in 2026?",
+                headline={"question": "Will Acme ship v2 in 2026?", "price": 0.65, "label": ""},
+                volume=500,
+            ),
+            self._pm_item("unpriced-3", "Will Acme trade at ___?", outcome_prices=[], volume=700),
         ]
 
         summaries = render._polymarket_top_markets(items, limit=3)
@@ -724,12 +976,13 @@ class TestHigh042PolymarketTopMarketsNoPreSlice:
         ]
 
     def test_duplicate_and_malformed_entries_do_not_starve_later_valid_markets(self):
+        # Shuffled order verifies engagement["volume"] sorting determines winners.
         items = [
             self._pm_item(
-                "dup-1",
-                "Will Acme IPO in 2026?",
-                outcome_prices=[("Yes", 0.40)],
-                volume=900,
+                "valid-3",
+                "Will Acme open a Tokyo office?",
+                outcome_prices=[("Yes", 0.29)],
+                volume=600,
             ),
             self._pm_item(
                 "dup-2",
@@ -750,10 +1003,10 @@ class TestHigh042PolymarketTopMarketsNoPreSlice:
                 volume=700,
             ),
             self._pm_item(
-                "valid-3",
-                "Will Acme open a Tokyo office?",
-                outcome_prices=[("Yes", 0.29)],
-                volume=600,
+                "dup-1",
+                "Will Acme IPO in 2026?",
+                outcome_prices=[("Yes", 0.40)],
+                volume=900,
             ),
         ]
 
@@ -767,10 +1020,10 @@ class TestHigh042PolymarketTopMarketsNoPreSlice:
     def test_unshown_fourth_market_does_not_expand_first_market_disambiguation(self):
         items = [
             self._pm_item(
-                "m1",
-                "Will Fed cut rates by March 31, 2027?",
-                outcome_prices=[("Yes", 0.25)],
-                volume=900,
+                "m4",
+                "Will Fed cut rates by June 30, 2027?",
+                outcome_prices=[("Yes", 0.50)],
+                volume=600,
             ),
             self._pm_item(
                 "m2",
@@ -779,16 +1032,16 @@ class TestHigh042PolymarketTopMarketsNoPreSlice:
                 volume=800,
             ),
             self._pm_item(
+                "m1",
+                "Will Fed cut rates by March 31, 2027?",
+                outcome_prices=[("Yes", 0.25)],
+                volume=900,
+            ),
+            self._pm_item(
                 "m3",
                 "Will Apple release foldable iPhone in 2026?",
                 outcome_prices=[("Yes", 0.15)],
                 volume=700,
-            ),
-            self._pm_item(
-                "m4",
-                "Will Fed cut rates by June 30, 2027?",
-                outcome_prices=[("Yes", 0.50)],
-                volume=600,
             ),
         ]
 
@@ -796,6 +1049,38 @@ class TestHigh042PolymarketTopMarketsNoPreSlice:
 
         assert len(summaries) == 3
         assert "March 31, 2027" not in summaries[0]
+
+    def test_unpriced_count_series_item_does_not_block_priced_sibling_in_same_series(
+        self,
+    ):
+        # Higher-volume unpriced weekly count market must NOT claim seen_series and
+        # drop the priced weekly count market from the same series.
+        unpriced_count = self._pm_item(
+            "tweets-unpriced",
+            "Elon Musk # tweets November 10 - November 17, 2026?",
+            outcome_prices=[],
+            volume=5000,
+        )
+        priced_count = self._pm_item(
+            "tweets-priced",
+            "Elon Musk # tweets November 17 - November 24, 2026?",
+            headline={
+                "question": "Elon Musk # tweets November 17 - November 24, 2026?",
+                "price": 0.34,
+                "label": "200-219",
+            },
+            volume=1000,
+        )
+        assert polymarket.is_count_series(unpriced_count.title, unpriced_count.title)
+        assert polymarket.series_key(unpriced_count.title, unpriced_count.title) == (
+            polymarket.series_key(priced_count.title, priced_count.title)
+        )
+
+        summaries = render._polymarket_top_markets([priced_count, unpriced_count], limit=3)
+
+        assert len(summaries) == 1
+        assert "200-219" in summaries[0]
+        assert summaries[0].endswith("34%")
 
 
 # ---------------------------------------------------------------------------
