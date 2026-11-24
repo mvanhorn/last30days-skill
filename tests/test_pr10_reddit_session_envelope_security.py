@@ -1061,3 +1061,78 @@ class TestAutoDiscoveredPeerAndArchiveMatchedComment:
         )
         assert len(hydrated_expired.items) == 1
         assert "matched_comment" not in hydrated_expired.items[0]
+
+    def test_finish_and_hydrate_fail_closed_without_session_hydrator_mutation(self, monkeypatch):
+        """Even if session_hydrator is skipped, raises, or _finish is called
+        directly, an archive copy with matched_comment_verified=False never
+        inherits logged-in matched_comment metadata."""
+        from lib.reddit_refs import ARCTIC, MatchedComment
+
+        def make_archive_post(pid: str, sub: str) -> dict:
+            return {
+                "id": "",
+                "title": f"Ghostty terminal thread in {sub}",
+                "url": f"https://www.reddit.com/r/{sub}/comments/{pid}/",
+                "score": 15,
+                "num_comments": 4,
+                "subreddit": sub,
+                "created_utc": IN_WINDOW_UTC,
+                "author": "op",
+                "selftext": "",
+                "date": dates.timestamp_to_date(IN_WINDOW_UTC),
+                "engagement": {"score": 15, "num_comments": 4, "upvote_ratio": 0.9},
+                "engagement_source": ARCTIC,
+                "metadata": {"post_id": pid},
+            }
+
+        ref_unverified = _ref("1dir001", "FormerlyPublic", provenance="session")
+        ref_unverified.matched_comment = MatchedComment(
+            comment_id="c_dir1",
+            created_utc=1794700800,
+            permalink="https://www.reddit.com/r/FormerlyPublic/comments/1dir001/t/c_dir1/",
+        )
+        assert ref_unverified.matched_comment_verified is False
+
+        # Direct _finish on an archive copy fails closed when unverified.
+        finished = reddit_hydrate._finish(make_archive_post("1dir001", "FormerlyPublic"), ref_unverified, TOPIC)
+        assert finished["metadata"]["post_id"] == "1dir001"
+        assert "matched_comment" not in finished
+
+        # Direct _finish attaches matched_comment only when explicitly verified.
+        ref_verified = _ref("1dir002", "Ghostty", provenance="session")
+        ref_verified.matched_comment = MatchedComment(
+            comment_id="c_dir2",
+            created_utc=1794700800,
+            permalink="https://www.reddit.com/r/Ghostty/comments/1dir002/t/c_dir2/",
+        )
+        ref_verified.matched_comment_verified = True
+        finished_ok = reddit_hydrate._finish(make_archive_post("1dir002", "Ghostty"), ref_verified, TOPIC)
+        assert finished_ok["matched_comment"]["id"] == "c_dir2"
+
+        # hydrate() when session_hydrator raises (so it never mutates ref) or is None
+        # still keeps the archive copy and omits unverified matched_comment.
+        monkeypatch.setattr(
+            reddit_arctic,
+            "fetch_posts_by_ids",
+            lambda ids, **_k: ({"1dir001": make_archive_post("1dir001", "FormerlyPublic")}, "ok"),
+        )
+        monkeypatch.setattr(reddit_arctic, "fetch_comment_tree", lambda *_a, **_k: None)
+        monkeypatch.setattr(reddit_shreddit, "fetch_comments", lambda *_a, **_k: {})
+
+        def crashing_hydrator(_refs):
+            raise RuntimeError("session boom")
+
+        for hyd in (None, crashing_hydrator):
+            with redirect_stderr(io.StringIO()):
+                out = reddit_hydrate.hydrate(
+                    [ref_unverified],
+                    topic=TOPIC,
+                    from_date=FROM,
+                    to_date=TO,
+                    comments=False,
+                    session_hydrator=hyd,
+                    now=1.9e9,
+                )
+            assert len(out.items) == 1
+            assert out.items[0]["metadata"]["post_id"] == "1dir001"
+            assert "matched_comment" not in out.items[0]

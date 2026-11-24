@@ -66,6 +66,7 @@ class ThreadRef:
     matched_comment: MatchedComment | None = None
     title: str = ""
     date: str | None = None
+    matched_comment_verified: bool = False
 
 
 def _canonical_url(post_id: str, subreddit: str) -> str:

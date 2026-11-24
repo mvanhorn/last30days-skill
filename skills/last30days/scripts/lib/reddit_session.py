@@ -810,12 +810,15 @@ def hydrator(
             for ref in refs:
                 post = out.get(ref.post_id)
                 if post is not None and not post.get("_drop"):
+                    if ref.matched_comment is not None:
+                        ref.matched_comment_verified = True
                     continue
-                if ref.matched_comment is not None and not (
-                    session.is_public_sub(ref.subreddit)
-                    or _sub_key(ref.subreddit) in allowed_named
-                ):
-                    ref.matched_comment = None
+                if ref.matched_comment is not None:
+                    if session.is_public_sub(ref.subreddit) or _sub_key(ref.subreddit) in allowed_named:
+                        ref.matched_comment_verified = True
+                    else:
+                        ref.matched_comment_verified = False
+                        ref.matched_comment = None
             return out
         finally:
             if named_token is not None:
