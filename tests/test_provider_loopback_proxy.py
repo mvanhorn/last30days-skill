@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import http.server as stdlib_http
 import json
+import socket
 import threading
 import urllib.request
 
 import pytest
 
-from lib import http, perplexity, providers, xai_x
+from lib import http, perplexity, providers, tiktok, xai_x
 
 
 @pytest.fixture
@@ -161,3 +162,38 @@ def test_openrouter_sonar_loopback_override_bypasses_proxy(monkeypatch, serve):
     assert len(endpoint_requests) == 1
     assert endpoint_requests[0][0:2] == ("POST", "/v1/chat/completions")
     assert endpoint_requests[0][2]["authorization"] == "Bearer dummy-key"
+
+
+def test_scrapecreators_loopback_override_bypasses_proxy(monkeypatch, serve):
+    """SCRAPECREATORS_BASE_URL carries its key in X-api-key, so it needs the
+    same loopback bypass the bearer-based providers already have."""
+    endpoint, endpoint_requests = serve(payload={"aweme_list": [{"id": "1"}]})
+    proxy, proxy_requests = serve(reply="proxy")
+    _enable_proxy(monkeypatch, proxy)
+    monkeypatch.setenv("SCRAPECREATORS_BASE_URL", endpoint)
+
+    assert tiktok._hashtag_search("audit", token="dummy-key") == [{"id": "1"}]
+    assert proxy_requests == []
+    assert len(endpoint_requests) == 1
+    method, path, headers = endpoint_requests[0]
+    assert (method, path) == ("GET", "/v1/tiktok/search/hashtag?hashtag=audit")
+    assert headers["x-api-key"] == "dummy-key"
+
+
+def test_get_text_failure_log_masks_credential_query_params(monkeypatch, capsys):
+    """A failed fetch logs its URL; credential query params must be masked."""
+    monkeypatch.setenv("LAST30DAYS_DEBUG", "1")
+    # Bound but never listening: the connection is refused while the port stays
+    # owned by this test, which the offline guard requires.
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        url = f"http://127.0.0.1:{port}/feed?api_key=DUMMY-SECRET-1234"
+        assert http.get_text(url, timeout=1, retries=1) is None
+    finally:
+        probe.close()
+
+    logged = capsys.readouterr().err
+    assert "DUMMY-SECRET-1234" not in logged
+    assert "api_key=" in logged

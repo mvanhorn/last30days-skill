@@ -33,6 +33,28 @@ MAX_ERROR_BODY_BYTES = 64 * 1024
 _URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
 
 
+def _is_loopback_http_url(url: str) -> bool:
+    """True for a plaintext URL whose host never leaves the machine."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+    if parts.scheme != "http":
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _carries_provider_credential(headers: Dict[str, str]) -> bool:
+    """True when the request carries an API key in a header, not in the URL."""
+    return any(str(name).lower() in proxy._PROVIDER_AUTH_HEADERS for name in headers)
+
+
 def log(msg: str):
     """Log debug message to stderr with any embedded URL userinfo scrubbed."""
     _log.debug(_URL_USERINFO_RE.sub(r"\1", msg))
@@ -1611,6 +1633,16 @@ def request(
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
 
+    # A provider key bound for a plaintext loopback endpoint must not ride the
+    # ambient HTTP proxy. CONFIGURATION.md promises loopback provider overrides
+    # bypass proxy settings for the request, "keeping the token on the local
+    # connection" - `SCRAPECREATORS_BASE_URL` carries its key in `X-api-key`, not
+    # `Authorization`, so it needs the same rule as the bearer-based providers.
+    # Keyed on the credential header, not the URL alone: ordinary loopback
+    # traffic keeps whatever proxy route it was configured with.
+    if not bypass_proxy and not owned_get and _is_loopback_http_url(url) and _carries_provider_credential(headers):
+        bypass_proxy = True
+
     if params:
         filtered = {k: str(v) for k, v in params.items() if v is not None}
         if filtered:
@@ -2180,7 +2212,7 @@ def get_text(
             **bounds,
         )
     except HTTPError as e:
-        log(f"get_text failed ({e}): {url}")
+        log(f"get_text failed ({e}): {_scrub_fixture_url(url)}")
         return None
     if landed is None:
         return answer
