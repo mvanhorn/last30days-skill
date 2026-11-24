@@ -28,9 +28,12 @@ MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_ERROR_BODY_BYTES = 64 * 1024
 
 
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
+
+
 def log(msg: str):
-    """Log debug message to stderr."""
-    _log.debug(msg)
+    """Log debug message to stderr with any embedded URL userinfo scrubbed."""
+    _log.debug(_URL_USERINFO_RE.sub(r"\1", msg))
 
 
 MAX_RETRIES = 5
@@ -1505,7 +1508,10 @@ def request(
         except urllib.error.HTTPError as e:
             log_request(f"HTTP Error {e.code}: {e.reason}")
             if body:
-                snippet = _scrub_fixture_value(" ".join(body.split()), redactions=fixture_redactions)
+                snippet = _scrub_fixture_value(
+                    _URL_USERINFO_RE.sub(r"\1", " ".join(body.split())),
+                    redactions=fixture_redactions,
+                )
                 log_request(f"Error body: {snippet[:200]}")
             last_error = HTTPError(f"HTTP {e.code}: {e.reason}", e.code, body)
 

@@ -523,11 +523,12 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     looked up at pass path ``f"{prefix}{key}"`` — mirroring Keychain's
     ``last30days-<key>`` service-name convention — so any user stores keys under
     that namespace without editing code (prefix overridable via
-    ``LAST30DAYS_PASS_PREFIX``). The secret is decrypted in a subprocess and
-    read from stdout's first line (pass keeps the secret there; any metadata
-    follows) — never written to disk, never logged. Honors ``PASSWORD_STORE_DIR``.
-    Missing entries and failures are silent: pass is a lowest-priority, additive
-    source like Keychain, so an explicit .env or process-env value still wins.
+    ``LAST30DAYS_PASS_PREFIX``, used verbatim to match ``setup-pass.sh``). The
+    secret is decrypted in a subprocess and read from stdout's first line (pass
+    keeps the secret there; any metadata follows) — never written to disk, never
+    logged. Honors ``PASSWORD_STORE_DIR``. Missing entries and failures are
+    silent: pass is a lowest-priority, additive source like Keychain, so an
+    explicit .env or process-env value still wins.
     """
     import shutil
     pass_bin = shutil.which("pass")
@@ -539,7 +540,7 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     for key in keys:
         try:
             result = subprocess.run(
-                [pass_bin, "show", f"{prefix}{key}"],
+                [pass_bin, "show", "--", f"{prefix}{key}"],
                 capture_output=True, text=True, timeout=5,
                 encoding="utf-8", errors="replace",
             )
