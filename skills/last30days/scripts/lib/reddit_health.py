@@ -113,9 +113,14 @@ def _read() -> dict[str, dict[str, Any]]:
 
 @contextlib.contextmanager
 def _file_lock(path: Optional[Path]):
-    """Serialize read-modify-write on ``reddit-health.json`` across processes."""
+    """Serialize read-modify-write on ``reddit-health.json`` across processes.
+
+    Yields ``True`` when the cross-process lock is held, or ``False`` when no
+    cache path is configured or locking failed (callers must skip disk writes
+    when ``False`` so concurrent writers cannot clobber each other).
+    """
     if path is None:
-        yield
+        yield False
         return
     # Persistent sidecar lock file keeps writers on the same inode across atomic replaces.
     lock_path = path.with_suffix(".lock")
@@ -153,7 +158,7 @@ def _file_lock(path: Optional[Path]):
                 pass
             fd = None
     try:
-        yield
+        yield locked
     finally:
         if fd is not None:
             try:
@@ -265,7 +270,9 @@ def record(
             _RUN[path] = state
         if state not in _PERSISTED:
             return
-        with _file_lock(cache_path()):
+        with _file_lock(cache_path()) as locked:
+            if not locked:
+                return
             paths = _read()
             previous = paths.get(path) or {}
             if state == OK and previous.get("state") == OK:
@@ -315,12 +322,14 @@ def clear() -> list[str]:
     """Drop every persisted skip and this run's states (doctor). Returns the
     paths whose skip was still in force."""
     global _seeded
+    cleared: list[str] = []
     with _LOCK:
-        with _file_lock(cache_path()):
-            paths = _read()
-            cleared = [p for p in paths if paths[p].get("state") == BLOCKED]
-            if paths:
-                _write({})
+        with _file_lock(cache_path()) as locked:
+            if locked:
+                paths = _read()
+                cleared = [p for p in paths if paths[p].get("state") == BLOCKED]
+                if paths:
+                    _write({})
         _RUN.clear()
         _seeded = False
     return cleared

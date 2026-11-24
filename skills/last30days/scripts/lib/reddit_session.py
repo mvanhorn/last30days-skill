@@ -736,8 +736,9 @@ def discover(
             continue
         found = Discovery()
         cancelled = False
+        complete = False
         try:
-            _discover(session, topic, depth, deadline, found, window, cancel=cancel)
+            complete = _discover(session, topic, depth, deadline, found, window, cancel=cancel)
             cancelled = bool(cancel is not None and cancel.is_set())
         except Exception as exc:  # the session must never break the lane
             _log(f"session search failed: {type(exc).__name__}")
@@ -749,7 +750,8 @@ def discover(
                 elif found.state is None:
                     found.state = reddit_health.OK if found.refs else reddit_health.EMPTY
                 cacheable = (
-                    not cancelled
+                    complete
+                    and not cancelled
                     and found.pages > 0
                     and found.state in (reddit_health.OK, reddit_health.EMPTY)
                 )
@@ -779,18 +781,19 @@ def _discover(
     window: str = "month",
     *,
     cancel: Optional[threading.Event] = None,
-) -> None:
+) -> bool:
+    """Run all discovery steps; return True only when every step finished cleanly."""
     cursor: Optional[str] = None
     for _page in range(POST_PAGES.get(depth, POST_PAGES["default"])):
         if cancel is not None and cancel.is_set():
             found.state = ERROR
-            return
+            return False
         state, body = _search_page(
             session, reddit_search.search_url(topic, window, cursor=cursor), deadline, cancel=cancel,
         )
         if state != OK:
             found.state = state if state != ERROR or not found.refs else None
-            return
+            return False
         found.pages += 1
         if reddit_search.unrecognized_body(body or ""):
             break
@@ -799,39 +802,40 @@ def _discover(
         if not cursor:
             break
     if not session.room() or (cancel is not None and cancel.is_set()):
-        return
+        return False
     state, body = _search_page(
         session, reddit_search.search_url(topic, window, kind="comments", sort="new"), deadline, cancel=cancel,
     )
     if state != OK:
         found.state = state if state in (EXPIRED, THROTTLED) else None
-        return
+        return False
     found.pages += 1
     if not unrecognized_comments(body or ""):
         _comment_hits(session, body or "", found)
     if not session.room() or (cancel is not None and cancel.is_set()):
-        return
+        return False
     state, body = _search_page(
         session, reddit_search.search_url(topic, kind="communities"), deadline, cancel=cancel,
     )
     if state != OK:
         found.state = state if state in (EXPIRED, THROTTLED) else None
-        return
+        return False
     found.pages += 1
     communities = [] if unrecognized_communities(body or "") else parse_communities(body or "")
     chosen = [c["name"] for c in communities if _allowed(session, c["name"], c["over_18"], c["quarantined"])]
     for name in chosen[:COMMUNITY_SEARCHES]:
         if not session.room() or (cancel is not None and cancel.is_set()):
-            return
+            return False
         state, body = _search_page(
             session, reddit_search.search_url(topic, window, subreddit=name), deadline, cancel=cancel,
         )
         if state != OK:
             found.state = state if state in (EXPIRED, THROTTLED) else None
-            return
+            return False
         found.pages += 1
         if not reddit_search.unrecognized_body(body or ""):
             _post_hits(session, body or "", topic, found)
+    return True
 
 
 # --- thread JSON hydrator -------------------------------------------------------------
@@ -936,7 +940,6 @@ def hydrator(
         try:
             if session.alive:
                 ordered = sorted(refs, key=lambda r: (PATH not in r.provenance, r.matched_comment is None))
-                ref_by_id = {ref.post_id: ref for ref in refs}
                 forbidden: list[str] = []
                 consecutive_403: list[str] = []
                 logged_out_403: set[str] = set()
@@ -980,11 +983,10 @@ def hydrator(
                     forbidden = [pid for pid in forbidden if pid not in trailing]
                 elif not answered and not session.verified and len(consecutive_403) == 1:
                     only_pid = consecutive_403[0]
-                    only_ref = ref_by_id.get(only_pid)
+                    # Only release a single 403 when Reddit positively indicated a
+                    # whole-session refusal; otherwise fail closed with DROP.
                     if only_pid in logged_out_403:
                         _record(session, EXPIRED, "thread JSON refused")
-                        forbidden = [pid for pid in forbidden if pid != only_pid]
-                    elif only_ref is not None and PATH not in only_ref.provenance:
                         forbidden = [pid for pid in forbidden if pid != only_pid]
                 for pid in forbidden:
                     out[pid] = dict(DROP)

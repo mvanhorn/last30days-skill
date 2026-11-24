@@ -479,7 +479,7 @@ class TestHigh128HydratorResilienceAndExpiry:
         assert session.state == reddit_session.EXPIRED
         assert [item["metadata"]["post_id"] for item in result.items] == ["1pub101"]
 
-    def test_single_ref_opaque_403_on_unverified_host_ref_falls_back_without_drop(self, monkeypatch):
+    def test_single_ref_opaque_403_on_unverified_host_ref_fails_closed_with_drop(self, monkeypatch):
         monkeypatch.setattr(http, "reddit_session_get", lambda *_a, **_k: (403, "Forbidden", False))
         monkeypatch.setattr(
             reddit_arctic,
@@ -499,7 +499,7 @@ class TestHigh128HydratorResilienceAndExpiry:
             now=1.9e9,
         )
         assert session.alive
-        assert [item["metadata"]["post_id"] for item in result.items] == ["1pub102"]
+        assert result.items == []
 
     def test_explicit_private_json_403_always_drops_and_does_not_expire_session(self, monkeypatch):
         private_403 = '{"reason": "private", "message": "Forbidden", "error": 403}'
@@ -696,6 +696,42 @@ class TestHigh129SessionSingleFlight:
         second = reddit_session.discover(session, TOPIC, depth="quick")
         assert second.state == reddit_health.OK and second.refs
 
+    def test_partial_discover_timeout_or_budget_truncation_is_not_cached(self, monkeypatch):
+        comment_attempts = {"n": 0}
+
+        def fake_get(url, _cookie, **_k):
+            if "type=posts" in url:
+                return 200, POSTS_HTML, False
+            if "type=comments" in url:
+                comment_attempts["n"] += 1
+                if comment_attempts["n"] == 1:
+                    # Simulate timeout on comments page after posts succeeded.
+                    return None, None, False
+                return 200, COMMENTS_HTML, False
+            if "type=communities" in url:
+                return 200, NO_COMMENTS_HTML, False
+            return 404, "", False
+
+        monkeypatch.setattr(http, "reddit_session_get", fake_get)
+        session = _session()
+        partial = reddit_session.discover(session, TOPIC, depth="quick")
+        assert partial.state == reddit_health.OK
+        assert partial.refs and not partial.comments
+        assert session._discover_cache == {}
+
+        # A second caller with more time must NOT reuse the partial search.
+        complete = reddit_session.discover(session, TOPIC, depth="quick")
+        assert complete.state == reddit_health.OK
+        assert complete.comments
+        assert comment_attempts["n"] == 2
+        assert len(session._discover_cache) == 1
+
+        # Cap exhaustion before comments also leaves the partial search uncached.
+        capped_session = _session(cap=1)
+        capped = reddit_session.discover(capped_session, TOPIC, depth="quick")
+        assert capped.state == reddit_health.OK and capped.refs and not capped.comments
+        assert capped_session._discover_cache == {}
+
     def test_parallel_session_fetch_coalesces_same_url_and_respects_waiter_cancel(self, monkeypatch):
         started = threading.Event()
         release = threading.Event()
@@ -739,12 +775,46 @@ class TestHigh129SessionSingleFlight:
         session = _session(entity_count=2, cap=2)
         with reddit_session.lane(session, "entity-a"):
             assert session.fetch(reddit_session.thread_url("1used01"), accept="application/json") == (200, '{"ok": true}')
-        # entity-a is now out of budget; entity-b still has 1 slot.
+
+        # entity-a is now out of budget; hold entity-a inside _take() while its
+        # inflight slot is active until entity-b is genuinely waiting on it.
         url2 = reddit_session.thread_url("1used02")
-        with reddit_session.lane(session, "entity-a"):
-            assert session.fetch(url2, accept="application/json") == (None, None)
-        with reddit_session.lane(session, "entity-b"):
-            assert session.fetch(url2, accept="application/json") == (200, '{"ok": true}')
+        owner_in_take = threading.Event()
+        waiter_waiting = threading.Event()
+        waiter_entered = {"seen": False}
+
+        orig_take = session._take
+
+        def gated_take(entity: str) -> bool:
+            if entity == "entity-a":
+                owner_in_take.set()
+                assert waiter_waiting.wait(timeout=5.0), "waiter never entered _wait_event"
+            return orig_take(entity)
+
+        orig_wait_event = reddit_session._wait_event
+
+        def spy_wait_event(event, deadline, cancel=None):
+            waiter_entered["seen"] = True
+            waiter_waiting.set()
+            return orig_wait_event(event, deadline, cancel)
+
+        monkeypatch.setattr(session, "_take", gated_take)
+        monkeypatch.setattr(reddit_session, "_wait_event", spy_wait_event)
+
+        def run_entity(name: str):
+            with reddit_session.lane(session, name):
+                return session.fetch(url2, accept="application/json")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            fut_a = pool.submit(run_entity, "entity-a")
+            assert owner_in_take.wait(timeout=3.0)
+            fut_b = pool.submit(run_entity, "entity-b")
+            res_a = fut_a.result(timeout=5.0)
+            res_b = fut_b.result(timeout=5.0)
+
+        assert waiter_entered["seen"] is True
+        assert res_a == (None, None)
+        assert res_b == (200, '{"ok": true}')
         assert len(calls) == 2
 
 
@@ -804,7 +874,11 @@ class TestHigh130HealthPersistenceAndLocking:
         assert set(saved.keys()) == set(paths)
         assert all(saved[p]["state"] == reddit_health.BLOCKED for p in paths)
 
-    def test_lock_failure_closes_fd_and_degrades_gracefully(self, monkeypatch):
+    def test_lock_failure_skips_disk_write_keeps_memory_and_closes_fd(self, monkeypatch):
+        # Seed a persisted entry from an earlier writer.
+        reddit_health.record("search", reddit_health.BLOCKED, "HTTP 403")
+        assert "search" in reddit_health.entries()
+
         closed_fds: list[int] = []
         real_close = os.close
 
@@ -816,11 +890,21 @@ class TestHigh130HealthPersistenceAndLocking:
         if os.name == "posix":
             import fcntl
             monkeypatch.setattr(fcntl, "flock", mock.Mock(side_effect=OSError("ENOLCK")))
+        else:
+            monkeypatch.setattr(os, "open", mock.Mock(side_effect=OSError("EACCES")))
 
+        # record() must update in-memory state while skipping the unlocked disk write.
         reddit_health.record("brave", reddit_health.BLOCKED, "HTTP 403")
-        assert reddit_health.entries()["brave"]["state"] == reddit_health.BLOCKED
+        assert reddit_health.run_state("brave") == reddit_health.BLOCKED
+        assert "brave" not in reddit_health.entries()
+        assert reddit_health.entries()["search"]["state"] == reddit_health.BLOCKED
         if os.name == "posix":
             assert len(closed_fds) >= 1
+
+        # clear() must clear in-memory state while skipping the unlocked disk write.
+        assert reddit_health.clear() == []
+        assert reddit_health.run_state("brave") is None
+        assert reddit_health.entries()["search"]["state"] == reddit_health.BLOCKED
 
     def test_windows_msvcrt_lock_and_unlock_path(self, monkeypatch):
         ops: list[tuple] = []
@@ -904,6 +988,12 @@ class TestHigh133ExtractRedditPath:
         "https://www.reddit.com/r/ClaudeAI/comments/abc123/../../api/v1/me",
         "https://www.reddit.com/r/ClaudeAI/comments/abc123/%2e%2e/%2e%2e/api",
         "https://www.reddit.com/r/ClaudeAI/comments/abc123/slug%2f..%2fapi",
+        "https://www.reddit.com/r/ClaudeAI/comments/abc123/slug%3Fextra=1",
+        "https://www.reddit.com/r/ClaudeAI/comments/abc123/slug%23frag",
+        "https://www.reddit.com/r/ClaudeAI/comments/abc123/slug%0Ainjected",
+        "https://www.reddit.com/r/ClaudeAI/comments/abc123/slug%253Fextra=1",
+        "https://www.reddit.com/r/ClaudeAI/comments/abc123/slug%2523frag",
+        "https://www.reddit.com/r/ClaudeAI/comments/abc123/slug%2500nul",
         "https://www.reddit.com/r/ClaudeAI/comments/abc123/a/b/c",
         "https://redd.it/abc123",
     ])

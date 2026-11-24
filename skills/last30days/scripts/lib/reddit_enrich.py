@@ -57,18 +57,17 @@ def extract_reddit_path(url: str) -> Optional[str]:
     for seg in segments:
         if not _SAFE_SLUG_SEG.match(seg):
             return None
+        if seg in (".", ".."):
+            return None
         decoded = unquote(seg)
         decoded_twice = unquote(decoded)
-        if (
-            seg in (".", "..")
-            or decoded in (".", "..")
-            or decoded_twice in (".", "..")
-            or "/" in decoded
-            or "\\" in decoded
-            or "/" in decoded_twice
-            or "\\" in decoded_twice
-        ):
-            return None
+        for candidate in (decoded, decoded_twice):
+            if (
+                candidate in (".", "..")
+                or any(ch in candidate for ch in ("/", "\\", "?", "#"))
+                or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in candidate)
+            ):
+                return None
     # Tail segments after /r/<sub>/comments/<id> or /comments/<id> are at most slug + comment_id.
     tail_start = 4 if ref.subreddit else 2
     if len(segments) < tail_start or len(segments) > tail_start + 2:
