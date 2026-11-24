@@ -98,7 +98,7 @@ def test_high207_config_and_delivery_reject_unsafe_webhook_urls(
     assert not store.get_setting("delivery_channel")
 
     store.set_setting("delivery_channel", bad_url)
-    with patch("watchlist.http.post") as mock_post:
+    with patch("watchlist.http.post_raw") as mock_post:
         watchlist._deliver_findings("AI agents", {"new": 2, "updated": 0})
     mock_post.assert_not_called()
     err = capsys.readouterr().err
@@ -106,7 +106,7 @@ def test_high207_config_and_delivery_reject_unsafe_webhook_urls(
     if bad_url != "https://":
         assert bad_url not in err
 
-    with patch("watchlist.http.post") as mock_post:
+    with patch("watchlist.http.post_raw") as mock_post:
         with pytest.raises(ValueError) as val_exc:
             watchlist._send_slack_webhook(bad_url, "hi")
         if bad_url != "https://":

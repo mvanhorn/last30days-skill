@@ -1547,7 +1547,9 @@ def request(
         params: Optional query-string params. Values are stringified. None values
             are dropped. If ``url`` already has a query string, ``params`` is appended.
         timeout: Request timeout in seconds
-        retries: Number of retries on failure
+        retries: Maximum number of attempts (clamped to at least 1; passing
+            retries=0 executes a single attempt with no retries, including on
+            DNS failures, whereas retries>=1 honors ``retry_dns``)
         max_429_retries: Maximum 429 retries before giving up (separate cap)
         raw: If True, return raw response text instead of parsed JSON
         deadline_monotonic: Optional absolute monotonic deadline shared by all
@@ -1580,6 +1582,9 @@ def request(
     if decode_errors not in ("strict", "replace", "ignore"):
         raise ValueError(f"unsupported decode_errors mode: {decode_errors!r}")
     effective_max_bytes = MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
+    if retries <= 0:
+        retry_dns = False
+        retries = 1
     if owned_get and (method != "GET" or json_data is not None):
         raise ValueError("owned transport requires a bodyless GET")
     if owned_get and deadline_monotonic is None:
@@ -1791,11 +1796,23 @@ def request(
                     **owned_kwargs,
                 )
             except bounded_get.GetLaunchError:
-                usage.cancel(charge)
+                cancel_deadline = (
+                    deadline_monotonic
+                    if deadline_monotonic is not None
+                    else time.monotonic() + min(request_timeout, usage._JOURNAL_TIMEOUT_SECONDS)
+                )
+                with usage.with_deadline(cancel_deadline):
+                    usage.cancel(charge)
                 raise
             except bounded_get.GetTimeout as exc:
                 if not exc.started:
-                    usage.cancel(charge)
+                    cancel_deadline = (
+                        deadline_monotonic
+                        if deadline_monotonic is not None
+                        else time.monotonic() + min(request_timeout, usage._JOURNAL_TIMEOUT_SECONDS)
+                    )
+                    with usage.with_deadline(cancel_deadline):
+                        usage.cancel(charge)
                 raise deadline_error() from exc
             except bounded_get.ResponseTooLarge as exc:
                 raise ResponseTooLarge(str(exc)) from exc
@@ -1865,6 +1882,13 @@ def request(
                 last_error = deadline_error()
                 break
             request_timeout = min(timeout, remaining)
+            begin_deadline = (
+                deadline_monotonic
+                if request_timeout == remaining
+                else (deadline_monotonic - remaining) + request_timeout
+            )
+        else:
+            begin_deadline = time.monotonic() + request_timeout
         try:
             if attempt > 0 and on_retry is not None:
                 on_retry()
@@ -1875,13 +1899,25 @@ def request(
                 except proxy.ProxyUnavailable as exc:
                     raise_recorded(HTTPError(f"API key proxy: {exc}", exc.status_code))
                 req.add_header(proxy.DEADLINE_HEADER, proxy.deadline_value(request_timeout))
-            charge = usage.begin_http(usage_url, method)
+            with usage.with_deadline(begin_deadline):
+                charge = usage.begin_http(usage_url, method)
             response_status, body, response_error = open_and_read_before_deadline(request_timeout)
             if body:
                 try:
-                    usage.finish(charge, json.loads(body))
+                    parsed_usage = json.loads(body)
                 except (ValueError, TypeError):
-                    pass
+                    parsed_usage = None
+                if parsed_usage is not None:
+                    finish_deadline = (
+                        deadline_monotonic
+                        if deadline_monotonic is not None
+                        else time.monotonic() + min(request_timeout, usage._JOURNAL_TIMEOUT_SECONDS)
+                    )
+                    with usage.with_deadline(finish_deadline):
+                        try:
+                            usage.finish(charge, parsed_usage)
+                        except (ValueError, TypeError):
+                            pass
             if (cancel is not None and cancel.is_set()) or (
                 deadline_monotonic is not None
                 and time.monotonic() >= deadline_monotonic
@@ -2045,9 +2081,23 @@ def post(url: str, json_data: Dict[str, Any], headers: Optional[Dict[str, str]] 
     return request("POST", url, headers=headers, json_data=json_data, **kwargs)
 
 
-def post_raw(url: str, json_data: Dict[str, Any], headers: Optional[Dict[str, str]] = None, **kwargs) -> str:
+def post_raw(
+    url: str,
+    json_data: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None,
+    decode_errors: str = "strict",
+    **kwargs,
+) -> str:
     """Make a POST request with JSON body and return raw text."""
-    return request("POST", url, headers=headers, json_data=json_data, raw=True, **kwargs)
+    return request(
+        "POST",
+        url,
+        headers=headers,
+        json_data=json_data,
+        raw=True,
+        decode_errors=decode_errors,
+        **kwargs,
+    )
 
 
 BROWSER_USER_AGENT = (

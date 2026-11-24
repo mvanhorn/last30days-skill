@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import stat
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -95,9 +96,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS library_fts USING fts5(
 """
 
 
+@contextmanager
+def _managed_connection(conn: sqlite3.Connection):
+    """Commit or roll back ``conn`` and always close it on exit."""
+    try:
+        with conn as active:
+            yield active
+    finally:
+        conn.close()
+
+
 def fts5_available() -> bool:
     try:
-        with sqlite3.connect(":memory:") as conn:
+        with _managed_connection(sqlite3.connect(":memory:")) as conn:
             conn.execute("CREATE VIRTUAL TABLE probe USING fts5(value)")
     except sqlite3.DatabaseError:
         return False
@@ -183,7 +194,7 @@ def index_entry(
         return False
     target = Path(db_path).expanduser()
     _ensure_private_directory(target.parent)
-    with _connect(target) as conn:
+    with _managed_connection(_connect(target)) as conn:
         _upsert_entry(conn, entry)
         conn.commit()
     return True
@@ -207,7 +218,7 @@ def index_brief(
         return False
     target = Path(db_path).expanduser()
     _ensure_private_directory(target.parent)
-    with _connect(target) as conn:
+    with _managed_connection(_connect(target)) as conn:
         _upsert_entry(conn, entry)
         conn.commit()
     return True
@@ -228,7 +239,7 @@ def search(
     brief_matches: list[LibrarySearchMatch] = []
     if target.is_file():
         try:
-            with _connect(target) as conn:
+            with _managed_connection(_connect(target)) as conn:
                 rows = conn.execute(
                     """SELECT d.topic, d.published_date, d.headline,
                               snippet(library_fts, 4, '', '', ' … ', 36) AS snippet,
@@ -286,7 +297,7 @@ def _sync_library(
     entries, notes = library.scan_library(memory_dir, briefs_dir)
     _ensure_private_directory(db_path.parent)
     indexed = unchanged = 0
-    with _connect(db_path) as conn:
+    with _managed_connection(_connect(db_path)) as conn:
         existing = {
             row["entry_id"]: (row["source_mtime_ns"], row["source_size"], row["content_hash"])
             for row in conn.execute(
@@ -350,7 +361,7 @@ def _connect(path: Path) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(_SCHEMA)
-    except Exception:
+    except BaseException:
         conn.close()
         raise
     return conn
@@ -436,7 +447,7 @@ def _search_store_sightings(
         # Standard SQLite builds reject a UNC server name in a URI authority.
         use_uri = os.name == "posix"
         database = f"{path.as_uri()}?mode=ro" if use_uri else str(path)
-        with sqlite3.connect(database, uri=use_uri) as conn:
+        with _managed_connection(sqlite3.connect(database, uri=use_uri)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """SELECT t.name AS topic, rr.run_date,

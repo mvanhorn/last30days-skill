@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal
 import json
 import math
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -19,6 +21,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
 from lib import env as envlib, health, http, public_host, schema, usage
+
+_parse_budget = store.parse_budget
 
 
 # --- Webhook Delivery Functions ---
@@ -41,7 +45,7 @@ def _validate_webhook_url(url: str) -> urllib.parse.ParseResult:
     """Require a public https:// webhook URL with no userinfo or non-public literals.
 
     DNS resolution and IP pinning happen fresh at connect time inside
-    ``http.post(..., public_only=True)`` so offline configuration stays
+    ``http.post_raw(..., public_only=True)`` so offline configuration stays
     network-free and DNS rebinding cannot bypass the check.
     """
     err = "delivery_channel must be a public https:// URL"
@@ -147,7 +151,7 @@ def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
 def _send_slack_webhook(url: str, text: str) -> None:
     """POST to Slack incoming webhook."""
     _validate_webhook_url(url)
-    http.post(
+    http.post_raw(
         url,
         json_data={"text": text},
         timeout=10,
@@ -155,13 +159,14 @@ def _send_slack_webhook(url: str, text: str) -> None:
         sensitive_url=True,
         redirect_guard=_refuse_webhook_redirect,
         public_only=True,
+        decode_errors="replace",
     )
 
 
 def _send_generic_webhook(url: str, text: str) -> None:
     """POST JSON payload to generic webhook."""
     _validate_webhook_url(url)
-    http.post(
+    http.post_raw(
         url,
         json_data={
             "message": text,
@@ -173,6 +178,7 @@ def _send_generic_webhook(url: str, text: str) -> None:
         sensitive_url=True,
         redirect_guard=_refuse_webhook_redirect,
         public_only=True,
+        decode_errors="replace",
     )
 
 
@@ -205,17 +211,28 @@ def cmd_remove(args):
     }))
 
 
+def _read_daily_budget() -> tuple[float | None, str | None]:
+    raw_budget = store.get_setting("daily_budget", "5.00")
+    try:
+        return _parse_budget(raw_budget), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
 def cmd_list(args):
     del args
     topics = store.list_topics()
     budget_used, budget_unknown_runs = store.get_daily_usage()
-    budget_limit = float(store.get_setting("daily_budget", "5.00"))
-    print(json.dumps({
+    budget_limit, budget_error = _read_daily_budget()
+    payload = {
         "topics": topics,
         "budget_used": budget_used,
         "budget_limit": budget_limit,
         "budget_unknown_runs": budget_unknown_runs,
-    }, default=str))
+    }
+    if budget_error is not None:
+        payload["budget_error"] = budget_error
+    print(json.dumps(payload, default=str))
 
 
 def cmd_delta(args):
@@ -241,23 +258,35 @@ def cmd_run_all(args):
         print(json.dumps({"message": "No enabled topics to research."}))
         return
 
-    budget_limit = float(store.get_setting("daily_budget", "5.00"))
+    budget_limit, budget_error = _read_daily_budget()
     results = []
     for topic in topics:
         results.append(_budget_skip(topic) or _run_topic(topic))
 
     budget_used, budget_unknown_runs = store.get_daily_usage()
-    print(json.dumps({
+    payload = {
         "action": "run_all",
         "results": results,
         "budget_used": budget_used,
         "budget_limit": budget_limit,
         "budget_unknown_runs": budget_unknown_runs,
-    }, default=str))
+    }
+    if budget_error is not None:
+        payload["budget_error"] = budget_error
+    print(json.dumps(payload, default=str))
 
 
 def _budget_skip(topic: dict) -> dict | None:
-    limit = float(store.get_setting("daily_budget", "5.00"))
+    limit, budget_error = _read_daily_budget()
+    if limit is None:
+        return {
+            "topic": topic["name"],
+            "status": "skipped",
+            "reason": (
+                f"Invalid daily_budget setting ({budget_error}); "
+                "refusing to run until reconfigured"
+            ),
+        }
     cost, unknown = store.get_daily_usage()
     if cost >= limit:
         reason = f"Budget exceeded: ${cost:.2f}/${limit:.2f}"
@@ -268,22 +297,47 @@ def _budget_skip(topic: dict) -> dict | None:
     return {"topic": topic["name"], "status": "skipped", "reason": reason}
 
 
+def _has_unknown_cost_marker(stderr: object, nonce: str | None = None) -> bool:
+    if not stderr:
+        return False
+    if isinstance(stderr, bytes):
+        text = stderr.decode("utf-8", errors="replace")
+    elif isinstance(stderr, str):
+        text = stderr
+    else:
+        return False
+    return usage.unknown_cost_marker(nonce) in text
+
+
 def _run_topic(topic: dict) -> dict:
     topic_id = topic["id"]
     with tempfile.TemporaryDirectory(prefix="last30days-usage-") as temp_dir:
         journal = Path(temp_dir) / "usage.db"
         usage.create_journal(journal)
+        usage_nonce = secrets.token_hex(8)
         # A scheduled run: the logged-in Reddit session stays off (its Keychain
         # prompt cannot be answered unattended), and --no-browser-cookies below
         # keeps every cookie read off besides.
         child_env = dict(os.environ, **{
-            usage.JOURNAL_ENV: str(journal), "LAST30DAYS_STORE": "0", "LAST30DAYS_SCHEDULED_RUN": "1",
+            usage.JOURNAL_ENV: str(journal),
+            usage.NONCE_ENV: usage_nonce,
+            "LAST30DAYS_STORE": "0",
+            "LAST30DAYS_SCHEDULED_RUN": "1",
         })
         run_id = store.record_run(topic_id, source_mode="v3", status="running")
+        unknown_cost_flag = [False]
         try:
-            result = _research_topic(topic, run_id, child_env)
+            result = _research_topic(
+                topic,
+                run_id,
+                child_env,
+                unknown_cost_flag=unknown_cost_flag,
+                usage_nonce=usage_nonce,
+            )
         finally:
             costs = usage.read_journal(journal)
+            if unknown_cost_flag[0]:
+                costs["cost_unknown"] = 1
             store.update_run(run_id, **costs)
         result.update(costs)
         return result
@@ -325,7 +379,14 @@ def _findings_from_output(output: str) -> list[dict]:
     return findings
 
 
-def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
+def _research_topic(
+    topic: dict,
+    run_id: int,
+    child_env: dict,
+    *,
+    unknown_cost_flag: list[bool] | None = None,
+    usage_nonce: str | None = None,
+) -> dict:
     start_time = time.time()
     topic_id = topic["id"]
 
@@ -356,7 +417,9 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             timeout=300,
             env={**child_env, envlib.ALLOW_ENGINE_PLAN_VAR: "1"},
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        if unknown_cost_flag is not None and _has_unknown_cost_marker(exc.stderr, usage_nonce):
+            unknown_cost_flag[0] = True
         duration = time.time() - start_time
         store.update_run(
             run_id,
@@ -373,6 +436,9 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             duration_seconds=time.time() - start_time,
         )
         return {"topic": topic["name"], "status": "failed", "error": f"parse error: {exc}"}
+
+    if unknown_cost_flag is not None and _has_unknown_cost_marker(result.stderr, usage_nonce):
+        unknown_cost_flag[0] = True
 
     duration = time.time() - start_time
     degraded = result.returncode == health.STRICT_EXIT_CODE and any(
@@ -424,8 +490,13 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
 
 def cmd_config(args):
     if args.key == "budget":
-        store.set_setting("daily_budget", str(args.value))
-        print(json.dumps({"action": "config", "key": "daily_budget", "value": str(args.value)}))
+        try:
+            value = _parse_budget(args.value)
+        except ValueError:
+            raise SystemExit("daily_budget must be a finite non-negative number")
+        canonical = format(Decimal(str(value)), "f")
+        store.set_setting("daily_budget", canonical)
+        print(json.dumps({"action": "config", "key": "daily_budget", "value": canonical}))
         return
     if args.key == "delivery":
         value = str(args.value)
