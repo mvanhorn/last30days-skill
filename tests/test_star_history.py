@@ -42,7 +42,40 @@ def test_merge_point_is_monotonic_and_idempotent():
     # New day appends in sorted order
     updated = mod.merge_point(updated, "2026-11-25", 75200)
     assert updated[-1] == ["2026-11-25", 75200]
-    assert len(updated) == 3
+    # Next-day dip carries highest count forward instead of regressing
+    updated = mod.merge_point(updated, "2026-11-26", 75100)
+    assert updated[-1] == ["2026-11-26", 75200]
+    assert len(updated) == 4
+
+
+def test_invalid_date_rejected_before_saving(tmp_path, monkeypatch):
+    import pytest
+
+    mod = _load_module()
+    data_file = tmp_path / "star-history.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "update_star_history.py",
+            "--seed",
+            str(SEED_PATH),
+            "--data",
+            str(data_file),
+            "--out-light",
+            str(tmp_path / "light.svg"),
+            "--out-dark",
+            str(tmp_path / "dark.svg"),
+            "--stars",
+            "75000",
+            "--date",
+            "2026-13-45",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 2
+    assert not data_file.exists()
 
 
 def test_render_svg_light_and_dark(tmp_path):

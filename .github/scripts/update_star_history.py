@@ -108,7 +108,12 @@ def merge_point(
     by_date[day_iso] = max(prev, int(stars))
 
     ordered = sorted(by_date.items(), key=lambda kv: kv[0])
-    return [[d, s] for d, s in ordered]
+    merged: list[list[object]] = []
+    highest = 0
+    for d, s in ordered:
+        highest = max(highest, s)
+        merged.append([d, highest])
+    return merged
 
 
 def nice_y_scale(max_val: int) -> tuple[int, list[int]]:
@@ -388,7 +393,13 @@ def main() -> int:
         if "milestones" in seed_data:
             data["milestones"] = seed_data["milestones"]
 
-    day_iso = args.date or datetime.now(timezone.utc).date().isoformat()
+    if args.date is None:
+        day_iso = datetime.now(timezone.utc).date().isoformat()
+    else:
+        try:
+            day_iso = date.fromisoformat(args.date).isoformat()
+        except ValueError:
+            parser.error("--date must be a valid date in YYYY-MM-DD format")
 
     if args.stars is not None:
         data["points"] = merge_point(data["points"], day_iso, args.stars)

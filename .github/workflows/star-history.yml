@@ -38,9 +38,13 @@ jobs:
           REMOTE_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
           ASSETS_DIR="$(mktemp -d)"
 
-          if git ls-remote --exit-code --heads "${REMOTE_URL}" "${ASSETS_BRANCH}" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --heads "${REMOTE_URL}" "${ASSETS_BRANCH}" >/dev/null; then
             git clone --depth 1 --branch "${ASSETS_BRANCH}" "${REMOTE_URL}" "${ASSETS_DIR}"
           else
+            LOOKUP_STATUS=$?
+            if [ "${LOOKUP_STATUS}" -ne 2 ]; then
+              exit "${LOOKUP_STATUS}"
+            fi
             git init "${ASSETS_DIR}"
             git -C "${ASSETS_DIR}" checkout --orphan "${ASSETS_BRANCH}"
             git -C "${ASSETS_DIR}" remote add origin "${REMOTE_URL}"
