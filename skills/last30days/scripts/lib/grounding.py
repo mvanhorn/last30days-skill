@@ -432,17 +432,34 @@ def web_search(
     date_range: tuple[str, str],
     config: dict,
     backend: str = "auto",
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
     """Run web search with the specified or auto-detected backend."""
     if backend != "auto":
-        return _web_search_with(backend, query, date_range, config)
+        return _web_search_with(
+            backend,
+            query,
+            date_range,
+            config,
+            deadline_monotonic=deadline_monotonic,
+            cancel=cancel,
+        )
     tried: set[str] = set()
     while True:
         chosen = configured_backend(config) or (
             "keyless" if env.keyless_web_allowed(config) else "none"
         )
         try:
-            return _web_search_with(chosen, query, date_range, config)
+            return _web_search_with(
+                chosen,
+                query,
+                date_range,
+                config,
+                deadline_monotonic=deadline_monotonic,
+                cancel=cancel,
+            )
         except Exception:
             # The service has no key for this proxied provider: try the next
             # backend instead of failing the web source.
@@ -456,9 +473,22 @@ def _web_search_with(
     query: str,
     date_range: tuple[str, str],
     config: dict,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
     items: list[dict] = []
     artifact: dict = {}
+    effective_deadline = (
+        deadline_monotonic
+        if deadline_monotonic is not None
+        else config.get("_research_deadline")
+    )
+    effective_cancel = (
+        cancel
+        if cancel is not None
+        else config.get("_enrich_cancel")
+    )
     if backend == "brave":
         key = config.get("BRAVE_API_KEY")
         if not key:
@@ -482,11 +512,24 @@ def _web_search_with(
     elif backend == "parallel-mcp":
         # The MCP client is not behind the http.request proxy seam, so it
         # never receives the proxy-lane placeholder.
+        mcp_kwargs: dict = {}
+        if effective_deadline is not None:
+            mcp_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            mcp_kwargs["cancel"] = effective_cancel
         items, artifact = parallel_mcp.search(
-            query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY"))
+            query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY")),
+            **mcp_kwargs,
         )
     elif backend == "keyless":
-        items, artifact = web_search_keyless.keyless_search(query, date_range, config)
+        keyless_kwargs: dict = {}
+        if effective_deadline is not None:
+            keyless_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            keyless_kwargs["cancel"] = effective_cancel
+        items, artifact = web_search_keyless.keyless_search(
+            query, date_range, config, **keyless_kwargs,
+        )
     elif backend != "none":
         raise ValueError(f"Unsupported web backend: {backend!r}")
     else:

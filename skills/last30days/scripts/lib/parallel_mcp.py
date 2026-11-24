@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client as http_client
 import json
+import re
 import socket
 import threading
 import time
@@ -28,6 +29,8 @@ _CLEANUP_TIMEOUT = 3.0
 _READ_CHUNK_BYTES = 65_536
 _DEADLINE_JITTER_SECONDS = 0.05
 
+_BEARER_TOKEN_RE = re.compile(r"\b(Bearer\s+)\S+", re.IGNORECASE)
+
 # Threads the shared search deadline/cancel/timeout budget into _request without
 # adding extra kwargs to search()'s _request calls (preserving 3-arg test mocks).
 _REQUEST_BUDGET: ContextVar[tuple[float | None, threading.Event | None, float | None] | None] = ContextVar(
@@ -41,6 +44,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         # The endpoint is fixed. Never forward credentials, session IDs, or
         # search data to a redirect target, including an HTTPS downgrade.
         return None
+
+
+def _scrub_secret_text(text: Any, redactions: frozenset[str] = frozenset()) -> str:
+    cleaned = str(text or "")
+    cleaned = http._URL_USERINFO_RE.sub(r"\1", cleaned)
+    cleaned = _BEARER_TOKEN_RE.sub(r"\1<redacted>", cleaned)
+    if redactions:
+        cleaned = http._scrub_fixture_value(cleaned, redactions=redactions)
+    return cleaned[:500]
 
 
 def _remaining_seconds(
@@ -63,15 +75,46 @@ def _response_socket(response: Any) -> Any:
     return getattr(raw, "_sock", None) or getattr(fp, "_sock", None) or getattr(response, "_sock", None)
 
 
-def _set_response_timeout(response: Any, remaining: float | None) -> None:
+def _shutdown_socket(sock: Any) -> None:
+    if sock is not None and hasattr(sock, "shutdown"):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def _effective_socket_timeout(
+    request_timeout: float | None,
+    remaining: float | None,
+) -> tuple[float | None, bool]:
+    """Return ``(socket_timeout, clamped_to_deadline)`` bounded by both limits."""
+    if request_timeout is None and remaining is None:
+        return None, False
+    if request_timeout is None:
+        return max(0.001, remaining), True
     if remaining is None:
-        return
+        return max(0.001, request_timeout), False
+    clamped = remaining <= request_timeout
+    return max(0.001, min(request_timeout, remaining)), clamped
+
+
+def _set_response_timeout(
+    response: Any,
+    remaining: float | None = None,
+    *,
+    request_timeout: float | None = None,
+) -> bool:
+    """Clamp response socket timeout to ``min(request_timeout, remaining)``."""
+    timeout_val, clamped = _effective_socket_timeout(request_timeout, remaining)
+    if timeout_val is None:
+        return False
     sock = _response_socket(response)
     if sock is not None and hasattr(sock, "settimeout"):
         try:
-            sock.settimeout(max(0.001, remaining))
+            sock.settimeout(timeout_val)
         except OSError:
             pass
+    return clamped
 
 
 def _is_deadline_timeout(
@@ -94,12 +137,97 @@ def _abort_response(response: Any) -> None:
     """Unblock a worker thread waiting in recv() without taking BufferedReader's lock."""
     if response is None:
         return
-    sock = _response_socket(response)
-    if sock is not None and hasattr(sock, "shutdown"):
+    _shutdown_socket(_response_socket(response))
+
+
+class _AbortState:
+    """Tracks active socket/response across TCP connect, headers, and body reads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._aborted = False
+        self._sock: Any = None
+        self._response: Any = None
+
+    def register_socket(self, sock: Any) -> None:
+        with self._lock:
+            self._sock = sock
+            aborted = self._aborted
+        if aborted:
+            _shutdown_socket(sock)
+            raise http.DeadlineExceeded()
+
+    def register_response(self, response: Any) -> None:
+        with self._lock:
+            self._response = response
+            sock = _response_socket(response)
+            if sock is not None:
+                self._sock = sock
+            aborted = self._aborted
+        if aborted:
+            _abort_response(response)
+            _shutdown_socket(sock)
+            raise http.DeadlineExceeded()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._response = None
+            self._sock = None
+
+    def abort(self) -> None:
+        with self._lock:
+            self._aborted = True
+            sock = self._sock
+            response = self._response
+        _shutdown_socket(sock)
+        if response is not None:
+            _abort_response(response)
+
+
+def _make_abortable_handlers(abort_state: _AbortState) -> list[Any]:
+    def _create_tracked_connection(
+        address: tuple[str, int],
+        timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address: Any = None,
+    ) -> socket.socket:
+        sock = socket.create_connection(address, timeout, source_address)
         try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
+            abort_state.register_socket(sock)
+        except BaseException:
+            sock.close()
+            raise
+        return sock
+
+    class _AbortableHTTPConnection(http_client.HTTPConnection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = _create_tracked_connection
+
+        def connect(self) -> None:
+            super().connect()
+            abort_state.register_socket(self.sock)
+
+    class _AbortableHTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(_AbortableHTTPConnection, req)
+
+    handlers: list[Any] = [_NoRedirect(), _AbortableHTTPHandler()]
+    if hasattr(http_client, "HTTPSConnection"):
+        class _AbortableHTTPSConnection(http_client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._create_connection = _create_tracked_connection
+
+            def connect(self) -> None:
+                super().connect()
+                abort_state.register_socket(self.sock)
+
+        class _AbortableHTTPSHandler(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return self.do_open(_AbortableHTTPSConnection, req, context=self._context)
+
+        handlers.append(_AbortableHTTPSHandler())
+    return handlers
 
 
 def _matching_response(payload: bytes, request_id: int | None) -> dict[str, Any] | None:
@@ -122,21 +250,22 @@ def _read_response(
     *,
     deadline_monotonic: float | None = None,
     cancel: threading.Event | None = None,
+    request_timeout: float | None = None,
 ) -> dict[str, Any]:
     if "text/event-stream" not in response.headers.get("Content-Type", "").lower():
         remaining = _remaining_seconds(deadline_monotonic, cancel)
-        _set_response_timeout(response, remaining)
+        clamped = _set_response_timeout(response, remaining, request_timeout=request_timeout)
         if hasattr(response, "read1"):
             chunks: list[bytes] = []
             total = 0
             while True:
                 remaining = _remaining_seconds(deadline_monotonic, cancel)
-                _set_response_timeout(response, remaining)
+                clamped = _set_response_timeout(response, remaining, request_timeout=request_timeout)
                 to_read = min(_READ_CHUNK_BYTES, _MAX_RESPONSE_BYTES - total + 1)
                 try:
                     chunk = response.read1(to_read)
                 except TimeoutError as exc:
-                    if _is_deadline_timeout(deadline_monotonic, cancel):
+                    if _is_deadline_timeout(deadline_monotonic, cancel, clamped_to_deadline=clamped):
                         raise http.DeadlineExceeded() from exc
                     raise
                 if not chunk:
@@ -150,7 +279,7 @@ def _read_response(
             try:
                 payload = response.read(_MAX_RESPONSE_BYTES + 1)
             except TimeoutError as exc:
-                if _is_deadline_timeout(deadline_monotonic, cancel):
+                if _is_deadline_timeout(deadline_monotonic, cancel, clamped_to_deadline=clamped):
                     raise http.DeadlineExceeded() from exc
                 raise
             if len(payload) > _MAX_RESPONSE_BYTES:
@@ -190,23 +319,33 @@ def _read_response(
 
         if hasattr(response, "read1"):
             buf = bytearray()
+            scan_pos = 0
             while True:
+                line_start = 0
                 while True:
-                    nl = buf.find(b"\n")
+                    nl = buf.find(b"\n", scan_pos)
                     if nl < 0:
+                        if line_start:
+                            del buf[:line_start]
+                        scan_pos = len(buf)
                         break
-                    raw_line = bytes(buf[:nl + 1])
-                    del buf[:nl + 1]
+                    raw_line = bytes(buf[line_start:nl + 1])
+                    line_start = nl + 1
+                    scan_pos = line_start
                     result = _process_line(raw_line)
                     if result is not None:
                         return result
                 remaining = _remaining_seconds(deadline_monotonic, cancel)
-                _set_response_timeout(response, remaining)
+                clamped = _set_response_timeout(
+                    response, remaining, request_timeout=request_timeout,
+                )
                 to_read = min(_READ_CHUNK_BYTES, _MAX_RESPONSE_BYTES - total + 1)
                 try:
                     chunk = response.read1(to_read)
                 except TimeoutError as exc:
-                    if _is_deadline_timeout(deadline_monotonic, cancel):
+                    if _is_deadline_timeout(
+                        deadline_monotonic, cancel, clamped_to_deadline=clamped,
+                    ):
                         raise http.DeadlineExceeded() from exc
                     raise
                 if not chunk:
@@ -222,11 +361,15 @@ def _read_response(
         else:
             while True:
                 remaining = _remaining_seconds(deadline_monotonic, cancel)
-                _set_response_timeout(response, remaining)
+                clamped = _set_response_timeout(
+                    response, remaining, request_timeout=request_timeout,
+                )
                 try:
                     raw_line = response.readline(_MAX_RESPONSE_BYTES - total + 1)
                 except TimeoutError as exc:
-                    if _is_deadline_timeout(deadline_monotonic, cancel):
+                    if _is_deadline_timeout(
+                        deadline_monotonic, cancel, clamped_to_deadline=clamped,
+                    ):
                         raise http.DeadlineExceeded() from exc
                     raise
                 total += len(raw_line)
@@ -260,8 +403,8 @@ def _request(
     http._check_http_scheme(PARALLEL_MCP_URL)
     remaining = _remaining_seconds(deadline_monotonic, cancel)
     base_timeout = float(http.DEFAULT_TIMEOUT if timeout is None else timeout)
-    clamped_to_deadline = remaining is not None and remaining <= base_timeout
-    effective_timeout = min(base_timeout, remaining) if remaining is not None else base_timeout
+    effective_timeout, clamped_to_deadline = _effective_socket_timeout(base_timeout, remaining)
+    redactions = frozenset({api_key}) if isinstance(api_key, str) and len(api_key) >= 4 else frozenset()
 
     headers = {
         "Accept": "application/json, text/event-stream",
@@ -283,15 +426,12 @@ def _request(
     if api_key and message is not None and message.get("method") == "tools/call":
         usage.begin("parallel")
 
-    def _do_request(
-        active_box: list[Any], lock: threading.Lock,
-    ) -> tuple[dict[str, Any], str | None]:
+    def _do_request(abort_state: _AbortState) -> tuple[dict[str, Any], str | None]:
         try:
-            with urllib.request.build_opener(_NoRedirect()).open(
-                request, timeout=max(0.001, effective_timeout),
+            with urllib.request.build_opener(*_make_abortable_handlers(abort_state)).open(
+                request, timeout=max(0.001, effective_timeout or base_timeout),
             ) as response:
-                with lock:
-                    active_box[0] = response
+                abort_state.register_response(response)
                 try:
                     if cancel is not None and cancel.is_set():
                         raise http.DeadlineExceeded()
@@ -301,14 +441,26 @@ def _request(
                             message.get("id"),
                             deadline_monotonic=deadline_monotonic,
                             cancel=cancel,
+                            request_timeout=base_timeout,
                         )
                         if message is not None
                         else {}
                     )
                     return result, response.headers.get("Mcp-Session-Id") or session_id
                 finally:
-                    with lock:
-                        active_box[0] = None
+                    abort_state.clear()
+        except urllib.error.HTTPError as exc:
+            clean_reason = _scrub_secret_text(exc.reason, redactions)
+            clean_url = _scrub_secret_text(exc.url, redactions)
+            if clean_reason != str(exc.reason or "") or clean_url != str(exc.url or ""):
+                try:
+                    exc.close()
+                except Exception:
+                    pass
+                raise urllib.error.HTTPError(
+                    clean_url, exc.code, clean_reason, exc.headers, None,
+                ) from None
+            raise
         except TimeoutError as exc:
             if _is_deadline_timeout(
                 deadline_monotonic, cancel, clamped_to_deadline=clamped_to_deadline,
@@ -324,40 +476,42 @@ def _request(
                 and (isinstance(reason, TimeoutError) or "timed out" in str(reason).lower())
             ):
                 raise http.DeadlineExceeded() from exc
+            clean_reason = _scrub_secret_text(reason, redactions)
+            if clean_reason != str(reason or ""):
+                raise urllib.error.URLError(clean_reason) from None
             raise
+        finally:
+            abort_state.clear()
 
     if deadline_monotonic is None and cancel is None:
-        return _do_request([None], threading.Lock())
+        return _do_request(_AbortState())
 
-    active_box: list[Any] = [None]
-    lock = threading.Lock()
+    abort_state = _AbortState()
     future: Future = Future()
 
     def _worker() -> None:
         try:
             if cancel is not None and cancel.is_set():
                 raise http.DeadlineExceeded()
-            future.set_result(_do_request(active_box, lock))
+            future.set_result(_do_request(abort_state))
         except BaseException as exc:
             future.set_exception(exc)
 
-    threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=_worker, name="parallel-mcp-request", daemon=True).start()
     wait_deadline = (
         deadline_monotonic
         if deadline_monotonic is not None
-        else (time.monotonic() + effective_timeout)
+        else (time.monotonic() + (effective_timeout or base_timeout))
     )
     while True:
         if cancel is not None and cancel.is_set():
-            with lock:
-                _abort_response(active_box[0])
+            abort_state.abort()
             raise http.DeadlineExceeded()
         rem = wait_deadline - time.monotonic()
         if rem <= 0:
             if future.done():
                 return future.result()
-            with lock:
-                _abort_response(active_box[0])
+            abort_state.abort()
             raise http.DeadlineExceeded()
         poll = min(rem, 0.05) if cancel is not None else rem
         try:
@@ -366,8 +520,7 @@ def _request(
             if future.done():
                 return future.result()
             if cancel is None:
-                with lock:
-                    _abort_response(active_box[0])
+                abort_state.abort()
                 raise http.DeadlineExceeded()
 
 
@@ -375,7 +528,7 @@ def _result(response: dict[str, Any], *, redactions: frozenset[str] = frozenset(
     if response.get("error"):
         error = response["error"]
         detail = error.get("message") if isinstance(error, dict) else str(error)
-        safe_detail = http._scrub_fixture_value(str(detail or ""), redactions=redactions)[:500]
+        safe_detail = _scrub_secret_text(detail, redactions)
         raise RuntimeError(f"Parallel MCP error: {safe_detail}")
     result = response.get("result")
     if not isinstance(result, dict):

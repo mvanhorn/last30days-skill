@@ -25,7 +25,7 @@ from urllib.request import Request
 
 import pytest
 
-from lib import http, parallel_mcp, resolve, web_fetch_keyless, web_search_keyless
+from lib import grounding, http, parallel_mcp, resolve, web_fetch_keyless, web_search_keyless
 
 
 def _start_server(handler_cls):
@@ -913,4 +913,196 @@ def test_parallel_mcp_abort_handles_socket_without_shutdown_and_early_wake_jitte
     deadline = time.monotonic() + 0.01  # 10ms remaining (< 50ms jitter tolerance)
     with pytest.raises(http.DeadlineExceeded):
         parallel_mcp._read_response(EarlyTimeoutSSEResp(), 1, deadline_monotonic=deadline)
+
+
+def test_parallel_mcp_aborts_slow_stalled_headers_and_exits_worker_thread(monkeypatch):
+    stop_headers = threading.Event()
+    started_threads: list[threading.Thread] = []
+    real_thread_cls = threading.Thread
+
+    class TrackingThread(real_thread_cls):
+        def start(self):
+            if self.name == "parallel-mcp-request":
+                started_threads.append(self)
+            return super().start()
+
+    class SlowHeadersHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            # Send status line and drip partial headers without ever sending \r\n\r\n.
+            try:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n")
+                self.wfile.flush()
+                counter = 0
+                while not stop_headers.is_set():
+                    counter += 1
+                    self.wfile.write(f"X-Slow-{counter}: 1\r\n".encode())
+                    self.wfile.flush()
+                    stop_headers.wait(0.04)
+            except OSError:
+                pass
+
+    srv, srv_thread, base = _start_server(SlowHeadersHandler)
+    try:
+        monkeypatch.setattr(parallel_mcp, "PARALLEL_MCP_URL", f"{base}/slow-headers")
+        monkeypatch.setattr(parallel_mcp.threading, "Thread", TrackingThread)
+        started = time.monotonic()
+        with pytest.raises(http.DeadlineExceeded):
+            parallel_mcp.search(
+                "topic",
+                ("2026-10-01", "2026-11-01"),
+                deadline_monotonic=started + 0.25,
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, f"stalled headers took {elapsed:.2f}s"
+        assert len(started_threads) == 1
+        started_threads[0].join(timeout=1.0)
+        assert started_threads[0].is_alive() is False, "worker thread leaked after stalled headers abort"
+    finally:
+        stop_headers.set()
+        _stop_server(srv, srv_thread)
+
+
+def test_grounding_threads_deadline_and_cancel_to_parallel_mcp(monkeypatch):
+    seen_requests: list[object] = []
+
+    def fail_open(*_args, **_kwargs):
+        seen_requests.append(_args)
+        raise AssertionError("No HTTP requests should be issued when deadline expired or cancelled")
+
+    monkeypatch.setattr(parallel_mcp.urllib.request.OpenerDirector, "open", fail_open)
+
+    # 1. Expired deadline via pipeline config key `_research_deadline`.
+    with pytest.raises(http.DeadlineExceeded):
+        grounding.web_search(
+            "topic",
+            ("2026-10-01", "2026-11-01"),
+            {"PARALLEL_API_KEY": "secret-key-999", "_research_deadline": time.monotonic() - 1.0},
+            backend="parallel-mcp",
+        )
+
+    # 2. Triggered cancel event via pipeline config key `_enrich_cancel`.
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(http.DeadlineExceeded):
+        grounding.web_search(
+            "topic",
+            ("2026-10-01", "2026-11-01"),
+            {"PARALLEL_API_KEY": "secret-key-999", "_enrich_cancel": cancel},
+            backend="parallel-mcp",
+        )
+
+    # 3. Direct keyword arguments on grounding.web_search().
+    with pytest.raises(http.DeadlineExceeded):
+        grounding.web_search(
+            "topic",
+            ("2026-10-01", "2026-11-01"),
+            {},
+            backend="parallel-mcp",
+            deadline_monotonic=time.monotonic() - 1.0,
+        )
+
+    assert seen_requests == []
+
+
+def test_parallel_mcp_set_response_timeout_clamps_to_min_request_timeout_and_remaining():
+    class RecordingSock:
+        def __init__(self):
+            self.timeouts: list[float] = []
+
+        def settimeout(self, val):
+            self.timeouts.append(val)
+
+    class FakeResp:
+        def __init__(self):
+            self._sock = RecordingSock()
+
+    resp = FakeResp()
+    clamped = parallel_mcp._set_response_timeout(resp, 55.0, request_timeout=30.0)
+    assert resp._sock.timeouts[-1] == 30.0
+    assert clamped is False
+
+    clamped = parallel_mcp._set_response_timeout(resp, 5.0, request_timeout=30.0)
+    assert resp._sock.timeouts[-1] == 5.0
+    assert clamped is True
+
+
+def test_parallel_mcp_sse_long_line_in_small_chunks_is_linear():
+    # 512 KiB single SSE data line arriving in 64-byte chunks (~8,192 chunks).
+    # Quadratic buf.find(b"\n") rescanning would scan ~2 GiB; linear scan_pos scans 512 KiB.
+    padding = "a" * (512 * 1024)
+    line = (
+        b'data: {"jsonrpc":"2.0","id":7,"result":{"pad":"'
+        + padding.encode("ascii")
+        + b'"}}\n\n'
+    )
+
+    class SmallChunkSSEResp:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __init__(self, raw: bytes, chunk_size: int = 64):
+            self._raw = raw
+            self._pos = 0
+            self._chunk_size = chunk_size
+
+        def read1(self, size=-1):
+            if self._pos >= len(self._raw):
+                return b""
+            n = self._chunk_size if size < 0 else min(self._chunk_size, size)
+            out = self._raw[self._pos:self._pos + n]
+            self._pos += len(out)
+            return out
+
+    started = time.monotonic()
+    result = parallel_mcp._read_response(SmallChunkSSEResp(line, chunk_size=64), 7)
+    elapsed = time.monotonic() - started
+    assert result["id"] == 7
+    assert len(result["result"]["pad"]) == len(padding)
+    assert elapsed < 0.5, f"chunked long SSE line took {elapsed:.4f}s (possible O(N^2) rescan)"
+
+
+def test_parallel_mcp_scrubs_bearer_key_from_http_error_reason(monkeypatch):
+    secret = "pl_live_super_secret_token_987654"
+
+    class SecretEchoErrorHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            status = 401 if "401" in self.path else 500
+            self.send_response(
+                status,
+                f"Rejected Bearer {secret} for key {secret} via https://u:{secret}@proxy.internal",
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv, thread, base = _start_server(SecretEchoErrorHandler)
+    try:
+        for status in (401, 500):
+            monkeypatch.setattr(parallel_mcp, "PARALLEL_MCP_URL", f"{base}/{status}")
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                parallel_mcp._request(
+                    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                    secret,
+                )
+            err = exc_info.value
+            try:
+                assert err.code == status
+                assert secret not in str(err)
+                assert secret not in str(err.reason)
+                assert "<redacted>" in str(err.reason)
+            finally:
+                err.close()
+    finally:
+        _stop_server(srv, thread)
+
 
