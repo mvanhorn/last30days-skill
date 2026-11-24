@@ -97,36 +97,57 @@ class _StreamCollector:
             return list(self._posts)
 
 
+def _merge_streams(
+    streams: List[List[Dict[str, Any]]],
+    limit: int,
+    *,
+    deepcopy_posts: bool = False,
+) -> List[Dict[str, Any]]:
+    """Round-robin interleave across streams, dedupe by URL/post_id, and cap to ``limit``."""
+    results = [
+        stream[i]
+        for i in range(max((len(s) for s in streams), default=0))
+        for stream in streams
+        if i < len(stream)
+    ]
+    seen_urls: set = set()
+    seen_ids: set = set()
+    unique: List[Dict[str, Any]] = []
+    for post in results:
+        url = post.get("url")
+        pid = (post.get("metadata") or {}).get("post_id")
+        if (url and url in seen_urls) or (pid and pid in seen_ids):
+            continue
+        if url:
+            seen_urls.add(url)
+        if pid:
+            seen_ids.add(pid)
+        copied = copy.deepcopy(post) if deepcopy_posts else {**post}
+        copied["id"] = f"R{len(unique) + 1}"
+        unique.append(copied)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
 @dataclass
 class _InflightSearch:
     """In-flight search coordination slot shared between owner and waiting callers."""
 
     done: threading.Event = field(default_factory=threading.Event)
     partial: Optional[List[Dict[str, Any]]] = None
-    live_posts: _StreamCollector = field(default_factory=_StreamCollector)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _collectors: List[_StreamCollector] = field(default_factory=list, init=False, repr=False)
 
-    def add_live(self, posts: List[Dict[str, Any]]) -> None:
-        self.live_posts.add(posts)
+    def set_collectors(self, collectors: List[_StreamCollector]) -> None:
+        with self._lock:
+            self._collectors = list(collectors)
 
     def live_snapshot(self, limit: int) -> List[Dict[str, Any]]:
-        seen_urls: set = set()
-        seen_ids: set = set()
-        unique: List[Dict[str, Any]] = []
-        for post in self.live_posts.snapshot():
-            pid = (post.get("metadata") or {}).get("post_id")
-            url = post.get("url")
-            if (pid and pid in seen_ids) or (url and url in seen_urls):
-                continue
-            if pid:
-                seen_ids.add(pid)
-            if url:
-                seen_urls.add(url)
-            copied = copy.deepcopy(post)
-            copied["id"] = f"R{len(unique) + 1}"
-            unique.append(copied)
-            if len(unique) >= limit:
-                break
-        return unique
+        with self._lock:
+            collectors = list(self._collectors)
+        streams = [snap for c in collectors if (snap := c.snapshot())]
+        return _merge_streams(streams, limit, deepcopy_posts=True)
 
 
 _run_lock = threading.Lock()
@@ -338,7 +359,6 @@ def _search_stream(
     subreddit: Optional[str] = None,
     deadline: Optional[float] = None,
     collector: Optional[_StreamCollector] = None,
-    inflight: Optional[_InflightSearch] = None,
 ) -> List[Dict[str, Any]]:
     """Page one search sequentially. Keeps earlier pages when a later one fails."""
     label = f"r/{subreddit}" if subreddit else "global"
@@ -371,8 +391,6 @@ def _search_stream(
         posts.extend(new)
         if collector is not None:
             collector.add(new)
-        if inflight is not None:
-            inflight.add_live(new)
         if not new or not next_cursor or next_cursor in used_cursors:
             break
         used_cursors.add(next_cursor)
@@ -511,18 +529,21 @@ def _search_uncached_with_status(
             # worker with an empty context, dropping the pipeline's
             # capture_failures() sink so a 429/403 or a challenge page is
             # silently discarded (issue #899).
-            futures = []
-            for sub, pages in jobs:
-                collector = _StreamCollector()
-                futures.append((
+            collectors = [_StreamCollector() for _ in jobs]
+            if inflight is not None:
+                inflight.set_collectors(collectors)
+            futures = [
+                (
                     http.submit_with_context(
                         executor, _search_stream, query, time_filter, pages, sub,
-                        deadline=deadline, collector=collector, inflight=inflight,
+                        deadline=deadline, collector=collector,
                     ),
                     sub,
                     pages,
                     collector,
-                ))
+                )
+                for (sub, pages), collector in zip(jobs, collectors)
+            ]
             for future, sub, pages, collector in futures:
                 wait = _result_timeout(batch, pages)
                 if deadline is not None:
@@ -545,22 +566,7 @@ def _search_uncached_with_status(
             # Under a deadline a stream still queued or running is not waited for.
             executor.shutdown(wait=deadline is None, cancel_futures=deadline is not None)
 
-        # Round-robin across streams, each in its own relevance order, so the
-        # depth cap keeps a share of every stream.
-        results = [
-            stream[i]
-            for i in range(max((len(s) for s in streams), default=0))
-            for stream in streams
-            if i < len(stream)
-        ]
-        seen: set = set()
-        unique: List[Dict[str, Any]] = []
-        for post in results:
-            if post["url"] not in seen:
-                seen.add(post["url"])
-                unique.append({**post, "id": f"R{len(unique) + 1}"})
-                if len(unique) >= limit:
-                    break
+        unique = _merge_streams(streams, limit)
         _log(f"{len(unique)} posts (t={time_filter}, {len(subs)} targeted subs)")
         if not unique and _blocked_reason:
             _failed_reason = _blocked_reason

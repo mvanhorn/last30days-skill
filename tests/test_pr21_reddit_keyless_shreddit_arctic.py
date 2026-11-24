@@ -1198,31 +1198,123 @@ class TestGreptileFixes:
             release_page2.wait(timeout=5.0)
             return _search_page_html("p2slow", author="bob"), None
 
-        shared_deadline = time.monotonic() + 0.2
+        try:
+            with mock.patch.object(
+                reddit_search.http, "reddit_keyless_get_text_retry_429", side_effect=fake_retry_get,
+            ):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    # Owner stays paused on page 2 until we explicitly release it,
+                    # guaranteeing slot.partial is still None when the waiter times out.
+                    f_owner = pool.submit(
+                        reddit_search.search, "Ghostty", depth="quick", deadline=time.monotonic() + 5.0,
+                    )
+                    assert page2_started.wait(timeout=3.0)
+                    key = ("Ghostty", "quick", "month", ())
+                    with reddit_search._run_lock:
+                        inflight_slot = reddit_search._run_inflight[key]
+                    assert inflight_slot.partial is None
+
+                    f_waiter = pool.submit(
+                        reddit_search.search, "Ghostty", depth="quick", deadline=time.monotonic() + 0.12,
+                    )
+                    waiter_res = f_waiter.result(timeout=2.0)
+                    # Check waiter result BEFORE releasing the owner so live_snapshot() is proven.
+                    assert not f_owner.done()
+                    assert inflight_slot.partial is None
+                    assert [p["metadata"]["post_id"] for p in waiter_res] == ["p1live"]
+
+                    release_page2.set()
+                    owner_res = f_owner.result(timeout=3.0)
+        finally:
+            release_page2.set()
+
+        assert [p["metadata"]["post_id"] for p in owner_res] == ["p1live", "p2slow"]
+        assert owner_res[0] is not waiter_res[0]
+
+    def test_live_snapshot_interleaves_subreddit_and_global_streams_like_owner(self):
+        sub_done = threading.Barrier(2)
+        global_page2_started = threading.Event()
+        release_global_page2 = threading.Event()
+
+        def multi_post_page(prefix: str, count: int, sub: str, cursor: str | None = None) -> str:
+            units = []
+            for i in range(count):
+                pid = f"{prefix}{i}"
+                ctx = json.dumps({
+                    "action_info": {"type": "post"},
+                    "post": {"id": f"t3_{pid}", "title": f"Ghostty {pid}"},
+                    "subreddit": {"name": sub},
+                    "profile": {"id": f"t2_{pid}", "name": f"user_{pid}"},
+                }).replace('"', "&quot;")
+                units.append(
+                    f'<search-telemetry-tracker data-faceplate-tracking-context="{ctx}" '
+                    f'view-events="search/view/post">'
+                    f'<h2><a data-testid="post-title" href="/r/{sub}/comments/{pid}/slug/">'
+                    f"Ghostty {pid}</a></h2></search-telemetry-tracker>"
+                    f'<faceplate-timeago ts="2026-10-10T10:00:00.000000+0000"></faceplate-timeago>'
+                    f'<div data-testid="search-counter-row">'
+                    f'<span><faceplate-number number="10" pretty></faceplate-number> votes</span>'
+                    f'<span><faceplate-number number="2" pretty></faceplate-number> comments</span>'
+                    f"</div>"
+                )
+            if cursor:
+                units.append(
+                    f'<faceplate-partial loading="lazy" '
+                    f'src="/svc/shreddit/search/?q=Ghostty&amp;type=posts&amp;cursor={cursor}">'
+                    f"</faceplate-partial>"
+                )
+            return "<html><body>" + "".join(units) + "</body></html>"
+
+        def fake_retry_get(url, **kwargs):
+            if "/r/SubA/" in url:
+                html = multi_post_page("a", 7, "SubA")
+                sub_done.wait(timeout=3.0)
+                return html, None
+            if "/r/SubB/" in url:
+                html = multi_post_page("b", 7, "SubB")
+                sub_done.wait(timeout=3.0)
+                return html, None
+            if "cursor=" not in url:
+                # Ensure both subreddit streams complete (14 sub posts > quick cap of 10)
+                # BEFORE global page 1 arrives.
+                time.sleep(0.05)
+                return multi_post_page("g", 7, "allnews", cursor="gcur2"), None
+            global_page2_started.set()
+            release_global_page2.wait(timeout=5.0)
+            return multi_post_page("g2", 3, "allnews"), None
+
         try:
             with mock.patch.object(
                 reddit_search.http, "reddit_keyless_get_text_retry_429", side_effect=fake_retry_get,
             ):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                     f_owner = pool.submit(
-                        reddit_search.search, "Ghostty", depth="quick", deadline=shared_deadline,
+                        reddit_search.search,
+                        "Ghostty", depth="quick", subreddits=["SubA", "SubB"],
+                        deadline=time.monotonic() + 5.0,
                     )
-                    assert page2_started.wait(timeout=3.0)
-                    # Waiter joins after page 1 already completed and shares the exact
-                    # same deadline; waiter wakes up before owner finishes page 2 and
-                    # must still receive page 1 from slot.live_snapshot().
+                    assert global_page2_started.wait(timeout=3.0)
                     f_waiter = pool.submit(
-                        reddit_search.search, "Ghostty", depth="quick", deadline=shared_deadline,
+                        reddit_search.search,
+                        "Ghostty", depth="quick", subreddits=["SubA", "SubB"],
+                        deadline=time.monotonic() + 0.12,
                     )
-                    owner_res = f_owner.result(timeout=3.0)
-                    waiter_res = f_waiter.result(timeout=3.0)
-        finally:
-            release_page2.set()
+                    waiter_res = f_waiter.result(timeout=2.0)
+                    assert not f_owner.done()
+                    waiter_ids = [p["metadata"]["post_id"] for p in waiter_res]
+                    assert len(waiter_ids) == 10
+                    # Round-robin across [SubA, SubB, global] keeps global posts even
+                    # though SubA + SubB alone finished earlier with 14 posts.
+                    assert waiter_ids == ["a0", "b0", "g0", "a1", "b1", "g1", "a2", "b2", "g2", "a3"]
 
-        assert [p["metadata"]["post_id"] for p in owner_res] == ["p1live"]
-        assert [p["metadata"]["post_id"] for p in waiter_res] == ["p1live"]
-        assert owner_res[0] is not waiter_res[0]
-        assert reddit_search._run_results == {}
+                    release_global_page2.set()
+                    owner_res = f_owner.result(timeout=3.0)
+        finally:
+            release_global_page2.set()
+
+        assert [p["metadata"]["post_id"] for p in owner_res] == [
+            "a0", "b0", "g0", "a1", "b1", "g1", "a2", "b2", "g2", "a3",
+        ]
 
     def test_web_floor_passes_earlier_hydration_cutoff_to_session_and_archive(self):
         ref = reddit_refs.canonical_thread("https://www.reddit.com/r/ghostty/comments/sess1/")

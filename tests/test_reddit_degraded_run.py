@@ -732,7 +732,7 @@ class TestStagesReturnPartialResultsBeforeTheWait:
     def test_site_search_with_a_targeted_sub_returns_its_posts(self):
         release = threading.Event()
 
-        def stream(query, time_filter, pages, subreddit=None, deadline=None, collector=None, inflight=None):
+        def stream(query, time_filter, pages, subreddit=None, deadline=None, collector=None):
             if subreddit is None:
                 release.wait(10)
                 return []
