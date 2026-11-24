@@ -23,12 +23,15 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlsplit
 
-from . import env, health, http, log, subproc, usage
+from . import env, health, http, log, public_host, subproc, usage
 
 # Whisper's documented upload ceiling. We compress to stay under it and chunk
 # when a single clip still exceeds it.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
+MAX_DOWNLOAD_SIZE_ARG = "200M"
 CHUNK_SECONDS = 600  # 10-minute chunks when splitting is required
 
 _PROVIDER_ENDPOINTS = {
@@ -119,31 +122,83 @@ def _degraded(reason: str, state: str) -> TranscriptResult:
     )
 
 
+def _is_safe_remote_media_url(source: str) -> bool:
+    """Return True only for http(s) URLs with public host syntax and public DNS."""
+    if not isinstance(source, str) or not source or source.startswith("-"):
+        return False
+    return public_host.public_any_url(source)
+
+
 def _acquire_audio(source: str, workdir: str, timeout: float) -> Optional[str]:
     """Produce a compressed mono/16kHz/low-bitrate audio file, or None.
 
     For a URL, extract audio with yt-dlp; for a local path, transcode it. The
     re-encode keeps most clips under the upload ceiling.
     """
-    raw = source
-    if source.startswith("http"):
-        raw = os.path.join(workdir, "raw.m4a")
-        if not _run([
-            "yt-dlp", "-f", "bestaudio", "-o", raw, "--no-playlist", source
-        ], timeout=timeout):
-            return None
-        if not os.path.exists(raw):
-            return None
-    elif not os.path.exists(source):
+    if not isinstance(source, str) or not source:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in source):
         return None
 
-    out = os.path.join(workdir, "audio.mp3")
+    abs_workdir = os.path.abspath(workdir)
+    try:
+        parts = urlsplit(source)
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+
+    if scheme in ("http", "https"):
+        if not _is_safe_remote_media_url(source):
+            log.debug(f"transcribe: refused unsafe media URL: {source!r}")
+            return None
+        raw = os.path.join(abs_workdir, "raw.m4a")
+        if not _run([
+            "yt-dlp",
+            "--ignore-config",
+            "--no-cookies-from-browser",
+            "--no-playlist",
+            "--no-live-from-start",
+            "--match-filter", "!is_live",
+            "--max-filesize", MAX_DOWNLOAD_SIZE_ARG,
+            "-f", "bestaudio",
+            "-o", raw,
+            "--",
+            source,
+        ], timeout=timeout):
+            return None
+        if not os.path.isfile(raw):
+            return None
+        try:
+            if os.path.getsize(raw) > MAX_DOWNLOAD_BYTES:
+                return None
+        except OSError:
+            return None
+    elif "://" in source or (scheme and len(scheme) > 1):
+        # Reject non-http(s) URI schemes and ffmpeg protocol prefixes (file://, ftp://, concat:, etc.).
+        log.debug(f"transcribe: refused unsupported media scheme: {source!r}")
+        return None
+    else:
+        raw = os.path.abspath(source)
+        if not os.path.isfile(raw):
+            return None
+
+    out = os.path.join(abs_workdir, "audio.mp3")
     # Mono, 16kHz, 32kbps keeps speech intelligible while shrinking the file.
     if not _run([
-        "ffmpeg", "-y", "-i", raw, "-ac", "1", "-ar", "16000", "-b:a", "32k", out
+        "ffmpeg",
+        "-nostdin",
+        "-y",
+        "-protocol_whitelist", "file",
+        "-i", raw,
+        "-vn",
+        "-map_metadata", "-1",
+        "-ac", "1",
+        "-ar", "16000",
+        "-b:a", "32k",
+        out,
     ], timeout=timeout):
         return None
-    return out if os.path.exists(out) else None
+    return out if os.path.isfile(out) else None
 
 
 def _chunk_audio(audio_path: str, workdir: str) -> list[str]:
@@ -155,15 +210,24 @@ def _chunk_audio(audio_path: str, workdir: str) -> list[str]:
     if size <= MAX_UPLOAD_BYTES:
         return [audio_path]
 
-    pattern = os.path.join(workdir, "chunk_%03d.mp3")
+    abs_workdir = os.path.abspath(workdir)
+    abs_audio = os.path.abspath(audio_path)
+    pattern = os.path.join(abs_workdir, "chunk_%03d.mp3")
     if not _run([
-        "ffmpeg", "-y", "-i", audio_path, "-f", "segment",
-        "-segment_time", str(CHUNK_SECONDS), "-c", "copy", pattern
+        "ffmpeg",
+        "-nostdin",
+        "-y",
+        "-protocol_whitelist", "file",
+        "-i", abs_audio,
+        "-f", "segment",
+        "-segment_time", str(CHUNK_SECONDS),
+        "-c", "copy",
+        pattern,
     ]):
         # Fall back to the single (oversized) file; the provider may still accept it.
         return [audio_path]
     chunks = sorted(
-        os.path.join(workdir, f) for f in os.listdir(workdir) if f.startswith("chunk_")
+        os.path.join(abs_workdir, f) for f in os.listdir(abs_workdir) if f.startswith("chunk_")
     )
     return chunks or [audio_path]
 

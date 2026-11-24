@@ -18,12 +18,100 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode, urlsplit
 
-from . import http, log
+from . import http, log, public_host
 
 BSKY_SESSION_URL = "https://bsky.social/xrpc/com.atproto.server.createSession"
 BSKY_REFRESH_URL = "https://bsky.social/xrpc/com.atproto.server.refreshSession"
 _DEFAULT_BSKY_SEARCH_HOST = "api.bsky.app"
+_BSKY_HOST_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+_BSKY_DISALLOWED_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain", ".home.arpa")
+_BSKY_TRUSTED_HOSTS = frozenset({"bsky.app", "bsky.social"})
+_BSKY_TRUSTED_SUFFIXES = (".bsky.app", ".bsky.social")
+
+
+def _is_trusted_bsky_host(host: str) -> bool:
+    """Return True when ``host`` is a Bluesky domain safe for bsky.social JWTs."""
+    normalized = (host or "").strip().lower()
+    return normalized in _BSKY_TRUSTED_HOSTS or normalized.endswith(_BSKY_TRUSTED_SUFFIXES)
+
+
+def _validate_search_host(raw: Any) -> Optional[str]:
+    """Validate and normalize a BSKY_SEARCH_HOST override to a bare public FQDN."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return None
+    # Strip a single pasted https:// origin (reject http:// and other schemes).
+    if text.lower().startswith("https://"):
+        text = text[len("https://"):]
+    if text.endswith("/"):
+        text = text[:-1]
+    if not text or not text.isascii():
+        return None
+    if any(ch in text for ch in "/\\@?#:[]%"):
+        return None
+    try:
+        parts = urlsplit(f"https://{text}")
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme != "https"
+        or parts.username is not None
+        or parts.password is not None
+        or port is not None
+        or parts.path != ""
+        or parts.query != ""
+        or parts.fragment != ""
+    ):
+        return None
+    host = (parts.hostname or "").lower()
+    if not host or len(host) > 253 or parts.netloc.lower() != host:
+        return None
+    if not _BSKY_HOST_RE.fullmatch(host):
+        return None
+    if host == "localhost" or host.endswith(_BSKY_DISALLOWED_SUFFIXES):
+        return None
+    if public_host._parse_ip_literal(host) is not None or host.rsplit(".", 1)[-1].isdigit():
+        return None
+    if not public_host.is_public_address_syntax(f"https://{host}"):
+        return None
+    return host
+
+
+def _bsky_search_redirect_guard(expected_host: str):
+    """Allow redirects only over HTTPS to the exact validated search host."""
+    target_host = expected_host.lower()
+
+    def _guard(newurl: str) -> bool:
+        if not isinstance(newurl, str) or not newurl or newurl != newurl.strip():
+            return False
+        if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in newurl):
+            return False
+        if not public_host.is_public_address_syntax(newurl):
+            return False
+        try:
+            parts = urlsplit(newurl)
+            port = parts.port
+        except ValueError:
+            return False
+        return (
+            parts.scheme.lower() == "https"
+            and parts.username is None
+            and parts.password is None
+            and "\\" not in parts.netloc
+            and port in (None, 443)
+            and (parts.hostname or "").lower() == target_host
+        )
+
+    return _guard
 
 
 def _resolve_search_url(config: Optional[Dict[str, Any]] = None) -> str:
@@ -34,12 +122,10 @@ def _resolve_search_url(config: Optional[Dict[str, Any]] = None) -> str:
     os.environ, so check both — same hybrid pattern as last30days.py for
     LAST30DAYS_STORE.
 
-    Hardens user-supplied host values against three common mis-configurations:
-    whitespace (e.g. " api.bsky.app "), embedded path components (e.g.
-    "api.bsky.app/xrpc/proxy") that would double the /xrpc/ segment, and
-    embedded scheme prefixes (e.g. "https://api.bsky.app"). On any of these
-    we log a warning and fall back to the default rather than building an
-    invalid URL with an opaque downstream error.
+    Strictly validates user-supplied host values as bare public FQDNs:
+    rejects non-HTTPS schemes, embedded paths, queries, fragments, userinfo,
+    ports, whitespace/control chars, IP literals, and localhost/private hosts.
+    On invalid input we log a warning and fall back to the default.
     """
     config = config or {}
     raw = (
@@ -47,17 +133,11 @@ def _resolve_search_url(config: Optional[Dict[str, Any]] = None) -> str:
         or config.get("BSKY_SEARCH_HOST")
         or _DEFAULT_BSKY_SEARCH_HOST
     )
-    host = raw.strip().rstrip("/")
-    # Strip embedded scheme so users who paste full URLs do not break the f-string.
-    for prefix in ("https://", "http://"):
-        if host.lower().startswith(prefix):
-            host = host[len(prefix):]
-            break
-    if not host or "/" in host or " " in host:
-        # Embedded path or whitespace remains — don't trust it. Default + log.
+    host = _validate_search_host(raw)
+    if not host:
         if raw != _DEFAULT_BSKY_SEARCH_HOST:
             _log(
-                f"BSKY_SEARCH_HOST={raw!r} is not a bare hostname; "
+                f"BSKY_SEARCH_HOST={raw!r} is not a valid public hostname; "
                 f"falling back to default {_DEFAULT_BSKY_SEARCH_HOST!r}"
             )
         host = _DEFAULT_BSKY_SEARCH_HOST
@@ -295,7 +375,6 @@ def search_bluesky(
 
     _log(f"Searching for '{core_topic}' (depth={depth}, limit={count})")
 
-    from urllib.parse import urlencode
     params = {
         "q": core_topic,
         "limit": str(min(count, 100)),
@@ -303,19 +382,32 @@ def search_bluesky(
         "since": _inclusive_since_date(from_date),
         "until": _exclusive_until_date(to_date),
     }
-    url = f"{_resolve_search_url(config)}?{urlencode(params)}"
+    search_base_url = _resolve_search_url(config)
+    search_host = (urlsplit(search_base_url).hostname or _DEFAULT_BSKY_SEARCH_HOST).lower()
+    trusted_host = _is_trusted_bsky_host(search_host)
+    redirect_guard = _bsky_search_redirect_guard(search_host)
+    url = f"{search_base_url}?{urlencode(params)}"
 
-    def _search_with_token(token: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def _search_with_token(token: Optional[str]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        req_kwargs: Dict[str, Any] = {
+            "timeout": 30,
+            "redirect_guard": redirect_guard,
+        }
+        if token is not None:
+            req_kwargs["headers"] = {"Authorization": f"Bearer {token}"}
+        if not trusted_host:
+            req_kwargs["public_only"] = True
         try:
-            response = http.request(
-                "GET", url,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=30,
-            )
+            response = http.request("GET", url, **req_kwargs)
             return response, None
         except http.HTTPError as e:
             _log(f"Search failed: {e}")
             if e.status_code == 401:
+                if token is None:
+                    return None, (
+                        f"Bluesky search host {search_host!r} rejected unauthenticated search (401); "
+                        "bsky.social Bearer tokens are only sent to *.bsky.app / *.bsky.social hosts"
+                    )
                 return None, "refresh"
             if e.status_code == 403 and e.body and "cloudflare" in e.body.lower():
                 return None, "Bluesky search blocked by Cloudflare (403). This is a network-level block - try a different network or VPN."
@@ -325,6 +417,10 @@ def search_bluesky(
             return None, f"Bluesky search failed: {type(e).__name__}: {e}"
 
     def _auth_and_search() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        if not trusted_host:
+            # Never exfiltrate a live bsky.social session JWT to an arbitrary third-party host.
+            _log(f"Withholding bsky.social Bearer token from non-Bluesky search host {search_host!r}")
+            return _search_with_token(None)
         token = _create_session(handle, app_password)
         if not token:
             error_msg = _session_error or "Bluesky session creation failed (unknown error)"
