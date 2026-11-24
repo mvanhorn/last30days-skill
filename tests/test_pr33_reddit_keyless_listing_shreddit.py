@@ -593,7 +593,7 @@ class TestHigh114ScoreBackfillAndCommentIntegrity:
         assert len(posts) == 1
         assert posts[0]["score"] == 0
         assert posts[0]["num_comments"] == 62
-        assert "engagement_source" not in posts[0]
+        assert posts[0]["engagement_source"] == reddit_refs.UNKNOWN
 
     def test_discover_skips_arctic_backfill_for_live_zero_score_site_search_post(self):
         parsed, _ = reddit_search.parse_page(SEARCH_PAGE1_HTML, "ButcherBox")
@@ -798,6 +798,113 @@ class TestHigh114ScoreBackfillAndCommentIntegrity:
         assert archive_post["score"] == 88
         assert archive_post["num_comments"] == 20
         assert archive_post["engagement_source"] == reddit_refs.LIVE
+
+    def test_missing_votes_never_erase_known_scores_and_measured_zero_beats_archive(self):
+        # 1) Unscored search result (no vote counter -> UNKNOWN) merged with Arctic Shift (55, ARCTIC)
+        #    must keep 55 + ARCTIC (both when parsed from HTML and when unlabeled placeholder 0).
+        ctx = json.dumps({
+            "action_info": {"type": "post"},
+            "post": {"id": "t3_u111", "title": "Python unscored search"},
+            "subreddit": {"name": "python"},
+        }).replace('"', "&quot;")
+        unscored_search_html = (
+            f'<search-telemetry-tracker data-faceplate-tracking-context="{ctx}" '
+            f'view-events="search/view/post"><h2><a data-testid="post-title" '
+            f'href="/r/python/comments/u111/">Python unscored search</a></h2>'
+            f"</search-telemetry-tracker>"
+            f'<faceplate-timeago ts="2026-11-15T10:00:00+0000"></faceplate-timeago>'
+            f'<div data-testid="search-counter-row">'
+            f'<span><faceplate-number number="12" pretty></faceplate-number> comments</span></div>'
+        )
+        parsed_unscored_search, _ = reddit_search.parse_page(unscored_search_html, "Python")
+        assert parsed_unscored_search[0]["engagement_source"] == reddit_refs.UNKNOWN
+
+        arctic_copy = _post_dict("u111", title="Python unscored search", score=55, num_comments=10, created_utc=1_700_000_000)
+        arctic_copy["url"] = "https://www.reddit.com/r/python/comments/u111/python_unscored_search/"
+
+        with mock.patch.object(reddit_keyless.reddit_search, "search", return_value=parsed_unscored_search), \
+             mock.patch.object(reddit_keyless.reddit_discover, "web_refs", side_effect=_empty_web_floor), \
+             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[arctic_copy]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores") as fetch_scores:
+            out1 = reddit_keyless._discover("Python", "quick", ["python"])
+        fetch_scores.assert_not_called()
+        assert len(out1) == 1
+        assert out1[0]["score"] == 55
+        assert out1[0]["engagement"]["score"] == 55
+        assert out1[0]["num_comments"] == 12
+        assert out1[0]["engagement_source"] == reddit_refs.ARCTIC
+
+        # Also verify unlabeled placeholder zero search dict merged into ARCTIC keeps 55 + ARCTIC.
+        unlabeled_zero = _post_dict("u111", score=0, num_comments=12)
+        target_arctic = _post_dict("u111", score=55, num_comments=10, engagement_source=reddit_refs.ARCTIC)
+        reddit_hydrate.merge_post(target_arctic, unlabeled_zero)
+        assert target_arctic["score"] == 55
+        assert target_arctic["engagement_source"] == reddit_refs.ARCTIC
+
+        # 2) Unscored listing card (no score attr -> UNKNOWN) merged with measured search (19, LIVE)
+        #    must adopt 19 + LIVE.
+        unscored_card_html = (
+            '<shreddit-post permalink="/r/python/comments/u222/python_card/" '
+            'post-title="Python unscored listing" comment-count="8" '
+            'author="alice" subreddit-name="python" '
+            'created-timestamp="2026-11-15T10:00:00+00:00"></shreddit-post>'
+        )
+        parsed_unscored_card = reddit_listing.parse_cards(unscored_card_html, query="Python")
+        assert parsed_unscored_card[0]["engagement_source"] == reddit_refs.UNKNOWN
+
+        measured_search = _post_dict(
+            "u222", title="Python unscored listing", score=19, num_comments=8, engagement_source=reddit_refs.LIVE
+        )
+        measured_search["url"] = "https://www.reddit.com/r/python/comments/u222/"
+
+        with mock.patch.object(reddit_keyless.reddit_search, "search", return_value=[measured_search]), \
+             mock.patch.object(reddit_keyless.reddit_discover, "web_refs", side_effect=_empty_web_floor), \
+             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=parsed_unscored_card), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores") as fetch_scores2:
+            out2 = reddit_keyless._discover("Python", "quick", ["python"])
+        fetch_scores2.assert_not_called()
+        assert len(out2) == 1
+        assert out2[0]["score"] == 19
+        assert out2[0]["engagement"]["score"] == 19
+        assert out2[0]["engagement_source"] == reddit_refs.LIVE
+
+        # 3) Measured zero-score search result (score=0, num_comments=62, LIVE) merged with
+        #    Arctic Shift (score=1, num_comments=0, ARCTIC) must keep score=0, num_comments=62, LIVE.
+        measured_zero = _post_dict(
+            "u333", title="ButcherBox zero votes", score=0, num_comments=62, engagement_source=reddit_refs.LIVE
+        )
+        measured_zero["url"] = "https://www.reddit.com/r/Netherlands/comments/u333/"
+        arctic_stub = _post_dict("u333", title="ButcherBox zero votes", score=1, num_comments=0, created_utc=1_700_000_000)
+        arctic_stub["url"] = "https://www.reddit.com/r/Netherlands/comments/u333/butcherbox_zero_votes/"
+
+        with mock.patch.object(reddit_keyless.reddit_search, "search", return_value=[measured_zero]), \
+             mock.patch.object(reddit_keyless.reddit_discover, "web_refs", side_effect=_empty_web_floor), \
+             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[arctic_stub]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores") as fetch_scores3:
+            out3 = reddit_keyless._discover("ButcherBox", "quick", ["Netherlands"])
+        fetch_scores3.assert_not_called()
+        assert len(out3) == 1
+        assert out3[0]["score"] == 0
+        assert out3[0]["engagement"]["score"] == 0
+        assert out3[0]["num_comments"] == 62
+        assert out3[0]["engagement"]["num_comments"] == 62
+        assert out3[0]["engagement_source"] == reddit_refs.LIVE
+
+        # Unscored search post (UNKNOWN, no listing copy) remains eligible for Arctic backfill.
+        solo_unscored, _ = reddit_search.parse_page(unscored_search_html, "Python")
+        with mock.patch.object(reddit_keyless.reddit_search, "search", return_value=solo_unscored), \
+             mock.patch.object(reddit_keyless.reddit_discover, "web_refs", side_effect=_empty_web_floor), \
+             mock.patch.object(
+                 reddit_keyless.reddit_arctic, "fetch_scores", return_value={"u111": {"score": 27, "num_comments": 4}}
+             ) as fetch_scores4:
+            out4 = reddit_keyless._discover("Python", "quick", None)
+        fetch_scores4.assert_called_once_with(["u111"])
+        assert out4[0]["score"] == 27
+        assert out4[0]["num_comments"] == 12
+        assert out4[0]["engagement_source"] == reddit_refs.ARCTIC
 
 
 # ---------------------------------------------------------------------------
@@ -1035,3 +1142,45 @@ class TestHigh122ShredditParaAndBodyBounding:
         started = time.monotonic()
         assert reddit_shreddit._body_for(malformed, "t1_missing") == ""
         assert time.monotonic() - started < 1.0
+
+    def test_parse_comments_indexes_body_divs_once_per_page_and_prefers_post_variant(self):
+        parts = []
+        for i in range(30):
+            tid = f"t1_c{i:02d}"
+            if i == 0:
+                # Comment 0 has BOTH -comment-rtjson-content and nested -post-rtjson-content
+                # plus a sibling footer inside -comment-rtjson-content to confirm -post- wins.
+                body_html = (
+                    f'<div id="{tid}-comment-rtjson-content">'
+                    f'<div id="{tid}-post-rtjson-content"><p>Preferred post body 0.</p></div>'
+                    f'<div class="extra-ui"><p>Outer wrapper noise</p></div>'
+                    f"</div>"
+                )
+            else:
+                body_html = f'<div id="{tid}-comment-rtjson-content"><p>Comment body {i}.</p></div>'
+            parts.append(
+                f'<shreddit-comment author="user{i}" thingId="{tid}" score="{100 - i}" '
+                f'depth="0" permalink="/r/python/comments/1/comment/{tid}/">'
+                f"{body_html}"
+                f"</shreddit-comment>"
+            )
+        html = "".join(parts)
+
+        real_div_open = reddit_shreddit._DIV_OPEN
+        scan_count = 0
+
+        class CountingPattern:
+            def finditer(self, text):
+                nonlocal scan_count
+                scan_count += 1
+                return real_div_open.finditer(text)
+
+        with mock.patch.object(reddit_shreddit, "_DIV_OPEN", CountingPattern()):
+            comments = reddit_shreddit.parse_comments(html, limit=30)
+
+        assert scan_count == 1, f"expected single page scan, got {scan_count}"
+        assert len(comments) == 30
+        assert comments[0]["body"] == "Preferred post body 0."
+        assert "Outer wrapper noise" not in comments[0]["body"]
+        assert comments[15]["body"] == "Comment body 15."
+        assert comments[29]["body"] == "Comment body 29."

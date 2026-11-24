@@ -205,6 +205,32 @@ def _iso_to_date(value: str) -> Optional[str]:
         return None
 
 
+def _index_body_divs(html_text: str) -> Dict[str, int]:
+    """Index opening body ``<div>`` end offsets by lowercased thingId in one pass.
+
+    Prefers ``-post-rtjson-content`` over ``-comment-rtjson-content`` when both
+    exist for the same comment (live shreddit markup nests the post div inside
+    the comment div).
+    """
+    starts: Dict[str, int] = {}
+    has_post_variant: set[str] = set()
+    for m in _DIV_OPEN.finditer(html_text or ""):
+        tag = m.group(0)
+        if tag.rstrip().endswith("/>"):
+            continue
+        div_id = _attr(tag, "id").lower()
+        if div_id.endswith("-post-rtjson-content"):
+            tid = div_id.removesuffix("-post-rtjson-content")
+            if tid and tid not in has_post_variant:
+                starts[tid] = m.end()
+                has_post_variant.add(tid)
+        elif div_id.endswith("-comment-rtjson-content"):
+            tid = div_id.removesuffix("-comment-rtjson-content")
+            if tid and tid not in starts:
+                starts[tid] = m.end()
+    return starts
+
+
 def _find_body_div_start(html_text: str, thing_id: str) -> Optional[int]:
     """Return the index right after the opening body ``<div>`` for ``thing_id``."""
     thing_lower = thing_id.lower()
@@ -223,7 +249,11 @@ def _find_body_div_start(html_text: str, thing_id: str) -> Optional[int]:
     return comment_match_end
 
 
-def _body_for(html_text: str, thing_id: str) -> str:
+def _body_for(
+    html_text: str,
+    thing_id: str,
+    body_starts: Optional[Dict[str, int]] = None,
+) -> str:
     """Extract a comment's text body, anchored on its unique thingId.
 
     The body div id embeds the comment's thingId (``-post-rtjson-content`` or
@@ -235,7 +265,11 @@ def _body_for(html_text: str, thing_id: str) -> str:
     """
     if not html_text or not thing_id:
         return ""
-    start = _find_body_div_start(html_text, thing_id)
+    start = (
+        body_starts.get(thing_id.lower())
+        if body_starts is not None
+        else _find_body_div_start(html_text, thing_id)
+    )
     if start is None:
         return ""
     window = html_text[start: start + 16000]
@@ -296,13 +330,16 @@ def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, 
     on high-traffic threads without saying anything about the topic.
     """
     comments: List[Dict[str, Any]] = []
+    body_starts: Optional[Dict[str, int]] = None
     for m in _COMMENT_START.finditer(html_text or ""):
         tag = m.group(0)
         author = _attr(tag, "author") or "[deleted]"
         if author in ("[deleted]", "[removed]") or _is_bot_author(author):
             continue
         thing_id = _attr(tag, "thingId")
-        body = _body_for(html_text, thing_id)
+        if body_starts is None:
+            body_starts = _index_body_divs(html_text)
+        body = _body_for(html_text, thing_id, body_starts=body_starts)
         if not body or body in ("[deleted]", "[removed]"):
             continue
         try:

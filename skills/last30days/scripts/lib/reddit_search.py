@@ -325,8 +325,9 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
             "why_relevant": "Reddit search",
             "metadata": {"post_id": post_id},
         }
-        if "vote" in counts:
-            post_item["engagement_source"] = reddit_refs.LIVE
+        post_item["engagement_source"] = (
+            reddit_refs.LIVE if "vote" in counts else reddit_refs.UNKNOWN
+        )
         posts.append(post_item)
     return posts, _next_cursor(html_text)
 

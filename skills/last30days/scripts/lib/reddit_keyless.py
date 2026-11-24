@@ -208,24 +208,17 @@ def _apply_scores(post: Dict[str, Any], scored: Dict[str, Any]) -> None:
     engagement = post.setdefault("engagement", {})
     existing_source = post.get("engagement_source")
     incoming_source = scored.get("engagement_source")
-    existing_score = (
-        engagement.get("score")
-        if engagement.get("score") is not None
-        else post.get("score")
+    existing_rank = reddit_hydrate._effective_score_rank(post)
+    incoming_rank = (
+        reddit_refs.score_rank(incoming_source)
+        if incoming_source is not None
+        else reddit_refs.score_rank(reddit_refs.LIVE)
     )
-    has_live_score = existing_source == reddit_refs.LIVE or (
-        existing_source is None and bool(existing_score)
-    )
-    incoming_is_lower = (
-        incoming_source is not None
-        and reddit_refs.score_rank(incoming_source) < reddit_refs.score_rank(reddit_refs.LIVE)
-    )
-    if not (has_live_score and incoming_is_lower):
+    if incoming_rank >= existing_rank:
         post["score"] = scored["score"]
         engagement["score"] = scored["score"]
         if incoming_source and (
-            not existing_source
-            or reddit_refs.score_rank(incoming_source) > reddit_refs.score_rank(existing_source)
+            not existing_source or incoming_rank > existing_rank
         ):
             post["engagement_source"] = incoming_source
     counts = [
@@ -239,6 +232,19 @@ def _apply_scores(post: Dict[str, Any], scored: Dict[str, Any]) -> None:
     num_comments = int(max(counts)) if counts else 0
     post["num_comments"] = num_comments
     engagement["num_comments"] = num_comments
+
+
+def _needs_score_backfill(post: Dict[str, Any]) -> bool:
+    """True when ``post`` lacks a measured score and has not already tried Arctic Shift."""
+    if post.get("engagement", {}).get("score"):
+        return False
+    source = post.get("engagement_source")
+    if not source:
+        return True
+    if source == reddit_refs.UNKNOWN:
+        prov = set(post.get("provenance") or [])
+        return not (prov & {"web", "host", "session"})
+    return False
 
 
 def _listing_timeframe(from_date: Optional[str], to_date: Optional[str]) -> str:
@@ -773,11 +779,15 @@ def _discover(
     )
 
     # Score lookup by post id, from the scored listing cards, carrying
-    # engagement_source so live scores are never overwritten by archive snapshots.
+    # engagement_source so live scores are never overwritten by archive snapshots
+    # and unmeasured listing placeholders never enter the score map.
     score_map: Dict[str, Dict[str, Any]] = {}
     for p in listing_posts:
         pid = p.get("metadata", {}).get("post_id", "")
         if not pid or reddit_refs.score_pending(p):
+            continue
+        rank = reddit_hydrate._effective_score_rank(p)
+        if rank <= reddit_refs.score_rank(reddit_refs.UNKNOWN):
             continue
         src = p.get("engagement_source") or reddit_refs.LIVE
         prev = score_map.get(pid)
@@ -857,8 +867,7 @@ def _discover(
     # Hydrated web-floor threads carry their own labeled score (a pending
     # archive score stays pending) and are not looked up again.
     need = [pid for p in merged
-            if not (p.get("engagement", {}).get("score"))
-            and not p.get("engagement_source")
+            if _needs_score_backfill(p)
             for pid in [reddit_listing._post_id(p["url"])] if pid]
     if need and not _out_of_time(deadline):
         scores = _within(
@@ -868,7 +877,7 @@ def _discover(
         filled = 0
         now = time.time()
         for p in merged:
-            if p.get("engagement", {}).get("score") or p.get("engagement_source"):
+            if not _needs_score_backfill(p):
                 continue
             pid = reddit_listing._post_id(p["url"])
             if pid in scores:

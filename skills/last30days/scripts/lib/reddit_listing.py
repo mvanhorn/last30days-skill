@@ -197,8 +197,9 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
             "why_relevant": "Reddit listing",
             "metadata": {"post_id": _post_id(permalink)},
         }
-        if has_live_score:
-            card["engagement_source"] = reddit_refs.LIVE
+        card["engagement_source"] = (
+            reddit_refs.LIVE if has_live_score else reddit_refs.UNKNOWN
+        )
         posts.append(card)
     return posts
 
