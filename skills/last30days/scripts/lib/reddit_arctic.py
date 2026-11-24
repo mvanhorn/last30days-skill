@@ -504,12 +504,23 @@ def fetch_posts_by_ids(
                 state = "down"
             break
         try:
-            data = _archive_get(f"{API}?ids={','.join(batch)}", end)
+            _acquire_keyless_limiter(end)
         except http.DeadlineExceeded:
             _log(f"post lookup stopped at its deadline; {len(todo) - start} ids left")
             if state == "ok":
                 state = "down"
             break
+        try:
+            data = _fetch_search(f"{API}?ids={','.join(batch)}", end, retry_422=True)
+        except http.DeadlineExceeded as exc:
+            if time.monotonic() >= end:
+                _log(f"post lookup stopped at its deadline; {len(todo) - start} ids left")
+                if state == "ok":
+                    state = "down"
+                break
+            _log(f"post lookup batch timed out ({exc}); {len(batch)} ids left")
+            state = "down"
+            continue
         except Exception as exc:  # network error / non-200 — degrade, never raise
             if _is_slow_down(exc):
                 _log(f"post lookup throttled (422 twice); {len(todo) - start} ids left")

@@ -42,7 +42,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunsplit
 
 from . import health, http, log, public_host
@@ -422,7 +422,11 @@ def keyless_search(
     used = "ddg"
     ladder = (("brave", _brave_rung),) if _is_reddit_query(query) else ()
     ladder += (("ddg", _ddg_rung), ("startpage", _startpage_rung))
-    bound = {"deadline_monotonic": deadline_monotonic} if deadline_monotonic is not None else {}
+    bound: dict[str, Any] = {}
+    if deadline_monotonic is not None:
+        bound["deadline_monotonic"] = deadline_monotonic
+    if cancel is not None:
+        bound["cancel"] = cancel
 
     def stopped() -> bool:
         if cancel is not None and cancel.is_set():
@@ -482,13 +486,19 @@ def keyless_search(
 
 
 def _fetch_page(
-    rung: str, url: str, deadline_monotonic: Optional[float] = None,
+    rung: str,
+    url: str,
+    deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[Optional[str], str]:
     """One rung's results page: ``(text, "")`` or ``(None, failure state)``.
 
     The transport swallows the status; the failures it records are read back
     here and still forwarded to the caller's failure sink.
     """
+    extra: dict[str, Any] = {}
+    if cancel is not None:
+        extra["cancel"] = cancel
     with http.tee_failures() as failures:
         try:
             text = http.get_text(
@@ -500,6 +510,7 @@ def _fetch_page(
                 redirect_guard=_rung_redirect_guard(url),
                 max_bytes=_MAX_SERP_BYTES,
                 decode_errors="replace",
+                **extra,
             )
         except (UnicodeDecodeError, ValueError):
             return None, ERROR
@@ -532,9 +543,12 @@ def _brave_url(query: str, freshness: Optional[str] = None) -> str:
 def _brave_rung(
     query: str, count: int, freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[list[dict], str]:
     """Rung 0 (Reddit queries): Brave Search's HTML results page, with its state."""
-    text, failed = _fetch_page("brave", _brave_url(query, freshness), deadline_monotonic)
+    text, failed = _fetch_page(
+        "brave", _brave_url(query, freshness), deadline_monotonic, cancel=cancel,
+    )
     if text is None:
         return [], failed
     items = parse_brave(text, count)
@@ -648,8 +662,11 @@ def _ddg_url(query: str, freshness: Optional[str] = None) -> str:
 def _ddg_rung(
     query: str, count: int, freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[list[dict], str]:
-    text, failed = _fetch_page("ddg", _ddg_url(query, freshness), deadline_monotonic)
+    text, failed = _fetch_page(
+        "ddg", _ddg_url(query, freshness), deadline_monotonic, cancel=cancel,
+    )
     if text is None:
         return [], failed
     items = parse_ddg(text, count)
@@ -716,12 +733,15 @@ def _search_startpage(query: str, count: int, freshness: Optional[str] = None) -
 def _startpage_rung(
     query: str, count: int, freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[list[dict], str]:
     """Keyless rung 2: Startpage's HTML results page. Unlike DuckDuckGo's HTML
     endpoint (which anomaly-blocks datacenter IPs with a 202 challenge page),
     Startpage returns organic results to a plain browser-UA GET, making it the
     working floor on hosts DuckDuckGo refuses. Never raises."""
-    text, failed = _fetch_page("startpage", _startpage_url(query, freshness), deadline_monotonic)
+    text, failed = _fetch_page(
+        "startpage", _startpage_url(query, freshness), deadline_monotonic, cancel=cancel,
+    )
     if text is None:
         return [], failed
     items = parse_startpage(text, count)
@@ -813,6 +833,7 @@ def is_challenge_page(rung: str, text: str) -> bool:
 def _search_searxng(
     query: str, count: int, instance_url: str, time_range: str | None = None,
     deadline_monotonic: float | None = None,
+    cancel: Optional[threading.Event] = None,
 ) -> list[dict]:
     validated = _validate_searxng_url(instance_url)
     if validated is None:
@@ -827,6 +848,9 @@ def _search_searxng(
     if time_range:
         params['time_range'] = time_range
     url = f"{base}/search?{urlencode(params)}"
+    extra: dict[str, Any] = {}
+    if cancel is not None:
+        extra["cancel"] = cancel
     try:
         data = http.get(
             url,
@@ -838,6 +862,7 @@ def _search_searxng(
             ip_validator=_is_allowed_searxng_ip,
             max_bytes=_MAX_SEARXNG_BYTES,
             decode_errors="replace",
+            **extra,
         )
     except (http.HTTPError, UnicodeDecodeError, ValueError):
         return []

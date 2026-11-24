@@ -1,6 +1,7 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
 import http.client
+import io
 import ipaddress
 import json
 from collections import OrderedDict
@@ -1222,7 +1223,18 @@ def _content_length(headers) -> Optional[int]:
     return value if value >= 0 else None
 
 
-def _read_bounded(stream, max_bytes: int, *, truncate: bool = False) -> bytes:
+_READ_CHUNK_BYTES = 65_536
+
+
+def _read_bounded(
+    stream,
+    max_bytes: int,
+    *,
+    truncate: bool = False,
+    cancel: Optional[threading.Event] = None,
+) -> bytes:
+    if cancel is not None and cancel.is_set():
+        raise DeadlineExceeded()
     if not truncate:
         declared = (
             stream.length
@@ -1234,7 +1246,30 @@ def _read_bounded(stream, max_bytes: int, *, truncate: bool = False) -> bytes:
                 f"Response Content-Length {declared} exceeds limit of {max_bytes} bytes"
             )
     limit = max_bytes if truncate else max_bytes + 1
-    data = stream.read(limit)
+    reader = (
+        stream.fp
+        if isinstance(stream, urllib.error.HTTPError)
+        and isinstance(getattr(stream, "fp", None), io.IOBase)
+        else stream
+    )
+    if cancel is not None and isinstance(reader, io.IOBase) and hasattr(reader, "read1"):
+        chunks: list[bytes] = []
+        total = 0
+        while total < limit:
+            if cancel.is_set():
+                raise DeadlineExceeded()
+            chunk = reader.read1(min(_READ_CHUNK_BYTES, limit - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if cancel.is_set():
+            raise DeadlineExceeded()
+        data = b"".join(chunks)
+    else:
+        data = stream.read(limit)
+        if cancel is not None and cancel.is_set():
+            raise DeadlineExceeded()
     if data is None:
         return b""
     if truncate:
@@ -1671,6 +1706,9 @@ def request(
     def sleep_before_retry(delay: float) -> bool:
         """Sleep only when the full delay fits inside the caller's deadline."""
         nonlocal last_error
+        if cancel is not None and cancel.is_set():
+            last_error = deadline_error()
+            return False
         if deadline_monotonic is not None:
             remaining = deadline_monotonic - time.monotonic()
             if remaining <= 0 or delay >= remaining:
@@ -1702,7 +1740,9 @@ def request(
                     response_headers.url = final if isinstance(final, str) else ""
                 return (
                     response.status,
-                    _read_bounded(response, effective_max_bytes).decode('utf-8', errors=decode_errors),
+                    _read_bounded(
+                        response, effective_max_bytes, cancel=cancel,
+                    ).decode('utf-8', errors=decode_errors),
                     None,
                 )
         except urllib.error.HTTPError as error:
@@ -1710,7 +1750,9 @@ def request(
             # inside the same deadline-protected worker before classification.
             body = None
             try:
-                raw_error = _read_bounded(error, MAX_ERROR_BODY_BYTES, truncate=True)
+                raw_error = _read_bounded(
+                    error, MAX_ERROR_BODY_BYTES, truncate=True, cancel=cancel,
+                )
                 body = raw_error.decode(
                     'utf-8',
                     errors='replace' if len(raw_error) == MAX_ERROR_BODY_BYTES else 'strict',
@@ -1834,7 +1876,7 @@ def request(
                     usage.finish(charge, json.loads(body))
                 except (ValueError, TypeError):
                     pass
-            if (
+            if (cancel is not None and cancel.is_set()) or (
                 deadline_monotonic is not None
                 and time.monotonic() >= deadline_monotonic
             ):
@@ -2016,6 +2058,7 @@ def get_text(
     accept: str = "*/*",
     headers: Optional[Dict[str, str]] = None,
     deadline_monotonic: float | None = None,
+    cancel: Optional[threading.Event] = None,
     retry_dns: bool = True,
     landed: Optional[list] = None,
     redirect_guard: Optional[Callable[[str], bool]] = None,
@@ -2059,6 +2102,8 @@ def get_text(
     bounds: Dict[str, Any] = {}
     if deadline_monotonic is not None:
         bounds["deadline_monotonic"] = deadline_monotonic
+    if cancel is not None:
+        bounds["cancel"] = cancel
     if not retry_dns:
         bounds["retry_dns"] = False
     if landed is not None:

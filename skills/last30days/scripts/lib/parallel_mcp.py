@@ -219,8 +219,37 @@ def _make_abortable_handlers(abort_state: _AbortState) -> list[Any]:
                 self._create_connection = _create_tracked_connection
 
             def connect(self) -> None:
-                super().connect()
-                abort_state.register_socket(self.sock)
+                # Open TCP (and optional CONNECT tunnel) first via HTTPConnection.connect(),
+                # which already registers the raw TCP socket with abort_state.
+                http_client.HTTPConnection.connect(self)
+                server_hostname = self._tunnel_host if self._tunnel_host else self.host
+                raw_sock = self.sock
+                try:
+                    tls_sock = self._context.wrap_socket(
+                        raw_sock,
+                        server_hostname=server_hostname,
+                        do_handshake_on_connect=False,
+                    )
+                except BaseException:
+                    self.sock = None
+                    try:
+                        raw_sock.close()
+                    except OSError:
+                        pass
+                    raise
+                self.sock = tls_sock
+                try:
+                    # Register the TLS socket before starting the handshake so
+                    # cancel/deadline abort can shut it down if ServerHello stalls.
+                    abort_state.register_socket(tls_sock)
+                    tls_sock.do_handshake()
+                except BaseException:
+                    self.sock = None
+                    try:
+                        tls_sock.close()
+                    except OSError:
+                        pass
+                    raise
 
         class _AbortableHTTPSHandler(urllib.request.HTTPSHandler):
             def https_open(self, req):

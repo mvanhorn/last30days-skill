@@ -1436,6 +1436,284 @@ def test_http_ip_validator_and_local_bridge_mutually_exclusive_and_trailing_dot_
     assert len(verified) == 1
 
 
+def test_parallel_mcp_aborts_stalled_tls_handshake_and_worker_exits():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    port = srv.getsockname()[1]
+
+    stop_srv = threading.Event()
+    accepted_conns: list[socket.socket] = []
+
+    def accept_and_stall():
+        srv.settimeout(0.1)
+        while not stop_srv.is_set():
+            try:
+                conn, _ = srv.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            accepted_conns.append(conn)
+            # Accept TCP and never send TLS ServerHello; hold socket until test teardown.
+        for conn in accepted_conns:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    srv_thread = threading.Thread(target=accept_and_stall, daemon=True)
+    srv_thread.start()
+
+    real_thread_cls = threading.Thread
+
+    def run_with_worker_tracking(**kwargs):
+        workers: list[threading.Thread] = []
+
+        def tracking_thread(*args, **t_kwargs):
+            t = real_thread_cls(*args, **t_kwargs)
+            if t_kwargs.get("name") == "parallel-mcp-request":
+                workers.append(t)
+            return t
+
+        with patch.object(parallel_mcp, "PARALLEL_MCP_URL", f"https://127.0.0.1:{port}/mcp"), \
+             patch.object(parallel_mcp.threading, "Thread", side_effect=tracking_thread):
+            t0 = time.monotonic()
+            with pytest.raises(http.DeadlineExceeded):
+                parallel_mcp.search(
+                    "tls stall",
+                    ("2026-10-01", "2026-11-01"),
+                    "test-key",
+                    **kwargs,
+                )
+            elapsed = time.monotonic() - t0
+        assert workers, "expected at least one parallel-mcp-request worker thread"
+        for worker in workers:
+            worker.join(2.0)
+            assert not worker.is_alive(), "worker thread stayed hung in stalled TLS handshake"
+        return elapsed
+
+    try:
+        # 1) Deadline abort during stalled TLS handshake.
+        elapsed_deadline = run_with_worker_tracking(
+            deadline_monotonic=time.monotonic() + 0.25,
+        )
+        assert elapsed_deadline < 1.5
+
+        # 2) Cancel abort during stalled TLS handshake.
+        cancel = threading.Event()
+
+        def trigger_cancel():
+            time.sleep(0.15)
+            cancel.set()
+
+        canceller = real_thread_cls(target=trigger_cancel, daemon=True)
+        canceller.start()
+        elapsed_cancel = run_with_worker_tracking(
+            deadline_monotonic=time.monotonic() + 15.0,
+            cancel=cancel,
+        )
+        canceller.join(1.0)
+        assert elapsed_cancel < 1.5
+    finally:
+        stop_srv.set()
+        try:
+            srv.close()
+        except OSError:
+            pass
+        srv_thread.join(2.0)
+
+
+def test_reddit_arctic_fetch_posts_by_ids_continues_after_per_batch_timeout_but_stops_on_overall_or_limiter_deadline():
+    from lib import reddit_arctic
+
+    many_ids = [f"b{i:03d}" for i in range(150)]  # 2 batches: 100 + 50
+    fast_limiter = http.RateLimiter(rate_per_sec=1000.0, burst=100)
+
+    # (a) Batch 1 hits per-batch 15s DeadlineExceeded while overall end still has 30s left:
+    # batch 2 MUST still run and return its posts.
+    calls: list[str] = []
+
+    def batch1_timeout_batch2_ok(url, deadline, retry_422=True):
+        calls.append(url)
+        if len(calls) == 1:
+            raise http.DeadlineExceeded()
+        return {
+            "data": [
+                {
+                    "id": "b100",
+                    "title": "Batch 2 survived",
+                    "subreddit": "python",
+                    "permalink": "/r/python/comments/b100/batch_2_survived/",
+                    "score": 42,
+                    "num_comments": 7,
+                    "created_utc": 1_760_000_000,
+                }
+            ]
+        }
+
+    with patch.object(http, "REDDIT_KEYLESS_LIMITER", fast_limiter), \
+         patch.object(reddit_arctic, "_fetch_search", side_effect=batch1_timeout_batch2_ok):
+        found, state = reddit_arctic.fetch_posts_by_ids(
+            many_ids, deadline=time.monotonic() + 30.0,
+        )
+    assert len(calls) == 2
+    assert "b100" in found
+    assert found["b100"]["title"] == "Batch 2 survived"
+    assert state == "down"
+
+    # (b) Batch 1 raises DeadlineExceeded AFTER overall deadline expired -> batch 2 skipped.
+    calls.clear()
+    fake_now = [100.0]
+
+    def batch1_exhausts_overall(url, deadline, retry_422=True):
+        calls.append(url)
+        fake_now[0] = 105.0  # past end=101.0
+        raise http.DeadlineExceeded()
+
+    with patch.object(http, "REDDIT_KEYLESS_LIMITER", fast_limiter), \
+         patch.object(reddit_arctic.time, "monotonic", side_effect=lambda: fake_now[0]), \
+         patch.object(reddit_arctic, "_fetch_search", side_effect=batch1_exhausts_overall):
+        found2, state2 = reddit_arctic.fetch_posts_by_ids(many_ids, deadline=101.0)
+    assert len(calls) == 1
+    assert found2 == {}
+    assert state2 == "down"
+
+    # (c) Limiter rejects before end -> batch 1 and batch 2 never invoke _fetch_search.
+    slow_limiter = http.RateLimiter(rate_per_sec=0.05, burst=1)
+    slow_limiter.acquire()
+    calls.clear()
+    with patch.object(http, "REDDIT_KEYLESS_LIMITER", slow_limiter), \
+         patch.object(reddit_arctic, "_fetch_search", side_effect=AssertionError("must not fetch")):
+        t0 = time.monotonic()
+        found3, state3 = reddit_arctic.fetch_posts_by_ids(many_ids, deadline=t0 + 0.2)
+    assert time.monotonic() - t0 < 0.5
+    assert found3 == {}
+    assert state3 == "down"
+
+
+def test_http_request_and_keyless_search_honor_cancel_during_retries_and_reads():
+    attempts = 0
+
+    class Retry503Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            nonlocal attempts
+            if self.path == "/flaky":
+                attempts += 1
+                body = b"service unavailable"
+                self.send_response(503)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/stream":
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                chunk = b"X" * 4096
+                for _ in range(50):
+                    try:
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                        self.wfile.flush()
+                    except OSError:
+                        break
+                    time.sleep(0.05)
+                try:
+                    self.wfile.write(b"0\r\n\r\n")
+                except OSError:
+                    pass
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    srv, thread, base = _start_server(Retry503Handler)
+    try:
+        # 1) Pre-set cancel aborts before making any attempt.
+        pre_cancel = threading.Event()
+        pre_cancel.set()
+        with pytest.raises(http.DeadlineExceeded):
+            http.request("GET", f"{base}/flaky", retries=3, raw=True, cancel=pre_cancel)
+        assert attempts == 0
+
+        # 2) Cancel set shortly into retry backoff aborts immediately without sleeping 2s or retrying.
+        retry_cancel = threading.Event()
+
+        def set_soon():
+            time.sleep(0.08)
+            retry_cancel.set()
+
+        t_cancel = threading.Thread(target=set_soon, daemon=True)
+        t_cancel.start()
+        t0 = time.monotonic()
+        with pytest.raises(http.DeadlineExceeded):
+            http.request("GET", f"{base}/flaky", retries=3, raw=True, cancel=retry_cancel)
+        elapsed = time.monotonic() - t0
+        t_cancel.join(1.0)
+        assert attempts == 1
+        assert elapsed < 1.0
+
+        # 3) Cancel mid-stream interrupts _read_bounded / get_text promptly.
+        stream_cancel = threading.Event()
+
+        def set_stream_cancel():
+            time.sleep(0.12)
+            stream_cancel.set()
+
+        t_stream = threading.Thread(target=set_stream_cancel, daemon=True)
+        t_stream.start()
+        t1 = time.monotonic()
+        with http.capture_failures() as failures:
+            body = http.get_text(f"{base}/stream", retries=1, cancel=stream_cancel)
+        elapsed_stream = time.monotonic() - t1
+        t_stream.join(1.0)
+        assert body is None
+        assert elapsed_stream < 1.0
+        assert any(isinstance(f, http.DeadlineExceeded) for f in failures)
+    finally:
+        _stop_server(srv, thread)
+
+    # 4) keyless_search forwards cancel to http.get_text (HTML rungs) and http.get (SearXNG).
+    ev = threading.Event()
+    seen_get_text_cancels: list[object] = []
+    seen_get_cancels: list[object] = []
+
+    def fake_get_text(url, **kwargs):
+        seen_get_text_cancels.append(kwargs.get("cancel"))
+        return None
+
+    def fake_get(url, **kwargs):
+        seen_get_cancels.append(kwargs.get("cancel"))
+        ev.set()
+        err = http.DeadlineExceeded()
+        http._record_failure(err)
+        raise err
+
+    web_search_keyless.reset_rung_health()
+    try:
+        with patch.object(web_search_keyless.http, "get_text", side_effect=fake_get_text), \
+             patch.object(web_search_keyless.http, "get", side_effect=fake_get):
+            items, artifact = web_search_keyless.keyless_search(
+                "topic",
+                ("2026-10-01", "2026-11-01"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+                cancel=ev,
+            )
+        assert items == []
+        assert seen_get_text_cancels == [ev, ev]
+        assert seen_get_cancels == [ev]
+        assert artifact["reason"] == "keyless-search-timeout"
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+    finally:
+        web_search_keyless.reset_rung_health()
+
+
+
 
 
 
