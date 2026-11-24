@@ -673,3 +673,92 @@ class TestEnvelopeReadSecurity:
         with mock.patch.object(sys, "stdin", io.StringIO("{}")), \
              pytest.raises(shortform_envelope.EnvelopeContractError, match="cannot be read"):
             shortform_envelope.read(shortform_envelope.STDIN, TOPIC)
+
+    def test_macos_case_insensitive_protected_directory_rejection(self, tmp_path, monkeypatch):
+        home = tmp_path / "Users" / "alice"
+        aws = home / ".aws"
+        cfg = home / ".config" / "last30days"
+        sibling = home / ".aws-public"
+        aws.mkdir(parents=True)
+        cfg.mkdir(parents=True)
+        sibling.mkdir(parents=True)
+
+        (aws / "credentials").write_text("dummy-secret", encoding="utf-8")
+        _write_json(aws / "secret.json", _envelope_payload([{"id": "sec111"}]))
+        _write_json(cfg / "cache.json", _envelope_payload([{"id": "cfg111"}]))
+        ok_file = _write_json(sibling / "threads.json", _envelope_payload([{"id": "ok1111"}]))
+
+        case_link = tmp_path / "case_link.json"
+        case_link.symlink_to(home / ".AWS" / "secret.json")
+
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(reddit_envelope.env, "CONFIG_DIR", cfg)
+        monkeypatch.setattr(reddit_envelope.env, "CONFIG_FILE", cfg / ".env")
+
+        probes = [
+            home / ".AWS" / "credentials",
+            home / ".AWS" / "nonexistent",
+            home / ".Config" / "Last30Days" / "cache.json",
+            tmp_path / "Users" / "ALICE" / ".CONFIG" / "LAST30DAYS" / "missing.json",
+            case_link,
+        ]
+        with mock.patch.object(
+            reddit_envelope, "_stat", side_effect=AssertionError("_stat must not run"),
+        ), mock.patch.object(
+            reddit_envelope.os, "open", side_effect=AssertionError("os.open must not run"),
+        ):
+            templates = []
+            for probe in probes:
+                with pytest.raises(reddit_envelope.EnvelopeContractError) as exc_info:
+                    reddit_envelope.read(probe, TOPIC)
+                msg = exc_info.value.message
+                assert "is inside a configuration or credential directory" in msg
+                templates.append(msg.replace(str(probe), "<PATH>"))
+            assert len(set(templates)) == 1
+
+        # Sibling directory sharing only a string prefix (.aws-public vs .aws) stays allowed.
+        with redirect_stderr(io.StringIO()):
+            env_obj = reddit_envelope.read(ok_file, TOPIC)
+        assert [r.post_id for r in env_obj.refs] == ["ok1111"]
+
+    def test_macos_fd_real_path_uses_f_getpath_and_blocks_parent_swap(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "cfg"
+        cfg.mkdir()
+        work = tmp_path / "work"
+        work.mkdir()
+        target = _write_json(work / "threads.json", _envelope_payload([{"id": "ok1111"}]))
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(reddit_envelope.env, "CONFIG_DIR", cfg)
+        monkeypatch.setattr(reddit_envelope.env, "CONFIG_FILE", cfg / ".env")
+
+        seen_calls: list[tuple[int, int, int]] = []
+
+        def fake_fcntl_protected(fd, cmd, buf):
+            seen_calls.append((fd, cmd, len(buf)))
+            # Return uppercase case-variant under protected cfg to test both F_GETPATH
+            # and macOS case-insensitive matching together.
+            return os.fsencode(str(tmp_path / "CFG" / "threads.json")) + b"\x00" * 32
+
+        fake_fcntl_mod = mock.Mock(F_GETPATH=50, fcntl=mock.Mock(side_effect=fake_fcntl_protected))
+        with mock.patch.object(reddit_envelope, "fcntl", fake_fcntl_mod), \
+             pytest.raises(reddit_envelope.EnvelopeContractError, match="credential directory"):
+            reddit_envelope.read(target, TOPIC)
+        assert len(seen_calls) == 1
+        assert seen_calls[0][1] == 50
+        assert seen_calls[0][2] == reddit_envelope._DARWIN_MAXPATHLEN
+
+        # When F_GETPATH returns the benign path, read succeeds normally.
+        benign_mod = mock.Mock(
+            F_GETPATH=50,
+            fcntl=mock.Mock(return_value=os.fsencode(str(target)) + b"\x00" * 16),
+        )
+        with mock.patch.object(reddit_envelope, "fcntl", benign_mod), redirect_stderr(io.StringIO()):
+            env_obj = reddit_envelope.read(target, TOPIC)
+        assert [r.post_id for r in env_obj.refs] == ["ok1111"]
+
+        # When F_GETPATH fails with OSError, _fd_real_path returns None cleanly.
+        err_mod = mock.Mock(F_GETPATH=50, fcntl=mock.Mock(side_effect=OSError("ENOTSUP")))
+        with mock.patch.object(reddit_envelope, "fcntl", err_mod):
+            assert reddit_envelope._fd_real_path(99999) is None

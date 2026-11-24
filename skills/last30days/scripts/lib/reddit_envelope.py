@@ -46,6 +46,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 from urllib.parse import urlsplit
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
 from . import env, log, reddit_discover, reddit_hydrate
 from .reddit_refs import UNKNOWN, ThreadRef, canonical_thread
 
@@ -339,8 +344,25 @@ def _protected_roots() -> list[Path]:
     return [Path(os.path.realpath(root)) for root in _raw_protected_roots()]
 
 
+_DARWIN_F_GETPATH = 50
+_DARWIN_MAXPATHLEN = 1024
+
+
+def _norm_parts(path: Path) -> tuple[str, ...]:
+    if sys.platform == "darwin":
+        return tuple(part.casefold() for part in path.parts)
+    if sys.platform == "win32":
+        return tuple(os.path.normcase(part) for part in path.parts)
+    return path.parts
+
+
 def _is_under(path: Path, roots: Iterable[Path]) -> bool:
-    return any(path == root or root in path.parents for root in roots)
+    p_parts = _norm_parts(path)
+    for root in roots:
+        r_parts = _norm_parts(root)
+        if r_parts and len(p_parts) >= len(r_parts) and p_parts[:len(r_parts)] == r_parts:
+            return True
+    return False
 
 
 def _inside_protected(real: Path) -> bool:
@@ -348,12 +370,24 @@ def _inside_protected(real: Path) -> bool:
 
 
 def _fd_real_path(fd: int) -> Optional[Path]:
-    """Canonical path of an open descriptor on systems with ``/proc/self/fd``."""
-    try:
-        target = os.readlink(f"/proc/self/fd/{fd}")
-    except OSError:
-        return None
-    if not target.startswith("/"):
+    """Canonical path of an open descriptor (``F_GETPATH`` on macOS, ``/proc/self/fd`` on Linux)."""
+    target: Optional[str] = None
+    if sys.platform == "darwin" and fcntl is not None:
+        f_getpath = getattr(fcntl, "F_GETPATH", _DARWIN_F_GETPATH)
+        try:
+            raw = fcntl.fcntl(fd, f_getpath, b"\x00" * _DARWIN_MAXPATHLEN)
+        except (OSError, ValueError):
+            return None
+        if isinstance(raw, (bytes, bytearray)):
+            target = os.fsdecode(bytes(raw).split(b"\x00", 1)[0])
+        elif isinstance(raw, str):
+            target = raw.split("\x00", 1)[0]
+    else:
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            return None
+    if not target or not target.startswith("/"):
         return None
     try:
         return Path(os.path.realpath(target))
