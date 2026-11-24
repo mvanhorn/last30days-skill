@@ -20,6 +20,7 @@ than failing the run.
 from __future__ import annotations
 
 import json
+import math
 import secrets
 from collections import Counter
 from dataclasses import dataclass, field
@@ -400,7 +401,7 @@ def _parse_handoff_envelope(
     (payload, bundle_id, generated_at)."""
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise HandoffContractError(
             f"Could not read {label.lower()} {path}: {exc}"
         ) from exc
@@ -427,7 +428,8 @@ def _parse_handoff_envelope(
             f"{label} {path} has kind {file_kind!r}; expected "
             f"{kind!r}. {remedy}"
         )
-    bundle_id = str(payload.get("bundle_id") or "")
+    raw_bundle_id = payload.get("bundle_id")
+    bundle_id = raw_bundle_id.strip() if isinstance(raw_bundle_id, str) else ""
     if not bundle_id:
         raise HandoffContractError(
             f"{label} {path} is missing its bundle_id; "
@@ -443,6 +445,18 @@ def _parse_handoff_envelope(
     return payload, bundle_id, generated_at
 
 
+def _parse_mock_flag(payload: dict[str, Any], path: Path, *, label: str, remedy: str) -> bool:
+    raw_mock = payload.get("mock")
+    if raw_mock is None:
+        return False
+    if not isinstance(raw_mock, bool):
+        raise HandoffContractError(
+            f"{label} {path} has non-boolean \"mock\" value "
+            f"{raw_mock!r}. {remedy}"
+        )
+    return raw_mock
+
+
 def _parse_bundle_file(path: Path) -> NominationsBundle:
     payload, bundle_id, generated_at = _parse_handoff_envelope(
         path,
@@ -454,14 +468,59 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         stale_context="the momentum window it captured has moved on",
     )
     version = payload.get("schema_version")
+    mock_flag = _parse_mock_flag(
+        payload, path, label="Nominations bundle", remedy=_RESWEEP_REMEDY
+    )
 
-    context = payload.get("context") or {}
+    raw_context = payload.get("context")
+    if raw_context is None:
+        context: dict[str, Any] = {}
+    elif isinstance(raw_context, dict):
+        context = raw_context
+    else:
+        raise HandoffContractError(
+            f"Nominations bundle {path} has malformed \"context\" "
+            f"(expected object, got {type(raw_context).__name__}). {_RESWEEP_REMEDY}"
+        )
+
     boundary = context.get("enrichment_source_boundary")
+    if boundary is not None and (
+        not isinstance(boundary, list) or any(not isinstance(s, str) for s in boundary)
+    ):
+        raise HandoffContractError(
+            f"Nominations bundle {path} has malformed "
+            f"context.enrichment_source_boundary. {_RESWEEP_REMEDY}"
+        )
     requested = context.get("requested_sources")
-    try:
-        lookback_days = int(context.get("lookback_days") or 30)
-    except (TypeError, ValueError):
+    if requested is not None and (
+        not isinstance(requested, list) or any(not isinstance(s, str) for s in requested)
+    ):
+        raise HandoffContractError(
+            f"Nominations bundle {path} has malformed "
+            f"context.requested_sources. {_RESWEEP_REMEDY}"
+        )
+
+    raw_lookback = context.get("lookback_days")
+    if raw_lookback is None:
         lookback_days = 30
+    elif isinstance(raw_lookback, bool):
+        raise HandoffContractError(
+            f"Nominations bundle {path} has invalid context.lookback_days "
+            f"{raw_lookback!r} (expected integer >= 1). {_RESWEEP_REMEDY}"
+        )
+    else:
+        try:
+            lookback_days = int(raw_lookback)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise HandoffContractError(
+                f"Nominations bundle {path} has invalid context.lookback_days "
+                f"{raw_lookback!r} (expected integer >= 1). {_RESWEEP_REMEDY}"
+            ) from exc
+        if lookback_days < 1:
+            raise HandoffContractError(
+                f"Nominations bundle {path} has invalid context.lookback_days "
+                f"{raw_lookback!r} (expected integer >= 1). {_RESWEEP_REMEDY}"
+            )
 
     rows_raw = payload.get("nominations")
     if not isinstance(rows_raw, list):
@@ -472,6 +531,7 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         )
 
     nominations: list[BundleNomination] = []
+    seen_ids: set[str] = set()
     for position, row in enumerate(rows_raw, start=1):
         # Lenient per row: the bundle is engine-written, but one corrupted
         # row must not discard the rest of the pool.
@@ -481,16 +541,49 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
                 f"{path.name} (not an object)"
             )
             continue
+        nom_raw = row.get("nomination")
+        if not isinstance(nom_raw, dict):
+            _warn(
+                f"skipping unparseable nomination row {position} in "
+                f"{path.name}: nomination field is not an object"
+            )
+            continue
+        items_raw = nom_raw.get("items")
+        if items_raw is not None and not isinstance(items_raw, list):
+            _warn(
+                f"skipping unparseable nomination row {position} in "
+                f"{path.name}: nomination.items is not a list"
+            )
+            continue
         try:
             nomination = pipeline.Nomination(
-                **schema.nomination_kwargs_from_dict(row.get("nomination") or {})
+                **schema.nomination_kwargs_from_dict(nom_raw)
             )
-        except (KeyError, TypeError, ValueError) as exc:
+            if not isinstance(nomination.name, str):
+                raise TypeError("nomination.name must be a string")
+            if not math.isfinite(nomination.seed_score):
+                raise ValueError("nomination.seed_score must be finite")
+            if nomination.worthiness is not None and not math.isfinite(nomination.worthiness):
+                raise ValueError("nomination.worthiness must be finite")
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
             _warn(
                 f"skipping unparseable nomination row {position} in "
                 f"{path.name}: {type(exc).__name__}: {exc}"
             )
             continue
+        raw_id = row.get("id")
+        if raw_id is None:
+            nomination_id = f"n{position}"
+        elif isinstance(raw_id, str) and raw_id.strip():
+            nomination_id = raw_id.strip()
+        else:
+            nomination_id = f"n{position}"
+        if nomination_id in seen_ids:
+            raise HandoffContractError(
+                f"Nominations bundle {path} contains duplicate nomination id "
+                f"{nomination_id!r}. {_RESWEEP_REMEDY}"
+            )
+        seen_ids.add(nomination_id)
         engagement_raw = row.get("engagement_by_source")
         engagement = {
             str(source): dict(metrics)
@@ -499,13 +592,29 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
             )
             if isinstance(metrics, dict)
         }
+        sources_raw = row.get("sources")
+        if sources_raw is None:
+            sources: list[str] = []
+        elif isinstance(sources_raw, list):
+            sources = [s for s in sources_raw if isinstance(s, str)]
+            if len(sources) != len(sources_raw):
+                _warn(
+                    f"ignoring non-string entries in sources list on nomination "
+                    f"row {position} in {path.name}"
+                )
+        else:
+            _warn(
+                f"ignoring malformed sources list on nomination row {position} "
+                f"in {path.name}"
+            )
+            sources = []
         nominations.append(BundleNomination(
-            nomination_id=str(row.get("id") or f"n{position}"),
+            nomination_id=nomination_id,
             nomination=nomination,
             cluster_id=str(row.get("cluster_id") or ""),
             heuristic_name=str(row.get("heuristic_name") or ""),
             heuristic_junk=bool(row.get("heuristic_junk")),
-            sources=[str(source) for source in row.get("sources") or []],
+            sources=sources,
             engagement_by_source=engagement,
         ))
 
@@ -542,17 +651,15 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         domain=str(payload.get("domain") or ""),
         tier=str(payload.get("tier") or "deep"),
         enrichment_source_boundary=(
-            [str(source) for source in boundary]
-            if isinstance(boundary, list) else None
+            list(boundary) if boundary is not None else None
         ),
         requested_sources=(
-            [str(source) for source in requested]
-            if isinstance(requested, list) else None
+            list(requested) if requested is not None else None
         ),
         lookback_days=lookback_days,
         nominations=nominations,
         source_status=source_status,
-        mock=bool(payload.get("mock")),
+        mock=mock_flag,
         path=path,
         warnings=warnings,
     )
@@ -612,6 +719,9 @@ def _parse_pending_file(path: Path) -> PendingReport:
         )
         if isinstance(info, dict)
     }
+    mock_flag = _parse_mock_flag(
+        payload, path, label="Pending discovery report", remedy=_RESUME_REMEDY
+    )
     return PendingReport(
         schema_version=str(version),
         bundle_id=bundle_id,
@@ -619,7 +729,7 @@ def _parse_pending_file(path: Path) -> PendingReport:
         run_ref=str(payload.get("run_ref") or ""),
         report=report,
         angle_inputs=angle_inputs,
-        mock=bool(payload.get("mock")),
+        mock=mock_flag,
         path=path,
     )
 
@@ -629,7 +739,7 @@ def _load_host_file(path: str | Path, label: str) -> dict[str, Any]:
     file_path = Path(path).expanduser()
     try:
         raw = file_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise HandoffContractError(
             f"Could not read {label} file {file_path}: {exc}"
         ) from exc
@@ -741,12 +851,14 @@ def _known_rows(
 
 
 def _clamped_worthiness(raw: object) -> int | None:
-    """Worthiness clamped to 0-100 integers; anything non-numeric is absent."""
+    """Worthiness clamped to 0-100 integers; non-numeric or non-finite values are absent."""
     if isinstance(raw, bool):
         return None
     try:
         value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value):
         return None
     return max(0, min(100, round(value)))
 

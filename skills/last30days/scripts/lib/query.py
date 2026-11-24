@@ -166,14 +166,51 @@ def infer_query_intent(topic: str) -> str:
     return "breaking_news"
 
 
+_COMPOUND_BRAND_TOKEN = r'(?:[A-Z][A-Za-z0-9]*|[a-z]+[A-Z][A-Za-z0-9]*)'
+_COMPOUND_BRAND_TOKEN_RE = re.compile(rf'^{_COMPOUND_BRAND_TOKEN}$')
+_COMPOUND_CAPITALIZED_RUN_RE = re.compile(
+    rf"(?<![A-Za-z0-9'-])(?:{_COMPOUND_BRAND_TOKEN}\s+)+{_COMPOUND_BRAND_TOKEN}(?![A-Za-z0-9'-])"
+)
+COMPOUND_ENTITY_PHRASE_RE = re.compile(
+    rf'^{_COMPOUND_BRAND_TOKEN}(?:\s+{_COMPOUND_BRAND_TOKEN}){{1,2}}$'
+)
+_COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
+    'i', 'you', 'we', 'my', 'your', 'our', 'me', 'can', 'do', 'did',
+    'alternative', 'alternatives',
+    'workflow', 'workflows',
+    'example', 'tutorials',
+    'application', 'applications',
+    'practice', 'production',
+    'case', 'cases',
+})
+
+
+def _is_title_cased_prompt(topic: str) -> bool:
+    """True when a 4+ word topic capitalizes every alphabetic word, leaving no
+    case signal to distinguish proper nouns from prompt framing."""
+    alpha_words = [
+        tok for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", topic)
+        if tok[0].isalpha()
+    ]
+    if len(alpha_words) < 4:
+        return False
+    return all(
+        tok[0].isupper() or _COMPOUND_BRAND_TOKEN_RE.fullmatch(tok) is not None
+        for tok in alpha_words
+    )
+
+
 def extract_compound_terms(topic: str) -> List[str]:
     """Detect multi-word terms that should be quoted in search queries.
 
     Identifies:
     - Hyphenated terms: "multi-agent", "vc-backed"
-    - Title-cased multi-word names: "Claude Code", "React Native"
+    - Short capitalized/brand multi-word names (2-3 words): "Claude Code",
+      "React Native", "GitHub Actions", "MacBook Pro", "iPhone Pro"
 
-    Returns list of terms suitable for quoting (e.g., '"multi-agent"').
+    Anchored to full word boundaries so PascalCase/camelCase brands are never
+    sliced mid-word, and skips full Title-Cased prompts or runs longer than 3
+    words after trimming noise/intent-modifier edges.
     """
     terms: List[str] = []
 
@@ -181,9 +218,20 @@ def extract_compound_terms(topic: str) -> List[str]:
     for match in re.finditer(r'\b\w+-\w+(?:-\w+)*\b', topic):
         terms.append(match.group())
 
-    # Title-cased sequences (2+ capitalized words in a row)
-    for match in re.finditer(r'(?:[A-Z][a-z]+\s+){1,}[A-Z][a-z]+', topic):
-        terms.append(match.group())
+    if _is_title_cased_prompt(topic):
+        return terms
+
+    # Word-bounded capitalized / brand sequences (2-3 words after edge trim)
+    for match in _COMPOUND_CAPITALIZED_RUN_RE.finditer(topic):
+        words = match.group().split()
+        while words and words[0].lower() in _COMPOUND_EDGE_NOISE:
+            words.pop(0)
+        while words and words[-1].lower() in _COMPOUND_EDGE_NOISE:
+            words.pop()
+        if 2 <= len(words) <= 3:
+            phrase = " ".join(words)
+            if phrase not in terms:
+                terms.append(phrase)
 
     return terms
 
