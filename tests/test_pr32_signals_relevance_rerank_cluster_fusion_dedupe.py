@@ -1623,9 +1623,93 @@ class TestHigh109DedupeUrlNormalization:
         web_members = [c for c in c1_members if c.source == "web"]
         poly_c1 = [c for c in c1_members if c.source == "polymarket"]
         assert len(web_members) == 1
-        assert web_members[0].candidate_id != reused_url
+        saved_web_id = web_members[0].candidate_id
+        assert saved_web_id != reused_url
         assert web_members[0].title == web_item.title
         assert [c.source_items[0].metadata["event_id"] for c in poly_c1] == ["200"]
+
+        # Repeat drill on cluster-2 rediscovers the same web URL (with query/trailing-slash
+        # variance and its original unsuffixed URL-based candidate_id): cluster-1's untouched
+        # suffixed web candidate must be updated in place rather than duplicated into cluster-2.
+        web_repeat = _source_item(
+            "web-2",
+            "web",
+            title="Updated Polymarket Fed rate coverage",
+            body="Refreshed article text about the Polymarket Fed meetings",
+            snippet="Fresh web summary after FOMC minutes",
+            url=f"https://www.polymarket.com/event/fed-rate-decision/?utm_source=repeat",
+            local_relevance=0.86,
+            freshness=92,
+            source_quality=0.7,
+        )
+        repeat_cands = fusion.weighted_rrf(
+            {
+                ("primary", "polymarket"): [ev_100, ev_200],
+                ("primary", "web"): [web_repeat],
+            },
+            plan_all,
+            pool_limit=10,
+        )
+        for idx, cand in enumerate(repeat_cands):
+            cand.final_score = 91.0 - idx
+        repeat_web_cand = next(c for c in repeat_cands if c.source == "web")
+        assert repeat_web_cand.candidate_id == reused_url
+        repeat_drill = schema.Report(
+            topic="fed rate decision",
+            range_from="2026-10-01",
+            range_to="2026-10-22",
+            generated_at="2026-10-22T12:10:00+00:00",
+            provider_runtime=runtime,
+            query_plan=plan_all,
+            clusters=[
+                schema.Cluster(
+                    cluster_id="cluster-2",
+                    title=repeat_cands[0].title,
+                    candidate_ids=[c.candidate_id for c in repeat_cands],
+                    representative_ids=[c.candidate_id for c in repeat_cands[:3]],
+                    sources=["polymarket", "web"],
+                    score=91.0,
+                )
+            ],
+            ranked_candidates=repeat_cands,
+            items_by_source={"polymarket": [ev_100, ev_200], "web": [web_repeat]},
+            errors_by_source={},
+            source_status={
+                "polymarket": schema.SourceOutcome(source="polymarket", state="ok", items_returned=2),
+                "web": schema.SourceOutcome(source="web", state="ok", items_returned=1),
+            },
+        )
+
+        merged_repeat = pipeline.merge_drill_report(
+            merged, repeat_drill, [cluster_2], target="cluster 2",
+        )
+        repeat_ids = [c.candidate_id for c in merged_repeat.ranked_candidates]
+        assert len(repeat_ids) == len(set(repeat_ids)) == len(merged.ranked_candidates)
+        repeat_webs = [c for c in merged_repeat.ranked_candidates if c.source == "web"]
+        assert len(repeat_webs) == 1
+        assert repeat_webs[0].candidate_id == saved_web_id
+        assert repeat_webs[0].cluster_id == "cluster-1"
+        assert repeat_webs[0].snippet == "Fresh web summary after FOMC minutes"
+        repeat_cluster_2 = next(cl for cl in merged_repeat.clusters if cl.cluster_id == "cluster-2")
+        assert saved_web_id not in repeat_cluster_2.candidate_ids
+        assert len(repeat_cluster_2.candidate_ids) == 1
+        repeat_by_id = {c.candidate_id: c for c in merged_repeat.ranked_candidates}
+        c2_only = repeat_by_id[repeat_cluster_2.candidate_ids[0]]
+        assert c2_only.source == "polymarket"
+        assert c2_only.source_items[0].metadata["event_id"] == "100"
+
+        # Re-drilling cluster-1 while untouched cluster-2 still occupies reused_url also keeps
+        # a single web candidate under the same stable suffixed ID (no :2 drift or duplicate).
+        merged_same_cluster = pipeline.merge_drill_report(
+            merged, repeat_drill, [cluster_1], target="cluster 1",
+        )
+        same_ids = [c.candidate_id for c in merged_same_cluster.ranked_candidates]
+        assert len(same_ids) == len(set(same_ids)) == len(merged.ranked_candidates)
+        same_webs = [c for c in merged_same_cluster.ranked_candidates if c.source == "web"]
+        assert len(same_webs) == 1
+        assert same_webs[0].candidate_id == saved_web_id
+        assert same_webs[0].cluster_id == "cluster-1"
+        assert same_webs[0].snippet == "Fresh web summary after FOMC minutes"
 
     def test_polymarket_fresh_matched_copy_keeps_empty_snippet_over_stale_price_move(self):
         url = "https://polymarket.com/event/fed-rate-decision"

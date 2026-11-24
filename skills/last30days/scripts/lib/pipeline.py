@@ -4178,25 +4178,33 @@ def _candidate_is_duplicate(
             if cand_eid == existing_eid:
                 return True
             continue
+        existing_norm_url = fusion._normalize_url(existing.url) if existing.url else ""
+        existing_is_poly = bool(_candidate_polymarket_items(existing))
         if (
             conflicted_poly_urls
             and cand_norm_url
             and cand_norm_url in conflicted_poly_urls
+            and cand_norm_url == existing_norm_url
         ):
-            existing_norm_url = fusion._normalize_url(existing.url) if existing.url else ""
-            if cand_norm_url == existing_norm_url:
-                if bool(cand_eid) != bool(existing_eid):
-                    continue
-                existing_is_poly = bool(_candidate_polymarket_items(existing))
-                if cand_is_poly != existing_is_poly:
-                    continue
-                if cand_is_poly and existing_is_poly:
-                    if not cand_eid and not existing_eid:
-                        return True
-                    continue
+            if bool(cand_eid) != bool(existing_eid):
+                continue
+            if cand_is_poly != existing_is_poly:
+                continue
+            if cand_is_poly and existing_is_poly:
+                if not cand_eid and not existing_eid:
+                    return True
+                continue
         if existing.candidate_id == candidate.candidate_id:
             return True
         if candidate.url and existing.url == candidate.url:
+            return True
+        if (
+            not cand_is_poly
+            and not existing_is_poly
+            and cand_norm_url
+            and existing_norm_url == cand_norm_url
+            and candidate.source == existing.source
+        ):
             return True
         if cand_text:
             existing_text = " ".join((existing.title, existing.snippet)).strip()
@@ -4251,10 +4259,19 @@ def merge_drill_report(
         for index, candidate in enumerate(unrelated_candidates)
     }
     unrelated_poly_event_indexes: dict[str, int] = {}
+    unrelated_poly_idless_url_indexes: dict[str, int] = {}
+    unrelated_source_url_indexes: dict[tuple[str, str], int] = {}
     for index, candidate in enumerate(unrelated_candidates):
         eid = _candidate_polymarket_event_id(candidate)
-        if eid and eid not in unrelated_poly_event_indexes:
-            unrelated_poly_event_indexes[eid] = index
+        is_poly = bool(_candidate_polymarket_items(candidate))
+        norm = fusion._normalize_url(candidate.url) if candidate.url else ""
+        if eid:
+            unrelated_poly_event_indexes.setdefault(eid, index)
+        elif is_poly:
+            if norm:
+                unrelated_poly_idless_url_indexes.setdefault(norm, index)
+        elif norm:
+            unrelated_source_url_indexes.setdefault((candidate.source, norm), index)
     selected_base_candidates = [
         copy.deepcopy(candidate)
         for candidate in merged.ranked_candidates
@@ -4298,6 +4315,7 @@ def merge_drill_report(
         *((False, c) for c in selected_base_candidates),
     ]:
         cand_eid = _candidate_polymarket_event_id(candidate)
+        cand_is_poly = bool(_candidate_polymarket_items(candidate))
         cand_norm_url = fusion._normalize_url(candidate.url) if candidate.url else ""
         unrelated_index = unrelated_poly_event_indexes.get(cand_eid) if cand_eid else None
         if unrelated_index is None:
@@ -4305,11 +4323,22 @@ def merge_drill_report(
             if by_id is not None:
                 unrelated_cand = unrelated_candidates[by_id]
                 unrelated_eid = _candidate_polymarket_event_id(unrelated_cand)
+                unrelated_is_poly = bool(_candidate_polymarket_items(unrelated_cand))
                 if not _polymarket_candidates_conflict(candidate, unrelated_cand) and not (
                     cand_norm_url in conflicted_poly_urls
-                    and bool(cand_eid) != bool(unrelated_eid)
+                    and (
+                        bool(cand_eid) != bool(unrelated_eid)
+                        or cand_is_poly != unrelated_is_poly
+                    )
                 ):
                     unrelated_index = by_id
+        if unrelated_index is None and cand_norm_url:
+            if not cand_is_poly:
+                unrelated_index = unrelated_source_url_indexes.get(
+                    (candidate.source, cand_norm_url)
+                )
+            elif not cand_eid:
+                unrelated_index = unrelated_poly_idless_url_indexes.get(cand_norm_url)
         if unrelated_index is not None:
             existing_unrelated = unrelated_candidates[unrelated_index]
             candidate.candidate_id = existing_unrelated.candidate_id
@@ -4322,7 +4351,16 @@ def merge_drill_report(
             conflicted_poly_urls=conflicted_poly_urls,
         ):
             reserved_ids = (
-                used_candidate_ids | set(selected_base_by_id)
+                used_candidate_ids
+                | {
+                    base_cand.candidate_id
+                    for base_cand in selected_base_candidates
+                    if not _candidate_is_duplicate(
+                        base_cand,
+                        [candidate],
+                        conflicted_poly_urls=conflicted_poly_urls,
+                    )
+                }
                 if from_drill
                 else used_candidate_ids
             )
@@ -4331,7 +4369,10 @@ def merge_drill_report(
                 _polymarket_candidates_conflict(candidate, base_collision)
                 or (
                     cand_norm_url in conflicted_poly_urls
-                    and bool(cand_eid) != bool(_candidate_polymarket_event_id(base_collision))
+                    and (
+                        bool(cand_eid) != bool(_candidate_polymarket_event_id(base_collision))
+                        or cand_is_poly != bool(_candidate_polymarket_items(base_collision))
+                    )
                 )
             ):
                 _disambiguate_candidate_id(candidate, cand_eid, reserved_ids)
