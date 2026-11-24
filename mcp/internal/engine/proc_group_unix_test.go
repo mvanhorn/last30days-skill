@@ -9,8 +9,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -293,4 +296,200 @@ func assertPidDead(t *testing.T, pidFile, what string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+type signalLifecycleRecorder struct {
+	mu          sync.Mutex
+	events      []string
+	reapStarted atomic.Bool
+	postReapSig atomic.Bool
+}
+
+func installLifecycleHooks(t *testing.T) *signalLifecycleRecorder {
+	t.Helper()
+	rec := &signalLifecycleRecorder{}
+	origSignal := signalProcessGroupFunc
+	origWait := waitCmdFunc
+	origNoReap := waitChildNoReapFunc
+	t.Cleanup(func() {
+		signalProcessGroupFunc = origSignal
+		waitCmdFunc = origWait
+		waitChildNoReapFunc = origNoReap
+	})
+	signalProcessGroupFunc = func(pid int, sig syscall.Signal) error {
+		if rec.reapStarted.Load() {
+			rec.postReapSig.Store(true)
+		}
+		rec.mu.Lock()
+		rec.events = append(rec.events, "signal:"+sig.String())
+		rec.mu.Unlock()
+		return origSignal(pid, sig)
+	}
+	waitCmdFunc = func(cmd *exec.Cmd) error {
+		rec.reapStarted.Store(true)
+		rec.mu.Lock()
+		rec.events = append(rec.events, "wait:start")
+		rec.mu.Unlock()
+		err := origWait(cmd)
+		rec.mu.Lock()
+		rec.events = append(rec.events, "wait:done")
+		rec.mu.Unlock()
+		return err
+	}
+	return rec
+}
+
+func (r *signalLifecycleRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.events)
+}
+
+// TestWaitCommandNeverSignalsAfterReap verifies that on cancellation/timeout
+// every process-group signal (SIGTERM and SIGKILL) executes strictly before
+// cmd.Wait() reaps the child leader, eliminating post-reap PID-reuse races.
+func TestWaitCommandNeverSignalsAfterReap(t *testing.T) {
+	t.Run("clean exit during grace delivers SIGKILL before reap", func(t *testing.T) {
+		rec := installLifecycleHooks(t)
+		dir := t.TempDir()
+		ready := filepath.Join(dir, "ready")
+		stub := filepath.Join(dir, "trap-exit.sh")
+		script := "#!/bin/sh\ntrap 'exit 0' TERM\n: > \"$READY_FILE\"\nwhile :; do sleep 1; done\n"
+		if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(stub)
+		cmd.Env = append(os.Environ(), "READY_FILE="+ready)
+		setProcessGroup(cmd)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, ready)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := waitCommand(ctx, cmd, 2*time.Second); err != nil {
+			t.Fatalf("waitCommand: %v", err)
+		}
+		if rec.postReapSig.Load() {
+			t.Fatalf("delivered process-group signal after cmd.Wait() started: %v", rec.snapshot())
+		}
+		want := []string{
+			"signal:" + syscall.SIGTERM.String(),
+			"signal:" + syscall.SIGKILL.String(),
+			"wait:start",
+			"wait:done",
+		}
+		if got := rec.snapshot(); !slices.Equal(got, want) {
+			t.Fatalf("lifecycle events = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("TERM-ignoring leader escalates to SIGKILL before reap", func(t *testing.T) {
+		rec := installLifecycleHooks(t)
+		dir := t.TempDir()
+		ready := filepath.Join(dir, "ready")
+		stub := filepath.Join(dir, "ignore-term.sh")
+		script := "#!/bin/sh\ntrap '' TERM\n: > \"$READY_FILE\"\nwhile :; do sleep 1; done\n"
+		if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(stub)
+		cmd.Env = append(os.Environ(), "READY_FILE="+ready)
+		setProcessGroup(cmd)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, ready)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := waitCommand(ctx, cmd, 100*time.Millisecond)
+		if err == nil {
+			t.Fatal("expected non-nil error for SIGKILLed child")
+		}
+		if rec.postReapSig.Load() {
+			t.Fatalf("delivered process-group signal after cmd.Wait() started: %v", rec.snapshot())
+		}
+		want := []string{
+			"signal:" + syscall.SIGTERM.String(),
+			"signal:" + syscall.SIGKILL.String(),
+			"wait:start",
+			"wait:done",
+		}
+		if got := rec.snapshot(); !slices.Equal(got, want) {
+			t.Fatalf("lifecycle events = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("concurrent immediate exit and cancel never signals post-reap", func(t *testing.T) {
+		for i := range 25 {
+			rec := installLifecycleHooks(t)
+			cmd := exec.Command("/bin/sh", "-c", "exit 0")
+			setProcessGroup(cmd)
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("iter %d start: %v", i, err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_ = waitCommand(ctx, cmd, 200*time.Millisecond)
+			if rec.postReapSig.Load() {
+				t.Fatalf("iter %d: delivered signal after reap: %v", i, rec.snapshot())
+			}
+		}
+	})
+
+	t.Run("fallback path never calls killProcessGroup after cmd.Wait returns", func(t *testing.T) {
+		rec := installLifecycleHooks(t)
+		waitChildNoReapFunc = func(int) error { return errWaitNoReapUnsupported }
+
+		dir := t.TempDir()
+		ready := filepath.Join(dir, "ready")
+		stub := filepath.Join(dir, "fallback-trap.sh")
+		script := "#!/bin/sh\ntrap 'exit 0' TERM\n: > \"$READY_FILE\"\nwhile :; do sleep 1; done\n"
+		if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(stub)
+		cmd.Env = append(os.Environ(), "READY_FILE="+ready)
+		setProcessGroup(cmd)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, ready)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if err := waitCommand(ctx, cmd, 2*time.Second); err != nil {
+			t.Fatalf("waitCommand fallback: %v", err)
+		}
+		events := rec.snapshot()
+		waitDoneIdx := slices.Index(events, "wait:done")
+		if waitDoneIdx < 0 {
+			t.Fatalf("missing wait:done event: %v", events)
+		}
+		for _, ev := range events[waitDoneIdx+1:] {
+			if strings.HasPrefix(ev, "signal:") {
+				t.Fatalf("fallback delivered post-reap signal %q: %v", ev, events)
+			}
+		}
+		if slices.Contains(events, "signal:"+syscall.SIGKILL.String()) {
+			t.Fatalf("fallback unexpectedly sent SIGKILL after clean exit: %v", events)
+		}
+	})
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for readiness file %s", path)
 }

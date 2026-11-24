@@ -3,7 +3,9 @@
 package engine
 
 import (
+	"context"
 	"os/exec"
+	"time"
 )
 
 // setProcessGroup is a no-op on Windows: syscall.SysProcAttr has no Setpgid
@@ -30,4 +32,25 @@ func termProcessGroup(cmd *exec.Cmd) {
 		return
 	}
 	_ = cmd.Process.Kill()
+}
+
+func waitCommand(ctx context.Context, cmd *exec.Cmd, grace time.Duration) error {
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	select {
+	case err := <-waitCh:
+		return err
+	case <-ctx.Done():
+		termProcessGroup(cmd)
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case err := <-waitCh:
+			return err
+		case <-timer.C:
+			killProcessGroup(cmd)
+			return <-waitCh
+		}
+	}
 }

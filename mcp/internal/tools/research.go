@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -155,7 +156,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 // The engine emits the strict-exit receipt only after rendering. Hosted
 // clarification uses the same exit code without producing a report.
 func isDegradedReport(res *engine.RunResult, runErr error, emit string) bool {
-	if res == nil || res.ExitCode != strictExitCode || res.TimedOut || errors.Is(runErr, context.Canceled) {
+	if res == nil || res.ExitCode != strictExitCode || res.TimedOut || res.StdoutTruncated || errors.Is(runErr, context.Canceled) {
 		return false
 	}
 	output := strings.TrimSpace(withoutReportChecklist(string(res.Stdout)))
@@ -306,14 +307,37 @@ func boolArgument(args map[string]any, name string) (bool, error) {
 	return value, nil
 }
 
+// maxErrorStderrBytes caps the engine stderr excerpt included in an MCP tool
+// error payload so verbose diagnostics cannot produce oversized JSON-RPC frames.
+const maxErrorStderrBytes = 16 << 10
+
 // formatRunError flattens engine.Run's distinct error shapes into a single
-// user-facing message that includes the relevant stderr context.
+// user-facing message that includes the relevant bounded stderr context.
 func formatRunError(runErr error, res *engine.RunResult) string {
 	var msg strings.Builder
 	msg.WriteString(runErr.Error())
 	if res != nil && len(res.Stderr) > 0 {
-		msg.WriteString("\nengine stderr:\n")
-		msg.Write(res.Stderr)
+		stderr := res.Stderr
+		truncated := res.StderrTruncated
+		if len(stderr) > maxErrorStderrBytes {
+			stderr = trimLeadingUTF8Continuation(stderr[len(stderr)-maxErrorStderrBytes:])
+			truncated = true
+		}
+		if truncated {
+			fmt.Fprintf(&msg, "\nengine stderr (truncated, showing last %d bytes):\n", len(stderr))
+		} else {
+			msg.WriteString("\nengine stderr:\n")
+		}
+		msg.Write(stderr)
 	}
 	return msg.String()
+}
+
+// trimLeadingUTF8Continuation drops up to three orphaned UTF-8 continuation
+// bytes after slicing a byte tail so valid UTF-8 output is not split mid-rune.
+func trimLeadingUTF8Continuation(b []byte) []byte {
+	for i := 0; i < 3 && len(b) > 0 && !utf8.RuneStart(b[0]); i++ {
+		b = b[1:]
+	}
+	return b
 }

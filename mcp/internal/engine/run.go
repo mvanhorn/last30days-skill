@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -47,21 +46,25 @@ const pipeGracePeriod = time.Second
 // PythonPath is exposed so tests can substitute a stub interpreter without
 // manipulating the process PATH.
 type RunOptions struct {
-	PythonPath string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
-	CacheDir   string        // engine.Ensure result; lib/ here is added to PYTHONPATH
-	Args       []string      // arguments after last30days.py (topic, --emit=..., etc.)
-	ExtraEnv   []string      // appended to os.Environ() for the child process
-	Timeout    time.Duration // zero means DefaultTimeout or TimeoutEnvOverride
+	PythonPath     string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
+	CacheDir       string        // engine.Ensure result; lib/ here is added to PYTHONPATH
+	Args           []string      // arguments after last30days.py (topic, --emit=..., etc.)
+	ExtraEnv       []string      // appended to os.Environ() for the child process
+	Timeout        time.Duration // zero means DefaultTimeout or TimeoutEnvOverride
+	MaxStdoutBytes int           // zero means DefaultMaxStdoutBytes
+	MaxStderrBytes int           // zero means DefaultMaxStderrBytes
 }
 
-// RunResult captures the engine's full output. Stdout is what we surface to
+// RunResult captures the engine's bounded output. Stdout is what we surface to
 // the agent; Stderr is included in error messages so users can diagnose
 // engine failures without leaving Claude Desktop.
 type RunResult struct {
-	Stdout   []byte
-	Stderr   []byte
-	ExitCode int
-	TimedOut bool
+	Stdout          []byte
+	Stderr          []byte
+	StdoutTruncated bool
+	StderrTruncated bool
+	ExitCode        int
+	TimedOut        bool
 }
 
 // Run shells out to python3 with last30days.py inside cacheDir. The child
@@ -101,9 +104,12 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	// Mirrors lib/subproc.py.
 	setProcessGroup(cmd)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	maxStdout := resolveOutputLimit(opts.MaxStdoutBytes, DefaultMaxStdoutBytes)
+	maxStderr := resolveOutputLimit(opts.MaxStderrBytes, DefaultMaxStderrBytes)
+	stdout := newHeadBuffer(maxStdout)
+	stderr := newTailBuffer(maxStderr)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := subCtx.Err(); err != nil {
 		return &RunResult{
@@ -113,40 +119,26 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 	if err := cmd.Start(); err != nil {
 		res := &RunResult{
-			Stdout:   stdout.Bytes(),
-			Stderr:   stderr.Bytes(),
-			ExitCode: 0,
-			TimedOut: errors.Is(subCtx.Err(), context.DeadlineExceeded),
+			Stdout:          stdout.Bytes(),
+			Stderr:          stderr.Bytes(),
+			StdoutTruncated: stdout.Truncated(),
+			StderrTruncated: stderr.Truncated(),
+			ExitCode:        0,
+			TimedOut:        errors.Is(subCtx.Err(), context.DeadlineExceeded),
 		}
 		return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
 	}
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
 
-	select {
-	case <-subCtx.Done():
-		// Deadline or parent cancel: SIGTERM the group first so the
-		// python SIGTERM handler killpg()s the setsid'd descendant
-		// groups (node, yt-dlp, digg) that kill(-pid) cannot reach,
-		// then SIGKILL stragglers that ignore TERM. Then reap.
-		termProcessGroup(cmd)
-		select {
-		case err = <-waitCh:
-			killProcessGroup(cmd)
-		case <-time.After(termGracePeriod):
-			killProcessGroup(cmd)
-			err = <-waitCh
-		}
-	case werr := <-waitCh:
-		err = werr
-	}
+	err = waitCommand(subCtx, cmd, termGracePeriod)
 
 	ctxErr := subCtx.Err()
 	res := &RunResult{
-		Stdout:   stdout.Bytes(),
-		Stderr:   stderr.Bytes(),
-		ExitCode: 0,
-		TimedOut: errors.Is(ctxErr, context.DeadlineExceeded),
+		Stdout:          stdout.Bytes(),
+		Stderr:          stderr.Bytes(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
+		ExitCode:        0,
+		TimedOut:        errors.Is(ctxErr, context.DeadlineExceeded),
 	}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
@@ -156,6 +148,12 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 	if ctxErr != nil {
 		return res, fmt.Errorf("engine: subprocess canceled: %w", ctxErr)
+	}
+	if res.StdoutTruncated {
+		if err != nil {
+			return res, fmt.Errorf("%w (%d byte limit, received %d bytes; exit code %d)", ErrStdoutLimitExceeded, maxStdout, stdout.Total(), res.ExitCode)
+		}
+		return res, fmt.Errorf("%w (%d byte limit, received %d bytes)", ErrStdoutLimitExceeded, maxStdout, stdout.Total())
 	}
 	if err == nil {
 		return res, nil
