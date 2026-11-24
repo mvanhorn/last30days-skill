@@ -512,6 +512,97 @@ class TestHigh156QueryIdDiscoverySecurity:
         assert client_cache.is_file()
         assert json.loads(client_cache.read_text(encoding="utf-8"))["ids"] == {"SearchTimeline": "SearchOnlyId99"}
 
+    def test_slow_sibling_bundle_is_aborted_once_target_found_leaving_time_for_retry(self, tmp_path):
+        retry_cache = tmp_path / "retry-cache.json"
+        script = textwrap.dedent(
+            f"""
+            delete process.env.NODE_ENV;
+            process.env.BIRD_QUERY_IDS_CACHE = {json.dumps(str(retry_cache))};
+            let slowAborted = false;
+            let searchAttempts = 0;
+            globalThis.fetch = async (url, init) => {{
+              const u = String(url);
+              if (u.includes('/SearchTimeline?')) {{
+                searchAttempts += 1;
+                if (u.includes('/RotatedFreshId_9/SearchTimeline?')) {{
+                  const body = {{
+                    data: {{
+                      search_by_raw_query: {{
+                        search_timeline: {{
+                          timeline: {{
+                            instructions: [{{
+                              type: 'TimelineAddEntries',
+                              entries: [{{
+                                entryId: 'tweet-888',
+                                content: {{
+                                  itemContent: {{
+                                    tweet_results: {{
+                                      result: {{
+                                        __typename: 'Tweet',
+                                        rest_id: '888',
+                                        legacy: {{ id_str: '888', full_text: 'after fast refresh', created_at: 'Wed May 15 12:00:00 +0000 2026' }},
+                                        core: {{ user_results: {{ result: {{ rest_id: '8', legacy: {{ screen_name: 'carol', name: 'Carol' }} }} }} }},
+                                      }},
+                                    }},
+                                  }},
+                                }},
+                              }}],
+                            }}],
+                          }},
+                        }},
+                      }},
+                    }},
+                  }};
+                  return new Response(JSON.stringify(body), {{ status: 200, headers: {{ 'content-type': 'application/json' }} }});
+                }}
+                return new Response('not found', {{ status: 404 }});
+              }}
+              if (u === 'https://x.com/?lang=en') {{
+                return new Response(
+                  'https://abs.twimg.com/responsive-web/client-web/fast.js ' +
+                  'https://abs.twimg.com/responsive-web/client-web/stalled.js',
+                  {{ status: 200 }},
+                );
+              }}
+              if (u.endsWith('fast.js')) {{
+                return new Response('e.exports={{queryId:"RotatedFreshId_9",operationName:"SearchTimeline"}}', {{ status: 200 }});
+              }}
+              if (u.endsWith('stalled.js')) {{
+                return new Promise((_resolve, reject) => {{
+                  init?.signal?.addEventListener('abort', () => {{
+                    slowAborted = true;
+                    reject(init.signal.reason);
+                  }}, {{ once: true }});
+                }});
+              }}
+              return new Response('', {{ status: 404 }});
+            }};
+
+            const {{ TwitterClientBase }} = await import('./skills/last30days/scripts/lib/vendor/bird-search/lib/twitter-client-base.js');
+            const {{ withSearch }} = await import('./skills/last30days/scripts/lib/vendor/bird-search/lib/twitter-client-search.js');
+            const Client = withSearch(TwitterClientBase);
+            const client = new Client({{ cookies: {{ authToken: 'dummy-auth-1234', ct0: 'dummy-ct0-5678' }}, timeoutMs: 3000 }});
+            const t0 = Date.now();
+            const res = await client.search('hello', 5);
+            const elapsed = Date.now() - t0;
+            process.stdout.write(JSON.stringify({{
+              success: res.success,
+              ids: (res.tweets || []).map((t) => t.id),
+              slowAborted,
+              elapsed,
+              searchAttempts,
+            }}));
+            """
+        )
+        res = _node_eval(script)
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        assert data["success"] is True
+        assert data["ids"] == ["888"]
+        assert data["slowAborted"] is True
+        assert data["elapsed"] < 1500
+        assert data["searchAttempts"] >= 2
+
     def test_read_response_text_json_fallback_utf8_truncation_and_non_ok_abort_rethrow(self, tmp_path):
         script = textwrap.dedent(
             f"""
@@ -1676,13 +1767,31 @@ class TestHigh160CookieConsentAndFailoverReset:
             resp = bird_x._run_bird_search("topic", count=20, timeout=15)
         assert [it["url"] for it in bird_x.parse_bird_response(resp)] == ["https://x.com/alice/status/901"]
 
-        # Case 2: Retry fails with 401 and no browsers remain -> keep safari's partial page-1 post
+        # Case 2: Safari returns partial post + Internal server error, Chrome fails with 401 ->
+        # keep Safari's partial page-1 post AND attribute Chrome's 401 error to Chrome (not Safari's error).
         rotations = [("chrome-auth-2222", "chrome-ct0-2222", "chrome")]
         bird_x.set_credentials("safari-auth-2222", "safari-ct0-2222")
         bird_x.set_session_failover("safari", lambda deadline=None, cancel=None: rotations.pop(0) if rotations else None)
         with mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=[partial_page1, failed_retry]):
             resp2 = bird_x._run_bird_search("topic", count=20, timeout=15)
         assert [it["url"] for it in bird_x.parse_bird_response(resp2)] == ["https://x.com/alice/status/901"]
+        assert "cookies from chrome" in resp2["error"]
+        assert "HTTP 401" in resp2["error"]
+        assert "Internal server error" not in resp2["error"]
+
+        # Case 2b: Chrome fails with a non-suspect error (e.g. HTTP 429) -> keep Safari's post + Chrome's error
+        rate_limited_retry = (
+            SubprocResult(returncode=1, stdout='{"error": "HTTP 429: Rate limit exceeded", "items": []}', stderr=""),
+            None,
+        )
+        rotations = [("chrome-auth-2223", "chrome-ct0-2223", "chrome")]
+        bird_x.set_credentials("safari-auth-2223", "safari-ct0-2223")
+        bird_x.set_session_failover("safari", lambda deadline=None, cancel=None: rotations.pop(0) if rotations else None)
+        with mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=[partial_page1, rate_limited_retry]):
+            resp2b = bird_x._run_bird_search("topic", count=20, timeout=15)
+        assert [it["url"] for it in bird_x.parse_bird_response(resp2b)] == ["https://x.com/alice/status/901"]
+        assert "HTTP 429" in resp2b["error"]
+        assert "Internal server error" not in resp2b["error"]
 
         # Case 3: Retry succeeds with clean posts -> retry wins
         rotations = [("chrome-auth-3333", "chrome-ct0-3333", "chrome")]

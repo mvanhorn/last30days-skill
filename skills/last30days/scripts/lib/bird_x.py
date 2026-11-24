@@ -565,6 +565,16 @@ def _run_bird_search(
     """
     best_partial: Optional[Dict[str, Any]] = None
     best_partial_count = 0
+
+    def _keep_best_partial(
+        current: Dict[str, Any], current_error: str, current_count: int
+    ) -> Dict[str, Any]:
+        if best_partial is None or current_count >= best_partial_count:
+            return current
+        if current_error:
+            return {**best_partial, "error": _scrub_credentials(current_error)}
+        return best_partial
+
     while True:
         started_with = _credentials.get('AUTH_TOKEN')
         response = _run_bird_search_once(
@@ -574,27 +584,23 @@ def _run_bird_search(
         usable_count = _usable_item_count(response)
         if not error or not _session_suspect(error):
             if best_partial is not None and usable_count < best_partial_count and (error or usable_count == 0):
-                return best_partial
+                return _keep_best_partial(response, error, usable_count)
             return response
         if usable_count > best_partial_count:
             best_partial = response
             best_partial_count = usable_count
         if cancel is not None and cancel.is_set():
-            if best_partial is not None and usable_count < best_partial_count:
-                return best_partial
-            return response
+            return _keep_best_partial(response, error, usable_count)
         failed_browser = _session_browser
         # Never start browser reads (possible Keychain prompts) once the
         # search budget can no longer fit a retry.
         if deadline is not None and _clamped_bird_timeout(timeout, deadline) is None:
-            chosen = best_partial if (best_partial is not None and usable_count < best_partial_count) else response
-            chosen_err = str(chosen.get("error") or error) if isinstance(chosen, dict) else error
-            return _annotate_session_error(chosen, chosen_err, failed_browser)
+            chosen = _keep_best_partial(response, error, usable_count)
+            return _annotate_session_error(chosen, error, failed_browser)
         wait = -1 if deadline is None else max(0.0, deadline - time.monotonic())
         if not _session_lock.acquire(timeout=wait):
-            chosen = best_partial if (best_partial is not None and usable_count < best_partial_count) else response
-            chosen_err = str(chosen.get("error") or error) if isinstance(chosen, dict) else error
-            return _annotate_session_error(chosen, chosen_err, failed_browser)
+            chosen = _keep_best_partial(response, error, usable_count)
+            return _annotate_session_error(chosen, error, failed_browser)
         try:
             if _credentials.get('AUTH_TOKEN') != started_with:
                 switched = True  # another search already moved to a new session
@@ -620,11 +626,10 @@ def _run_bird_search(
         if switched:
             timeout = _clamped_bird_timeout(timeout, deadline)
             if timeout is None:
-                return best_partial if (best_partial is not None and usable_count < best_partial_count) else response
+                return _keep_best_partial(response, error, usable_count)
             continue
-        chosen = best_partial if (best_partial is not None and usable_count < best_partial_count) else response
-        chosen_err = str(chosen.get("error") or error) if isinstance(chosen, dict) else error
-        return _annotate_session_error(chosen, chosen_err, failed_browser)
+        chosen = _keep_best_partial(response, error, usable_count)
+        return _annotate_session_error(chosen, error, failed_browser)
 
 
 def _annotate_session_error(

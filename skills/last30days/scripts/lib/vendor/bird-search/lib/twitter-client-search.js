@@ -164,8 +164,15 @@ export function withSearch(Base) {
                     if (refreshRemainingMs !== undefined && refreshRemainingMs <= 0) {
                         return { success: false, error: timeoutError() };
                     }
+                    let refreshBudgetMs;
+                    if (refreshRemainingMs !== undefined) {
+                        const retryReserveMs = refreshRemainingMs > 2000
+                            ? Math.min(3000, Math.floor(refreshRemainingMs / 3))
+                            : Math.floor(refreshRemainingMs / 3);
+                        refreshBudgetMs = Math.max(1, refreshRemainingMs - retryReserveMs);
+                    }
                     await this.refreshQueryIds(
-                        refreshRemainingMs !== undefined ? { timeoutMs: refreshRemainingMs } : {},
+                        refreshBudgetMs !== undefined ? { timeoutMs: refreshBudgetMs } : {},
                     );
                     const retryRemainingMs = remainingBudgetMs();
                     if (retryRemainingMs !== undefined && retryRemainingMs <= 0) {

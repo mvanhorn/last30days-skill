@@ -486,6 +486,7 @@ function extractOperations(bundleContents, bundleLabel, targets, discovered) {
 }
 async function fetchAndExtract(fetchImpl, bundleUrls, targets, opts = {}, discovered = new Map()) {
     const deadlineMs = opts.deadlineMs;
+    const outerSignal = opts.signal;
     const CONCURRENCY = 6;
     for (let i = 0; i < bundleUrls.length; i += CONCURRENCY) {
         if (discovered.size === targets.size) {
@@ -494,23 +495,47 @@ async function fetchAndExtract(fetchImpl, bundleUrls, targets, opts = {}, discov
         if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
             break;
         }
+        if (outerSignal?.aborted) {
+            break;
+        }
         const chunk = bundleUrls.slice(i, i + CONCURRENCY);
-        await Promise.all(chunk.map(async (url) => {
-            if (discovered.size === targets.size) {
-                return;
+        const batchController = new AbortController();
+        const onOuterAbort = () => batchController.abort(outerSignal.reason);
+        if (outerSignal) {
+            if (outerSignal.aborted) {
+                batchController.abort(outerSignal.reason);
             }
-            if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
-                return;
+            else {
+                outerSignal.addEventListener('abort', onOuterAbort, { once: true });
             }
-            const label = url.split('/').at(-1) ?? url;
-            try {
-                const js = await fetchText(fetchImpl, url, opts);
-                extractOperations(js, label, targets, discovered);
+        }
+        const batchOpts = { ...opts, signal: batchController.signal };
+        try {
+            await Promise.all(chunk.map(async (url) => {
+                if (discovered.size === targets.size || batchController.signal.aborted) {
+                    return;
+                }
+                if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+                    return;
+                }
+                const label = url.split('/').at(-1) ?? url;
+                try {
+                    const js = await fetchText(fetchImpl, url, batchOpts);
+                    extractOperations(js, label, targets, discovered);
+                    if (discovered.size === targets.size) {
+                        batchController.abort(createAbortError('All target query IDs discovered'));
+                    }
+                }
+                catch {
+                    // ignore failed or batch-aborted sibling bundles
+                }
+            }));
+        }
+        finally {
+            if (outerSignal) {
+                outerSignal.removeEventListener('abort', onOuterAbort);
             }
-            catch {
-                // ignore failed bundles
-            }
-        }));
+        }
         if (discovered.size === targets.size) {
             break;
         }
