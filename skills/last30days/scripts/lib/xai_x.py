@@ -43,12 +43,14 @@ _ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Cn", "Co", "Cs", "Zl", "Zp"})
 
 _STATUS_URL_RE = re.compile(
     r"^https?://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/"
-    r"(?P<handle>[A-Za-z0-9_]{1,15})/status(?:es)?/(?P<id>[1-9][0-9]{0,19})(?:[/?#].*)?$",
+    r"(?:(?P<i_web>i/web)|(?P<handle>[A-Za-z0-9_]{1,15}))/status(?:es)?/"
+    r"(?P<id>[1-9][0-9]{0,19})(?:[/?#].*)?$",
     re.IGNORECASE,
 )
 _SNOWFLAKE_FLOOR = datetime(2010, 11, 4, tzinfo=timezone.utc)
+_CLAIMED_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _PLACEHOLDER_HANDLES = frozenset({
-    "unknown", "n/a", "na", "none", "null", "user", "example",
+    "i", "unknown", "n/a", "na", "none", "null", "user", "example",
     "anonymous", "placeholder", "handle",
 })
 
@@ -88,11 +90,15 @@ def _safe_relevance(value: Any) -> float:
         return 0.5
     try:
         rel = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.5
     if not math.isfinite(rel):
         return 0.5
     return min(1.0, max(0.0, rel))
+
+
+def _reject_constant(token: str) -> Any:
+    raise ValueError(f"invalid JSON constant: {token}")
 
 
 X_SEARCH_PROMPT = """You have access to real-time X (Twitter) data. Search for posts matching the topic given below as a single-line JSON string literal.
@@ -306,9 +312,9 @@ def parse_x_response(
             f"xAI API returned output without valid JSON items structure (output: {output_text[:200]})"
         )
     try:
-        data = json.loads(json_match.group())
+        data = json.loads(json_match.group(), parse_constant=_reject_constant)
         raw_items = data.get("items", []) if isinstance(data, dict) else None
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, RecursionError):
         raise http.HTTPError(
             f"xAI API returned valid output but invalid JSON structure (output: {output_text[:200]})"
         )
@@ -334,9 +340,12 @@ def parse_x_response(
         if not match:
             continue
 
-        url_handle = x_api._clean_handle(match.group("handle"))
+        is_anonymous_url = bool(match.group("i_web"))
+        url_handle = "" if is_anonymous_url else x_api._clean_handle(match.group("handle"))
+        if url_handle.lower() == "i":
+            is_anonymous_url = True
         post_id = match.group("id")
-        if not url_handle or not post_id:
+        if (not is_anonymous_url and not url_handle) or not post_id:
             continue
 
         raw_author = item.get("author_handle")
@@ -347,15 +356,15 @@ def parse_x_response(
                 author_handle = x_api._clean_handle(raw_author)
                 if not author_handle or author_handle.lower() in _PLACEHOLDER_HANDLES:
                     continue
-                if url_handle.lower() != "i" and author_handle.lower() != url_handle.lower():
+                if not is_anonymous_url and author_handle.lower() != url_handle.lower():
                     continue
                 handle = author_handle
             else:
-                if url_handle.lower() == "i" or url_handle.lower() in _PLACEHOLDER_HANDLES:
+                if is_anonymous_url or url_handle.lower() in _PLACEHOLDER_HANDLES:
                     continue
                 handle = url_handle
         else:
-            if url_handle.lower() == "i" or url_handle.lower() in _PLACEHOLDER_HANDLES:
+            if is_anonymous_url or url_handle.lower() in _PLACEHOLDER_HANDLES:
                 continue
             handle = url_handle
 
@@ -372,7 +381,7 @@ def parse_x_response(
             continue
 
         claimed_raw = item.get("date")
-        if isinstance(claimed_raw, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", claimed_raw.strip()):
+        if isinstance(claimed_raw, str) and _CLAIMED_DATE_RE.fullmatch(claimed_raw.strip()):
             try:
                 claimed_date = datetime.strptime(claimed_raw.strip(), "%Y-%m-%d").date()
             except ValueError:

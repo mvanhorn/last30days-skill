@@ -130,6 +130,8 @@ def _token():
         return "xai-last30days-audit-dummy"
     if MODE == "no_auth" and restricted:
         return ""
+    if MODE == "wrong_api_key" and restricted and not has_oidc:
+        return "xai-wrong-key"
     key = os.environ.get("XAI_API_KEY", "")
     if key:
         return key
@@ -201,6 +203,12 @@ class TestHigh136GrokAuditOidcAuthMode:
         verdict = grok_audit.run_audit(binary, time.monotonic() + 30)
         assert verdict.status == grok_audit.INCONCLUSIVE
         assert "oidc" in verdict.check.lower()
+
+    def test_api_key_run_without_dummy_key_in_authorization_is_inconclusive(self, tmp_path):
+        binary = _write_auth_fake_grok(tmp_path, "wrong_api_key")
+        verdict = grok_audit.run_audit(binary, time.monotonic() + 30)
+        assert verdict.status == grok_audit.INCONCLUSIVE
+        assert "dummy api key" in verdict.check.lower()
 
     def test_fixture_records_concurrent_requests_thread_safely(self):
         worker_count = 12
@@ -289,6 +297,43 @@ class TestHigh137GrokXCliErrorHandling:
         for secret in (jwt, api_key, refresh):
             assert secret not in logged
             assert secret not in response["error"]
+
+    def test_scrub_cli_output_redacts_cookies_auth_token_ct0_quoted_pydict_and_unsigned_jwt(self):
+        unsigned_jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzZWNyZXQifQ."
+        raw = (
+            f"Cookie: auth_token=COOKIE_AUTH_AAA; ct0=COOKIE_CT0_BBB\n"
+            f"Set-Cookie: session=SETCOOKIE_CCC; HttpOnly\n"
+            f"auth_token=\"QUOTED_AUTH_DDD\" ct0='QUOTED_CT0_EEE' x-api-key=\"QUOTED_XAPI_FFF\"\n"
+            f"jwt=RAW_JWT_GGG bearer=RAW_BEARER_HHH\n"
+            f"{{'auth_token': 'PYDICT_AUTH_III', 'access_token': 'PYDICT_ACC_JJJ', 'ct0': 'PYDICT_CT0_KKK'}}\n"
+            f"token={unsigned_jwt} trailing\n"
+            f"bare {unsigned_jwt} after\n"
+        )
+        scrubbed = grok_x._scrub_cli_output(raw)
+        for secret in (
+            "COOKIE_AUTH_AAA",
+            "COOKIE_CT0_BBB",
+            "SETCOOKIE_CCC",
+            "QUOTED_AUTH_DDD",
+            "QUOTED_CT0_EEE",
+            "QUOTED_XAPI_FFF",
+            "RAW_JWT_GGG",
+            "RAW_BEARER_HHH",
+            "PYDICT_AUTH_III",
+            "PYDICT_ACC_JJJ",
+            "PYDICT_CT0_KKK",
+            "eyJhbGciOiJub25lIn0",
+            "eyJzdWIiOiJzZWNyZXQifQ",
+        ):
+            assert secret not in scrubbed, f"{secret} leaked in {scrubbed!r}"
+        assert "trailing" in scrubbed and "after" in scrubbed
+
+    def test_classify_exit_error_uses_status_boundary_for_401_vs_forbidden(self):
+        # Line/offset number 401 alongside a 403/forbidden error must not misclassify as http 401.
+        res_403 = grok_x._classify_exit_error(1, "error at line 401: forbidden access")
+        assert res_403 == {"error": "grok CLI exited 1: forbidden"}
+        res_401 = grok_x._classify_exit_error(1, "upstream returned HTTP 401")
+        assert res_401 == {"error": "grok CLI exited 1: http 401"}
 
     def test_auth_revocation_in_stdout_detected_even_when_stderr_is_nonempty(self, monkeypatch):
         secret = "xai-SECRETTOKEN123456"
@@ -592,18 +637,90 @@ class TestHigh143XaiXProvenanceValidation:
         assert items[0]["author_handle"] == "Steipete"
         assert items[0]["date"] == "2026-08-12"
 
-    def test_i_status_url_with_valid_author_handle_is_canonicalized(self):
+    def test_i_status_and_i_web_status_canonicalization_and_reject_i_author(self):
         resp = _xai_wrap([
             {
                 "text": "from /i/status",
                 "url": f"https://x.com/i/status/{IN_WINDOW_ID}",
                 "author_handle": "@steipete",
+            },
+            {
+                "text": "from /i/web/status",
+                "url": f"https://x.com/i/web/status/{_snowflake('2026-08-11', low=777)}",
+                "author_handle": "alice",
+            },
+            # /i/web/status without author_handle -> rejected
+            {
+                "text": "anonymous web status",
+                "url": f"https://x.com/i/web/status/{_snowflake('2026-08-10', low=888)}",
+            },
+            # author_handle='i' on /i/status or /i/web/status -> rejected
+            {
+                "text": "spoofed i handle",
+                "url": f"https://x.com/i/status/{_snowflake('2026-08-09', low=999)}",
+                "author_handle": "i",
+            },
+            {
+                "text": "spoofed uppercase I handle",
+                "url": f"https://x.com/i/web/status/{_snowflake('2026-08-08', low=1111)}",
+                "author_handle": "@I",
+            },
+        ])
+        items = xai_x.parse_x_response(resp, *WINDOW)
+        assert [(i["author_handle"], i["url"].startswith(f"https://x.com/{i['author_handle']}/status/")) for i in items] == [
+            ("steipete", True),
+            ("alice", True),
+        ]
+
+    def test_huge_int_relevance_and_non_finite_or_oversized_int_json(self):
+        # 10**400 triggers OverflowError in float(value); _safe_relevance must fall back cleanly.
+        assert xai_x._safe_relevance(10**400) == 0.5
+        resp_huge_rel = {
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": (
+                        f'{{"items": [{{"text": "ok", "url": "https://x.com/steipete/status/{IN_WINDOW_ID}", '
+                        f'"author_handle": "steipete", "relevance": {"9" * 400}}}]}}'
+                    ),
+                }],
+            }]
+        }
+        items = xai_x.parse_x_response(resp_huge_rel, *WINDOW)
+        assert len(items) == 1 and items[0]["relevance"] == 0.5
+
+        # Non-standard JSON constants (NaN/Infinity/-Infinity) and >4300-digit ints raise http.HTTPError.
+        for bad_literal in ("NaN", "Infinity", "-Infinity", "9" * 4501):
+            bad_resp = {
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": (
+                            f'{{"items": [{{"text": "bad", "url": "https://x.com/steipete/status/{IN_WINDOW_ID}", '
+                            f'"author_handle": "steipete", "relevance": {bad_literal}}}]}}'
+                        ),
+                    }],
+                }]
+            }
+            with pytest.raises(http.HTTPError):
+                xai_x.parse_x_response(bad_resp, *WINDOW)
+
+    def test_claimed_date_regex_is_ascii_only_and_date_is_always_ascii_snowflake(self):
+        assert xai_x._CLAIMED_DATE_RE.fullmatch("2025-01-01") is not None
+        assert xai_x._CLAIMED_DATE_RE.fullmatch("٢٠٢٥-٠١-٠١") is None
+        resp = _xai_wrap([
+            {
+                "text": "unicode digits date",
+                "url": f"https://x.com/steipete/status/{IN_WINDOW_ID}",
+                "author_handle": "steipete",
+                "date": "٢٠٢٥-٠١-٠١",
             }
         ])
         items = xai_x.parse_x_response(resp, *WINDOW)
         assert len(items) == 1
-        assert items[0]["url"] == f"https://x.com/steipete/status/{IN_WINDOW_ID}"
-        assert items[0]["author_handle"] == "steipete"
+        assert items[0]["date"] == "2026-08-12"
 
     def test_filters_out_of_window_and_forged_dates(self):
         resp = _xai_wrap([

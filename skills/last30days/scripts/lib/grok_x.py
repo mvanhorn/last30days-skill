@@ -904,25 +904,46 @@ def _check_cli_version(binary: str, workdir: str, timeout: float) -> Tuple[Optio
     return None, line
 
 
-_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*\b")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*(?![A-Za-z0-9_-])")
 _API_KEY_RE = re.compile(r"\b(?:xai|sk)-[A-Za-z0-9_-]{8,}\b")
+_COOKIE_HEADER_RE = re.compile(r"(?i)(\b(?:set-)?cookie\s*:\s*)[^\r\n]+")
+_CRED_KEY_PATTERN = (
+    r"refresh_token|access_token|id_token|auth_token|ct0|token|"
+    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password|key"
+)
+_KV_CRED_KEY_PATTERN = (
+    r"refresh_token|access_token|id_token|auth_token|ct0|token|"
+    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password"
+)
 _JSON_CRED_RE = re.compile(
-    r'("(?:refresh_token|access_token|id_token|token|api_key|authorization|cookie|secret|password|key)"\s*:\s*")([^"]*)(")',
+    rf'((["\'])(?:{_CRED_KEY_PATTERN})\2\s*:\s*")((?:[^"\\\r\n]|\\.)*)(")',
+    re.IGNORECASE,
+)
+_PY_DICT_CRED_RE = re.compile(
+    rf"(([\"'])(?:{_CRED_KEY_PATTERN})\2\s*:\s*')((?:[^'\\\r\n]|\\.)*)(')",
+    re.IGNORECASE,
+)
+_KV_QUOTED_CRED_RE = re.compile(
+    rf"""(\b(?:{_KV_CRED_KEY_PATTERN})\s*[:=]\s*)(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')""",
     re.IGNORECASE,
 )
 _KV_CRED_RE = re.compile(
-    r"(\b(?:refresh_token|access_token|id_token|token|api_key|xai_api_key|authorization|cookie|secret|password)\s*[:=]\s*)([^\s'\"\\,;]+)",
+    rf"(\b(?:{_KV_CRED_KEY_PATTERN})\s*[:=]\s*)([^\s'\"\\,;]+)",
     re.IGNORECASE,
 )
+_HTTP_401_RE = re.compile(r"\b(?:http(?:/[\d.]+)?|status)\s*[:=]?\s*401\b", re.IGNORECASE)
 _CONTROL_DEBUG_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 def _scrub_cli_output(text: str) -> str:
-    """Redact credentials, JWTs, API keys, and control chars for debug logs."""
+    """Redact credentials, cookies, JWTs, API keys, and control chars for debug logs."""
     scrubbed = auth_safety.scrub_secrets(text or "")
+    scrubbed = _COOKIE_HEADER_RE.sub(r"\1<redacted>", scrubbed)
     scrubbed = _JWT_RE.sub("<redacted>", scrubbed)
     scrubbed = _API_KEY_RE.sub("<redacted>", scrubbed)
-    scrubbed = _JSON_CRED_RE.sub(r"\1<redacted>\3", scrubbed)
+    scrubbed = _JSON_CRED_RE.sub(r"\1<redacted>\4", scrubbed)
+    scrubbed = _PY_DICT_CRED_RE.sub(r"\1<redacted>\4", scrubbed)
+    scrubbed = _KV_QUOTED_CRED_RE.sub(r"\1<redacted>", scrubbed)
     scrubbed = _KV_CRED_RE.sub(r"\1<redacted>", scrubbed)
     return _CONTROL_DEBUG_RE.sub("", scrubbed)
 
@@ -940,7 +961,7 @@ def _classify_exit_error(returncode: int, combined_output: str) -> Dict[str, Any
     elif state == health.RATE_LIMITED:
         error_msg = f"grok CLI exited {returncode}: rate limit exceeded"
     elif state == health.AUTH_FAILED:
-        if "401" in (combined_output or ""):
+        if _HTTP_401_RE.search(combined_output or ""):
             error_msg = f"grok CLI exited {returncode}: http 401"
         else:
             error_msg = f"grok CLI exited {returncode}: forbidden"

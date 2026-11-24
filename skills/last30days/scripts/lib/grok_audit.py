@@ -502,7 +502,7 @@ def _run_child(binary: str, permissive: bool, deadline: float, signed_in: bool =
     with tempfile.TemporaryDirectory(prefix="last30days-grok-audit-") as workdir:
         home = os.path.join(workdir, "home")
         os.makedirs(home)
-        expected_auth_token = _write_dummy_session(home) if signed_in else ""
+        expected_auth_token = _write_dummy_session(home) if signed_in else _DUMMY_KEY
         canary = Path(workdir) / "canary"
         secret_value = "l30d-audit-" + os.urandom(8).hex()
         secret = Path(workdir) / "secret.txt"
@@ -587,14 +587,19 @@ def _check_restricted(run: Dict[str, Any]) -> Optional[Verdict]:
     if not run["answered"]:
         # A crash or early exit is not evidence the boundary refused the calls.
         return Verdict(INCONCLUSIVE, "the CLI did not answer the forced calls")
+    expected_token = run.get("expected_auth_token") or ""
+    tokens = [_bearer_token(r.get("authorization", "")) for r in run["requests"]]
     if run.get("signed_in"):
-        expected_token = run.get("expected_auth_token") or ""
-        tokens = [_bearer_token(r.get("authorization", "")) for r in run["requests"]]
         if not expected_token or any(tok != expected_token for tok in tokens):
             return Verdict(
                 INCONCLUSIVE,
                 "signed-in audit run did not authenticate with the OIDC session token",
             )
+    elif expected_token and any(tok != expected_token for tok in tokens):
+        return Verdict(
+            INCONCLUSIVE,
+            "API-key audit run did not authenticate with the dummy API key",
+        )
     return None
 
 
