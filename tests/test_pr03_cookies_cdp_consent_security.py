@@ -140,6 +140,28 @@ class TestHigh077ChromeCryptoAndSecurityPin:
         ):
             assert chrome_cookies._decrypt_v10_value(_V10_AUTH_TOKEN, _V10_AES_KEY, 20) is None
 
+    def test_chrome130_empty_cookie_does_not_leak_32_byte_digest(self, tmp_path):
+        fake_digest_only = b"\x41" * 32
+        with mock.patch("lib.chrome_cookies._decrypt_aes128_cbc", return_value=fake_digest_only):
+            assert chrome_cookies._decrypt_v10_value(b"v10" + b"\x00" * 48, _V10_AES_KEY, 24) == ""
+
+        db = tmp_path / "Cookies"
+        _make_chromium_db(
+            db,
+            [(".x.com", "auth_token", "", b"v10" + b"\x00" * 48, "/", _chrome_utc(3600), 1, 1, "")],
+            db_version=24,
+        )
+        with (
+            mock.patch("lib.chrome_cookies._get_chromium_encryption_key", return_value=b"pass"),
+            mock.patch("lib.chrome_cookies._decrypt_aes128_cbc", return_value=fake_digest_only),
+        ):
+            assert (
+                chrome_cookies._extract_chromium_cookies_macos(
+                    db, "Chrome Safe Storage", ".x.com", ["auth_token"]
+                )
+                is None
+            )
+
 
 # ===========================================================================
 # HIGH-079: Firefox temp fd close before unlink, sidecars, and scoping
@@ -151,11 +173,14 @@ def _make_firefox_db(
     rows: list[tuple[str, str, str, str, int, int, int, str]],
     *,
     wal_mode: bool = False,
+    user_version: int = 0,
 ) -> None:
     conn = sqlite3.connect(str(path))
     try:
         if wal_mode:
             conn.execute("PRAGMA journal_mode=WAL")
+        if user_version:
+            conn.execute(f"PRAGMA user_version = {int(user_version)}")
         conn.execute(
             "CREATE TABLE moz_cookies ("
             "  id INTEGER PRIMARY KEY,"
@@ -273,7 +298,7 @@ class TestHigh079FirefoxTempCleanupAndScoping:
         got = cookie_extract._query_cookies_db(db, "x.com", ["auth_token", "ct0"])
         assert got == {"auth_token": "good-auth", "ct0": "good-ct0"}
 
-    def test_firefox_never_mixes_pairs_across_scopes(self, tmp_path):
+    def test_firefox_never_mixes_pairs_across_path_partition_or_subdomain(self, tmp_path):
         db = tmp_path / "cookies.sqlite"
         future = int(time.time()) + 3600
         _make_firefox_db(
@@ -281,12 +306,76 @@ class TestHigh079FirefoxTempCleanupAndScoping:
             [
                 (".x.com", "auth_token", "root-auth", "/", future, 1, 1, ""),
                 (".x.com", "ct0", "subpath-ct0", "/i", future, 1, 1, ""),
-                ("x.com", "ct0", "hostonly-ct0", "/", future, 1, 1, ""),
+                (".x.com", "ct0", "part-ct0", "/", future, 1, 1, "^userContextId=2"),
+                ("sub.x.com", "ct0", "subdomain-ct0", "/", future, 1, 1, ""),
             ],
         )
         got = cookie_extract._query_cookies_db(db, ".x.com", ["auth_token", "ct0"])
         assert got is not None
         assert set(got) != {"auth_token", "ct0"}
+
+    def test_firefox_pairs_host_only_and_domain_cookies_in_same_scope(self, tmp_path):
+        db = tmp_path / "cookies.sqlite"
+        future = int(time.time()) + 3600
+        _make_firefox_db(
+            db,
+            [
+                ("x.com", "auth_token", "host-auth", "/", future, 1, 1, ""),
+                (".x.com", "ct0", "domain-ct0", "/", future, 1, 1, ""),
+            ],
+        )
+        assert cookie_extract._query_cookies_db(db, ".x.com", ["auth_token", "ct0"]) == {
+            "auth_token": "host-auth",
+            "ct0": "domain-ct0",
+        }
+
+        # When both x.com and .x.com define the same cookie, preferred_host wins.
+        db_both = tmp_path / "both.sqlite"
+        _make_firefox_db(
+            db_both,
+            [
+                ("x.com", "auth_token", "host-auth", "/", future, 1, 1, ""),
+                (".x.com", "auth_token", "domain-auth", "/", future, 1, 1, ""),
+            ],
+        )
+        assert cookie_extract._query_cookies_db(db_both, ".x.com", ["auth_token"]) == {
+            "auth_token": "domain-auth"
+        }
+        assert cookie_extract._query_cookies_db(db_both, "x.com", ["auth_token"]) == {
+            "auth_token": "host-auth"
+        }
+
+    def test_firefox_142_millisecond_expiry_drops_expired_and_keeps_future(self, tmp_path):
+        db = tmp_path / "cookies_v16.sqlite"
+        now_ms = int(time.time()) * 1000
+        past_ms = now_ms - 60_000
+        future_ms = now_ms + 3_600_000
+        _make_firefox_db(
+            db,
+            [
+                (".x.com", "auth_token", "expired-ms-auth", "/", past_ms, 1, 1, ""),
+                (".x.com", "ct0", "tiny-expired-ms-ct0", "/", 500, 1, 1, ""),
+                (".x.com", "auth_token", "valid-ms-auth", "/", future_ms, 1, 1, ""),
+                (".x.com", "ct0", "valid-ms-ct0", "/", future_ms, 1, 1, ""),
+            ],
+            user_version=16,
+        )
+        assert cookie_extract._query_cookies_db(db, ".x.com", ["auth_token", "ct0"]) == {
+            "auth_token": "valid-ms-auth",
+            "ct0": "valid-ms-ct0",
+        }
+
+        # Only expired millisecond rows under user_version=16 -> None.
+        db_exp = tmp_path / "cookies_v16_expired.sqlite"
+        _make_firefox_db(
+            db_exp,
+            [
+                (".x.com", "auth_token", "expired-ms-auth", "/", past_ms, 1, 1, ""),
+                (".x.com", "ct0", "tiny-expired-ms-ct0", "/", 500, 1, 1, ""),
+            ],
+            user_version=16,
+        )
+        assert cookie_extract._query_cookies_db(db_exp, ".x.com", ["auth_token", "ct0"]) is None
 
 
 # ===========================================================================
@@ -412,16 +501,16 @@ class TestHigh081ChromiumCookieScoping:
         )
         assert got == {"auth_token": "good-auth", "ct0": "good-ct0"}
 
-    def test_never_mixes_cookies_across_host_path_or_chips_scopes(self, tmp_path):
+    def test_never_mixes_cookies_across_path_chips_or_subdomain_scopes(self, tmp_path):
         db = tmp_path / "Cookies"
         future = _chrome_utc(3600)
         _make_chromium_db(
             db,
             [
                 (".x.com", "auth_token", "root-auth", b"", "/", future, 1, 1, ""),
-                ("x.com", "ct0", "hostonly-ct0", b"", "/", future, 1, 1, ""),
                 (".x.com", "ct0", "subpath-ct0", b"", "/i", future, 1, 1, ""),
                 (".x.com", "ct0", "chips-ct0", b"", "/", future, 1, 1, "https://other.example"),
+                ("sub.x.com", "ct0", "subdomain-ct0", b"", "/", future, 1, 1, ""),
             ],
             include_chips=True,
         )
@@ -430,6 +519,38 @@ class TestHigh081ChromiumCookieScoping:
         )
         assert got is not None
         assert set(got) != {"auth_token", "ct0"}
+
+    def test_pairs_host_only_and_domain_cookies_in_same_scope(self, tmp_path):
+        db = tmp_path / "Cookies"
+        future = _chrome_utc(3600)
+        _make_chromium_db(
+            db,
+            [
+                ("x.com", "auth_token", "host-auth", b"", "/", future, 1, 1, ""),
+                (".x.com", "ct0", "domain-ct0", b"", "/", future, 1, 1, ""),
+            ],
+            include_chips=True,
+        )
+        assert chrome_cookies._extract_chromium_cookies_macos(
+            db, "Chrome Safe Storage", ".x.com", ["auth_token", "ct0"]
+        ) == {"auth_token": "host-auth", "ct0": "domain-ct0"}
+
+        # When both x.com and .x.com define the same cookie, preferred_host wins.
+        db_both = tmp_path / "Cookies_both"
+        _make_chromium_db(
+            db_both,
+            [
+                ("x.com", "auth_token", "host-auth", b"", "/", future, 1, 1, ""),
+                (".x.com", "auth_token", "domain-auth", b"", "/", future, 1, 1, ""),
+            ],
+            include_chips=True,
+        )
+        assert chrome_cookies._extract_chromium_cookies_macos(
+            db_both, "Chrome Safe Storage", ".x.com", ["auth_token"]
+        ) == {"auth_token": "domain-auth"}
+        assert chrome_cookies._extract_chromium_cookies_macos(
+            db_both, "Chrome Safe Storage", "x.com", ["auth_token"]
+        ) == {"auth_token": "host-auth"}
 
     def test_works_on_legacy_schema_without_top_frame_site_key(self, tmp_path):
         db = tmp_path / "Cookies"
@@ -655,6 +776,20 @@ class TestHigh082ChromeCdpHardening:
             )
         fake_sock.close.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "env_refusal",
+        [
+            {"FROM_BROWSER": "off"},
+            {"BROWSER_CONSENT": "false"},
+            {"BROWSER_CONSENT": "unknown"},
+        ],
+    )
+    def test_cookie_access_allowed_honors_env_refusal(self, monkeypatch, env_refusal):
+        for k, v in env_refusal.items():
+            monkeypatch.setenv(k, v)
+        assert chrome_cdp.cookie_access_allowed({"BROWSER_CONSENT": "true"}) is False
+        assert chrome_cdp.cookie_access_allowed({"FROM_BROWSER": "chrome"}) is False
+
 
 # ===========================================================================
 # HIGH-083: Owner-only Chrome login profile directory in box_chrome_login.py
@@ -672,11 +807,17 @@ class TestHigh083BoxChromeLoginProfileDir:
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
         assert bcl._default_profile_dir() == str(runtime / "last30days-x-chrome")
 
-        # World-writable XDG_RUNTIME_DIR (e.g. /tmp) is rejected -> falls back to cache dir.
+        # World-writable XDG_RUNTIME_DIR (e.g. /tmp) is rejected -> uses safe 0700 XDG_CACHE_HOME.
         monkeypatch.setenv("XDG_RUNTIME_DIR", "/tmp")
         cache = tmp_path / "cache"
+        cache.mkdir(mode=0o700)
+        os.chmod(cache, 0o700)
         monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
         assert bcl._default_profile_dir() == str(cache / "last30days" / "x-chrome")
+
+        # Unsafe XDG_CACHE_HOME (e.g. /tmp or loose mode) falls back to ~/.cache.
+        monkeypatch.setenv("XDG_CACHE_HOME", "/tmp")
+        assert bcl._default_profile_dir() == str(Path.home() / ".cache" / "last30days" / "x-chrome")
 
     def test_render_recipe_emits_mkdir_m_700(self, tmp_path):
         profile = tmp_path / "x-chrome"

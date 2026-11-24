@@ -30,12 +30,12 @@ def test_firefox_cookie_host_family_and_requested_names(tmp_path, domain):
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE moz_cookies (host TEXT, name TEXT, value TEXT)")
         conn.executemany("INSERT INTO moz_cookies VALUES (?, ?, ?)", [
-            ("." + host, "auth_token", "dummy-auth"),
+            (host, "auth_token", "dummy-auth"),
             ("." + host, "ct0", "dummy-ct0"),
             ("sub." + host, "sub_cookie", "dummy-sub"),
             ("not" + host, "near_cookie", "dummy-near"),
             (host + ".example", "suffix_cookie", "dummy-suffix"),
-            ("." + host, "unrequested", "dummy-other"),
+            (host, "unrequested", "dummy-other"),
         ])
     assert _query_cookies_db(
         db, domain, ["auth_token", "ct0", "sub_cookie", "near_cookie", "suffix_cookie"],

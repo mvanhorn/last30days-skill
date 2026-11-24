@@ -67,8 +67,13 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Refuse HTTP 3xx redirects on loopback CDP requests."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            try:
+                fp.close()
+            except OSError:
+                pass
         raise urllib.error.HTTPError(
-            req.full_url, code, f"CDP redirects are refused: {msg}", headers, fp
+            req.full_url, code, f"CDP redirects are refused: {msg}", headers, None
         )
 
 
@@ -527,6 +532,12 @@ def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
 def cookie_access_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
     from . import env
 
+    env_consent = {
+        name: env.read_secret_env(name)
+        for name in ("BROWSER_CONSENT", "FROM_BROWSER")
+    }
+    if env.cookie_access_denied(env_consent):
+        return False
     config = config or {}
     if env.cookie_access_denied(config):
         return False

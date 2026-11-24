@@ -206,12 +206,12 @@ def test_chromium_cookie_host_family_and_requested_names(tmp_path, domain):
     host = domain.lstrip(".")
     db = tmp_path / "Cookies"
     _create_chrome_cookies_db(str(db), [
-        ("." + host, "auth_token", "dummy-auth", b""),
+        (host, "auth_token", "dummy-auth", b""),
         ("." + host, "ct0", "dummy-ct0", b""),
         ("sub." + host, "sub_cookie", "dummy-sub", b""),
         ("not" + host, "near_cookie", "dummy-near", b""),
         (host + ".example", "suffix_cookie", "dummy-suffix", b""),
-        ("." + host, "unrequested", "dummy-other", b""),
+        (host, "unrequested", "dummy-other", b""),
     ])
     with mock.patch("lib.chrome_cookies._get_chromium_encryption_key") as key:
         result = _extract_chromium_cookies_macos(

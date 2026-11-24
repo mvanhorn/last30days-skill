@@ -272,10 +272,12 @@ def _select_scoped_firefox_cookies(
     preferred_host: str,
     cookie_names: List[str],
     now_unix: int,
+    *,
+    schema_version: int = 0,
 ) -> Optional[Dict[str, str]]:
     """Select cookie values from a single non-expired Firefox scope without mixing."""
     allowed_hosts = (wanted, f".{wanted}")
-    scopes: Dict[tuple[str, str, str], Dict[str, List[tuple[int, int, int, str]]]] = {}
+    scopes: Dict[tuple[str, str, str], Dict[str, List[tuple[int, int, bool, int, str]]]] = {}
     for name, value, host, path, expiry, is_secure, is_httponly, origin_attrs in rows:
         if not isinstance(value, str) or not value:
             continue
@@ -283,8 +285,13 @@ def _select_scoped_firefox_cookies(
             expiry_val = int(expiry) if expiry is not None else 0
         except (TypeError, ValueError):
             continue
-        if expiry_val != 0 and expiry_val <= now_unix:
-            continue
+        if expiry_val != 0:
+            # Firefox 142+ (PRAGMA user_version >= 16) stores moz_cookies.expiry
+            # in Unix milliseconds instead of Unix seconds.
+            if schema_version >= 16 or (schema_version == 0 and expiry_val >= 10**11):
+                expiry_val //= 1000
+            if expiry_val <= now_unix:
+                continue
         host_norm = str(host or "").strip().lower()
         if host_norm not in allowed_hosts:
             continue
@@ -292,9 +299,11 @@ def _select_scoped_firefox_cookies(
         partition_norm = str(origin_attrs or "").strip()
         secure_flag = 1 if is_secure else 0
         httponly_flag = 1 if is_httponly else 0
-        scope_key = (host_norm, path_norm, partition_norm)
+        # Host-only (x.com) and domain (.x.com) cookies apply to the same apex
+        # origin per RFC 6265; pair them within one (path, partition).
+        scope_key = (host_norm.lstrip("."), path_norm, partition_norm)
         scopes.setdefault(scope_key, {}).setdefault(str(name), []).append(
-            (secure_flag, httponly_flag, expiry_val, value)
+            (secure_flag, httponly_flag, host_norm == preferred_host, expiry_val, value)
         )
 
     if not scopes:
@@ -303,7 +312,7 @@ def _select_scoped_firefox_cookies(
     requested = list(dict.fromkeys(cookie_names))
     resolved_scopes: List[tuple[tuple[Any, ...], Dict[str, str]]] = []
     for scope_key, by_name in scopes.items():
-        host_norm, path_norm, partition_norm = scope_key
+        host_base, path_norm, partition_norm = scope_key
         jar: Dict[str, str] = {}
         all_secure = True
         all_httponly = True
@@ -312,11 +321,12 @@ def _select_scoped_firefox_cookies(
                 key=lambda item: (
                     item[0] == 0,
                     item[1] == 0,
-                    0 if item[2] == 0 else -item[2],
+                    not item[2],
+                    0 if item[3] == 0 else -item[3],
                 )
             )
             best = candidates[0]
-            jar[name] = best[3]
+            jar[name] = best[4]
             if best[0] == 0:
                 all_secure = False
             if best[1] == 0:
@@ -330,9 +340,8 @@ def _select_scoped_firefox_cookies(
             path_norm != "/",
             not all_secure,
             not all_httponly,
-            host_norm != preferred_host,
             path_norm,
-            host_norm,
+            host_base,
             partition_norm,
         )
         resolved_scopes.append((rank, jar))
@@ -372,6 +381,7 @@ def _query_cookies_db(
             tmp_fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             os.close(tmp_fd)
             conn: Optional[sqlite3.Connection] = None
+            schema_version = 0
             try:
                 if windows_wsl:
                     copy_snapshot(db_path, tmp_path, wsl_wal_fallback=True)
@@ -380,6 +390,8 @@ def _query_cookies_db(
                 _lock_temp_cookie_copy(tmp_path)
 
                 conn = sqlite3.connect(tmp_path)
+                uv_row = conn.execute("PRAGMA user_version").fetchone()
+                schema_version = int((uv_row or (0,))[0] or 0)
                 col_rows = conn.execute("PRAGMA table_info(moz_cookies)").fetchall()
                 col_map = {str(row[1]).lower(): str(row[1]) for row in col_rows}
                 if not {"name", "value", "host"}.issubset(col_map):
@@ -410,7 +422,12 @@ def _query_cookies_db(
         if not rows:
             return None
         return _select_scoped_firefox_cookies(
-            rows, wanted, preferred_host, cookie_names, int(time.time())
+            rows,
+            wanted,
+            preferred_host,
+            cookie_names,
+            int(time.time()),
+            schema_version=schema_version,
         )
 
     except (sqlite3.Error, OSError) as exc:

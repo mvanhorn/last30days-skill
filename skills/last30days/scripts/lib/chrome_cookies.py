@@ -203,29 +203,30 @@ def _load_commoncrypto() -> Any:
     global _COMMONCRYPTO_FUNC, _COMMONCRYPTO_LOADED
     if _COMMONCRYPTO_LOADED:
         return _COMMONCRYPTO_FUNC
+    cc_crypt: Any = None
+    if sys.platform == "darwin":
+        try:
+            lib = ctypes.CDLL(_COMMONCRYPTO_LIB_PATH)
+            candidate = lib.CCCrypt
+            candidate.argtypes = [
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_size_t),
+            ]
+            candidate.restype = ctypes.c_int32
+            cc_crypt = candidate
+        except (OSError, AttributeError):
+            cc_crypt = None
+    _COMMONCRYPTO_FUNC = cc_crypt
     _COMMONCRYPTO_LOADED = True
-    if sys.platform != "darwin":
-        return None
-    try:
-        lib = ctypes.CDLL(_COMMONCRYPTO_LIB_PATH)
-        cc_crypt = lib.CCCrypt
-        cc_crypt.argtypes = [
-            ctypes.c_uint32,
-            ctypes.c_uint32,
-            ctypes.c_uint32,
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_size_t),
-        ]
-        cc_crypt.restype = ctypes.c_int32
-        _COMMONCRYPTO_FUNC = cc_crypt
-    except (OSError, AttributeError):
-        _COMMONCRYPTO_FUNC = None
     return _COMMONCRYPTO_FUNC
 
 
@@ -343,7 +344,7 @@ def _decrypt_v10_value(encrypted_value: bytes, aes_key: bytes, db_version: int) 
             return None
 
         # Chrome 130+ (db version >= 24): strip 32-byte SHA-256 prefix
-        if db_version >= 24 and len(decrypted) > 32:
+        if db_version >= 24 and len(decrypted) >= 32:
             decrypted = decrypted[32:]
 
         return decrypted.decode("utf-8", errors="replace")
@@ -477,7 +478,7 @@ def _extract_chromium_cookies_macos(
 
         now_chrome_utc = (int(time.time()) + _CHROME_EPOCH_OFFSET_SECONDS) * 1_000_000
         allowed_hosts = (wanted, f".{wanted}")
-        scopes: dict[tuple[str, str, str], dict[str, list[tuple[int, int, int, Any, Any]]]] = {}
+        scopes: dict[tuple[str, str, str], dict[str, list[tuple[int, int, bool, int, Any, Any]]]] = {}
         for (
             name,
             value,
@@ -502,9 +503,18 @@ def _extract_chromium_cookies_macos(
             partition_norm = str(top_frame_site_key or "").strip()
             secure_flag = 1 if is_secure else 0
             httponly_flag = 1 if is_httponly else 0
-            scope_key = (host_norm, path_norm, partition_norm)
+            # Host-only (x.com) and domain (.x.com) cookies apply to the same
+            # apex origin per RFC 6265; pair them within one (path, partition).
+            scope_key = (host_norm.lstrip("."), path_norm, partition_norm)
             scopes.setdefault(scope_key, {}).setdefault(str(name), []).append(
-                (secure_flag, httponly_flag, expires_val, value, encrypted_value)
+                (
+                    secure_flag,
+                    httponly_flag,
+                    host_norm == preferred_host,
+                    expires_val,
+                    value,
+                    encrypted_value,
+                )
             )
 
         if not scopes:
@@ -518,14 +528,15 @@ def _extract_chromium_cookies_macos(
                     key=lambda item: (
                         item[0] == 0,
                         item[1] == 0,
-                        0 if item[2] == 0 else -item[2],
+                        not item[2],
+                        0 if item[3] == 0 else -item[3],
                     )
                 )
 
         def _scope_sort_key(
-            item: tuple[tuple[str, str, str], dict[str, list[tuple[int, int, int, Any, Any]]]]
+            item: tuple[tuple[str, str, str], dict[str, list[tuple[int, int, bool, int, Any, Any]]]]
         ) -> tuple[Any, ...]:
-            (host_norm, path_norm, partition_norm), by_name = item
+            (host_base, path_norm, partition_norm), by_name = item
             has_all_names = all(name in by_name for name in requested)
             all_secure = all(cands[0][0] == 1 for cands in by_name.values())
             all_httponly = all(cands[0][1] == 1 for cands in by_name.values())
@@ -535,9 +546,8 @@ def _extract_chromium_cookies_macos(
                 path_norm != "/",
                 not all_secure,
                 not all_httponly,
-                host_norm != preferred_host,
                 path_norm,
-                host_norm,
+                host_base,
                 partition_norm,
             )
 
@@ -548,7 +558,7 @@ def _extract_chromium_cookies_macos(
         for _scope_key, by_name in sorted(scopes.items(), key=_scope_sort_key):
             scope_results: dict[str, str] = {}
             for name, candidates in by_name.items():
-                for _sec, _http, _exp, value, encrypted_value in candidates:
+                for _sec, _http, _pref, _exp, value, encrypted_value in candidates:
                     if isinstance(value, str) and value:
                         scope_results[name] = value
                         break

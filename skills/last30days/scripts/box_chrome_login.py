@@ -80,10 +80,10 @@ def _default_profile_dir() -> str:
             return str(runtime_path / "last30days-x-chrome")
     xdg_cache = (os.environ.get("XDG_CACHE_HOME") or "").strip()
     if xdg_cache and os.path.isabs(xdg_cache):
-        cache_root = Path(xdg_cache)
-    else:
-        cache_root = Path.home() / ".cache"
-    return str(cache_root / "last30days" / "x-chrome")
+        cache_candidate = Path(xdg_cache)
+        if _is_safe_owner_dir(cache_candidate):
+            return str(cache_candidate / "last30days" / "x-chrome")
+    return str(Path.home() / ".cache" / "last30days" / "x-chrome")
 
 
 DEFAULT_PROFILE_DIR = _default_profile_dir()
@@ -109,7 +109,27 @@ def _ensure_private_profile_dir(profile_dir: str) -> None:
         uid = os.getuid()
         if st.st_uid != uid:
             raise PermissionError(f"Profile directory is not owned by uid {uid}: {profile_dir}")
-        if stat.S_IMODE(st.st_mode) != 0o700:
+        if hasattr(os, "O_DIRECTORY") and hasattr(os, "fchmod"):
+            open_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(profile_dir, open_flags)
+            try:
+                fst = os.fstat(fd)
+                if not stat.S_ISDIR(fst.st_mode):
+                    raise OSError(f"Profile path is not a directory: {profile_dir}")
+                if fst.st_uid != uid:
+                    raise PermissionError(
+                        f"Profile directory is not owned by uid {uid}: {profile_dir}"
+                    )
+                if stat.S_IMODE(fst.st_mode) != 0o700:
+                    os.fchmod(fd, 0o700)
+                    fst = os.fstat(fd)
+                    if stat.S_IMODE(fst.st_mode) != 0o700:
+                        raise PermissionError(
+                            f"Could not enforce 0700 permissions on profile directory: {profile_dir}"
+                        )
+            finally:
+                os.close(fd)
+        elif stat.S_IMODE(st.st_mode) != 0o700:
             os.chmod(profile_dir, 0o700)
             st = os.lstat(profile_dir)
             if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
