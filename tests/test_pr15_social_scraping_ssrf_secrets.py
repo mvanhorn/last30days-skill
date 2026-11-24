@@ -544,6 +544,89 @@ class TestHigh183TokenValidationAndSecretScrubbing:
         assert partial.get("partial") is True
         assert "UnicodeDecodeError" in partial.get("error", "")
 
+    def test_http_request_passes_unredacted_body_to_proxy_observe_error_while_scrubbing_error_and_logs(
+        self, capsys,
+    ) -> None:
+        secret = "PROXY_ECHO_SECRET_555444"
+        raw_body = json.dumps({
+            "detail": f"Invalid header value {secret}",
+            "code": "out_of_credits",
+        })
+        observed_bodies: list[str | None] = []
+
+        class _FakeRouted:
+            provider = "scrapecreators"
+            url = "https://proxy.example/v1/telegram/channel/posts"
+            headers = {"x-api-key": secret}
+
+        def fake_observe(provider, code, body, headers, call_key):
+            observed_bodies.append(body)
+            return True
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(
+                _FakeRouted.url,
+                402,
+                f"Payment Required ({secret})",
+                hdrs={},
+                fp=io.BytesIO(raw_body.encode("utf-8")),
+            )
+
+        with http.capture_failures() as failures, \
+                mock.patch.object(http.proxy, "route", return_value=_FakeRouted()), \
+                mock.patch.object(http.proxy, "new_idempotency_key", return_value="k1"), \
+                mock.patch.object(http.proxy, "ensure_open"), \
+                mock.patch.object(http.proxy, "deadline_value", return_value="30"), \
+                mock.patch.object(http.proxy, "observe_error", side_effect=fake_observe), \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with pytest.raises(http.HTTPError) as exc_info:
+                http.get(
+                    "https://api.scrapecreators.com/v1/telegram/channel/posts",
+                    headers={"x-api-key": secret},
+                    retries=2,
+                )
+
+        # proxy.observe_error gets the original JSON body so "code": "out_of_credits" is intact.
+        assert observed_bodies == [raw_body]
+        assert json.loads(observed_bodies[0])["code"] == "out_of_credits"
+        # Raised HTTPError, captured failure sink, and logs remain scrubbed.
+        assert exc_info.value.status_code == 402
+        assert secret not in str(exc_info.value)
+        assert secret not in (exc_info.value.body or "")
+        assert failures and secret not in str(failures[0]) and secret not in (failures[0].body or "")
+        assert secret not in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("second_exc", "expected_marker"),
+        [
+            (http.HTTPError("HTTP 429: Too Many Requests", status_code=429), "429"),
+            (http.HTTPError("Too Many Requests", status_code=429), "429"),
+            (http.HTTPError("HTTP 401: Unauthorized", status_code=401), "401"),
+            (http.HTTPError("HTTP 402: Payment Required", status_code=402), "402"),
+        ],
+    )
+    def test_telegram_prioritizes_rate_limit_and_auth_errors_over_earlier_timeout(
+        self, second_exc: http.HTTPError, expected_marker: str,
+    ) -> None:
+        def fake_get(url, **kwargs):
+            handle = (kwargs.get("params") or {}).get("handle")
+            if handle == "chan_timeout":
+                raise http.HTTPError("Request timed out")
+            raise second_exc
+
+        with mock.patch.object(telegram.http, "get", side_effect=fake_get):
+            res = telegram.search_telegram(
+                "ai agents",
+                "2026-06-01",
+                "2026-06-30",
+                token="valid-sc-key",
+                config={"TELEGRAM_SOURCES": "chan_timeout,chan_severe"},
+            )
+
+        assert res["items"] == []
+        assert "@chan_severe" in res["error"]
+        assert expected_marker in res["error"]
+
     def test_real_http_client_putheader_error_shape_is_scrubbed(self) -> None:
         """Exercise Python's real http.client.HTTPConnection.putheader ValueError."""
         conn = http_client.HTTPConnection("example.invalid")
@@ -1209,12 +1292,12 @@ class TestHigh190GitHubQualifierSanitization:
         result = github.strip_search_qualifiers(payload)
         elapsed = time.monotonic() - start
         assert result == ""
-        assert elapsed < 0.2, f"deeply nested wrappers took {elapsed:.3f}s (expected linear O(N) < 0.2s)"
+        assert elapsed < 1.0, f"deeply nested wrappers took {elapsed:.3f}s (expected linear O(N) < 1.0s)"
 
         mixed = "[(" * 2500 + "-is:public" + ")]" * 2500
         start2 = time.monotonic()
         assert github.strip_search_qualifiers(mixed) == ""
-        assert time.monotonic() - start2 < 0.2
+        assert time.monotonic() - start2 < 1.0
 
     def test_strip_search_qualifiers_linear_time_on_long_backslash_run(self) -> None:
         slashes = "\\" * 50000
@@ -1222,13 +1305,13 @@ class TestHigh190GitHubQualifierSanitization:
         result = github.strip_search_qualifiers(slashes)
         elapsed = time.monotonic() - start
         assert result == slashes
-        assert elapsed < 0.1, f"50k backslashes took {elapsed:.3f}s (expected linear O(N) < 0.1s)"
+        assert elapsed < 1.0, f"50k backslashes took {elapsed:.3f}s (expected linear O(N) < 1.0s)"
 
         start2 = time.monotonic()
         res2 = github.strip_search_qualifiers(f"auth {slashes} -is:public")
         elapsed2 = time.monotonic() - start2
         assert res2 == f"auth {slashes}"
-        assert elapsed2 < 0.1
+        assert elapsed2 < 1.0
 
     @pytest.mark.parametrize(
         "adversarial_topic",

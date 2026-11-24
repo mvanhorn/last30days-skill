@@ -14,7 +14,7 @@ import os
 import re
 from typing import Any
 
-from . import auth_safety, dates, http, log
+from . import auth_safety, dates, health, http, log
 from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/telegram"
@@ -179,6 +179,26 @@ def _parse_post(
     }
 
 
+_ERROR_SEVERITY_RANK = {
+    health.AUTH_FAILED: 0,
+    health.PAYMENT_REQUIRED: 0,
+    health.RATE_LIMITED: 1,
+    health.SCHEMA_DRIFT: 2,
+    health.ERROR: 3,
+    health.UNREACHABLE: 4,
+    health.TIMEOUT: 5,
+}
+
+
+def _error_severity(message: str, status_code: int | None = None) -> int:
+    state = http.classify_failure(status_code=status_code, message=message)
+    return _ERROR_SEVERITY_RANK.get(state, 3)
+
+
+def _select_primary_error(errors: list[tuple[int, str]]) -> str:
+    return min(errors, key=lambda item: item[0])[1]
+
+
 def _fetch_channel_posts(
     handle: str,
     token: str,
@@ -186,7 +206,7 @@ def _fetch_channel_posts(
     from_date: str,
     topic: str,
     max_pages: int,
-    errors_out: list[str] | None = None,
+    errors_out: list[tuple[int, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch posts from a single channel, paginating until date cutoff."""
     raw_token = token
@@ -195,7 +215,7 @@ def _fetch_channel_posts(
         err_msg = token_err or "No SCRAPECREATORS_API_KEY configured"
         _log(f"Skipping @{handle}: {err_msg}")
         if errors_out is not None:
-            errors_out.append(f"@{handle}: {err_msg}")
+            errors_out.append((_error_severity(err_msg), f"@{handle}: {err_msg}"))
         return []
 
     items: list[dict[str, Any]] = []
@@ -219,15 +239,20 @@ def _fetch_channel_posts(
             )
         except http.HTTPError as exc:
             safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+            if exc.status_code is not None and str(exc.status_code) not in safe_err:
+                safe_err = f"HTTP {exc.status_code}: {safe_err}"
             _log(f"HTTP error fetching @{handle}: {safe_err}")
             if errors_out is not None:
-                errors_out.append(f"@{handle}: {safe_err}")
+                errors_out.append(
+                    (_error_severity(safe_err, status_code=exc.status_code), f"@{handle}: {safe_err}")
+                )
             break
         except Exception as exc:
             safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
-            _log(f"Error fetching @{handle}: {type(exc).__name__}: {safe_err}")
+            detail = f"{type(exc).__name__}: {safe_err}"
+            _log(f"Error fetching @{handle}: {detail}")
             if errors_out is not None:
-                errors_out.append(f"@{handle}: {type(exc).__name__}: {safe_err}")
+                errors_out.append((_error_severity(detail), f"@{handle}: {detail}"))
             break
 
         if not isinstance(data, dict) or not data.get("success"):
@@ -238,7 +263,7 @@ def _fetch_channel_posts(
             safe_msg = auth_safety.scrub_secrets(str(raw_msg), (raw_token, clean_token))
             _log(f"API error for @{handle}: {safe_msg}")
             if errors_out is not None:
-                errors_out.append(f"@{handle}: {safe_msg}")
+                errors_out.append((_error_severity(safe_msg), f"@{handle}: {safe_msg}"))
             break
 
         channel = data.get("channel") or {}
@@ -316,7 +341,7 @@ def search_telegram(
     _log(f"Searching {len(channels)} channel(s) for '{topic}' (depth={depth}, max_pages={max_pages})")
 
     all_items: list[dict[str, Any]] = []
-    errors: list[str] = []
+    errors: list[tuple[int, str]] = []
     for handle in channels:
         channel_items = _fetch_channel_posts(
             handle,
@@ -343,14 +368,15 @@ def search_telegram(
 
     items.sort(key=lambda x: x.get("relevance", 0), reverse=True)
 
-    if not items and errors:
-        return {"items": [], "error": errors[0]}
+    primary_error = _select_primary_error(errors) if errors else None
+    if not items and primary_error:
+        return {"items": [], "error": primary_error}
 
     result: dict[str, Any] = {"items": items}
-    if errors:
+    if primary_error:
         result["partial"] = True
-        result["error"] = errors[0]
-        _log(f"PARTIAL — {len(errors)} channel failure(s); first: {errors[0]}")
+        result["error"] = primary_error
+        _log(f"PARTIAL — {len(errors)} channel failure(s); primary: {primary_error}")
 
     _log(f"Found {len(items)} Telegram posts")
     return result

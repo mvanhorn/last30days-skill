@@ -1691,9 +1691,10 @@ def request(
             last_error = HTTPError(f"HTTP {e.code}: {safe_reason}", e.code, safe_body)
 
             # A proxy error that ends the lane (out of credits, spend ceiling,
-            # provider off, duplicate call) is never retried.
+            # provider off, duplicate call) is never retried. Pass the original
+            # body so JSON error codes survive secret-scrubbing truncation.
             if routed is not None and proxy.observe_error(
-                routed.provider, e.code, safe_body, getattr(e, "headers", None), call_key,
+                routed.provider, e.code, body, getattr(e, "headers", None), call_key,
             ):
                 raise_recorded(last_error)
 
