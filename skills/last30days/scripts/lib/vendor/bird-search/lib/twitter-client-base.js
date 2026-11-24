@@ -95,15 +95,22 @@ export class TwitterClientBase {
         const cached = await runtimeQueryIds.getQueryId(operationName);
         return cached ?? QUERY_IDS[operationName];
     }
-    async refreshQueryIds() {
+    async refreshQueryIds(opts = {}) {
         if (process.env.NODE_ENV === 'test') {
             return;
         }
         try {
+            const budgetMs =
+                typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs)
+                    ? opts.timeoutMs
+                    : this.timeoutMs;
+            if (typeof budgetMs === 'number' && Number.isFinite(budgetMs) && budgetMs <= 0) {
+                return;
+            }
             const refreshOpts = { force: true };
-            if (typeof this.timeoutMs === 'number' && Number.isFinite(this.timeoutMs) && this.timeoutMs > 0) {
-                refreshOpts.refreshTimeoutMs = Math.min(15_000, this.timeoutMs);
-                refreshOpts.fetchTimeoutMs = Math.min(10_000, this.timeoutMs);
+            if (typeof budgetMs === 'number' && Number.isFinite(budgetMs) && budgetMs > 0) {
+                refreshOpts.refreshTimeoutMs = Math.min(15_000, budgetMs);
+                refreshOpts.fetchTimeoutMs = Math.min(10_000, budgetMs);
             }
             await runtimeQueryIds.refresh(SEARCH_QUERY_ID_OPERATIONS, refreshOpts);
         }
@@ -141,7 +148,14 @@ export class TwitterClientBase {
     async fetchTextWithTimeout(url, init = {}, opts = {}) {
         const maxBytes = opts.maxBytes ?? this.maxResponseBytes;
         const skipBodyStatuses = opts.skipBodyStatuses;
-        const { signal, cleanup } = createComposedSignal(init?.signal, this.timeoutMs);
+        const effectiveTimeoutMs =
+            typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs)
+                ? opts.timeoutMs
+                : this.timeoutMs;
+        if (typeof effectiveTimeoutMs === 'number' && Number.isFinite(effectiveTimeoutMs) && effectiveTimeoutMs <= 0) {
+            throw createAbortError('Request timed out');
+        }
+        const { signal, cleanup } = createComposedSignal(init?.signal, effectiveTimeoutMs);
         try {
             const fetchInit = signal ? { ...init, signal } : init;
             const response = await raceWithAbort(fetch(url, fetchInit), signal);

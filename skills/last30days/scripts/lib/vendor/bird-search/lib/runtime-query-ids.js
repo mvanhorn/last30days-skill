@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { chmod, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 const DEFAULT_CACHE_FILENAME = 'query-ids-cache.json';
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -351,15 +351,84 @@ async function readSnapshotFromDisk(cachePath) {
         return null;
     }
 }
-export async function writeFileAtomicPrivate(targetPath, content) {
-    const dir = path.dirname(targetPath);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const dirStat = await lstat(dir);
-    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+async function resolveTrustedCacheRoot(resolvedDir) {
+    const rawRoots = [homedir(), tmpdir()];
+    if (process.platform === 'darwin') {
+        rawRoots.push('/tmp');
+    }
+    const candidates = [];
+    for (const rawRoot of rawRoots) {
+        if (!rawRoot) {
+            continue;
+        }
+        const resolved = path.resolve(rawRoot);
+        let real = resolved;
+        try {
+            real = await realpath(resolved);
+        }
+        catch {
+            continue;
+        }
+        candidates.push({ prefix: resolved, realRoot: real });
+        if (real !== resolved) {
+            candidates.push({ prefix: real, realRoot: real });
+        }
+    }
+    candidates.sort((a, b) => b.prefix.length - a.prefix.length);
+    for (const { prefix, realRoot } of candidates) {
+        const rel = path.relative(prefix, resolvedDir);
+        if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+            return { root: realRoot, relativeDir: rel };
+        }
+    }
+    const fsRoot = path.parse(resolvedDir).root;
+    return { root: fsRoot, relativeDir: path.relative(fsRoot, resolvedDir) };
+}
+async function ensurePrivateDirectoryNoSymlinks(dir) {
+    const resolvedDir = path.resolve(dir);
+    const { root, relativeDir } = await resolveTrustedCacheRoot(resolvedDir);
+    const rootStat = await lstat(root);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
         throw new Error('Refusing to write cache inside symlink or non-directory');
     }
+    const segments = relativeDir ? relativeDir.split(path.sep).filter(Boolean) : [];
+    let current = root;
+    for (const segment of segments) {
+        current = path.join(current, segment);
+        let st;
+        try {
+            st = await lstat(current);
+        }
+        catch (err) {
+            if (err?.code !== 'ENOENT') {
+                throw err;
+            }
+            try {
+                await mkdir(current, { mode: 0o700 });
+            }
+            catch (mkdirErr) {
+                if (mkdirErr?.code !== 'EEXIST') {
+                    throw mkdirErr;
+                }
+            }
+            st = await lstat(current);
+        }
+        if (st.isSymbolicLink() || !st.isDirectory()) {
+            throw new Error('Refusing to write cache inside symlink or non-directory');
+        }
+    }
+    return current;
+}
+export async function writeFileAtomicPrivate(targetPath, content) {
+    const resolvedTarget = path.resolve(targetPath);
+    const baseName = path.basename(resolvedTarget);
+    if (!baseName || baseName === '.' || baseName === '..') {
+        throw new Error('Invalid cache file path');
+    }
+    const safeDir = await ensurePrivateDirectoryNoSymlinks(path.dirname(resolvedTarget));
+    const safeTargetPath = path.join(safeDir, baseName);
     try {
-        const targetStat = await lstat(targetPath);
+        const targetStat = await lstat(safeTargetPath);
         if (targetStat.isSymbolicLink() || !targetStat.isFile()) {
             throw new Error('Refusing to overwrite symlink or non-regular cache file');
         }
@@ -369,14 +438,14 @@ export async function writeFileAtomicPrivate(targetPath, content) {
             throw err;
         }
     }
-    const tempName = `.${path.basename(targetPath)}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
-    const tempPath = path.join(dir, tempName);
+    const tempName = `.${baseName}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+    const tempPath = path.join(safeDir, tempName);
     try {
         await writeFile(tempPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
         if (process.platform !== 'win32') {
             await chmod(tempPath, 0o600).catch(() => {});
         }
-        await rename(tempPath, targetPath);
+        await rename(tempPath, safeTargetPath);
     }
     catch (err) {
         await unlink(tempPath).catch(() => {});
@@ -385,36 +454,6 @@ export async function writeFileAtomicPrivate(targetPath, content) {
 }
 async function writeSnapshotToDisk(cachePath, snapshot) {
     await writeFileAtomicPrivate(cachePath, `${JSON.stringify(snapshot, null, 2)}\n`);
-}
-async function discoverBundles(fetchImpl, opts = {}) {
-    const maxBundles = opts.maxBundles ?? DEFAULT_MAX_BUNDLES;
-    const deadlineMs = opts.deadlineMs;
-    const bundles = new Set();
-    for (const page of DISCOVERY_PAGES) {
-        if (bundles.size >= maxBundles) {
-            break;
-        }
-        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
-            break;
-        }
-        try {
-            const html = await fetchText(fetchImpl, page, opts);
-            for (const match of html.matchAll(BUNDLE_URL_REGEX)) {
-                bundles.add(match[0]);
-                if (bundles.size >= maxBundles) {
-                    break;
-                }
-            }
-        }
-        catch {
-            // ignore discovery page failures; other pages often work
-        }
-    }
-    const discovered = [...bundles].slice(0, maxBundles);
-    if (discovered.length === 0) {
-        throw new Error('No client bundles discovered; x.com layout may have changed.');
-    }
-    return discovered;
 }
 function extractOperations(bundleContents, bundleLabel, targets, discovered) {
     for (const pattern of OPERATION_PATTERNS) {
@@ -445,20 +484,17 @@ function extractOperations(bundleContents, bundleLabel, targets, discovered) {
         }
     }
 }
-async function fetchAndExtract(fetchImpl, bundleUrls, targets, opts = {}) {
-    const maxBundles = opts.maxBundles ?? DEFAULT_MAX_BUNDLES;
+async function fetchAndExtract(fetchImpl, bundleUrls, targets, opts = {}, discovered = new Map()) {
     const deadlineMs = opts.deadlineMs;
-    const cappedUrls = bundleUrls.slice(0, maxBundles);
-    const discovered = new Map();
     const CONCURRENCY = 6;
-    for (let i = 0; i < cappedUrls.length; i += CONCURRENCY) {
+    for (let i = 0; i < bundleUrls.length; i += CONCURRENCY) {
         if (discovered.size === targets.size) {
             break;
         }
         if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
             break;
         }
-        const chunk = cappedUrls.slice(i, i + CONCURRENCY);
+        const chunk = bundleUrls.slice(i, i + CONCURRENCY);
         await Promise.all(chunk.map(async (url) => {
             if (discovered.size === targets.size) {
                 return;
@@ -480,6 +516,52 @@ async function fetchAndExtract(fetchImpl, bundleUrls, targets, opts = {}) {
         }
     }
     return discovered;
+}
+async function discoverAndExtract(fetchImpl, targets, opts = {}) {
+    const maxBundles = opts.maxBundles ?? DEFAULT_MAX_BUNDLES;
+    const deadlineMs = opts.deadlineMs;
+    const seenBundles = new Set();
+    const scannedPages = [];
+    const discovered = new Map();
+    for (const page of DISCOVERY_PAGES) {
+        if (discovered.size === targets.size) {
+            break;
+        }
+        if (seenBundles.size >= maxBundles) {
+            break;
+        }
+        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+            break;
+        }
+        scannedPages.push(page);
+        const newBundles = [];
+        try {
+            const html = await fetchText(fetchImpl, page, opts);
+            for (const match of html.matchAll(BUNDLE_URL_REGEX)) {
+                const bundleUrl = match[0];
+                if (seenBundles.has(bundleUrl)) {
+                    continue;
+                }
+                seenBundles.add(bundleUrl);
+                newBundles.push(bundleUrl);
+                if (seenBundles.size >= maxBundles) {
+                    break;
+                }
+            }
+        }
+        catch {
+            // ignore discovery page failures; other pages often work
+            continue;
+        }
+        if (newBundles.length > 0) {
+            await fetchAndExtract(fetchImpl, newBundles, targets, opts, discovered);
+        }
+    }
+    const bundleUrls = [...seenBundles];
+    if (bundleUrls.length === 0) {
+        throw new Error('No client bundles discovered; x.com layout may have changed.');
+    }
+    return { bundleUrls, discovered, scannedPages };
 }
 export function createRuntimeQueryIdStore(options = {}) {
     const fetchImpl = options.fetchImpl ?? fetch;
@@ -547,8 +629,11 @@ export function createRuntimeQueryIdStore(options = {}) {
                 signal: opts.signal,
             };
             const targets = new Set(operationNames);
-            const bundleUrls = await discoverBundles(fetchImpl, fetchOpts);
-            const discovered = await fetchAndExtract(fetchImpl, bundleUrls, targets, fetchOpts);
+            const { bundleUrls, discovered, scannedPages } = await discoverAndExtract(
+                fetchImpl,
+                targets,
+                fetchOpts,
+            );
             if (discovered.size === 0) {
                 return current ?? null;
             }
@@ -567,7 +652,7 @@ export function createRuntimeQueryIdStore(options = {}) {
                 ttlMs,
                 ids,
                 discovery: {
-                    pages: [...DISCOVERY_PAGES],
+                    pages: scannedPages,
                     bundles: bundleUrls.map((url) => url.split('/').at(-1) ?? url),
                 },
             };

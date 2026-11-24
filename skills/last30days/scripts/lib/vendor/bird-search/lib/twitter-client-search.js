@@ -72,6 +72,15 @@ export function withSearch(Base) {
                 return { success: true, tweets: [], nextCursor: cursor };
             }
             const seenCursors = new Set(cursor ? [cursor] : []);
+            const totalTimeoutMs =
+                typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+                    ? options.timeoutMs
+                    : typeof this.timeoutMs === 'number' && Number.isFinite(this.timeoutMs) && this.timeoutMs > 0
+                        ? this.timeoutMs
+                        : undefined;
+            const deadlineMs = totalTimeoutMs !== undefined ? Date.now() + totalTimeoutMs : undefined;
+            const remainingBudgetMs = () => (deadlineMs !== undefined ? deadlineMs - Date.now() : undefined);
+            const timeoutError = () => `Request timed out after ${totalTimeoutMs}ms`;
             const redact = (msg) =>
                 typeof this.redactError === 'function' ? this.redactError(msg) : redactSecrets(msg);
             const fetchPage = async (pageCount, pageCursor) => {
@@ -81,6 +90,10 @@ export function withSearch(Base) {
                 for (const queryId of queryIds) {
                     if (typeof queryId !== 'string' || !QUERY_ID_REGEX.test(queryId)) {
                         continue;
+                    }
+                    const remainingMs = remainingBudgetMs();
+                    if (remainingMs !== undefined && remainingMs <= 0) {
+                        return { success: false, error: timeoutError(), had404: false };
                     }
                     const variables = {
                         rawQuery: query,
@@ -101,7 +114,10 @@ export function withSearch(Base) {
                                 headers: this.getHeaders(),
                                 body: JSON.stringify({ features, queryId }),
                             },
-                            { skipBodyStatuses: SKIP_BODY_ON_404 },
+                            {
+                                skipBodyStatuses: SKIP_BODY_ON_404,
+                                ...(remainingMs !== undefined ? { timeoutMs: remainingMs } : {}),
+                            },
                         );
                         if (response.status === 404) {
                             had404 = true;
@@ -144,7 +160,17 @@ export function withSearch(Base) {
                     return firstAttempt;
                 }
                 if (firstAttempt.had404) {
-                    await this.refreshQueryIds();
+                    const refreshRemainingMs = remainingBudgetMs();
+                    if (refreshRemainingMs !== undefined && refreshRemainingMs <= 0) {
+                        return { success: false, error: timeoutError() };
+                    }
+                    await this.refreshQueryIds(
+                        refreshRemainingMs !== undefined ? { timeoutMs: refreshRemainingMs } : {},
+                    );
+                    const retryRemainingMs = remainingBudgetMs();
+                    if (retryRemainingMs !== undefined && retryRemainingMs <= 0) {
+                        return { success: false, error: timeoutError() };
+                    }
                     const secondAttempt = await fetchPage(pageCount, pageCursor);
                     if (secondAttempt.success) {
                         return secondAttempt;
@@ -154,7 +180,17 @@ export function withSearch(Base) {
                 return { success: false, error: firstAttempt.error };
             };
             while (unlimited || tweets.length < limit) {
+                const remainingBeforePage = remainingBudgetMs();
+                if (remainingBeforePage !== undefined && remainingBeforePage <= 0) {
+                    if (tweets.length > 0) {
+                        return { success: false, error: timeoutError(), tweets, nextCursor: cursor };
+                    }
+                    return { success: false, error: timeoutError() };
+                }
                 if (pagesFetched > 0 && pageDelayMs > 0 && typeof this.sleep === 'function') {
+                    if (remainingBeforePage !== undefined && pageDelayMs >= remainingBeforePage) {
+                        return { success: false, error: timeoutError(), tweets, nextCursor: cursor };
+                    }
                     await this.sleep(pageDelayMs);
                 }
                 const pageCount = unlimited ? pageSize : Math.min(pageSize, limit - tweets.length);

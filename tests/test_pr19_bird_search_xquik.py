@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -203,6 +204,9 @@ class TestHigh150XquikSecurityAndParsing:
             {"id": "0", "text": "zero str id", "author": {"username": "alice"}},
             {"id": 0, "text": "zero int id", "author": {"username": "alice"}},
             {"id": "000", "text": "zeros id", "author": {"username": "alice"}},
+            {"id": "9" * 5000, "text": "oversized str id", "author": {"username": "alice"}},
+            {"id": 10 ** 5000, "text": "oversized int id", "author": {"username": "alice"}},
+            {"id": "1" * 21, "text": "21-digit id", "author": {"username": "alice"}},
             {"id": "None", "text": "str none id", "author": {"username": "alice"}},
             {"id": "123abc", "text": "alpha id", "author": {"username": "alice"}},
             {"id": "١٢٣٤٥", "text": "non-ascii digits", "author": {"username": "alice"}},
@@ -231,6 +235,8 @@ class TestHigh150XquikSecurityAndParsing:
         assert item["date"] is None
         assert item["engagement"]["likes"] is None
         assert item["engagement"]["reposts"] is None
+        assert xquik._clean_tweet_id("9" * 5000) == ""
+        assert xquik._clean_tweet_id(10 ** 5000) == ""
         assert xquik._safe_int(True) is None
         assert xquik._safe_int(False) is None
         assert xquik.parse_xquik_response("not-a-dict") == []  # type: ignore[arg-type]
@@ -406,11 +412,72 @@ class TestHigh156QueryIdDiscoverySecurity:
             }});
             await cappedStore.refresh(['SearchTimeline'], {{ force: true }});
 
-            // 3) TwitterClientBase.refreshQueryIds only refreshes SearchTimeline (exits early)
-            const origNodeEnv = process.env.NODE_ENV;
+            // 3) Page-by-page discovery scans page 1's bundles immediately without touching slow page 2
+            const pageByPageUrls = [];
+            const fastPageStore = createRuntimeQueryIdStore({{
+              cachePath: {json.dumps(str(tmp_path / "fast-page.json"))},
+              fetchTimeoutMs: 500,
+              refreshTimeoutMs: 1000,
+              fetchImpl: async (url) => {{
+                const u = String(url);
+                pageByPageUrls.push(u);
+                if (u === 'https://x.com/?lang=en') {{
+                  return new Response(
+                    'https://abs.twimg.com/responsive-web/client-web/fast.1.js',
+                    {{ status: 200 }},
+                  );
+                }}
+                if (u.endsWith('fast.1.js')) {{
+                  return new Response(
+                    'e.exports={{queryId:"FastPageId_7",operationName:"SearchTimeline"}}',
+                    {{ status: 200 }},
+                  );
+                }}
+                // Fallback pages hang — must never be requested once page 1 yields SearchTimeline
+                return new Promise(() => {{}});
+              }},
+            }});
+            const tFast = Date.now();
+            const fastInfo = await fastPageStore.refresh(['SearchTimeline'], {{ force: true }});
+            const fastElapsed = Date.now() - tFast;
+
+            process.stdout.write(JSON.stringify({{
+              searchOps: SEARCH_QUERY_ID_OPERATIONS,
+              stalledErr,
+              stalledElapsed,
+              stalledCancelled,
+              oversizedCancelled,
+              bundleFetchCount: bundleFetches.length,
+              fastPageId: fastInfo?.snapshot?.ids?.SearchTimeline ?? null,
+              fastPageUrls: pageByPageUrls,
+              fastElapsed,
+            }}));
+            """
+        )
+        res = _node_eval(script)
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        assert data["searchOps"] == ["SearchTimeline"]
+        assert data["stalledErr"] is not None
+        assert data["stalledElapsed"] < 2000
+        assert data["stalledCancelled"] is True
+        assert data["oversizedCancelled"] is True
+        assert data["bundleFetchCount"] == 5
+        assert data["fastPageId"] == "FastPageId_7"
+        assert data["fastElapsed"] < 500
+        assert data["fastPageUrls"] == [
+            "https://x.com/?lang=en",
+            "https://abs.twimg.com/responsive-web/client-web/fast.1.js",
+        ]
+
+        # 4) TwitterClientBase.refreshQueryIds: install fetch stub & cache path BEFORE dynamic
+        #    import so the module-level runtimeQueryIds store captures our stub and temp cache.
+        client_cache = tmp_path / "client-cache.json"
+        client_script = textwrap.dedent(
+            f"""
             delete process.env.NODE_ENV;
+            process.env.BIRD_QUERY_IDS_CACHE = {json.dumps(str(client_cache))};
             const clientBundlesFetched = [];
-            const origFetch = globalThis.fetch;
             globalThis.fetch = async (url) => {{
               const u = String(url);
               if (u.startsWith('https://x.com/')) {{
@@ -425,34 +492,25 @@ class TestHigh156QueryIdDiscoverySecurity:
               }}
               return new Response('noop', {{ status: 200 }});
             }};
-            process.env.BIRD_QUERY_IDS_CACHE = {json.dumps(str(tmp_path / "client-cache.json"))};
+
+            const {{ TwitterClientBase }} = await import('./skills/last30days/scripts/lib/vendor/bird-search/lib/twitter-client-base.js');
             const client = new TwitterClientBase({{ cookies: {{ authToken: 'dummy-auth-1234', ct0: 'dummy-ct0-5678' }}, timeoutMs: 5000 }});
             await client.refreshQueryIds();
-            globalThis.fetch = origFetch;
-            if (origNodeEnv !== undefined) process.env.NODE_ENV = origNodeEnv;
-
+            const refreshedId = await client.getQueryId('SearchTimeline');
             process.stdout.write(JSON.stringify({{
-              searchOps: SEARCH_QUERY_ID_OPERATIONS,
-              stalledErr,
-              stalledElapsed,
-              stalledCancelled,
-              oversizedCancelled,
-              bundleFetchCount: bundleFetches.length,
               clientBundlesFetchedCount: clientBundlesFetched.length,
+              refreshedId,
             }}));
             """
         )
-        res = _node_eval(script)
-        assert res.returncode == 0, res.stderr
-        data = json.loads(res.stdout)
-        assert data["searchOps"] == ["SearchTimeline"]
-        assert data["stalledErr"] is not None
-        assert data["stalledElapsed"] < 2000
-        assert data["stalledCancelled"] is True
-        assert data["oversizedCancelled"] is True
-        assert data["bundleFetchCount"] == 5
+        client_res = _node_eval(client_script)
+        assert client_res.returncode == 0, client_res.stderr
+        client_data = json.loads(client_res.stdout)
         # First chunk of concurrency 6 finds SearchTimeline in b0.js and stops before chunks 2-3 (18 total).
-        assert data["clientBundlesFetchedCount"] <= 6
+        assert 1 <= client_data["clientBundlesFetchedCount"] <= 6
+        assert client_data["refreshedId"] == "SearchOnlyId99"
+        assert client_cache.is_file()
+        assert json.loads(client_cache.read_text(encoding="utf-8"))["ids"] == {"SearchTimeline": "SearchOnlyId99"}
 
     def test_read_response_text_json_fallback_utf8_truncation_and_non_ok_abort_rethrow(self, tmp_path):
         script = textwrap.dedent(
@@ -714,7 +772,9 @@ class TestHigh157FetchLifecycleAndTimeoutCli:
         assert res.returncode == 1
         assert elapsed < 3.0
         payload = json.loads(res.stdout)
-        assert "150ms" in payload["error"]
+        match = re.search(r"timed out after (\d+)ms", payload["error"])
+        assert match is not None, payload["error"]
+        assert 1 <= int(match.group(1)) <= 150
 
         for bad in (
             ["--timeout-ms", "0"],
@@ -754,11 +814,150 @@ class TestHigh157FetchLifecycleAndTimeoutCli:
             sep = cmd.index("--")
             idx = cmd.index("--timeout-ms")
             assert idx < sep
-        assert captured_cmds[0][captured_cmds[0].index("--timeout-ms") + 1] == "8000"
+        # Python reserves flush headroom so Node writes partial JSON before Python kills it
+        assert captured_cmds[0][captured_cmds[0].index("--timeout-ms") + 1] == "6500"
         sub_second_ms = int(captured_cmds[1][captured_cmds[1].index("--timeout-ms") + 1])
-        assert 1 <= sub_second_ms <= 400
-        assert captured_cmds[2][captured_cmds[2].index("--timeout-ms") + 1] == "15000"
-        assert captured_cmds[3][captured_cmds[3].index("--timeout-ms") + 1] == "15000"
+        assert 1 <= sub_second_ms < 350
+        assert captured_cmds[2][captured_cmds[2].index("--timeout-ms") + 1] == "13500"
+        assert captured_cmds[3][captured_cmds[3].index("--timeout-ms") + 1] == "13500"
+
+    def test_single_search_deadline_and_headroom_preserve_page1_on_page2_stall(self, tmp_path):
+        # 1) Node searchPaged enforces a single total deadline across pages (page 1 slow + page 2 stall)
+        node_script = textwrap.dedent(
+            """
+            import { TwitterClientBase } from './skills/last30days/scripts/lib/vendor/bird-search/lib/twitter-client-base.js';
+            import { withSearch } from './skills/last30days/scripts/lib/vendor/bird-search/lib/twitter-client-search.js';
+
+            const Client = withSearch(TwitterClientBase);
+            let pageNum = 0;
+            globalThis.fetch = async (_url, init) => {
+              pageNum += 1;
+              if (pageNum === 1) {
+                await new Promise((r) => setTimeout(r, 120));
+                const body = {
+                  data: {
+                    search_by_raw_query: {
+                      search_timeline: {
+                        timeline: {
+                          instructions: [{
+                            type: 'TimelineAddEntries',
+                            entries: [
+                              {
+                                entryId: 'tweet-601',
+                                content: {
+                                  itemContent: {
+                                    tweet_results: {
+                                      result: {
+                                        __typename: 'Tweet',
+                                        rest_id: '601',
+                                        legacy: { id_str: '601', full_text: 'page1 kept', created_at: 'Wed May 15 12:00:00 +0000 2026' },
+                                        core: { user_results: { result: { rest_id: '1', legacy: { screen_name: 'alice', name: 'Alice' } } } },
+                                      },
+                                    },
+                                  },
+                                },
+                              },
+                              { entryId: 'cursor-bottom-0', content: { cursorType: 'Bottom', value: 'c2' } },
+                            ],
+                          }],
+                        },
+                      },
+                    },
+                  },
+                };
+                return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+              }
+              return new Promise((_res, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+              });
+            };
+            const client = new Client({ cookies: { authToken: 'dummy-auth-1234', ct0: 'dummy-ct0-5678' }, timeoutMs: 260 });
+            const t0 = Date.now();
+            const result = await client.search('hello', 30);
+            const elapsed = Date.now() - t0;
+            process.stdout.write(JSON.stringify({
+              elapsed,
+              success: result.success,
+              ids: (result.tweets || []).map((t) => t.id),
+              error: result.error,
+            }));
+            """
+        )
+        res = _node_eval(node_script)
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        assert data["success"] is False
+        assert data["ids"] == ["601"]
+        assert "timed out" in data["error"].lower()
+        # Total time is bounded by the single 260ms search deadline (not 120 + 260 = 380ms+)
+        assert data["elapsed"] < 360
+
+        # 2) End-to-end Python -> Node: page 2 stalls forever, Node self-aborts using headroom
+        #    before Python's 2s subprocess timeout kills it, flushing page 1's tweet to stdout.
+        stub = tmp_path / "stub-page2-stall.mjs"
+        stub.write_text(
+            textwrap.dedent(
+                """
+                let calls = 0;
+                globalThis.fetch = async (_url, init) => {
+                  calls += 1;
+                  if (calls === 1) {
+                    const body = {
+                      data: {
+                        search_by_raw_query: {
+                          search_timeline: {
+                            timeline: {
+                              instructions: [{
+                                type: 'TimelineAddEntries',
+                                entries: [
+                                  {
+                                    entryId: 'tweet-602',
+                                    content: {
+                                      itemContent: {
+                                        tweet_results: {
+                                          result: {
+                                            __typename: 'Tweet',
+                                            rest_id: '602',
+                                            legacy: { id_str: '602', full_text: 'flushed before kill', created_at: 'Wed May 15 12:00:00 +0000 2026' },
+                                            core: { user_results: { result: { rest_id: '2', legacy: { screen_name: 'bob', name: 'Bob' } } } },
+                                          },
+                                        },
+                                      },
+                                    },
+                                  },
+                                  { entryId: 'cursor-bottom-0', content: { cursorType: 'Bottom', value: 'c-stall' } },
+                                ],
+                              }],
+                            },
+                          },
+                        },
+                      },
+                    };
+                    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+                  }
+                  return new Promise((_res, reject) => {
+                    init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+                  });
+                };
+                """
+            ),
+            encoding="utf-8",
+        )
+        real_run = bird_x.subproc.run_with_timeout
+
+        def wrapped_run(cmd, **kwargs):
+            env_copy = dict(kwargs.get("env") or {})
+            env_copy["NODE_OPTIONS"] = f"--import={stub.as_uri()}"
+            env_copy["AUTH_TOKEN"] = "dummy-auth-token-1234"
+            env_copy["CT0"] = "dummy-ct0-token-5678"
+            kwargs["env"] = env_copy
+            return real_run(cmd, **kwargs)
+
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=wrapped_run):
+            resp = bird_x._run_bird_search("hello", count=30, timeout=2)
+        assert "timed out" in resp.get("error", "").lower()
+        parsed = bird_x.parse_bird_response(resp)
+        assert [it["url"] for it in parsed] == ["https://x.com/bob/status/602"]
 
 
 # ---------------------------------------------------------------------------
@@ -819,6 +1018,11 @@ class TestHigh158AtomicPrivateCacheWrites:
         symlink_dir = tmp_path / "symlink_dir"
         symlink_dir.symlink_to(real_dir)
 
+        outside_dir = tmp_path / "outside_dir"
+        outside_dir.mkdir()
+        ancestor_symlink = tmp_path / "ancestor_symlink"
+        ancestor_symlink.symlink_to(outside_dir)
+
         script = textwrap.dedent(
             f"""
             import {{ writeFileAtomicPrivate }} from './skills/last30days/scripts/lib/vendor/bird-search/lib/runtime-query-ids.js';
@@ -837,7 +1041,14 @@ class TestHigh158AtomicPrivateCacheWrites:
               symlinkDirErr = e.message;
             }}
 
-            process.stdout.write(JSON.stringify({{ symlinkTargetErr, symlinkDirErr }}));
+            let ancestorSymlinkErr = null;
+            try {{
+              await writeFileAtomicPrivate({json.dumps(str(ancestor_symlink / "nested" / "deep" / "cache.json"))}, '{{}}\\n');
+            }} catch (e) {{
+              ancestorSymlinkErr = e.message;
+            }}
+
+            process.stdout.write(JSON.stringify({{ symlinkTargetErr, symlinkDirErr, ancestorSymlinkErr }}));
             """
         )
         res = _node_eval(script)
@@ -845,8 +1056,10 @@ class TestHigh158AtomicPrivateCacheWrites:
         data = json.loads(res.stdout)
         assert data["symlinkTargetErr"] and "symlink" in data["symlinkTargetErr"].lower()
         assert data["symlinkDirErr"] and "symlink" in data["symlinkDirErr"].lower()
+        assert data["ancestorSymlinkErr"] and "symlink" in data["ancestorSymlinkErr"].lower()
         assert victim.read_text(encoding="utf-8") == "DO_NOT_OVERWRITE"
         assert not (real_dir / "out.json").exists()
+        assert not (outside_dir / "nested").exists()
 
     def test_concurrent_node_processes_never_corrupt_query_ids_cache(self, tmp_path):
         cache_file = tmp_path / "concurrent" / "query-ids-cache.json"
@@ -1212,13 +1425,6 @@ class TestHigh159PaginationGuards:
             ),
             encoding="utf-8",
         )
-        run_env = os.environ.copy()
-        run_env.update(
-            AUTH_TOKEN="dummy-auth-token-1234",
-            CT0="dummy-ct0-token-5678",
-            BIRD_DISABLE_BROWSER_COOKIES="1",
-            NODE_OPTIONS=f"--import={stub.as_uri()}",
-        )
         real_run = bird_x.subproc.run_with_timeout
         spawn_count = 0
 
@@ -1432,6 +1638,63 @@ class TestHigh160CookieConsentAndFailoverReset:
         assert bird_x._credentials["AUTH_TOKEN"] == "edge-auth-token-4444"
         assert bird_x._session_browser == "edge"
         assert bird_x._next_session is next_browser
+
+    def test_browser_failover_preserves_page1_partial_posts_when_retry_yields_nothing(self):
+        partial_page1 = (
+            SubprocResult(
+                returncode=1,
+                stdout=json.dumps({
+                    "error": "Internal server error",
+                    "items": [{"id": "901", "text": "page 1 tweet", "author": {"username": "alice"}}],
+                }),
+                stderr="",
+            ),
+            None,
+        )
+        empty_retry = (SubprocResult(returncode=0, stdout="[]", stderr=""), None)
+        failed_retry = (
+            SubprocResult(returncode=1, stdout='{"error": "HTTP 401: Could not authenticate you", "items": []}', stderr=""),
+            None,
+        )
+        better_retry = (
+            SubprocResult(
+                returncode=0,
+                stdout=json.dumps([
+                    {"id": "901", "text": "page 1 tweet", "author": {"username": "alice"}},
+                    {"id": "902", "text": "page 2 tweet", "author": {"username": "bob"}},
+                ]),
+                stderr="",
+            ),
+            None,
+        )
+
+        # Case 1: Retry returns empty clean list -> keep safari's partial page-1 post
+        rotations = [("chrome-auth-1111", "chrome-ct0-1111", "chrome")]
+        bird_x.set_credentials("safari-auth-1111", "safari-ct0-1111")
+        bird_x.set_session_failover("safari", lambda deadline=None, cancel=None: rotations.pop(0) if rotations else None)
+        with mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=[partial_page1, empty_retry]):
+            resp = bird_x._run_bird_search("topic", count=20, timeout=15)
+        assert [it["url"] for it in bird_x.parse_bird_response(resp)] == ["https://x.com/alice/status/901"]
+
+        # Case 2: Retry fails with 401 and no browsers remain -> keep safari's partial page-1 post
+        rotations = [("chrome-auth-2222", "chrome-ct0-2222", "chrome")]
+        bird_x.set_credentials("safari-auth-2222", "safari-ct0-2222")
+        bird_x.set_session_failover("safari", lambda deadline=None, cancel=None: rotations.pop(0) if rotations else None)
+        with mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=[partial_page1, failed_retry]):
+            resp2 = bird_x._run_bird_search("topic", count=20, timeout=15)
+        assert [it["url"] for it in bird_x.parse_bird_response(resp2)] == ["https://x.com/alice/status/901"]
+
+        # Case 3: Retry succeeds with clean posts -> retry wins
+        rotations = [("chrome-auth-3333", "chrome-ct0-3333", "chrome")]
+        bird_x.set_credentials("safari-auth-3333", "safari-ct0-3333")
+        bird_x.set_session_failover("safari", lambda deadline=None, cancel=None: rotations.pop(0) if rotations else None)
+        with mock.patch.object(bird_x, "_invoke_bird_subprocess", side_effect=[partial_page1, better_retry]):
+            resp3 = bird_x._run_bird_search("topic", count=20, timeout=15)
+        assert "error" not in resp3
+        assert [it["url"] for it in bird_x.parse_bird_response(resp3)] == [
+            "https://x.com/alice/status/901",
+            "https://x.com/bob/status/902",
+        ]
 
 
 # ---------------------------------------------------------------------------

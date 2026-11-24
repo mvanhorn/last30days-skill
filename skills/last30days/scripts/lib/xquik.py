@@ -42,16 +42,24 @@ def _extract_core_subject(topic: str) -> str:
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+_MAX_TWEET_ID_DIGITS = 20
 
 
 def _clean_tweet_id(value: Any) -> str:
     """Return a positive ASCII numeric tweet id, or '' when invalid."""
     if value is None or isinstance(value, bool):
         return ""
-    candidate = str(value).strip()
-    if not (candidate.isascii() and candidate.isdigit()):
+    if isinstance(value, int):
+        if value <= 0 or value.bit_length() > 67:
+            return ""
+        candidate = str(value)
+    elif isinstance(value, str):
+        candidate = value.strip()
+    else:
         return ""
-    return candidate if int(candidate) > 0 else ""
+    if len(candidate) > _MAX_TWEET_ID_DIGITS or not (candidate.isascii() and candidate.isdigit()):
+        return ""
+    return candidate if candidate.lstrip("0") else ""
 
 
 def _sanitize_topic_query(query_text: str) -> str:
