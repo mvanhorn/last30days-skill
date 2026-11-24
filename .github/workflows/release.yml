@@ -15,15 +15,74 @@ on:
 
 permissions: {}
 
-env:
-  # Tag push uses ref_name (vX.Y.Z); dispatch from tag-release passes inputs.tag.
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-
 jobs:
+  # Validate release tag syntax, exact git tag resolution, and lockstep
+  # manifest versions before any job builds artifacts or mints SLSA
+  # provenance attestations.
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.verify.outputs.tag }}
+      version: ${{ steps.verify.outputs.version }}
+      commit: ${{ steps.verify.outputs.commit }}
+    steps:
+      - name: Validate release tag format
+        id: format
+        env:
+          # Tag push uses ref_name (vX.Y.Z); dispatch from tag-release passes inputs.tag.
+          RAW_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${RAW_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid release tag format. Expected vMAJOR.MINOR.PATCH (e.g. v4.6.0)."
+            exit 1
+          fi
+          echo "tag=${RAW_RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${RAW_RELEASE_TAG#v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.format.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag ref and manifest versions
+        id: verify
+        env:
+          RELEASE_TAG: ${{ steps.format.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.format.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          HEAD_COMMIT="$(git rev-parse --verify HEAD)"
+          if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then
+            echo "::error::Checked-out HEAD (${HEAD_COMMIT}) does not match refs/tags/${RELEASE_TAG} (${TAG_COMMIT})."
+            exit 1
+          fi
+
+          PY_VERSION="$(python3 .github/scripts/read_manifest_version.py pyproject.toml < pyproject.toml)"
+          MCP_VERSION="$(python3 .github/scripts/read_manifest_version.py mcp/manifest.json < mcp/manifest.json)"
+          if [ "${PY_VERSION}" != "${RELEASE_VERSION}" ]; then
+            echo "::error::Tag version (${RELEASE_VERSION}) does not match pyproject.toml (${PY_VERSION})."
+            exit 1
+          fi
+          if [ "${MCP_VERSION}" != "${RELEASE_VERSION}" ]; then
+            echo "::error::Tag version (${RELEASE_VERSION}) does not match mcp/manifest.json (${MCP_VERSION})."
+            exit 1
+          fi
+
+          echo "tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${TAG_COMMIT}" >> "${GITHUB_OUTPUT}"
+
   # Build the existing .skill artifact (Claude Code / Codex / Cursor install
   # surface). Unchanged from prior versions; just isolated into its own job
   # so the .mcpb matrix can run in parallel.
   build-skill:
+    needs: [validate]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,9 +92,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify checked-out tag commit
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          HEAD_COMMIT="$(git rev-parse --verify HEAD)"
+          if [ "${TAG_COMMIT}" != "${EXPECTED_COMMIT}" ] || [ "${HEAD_COMMIT}" != "${EXPECTED_COMMIT}" ]; then
+            echo "::error::Tag ref ${RELEASE_TAG} no longer resolves to validated commit ${EXPECTED_COMMIT}."
+            exit 1
+          fi
 
       - name: Build .skill artifact
         run: |
@@ -57,6 +129,7 @@ jobs:
   # package each as a .mcpb. MCPB v0.3 is a ZIP containing the checked-in
   # manifest and the pre-built binary at the manifest's entry point.
   build-mcpb:
+    needs: [validate]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -78,8 +151,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
           persist-credentials: false
+
+      - name: Verify checked-out tag commit
+        env:
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          HEAD_COMMIT="$(git rev-parse --verify HEAD)"
+          if [ "${HEAD_COMMIT}" != "${EXPECTED_COMMIT}" ]; then
+            echo "::error::Checked-out HEAD (${HEAD_COMMIT}) does not match validated commit ${EXPECTED_COMMIT}."
+            exit 1
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -98,8 +182,13 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          RELEASE_VERSION: ${{ env.RELEASE_TAG }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.tag }}
         run: |
+          set -euo pipefail
+          if ! [[ "${RELEASE_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid RELEASE_VERSION format for Go ldflags."
+            exit 1
+          fi
           mkdir -p mcp/build
           go -C mcp build \
             -ldflags "-X main.Version=${RELEASE_VERSION}" \
@@ -142,7 +231,7 @@ jobs:
 
   # Gather every platform artifact and attach to one GitHub release.
   release:
-    needs: [build-skill, build-mcpb]
+    needs: [validate, build-skill, build-mcpb]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -154,9 +243,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify checked-out tag commit
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          TAG_COMMIT="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          HEAD_COMMIT="$(git rev-parse --verify HEAD)"
+          if [ "${TAG_COMMIT}" != "${EXPECTED_COMMIT}" ] || [ "${HEAD_COMMIT}" != "${EXPECTED_COMMIT}" ]; then
+            echo "::error::Tag ref ${RELEASE_TAG} no longer resolves to validated commit ${EXPECTED_COMMIT}."
+            exit 1
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -167,7 +269,7 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           gh release create "${RELEASE_TAG}" \
             dist/last30days.skill \
