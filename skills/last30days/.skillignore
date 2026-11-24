@@ -1,14 +1,24 @@
 # Hermes scans from this skill directory, not the repository root.
-# Keep non-runtime packaging/dev/eval artifacts out of install-time security scans.
+# Keep secrets, caches, and non-runtime packaging/dev/eval artifacts out of install-time security scans.
+.env
+.env.*
+.claude/
+*.pem
+*.key
+__pycache__/
+*.pyc
 assets/
 agents/
 scripts/build-skill.sh
 scripts/compare.sh
 scripts/evaluate_search_quality.py
 scripts/reddit_canary.py
+scripts/setup-keychain.sh
+scripts/setup-pass.sh
 scripts/test_device_auth.py
 scripts/test-v1-vs-v2.sh
 scripts/verify_v3.py
+scripts/x_lane_parity.py
 
 # Vendored third-party X-search client (node_modules analog); excluded from scan, still installed.
 scripts/lib/vendor/

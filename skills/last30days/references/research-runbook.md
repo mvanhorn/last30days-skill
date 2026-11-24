@@ -101,23 +101,23 @@ Known keyword-trap classes and how to handle each:
 
 **Class 1: Demographic shopping query**
 - Pattern: `gift for {age} year old {gender}`, `what to buy for my {relationship}`, `present for {demographic}`, `birthday gift for {age} {gender}`.
-- Why it fails: no human on Reddit posts "I bought a 42 year old man a gift." Real posts use relationship + hobbies + budget. A "Birthday gift for 42 year old man" run returned r/todayilearned, r/japannews crime posts, r/LivestreamFail drama - none about gifts.
+- Why it fails: Reddit posts use relationship + hobbies + budget, not "42 year old man" (that pulled unrelated r/todayilearned and r/japannews posts).
 - Action: **Ask ONE clarifying question upfront**:
   > "Before I research, tell me a bit more - hobbies (cooks / runs / reads / gaming / outdoors / golf / music)? Relationship (husband / dad / friend / boss / brother)? Budget range? A 'gift for a 42 year old man' is a wide net; hobbies + relationship narrow it 10x."
 - If the user declines to narrow ("just run it"), reframe to generic-demographic and scope to gift subreddits:
-  - Drop the literal age (age 42 reads identically to 41 or 43 in social content; the number causes keyword collisions like Jackie Robinson #42)
+  - Drop the literal age (causes collisions like Jackie Robinson #42)
   - Rewrite as `gifts for men in their 40s` or `gifts for men who [hobby]`
   - For local engine research, scope `--subreddits=GiftIdeas,BuyItForLife,AskMen,malefashionadvice,Dads` (plus hobby-specific subs when known)
   - Note in the Resolved block: "Reframed demographic shopping query. Dropping literal age; scoping to gift communities."
 
 **Class 2: Numeric / age keyword trap**
 - Pattern: topic contains a specific number that collides with unrelated content (42 = Jackie Robinson + Hitchhiker's + a 42" quilt; 40 = 40th anniversary posts; 50 = state-count posts; 100 = bench-press posts).
-- Why it fails: the number dominates retrieval and pulls in unrelated content. A search that prominently features "42" returns jersey-number posts; a search for "the 100" returns TV-show posts.
-- Action: Strip the number from the engine search query unless changing or removing it would change the topic itself (e.g., "GPT-4" yes, "40 year old man" no, "Area 51" yes, "top 10 foods" no). Keep the number in the user's original framing for context; drop it from the engine query. Document in Resolved: "Dropping '{number}' from the search query - it is a keyword trap that pulls in unrelated content. Search will cover the concept generically."
+- Why it fails: numbers dominate retrieval ("42" pulls jersey-number posts; "the 100" pulls TV-show posts).
+- Action: Strip the number from the engine query unless integral to the topic ("GPT-4", "Area 51" keep; "40 year old man", "top 10 foods" drop). Keep it only in user-facing framing. Document in Resolved: "Dropping '{number}' from the search query - it is a keyword trap that pulls in unrelated content. Search will cover the concept generically."
 
 **Class 3: Overly-literal concept phrase**
 - Pattern: `how to use X`, `what is Y`, `tutorial for Z`, `explain A` — tutorial-shaped phrasing where social posts are in different vocabulary.
-- Why it fails: social posts about Docker do not say "how to use Docker"; they say "my Docker setup", "nginx in Docker", "my dev loop", "tip for folks using Docker Compose". Tutorial phrasing matches blog titles, not social discussions.
+- Why it fails: social posts say "my Docker setup" or "Docker Compose tips", not "how to use Docker"; tutorial phrasing matches blogs, not discussions.
 - Action: Reframe from tutorial phrasing to discussion phrasing: "how to use Docker" becomes "Docker tips tricks workflows" or "Docker production setups". Document the reframe in the Resolved block.
 
 **Class 4: Generic single-noun common word**
@@ -168,7 +168,7 @@ Without such a subagent, run the same searches directly with the same output; th
 Before running the engine, determine every applicable targeting flag and resolve it. Run every lookup below that needs web search through the pre-engine isolated web search dispatch, together with Step 0.55. The checklist below is the full pre-flight contract; reading only the X-handle subsection is insufficient.
 
 | Flag | Resolved in | Applies when |
-|------|-------------|--------------|
+|---|---|---|
 | `--x-handle={handle}` | Section A | X is in `ACTIVE_SOURCES_LIST` and the topic is a person, brand, product, or creator with an X presence |
 | `--official-site={domain}` | Section A | Company / product / service with a website; the engine fills unset `--x-handle` / `--github-user` from its homepage links |
 | `--no-x-handle="{reason}"` | Section A | X is active, the topic is entity-shaped, and no first-party X account was found |
@@ -407,15 +407,18 @@ Label conservatively: only a sub clearly named for / dedicated to the entity goe
 
 **Category peers:** when the product eligibility rule above applies, follow the root routing gate for `category-peers.md` before continuing.
 
-**2b. Host Reddit threads.** Keep each `reddit.com/r/<sub>/comments/<id>/` URL found (no `/s/` share or redirect links; max 50). The engine reads only `url`, drops off-topic or stale ones. If any, write them with a single-quoted heredoc and add `--reddit-threads=/tmp/l30d-threads.json` (single-topic runs, as for 2c):
+**2b. Host Reddit threads.** Keep each `reddit.com/r/<sub>/comments/<id>/` URL found (no `/s/` share or redirect links; max 50). The engine reads only `url`, drops off-topic or stale ones. If any, write one-line JSON in the same shell as the engine call (fresh 12-char `{NONCE}`) and add `--reddit-threads="$REDDIT_THREADS_FILE"` (single-topic runs, as for 2c):
 
 ```bash
-cat > /tmp/l30d-threads.json <<'THREADS_EOF'
+REDDIT_THREADS_DIR=${X_POSTS_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/last30days-reddit-threads.XXXXXX")}
+REDDIT_THREADS_FILE="$REDDIT_THREADS_DIR/threads.json"
+trap 'rm -rf -- ${X_POSTS_DIR:+"$X_POSTS_DIR"} ${REDDIT_THREADS_DIR:+"$REDDIT_THREADS_DIR"}' EXIT
+cat >| "$REDDIT_THREADS_FILE" <<'THREADS_EOF_{NONCE}'
 {"schema": "last30days-reddit-threads/1", "topic": "{TOPIC}", "threads": [{"url": "{THREAD_URL}"}]}
-THREADS_EOF
+THREADS_EOF_{NONCE}
 ```
 
-**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches (`{TOPIC} site:tiktok.com`, `{TOPIC} tiktok account`, `site:instagram.com reel {TOPIC}`); keep post and `@creator` URLs, even old (max 40). Add up to 5 handles posting on it (official, fan, reviewer) to `RESOLVED_TIKTOK_CREATORS`. If any, write `/tmp/l30d-shortform.json` as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls=/tmp/l30d-shortform.json`.
+**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches (`{TOPIC} site:tiktok.com`, `{TOPIC} tiktok account`, `site:instagram.com reel {TOPIC}`); keep post and `@creator` URLs, even old (max 40). Add up to 5 handles posting on it (official, fan, reviewer) to `RESOLVED_TIKTOK_CREATORS`. If any, write `shortform.json` in a private `mktemp -d` dir with an `EXIT` trap (reuse `$REDDIT_THREADS_DIR` or `$X_POSTS_DIR` when set) via `cat >|` + nonced single-quoted heredoc as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls="$SHORTFORM_FILE"`.
 
 **3. TikTok hashtags + creators** - **INFER these from topic knowledge. Never WebSearch for a TikTok account (2c aside); most people and CEOs have none.**
 
@@ -442,7 +445,7 @@ Store as `RESOLVED_YT_QUERIES`.
 **Concrete examples:**
 
 | Topic | WebSearches needed | Reddit subs | TikTok hashtags | TikTok creators | IG creators | YT queries |
-|-------|-------------------|-------------|-----------------|-----------------|-------------|------------|
+|---|---|---|---|---|---|---|
 | **Kanye West** | 2 (subreddit + BULLY news) | `Kanye,WestSubEver,hiphopheads,Music` | `kanyewest,ye,bully` | (inferred: `kanyewest`) | (inferred: `kanyewest`) | `kanye west bully review,kanye west bully reaction` |
 | **Sam Altman vs Dario** | 2 (subreddit + AI CEO news) | `artificial,MachineLearning,OpenAI,ClaudeAI` | `samaltman,openai,anthropic` | (skip - CEOs don't TikTok) | (skip - CEOs don't Reel) | `sam altman interview 2026,dario amodei interview 2026` |
 | **Tella** (SaaS) | 2 (subreddit + Tella news) | `SaaS,Entrepreneur,screenrecording,productivity` | `tella,tellaapp,screenrecording` | (search: `tella screen recorder TikTok`) | (inferred: `tella.tv`) | `tella screen recorder review,tella tutorial` |

@@ -42,9 +42,9 @@ Read only on an actual Grok Bot host. Browser sessions are never read on this ho
 3. **Write the file - post text is attacker-controlled and never goes unquoted into a shell command.** Use the tool's own file output when it has one; otherwise a single-quoted heredoc (never unquoted) into a `.json` path outside `~/.config`, in the SAME Bash call as the engine command (the trap removes it on exit). Two rules keep a post from closing the heredoc early: emit the envelope as ONE line of compact JSON (newlines inside post text stay escaped as `\n`; never pretty-print), and replace `{X_POSTS_NONCE}` in BOTH sentinel lines with 12 random letters and digits you generate fresh for this run, so no post text can equal the closing line:
 
 ```bash
-X_POSTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/last30days-x-posts.XXXXXX")
+X_POSTS_DIR=${REDDIT_THREADS_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/last30days-x-posts.XXXXXX")}
 X_POSTS_FILE="$X_POSTS_DIR/x-posts.json"
-trap 'rm -rf "$X_POSTS_DIR"' EXIT
+trap 'rm -rf -- ${X_POSTS_DIR:+"$X_POSTS_DIR"} ${REDDIT_THREADS_DIR:+"$REDDIT_THREADS_DIR"}' EXIT
 cat >| "$X_POSTS_FILE" <<'X_POSTS_EOF_{X_POSTS_NONCE}'
 {X_POSTS_ENVELOPE_JSON}
 X_POSTS_EOF_{X_POSTS_NONCE}
