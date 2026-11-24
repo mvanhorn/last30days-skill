@@ -47,13 +47,52 @@ ALL_KEYS=(
 )
 
 if [[ "${OSTYPE:-}" != darwin* ]]; then
-  echo "setup-keychain.sh requires macOS (security command). Got: $OSTYPE" >&2
+  echo "setup-keychain.sh requires macOS (security command). Got: ${OSTYPE:-}" >&2
   exit 1
 fi
-if ! command -v security >/dev/null 2>&1; then
-  echo "security command not found on PATH" >&2
+
+SECURITY_BIN="${SECURITY_BIN:-/usr/bin/security}"
+if [[ "$SECURITY_BIN" != /* || ! -x "$SECURITY_BIN" ]]; then
+  echo "security binary not found at ${SECURITY_BIN}" >&2
   exit 1
 fi
+
+USER_NAME="${USER:-}"
+if [[ -z "$USER_NAME" && -x /usr/bin/id ]]; then
+  USER_NAME="$(/usr/bin/id -un 2>/dev/null || true)"
+fi
+if [[ -z "$USER_NAME" ]]; then
+  echo "Unable to determine current username (set USER)." >&2
+  exit 1
+fi
+if [[ "$USER_NAME" == *$'\n'* || "$USER_NAME" == *$'\r'* || "$USER_NAME" =~ [[:cntrl:]] ]]; then
+  echo "Invalid USER value." >&2
+  exit 1
+fi
+
+is_valid_key() {
+  local candidate="$1"
+  local allowed
+  for allowed in "${ALL_KEYS[@]}"; do
+    if [[ "$candidate" == "$allowed" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+hex_encode() {
+  local LC_ALL=C
+  local s="$1"
+  local i ch n h out=""
+  for (( i = 0; i < ${#s}; i++ )); do
+    ch="${s:i:1}"
+    printf -v n "%d" "'${ch}"
+    printf -v h "%02x" $(( n & 0xff ))
+    out+="${h}"
+  done
+  HEX_VALUE="${out}"
+}
 
 REPLACE=0
 ACTION="prompt"
@@ -65,9 +104,17 @@ while [[ $# -gt 0 ]]; do
     --delete) ACTION="delete"; shift ;;
     --replace) REPLACE=1; shift ;;
     --help|-h) sed -n '2,/^$/p' "$0" | sed 's/^# //; s/^#//'; exit 0 ;;
+    --) shift; TARGETS+=("$@"); break ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
     *) TARGETS+=("$1"); shift ;;
   esac
+done
+
+for key in "${TARGETS[@]}"; do
+  if ! is_valid_key "$key"; then
+    echo "unknown or invalid key: $key" >&2
+    exit 2
+  fi
 done
 
 case "$ACTION" in
@@ -75,7 +122,7 @@ case "$ACTION" in
     echo "Stored last30days-* keychain items:"
     for key in "${ALL_KEYS[@]}"; do
       # Existence checks do not need to decrypt or return the password.
-      if security find-generic-password -a "$USER" -s "${PREFIX}${key}" >/dev/null 2>&1; then
+      if "$SECURITY_BIN" find-generic-password -a "$USER_NAME" -s "${PREFIX}${key}" >/dev/null 2>&1; then
         echo "  $key"
       fi
     done
@@ -86,7 +133,7 @@ case "$ACTION" in
       echo "--delete needs at least one KEY name" >&2; exit 2
     fi
     for key in "${TARGETS[@]}"; do
-      if security delete-generic-password -a "$USER" -s "${PREFIX}${key}" >/dev/null 2>&1; then
+      if "$SECURITY_BIN" delete-generic-password -a "$USER_NAME" -s "${PREFIX}${key}" >/dev/null 2>&1; then
         echo "deleted: $key"
       else
         echo "not found: $key"
@@ -100,9 +147,12 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   TARGETS=("${ALL_KEYS[@]}")
 fi
 
+escaped_user="${USER_NAME//\\/\\\\}"
+escaped_user="${escaped_user//\"/\\\"}"
+
 added=0; skipped=0; replaced=0
 for key in "${TARGETS[@]}"; do
-  if security find-generic-password -a "$USER" -s "${PREFIX}${key}" >/dev/null 2>&1; then
+  if "$SECURITY_BIN" find-generic-password -a "$USER_NAME" -s "${PREFIX}${key}" >/dev/null 2>&1; then
     existed=1
   else
     existed=0
@@ -119,7 +169,13 @@ for key in "${TARGETS[@]}"; do
     skipped=$((skipped + 1))
     continue
   fi
-  security add-generic-password -U -a "$USER" -s "${PREFIX}${key}" -w "$value"
+  # Hex-encode in pure bash builtins and pipe via stdin to `security -i` so the
+  # secret never enters argv or a bash-3.2 heredoc temp file in /tmp.
+  hex_encode "$value"
+  printf 'add-generic-password -U -a "%s" -s "%s" -X %s\n' \
+    "$escaped_user" "${PREFIX}${key}" "$HEX_VALUE" | "$SECURITY_BIN" -i
+  value=""
+  HEX_VALUE=""
   if [[ "$existed" -eq 1 ]]; then
     replaced=$((replaced + 1))
   else

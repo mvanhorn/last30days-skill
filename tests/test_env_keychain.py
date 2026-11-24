@@ -59,11 +59,21 @@ def test_setup_presence_and_counters_use_stub_security(tmp_path, existed, replac
     stub = tmp_path / "security"
     stub.write_text(
         '#!/bin/sh\n'
-        'printf "%s\\n" "$1" >> "$STUB_LOG"\n'
         'case "$1" in\n'
-        '  find-generic-password) exit "$STUB_STATUS" ;;\n'
-        '  add-generic-password) exit 0 ;;\n'
-        '  *) exit 99 ;;\n'
+        '  find-generic-password)\n'
+        '    printf "%s\\n" "$1" >> "$STUB_LOG"\n'
+        '    exit "$STUB_STATUS"\n'
+        '    ;;\n'
+        '  -i)\n'
+        '    IFS= read -r line || exit 98\n'
+        '    cmd="${line%% *}"\n'
+        '    printf "%s\\n" "$cmd" >> "$STUB_LOG"\n'
+        '    exit 0\n'
+        '    ;;\n'
+        '  *)\n'
+        '    printf "%s\\n" "$1" >> "$STUB_LOG"\n'
+        '    exit 99\n'
+        '    ;;\n'
         'esac\n', encoding="utf-8",
     )
     stub.chmod(0o755)
@@ -74,7 +84,7 @@ def test_setup_presence_and_counters_use_stub_security(tmp_path, existed, replac
     command.append("OPENAI_API_KEY")
     result = subprocess.run(
         command, input=value, text=True, capture_output=True, timeout=5,
-        env={"PATH": str(tmp_path), "USER": "fixture-user", "OSTYPE": "darwin",
+        env={"PATH": str(tmp_path), "SECURITY_BIN": str(stub), "USER": "fixture-user", "OSTYPE": "darwin",
              "STUB_LOG": str(log_path), "STUB_STATUS": "0" if existed else "44"},
     )
     assert result.returncode == 0, result.stderr

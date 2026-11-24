@@ -16,9 +16,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import Request
 
-from . import brightdata, health
+from . import brightdata, health, http
 from .private_files import replace_private_text, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -1133,6 +1134,80 @@ def _device_base() -> str:
 # or key-shaped value (e.g. a returning-account server response) is never
 # mislabeled as a device code or leaked to stdout/clipboard.
 _DEVICE_CODE_RE = re.compile(r"^[0-9A-Z]{4}-[0-9A-Z]{4}$")
+_GITHUB_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_GITHUB_TOKEN_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b"
+)
+_SECRET_FIELD_RE = re.compile(
+    r"""(["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}&;]+)""",
+    re.IGNORECASE,
+)
+_URL_USERINFO_RE = re.compile(r"(https?://)[^/\s@]+@", re.IGNORECASE)
+
+
+def _default_urlopen(req: Request, timeout: int = 15):
+    return http.open_request(req, timeout=timeout)
+
+
+# Test compatibility seam for patches targeting ``lib.setup_wizard.urlopen``;
+# production requests flow through ``http.open_request`` with redirects blocked.
+urlopen = _default_urlopen
+
+
+def _open_device_request(req: Request, *, timeout: int = 15):
+    setattr(req, http._REDIRECT_GUARD_ATTR, lambda _newurl: False)
+    return urlopen(req, timeout=timeout)
+
+
+def _is_valid_verification_uri(uri: Any) -> bool:
+    """Return True only for HTTPS GitHub device-login verification URIs."""
+    if not isinstance(uri, str) or not uri:
+        return False
+    if "\\" in uri or any(ord(ch) <= 0x20 or ord(ch) >= 0x7F for ch in uri):
+        return False
+    try:
+        parts = urlsplit(uri)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "https":
+        return False
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        return False
+    if port not in (None, 443):
+        return False
+    host = (parts.hostname or "").lower()
+    if host != "github.com":
+        if not host.endswith(".github.com"):
+            return False
+        prefix = host[: -len(".github.com")]
+        labels = prefix.split(".")
+        if not labels or not all(_GITHUB_HOST_LABEL_RE.match(label) for label in labels):
+            return False
+    path = parts.path
+    if path != "/login/device" and not path.startswith("/login/device/"):
+        return False
+    lowered_path = path.lower()
+    if ".." in path.split("/") or "%2e" in lowered_path or "%2f" in lowered_path or "%5c" in lowered_path:
+        return False
+    return True
+
+
+def _scrub_error_text(text: str, *, secrets: Tuple[str, ...] = ()) -> str:
+    """Redact known secrets, bearer tokens, and URL credentials from error text."""
+    scrubbed = text
+    for secret in secrets:
+        if not isinstance(secret, str):
+            continue
+        for candidate in {secret, secret.strip()}:
+            if candidate:
+                scrubbed = scrubbed.replace(candidate, "[REDACTED]")
+    scrubbed = _URL_USERINFO_RE.sub(r"\1", scrubbed)
+    scrubbed = _AUTH_HEADER_RE.sub(r"\1 [REDACTED]", scrubbed)
+    scrubbed = _GITHUB_TOKEN_RE.sub("[REDACTED]", scrubbed)
+    scrubbed = _SECRET_FIELD_RE.sub(r'\1"[REDACTED]"', scrubbed)
+    return scrubbed
 
 
 def _existing_scrapecreators_key() -> Optional[str]:
@@ -1175,10 +1250,10 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
         body = json.dumps({}).encode()
         req = Request(f"{_device_base()}/code", data=body, method="POST")
         req.add_header("Content-Type", "application/json")
-        with urlopen(req, timeout=15) as resp:
+        with _open_device_request(req, timeout=15) as resp:
             data = json.loads(resp.read())
     except (HTTPError, URLError, OSError) as exc:
-        logger.warning("Device auth code request failed: %s", exc)
+        logger.warning("Device auth code request failed: %s", _scrub_error_text(str(exc)))
         return None
 
     device_code = data.get("device_code")
@@ -1194,7 +1269,13 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
         )
         return None
 
-    return (device_code, user_code, verification_uri or "", interval)
+    if verification_uri is None:
+        verification_uri = ""
+    elif verification_uri != "" and not _is_valid_verification_uri(verification_uri):
+        logger.warning("Device auth returned an untrusted verification_uri; aborting.")
+        return None
+
+    return (device_code, user_code, verification_uri, interval)
 
 
 def poll_device_auth(
@@ -1248,12 +1329,16 @@ def poll_device_auth(
             body = json.dumps({"device_code": device_code}).encode()
             req = Request(f"{_device_base()}/token", data=body, method="POST")
             req.add_header("Content-Type", "application/json")
-            with urlopen(req, timeout=15) as resp:
+            with _open_device_request(req, timeout=15) as resp:
                 data = json.loads(resp.read())
         except HTTPError as exc:
-            if exc.code in (400, 403, 428):
+            reason = str(getattr(exc, "reason", "") or "").lower()
+            if exc.code in (400, 403, 428) and "redirect refused" not in reason:
                 continue
-            logger.warning("Device auth poll error: %s", exc)
+            logger.warning(
+                "Device auth poll error: %s",
+                _scrub_error_text(str(exc), secrets=(device_code,)),
+            )
             return None
         except (URLError, OSError):
             continue
@@ -1280,15 +1365,29 @@ _PROFILE_FETCH_RETRY_SLEEP_S = 1.0
 _PROFILE_ERROR_BODY_LIMIT = 200
 
 
-def _http_error_detail(exc: HTTPError, *, body_limit: int = _PROFILE_ERROR_BODY_LIMIT) -> str:
-    """Build a diagnosable HTTPError string including a truncated body.
+_PROFILE_ERROR_READ_LIMIT = 65536
 
-    The body is capped and never treated as a secret source of truth; callers
-    still must not log bearer tokens. Used so a 5xx is not a black box.
+
+def _http_error_detail(
+    exc: HTTPError,
+    *,
+    body_limit: int = _PROFILE_ERROR_BODY_LIMIT,
+    secrets: Tuple[str, ...] = (),
+) -> str:
+    """Build a diagnosable HTTPError string including a scrubbed, truncated body.
+
+    Secrets are redacted before truncation so tokens straddling ``body_limit``
+    cannot leak partial prefixes to logs or stdout JSON.
     """
-    base = f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": ")
+    base = _scrub_error_text(
+        f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": "),
+        secrets=secrets,
+    )
     try:
-        raw = exc.read() or b""
+        try:
+            raw = exc.read(_PROFILE_ERROR_READ_LIMIT) or b""
+        except TypeError:
+            raw = exc.read() or b""
     except Exception:
         return base
     if not raw:
@@ -1296,6 +1395,7 @@ def _http_error_detail(exc: HTTPError, *, body_limit: int = _PROFILE_ERROR_BODY_
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
         return base
+    text = _scrub_error_text(text, secrets=secrets)
     if len(text) > body_limit:
         text = text[:body_limit] + "…"
     return f"{base} body={text!r}"
@@ -1319,6 +1419,18 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
       - ``{"ok": False, "reason": "request_failed", "detail": str}`` on
         network/OS failures
     """
+    if (
+        not isinstance(access_token, str)
+        or not access_token.strip()
+        or any(ord(ch) < 0x20 or ord(ch) >= 0x7F for ch in access_token)
+    ):
+        logger.warning("Failed to fetch API key: invalid access token")
+        return {
+            "ok": False,
+            "reason": "request_failed",
+            "detail": "Invalid access token",
+        }
+
     data: Optional[Dict[str, Any]] = None
     last_upstream: Optional[Dict[str, Any]] = None
 
@@ -1326,11 +1438,11 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
         try:
             req = Request(f"{_device_base()}/profile")
             req.add_header("Authorization", f"Bearer {access_token}")
-            with urlopen(req, timeout=15) as resp:
+            with _open_device_request(req, timeout=15) as resp:
                 data = json.loads(resp.read())
             break
         except HTTPError as exc:
-            detail = _http_error_detail(exc)
+            detail = _http_error_detail(exc, secrets=(access_token,))
             if 500 <= int(exc.code) <= 599:
                 logger.warning(
                     "Device auth /profile upstream error (attempt %s/%s): %s",
@@ -1356,8 +1468,16 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
                 "detail": detail,
             }
         except (URLError, OSError) as exc:
-            logger.warning("Failed to fetch API key: %s", exc)
-            return {"ok": False, "reason": "request_failed", "detail": str(exc)}
+            detail = _scrub_error_text(str(exc), secrets=(access_token,))
+            logger.warning("Failed to fetch API key: %s", detail)
+            return {"ok": False, "reason": "request_failed", "detail": detail}
+        except ValueError:
+            logger.warning("Failed to fetch API key: invalid request configuration")
+            return {
+                "ok": False,
+                "reason": "request_failed",
+                "detail": "Invalid request configuration",
+            }
 
     if data is None:
         # Defensive: loop exited without success or an explicit return.
@@ -1436,12 +1556,24 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
     # Validate the code shape BEFORE copying, labeling, or emitting it. A
     # non-conforming user_code (e.g. a key-shaped value) is never surfaced as a
     # GitHub device code; we stop rather than instruct the user to paste garbage.
-    if not _DEVICE_CODE_RE.match(user_code):
+    if not isinstance(user_code, str) or not _DEVICE_CODE_RE.match(user_code):
         logger.warning("Device auth returned a non-device-shaped user_code; aborting.")
         return (
             {
                 "status": "error",
                 "message": "ScrapeCreators returned an unexpected device-code format.",
+            },
+            None,
+        )
+
+    if verification_uri is None:
+        verification_uri = ""
+    if verification_uri != "" and not _is_valid_verification_uri(verification_uri):
+        logger.warning("Device auth returned an untrusted verification_uri; aborting.")
+        return (
+            {
+                "status": "error",
+                "message": "ScrapeCreators returned an unexpected verification URI.",
             },
             None,
         )
