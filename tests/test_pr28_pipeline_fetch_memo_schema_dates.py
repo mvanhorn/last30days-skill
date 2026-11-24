@@ -815,7 +815,7 @@ class TestHigh022PostPlanWeightNormalization:
         assert multi_plan.source_weights["x"] == pytest.approx(1.0 / 6.0)
 
     def test_sanitize_plan_ignores_filtered_out_and_overflow_weights_for_default(self):
-        from lib import planner
+        from lib import planner, signals
 
         base_raw = {
             "intent": "product",
@@ -931,6 +931,8 @@ class TestHigh022PostPlanWeightNormalization:
         assert plan_with_typo.source_weights["x"] == pytest.approx(2.0 / 3)
         assert "youtub" not in plan_with_typo.source_weights
         assert pipeline.KNOWN_SEARCH_SOURCES <= planner.KNOWN_SOURCES
+        assert set(signals._ENGAGEMENT_LOG_REFERENCE) <= planner.KNOWN_SOURCES
+        assert signals._NO_ENGAGEMENT_SCORE_SOURCES <= planner.KNOWN_SOURCES
 
 
 # ---------------------------------------------------------------------------
