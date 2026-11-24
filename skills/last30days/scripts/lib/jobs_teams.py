@@ -54,9 +54,12 @@ def _team_names(title: str, company: str, place_words: set[str]) -> list[str]:
     names = []
     for segment in _segments(title)[1:]:
         if company:
-            # Strip ampersands directly joined to the removed company name so
-            # "Cloud&AI" -> "cloud" without touching unrelated "&" in the segment.
-            segment = re.sub(rf"&*\b{re.escape(company)}\b&*", " ", segment, flags=re.I)
+            # Strip ampersands directly joined (or spaced-joined) to the removed
+            # company name so "Cloud&AI" and "Cloud& AI&Data" collapse cleanly
+            # without touching unrelated "&" in the segment.
+            segment = re.sub(
+                rf"(?:&+\s*)?\b{re.escape(company)}\b(?:\s*&+)?", " ", segment, flags=re.I,
+            )
         name = " ".join(segment.split()).strip(" -,.&").lower()
         words = _WORD.findall(name)
         if len(name) < 3 or not words or _NOISE.search(name):

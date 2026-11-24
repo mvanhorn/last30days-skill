@@ -69,6 +69,29 @@ _CRYPTO_ALIASES = {
 }
 
 
+# Generic finance words that may appear inside real company names (e.g. "Equity
+# Residential", "The Trade Desk") so they are NOT stripped from multi-word
+# queries, but a topic made up solely of these terms names no company/asset and
+# must not trigger a blind StockTwits symbol search.
+_GENERIC_FINANCE_WORDS = frozenset({
+    "token", "tokens", "coin", "coins",
+    "dividend", "dividends", "valuation", "valuations",
+    "market", "markets", "cap",
+    "equity", "equities",
+    "premarket", "pre-market", "after", "hours", "afterhours",
+    "trading", "trade", "trades",
+    "option", "options",
+    "bond", "bonds",
+    "fund", "funds",
+    "index", "indexes", "indices",
+    "forex", "futures",
+    "altcoins", "stocks", "stock", "share", "shares",
+    "price", "target", "ticker", "tickers", "cashtag", "cashtags",
+    "earnings", "forecast", "sentiment", "crypto", "defi",
+    "bullish", "bearish", "etf", "etfs", "watchlist",
+})
+
+
 def _log(msg: str) -> None:
     try:
         from . import log as _enginelog
@@ -137,6 +160,14 @@ def detect_symbols(topic: str, *, resolve: bool = True, max_symbols: int = 2) ->
         ).split()
     )
     if not name:
+        return []
+    remaining_words = [
+        word for word in (tok.strip(".,!?;:\"'()[]{}") for tok in name.lower().split()) if word
+    ]
+    if not remaining_words or all(
+        word in _GENERIC_FINANCE_WORDS or bool(_FINANCE_HINTS.fullmatch(word))
+        for word in remaining_words
+    ):
         return []
     try:
         url = _SEARCH_URL + "?" + urllib.parse.urlencode({"q": name})

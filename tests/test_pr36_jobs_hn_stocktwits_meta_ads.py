@@ -812,3 +812,62 @@ def test_greptile_jobs_teams_preserves_ampersands_when_company_not_adjacent():
     mixed = [_team_role(f"Engineer {i}, R&D Cloud&AI", i) for i in range(4)]
     mixed_result = jobs_teams.named_teams(mixed, company="AI", window_start="2026-10-15")
     assert [t["name"] for t in mixed_result["teams"]] == ["r&d cloud"]
+
+
+# ---------------------------------------------------------------------------
+# PR #1611 Greptile round-2 regressions (4/5 -> 5/5)
+# ---------------------------------------------------------------------------
+
+
+def test_greptile2_registry_unanswered_sitemap_respects_discovery_share(_fresh_jobs_robots):
+    now = [1000.0]
+    budget = jobs.LaneBudget(45.0, clock=lambda: now[0])
+    seen_remaining: list[float] = []
+    seen_deadlines: list[float] = []
+
+    def fake_read_roster(hosts, *, company, deadline):
+        seen_remaining.append(budget.remaining())
+        seen_deadlines.append(deadline - now[0])
+        return [], {"board_total": 0}
+
+    with patch.object(jobs.http, "get_text", return_value=None), \
+            patch.object(jobs.http, "post", side_effect=http.HTTPError("503", status_code=503)), \
+            patch.object(sitemap, "read_roster", side_effect=fake_read_roster):
+        items, artifact = jobs.search_jobs(
+            "Salesforce", WINDOW, {}, web_backend="none",
+            site="https://www.salesforce.com/", budget=budget, discovery_seconds=12.0,
+        )
+
+    assert items == []
+    assert seen_remaining and seen_remaining[0] <= 12.0
+    assert seen_deadlines and seen_deadlines[0] <= 12.0
+    assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+
+
+def test_greptile2_jobs_teams_spaced_ampersand_around_company_name():
+    rows = (
+        [_team_role(f"Engineer {i}, Cloud& AI&Data", i) for i in range(4)]
+        + [_team_role(f"Specialist {i}, Cloud&AI&Data", i + 10) for i in range(4)]
+    )
+    result = jobs_teams.named_teams(rows, company="AI", window_start="2026-10-15")
+    by_name = {t["name"]: t["roles"] for t in result["teams"]}
+    assert by_name == {"cloud data": 8}
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "crypto token",
+        "market cap",
+        "dividend valuation",
+        "pre-market trading",
+        "after hours",
+        "equity markets",
+        "defi tokens",
+        "crypto coin",
+    ],
+)
+def test_greptile2_stocktwits_skips_generic_finance_only_topics(topic):
+    with patch.object(stocktwits, "_get_json") as mock_get:
+        assert stocktwits.detect_symbols(topic, resolve=True) == []
+        mock_get.assert_not_called()

@@ -823,6 +823,7 @@ def _search_jobs(
                 company, date_range, config, entry, entry["reason"],
                 attempted=attempted, web_backend=web_backend, explicit=explicit,
             )
+        share = budget.step_deadline
         attempted.append(f"company:{entry['provider']}:{entry['board']}")
         hosted = entry["provider"] in _HOSTED_PROVIDERS
         found, reason = _read_found_board(
@@ -832,6 +833,7 @@ def _search_jobs(
         )
         if found is not None:
             return found
+        budget.step_deadline = share
         if reason == "unanswered":
             # A board that did not answer is not one that cannot be read:
             # the budget names it, and a retry may read it. For a hosted
@@ -893,6 +895,7 @@ def _search_jobs(
             platform = board_detect.detect_platform(careers_html, careers_url or "")
 
     if platform is not None:
+        share = budget.step_deadline
         platform_provider, entry = platform
         entry = {"name": company, **entry}
         attempted.append(f"careers:{platform_provider}:{entry['board']}")
@@ -903,6 +906,7 @@ def _search_jobs(
         )
         if found is not None:
             return found
+        budget.step_deadline = share
         if reason == "unanswered":
             return _web_tier(
                 company, date_range, config, attempted=attempted,
@@ -1128,7 +1132,7 @@ def _sitemap_tier(
     if not hosts or _out_of_time("the job sitemap"):
         return None
     sitemap = importlib.import_module(f"{__package__}.job_boards.sitemap")
-    deadline = budget.deadline - budget.remaining() * DETAIL_SHARE
+    deadline = min(budget.deadline, budget.step_deadline) - budget.remaining() * DETAIL_SHARE
     attempted.append("sitemap:" + ",".join(hosts[:4]))
     def read() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         try:
