@@ -164,8 +164,13 @@ def _fetch_search(url: str, deadline: float, retry_422: bool = True) -> Any:
             and deadline - time.monotonic() > RETRY_422_PAUSE + 1
         )
         if not retryable:
-            for failure in failures:
-                http._record_failure(failure)
+            if failures:
+                for failure in failures:
+                    http._record_failure(failure)
+            else:
+                http._record_failure(
+                    error if isinstance(error, http.HTTPError) else http.HTTPError(str(error))
+                )
             raise error
         time.sleep(RETRY_422_PAUSE)
     raise http.DeadlineExceeded()  # pragma: no cover - the loop always returns or raises
@@ -593,6 +598,8 @@ def fetch_listings(
                 if earlier_error is not None:
                     _report_failures(earlier_error)
                     _log(f"listing search failed r/{sub}: {earlier_error}")
+                else:
+                    http._record_failure(http.DeadlineExceeded())
                 continue
             paced = paced or not memoized
             fetched_count += 1
@@ -602,7 +609,10 @@ def fetch_listings(
                 if not retrying and _is_slow_down(e):
                     refused.append((sub, url, e))
                     continue
-                _report_failures(e)
+                if isinstance(e, http.DeadlineExceeded):
+                    http._record_failure(e)
+                else:
+                    _report_failures(e)
                 _log(f"listing search failed r/{sub}: {e}")
                 continue
             keep(sub, data)
