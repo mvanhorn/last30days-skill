@@ -87,11 +87,14 @@ def _fetch(url: str, deadline: float) -> str | None:
         ))
 
 
+def _custom_resolver() -> Callable[[str], bool] | None:
+    return None if _resolves_public is detect.resolves_public else _resolves_public
+
+
 def _guard(url: str) -> Callable[[str], bool]:
     """The redirect check for a fetch of ``url``: it may be redirected only to
     an address on the same site that is not on a private network."""
-    custom_resolver = None if _resolves_public is detect.resolves_public else _resolves_public
-    return detect.same_site_redirect_guard(url, resolves=custom_resolver)
+    return detect.same_site_redirect_guard(url, resolves=_custom_resolver())
 
 
 def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
@@ -112,7 +115,11 @@ def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
             detect.is_safe_public_url(str(hop)) and urlparse(str(hop)).scheme.lower() == "https"
             for hop in landed[:-1]
         )
-        if (saw_https and urlparse(final).scheme.lower() != "https") or not _public_url(final, host):
+        custom = _custom_resolver()
+        if custom is None:
+            if not detect.is_same_site_public_url(final, host, require_https=saw_https):
+                return None
+        elif not detect.public_site_url(final, host, resolves=custom, require_https=saw_https):
             return None
     return text
 

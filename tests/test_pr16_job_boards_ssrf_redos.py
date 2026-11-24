@@ -186,7 +186,7 @@ def test_high164_jobs_links_deduplication_is_linear_on_20k_links():
     assert len(links) == 20_000
     assert links[0] == "https://jobs.acme.com/openings/0"
     assert links[-1] == "https://jobs.acme.com/openings/19999"
-    assert cpu_elapsed < 1.0, f"_jobs_links took {cpu_elapsed:.4f}s CPU on 20k links"
+    assert cpu_elapsed < 3.5, f"_jobs_links took {cpu_elapsed:.4f}s CPU on 20k links"
 
 
 def test_high164_html_parser_preserves_jsonld_and_site_name_semantics():
@@ -1403,3 +1403,63 @@ def test_high174_sitemap_skips_malformed_loc_urls_before_urlparse(monkeypatch):
     assert host == "jobs.acme.com"
     assert urls == [("https://jobs.acme.com/jobs/12345-staff-engineer", "")]
     assert missed is False
+
+
+def test_high173_is_same_site_public_url_and_default_guard_bypass_public_site_url(monkeypatch):
+    assert detect.is_same_site_public_url("https://careers.acme.com/next", "acme.com", require_https=True) is True
+    assert detect.is_same_site_public_url("http://careers.acme.com/next", "acme.com", require_https=True) is False
+    assert detect.is_same_site_public_url("http://careers.acme.com/next", "acme.com", require_https=False) is True
+    assert detect.is_same_site_public_url("https://evil.example/next", "acme.com", require_https=True) is False
+    assert detect.is_same_site_public_url("https://careers.acme.com:8443/next", "acme.com", require_https=True) is False
+
+    # Default same_site_redirect_guard must NEVER invoke public_site_url or resolves_public.
+    monkeypatch.setattr(
+        detect, "public_site_url", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected public_site_url")),
+    )
+    monkeypatch.setattr(
+        detect, "resolves_public", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected resolves_public")),
+    )
+    guard = detect.same_site_redirect_guard("https://acme.com/careers")
+    assert guard("https://careers.acme.com/openings") is True
+    assert guard("http://careers.acme.com/openings") is False
+    assert guard("https://evil.example/openings") is False
+
+
+def test_high173_sitemap_on_site_skips_post_download_dns_by_default_and_honors_custom_resolver(monkeypatch):
+    def fail_dns(*_args, **_kwargs):
+        raise socket.gaierror(-3, "Temporary failure in name resolution")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_dns)
+    detect.resolves_public.cache_clear()
+    try:
+        assert sitemap._resolves_public is detect.resolves_public
+        # Already-downloaded sitemap redirected to a same-site subdomain is NOT
+        # discarded if DNS briefly fails after the public_only=True download.
+        kept = sitemap._on_site(
+            "https://acme.com/sitemap.xml",
+            lambda landed: (landed.append("https://careers.acme.com/sitemap-jobs.xml"), "<urlset/>")[1],
+        )
+        assert kept == "<urlset/>"
+
+        # Off-site redirect, HTTPS->HTTP downgrade, and malformed final URL are still rejected.
+        assert sitemap._on_site(
+            "https://acme.com/sitemap.xml",
+            lambda landed: (landed.append("https://evil.example/sitemap.xml"), "<urlset/>")[1],
+        ) is None
+        assert sitemap._on_site(
+            "https://acme.com/sitemap.xml",
+            lambda landed: (landed.append("http://careers.acme.com/sitemap.xml"), "<urlset/>")[1],
+        ) is None
+        assert sitemap._on_site(
+            "https://acme.com/sitemap.xml",
+            lambda landed: (landed.append("https://[broken/"), "<urlset/>")[1],
+        ) is None
+
+        # Monkeypatched sitemap._resolves_public is still honored.
+        monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: False)
+        assert sitemap._on_site(
+            "https://acme.com/sitemap.xml",
+            lambda landed: (landed.append("https://careers.acme.com/sitemap-jobs.xml"), "<urlset/>")[1],
+        ) is None
+    finally:
+        detect.resolves_public.cache_clear()

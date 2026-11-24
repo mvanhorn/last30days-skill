@@ -358,6 +358,22 @@ class _BoundedPublicResolver:
 resolves_public = _BoundedPublicResolver()
 
 
+def is_same_site_public_url(
+    url: str,
+    site_host: str,
+    *,
+    require_https: bool = False,
+) -> bool:
+    """Zero-DNS check: ``url`` is a safe standard-port http(s) URL on the
+    site of ``site_host`` (requiring ``https`` when ``require_https`` is set)."""
+    if not is_safe_public_url(url):
+        return False
+    if require_https and urlparse(url).scheme.lower() != "https":
+        return False
+    target_host = page_host(url)
+    return bool(target_host) and same_host_or_subdomain(target_host, site_host)
+
+
 def public_site_url(
     url: str,
     site_host: str,
@@ -367,16 +383,11 @@ def public_site_url(
 ) -> bool:
     """Whether ``url`` is a safe standard-port http(s) URL on the site of
     ``site_host`` whose host resolves exclusively to public IPs."""
-    if not is_safe_public_url(url):
+    if not is_same_site_public_url(url, site_host, require_https=require_https):
         return False
     parsed = urlparse(url)
-    if require_https and parsed.scheme.lower() != "https":
-        return False
-    target_host = page_host(url)
-    if not target_host or not same_host_or_subdomain(target_host, site_host):
-        return False
     dns_host = (parsed.hostname or "").lower()
-    return (resolves or resolves_public)(dns_host or target_host)
+    return (resolves or resolves_public)(dns_host or page_host(url))
 
 
 def public_redirect_guard(url: str) -> Callable[[str], bool]:
@@ -409,9 +420,12 @@ def same_site_redirect_guard(
     if not origin_host:
         return lambda _target: False
     require_https = urlparse(url).scheme.lower() == "https"
-    resolver = resolves if resolves is not None else (lambda _host: True)
+    if resolves is None:
+        return lambda target: is_same_site_public_url(
+            target, origin_host, require_https=require_https,
+        )
     return lambda target: public_site_url(
-        target, origin_host, resolves=resolver, require_https=require_https,
+        target, origin_host, resolves=resolves, require_https=require_https,
     )
 
 
