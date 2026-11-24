@@ -36,13 +36,66 @@ def _as_dict_list(value: Any) -> List[Dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _extract_dict_list(data: Any, primary_key: str) -> List[Dict[str, Any]]:
+def _extract_dict_list(
+    data: Any,
+    primary_key: str,
+    *,
+    context: str = "",
+) -> List[Dict[str, Any]]:
+    label = f"ScrapeCreators Reddit {context}" if context else "ScrapeCreators Reddit"
     if not isinstance(data, dict):
+        http._record_failure(http.HTTPError(
+            f"{label} returned non-object JSON ({type(data).__name__}) (schema drift)",
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
         return []
-    raw = data.get(primary_key)
-    if not isinstance(raw, list):
-        raw = data.get("data")
-    return _as_dict_list(raw)
+    primary = data.get(primary_key)
+    raw: Any = None
+    drift_reason: Optional[str] = None
+    if isinstance(primary, list):
+        raw = primary
+    else:
+        fallback = data.get("data")
+        if isinstance(fallback, list):
+            raw = fallback
+            if primary is not None:
+                drift_reason = (
+                    f"{label} returned non-list '{primary_key}' ({type(primary).__name__}) "
+                    "(schema drift)"
+                )
+        else:
+            if primary_key in data:
+                drift_reason = (
+                    f"{label} returned non-list '{primary_key}' ({type(primary).__name__}) "
+                    "without usable 'data' list (schema drift)"
+                )
+            elif "data" in data:
+                drift_reason = (
+                    f"{label} returned non-list 'data' ({type(fallback).__name__}) (schema drift)"
+                )
+            else:
+                drift_reason = (
+                    f"{label} response missing '{primary_key}'/'data' list (schema drift)"
+                )
+    if raw is None:
+        http._record_failure(http.HTTPError(
+            drift_reason or f"{label} returned unexpected payload shape (schema drift)",
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
+        return []
+    valid = [item for item in raw if isinstance(item, dict)]
+    if drift_reason is not None:
+        http._record_failure(http.HTTPError(
+            drift_reason,
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
+    elif len(valid) < len(raw):
+        dropped = len(raw) - len(valid)
+        http._record_failure(http.HTTPError(
+            f"{label} dropped {dropped} non-object entries in '{primary_key}' (schema drift)",
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
+    return valid
 
 
 def _is_finite_int(value: int) -> bool:
@@ -648,7 +701,7 @@ def _global_search(
                 **extra,
             )
         _mark_sc_paid_started()
-        return _extract_dict_list(data, "posts")
+        return _extract_dict_list(data, "posts", context="global search")
     except http.DeadlineExceeded as e:
         if getattr(e, "dispatched", False):
             _mark_sc_paid_started()
@@ -712,7 +765,7 @@ def _subreddit_search(
                 **extra,
             )
         _mark_sc_paid_started()
-        return _extract_dict_list(data, "posts")
+        return _extract_dict_list(data, "posts", context=f"subreddit search r/{subreddit}")
     except http.DeadlineExceeded as e:
         if getattr(e, "dispatched", False):
             _mark_sc_paid_started()
@@ -761,7 +814,7 @@ def fetch_post_comments(
                 owned_get=eff_deadline is not None,
             )
         _mark_sc_paid_started()
-        return _extract_dict_list(data, "comments")
+        return _extract_dict_list(data, "comments", context="comment fetch")
     except http.DeadlineExceeded as e:
         if getattr(e, "dispatched", False):
             _mark_sc_paid_started()

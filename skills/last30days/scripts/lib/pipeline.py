@@ -7702,7 +7702,7 @@ def _retrieve_stream_impl(
                 )
             primary_failure: Exception | None = None
             try:
-                with reddit.sc_spend_until(
+                with http.tee_failures() as sc_primary_failures, reddit.sc_spend_until(
                     deadline=config.get("_research_deadline"),
                     cancel=config.get("_enrich_cancel"),
                 ):
@@ -7728,6 +7728,15 @@ def _retrieve_stream_impl(
                         f"[Reddit] ScrapeCreators primary incomplete with no usable items "
                         f"({primary_failure}), using public fallback\n"
                     )
+                elif sc_primary_failures:
+                    primary_failure = min(
+                        sc_primary_failures,
+                        key=lambda f: _FAILURE_SPECIFICITY.get(f.outcome_state, 9),
+                    )
+                    sys.stderr.write(
+                        f"[Reddit] ScrapeCreators primary failed with no usable items "
+                        f"({primary_failure}), using public fallback\n"
+                    )
                 else:
                     sys.stderr.write(
                         "[Reddit] ScrapeCreators primary returned no items, "
@@ -7748,9 +7757,12 @@ def _retrieve_stream_impl(
                 if public_results:
                     if primary_failure is not None:
                         state = (
-                            health.TIMEOUT
-                            if isinstance(primary_failure, TimeoutError)
-                            else reddit.classify_run_failure(str(primary_failure))
+                            getattr(primary_failure, "outcome_state", None)
+                            or (
+                                health.TIMEOUT
+                                if isinstance(primary_failure, TimeoutError)
+                                else reddit.classify_run_failure(str(primary_failure))
+                            )
                         )
                         return public_results, _outcome_artifact(
                             state,
@@ -7771,9 +7783,12 @@ def _retrieve_stream_impl(
             failure = public_failure or primary_failure
             if failure is not None:
                 state = (
-                    health.TIMEOUT
-                    if isinstance(failure, TimeoutError)
-                    else reddit.classify_run_failure(str(failure))
+                    getattr(failure, "outcome_state", None)
+                    or (
+                        health.TIMEOUT
+                        if isinstance(failure, TimeoutError)
+                        else reddit.classify_run_failure(str(failure))
+                    )
                 )
                 raise SourceRunError(
                     f"Reddit primary and fallback produced no results after failure: {failure}",

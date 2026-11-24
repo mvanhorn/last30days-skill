@@ -832,6 +832,19 @@ def _tree_rows(nodes: Any) -> List[Dict[str, Any]]:
     return rows
 
 
+def _row_depth(row: Dict[str, Any]) -> int:
+    """A tree row's depth; without one, a reply to the post itself is top-level."""
+    raw_depth = row.get("depth")
+    if raw_depth is not None and not isinstance(raw_depth, bool):
+        if not (isinstance(raw_depth, str) and not raw_depth.strip()):
+            try:
+                return _strict_int(raw_depth)
+            except (TypeError, ValueError, OverflowError):
+                pass
+    parent_id = _coerce_text(row.get("parent_id")).strip()
+    return 0 if (not parent_id or parent_id.startswith("t3_")) else 1
+
+
 def _fetch_comment_tree_with_status(
     post_id: str, deadline: Optional[float] = None,
 ) -> tuple[Optional[List[Dict[str, Any]]], bool]:
@@ -869,7 +882,7 @@ def _fetch_comment_tree_with_status(
         if author in ("[deleted]", "[removed]") or body in ("[deleted]", "[removed]"):
             continue
         score = _coerce_int(row.get("score"), default=0)
-        depth = _coerce_int(row.get("depth"), default=0)
+        depth = _row_depth(row)
         raw_permalink = row.get("permalink")
         permalink = raw_permalink if isinstance(raw_permalink, str) else ""
         created_utc = _coerce_timestamp(row.get("created_utc"))
@@ -907,17 +920,6 @@ def fetch_comment_tree(
 
 
 _ORIG_FETCH_COMMENT_TREE = fetch_comment_tree
-
-
-def _row_depth(row: Dict[str, Any]) -> int:
-    """A tree row's depth; without one, a reply to the post itself is top-level."""
-    raw_depth = row.get("depth")
-    if raw_depth is not None and not isinstance(raw_depth, bool):
-        try:
-            return _strict_int(raw_depth)
-        except (TypeError, ValueError, OverflowError):
-            pass
-    return 0 if _coerce_text(row.get("parent_id") or "t3_").startswith("t3_") else 1
 
 
 def fetch_post_comments(

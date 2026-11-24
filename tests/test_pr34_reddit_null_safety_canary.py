@@ -26,13 +26,17 @@ import pytest
 
 import reddit_canary as canary
 from lib import (
+    env,
+    health,
     http,
+    pipeline,
     reddit,
     reddit_arctic,
     reddit_enrich,
     reddit_health,
     reddit_hydrate,
     reddit_session,
+    schema,
 )
 from lib.reddit_refs import ARCTIC, ARCTIC_PENDING, UNKNOWN, ThreadRef, canonical_thread
 
@@ -298,13 +302,59 @@ class TestHigh118ArcticShiftNullSafety:
         assert tree_comments[1]["score"] == 27
         assert tree_comments[1]["date"] is None
         assert tree_comments[2]["score"] == 0
-        assert tree_comments[2]["depth"] == 0
+        assert tree_comments[2]["depth"] == 1  # parent_id t1_c3 when depth is NaN
         assert tree_comments[2]["date"] == "2026-07-02"
 
         assert [c["author"] for c in post_comments] == ["carol", "bob", "dave"]
         assert [c["score"] for c in post_comments] == [27, 0, 0]
         assert post_comments[1]["depth"] == 0  # parent_id t3_
         assert post_comments[2]["depth"] == 1  # parent_id t1_
+
+    @pytest.mark.parametrize("raw_depth,parent_id,expected", [
+        (True, "t1_abc", 1),
+        (False, "t1_abc", 1),
+        ("", "t1_abc", 1),
+        ("   ", "t1_abc", 1),
+        (None, "t1_abc", 1),
+        (float("nan"), "t1_abc", 1),
+        (float("inf"), "t1_abc", 1),
+        (10**400, "t1_abc", 1),
+        ("bad", "t1_abc", 1),
+        (True, "t3_post", 0),
+        ("", "t3_post", 0),
+        ("   ", "t3_post", 0),
+        (0, "t1_abc", 0),
+        (2, "t3_post", 2),
+        ("3", "t3_post", 3),
+    ])
+    def test_comment_tree_and_post_comments_infer_nested_depth_from_parent_id(
+        self, raw_depth, parent_id, expected,
+    ):
+        tree_payload = {
+            "data": [
+                {
+                    "kind": "t1",
+                    "data": {
+                        "id": "t1_nested",
+                        "author": "alice",
+                        "body": "Nested reply body.",
+                        "score": 11,
+                        "depth": raw_depth,
+                        "parent_id": parent_id,
+                        "permalink": "/r/test/comments/abc123/x/nested/",
+                        "created_utc": 1783000000,
+                    },
+                },
+            ],
+        }
+        with mock.patch.object(reddit_arctic.http, "get", return_value=tree_payload):
+            tree_comments = reddit_arctic.fetch_comment_tree("abc123")
+            reddit_arctic.reset_memo()
+            post_comments = reddit_arctic.fetch_post_comments("abc123")
+        assert tree_comments is not None and len(tree_comments) == 1
+        assert len(post_comments) == 1
+        assert tree_comments[0]["depth"] == expected
+        assert post_comments[0]["depth"] == expected
 
     def test_huge_int_created_utc_and_score_do_not_overflow_downstream_hydrate(self):
         post_row_huge_cnt = {
@@ -402,8 +452,119 @@ class TestHigh120ScrapeCreatorsNullSafety:
     ])
     def test_global_and_subreddit_search_coerce_malformed_payloads_to_empty(self, payload):
         with mock.patch.object(reddit.http, "get", return_value=payload):
-            assert reddit._global_search("python", "dummy-token") == []
-            assert reddit._subreddit_search("python", "python", "dummy-token") == []
+            with http.capture_failures() as global_failures:
+                assert reddit._global_search("python", "dummy-token") == []
+            with http.capture_failures() as sub_failures:
+                assert reddit._subreddit_search("python", "python", "dummy-token") == []
+        assert len(global_failures) == 1
+        assert global_failures[0].outcome_state == health.SCHEMA_DRIFT
+        assert len(sub_failures) == 1
+        assert sub_failures[0].outcome_state == health.SCHEMA_DRIFT
+
+    @pytest.mark.parametrize("payload", [
+        {"posts": []},
+        {"success": True, "posts": []},
+        {"data": []},
+        {"posts": None, "data": []},
+        {"posts": None, "data": [{"id": "a"}]},
+    ])
+    def test_valid_empty_or_fallback_payloads_do_not_flag_schema_drift(self, payload):
+        with mock.patch.object(reddit.http, "get", return_value=payload):
+            with http.capture_failures() as failures:
+                reddit._global_search("python", "dummy-token")
+                reddit._subreddit_search("python", "python", "dummy-token")
+        assert failures == []
+
+    def test_partial_malformed_payload_keeps_valid_rows_and_flags_schema_drift(self):
+        with mock.patch.object(
+            reddit.http, "get", return_value={"posts": [{"id": "good"}, "bad", None]},
+        ):
+            with http.capture_failures() as failures:
+                got = reddit._global_search("python", "dummy-token")
+        assert got == [{"id": "good"}]
+        assert len(failures) == 1
+        assert failures[0].outcome_state == health.SCHEMA_DRIFT
+
+        with mock.patch.object(
+            reddit.http, "get", return_value={"posts": "oops", "data": [{"id": "from_data"}]},
+        ):
+            with http.capture_failures() as fallback_failures:
+                got = reddit._global_search("python", "dummy-token")
+        assert got == [{"id": "from_data"}]
+        assert len(fallback_failures) == 1
+        assert fallback_failures[0].outcome_state == health.SCHEMA_DRIFT
+
+    def test_pinned_scrapecreators_schema_drift_not_hidden_by_public_fallback(self):
+        cfg = {
+            "SCRAPECREATORS_API_KEY": "dummy-key",
+            env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+        }
+        subquery = schema.SubQuery(
+            label="t", search_query="python", ranking_query="python", sources=["reddit"],
+        )
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="mock", planner_model="mock", rerank_model="mock",
+        )
+        public_item = {
+            "url": "https://www.reddit.com/r/python/comments/pub01/t/",
+            "title": "python fallback thread",
+            "engagement": {"score": 40, "num_comments": 5},
+        }
+
+        # Case 1: pinned SC returns {"posts": null} and public fallback returns items ->
+        # fallback items survive, AND schema-drift is surfaced as the primary failure.
+        with mock.patch("lib.http.get", return_value={"posts": None}), \
+             mock.patch("lib.reddit_public.search_reddit_public", return_value=[public_item]):
+            items, artifact = pipeline._retrieve_stream(
+                topic="python",
+                subquery=subquery,
+                source="reddit",
+                config=cfg,
+                depth="quick",
+                date_range=("2026-10-16", "2026-11-15"),
+                runtime=runtime,
+                mock=False,
+            )
+        assert items == [public_item]
+        outcome = artifact.get("_source_outcome") or {}
+        assert outcome.get("state") == health.SCHEMA_DRIFT
+        assert "Reddit primary failed" in (outcome.get("detail") or "")
+
+        # Case 2: pinned SC returns {"posts": null} and public fallback is empty ->
+        # fails with SourceRunError(SCHEMA_DRIFT), never silent empty no-results.
+        reddit.reset_scrapecreators_memo()
+        with mock.patch("lib.http.get", return_value={"posts": None}), \
+             mock.patch("lib.reddit_public.search_reddit_public", return_value=[]):
+            with pytest.raises(pipeline.SourceRunError) as exc_info:
+                pipeline._retrieve_stream(
+                    topic="python",
+                    subquery=subquery,
+                    source="reddit",
+                    config=cfg,
+                    depth="quick",
+                    date_range=("2026-10-16", "2026-11-15"),
+                    runtime=runtime,
+                    mock=False,
+                )
+        assert exc_info.value.outcome_state == health.SCHEMA_DRIFT
+
+        # Case 3: pinned SC returns valid empty {"posts": []} and public fallback is empty ->
+        # clean empty result with no schema-drift error.
+        reddit.reset_scrapecreators_memo()
+        with mock.patch("lib.http.get", return_value={"posts": []}), \
+             mock.patch("lib.reddit_public.search_reddit_public", return_value=[]):
+            items, artifact = pipeline._retrieve_stream(
+                topic="python",
+                subquery=subquery,
+                source="reddit",
+                config=cfg,
+                depth="quick",
+                date_range=("2026-10-16", "2026-11-15"),
+                runtime=runtime,
+                mock=False,
+            )
+        assert items == []
+        assert not artifact.get("_source_outcome")
 
     @pytest.mark.parametrize("payload", [
         None,
