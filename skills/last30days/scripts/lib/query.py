@@ -168,8 +168,13 @@ def infer_query_intent(topic: str) -> str:
 
 _COMPOUND_BRAND_TOKEN = r'(?:[A-Z][A-Za-z0-9]*|[a-z]+[A-Z][A-Za-z0-9]*)'
 _COMPOUND_BRAND_TOKEN_RE = re.compile(rf'^{_COMPOUND_BRAND_TOKEN}$')
+# Unicode- and symbol-safe boundaries: reject mid-word slices across non-ASCII
+# letters (\w), dotted brands (Next.JS), straight/curly apostrophes (O'Reilly,
+# O’Reilly), ampersands (AT&T), hyphens (Multi-Agent), and symbol suffixes
+# (C++, C#), while still allowing trailing sentence punctuation like periods
+# not followed by a word character.
 _COMPOUND_CAPITALIZED_RUN_RE = re.compile(
-    rf"(?<![A-Za-z0-9'-])(?:{_COMPOUND_BRAND_TOKEN}\s+)+{_COMPOUND_BRAND_TOKEN}(?![A-Za-z0-9'-])"
+    rf"(?<![\w'.\u2019+#&-])(?:{_COMPOUND_BRAND_TOKEN}\s+)+{_COMPOUND_BRAND_TOKEN}(?![\w'\u2019+#&-]|\.\w)"
 )
 COMPOUND_ENTITY_PHRASE_RE = re.compile(
     rf'^{_COMPOUND_BRAND_TOKEN}(?:\s+{_COMPOUND_BRAND_TOKEN}){{1,2}}$'
@@ -183,21 +188,46 @@ _COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
     'practice', 'production',
     'case', 'cases',
 })
+_TITLE_CASE_CONNECTORS = frozenset({
+    'a', 'an', 'the', 'for', 'of', 'in', 'on', 'to', 'with', 'and', 'or', 'vs',
+})
+_ENTITY_JOINERS = frozenset({'and', 'or', 'vs'})
+
+
+def _is_capitalized_or_brand(tok: str) -> bool:
+    return tok[0].isupper() or _COMPOUND_BRAND_TOKEN_RE.fullmatch(tok) is not None
 
 
 def _is_title_cased_prompt(topic: str) -> bool:
-    """True when a 4+ word topic capitalizes every alphabetic word, leaving no
-    case signal to distinguish proper nouns from prompt framing."""
+    """True when a 4+ word topic uses Title Case across the whole prompt,
+    leaving no case signal to distinguish proper nouns from prompt framing.
+
+    Recognizes both strict every-word Title Case ("Best AI Coding Tools For
+    Python Developers") and standard English Title Case with lowercase minor
+    connectors ("Best AI Coding Tools for Python Developers"), while keeping
+    bare multi-entity pairs like "Claude Code and React Native" or "React
+    Server Components vs Astro Islands" eligible for extraction.
+    """
     alpha_words = [
-        tok for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", topic)
+        tok for tok in re.findall(r"\w+(?:['\u2019-]\w+)*", topic)
         if tok[0].isalpha()
     ]
     if len(alpha_words) < 4:
         return False
-    return all(
-        tok[0].isupper() or _COMPOUND_BRAND_TOKEN_RE.fullmatch(tok) is not None
-        for tok in alpha_words
-    )
+    if all(_is_capitalized_or_brand(tok) for tok in alpha_words):
+        return True
+    lowercase_words = [tok for tok in alpha_words if not _is_capitalized_or_brand(tok)]
+    if not all(tok in _TITLE_CASE_CONNECTORS for tok in lowercase_words):
+        return False
+    # All non-connector words are capitalized. Treat as a Title-Cased prompt
+    # unless the only lowercase words are entity list/comparison joiners
+    # ("and"/"or"/"vs") with no prompt/noise framing words among the rest.
+    non_connector_words = [tok for tok in alpha_words if tok not in _TITLE_CASE_CONNECTORS]
+    if all(tok in _ENTITY_JOINERS for tok in lowercase_words) and not any(
+        tok.lower() in _COMPOUND_EDGE_NOISE for tok in non_connector_words
+    ):
+        return False
+    return True
 
 
 def extract_compound_terms(topic: str) -> List[str]:

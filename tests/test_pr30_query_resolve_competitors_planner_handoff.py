@@ -78,9 +78,12 @@ def test_high088_single_brand_token_yields_no_compound(brand: str):
     "prompt",
     [
         "Best AI Coding Tools For Python Developers",
+        "Best AI Coding Tools for Python Developers",
         "Hermes Agent Actual Use Cases",
         "What Are The Best Claude Code Alternatives",
+        "What Are the Best Claude Code Alternatives",
         "How To Use GitHub Actions Today",
+        "How to Build AI Agents with Python",
     ],
 )
 def test_high088_full_title_cased_prompts_not_quoted_verbatim(prompt: str):
@@ -92,6 +95,37 @@ def test_high088_full_title_cased_prompts_not_quoted_verbatim(prompt: str):
     kw = planner._keyword_query(prompt, core)
     assert f'"{prompt}"' not in kw
     assert '"' not in kw
+
+
+@pytest.mark.parametrize(
+    "topic,forbidden_slice",
+    [
+        ("Claude Résumé", "Claude R"),
+        ("OpenAI Café", "OpenAI Caf"),
+        ("Next.JS Framework", "JS Framework"),
+        ("OpenAI Next.JS", "OpenAI Next"),
+        ("Visual C++", "Visual C"),
+        ("Visual C#", "Visual C"),
+        ("O\u2019Reilly Media", "Reilly Media"),
+        ("O'Reilly Media", "Reilly Media"),
+        ("AT&T Wireless", "T Wireless"),
+    ],
+)
+def test_high088_unicode_dotted_curly_apostrophe_and_symbol_brands_never_sliced(
+    topic: str, forbidden_slice: str,
+):
+    compounds = query.extract_compound_terms(topic)
+    assert forbidden_slice not in compounds
+    assert compounds == []
+
+    core = query.extract_core_subject(topic, max_words=6, strip_suffixes=True)
+    kw = planner._keyword_query(topic, core)
+    assert f'"{forbidden_slice}"' not in kw
+
+
+def test_high088_sentence_trailing_period_still_allows_valid_brand():
+    assert query.extract_compound_terms("Check out GitHub Actions.") == ["GitHub Actions"]
+    assert query.extract_compound_terms("DeepSeek R1") == ["DeepSeek R1"]
 
 
 def test_high088_mixed_case_topics_strip_edge_noise_and_cap_length():
@@ -527,7 +561,10 @@ def test_high093_bundle_non_dict_context_raises_contract_error(tmp_path: Path, b
         handoff.read_nominations_bundle(config_dir=tmp_path)
 
 
-@pytest.mark.parametrize("bad_lookback", [0, -5, True, False, "bad", float("inf"), float("nan")])
+@pytest.mark.parametrize(
+    "bad_lookback",
+    [0, -5, 1.5, 30.0, 99999, 10**400, True, False, "bad", "30", float("inf"), float("nan")],
+)
 def test_high093_bundle_invalid_lookback_days_raises_contract_error(tmp_path: Path, bad_lookback):
     _sample_bundle(tmp_path)
     path = tmp_path / handoff.NOMINATIONS_BUNDLE_FILENAME
@@ -536,6 +573,24 @@ def test_high093_bundle_invalid_lookback_days_raises_contract_error(tmp_path: Pa
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(handoff.HandoffContractError, match="lookback_days"):
         handoff.read_nominations_bundle(config_dir=tmp_path)
+
+
+def test_high093_huge_json_int_literal_raises_contract_error(tmp_path: Path):
+    """Python 3.11+ raises ValueError (not JSONDecodeError) on >4300-digit ints."""
+    huge_int = "9" * 5000
+    bundle_path = tmp_path / handoff.NOMINATIONS_BUNDLE_FILENAME
+    bundle_path.write_text(f'{{"lookback_days": {huge_int}}}', encoding="utf-8")
+    with pytest.raises(handoff.HandoffContractError, match="not valid JSON"):
+        handoff.read_nominations_bundle(config_dir=tmp_path)
+
+    bundle = _sample_bundle(tmp_path)
+    judgments_path = tmp_path / "huge-judgments.json"
+    judgments_path.write_text(
+        f'{{"bundle_id": "{bundle.bundle_id}", "judgments": [{{"id": "n1", "worthiness": {huge_int}}}]}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(handoff.HandoffContractError, match="not valid JSON"):
+        handoff.read_judgments(judgments_path, bundle, config_dir=tmp_path)
 
 
 @pytest.mark.parametrize("bad_mock", ["false", "true", 1, 0, []])

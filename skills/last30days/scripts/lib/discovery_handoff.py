@@ -40,6 +40,7 @@ NOMINATIONS_BUNDLE_FILENAME = "discover-nominations.json"
 PENDING_REPORT_FILENAME = "discover-pending.json"
 
 _VALID_TIERS = ("deep", "shallow")
+_MAX_LOOKBACK_DAYS = 3650
 
 _RESWEEP_REMEDY = "Run a fresh `--discover --nominate-only` re-sweep."
 
@@ -407,7 +408,7 @@ def _parse_handoff_envelope(
         ) from exc
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise HandoffContractError(
             f"{label} {path} is not valid JSON: {exc}"
         ) from exc
@@ -503,24 +504,18 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
     raw_lookback = context.get("lookback_days")
     if raw_lookback is None:
         lookback_days = 30
-    elif isinstance(raw_lookback, bool):
+    elif (
+        isinstance(raw_lookback, bool)
+        or not isinstance(raw_lookback, int)
+        or raw_lookback < 1
+        or raw_lookback > _MAX_LOOKBACK_DAYS
+    ):
         raise HandoffContractError(
             f"Nominations bundle {path} has invalid context.lookback_days "
-            f"{raw_lookback!r} (expected integer >= 1). {_RESWEEP_REMEDY}"
+            f"(expected integer in 1..{_MAX_LOOKBACK_DAYS}). {_RESWEEP_REMEDY}"
         )
     else:
-        try:
-            lookback_days = int(raw_lookback)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise HandoffContractError(
-                f"Nominations bundle {path} has invalid context.lookback_days "
-                f"{raw_lookback!r} (expected integer >= 1). {_RESWEEP_REMEDY}"
-            ) from exc
-        if lookback_days < 1:
-            raise HandoffContractError(
-                f"Nominations bundle {path} has invalid context.lookback_days "
-                f"{raw_lookback!r} (expected integer >= 1). {_RESWEEP_REMEDY}"
-            )
+        lookback_days = raw_lookback
 
     rows_raw = payload.get("nominations")
     if not isinstance(rows_raw, list):
@@ -745,7 +740,7 @@ def _load_host_file(path: str | Path, label: str) -> dict[str, Any]:
         ) from exc
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise HandoffContractError(
             f"{label.capitalize()} file {file_path} is not valid JSON: {exc}"
         ) from exc
