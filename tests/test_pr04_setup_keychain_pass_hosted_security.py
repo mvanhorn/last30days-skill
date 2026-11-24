@@ -1086,3 +1086,97 @@ def test_setup_pass_and_env_loader_agree_on_prefix_without_trailing_slash(mock_p
         assert env._load_pass(["OPENAI_API_KEY"], "work-") == {"OPENAI_API_KEY": "sk-legacy-work-key"}
         cfg_legacy = env.get_config()
         assert cfg_legacy["OPENAI_API_KEY"] == "sk-legacy-work-key"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script")
+def test_setup_pass_legacy_prefix_list_delete_and_replace_migration(mock_pass_env, monkeypatch):
+    """When LAST30DAYS_PASS_PREFIX lacks '/', --list, --delete, and --replace manage legacy entries cleanly."""
+    store, _calls_file, base_env = mock_pass_env
+    pass_bin = Path(base_env["PATH"].split(os.pathsep)[0]) / "pass"
+    pass_bin.write_text(
+        f"#!{sys.executable}\n"
+        "import os, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "target = pathlib.Path(os.environ['PASSWORD_STORE_DIR']) / (args[-1] + '.gpg')\n"
+        "if args and args[0] == 'insert':\n"
+        "    target.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    target.write_text(sys.stdin.read(), encoding='utf-8')\n"
+        "    sys.exit(0)\n"
+        "if args and args[0] == 'show':\n"
+        "    if target.exists():\n"
+        "        sys.stdout.write(target.read_text(encoding='utf-8'))\n"
+        "        sys.exit(0)\n"
+        "    sys.exit(1)\n"
+        "if args and args[0] == 'rm':\n"
+        "    if target.exists():\n"
+        "        target.unlink()\n"
+        "        sys.exit(0)\n"
+        "    sys.exit(1)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    pass_bin.chmod(0o755)
+
+    work_env = {**base_env, "LAST30DAYS_PASS_PREFIX": "work-"}
+    legacy_file = store / "work-OPENAI_API_KEY.gpg"
+    normalized_file = store / "work-" / "OPENAI_API_KEY.gpg"
+    legacy_file.write_text("sk-legacy-old\n", encoding="utf-8")
+
+    # 1. --list detects a legacy-only entry.
+    lst = subprocess.run(
+        ["bash", str(SETUP_PASS_SH), "--list"],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=work_env,
+    )
+    assert lst.returncode == 0, lst.stderr
+    assert "OPENAI_API_KEY" in lst.stdout
+
+    # 2. Without --replace, a legacy entry is treated as existing and skipped safely.
+    skip = subprocess.run(
+        ["bash", str(SETUP_PASS_SH), "OPENAI_API_KEY"],
+        input="sk-should-not-write\n",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=work_env,
+    )
+    assert skip.returncode == 0, skip.stderr
+    assert "skipping" in skip.stdout
+    assert legacy_file.read_text(encoding="utf-8") == "sk-legacy-old\n"
+    assert not normalized_file.exists()
+
+    # 3. Interactive --replace saves the normalized entry AND removes the stale legacy entry.
+    rep = subprocess.run(
+        ["bash", str(SETUP_PASS_SH), "--replace", "OPENAI_API_KEY"],
+        input="sk-migrated-new\n",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=work_env,
+    )
+    assert rep.returncode == 0, rep.stderr
+    assert "replaced=1" in rep.stdout
+    assert normalized_file.read_text(encoding="utf-8") == "sk-migrated-new\n"
+    assert not legacy_file.exists()
+
+    # 4. When BOTH legacy and normalized entries exist, --delete removes BOTH so env._load_pass sees nothing.
+    legacy_file.write_text("sk-legacy-stale\n", encoding="utf-8")
+    assert legacy_file.exists() and normalized_file.exists()
+    rm = subprocess.run(
+        ["bash", str(SETUP_PASS_SH), "--delete", "OPENAI_API_KEY"],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=work_env,
+    )
+    assert rm.returncode == 0, rm.stderr
+    assert "deleted: OPENAI_API_KEY" in rm.stdout
+    assert not legacy_file.exists()
+    assert not normalized_file.exists()
+
+    monkeypatch.setenv("PATH", base_env["PATH"])
+    monkeypatch.setenv("PASSWORD_STORE_DIR", base_env["PASSWORD_STORE_DIR"])
+    with mock.patch("shutil.which", return_value=str(pass_bin)):
+        assert env._load_pass(["OPENAI_API_KEY"], "work-") == {}
