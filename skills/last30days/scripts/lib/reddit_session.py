@@ -89,12 +89,18 @@ VIEWER_FIELDS = (
     "author_flair_css_class", "author_flair_template_id", "author_flair_type",
     "user_reports_dismissed", "mod_reports_dismissed", "ignore_reports",
 )
-_PRIVATE_TYPES = frozenset({"private"})
+# Only these subreddit_type values are readable by logged-out users; any other
+# value (private, gold_only, gold_restricted, employees_only, user, or missing)
+# is treated as non-public.
+_PUBLIC_TYPES = frozenset({"public", "restricted", "archived"})
 
 # The per-lane-call budget owner: the entity (topic) a lane call serves.
 _entity: contextvars.ContextVar[str] = contextvars.ContextVar("last30days_reddit_session_entity", default="")
 _current: contextvars.ContextVar[Optional["Session"]] = contextvars.ContextVar(
     "last30days_reddit_session", default=None,
+)
+_named: contextvars.ContextVar[Optional[frozenset[str]]] = contextvars.ContextVar(
+    "last30days_reddit_session_named", default=None,
 )
 
 _run_lock = threading.Lock()
@@ -214,6 +220,19 @@ class Session:
         with self._lock:
             return self._total < self.cap and self._per_entity.get(entity, 0) < self.entity_budget()
 
+    def mark_public_sub(self, subreddit: Any) -> None:
+        sub_key = _sub_key(subreddit)
+        if sub_key:
+            with self._lock:
+                self.public_subs.add(sub_key)
+
+    def is_public_sub(self, subreddit: Any) -> bool:
+        sub_key = _sub_key(subreddit)
+        if not sub_key:
+            return False
+        with self._lock:
+            return sub_key in self.public_subs
+
 
 # --- run-level session ---------------------------------------------------------
 
@@ -276,20 +295,38 @@ def session_for(
 
 
 @contextlib.contextmanager
-def lane(session: Optional[Session], entity: str = ""):
+def lane(
+    session: Optional[Session],
+    entity: str = "",
+    *,
+    named: Optional[Iterable[str]] = None,
+):
     """Make ``session`` the Reddit lane's session in this context, spending
-    the budget of ``entity`` (the topic the lane call serves)."""
+    the budget of ``entity`` (the topic the lane call serves).
+
+    When ``named`` is given, it overrides ``session.named`` in this context so
+    comparison entities sharing a session never inherit each other's
+    private/quarantined subreddit allowlist.
+    """
     token = _current.set(session)
     entity_token = _entity.set(entity or "")
+    override = (frozenset(_sub_key(s) for s in named) - {""}) if named is not None else None
+    named_token = _named.set(override)
     try:
         yield session
     finally:
+        _named.reset(named_token)
         _entity.reset(entity_token)
         _current.reset(token)
 
 
 def current() -> Optional[Session]:
     return _current.get()
+
+
+def _effective_named(session: Session) -> frozenset[str]:
+    override = _named.get()
+    return session.named if override is None else override
 
 
 def relogin_hint(session: Session) -> str:
@@ -498,7 +535,7 @@ def _search_page(
 def _allowed(session: Session, subreddit: str, over_18: bool, quarantined: bool, private: bool = False) -> bool:
     if over_18:
         return False
-    if (quarantined or private) and _sub_key(subreddit) not in session.named:
+    if (quarantined or private) and _sub_key(subreddit) not in _effective_named(session):
         return False
     return True
 
@@ -651,11 +688,12 @@ def thread_post(data: Any, session: Session) -> Optional[dict]:
         return None
     row = strip_viewer_fields(raw)
     subreddit = str(row.get("subreddit") or "")
-    private = str(row.get("subreddit_type") or "").lower() in _PRIVATE_TYPES
-    if not _allowed(session, subreddit, bool(row.get("over_18")), bool(row.get("quarantine")), private):
+    subreddit_type = str(row.get("subreddit_type") or "").strip().lower()
+    is_public = subreddit_type in _PUBLIC_TYPES
+    if not _allowed(session, subreddit, bool(row.get("over_18")), bool(row.get("quarantine")), private=not is_public):
         return DROP
-    if not private and not row.get("quarantine"):
-        session.public_subs.add(_sub_key(subreddit))
+    if is_public and not row.get("quarantine"):
+        session.mark_public_sub(subreddit)
     parsed = reddit_enrich.parse_thread_data(data)
     comments = reddit_enrich.stored_top_comments(
         reddit_enrich.get_top_comments(parsed.get("comments") or [], COMMENTS_PER_THREAD)
@@ -704,61 +742,67 @@ def hydrator(
     """
     found = found or Discovery()
     limit = HYDRATE_LIMITS.get(depth, HYDRATE_LIMITS["default"])
+    bound_named = _named.get()
 
     def run(refs: list[ThreadRef]) -> dict[str, dict]:
         out: dict[str, dict] = {}
         if not session.alive:
             return out
-        ordered = sorted(refs, key=lambda r: (PATH not in r.provenance, r.matched_comment is None))
-        forbidden: list[str] = []
-        answered = 0
-        for ref in ordered[:limit]:
-            if not session.alive or not session.room():
-                break
-            status, body = session.fetch(thread_url(ref.post_id), accept="application/json", deadline=deadline)
-            if status is None and body is None:
-                break
-            if status == 403:
-                forbidden.append(ref.post_id)
-                if not answered and len(forbidden) >= _EXPIRED_AFTER_FORBIDDEN:
-                    _record(session, EXPIRED, "thread JSON refused")
+        named_token = _named.set(bound_named) if bound_named is not None and _named.get() is None else None
+        try:
+            ordered = sorted(refs, key=lambda r: (PATH not in r.provenance, r.matched_comment is None))
+            forbidden: list[str] = []
+            answered = 0
+            for ref in ordered[:limit]:
+                if not session.alive or not session.room():
                     break
-                continue
-            if status == 429:
-                _record(session, THROTTLED, "thread JSON 429")
-                break
-            if status != 200:
-                continue
-            try:
-                post = thread_post(json.loads(body or ""), session)
-            except ValueError:
-                post = None
-            if post is None:
-                continue
-            answered += 1
-            out[ref.post_id] = post
-        if session.state == EXPIRED and not answered:
-            # The session, not these threads, was refused: the free chain takes them.
-            forbidden = []
-        for pid in forbidden:
-            out[pid] = dict(DROP)
-        for ref in refs:
-            pid = ref.post_id
-            post = out.get(pid)
-            matched = found.comments.get(pid)
-            if post is None and pid in found.hits and _sub_key(found.hits[pid].get("subreddit")) in session.public_subs:
-                post = out[pid] = dict(found.hits[pid])
-            if post is None or post.get("_drop") or not matched:
-                continue
-            kept = post.setdefault("top_comments", [])
-            if not any(str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or "") for c in kept):
-                kept.append(dict(matched))
-                post["comments_source"] = post.get("comments_source") or PATH
-            else:
-                for c in kept:
-                    if str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or ""):
-                        c["matched"] = True
-        return out
+                status, body = session.fetch(thread_url(ref.post_id), accept="application/json", deadline=deadline)
+                if status is None and body is None:
+                    break
+                if status == 403:
+                    forbidden.append(ref.post_id)
+                    if not answered and len(forbidden) >= _EXPIRED_AFTER_FORBIDDEN:
+                        _record(session, EXPIRED, "thread JSON refused")
+                        break
+                    continue
+                if status == 429:
+                    _record(session, THROTTLED, "thread JSON 429")
+                    break
+                if status != 200:
+                    continue
+                try:
+                    post = thread_post(json.loads(body or ""), session)
+                except ValueError:
+                    post = None
+                if post is None:
+                    continue
+                answered += 1
+                out[ref.post_id] = post
+            if session.state == EXPIRED and not answered:
+                # The session, not these threads, was refused: the free chain takes them.
+                forbidden = []
+            for pid in forbidden:
+                out[pid] = dict(DROP)
+            for ref in refs:
+                pid = ref.post_id
+                post = out.get(pid)
+                matched = found.comments.get(pid)
+                if post is None and pid in found.hits and session.is_public_sub(found.hits[pid].get("subreddit")):
+                    post = out[pid] = dict(found.hits[pid])
+                if post is None or post.get("_drop") or not matched:
+                    continue
+                kept = post.setdefault("top_comments", [])
+                if not any(str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or "") for c in kept):
+                    kept.append(dict(matched))
+                    post["comments_source"] = post.get("comments_source") or PATH
+                else:
+                    for c in kept:
+                        if str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or ""):
+                            c["matched"] = True
+            return out
+        finally:
+            if named_token is not None:
+                _named.reset(named_token)
 
     return run
 
