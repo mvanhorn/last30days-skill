@@ -206,6 +206,22 @@ _POLYMARKET_MATCH_BUNDLE_KEYS = (
 )
 
 
+def _polymarket_event_id(item: schema.SourceItem) -> str:
+    if item.source != "polymarket":
+        return ""
+    return str((item.metadata or {}).get("event_id") or "").strip()
+
+
+def _polymarket_event_ids_conflict(
+    a: schema.SourceItem,
+    b: schema.SourceItem,
+) -> bool:
+    """True when two Polymarket items carry distinct known Gamma event IDs."""
+    id_a = _polymarket_event_id(a)
+    id_b = _polymarket_event_id(b)
+    return bool(id_a and id_b and id_a != id_b)
+
+
 def _merge_polymarket_match_bundle(
     existing: schema.SourceItem,
     incoming: schema.SourceItem,
@@ -217,6 +233,8 @@ def _merge_polymarket_match_bundle(
     than replacing them with longer text from the unmatched copy.
     """
     if existing.source != "polymarket" or incoming.source != "polymarket":
+        return False
+    if _polymarket_event_ids_conflict(existing, incoming):
         return False
     in_meta = incoming.metadata or {}
     mine_matched = bool(existing.metadata.get("matched_market"))
@@ -260,6 +278,8 @@ def merge_source_items(
         existing.engagement = {}
     if existing.metadata is None:
         existing.metadata = {}
+    if _polymarket_event_ids_conflict(existing, incoming):
+        return existing
     eng_before = dict(existing.engagement)
     eng_src_before = existing.metadata.get("engagement_source")
     comments_before = existing.metadata.get("top_comments")
@@ -435,16 +455,22 @@ def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.Sourc
 
     Per-stream item ids (``R1``, ``X1``) collide across subqueries, so identity
     is :func:`source_item_key` (the normalized URL, or the HN discussion URL),
-    not the id. The first occurrence stays in place and
-    absorbs later copies via :func:`merge_source_items`.
+    not the id. The first occurrence stays in place and absorbs later copies
+    via :func:`merge_source_items`. Reused Polymarket slug URLs carrying
+    distinct known ``event_id`` values are kept separate.
     """
-    first_by_key: dict[tuple[str, str], schema.SourceItem] = {}
+    first_by_key: dict[tuple[str, str], list[schema.SourceItem]] = {}
     kept: list[schema.SourceItem] = []
     for item in items:
         key = source_item_key(item)
-        existing = first_by_key.get(key)
+        bucket = first_by_key.get(key)
+        existing = (
+            next((candidate for candidate in bucket if not _polymarket_event_ids_conflict(candidate, item)), None)
+            if bucket is not None
+            else None
+        )
         if existing is None:
-            first_by_key[key] = item
+            first_by_key.setdefault(key, []).append(item)
             kept.append(item)
         else:
             merge_source_items(existing, item)

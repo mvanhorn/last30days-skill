@@ -154,7 +154,8 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
     """
     # Pass 1: collapse exact normalized-URL duplicates in-order, merging
     # enrichment/counts/metadata from later copies without mutating caller inputs.
-    url_index: dict[tuple[str, str], int] = {}
+    # Reused Polymarket slug URLs carrying distinct known event_ids stay separate.
+    url_indices: dict[tuple[str, str], list[int]] = {}
     cloned_indices: set[int] = set()
     collapsed: list[schema.SourceItem] = []
     for item in items:
@@ -162,9 +163,17 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
         if url_key is None:
             collapsed.append(item)
             continue
-        existing_idx = url_index.get(url_key)
+        bucket = url_indices.get(url_key)
+        existing_idx = (
+            next(
+                (idx for idx in bucket if not fusion._polymarket_event_ids_conflict(collapsed[idx], item)),
+                None,
+            )
+            if bucket is not None
+            else None
+        )
         if existing_idx is None:
-            url_index[url_key] = len(collapsed)
+            url_indices.setdefault(url_key, []).append(len(collapsed))
             collapsed.append(item)
             continue
         if existing_idx not in cloned_indices:

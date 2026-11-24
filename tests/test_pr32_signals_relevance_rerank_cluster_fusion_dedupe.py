@@ -998,6 +998,95 @@ class TestHigh109DedupeUrlNormalization:
         assert merged_rev.metadata["end_date"] == "2027-02-14"
         assert merged_rev.engagement["volume"] == 900_000
 
+    def test_polymarket_reused_slug_with_distinct_event_ids_never_merges(self):
+        reused_url = "https://polymarket.com/event/fed-rate-decision"
+        fresh_new_event = _source_item(
+            "pm-new",
+            "polymarket",
+            title="Fed December 2026 rate decision",
+            body="Fresh unmatched event on reused slug",
+            snippet="Flat 0%",
+            url=f"{reused_url}?utm_source=drill",
+            engagement={"volume": 400_000, "liquidity": 120_000},
+            metadata={
+                "event_id": "200",
+                "question": "Will the Fed cut in Dec 2026?",
+                "end_date": "2026-12-18",
+                "odds": {"kind": "outcomes", "subject": "Fed Dec 2026", "entries": [{"label": "Hold", "price": 0.65}]},
+                "headline": "Hold 65%",
+                "outcome_prices": [("Hold", 0.65)],
+            },
+        )
+        saved_old_event = _source_item(
+            "pm-old",
+            "polymarket",
+            title="Fed May 2026 rate decision",
+            body="Old matched event that previously owned the slug",
+            snippet="Up 8%",
+            url=f"https://www.polymarket.com/event/fed-rate-decision/",
+            engagement={"volume": 900_000, "liquidity": 300_000},
+            metadata={
+                "event_id": "100",
+                "question": "Will the Fed cut in May 2026?",
+                "end_date": "2026-05-07",
+                "odds": {"kind": "outcomes", "subject": "Fed May 2026", "entries": [{"label": "Cut", "price": 0.80}]},
+                "headline": "Cut 80%",
+                "outcome_prices": [("Cut", 0.80)],
+                "matched_market": {"label": "Cut", "question": "Will the Fed cut in May 2026?", "price": 0.80},
+                "selection_score": 77.0,
+                "selection_tier": 2,
+            },
+        )
+
+        # Direct _merge_polymarket_match_bundle and merge_source_items skip conflicting event_ids.
+        fresh_copy = fusion._clone_source_item(fresh_new_event)
+        assert fusion._merge_polymarket_match_bundle(fresh_copy, saved_old_event) is False
+        merged_direct = fusion.merge_source_items(fresh_copy, saved_old_event)
+        assert merged_direct.metadata["event_id"] == "200"
+        assert "matched_market" not in merged_direct.metadata
+        assert merged_direct.metadata["question"] == "Will the Fed cut in Dec 2026?"
+        assert merged_direct.metadata["end_date"] == "2026-12-18"
+        assert merged_direct.metadata["headline"] == "Hold 65%"
+        assert merged_direct.engagement["volume"] == 400_000
+
+        # dedupe_items keeps both distinct events intact.
+        deduped = dedupe.dedupe_items([fresh_new_event, saved_old_event])
+        assert [i.item_id for i in deduped] == ["pm-new", "pm-old"]
+        assert deduped[0].metadata["event_id"] == "200"
+        assert "matched_market" not in deduped[0].metadata
+        assert deduped[0].metadata["headline"] == "Hold 65%"
+        assert deduped[1].metadata["event_id"] == "100"
+        assert deduped[1].metadata["headline"] == "Cut 80%"
+
+        # collapse_duplicate_urls also keeps both distinct events intact, while still
+        # merging a later same-event_id copy into its matching event.
+        fresh_new_dup = _source_item(
+            "pm-new-2",
+            "polymarket",
+            title="Fed December 2026 rate decision",
+            body="Updated",
+            url=reused_url,
+            engagement={"volume": 550_000, "liquidity": 150_000},
+            metadata={"event_id": "200"},
+        )
+        collapsed = fusion.collapse_duplicate_urls([
+            fusion._clone_source_item(fresh_new_event),
+            fusion._clone_source_item(saved_old_event),
+            fresh_new_dup,
+        ])
+        assert [i.item_id for i in collapsed] == ["pm-new", "pm-old"]
+        assert collapsed[0].engagement["volume"] == 550_000
+        assert "matched_market" not in collapsed[0].metadata
+        assert collapsed[1].metadata["event_id"] == "100"
+
+        # When one copy omits event_id, same URL still merges cleanly with the matched bundle.
+        no_id_fresh = fusion._clone_source_item(fresh_new_event)
+        no_id_fresh.metadata.pop("event_id", None)
+        [merged_missing_id] = dedupe.dedupe_items([no_id_fresh, saved_old_event])
+        assert merged_missing_id.metadata["event_id"] == "100"
+        assert merged_missing_id.metadata["matched_market"]["label"] == "Cut"
+        assert merged_missing_id.metadata["headline"] == "Cut 80%"
+
     def test_same_url_with_divergent_enrichment_text_merges_evidence_without_mutating_inputs(self):
         bare_yt = _source_item(
             "yt1",
