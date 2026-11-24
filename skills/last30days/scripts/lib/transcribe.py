@@ -19,10 +19,14 @@ the source-health layer, rather than a crash.
 from __future__ import annotations
 
 import os
+import re
+import selectors
 import shutil
+import socket
 import tempfile
+import threading
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from . import env, health, http, log, public_host, subproc, usage
@@ -33,6 +37,20 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 MAX_DOWNLOAD_SIZE_ARG = "200M"
 CHUNK_SECONDS = 600  # 10-minute chunks when splitting is required
+_PROXY_MAX_HEADER_BYTES = 64 * 1024
+_PROXY_MAX_REQUEST_BODY_BYTES = 1024 * 1024
+_PROXY_CHUNK_BYTES = 65536
+_HTTP_METHOD_RE = re.compile(r"^[A-Z]+$")
+_HOP_BY_HOP_HEADERS = frozenset({
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailers",
+    "upgrade",
+})
 
 _PROVIDER_ENDPOINTS = {
     "groq": "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -126,7 +144,433 @@ def _is_safe_remote_media_url(source: str) -> bool:
     """Return True only for http(s) URLs with public host syntax and public DNS."""
     if not isinstance(source, str) or not source or source.startswith("-"):
         return False
+    try:
+        parts = urlsplit(source)
+    except ValueError:
+        return False
+    if "\\" in parts.netloc:
+        return False
     return public_host.public_any_url(source)
+
+
+def _sanitized_ytdlp_env(proxy_url: str) -> dict[str, str]:
+    """Pin proxy env vars and clear NO_PROXY so yt-dlp cannot bypass the validating proxy."""
+    clean = {
+        k: v
+        for k, v in os.environ.items()
+        if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
+    }
+    clean["HTTP_PROXY"] = proxy_url
+    clean["HTTPS_PROXY"] = proxy_url
+    clean["http_proxy"] = proxy_url
+    clean["https_proxy"] = proxy_url
+    clean["NO_PROXY"] = ""
+    clean["no_proxy"] = ""
+    return clean
+
+
+class _PublicMediaProxy:
+    """Loopback HTTP/CONNECT proxy enforcing public-IP pinning and mid-transfer byte caps.
+
+    Every yt-dlp hop — initial URL, 3xx redirects, HLS/DASH manifests and segments,
+    and HTTPS CONNECT tunnels — resolves fresh and connects only to verified public IPs,
+    closing active sockets immediately once cumulative downstream bytes exceed ``max_bytes``.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_bytes: int = MAX_DOWNLOAD_BYTES,
+        connect_timeout: float = 15.0,
+        io_timeout: float = 60.0,
+        resolver: Optional[Callable[[str, int], list[tuple]]] = None,
+    ) -> None:
+        self._max_bytes = max_bytes
+        self._connect_timeout = connect_timeout
+        self._io_timeout = max(connect_timeout, io_timeout)
+        self._resolver = resolver or public_host.resolve_public_addresses
+        self._lock = threading.Lock()
+        self._bytes_transferred = 0
+        self._limit_exceeded = False
+        self._closed = False
+        self._active_sockets: set[socket.socket] = set()
+        self._server: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
+        self.port: int = 0
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def limit_exceeded(self) -> bool:
+        with self._lock:
+            return self._limit_exceeded
+
+    def __enter__(self) -> "_PublicMediaProxy":
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(32)
+        srv.settimeout(0.2)
+        self._server = srv
+        self.port = srv.getsockname()[1]
+        self._thread = threading.Thread(
+            target=self._accept_loop, name="l30d-media-proxy", daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            sockets = list(self._active_sockets)
+            self._active_sockets.clear()
+        srv = self._server
+        self._server = None
+        if srv is not None:
+            try:
+                srv.close()
+            except OSError:
+                pass
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+    def _track_socket(self, sock: socket.socket) -> bool:
+        with self._lock:
+            if self._closed:
+                return False
+            self._active_sockets.add(sock)
+            return True
+
+    def _untrack_socket(self, sock: socket.socket) -> None:
+        with self._lock:
+            self._active_sockets.discard(sock)
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+    def _abort_all_connections(self) -> None:
+        with self._lock:
+            sockets = list(self._active_sockets)
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _account_bytes(self, count: int) -> bool:
+        if count <= 0:
+            return True
+        with self._lock:
+            if self._closed or self._limit_exceeded:
+                return False
+            self._bytes_transferred += count
+            if self._bytes_transferred > self._max_bytes:
+                self._limit_exceeded = True
+                return False
+            return True
+
+    def _accept_loop(self) -> None:
+        while True:
+            srv = self._server
+            if srv is None:
+                return
+            try:
+                client, _addr = srv.accept()
+            except socket.timeout:
+                with self._lock:
+                    if self._closed:
+                        return
+                continue
+            except OSError:
+                return
+            if not self._track_socket(client):
+                try:
+                    client.close()
+                except OSError:
+                    pass
+                return
+            threading.Thread(
+                target=self._handle_client, args=(client,), daemon=True,
+            ).start()
+
+    def _connect_public(self, host: str, port: int) -> socket.socket:
+        if (
+            not host
+            or not isinstance(port, int)
+            or port < 1
+            or port > 65535
+            or "\\" in host
+            or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in host)
+        ):
+            raise public_host.NonPublicAddressError("refused invalid proxy destination")
+        verified = self._resolver(host, port)
+        last_err: Optional[OSError] = None
+        for af, socktype, proto, _canonname, sockaddr in verified:
+            sock: Optional[socket.socket] = None
+            try:
+                sock = socket.socket(af, socktype, proto)
+                sock.settimeout(self._connect_timeout)
+                sock.connect(sockaddr)
+                sock.settimeout(self._io_timeout)
+                if not self._track_socket(sock):
+                    sock.close()
+                    raise OSError("proxy closed")
+                return sock
+            except OSError as exc:
+                last_err = exc
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+        if last_err is not None:
+            raise last_err
+        raise public_host.NonPublicAddressError("refused non-public address")
+
+    @staticmethod
+    def _send_error(client: socket.socket, status: str) -> None:
+        try:
+            client.sendall(f"HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".encode("ascii"))
+        except OSError:
+            pass
+
+    def _handle_client(self, client: socket.socket) -> None:
+        upstream: Optional[socket.socket] = None
+        try:
+            client.settimeout(self._connect_timeout)
+            buf = bytearray()
+            while b"\r\n\r\n" not in buf:
+                chunk = client.recv(4096)
+                if not chunk:
+                    return
+                buf.extend(chunk)
+                if len(buf) > _PROXY_MAX_HEADER_BYTES:
+                    self._send_error(client, "431 Request Header Fields Too Large")
+                    return
+            header_end = buf.index(b"\r\n\r\n")
+            header_blob = bytes(buf[:header_end])
+            remainder = bytes(buf[header_end + 4:])
+
+            lines = header_blob.split(b"\r\n")
+            if not lines:
+                self._send_error(client, "400 Bad Request")
+                return
+            try:
+                req_line = lines[0].decode("latin-1")
+            except UnicodeDecodeError:
+                self._send_error(client, "400 Bad Request")
+                return
+            parts = req_line.split(" ")
+            if len(parts) != 3:
+                self._send_error(client, "400 Bad Request")
+                return
+            method, target, version = parts
+            if not _HTTP_METHOD_RE.fullmatch(method) or not version.startswith("HTTP/"):
+                self._send_error(client, "400 Bad Request")
+                return
+
+            if self.limit_exceeded:
+                self._send_error(client, "413 Payload Too Large")
+                return
+
+            if method == "CONNECT":
+                upstream = self._handle_connect(client, target, remainder)
+            else:
+                upstream = self._handle_http(client, method, target, lines[1:], remainder)
+        except OSError:
+            pass
+        finally:
+            if upstream is not None:
+                self._untrack_socket(upstream)
+            self._untrack_socket(client)
+
+    def _handle_connect(
+        self,
+        client: socket.socket,
+        target: str,
+        remainder: bytes,
+    ) -> Optional[socket.socket]:
+        if "\\" in target or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in target):
+            self._send_error(client, "400 Bad Request")
+            return None
+        try:
+            parsed = urlsplit(f"//{target}")
+            port = parsed.port
+        except ValueError:
+            self._send_error(client, "400 Bad Request")
+            return None
+        if (
+            not parsed.hostname
+            or port is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            self._send_error(client, "400 Bad Request")
+            return None
+        try:
+            upstream = self._connect_public(parsed.hostname, port)
+        except (public_host.NonPublicAddressError, ValueError):
+            self._send_error(client, "403 Forbidden")
+            return None
+        except OSError:
+            self._send_error(client, "502 Bad Gateway")
+            return None
+
+        client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        if remainder:
+            upstream.sendall(remainder)
+
+        sel = selectors.DefaultSelector()
+        try:
+            sel.register(client, selectors.EVENT_READ, "client")
+            sel.register(upstream, selectors.EVENT_READ, "upstream")
+            client_eof = False
+            upstream_eof = False
+            while not (client_eof and upstream_eof):
+                with self._lock:
+                    if self._closed or self._limit_exceeded:
+                        break
+                events = sel.select(timeout=0.5)
+                for key, _mask in events:
+                    if key.data == "client":
+                        data = client.recv(_PROXY_CHUNK_BYTES)
+                        if not data:
+                            client_eof = True
+                            sel.unregister(client)
+                            try:
+                                upstream.shutdown(socket.SHUT_WR)
+                            except OSError:
+                                pass
+                        else:
+                            upstream.sendall(data)
+                    else:
+                        data = upstream.recv(_PROXY_CHUNK_BYTES)
+                        if not data:
+                            upstream_eof = True
+                            sel.unregister(upstream)
+                            try:
+                                client.shutdown(socket.SHUT_WR)
+                            except OSError:
+                                pass
+                        else:
+                            if not self._account_bytes(len(data)):
+                                self._abort_all_connections()
+                                return upstream
+                            client.sendall(data)
+        finally:
+            sel.close()
+        return upstream
+
+    def _handle_http(
+        self,
+        client: socket.socket,
+        method: str,
+        target: str,
+        raw_headers: list[bytes],
+        remainder: bytes,
+    ) -> Optional[socket.socket]:
+        if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in target):
+            self._send_error(client, "400 Bad Request")
+            return None
+        try:
+            parsed = urlsplit(target)
+            port = parsed.port
+        except ValueError:
+            self._send_error(client, "400 Bad Request")
+            return None
+        if (
+            parsed.scheme.lower() != "http"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or "\\" in parsed.netloc
+        ):
+            self._send_error(client, "403 Forbidden")
+            return None
+        effective_port = port if port is not None else 80
+        try:
+            upstream = self._connect_public(parsed.hostname, effective_port)
+        except (public_host.NonPublicAddressError, ValueError):
+            self._send_error(client, "403 Forbidden")
+            return None
+        except OSError:
+            self._send_error(client, "502 Bad Gateway")
+            return None
+
+        forwarded_headers: list[tuple[str, str]] = []
+        has_host = False
+        content_length = 0
+        for line in raw_headers:
+            if not line or b":" not in line:
+                continue
+            name_b, val_b = line.split(b":", 1)
+            name = name_b.decode("latin-1").strip()
+            val = val_b.decode("latin-1").strip()
+            lower = name.lower()
+            if lower in _HOP_BY_HOP_HEADERS:
+                continue
+            if lower == "transfer-encoding":
+                self._send_error(client, "501 Not Implemented")
+                return upstream
+            if lower == "content-length":
+                try:
+                    content_length = int(val)
+                except ValueError:
+                    self._send_error(client, "400 Bad Request")
+                    return upstream
+                if content_length < 0 or content_length > _PROXY_MAX_REQUEST_BODY_BYTES:
+                    self._send_error(client, "413 Payload Too Large")
+                    return upstream
+            if lower == "host":
+                has_host = True
+            forwarded_headers.append((name, val))
+        if not has_host:
+            forwarded_headers.insert(0, ("Host", parsed.netloc))
+        forwarded_headers.append(("Connection", "close"))
+
+        origin_target = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        head = [f"{method} {origin_target} HTTP/1.1"]
+        head.extend(f"{k}: {v}" for k, v in forwarded_headers)
+        upstream.sendall(("\r\n".join(head) + "\r\n\r\n").encode("latin-1"))
+
+        if content_length > 0:
+            body_chunks = [remainder[:content_length]]
+            remaining = content_length - len(body_chunks[0])
+            while remaining > 0:
+                chunk = client.recv(min(_PROXY_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                body_chunks.append(chunk)
+                remaining -= len(chunk)
+            upstream.sendall(b"".join(body_chunks))
+
+        while True:
+            chunk = upstream.recv(_PROXY_CHUNK_BYTES)
+            if not chunk:
+                break
+            if not self._account_bytes(len(chunk)):
+                self._abort_all_connections()
+                return upstream
+            client.sendall(chunk)
+        return upstream
 
 
 def _acquire_audio(source: str, workdir: str, timeout: float) -> Optional[str]:
@@ -152,20 +596,29 @@ def _acquire_audio(source: str, workdir: str, timeout: float) -> Optional[str]:
             log.debug(f"transcribe: refused unsafe media URL: {source!r}")
             return None
         raw = os.path.join(abs_workdir, "raw.m4a")
-        if not _run([
-            "yt-dlp",
-            "--ignore-config",
-            "--no-cookies-from-browser",
-            "--no-playlist",
-            "--no-live-from-start",
-            "--match-filter", "!is_live",
-            "--max-filesize", MAX_DOWNLOAD_SIZE_ARG,
-            "-f", "bestaudio",
-            "-o", raw,
-            "--",
-            source,
-        ], timeout=timeout):
-            return None
+        with _PublicMediaProxy(
+            max_bytes=MAX_DOWNLOAD_BYTES,
+            connect_timeout=min(15.0, max(1.0, float(timeout))),
+            io_timeout=max(15.0, float(timeout)),
+        ) as media_proxy:
+            ok = _run([
+                "yt-dlp",
+                "--ignore-config",
+                "--no-plugin-dirs",
+                "--no-cookies-from-browser",
+                "--no-playlist",
+                "--no-live-from-start",
+                "--match-filter", "!is_live",
+                "--max-filesize", MAX_DOWNLOAD_SIZE_ARG,
+                "--downloader", "dash,m3u8:native",
+                "--proxy", media_proxy.url,
+                "-f", "bestaudio[protocol*=http]/bestaudio[protocol^=m3u8]",
+                "-o", raw,
+                "--",
+                source,
+            ], timeout=timeout, env=_sanitized_ytdlp_env(media_proxy.url))
+            if not ok or media_proxy.limit_exceeded:
+                return None
         if not os.path.isfile(raw):
             return None
         try:
@@ -295,14 +748,22 @@ def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optio
     return data.get("text")
 
 
-def _run(command: list[str], timeout: float = 120.0) -> bool:
+def _run(
+    command: list[str],
+    timeout: float = 120.0,
+    *,
+    env: Optional[dict[str, str]] = None,
+) -> bool:
     """Run a subprocess; return True on exit 0, False on any failure. No raise.
 
     Uses subproc.run_with_timeout so a timed-out yt-dlp/ffmpeg is killed at the
     process-group level (os.setsid/killpg) instead of orphaning child trees.
     """
     try:
-        result = subproc.run_with_timeout(command, timeout=int(timeout))
+        kwargs: dict = {"timeout": int(timeout)}
+        if env is not None:
+            kwargs["env"] = env
+        result = subproc.run_with_timeout(command, **kwargs)
     except (subproc.SubprocTimeout, FileNotFoundError, OSError):
         return False
     return result.returncode == 0

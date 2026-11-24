@@ -13,9 +13,13 @@ import ast
 import io
 import json
 import os
+import shutil
 import socket
+import threading
+import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -200,6 +204,193 @@ class TestHigh175YouTubeDirectTranscriptSSRF:
         assert result is not None and "hello" in result
         assert seen_urls[1] == "https://www.youtube.com/api/timedtext?v=abc123&fmt=vtt"
 
+    def test_read_transcript_url_propagates_guards_and_max_bytes_under_deadline(self) -> None:
+        captured: list[tuple[urllib.request.Request, dict]] = []
+
+        def fake_bounded(req, **kwargs):
+            captured.append((req, kwargs))
+            return 200, b"WEBVTT\n\nok\n", None
+
+        req = urllib.request.Request("https://www.youtube.com/api/timedtext?v=abc123&fmt=vtt")
+        with mock.patch.object(bounded_get, "get", side_effect=fake_bounded), \
+             youtube_yt.sc_spend_until(lambda: False, deadline=time.monotonic() + 60):
+            body = youtube_yt._read_transcript_url(req, timeout=10)
+
+        assert "WEBVTT" in body
+        assert len(captured) == 1
+        sent_req, kwargs = captured[0]
+        assert getattr(sent_req, http._PUBLIC_ONLY_ATTR, False) is True
+        assert getattr(sent_req, bounded_get._REDIRECT_POLICY_ATTR, None) == youtube_yt._YT_TRANSCRIPT_REDIRECT_POLICY
+        assert kwargs["max_bytes"] == youtube_yt._MAX_TRANSCRIPT_RESPONSE_BYTES
+
+    def test_bounded_get_worker_enforces_public_only_on_loopback(self) -> None:
+        hits: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"secret")
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/secret"
+            req = urllib.request.Request(url)
+            setattr(req, http._PUBLIC_ONLY_ATTR, True)
+            with pytest.raises(urllib.error.URLError) as exc_info:
+                bounded_get.get(req, timeout=5, deadline_monotonic=time.monotonic() + 5)
+            assert isinstance(exc_info.value.reason, public_host.NonPublicAddressError)
+
+            req_kw = urllib.request.Request(url)
+            with pytest.raises(urllib.error.URLError) as exc_info_kw:
+                bounded_get.get(
+                    req_kw, timeout=5, deadline_monotonic=time.monotonic() + 5, public_only=True,
+                )
+            assert isinstance(exc_info_kw.value.reason, public_host.NonPublicAddressError)
+            assert hits == []
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
+    @pytest.mark.parametrize(
+        ("target_kind", "expected_code"),
+        [
+            ("metadata", 403),
+            ("secret_loopback", 403),
+            ("evil_host", 403),
+            ("ftp_scheme", 403),
+            ("file_scheme", 403),
+        ],
+    )
+    def test_bounded_get_worker_blocks_disallowed_redirects_unmocked(
+        self, target_kind: str, expected_code: int,
+    ) -> None:
+        secret_hits: list[str] = []
+
+        class SecretHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                secret_hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"TOP_SECRET")
+
+        secret_srv = ThreadingHTTPServer(("127.0.0.1", 0), SecretHandler)
+        secret_srv.daemon_threads = True
+        secret_thread = threading.Thread(target=secret_srv.serve_forever, daemon=True)
+        secret_thread.start()
+
+        redirect_targets = {
+            "metadata": "http://169.254.169.254/latest/meta-data/",
+            "secret_loopback": f"http://127.0.0.1:{secret_srv.server_port}/secret",
+            "evil_host": "https://evil.example/steal",
+            "ftp_scheme": "ftp://evil.example/secret",
+            "file_scheme": "file:///etc/passwd",
+        }
+        location = redirect_targets[target_kind]
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        front_srv = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        front_srv.daemon_threads = True
+        front_thread = threading.Thread(target=front_srv.serve_forever, daemon=True)
+        front_thread.start()
+        try:
+            policy = {
+                "https_only": False,
+                "require_public_syntax": False,
+                "exact_hosts": ["127.0.0.1"],
+                "allowed_ports": [front_srv.server_port],
+            }
+            req = urllib.request.Request(f"http://127.0.0.1:{front_srv.server_port}/start")
+            setattr(req, bounded_get._REDIRECT_POLICY_ATTR, policy)
+            status, body, error = bounded_get.get(
+                req, timeout=5, deadline_monotonic=time.monotonic() + 5, read_error_body=False,
+            )
+            assert status == expected_code
+            assert body is None
+            assert isinstance(error, urllib.error.HTTPError)
+            assert error.code == expected_code
+            assert secret_hits == []
+        finally:
+            front_srv.shutdown()
+            front_srv.server_close()
+            front_thread.join(2)
+            secret_srv.shutdown()
+            secret_srv.server_close()
+            secret_thread.join(2)
+
+    def test_bounded_get_worker_enforces_max_bytes_mid_stream_under_sc_spend_until(
+        self, monkeypatch,
+    ) -> None:
+        bytes_written = [0]
+        total_stream_bytes = 4 * 1024 * 1024
+
+        class StreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(total_stream_bytes))
+                self.end_headers()
+                chunk = b"X" * 16384
+                remaining = total_stream_bytes
+                try:
+                    while remaining > 0:
+                        piece = chunk[:remaining]
+                        self.wfile.write(piece)
+                        self.wfile.flush()
+                        bytes_written[0] += len(piece)
+                        remaining -= len(piece)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), StreamHandler)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        original_bounded = bounded_get.get
+        monkeypatch.setattr(youtube_yt, "_MAX_TRANSCRIPT_RESPONSE_BYTES", 4096)
+
+        def local_bounded(req, **kwargs):
+            local_req = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/watch",
+                headers=dict(req.header_items()),
+            )
+            return original_bounded(local_req, **kwargs)
+
+        monkeypatch.setattr(bounded_get, "get", local_bounded)
+        try:
+            with youtube_yt.sc_spend_until(lambda: False, deadline=time.monotonic() + 20):
+                result = youtube_yt._fetch_transcript_direct("abc12345678", timeout=5)
+            assert result is None
+            assert bytes_written[0] < total_stream_bytes
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
 
 # ---------------------------------------------------------------------------
 # HIGH-178: youtube_yt.py video_id traversal, glob, collision, URL injection
@@ -353,6 +544,16 @@ class TestHigh178YouTubeVideoIdValidation:
             assert "--ignore-config" in cmd[:dash_idx]
             assert "--no-cookies-from-browser" in cmd[:dash_idx]
 
+    def test_leading_dash_video_id_on_ssh_transcript_uses_option_terminator(self) -> None:
+        fake_vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nssh transcript\n"
+        fake_res = subproc.SubprocResult(returncode=0, stdout=fake_vtt, stderr="")
+        with mock.patch.object(youtube_yt, "_run_ytdlp", return_value=fake_res) as run_mock:
+            out = youtube_yt._fetch_transcript_ytdlp_via_ssh("-_abc123XYZ", "macmini")
+
+        assert out == fake_vtt
+        remote_script = run_mock.call_args.args[0][-1]
+        assert "-- 'https://www.youtube.com/watch?v=-_abc123XYZ'" in remote_script
+
 
 # ---------------------------------------------------------------------------
 # HIGH-176: transcribe.py URL SSRF, yt-dlp isolation/caps, ffmpeg whitelist
@@ -371,6 +572,8 @@ class TestHigh176TranscribeHardening:
             "http://0177.0.0.1/audio.mp3",
             "https://localhost/audio.mp3",
             "https://user:pass@example.com/audio.mp3",
+            "https://127.0.0.1\\@media.example.com/audio.mp3",
+            "https://evil.com\\@media.example.com/audio.mp3",
             "file:///etc/passwd",
             "ftp://example.com/audio.mp3",
             "gopher://127.0.0.1:6379/",
@@ -420,10 +623,12 @@ class TestHigh176TranscribeHardening:
             return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port))]
 
         monkeypatch.setattr(public_host.socket, "getaddrinfo", fake_getaddrinfo)
-        cmds: list[list[str]] = []
+        monkeypatch.setenv("NO_PROXY", "169.254.169.254,127.0.0.1,localhost")
+        monkeypatch.setenv("ALL_PROXY", "socks5://attacker.example:1080")
+        cmds: list[tuple[list[str], dict | None]] = []
 
-        def fake_run(cmd, timeout=120.0):
-            cmds.append(cmd)
+        def fake_run(cmd, timeout=120.0, *, env=None):
+            cmds.append((cmd, env))
             if cmd[0] == "yt-dlp":
                 out_path = cmd[cmd.index("-o") + 1]
                 Path(out_path).write_bytes(b"fake-m4a")
@@ -437,17 +642,27 @@ class TestHigh176TranscribeHardening:
         assert out is not None and out.endswith("audio.mp3")
         assert len(cmds) == 2
 
-        ytdlp_cmd, ffmpeg_cmd = cmds
+        (ytdlp_cmd, ytdlp_env), (ffmpeg_cmd, _ffmpeg_env) = cmds
         assert ytdlp_cmd[0] == "yt-dlp"
         dash_idx = ytdlp_cmd.index("--")
         assert ytdlp_cmd[dash_idx + 1] == url
         flags = ytdlp_cmd[:dash_idx]
         assert "--ignore-config" in flags
+        assert "--no-plugin-dirs" in flags
         assert "--no-cookies-from-browser" in flags
         assert "--no-playlist" in flags
         assert "--no-live-from-start" in flags
         assert flags[flags.index("--match-filter") + 1] == "!is_live"
         assert flags[flags.index("--max-filesize") + 1] == transcribe.MAX_DOWNLOAD_SIZE_ARG
+        assert flags[flags.index("--downloader") + 1] == "dash,m3u8:native"
+        proxy_url = flags[flags.index("--proxy") + 1]
+        assert proxy_url.startswith("http://127.0.0.1:")
+        assert ytdlp_env is not None
+        assert ytdlp_env["HTTP_PROXY"] == proxy_url
+        assert ytdlp_env["HTTPS_PROXY"] == proxy_url
+        assert ytdlp_env["NO_PROXY"] == ""
+        assert ytdlp_env["no_proxy"] == ""
+        assert "ALL_PROXY" not in ytdlp_env
 
         assert ffmpeg_cmd[0] == "ffmpeg"
         assert "-nostdin" in ffmpeg_cmd
@@ -469,7 +684,7 @@ class TestHigh176TranscribeHardening:
         )
         cmds: list[list[str]] = []
 
-        def fake_run(cmd, timeout=120.0):
+        def fake_run(cmd, timeout=120.0, *, env=None):
             cmds.append(cmd)
             if cmd[0] == "yt-dlp":
                 Path(cmd[cmd.index("-o") + 1]).write_bytes(b"X" * 11)
@@ -482,6 +697,316 @@ class TestHigh176TranscribeHardening:
 
         assert out is None
         assert [c[0] for c in cmds] == ["yt-dlp"]
+
+    def test_media_proxy_blocks_http_and_connect_ssrf_and_redirects(self) -> None:
+        secret_hits: list[str] = []
+
+        class SecretHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                secret_hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"PRIVATE_SECRET")
+
+        secret_srv = ThreadingHTTPServer(("127.0.0.1", 0), SecretHandler)
+        secret_srv.daemon_threads = True
+        secret_thread = threading.Thread(target=secret_srv.serve_forever, daemon=True)
+        secret_thread.start()
+
+        class PublicHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/redirect-secret":
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{secret_srv.server_port}/secret")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                elif self.path == "/playlist.m3u8":
+                    body = f"#EXTM3U\n#EXTINF:1,\nhttp://127.0.0.1:{secret_srv.server_port}/seg.ts\n".encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+        pub_srv = ThreadingHTTPServer(("127.0.0.1", 0), PublicHandler)
+        pub_srv.daemon_threads = True
+        pub_thread = threading.Thread(target=pub_srv.serve_forever, daemon=True)
+        pub_thread.start()
+
+        def hybrid_resolver(host: str, port: int):
+            if host == "public.test":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", pub_srv.server_port))]
+            return public_host.resolve_public_addresses(host, port)
+
+        try:
+            with transcribe._PublicMediaProxy(max_bytes=1024 * 1024, resolver=hybrid_resolver) as proxy:
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url})
+                )
+                # Direct public.test succeeds.
+                with opener.open("http://public.test/ok", timeout=5) as resp:
+                    assert resp.read() == b"ok"
+
+                # 302 redirect from public.test to 127.0.0.1 secret is blocked with 403.
+                with pytest.raises(urllib.error.HTTPError) as exc_redir:
+                    opener.open("http://public.test/redirect-secret", timeout=5)
+                assert exc_redir.value.code == 403
+
+                # HLS playlist segment pointing at loopback is blocked with 403.
+                with opener.open("http://public.test/playlist.m3u8", timeout=5) as resp:
+                    playlist = resp.read().decode("utf-8")
+                seg_url = [line for line in playlist.splitlines() if line.startswith("http")][0]
+                with pytest.raises(urllib.error.HTTPError) as exc_seg:
+                    opener.open(seg_url, timeout=5)
+                assert exc_seg.value.code == 403
+
+                # Direct metadata & loopback HTTP and HTTPS CONNECT targets are refused with 403.
+                for target in (
+                    f"127.0.0.1:{secret_srv.server_port}",
+                    "169.254.169.254:443",
+                    "[::1]:443",
+                    "2130706433:80",
+                ):
+                    with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock:
+                        sock.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode("ascii"))
+                        reply = sock.recv(1024).decode("latin-1")
+                    assert reply.startswith("HTTP/1.1 403"), (target, reply)
+
+            assert secret_hits == []
+        finally:
+            pub_srv.shutdown()
+            pub_srv.server_close()
+            pub_thread.join(2)
+            secret_srv.shutdown()
+            secret_srv.server_close()
+            secret_thread.join(2)
+
+    def test_media_proxy_aborts_chunked_stream_mid_transfer_at_max_bytes(self) -> None:
+        bytes_written = [0]
+        total_stream_bytes = 2 * 1024 * 1024
+
+        class ChunkedHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                payload = b"A" * 8192
+                frame = f"{len(payload):x}\r\n".encode("ascii") + payload + b"\r\n"
+                remaining = total_stream_bytes
+                try:
+                    while remaining > 0:
+                        self.wfile.write(frame)
+                        self.wfile.flush()
+                        bytes_written[0] += len(payload)
+                        remaining -= len(payload)
+                    self.wfile.write(b"0\r\n\r\n")
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), ChunkedHandler)
+        srv.daemon_threads = True
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+
+        def hybrid_resolver(host: str, port: int):
+            if host == "stream.test":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", srv.server_port))]
+            return public_host.resolve_public_addresses(host, port)
+
+        try:
+            with transcribe._PublicMediaProxy(max_bytes=4096, resolver=hybrid_resolver) as proxy:
+                with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock:
+                    sock.sendall(b"GET http://stream.test/live HTTP/1.1\r\nHost: stream.test\r\n\r\n")
+                    received = bytearray()
+                    try:
+                        while True:
+                            chunk = sock.recv(4096)
+                            if not chunk:
+                                break
+                            received.extend(chunk)
+                    except OSError:
+                        pass
+                assert proxy.limit_exceeded is True
+                assert len(received) <= 4096
+                assert bytes_written[0] < total_stream_bytes
+
+                # Subsequent requests after limit_exceeded return 413 immediately.
+                with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock:
+                    sock.sendall(b"GET http://stream.test/next HTTP/1.1\r\nHost: stream.test\r\n\r\n")
+                    reply = sock.recv(1024).decode("latin-1")
+                assert reply.startswith("HTTP/1.1 413")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            thread.join(2)
+
+    def test_media_proxy_aborts_connect_tunnel_mid_transfer_at_max_bytes(self) -> None:
+        upstream_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        upstream_srv.bind(("127.0.0.1", 0))
+        upstream_srv.listen(4)
+        upstream_port = upstream_srv.getsockname()[1]
+        bytes_written = [0]
+        total_bytes = 2 * 1024 * 1024
+        stop_event = threading.Event()
+
+        def serve_stream() -> None:
+            upstream_srv.settimeout(2.0)
+            try:
+                conn, _ = upstream_srv.accept()
+            except OSError:
+                return
+            with conn:
+                chunk = b"B" * 8192
+                remaining = total_bytes
+                try:
+                    while remaining > 0 and not stop_event.is_set():
+                        conn.sendall(chunk)
+                        bytes_written[0] += len(chunk)
+                        remaining -= len(chunk)
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=serve_stream, daemon=True)
+        thread.start()
+
+        def hybrid_resolver(host: str, port: int):
+            if host == "tunnel.test":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", upstream_port))]
+            return public_host.resolve_public_addresses(host, port)
+
+        try:
+            with transcribe._PublicMediaProxy(max_bytes=4096, resolver=hybrid_resolver) as proxy:
+                with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock:
+                    sock.sendall(b"CONNECT tunnel.test:443 HTTP/1.1\r\nHost: tunnel.test:443\r\n\r\n")
+                    buf = bytearray()
+                    while b"\r\n\r\n" not in buf:
+                        part = sock.recv(1024)
+                        assert part
+                        buf.extend(part)
+                    header, _, tail = bytes(buf).partition(b"\r\n\r\n")
+                    assert header.startswith(b"HTTP/1.1 200")
+                    received = bytearray(tail)
+                    try:
+                        while True:
+                            part = sock.recv(4096)
+                            if not part:
+                                break
+                            received.extend(part)
+                    except OSError:
+                        pass
+                assert proxy.limit_exceeded is True
+                assert len(received) <= 4096
+                assert bytes_written[0] < total_bytes
+        finally:
+            stop_event.set()
+            upstream_srv.close()
+            thread.join(2)
+
+    @pytest.mark.skipif(shutil.which("yt-dlp") is None, reason="yt-dlp binary not installed")
+    def test_real_ytdlp_cannot_ssrf_via_redirect_or_hls_through_media_proxy(
+        self, tmp_path: Path,
+    ) -> None:
+        secret_hits: list[str] = []
+
+        class SecretHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                secret_hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"SECRET_AUDIO")
+
+        secret_srv = ThreadingHTTPServer(("127.0.0.1", 0), SecretHandler)
+        secret_srv.daemon_threads = True
+        secret_thread = threading.Thread(target=secret_srv.serve_forever, daemon=True)
+        secret_thread.start()
+
+        class FrontHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{secret_srv.server_port}/secret.mp3")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                elif self.path == "/evil.m3u8":
+                    body = (
+                        "#EXTM3U\n"
+                        "#EXT-X-VERSION:3\n"
+                        "#EXT-X-TARGETDURATION:2\n"
+                        "#EXTINF:2.0,\n"
+                        f"http://127.0.0.1:{secret_srv.server_port}/seg0.ts\n"
+                        "#EXT-X-ENDLIST\n"
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+        front_srv = ThreadingHTTPServer(("127.0.0.1", 0), FrontHandler)
+        front_srv.daemon_threads = True
+        front_thread = threading.Thread(target=front_srv.serve_forever, daemon=True)
+        front_thread.start()
+
+        def hybrid_resolver(host: str, port: int):
+            if host == "public.test":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", front_srv.server_port))]
+            return public_host.resolve_public_addresses(host, port)
+
+        try:
+            with transcribe._PublicMediaProxy(max_bytes=1024 * 1024, resolver=hybrid_resolver) as proxy:
+                env = transcribe._sanitized_ytdlp_env(proxy.url)
+                for path in ("/redirect", "/evil.m3u8"):
+                    out_file = str(tmp_path / f"out_{path.strip('/').replace('.', '_')}.m4a")
+                    ok = transcribe._run([
+                        "yt-dlp",
+                        "--ignore-config",
+                        "--no-plugin-dirs",
+                        "--no-cookies-from-browser",
+                        "--no-playlist",
+                        "--no-live-from-start",
+                        "--match-filter", "!is_live",
+                        "--max-filesize", transcribe.MAX_DOWNLOAD_SIZE_ARG,
+                        "--downloader", "dash,m3u8:native",
+                        "--proxy", proxy.url,
+                        "-f", "bestaudio[protocol*=http]/bestaudio[protocol^=m3u8]",
+                        "-o", out_file,
+                        "--",
+                        f"http://public.test{path}",
+                    ], timeout=15.0, env=env)
+                    assert ok is False
+            assert secret_hits == []
+        finally:
+            front_srv.shutdown()
+            front_srv.server_close()
+            front_thread.join(2)
+            secret_srv.shutdown()
+            secret_srv.server_close()
+            secret_thread.join(2)
 
     @pytest.mark.parametrize("filename", ["http_clip.mp3", "-leading_dash.mp3"])
     def test_local_files_with_http_prefix_or_leading_dash_handled_safely(

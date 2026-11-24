@@ -1129,6 +1129,13 @@ _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MAX_TRANSCRIPT_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MiB cap for watch HTML & VTT
 _YT_TRANSCRIPT_EXACT_HOSTS = frozenset({"youtube.com", "video.google.com"})
 _YT_TRANSCRIPT_SUFFIX_HOSTS = (".youtube.com", ".googlevideo.com", ".ytimg.com")
+_YT_TRANSCRIPT_REDIRECT_POLICY = {
+    "https_only": True,
+    "require_public_syntax": True,
+    "exact_hosts": sorted(_YT_TRANSCRIPT_EXACT_HOSTS),
+    "suffix_hosts": list(_YT_TRANSCRIPT_SUFFIX_HOSTS),
+    "allowed_ports": [443],
+}
 _STRICT_HOSTNAME_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
@@ -1200,6 +1207,7 @@ def _read_transcript_url(req: urllib.request.Request, timeout: float) -> str:
         )
     setattr(req, http._REDIRECT_GUARD_ATTR, _is_allowed_youtube_transcript_url)
     setattr(req, http._PUBLIC_ONLY_ATTR, True)
+    setattr(req, bounded_get._REDIRECT_POLICY_ATTR, _YT_TRANSCRIPT_REDIRECT_POLICY)
     deadline = _lane_deadline()
     if deadline is None:
         with http.open_request(req, timeout) as response:
@@ -1211,6 +1219,7 @@ def _read_transcript_url(req: urllib.request.Request, timeout: float) -> str:
     _, body, error = bounded_get.get(
         req, timeout=timeout, deadline_monotonic=deadline,
         cancel=limit.cancel if limit else None, read_error_body=False,
+        max_bytes=_MAX_TRANSCRIPT_RESPONSE_BYTES,
     )
     if error is not None:
         raise error
