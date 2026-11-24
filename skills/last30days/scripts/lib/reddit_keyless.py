@@ -49,9 +49,9 @@ import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
-from . import http
+from . import health, http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
 from . import reddit_discover, reddit_envelope, reddit_health, reddit_hydrate, reddit_refs, reddit_session, web_search_keyless
 # High-upvote posts from targeted-sub listings can bury on-topic search hits
@@ -442,6 +442,7 @@ def _web_floor(
     from_date: Optional[str],
     to_date: Optional[str],
     deadline: Optional[float],
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
     reddit_health.seed_web_rungs()
@@ -452,11 +453,15 @@ def _web_floor(
         discover_cutoff = _web_discover_deadline(deadline)
         discover_kw = {"deadline": discover_cutoff} if discover_cutoff is not None else {}
         found = _within(
-            discover_cutoff, "web floor", partial,
+            discover_cutoff, "web floor", None,
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
             floor=partial, **discover_kw,
+            **({"config": config} if config is not None else {}),
         )
+        wait_expired = found is None
+        if wait_expired:
+            found = partial
         floor = (
             found.snapshot()
             if hasattr(found, "snapshot")
@@ -465,6 +470,9 @@ def _web_floor(
             )
         )
         _record_web_rungs(floor)
+        _note_searxng_rung(floor)
+        if wait_expired or floor.timed_out:
+            _mark("web", health.TIMEOUT)
         if not floor.refs:
             return []
         if deadline is not None and deadline - time.monotonic() < _WEB_HYDRATION_MIN_SECONDS:
@@ -498,6 +506,30 @@ def _web_floor(
     for post in bar.kept:
         post["topic_bar"] = True
     return bar.kept
+
+
+# What the optional SearXNG fallback answered when it failed. This is a note on the
+# fallback itself. Its refusals say nothing about reddit.com, so they never become
+# a Reddit path state or touch the shared rung health. The wording avoids every phrase
+# that http.classify_failure reads, so a note can never change how a detail is classified.
+_SEARXNG_NOTES = {
+    web_search_keyless.BLOCKED: "refused (403)",
+    web_search_keyless.THROTTLED: "throttled (429)",
+    health.TIMEOUT: "ran out of time",
+    web_search_keyless.ERROR: "failed",
+}
+
+
+def searxng_note_texts() -> frozenset[str]:
+    """Every note the SearXNG fallback can produce. Nothing else is ever shown as one."""
+    return frozenset(f"SearXNG fallback {note}" for note in _SEARXNG_NOTES.values())
+
+
+def _note_searxng_rung(floor: "reddit_discover.WebFloor") -> None:
+    for state in floor.searxng_failures:
+        note = _SEARXNG_NOTES.get(state)
+        if note:
+            _note(f"SearXNG fallback {note}")
 
 
 _RUNG_STATES = {
@@ -693,6 +725,7 @@ def _discover(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     # The host's own thread refs come first (best-first, KTD12): they cost
     # only hydration, and every other layer merges into them by thread id.
@@ -737,6 +770,7 @@ def _discover(
     else:
         web_posts = _web_floor(
             topic, depth, subreddits, dedicated_subreddits, from_date, to_date, deadline,
+            **({"config": config} if config is not None else {}),
         )
 
     # Dedicated lane: the entity's home subs are wholly on-topic. Pull
@@ -1065,6 +1099,7 @@ def search_and_enrich(
     depth: str = "default",
     subreddits: Optional[List[str]] = None,
     dedicated_subreddits: Optional[List[str]] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Full keyless Reddit pipeline: discover then enrich.
 
@@ -1076,6 +1111,7 @@ def search_and_enrich(
         subreddits: Optional pre-resolved broad/category subreddit names (no r/)
         dedicated_subreddits: Optional entity-home subreddit names (no r/) pulled
             in full (top+hot+new) and exempt from the relevance floor.
+        config: Optional pre-loaded per-run config mapping.
 
     Returns:
         List of normalized item dicts matching the reddit_public output shape,
@@ -1086,6 +1122,7 @@ def search_and_enrich(
     posts = _discover(
         topic, depth, subreddits, dedicated_subreddits, from_date=from_date, to_date=to_date,
         **({"deadline": deadline} if deadline is not None else {}),
+        **({"config": config} if config is not None else {}),
     )
     if not posts:
         return []

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import errno
 import json
 import locale
 import os
@@ -315,13 +316,36 @@ def _is_symlink_or_junction(path: Path) -> bool:
     return bool(isjunction and isjunction(path))
 
 
+class ConfigReadError(OSError):
+    """A config file that exists could not be read right now (the cause is chained)."""
+
+
+# A missing file, a path that is not a file, or a refused symlink is an ordinary
+# absent or unsafe config. Any other read failure may pass on a later attempt.
+_ABSENT_OR_UNSAFE_ERRNOS = frozenset({
+    errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EMLINK, errno.EISDIR,
+})
+
+
+def _is_transient_read_error(exc: OSError) -> bool:
+    if isinstance(exc, (FileNotFoundError, NotADirectoryError, IsADirectoryError)):
+        return False
+    return exc.errno not in _ABSENT_OR_UNSAFE_ERRNOS
+
+
 def load_env_file(
     path: Path,
     *,
     allow_symlink: bool = True,
     strict_keys: bool = False,
+    raise_read_errors: bool = False,
 ) -> dict[str, str]:
-    """Load environment variables from a file."""
+    """Load environment variables from a file.
+
+    An unreadable file yields ``{}`` unless ``raise_read_errors`` is set. Then a
+    read failure that could pass on a later attempt raises ``ConfigReadError``, while a
+    missing file or a refused symlink still yields ``{}``.
+    """
     env: dict[str, str] = {}
     if not path:
         return env
@@ -350,7 +374,9 @@ def load_env_file(
             fd = os.open(path.name, flags, dir_fd=parent_fd)
         else:
             fd = os.open(path, flags)
-    except OSError:
+    except OSError as exc:
+        if raise_read_errors and _is_transient_read_error(exc):
+            raise ConfigReadError(f"config file could not be opened ({type(exc).__name__})") from exc
         return env
     finally:
         if parent_fd >= 0:
@@ -367,7 +393,9 @@ def load_env_file(
         fd = -1
         with handle:
             raw = handle.read(_MAX_ENV_FILE_BYTES + 1)
-    except OSError:
+    except OSError as exc:
+        if raise_read_errors and _is_transient_read_error(exc):
+            raise ConfigReadError(f"config file could not be read ({type(exc).__name__})") from exc
         return env
     finally:
         if fd >= 0:
@@ -627,11 +655,34 @@ def _find_project_env() -> Path | None:
 
 def _load_config_files(
     policy: ConfigLoadPolicy,
+    *,
+    raise_read_errors: bool = False,
 ) -> tuple[dict[str, str], dict[str, str], Path | None]:
-    file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
+    file_env = (
+        load_env_file(CONFIG_FILE, raise_read_errors=raise_read_errors) if CONFIG_FILE else {}
+    )
     project_path = _find_project_env() if _project_config_trusted(policy, file_env) else None
-    project_env = load_env_file(project_path, allow_symlink=False) if project_path else {}
+    project_env = (
+        load_env_file(project_path, allow_symlink=False, raise_read_errors=raise_read_errors)
+        if project_path else {}
+    )
     return file_env, project_env, project_path
+
+
+def resolve_searxng_url() -> str | None:
+    """Read only the approved SearXNG setting, without exporting process settings."""
+    key = "LAST30DAYS_SEARXNG_URL"
+    value = os.environ.get(key)
+    if value and not is_unsubstituted_template(value):
+        return value
+    # A read failure that may pass raises ConfigReadError, so a caller can retry instead of
+    # remembering "no URL". A missing or unsafe file is still just absent.
+    file_env, project_env, _ = _load_config_files(ConfigLoadPolicy(), raise_read_errors=True)
+    for layer in (project_env, file_env):
+        value = layer.get(key)
+        if value is not None and not is_unsubstituted_template(value):
+            return value
+    return None
 
 
 def has_recorded_browser_consent() -> bool:

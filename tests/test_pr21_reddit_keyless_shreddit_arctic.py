@@ -996,7 +996,9 @@ class TestGreptileFixes:
         query2_started = threading.Event()
         release_query2 = threading.Event()
 
-        def fake_keyless_search(query, date_range, config, count=20, freshness=None):
+        def fake_keyless_search(query, date_range, config, count=20, freshness=None, *,
+                                deadline_monotonic, accept_result=None):
+            assert deadline_monotonic is not None
             if "r/ghostty" not in query:
                 return (
                     [{
@@ -1066,7 +1068,9 @@ class TestGreptileFixes:
 
         # With a 2.9s budget where the single query takes 0.35s (> old 100ms cutoff),
         # _web_floor must still find and hydrate query 1's thread.
-        def moderate_query(query, date_range, config, count=20, freshness=None):
+        def moderate_query(query, date_range, config, count=20, freshness=None, *,
+                           deadline_monotonic, accept_result=None):
+            assert deadline_monotonic is not None
             time.sleep(0.35)
             return (
                 [{
@@ -1507,5 +1511,3 @@ class TestGreptileFixes:
             deadline=1234.5,
             post_author="Alice",
         )
-
-

@@ -3555,6 +3555,7 @@ def run(
             try:
                 raw_items, artifact = future.result(timeout=0)
             except Exception as exc:
+                _record_reddit_exception_notes(bundle, source, exc)
                 # Share 429 signal immediately (even if it came from a 5xx retry)
                 # so pending futures skip this source.
                 if _is_rate_limit_error(exc):
@@ -4009,6 +4010,7 @@ def run(
                 if source_item_key(item, polymarket_eids_by_url=poly_eids) in retained_markets
             ]
     source_status = _finalize_source_status(bundle.source_status, items_by_source)
+    _attach_reddit_lane_notes(bundle, source_status)
 
     candidates = weighted_rrf(
         bundle.items_by_source_and_query,
@@ -6044,9 +6046,16 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 class SourceRunError(RuntimeError):
     """Source-specific failure that survived a module's fallback logic."""
 
-    def __init__(self, message: str, state: schema.RunOutcomeState | None = None):
+    def __init__(
+        self,
+        message: str,
+        state: schema.RunOutcomeState | None = None,
+        lane_notes: Iterable[str] = (),
+    ):
         super().__init__(message)
         self.outcome_state = state or http.classify_failure(message=message)
+        # Display notes the lane observed. They never decide the state or the reason.
+        self.lane_notes = tuple(dict.fromkeys(lane_notes))
 
 
 def _classify_source_failure(exc: Exception) -> tuple[schema.RunOutcomeState, bool]:
@@ -6180,6 +6189,41 @@ def _with_reddit_lane_notes(artifact: dict[str, Any], notes: list[str]) -> dict[
     return artifact
 
 
+def _record_reddit_exception_notes(
+    bundle: schema.RetrievalBundle, source: str, exc: BaseException,
+) -> None:
+    """Keep the lane notes a failed Reddit stream carried, so the final report can show them."""
+    if source != "reddit":
+        return
+    known = reddit_keyless.searxng_note_texts()
+    for note in getattr(exc, "lane_notes", ()):
+        if note in known:
+            bundle.record_detail(source, note)
+
+
+def _attach_reddit_lane_notes(
+    bundle: schema.RetrievalBundle,
+    source_status: dict[str, schema.SourceOutcome],
+) -> None:
+    """Show the run's observed SearXNG notes on Reddit's final failure detail.
+
+    The bundle keeps a hard failure's own detail and drops the staged notes, and between
+    streams it keeps whichever failure outranks the others. So the notes stay as separate
+    data in ``detail_by_source`` until the winning outcome is chosen and classified. Only
+    then are the missing ones added after the winner's own reason. The state, the reason
+    and ``errors_by_source`` are never touched. A delivered or empty outcome already shows
+    its notes and is left alone.
+    """
+    outcome = source_status.get("reddit")
+    if outcome is None or not outcome.detail or outcome.state in (health.OK, schema.NO_RESULTS):
+        return
+    known = reddit_keyless.searxng_note_texts()
+    seen = (bundle.detail_by_source.get("reddit") or "").split("; ")
+    missing = [note for note in dict.fromkeys(seen) if note in known and note not in outcome.detail]
+    if missing:
+        outcome.detail = "; ".join([outcome.detail, *missing])
+
+
 def _reddit_sc_incomplete_notes(result: Any) -> list[str]:
     """Extract deadline-incompleteness notes from a ScrapeCreators Reddit result."""
     if not isinstance(result, dict):
@@ -6205,6 +6249,24 @@ def _outcome_artifact(
             "attempted": attempted,
         }
     }
+
+
+def _captured_failures_are_only_timeouts() -> bool:
+    """True when nothing is captured, or every captured failure is a timeout.
+
+    A timeout's own note is then the more specific account of the same failure. A failure of
+    another kind, such as a 429, keeps its priority and its kind through the stream resolver.
+    """
+    return all(failure.outcome_state == health.TIMEOUT for failure in http.captured_failures())
+
+
+def _reddit_timeout_artifact() -> dict[str, Any]:
+    # Give the stream resolver first choice of any recorded transport failure.
+    if http.has_captured_failures():
+        return {}
+    return _outcome_artifact(
+        health.TIMEOUT, "Reddit ran out of search time before it found threads",
+    )
 
 
 def _result_outcome_artifact(source: str, result: Any) -> dict[str, Any]:
@@ -7237,6 +7299,7 @@ def _retry_thin_sources(
                 ) = future.result(timeout=0)
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
+                _record_reddit_exception_notes(bundle, source, exc)
                 state, attempted = _classify_source_failure(exc)
                 bundle.record_failure(
                     source,
@@ -8096,6 +8159,7 @@ def _retrieve_stream_impl(
         reddit_query = raw_topic or subquery.search_query
         dedicated_subreddits = config.get("_dedicated_subreddits") or None
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
+        research_deadline = config.get("_research_deadline")
         if env.reddit_scrapecreators_primary(config):
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             if config.get("_reddit_envelope") is not None:
@@ -8152,12 +8216,26 @@ def _retrieve_stream_impl(
                     f"[Reddit] ScrapeCreators primary failed "
                     f"({type(exc).__name__}: {exc}), using public fallback\n"
                 )
-            public_failure: Exception | None = None
-            try:
-                public_results = reddit_public.search_reddit_public(
-                    reddit_query, from_date, to_date, depth=depth,
-                    subreddits=subreddits,
+            # Leave time to hand back the public lane's partial results. The paid primary has
+            # spent part of the budget, so size the margin from what is left now (as the
+            # public-first lane does) rather than a flat 20s that can swallow a short budget.
+            public_deadline = (
+                research_deadline - min(
+                    REDDIT_LANE_RETURN_MARGIN_SECONDS,
+                    max(0.0, research_deadline - time.monotonic()) * 0.15,
                 )
+                if research_deadline is not None else None
+            )
+            public_failure: Exception | None = None
+            fallback_notes: list[str] = []
+            try:
+                with reddit_keyless.lane_deadline(public_deadline), \
+                        reddit_keyless.lane_notes() as fallback_notes, \
+                        reddit_keyless.lane_paths() as lane_paths:
+                    public_results = reddit_public.search_reddit_public(
+                        reddit_query, from_date, to_date, depth=depth,
+                        subreddits=subreddits, config=config,
+                    )
                 if public_results:
                     if primary_failure is not None:
                         state = (
@@ -8174,12 +8252,12 @@ def _retrieve_stream_impl(
                             # puts "reddit" in rate_limited_sources and skips later
                             # subqueries before they can use the working fallback.
                             state = health.PARTIAL
-                        return public_results, _outcome_artifact(
+                        return public_results, _with_reddit_lane_notes(_outcome_artifact(
                             state,
                             f"Reddit primary failed; public fallback returned "
                             f"{len(public_results)} items: {primary_failure}",
-                        )
-                    return public_results, {}
+                        ), fallback_notes)
+                    return public_results, _with_reddit_lane_notes({}, fallback_notes)
                 sys.stderr.write(
                     "[Reddit] Public fallback returned no items after "
                     "ScrapeCreators primary miss\n"
@@ -8203,8 +8281,11 @@ def _retrieve_stream_impl(
                 raise SourceRunError(
                     f"Reddit primary and fallback produced no results after failure: {failure}",
                     state,
+                    lane_notes=fallback_notes,
                 )
-            return [], {}
+            if lane_paths.get("web") == health.TIMEOUT or reddit_keyless._out_of_time(public_deadline):
+                return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), fallback_notes)
+            return [], _with_reddit_lane_notes({}, fallback_notes)
 
         # Default: public Reddit first (free). ScrapeCreators backfills when the
         # free path returns fewer than the thinness floor (env.reddit_sc_min_items:
@@ -8247,6 +8328,7 @@ def _retrieve_stream_impl(
                 public_results = reddit_public.search_reddit_public(
                     reddit_query, from_date, to_date, depth=depth,
                     subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
+                    config=config,
                 ) or []
         except Exception as exc:
             public_failure = exc
@@ -8260,19 +8342,22 @@ def _retrieve_stream_impl(
                     if isinstance(exc, TimeoutError)
                     else reddit.classify_run_failure(str(exc))
                 )
-                raise SourceRunError(f"Reddit public search failed: {exc}", state) from exc
+                raise SourceRunError(
+                    f"Reddit public search failed: {exc}", state, lane_notes=lane_notes,
+                ) from exc
             sys.stderr.write(", using ScrapeCreators backup\n")
-        free_timed_out = (
+        # An actual web cutoff outranks completed failures; running inside the
+        # return margin does not (every path may have finished and failed).
+        free_cut_off = (
+            not public_results and public_failure is None
+            and lane_paths.get("web") == health.TIMEOUT
+        )
+        free_timed_out = free_cut_off or (
             not public_results and public_failure is None
             and reddit_keyless._out_of_time(lane_deadline)
         )
         if free_timed_out and not has_sc_key:
-            # The lane started with no budget left (queued behind slower
-            # streams): that is a timeout, not a topic nobody posted about.
-            return [], _outcome_artifact(
-                health.TIMEOUT,
-                "Reddit had no time left in the run's budget before it found threads",
-            )
+            return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), lane_notes)
         free_failed = (
             not public_results and public_failure is None
             and reddit_health.every_path_failed(lane_paths)
@@ -8280,7 +8365,9 @@ def _retrieve_stream_impl(
         if free_failed and not has_sc_key:
             # Every path Reddit was asked through refused or failed: a
             # transport failure, never a topic nobody posted about.
-            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
+            return [], _with_reddit_lane_notes(
+                _outcome_artifact(*reddit_health.failure_outcome(lane_paths)), lane_notes,
+            )
         # The floor counts the free threads that are on topic for this stream,
         # the ones its relevance prune will keep. Enough of them, or no key to
         # backfill with -> done. max(min_items, 1) keeps the default
@@ -8348,25 +8435,39 @@ def _retrieve_stream_impl(
                     # A ScrapeCreators rate limit says nothing about
                     # reddit.com (and the run memo already stops a retry).
                     artifact["_source_outcome_detail_state"] = state
-                return public_results, artifact
+                return public_results, _with_reddit_lane_notes(artifact, lane_notes)
             failed_paths = reddit_health.failures(lane_paths)
-            return public_results, _outcome_artifact(
+            return public_results, _with_reddit_lane_notes(_outcome_artifact(
                 state,
                 f"Reddit backup failed after {len(public_results)} public items: {exc}"
                 + "".join(f"; {failed}" for failed in failed_paths),
-            )
+            ), lane_notes)
         merged = _merge_reddit_items(public_results, sc_items)
         sc_notes = _reddit_sc_incomplete_notes(result)
-        if not merged and free_failed:
-            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
-        if not merged and isinstance(result, dict) and result.get("incomplete"):
-            return [], _outcome_artifact(
+        backfill_timeout = (
+            _outcome_artifact(
                 health.TIMEOUT,
                 str(
                     result.get("incomplete_note")
                     or "Reddit ScrapeCreators backfill timed out before completing"
                 ),
             )
+            if isinstance(result, dict) and result.get("incomplete") else None
+        )
+        if not merged and free_cut_off:
+            # Both stages ran out of time, so the paid backfill's own note is the specific
+            # one. Only a captured failure of another kind is left to the stream resolver.
+            if backfill_timeout is not None and _captured_failures_are_only_timeouts():
+                return [], _with_reddit_lane_notes(backfill_timeout, lane_notes)
+            return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), lane_notes)
+        if not merged and free_failed:
+            return [], _with_reddit_lane_notes(
+                _outcome_artifact(*reddit_health.failure_outcome(lane_paths)), lane_notes,
+            )
+        if not merged and backfill_timeout is not None:
+            return [], _with_reddit_lane_notes(backfill_timeout, lane_notes)
+        if not merged and free_timed_out:
+            return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), lane_notes)
         if public_failure is not None:
             state = (
                 health.TIMEOUT
