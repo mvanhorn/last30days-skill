@@ -2200,13 +2200,65 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         isinstance(m, dict) and m.get("active", True) and not m.get("closed", False)
         for m in markets
     )
+    live_event_markets = _live_markets(event, include_closed=not has_active)
+    # Build market_values directly from eligible child markets before checking
+    # whether parse_polymarket_response produced display rows: if one market
+    # resolves while the only open sibling has zero liquidity, or a two-market
+    # event drops to one active Yes/No market without outcome_market_ids,
+    # saved market_id claims must still verify using the same Yes extraction
+    # rule parse_polymarket_response applies when saving multi-market outcomes.
+    event_open = event.get("active", True) and not event.get("closed", False)
+    all_dict_markets = [m for m in markets if isinstance(m, dict)]
+    all_mid_counts: dict[str, int] = {}
+    for m in all_dict_markets:
+        clean_mid = _market_id(m)
+        if clean_mid:
+            all_mid_counts[clean_mid] = all_mid_counts.get(clean_mid, 0) + 1
+    eligible_market_ids = (
+        {id(m) for m in live_event_markets}
+        if (not has_active or event_open)
+        else set()
+    )
+    market_values: dict[str, Any] = {}
+    for m in all_dict_markets:
+        if id(m) not in eligible_market_ids and not m.get("closed", False):
+            continue
+        if not m.get("question"):
+            continue
+        clean_mid = _market_id(m)
+        if not clean_mid or all_mid_counts.get(clean_mid) != 1:
+            continue
+        pairs = _parse_outcome_prices(m)
+        yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
+        if yes_price is not None:
+            market_values[clean_mid] = yes_price
+
     parsed = parse_polymarket_response(
         {"events": [event]},
         include_all_outcomes=True,
         include_closed=not has_active,
     )
+    saved_market_id = (
+        None if datum_key == "end_date" else _saved_outcome_market_id(item, datum_key)
+    )
     if not parsed:
-        raise KeyError("Polymarket event is closed, unavailable, or malformed")
+        if not market_values:
+            raise KeyError("Polymarket event is closed, unavailable, or malformed")
+        snapshot = {
+            "values": {},
+            "legacy_values": {},
+            "market_values": market_values,
+            "blocked_repeats": [],
+            "legacy_blocked_repeats": [],
+            "url": str(getattr(item, "url", "")),
+            "timestamp": event.get("updatedAt"),
+        }
+        value = market_values.get(saved_market_id) if saved_market_id else None
+        if value is None:
+            missing = DatumNotFound(f"Polymarket datum {datum_key!r} was not found")
+            missing.snapshot = snapshot
+            raise missing
+        return {"value": value, **snapshot}
     refreshed = parsed[0]
     values: dict[str, Any] = {}
     outcome_pairs = refreshed.get("outcome_prices") or []
@@ -2230,7 +2282,6 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     # dropped market are not answered at all. Track current and legacy dropped
     # labels separately so a dropped market's legacy cut cannot block an
     # unrelated current outcome name.
-    live_event_markets = _live_markets(event, include_closed=not has_active)
     sibling_event_markets = [
         m for m in live_event_markets if isinstance(m, dict) and m.get("question")
     ]
@@ -2273,36 +2324,6 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         and m.get("question")
         and (not has_active or (m.get("active", True) and not m.get("closed", False)))
     ]
-    # Build market_values directly from eligible binary child markets regardless
-    # of how parse_polymarket_response formatted them: if a two-market event
-    # drops to a single active market, the parser displays Yes/No without
-    # outcome_market_ids, yet the remaining active market (and any closed
-    # sibling carrying its resolution price) must remain verifiable by ID.
-    all_dict_markets = [m for m in markets if isinstance(m, dict)]
-    all_mid_counts: dict[str, int] = {}
-    for m in all_dict_markets:
-        clean_mid = _market_id(m)
-        if clean_mid:
-            all_mid_counts[clean_mid] = all_mid_counts.get(clean_mid, 0) + 1
-    eligible_market_ids = {id(m) for m in live_event_markets}
-    market_values: dict[str, Any] = {}
-    for m in all_dict_markets:
-        if id(m) not in eligible_market_ids and not m.get("closed", False):
-            continue
-        raw_outcomes = [
-            str(name).strip().lower()
-            for name in _json_list(m.get("outcomes"))
-            if name is not None and str(name).strip()
-        ]
-        if len(raw_outcomes) != 2 or set(raw_outcomes) != {"yes", "no"}:
-            continue
-        clean_mid = _market_id(m)
-        if not clean_mid or all_mid_counts.get(clean_mid) != 1:
-            continue
-        pairs = _parse_outcome_prices(m)
-        yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
-        if yes_price is not None:
-            market_values[clean_mid] = yes_price
 
     ambiguous_current: set[str] = set()
     ambiguous_legacy: set[str] = set()
@@ -2365,7 +2386,6 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
 
     blocked_current = frozenset(dropped_current)
     blocked_legacy = frozenset(dropped_legacy)
-    saved_market_id = _saved_outcome_market_id(item, datum_key)
     if saved_market_id:
         value = market_values.get(saved_market_id)
     else:

@@ -1580,6 +1580,159 @@ def test_greptile_r8_last_remaining_active_market_still_verifies_by_market_id(mo
     assert verdicts_only_alice[0].current_value == 0.70
 
 
+def test_greptile_r9_resolved_market_verifies_when_only_open_market_has_zero_liquidity(
+    monkeypatch,
+):
+    """Greptile R9 P1 (4682261324):
+    If one market resolves at 0% and the only open market has zero liquidity,
+    parse_polymarket_response returns no display rows, yet refetch_datum and
+    cached verify_report must still verify the resolved market by market ID."""
+    from lib import normalize
+
+    initial_event = {
+        "id": "716",
+        "slug": "zero-liq-plus-resolved",
+        "title": "Two-market race?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {**_binary_submarket("Will Alice win?", "Alice", 0.40), "id": "m-alice"},
+            {**_binary_submarket("Will Bob win?", "Bob", 0.60), "id": "m-bob"},
+        ],
+    }
+    [parsed] = polymarket.parse_polymarket_response({"events": [initial_event]})
+    assert parsed["outcome_prices"] == [("Bob", 0.60), ("Alice", 0.40)]
+    assert parsed["outcome_market_ids"] == ["m-bob", "m-alice"]
+    [saved_item] = normalize.normalize_source_items(
+        "polymarket", [parsed], "2026-10-25", "2026-11-24",
+    )
+
+    # Alice stays open with zero liquidity; Bob resolves to 0.0 (closed=True).
+    updated_event = {
+        **initial_event,
+        "markets": [
+            {
+                **_binary_submarket("Will Alice win?", "Alice", 0.50),
+                "id": "m-alice",
+                "liquidity": "0",
+            },
+            {
+                **_binary_submarket("Will Bob win?", "Bob", 0.0, closed=True),
+                "id": "m-bob",
+                "liquidity": "0",
+            },
+        ],
+    }
+    # Confirm display parse produces no rows when open market has zero liquidity.
+    assert (
+        polymarket.parse_polymarket_response(
+            {"events": [updated_event]}, include_all_outcomes=True, include_closed=False,
+        )
+        == []
+    )
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        polymarket.http, "request", lambda *_a, **_k: calls.append(1) or updated_event,
+    )
+    # Direct fetch: Bob resolves to 0.0; Alice raises DatumNotFound with snapshot.
+    assert polymarket.refetch_datum(saved_item, "Bob")["value"] == 0.0
+    with pytest.raises(polymarket.DatumNotFound) as exc_info:
+        polymarket.refetch_datum(saved_item, "Alice")
+    assert exc_info.value.snapshot is not None
+    assert exc_info.value.snapshot["market_values"] == {"m-bob": 0.0}
+
+    # Cached verify_report (Bob first, Alice second, end_date third): 1 HTTP call.
+    calls.clear()
+    verdicts = freshness.verify_report(
+        _report(saved_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == ["stale", "unsupported", "unsupported"]
+    assert verdicts[0].current_value == 0.0
+    assert verdicts[0].detail == "moved: 60% -> 0%"
+
+    # Reverse claim order (Alice first misses and caches snapshot -> Bob still resolves).
+    reversed_item = _item(
+        "polymarket",
+        item_id="pm-716-rev",
+        url=saved_item.url,
+        title=saved_item.title,
+        metadata={
+            **saved_item.metadata,
+            "outcome_prices": [("Alice", 0.40), ("Bob", 0.60)],
+            "outcome_market_ids": ["m-alice", "m-bob"],
+        },
+    )
+    calls.clear()
+    rev_verdicts = freshness.verify_report(
+        _report(reversed_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in rev_verdicts] == ["unsupported", "stale", "unsupported"]
+    assert rev_verdicts[1].current_value == 0.0
+    assert rev_verdicts[1].detail == "moved: 60% -> 0%"
+
+
+def test_greptile_r9_yes_other_child_market_verifies_with_same_yes_rule(monkeypatch):
+    """Greptile R9 P2 (4682261343):
+    If a child market has ['Yes', 'Other'] outcomes, parse_polymarket_response
+    saves its Yes price and market_id during multi-market synthesis. refetch_datum
+    and cached verify_report must accept that same Yes outcome instead of
+    requiring strictly {'yes', 'no'} on every child market."""
+    from lib import normalize
+
+    event = {
+        "id": "717",
+        "slug": "yes-other-child",
+        "title": "Mixed binary child race?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {
+                **_binary_submarket("Will Alice win?", "Alice", 0.55),
+                "id": "m-alice",
+                "volume": "50000",
+            },
+            {
+                **_binary_submarket("Will Bob win?", "Bob", 0.35),
+                "id": "m-bob",
+                "volume": "10000",
+                "outcomes": '["Yes", "Other"]',
+            },
+        ],
+    }
+    [parsed] = polymarket.parse_polymarket_response({"events": [event]})
+    assert parsed["outcome_prices"] == [("Alice", 0.55), ("Bob", 0.35)]
+    assert parsed["outcome_market_ids"] == ["m-alice", "m-bob"]
+    [saved_item] = normalize.normalize_source_items(
+        "polymarket", [parsed], "2026-10-25", "2026-11-24",
+    )
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event,
+    )
+    assert polymarket.refetch_datum(saved_item, "Alice")["value"] == 0.55
+    assert polymarket.refetch_datum(saved_item, "Bob")["value"] == 0.35
+
+    calls.clear()
+    verdicts = freshness.verify_report(
+        _report(saved_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == ["current", "current", "current"]
+    assert verdicts[1].current_value == 0.35
+
+
 
 
 

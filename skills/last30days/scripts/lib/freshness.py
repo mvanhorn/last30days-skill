@@ -498,7 +498,7 @@ def _lookup_cached_datum(
         return None
     values = cached_datum.values
     legacy_values = cached_datum.legacy_values
-    if values or legacy_values:
+    if values or legacy_values or cached_datum.market_values is not None:
         value = polymarket.resolve_snapshot_value(
             values or {},
             claim.datum_key,
