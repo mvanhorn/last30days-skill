@@ -794,9 +794,13 @@ def test_greptile_f1_lookback_days_3650_round_trips_and_over_limit_rejected_befo
         ("New Balance", "New Balance"),
         ("On Running", "On Running"),
         ("Best Buy", "Best Buy"),
+        ("Best Buy earnings", "Best Buy"),
+        ("Best Buy layoffs", "Best Buy"),
         ("Best Buy vs Target", "Best Buy"),
         ("Target vs Best Buy", "Best Buy"),
         ("The Verge", "The Verge"),
+        ("The Verge review", "The Verge"),
+        ("The Verge layoffs", "The Verge"),
         ("The Economist", "The Economist"),
         ("The Atlantic", "The Atlantic"),
         ("The Verge vs Wired", "The Verge"),
@@ -825,6 +829,7 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     assert query.extract_compound_terms("Best AI Tools") == []
     assert query.extract_compound_terms("Best VPN for travel") == []
     assert query.extract_compound_terms("Best VPN") == []
+    assert query.extract_compound_terms("Best Camera for travel") == []
     assert query.extract_compound_terms("Best Laptops") == []
     assert query.extract_compound_terms("Best Laptops for travel") == []
     assert query.extract_compound_terms("Top CRM for startups") == []
@@ -832,6 +837,9 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     assert query.extract_compound_terms("The best CRM for startups") == []
     assert query.extract_compound_terms("The Best VPN for travel") == []
     assert query.extract_compound_terms("The VPN") == []
+    assert query.extract_compound_terms("The Future of AI agents") == []
+    assert query.extract_compound_terms("The State of Python") == []
+    assert query.extract_compound_terms("The State of Python programming") == []
     assert query.extract_compound_terms("New VPN for travel") == []
     assert query.extract_compound_terms("New Balance vs On Running") == [
         "New Balance",
@@ -844,11 +852,14 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     [
         ("Best VPN for travel", "vpn travel"),
         ("Best VPN", "vpn"),
+        ("Best Camera for travel", "camera travel"),
         ("Best Laptops for travel", "laptops travel"),
         ("Top CRM for startups", "crm startups"),
         ("Top AI tools for coding", "ai coding"),
         ("The best CRM for startups", "crm startups"),
         ("The Best VPN for travel", "vpn travel"),
+        ("The Future of AI agents", "future ai agents"),
+        ("The State of Python", "state python"),
         ("New VPN for travel", "vpn travel"),
     ],
 )
@@ -870,20 +881,33 @@ def test_greptile_r2_f1_recommendation_prompts_never_quote_prompt_filler(
     assert plan.subqueries[0].search_query == expected_search
 
 
-@pytest.mark.parametrize("brand", ["New Balance", "On Running", "Best Buy", "The Verge"])
-def test_greptile_f2_planner_keeps_full_brand_intact_in_fallback_queries(brand: str):
-    core = query.extract_core_subject(brand, max_words=6, strip_suffixes=True)
-    kw = planner._keyword_query(brand, core)
-    assert f'"{brand}"' == kw
+@pytest.mark.parametrize(
+    "topic,expected_search",
+    [
+        ("New Balance", '"New Balance"'),
+        ("On Running", '"On Running"'),
+        ("Best Buy", '"Best Buy"'),
+        ("Best Buy earnings", '"Best Buy" earnings'),
+        ("Best Buy layoffs", '"Best Buy" layoffs'),
+        ("The Verge", '"The Verge"'),
+        ("The Verge review", '"The Verge"'),
+    ],
+)
+def test_greptile_f2_planner_keeps_full_brand_intact_in_fallback_queries(
+    topic: str, expected_search: str,
+):
+    core = query.extract_core_subject(topic, max_words=6, strip_suffixes=True)
+    kw = planner._keyword_query(topic, core)
+    assert kw == expected_search
 
     plan = planner._fallback_plan(
-        topic=brand,
+        topic=topic,
         available_sources=["reddit", "x"],
         requested_sources=None,
         depth="default",
     )
     assert plan.subqueries
-    assert f'"{brand}"' in plan.subqueries[0].search_query
+    assert plan.subqueries[0].search_query == expected_search
 
 
 def test_greptile_f3_competitors_filters_multiword_spaced_self_brand_variants():

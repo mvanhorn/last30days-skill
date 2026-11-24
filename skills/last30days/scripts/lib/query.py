@@ -209,6 +209,10 @@ _RECOMMENDATION_TRAILING_RE = re.compile(
     r"^\s+(?:for|in|to|under|of|on|with|by|near|around|20\d\d)\b",
     re.IGNORECASE,
 )
+_THE_GENERIC_TRAILING_RE = re.compile(
+    r"^\s+(?:of|for|in|to|about|behind|around|between|on|with)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_capitalized_or_brand(tok: str) -> bool:
@@ -226,20 +230,23 @@ def _should_preserve_leading_word(
     topic: str,
 ) -> bool:
     """Keep leading noise words only when they open a real multi-word brand
-    ('New Balance', 'On Running', 'The Verge', standalone/compared 'Best Buy')
-    rather than recommendation/prompt filler ('Best VPN for travel', 'Best
-    Laptops', 'The Best VPN', 'New VPN for travel')."""
+    ('New Balance', 'On Running', 'The Verge', 'Best Buy earnings') rather
+    than generic/recommendation phrases ('The Future of AI agents', 'Best VPN
+    for travel', 'Best Camera for travel', 'Best Laptops', 'The Best VPN')."""
     if len(words) < 2:
         return False
     first = words[0].lower()
     if first in _BRAND_LEADING_WORDS:
         return not (len(words) == 2 and words[1].isupper())
+    after = topic[match.end():]
     if first == 'the':
-        return (
+        if not (
             len(words) == 2
             and _is_title_case_word(words[1])
             and words[1].lower() not in _COMPOUND_EDGE_NOISE
-        )
+        ):
+            return False
+        return not _THE_GENERIC_TRAILING_RE.match(after)
     if first == 'best':
         if not (
             len(words) == 2
@@ -248,20 +255,7 @@ def _should_preserve_leading_word(
             and words[1].lower() not in _COMPOUND_EDGE_NOISE
         ):
             return False
-        stripped_topic = topic.strip().rstrip('?!.')
-        if match.group() == stripped_topic:
-            return True
-        after = topic[match.end():]
-        if _RECOMMENDATION_TRAILING_RE.match(after):
-            return False
-        before = topic[:match.start()]
-        return bool(
-            re.match(r"^\s+(?:vs\.?|versus|and|or)\s+\S", after, re.IGNORECASE)
-            or (
-                re.search(r"\S\s+(?:vs\.?|versus|and|or)\s+$", before, re.IGNORECASE)
-                and not after.strip("?!.,;:)")
-            )
-        )
+        return not _RECOMMENDATION_TRAILING_RE.match(after)
     return False
 
 
