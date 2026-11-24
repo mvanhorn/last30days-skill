@@ -29,6 +29,7 @@ import re
 import socket
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -443,12 +444,105 @@ class TestHigh183TokenValidationAndSecretScrubbing:
 
             assert lip == {}
             assert tg["items"] == []
+            assert "error" in tg
             stderr = capsys.readouterr().err
-            for surface in (stderr, ts["error"], th["error"], pi["error"], li["error"], bs["error"]):
+            for surface in (stderr, ts["error"], th["error"], pi["error"], li["error"], tg["error"], bs["error"]):
                 assert secret not in surface
                 assert "<redacted>" in surface
         finally:
             bluesky._reset_session_cache()
+
+    @pytest.mark.parametrize("status_code", [401, 500])
+    def test_http_request_scrubs_echoed_api_key_in_error_reason_and_body_before_recording(
+        self, status_code: int, capsys,
+    ) -> None:
+        secret = "SC_LIVE_ECHO_SECRET_987654"
+        url = "https://api.scrapecreators.com/v1/telegram/channel/posts?handle=aipost"
+
+        def fake_urlopen(req, timeout=None):
+            err_body = io.BytesIO(f'{{"error": "rejected x-api-key: {secret}"}}'.encode("utf-8"))
+            raise urllib.error.HTTPError(
+                url,
+                status_code,
+                f"Rejected key {secret}",
+                hdrs={},
+                fp=err_body,
+            )
+
+        with http.capture_failures() as failures, \
+                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen), \
+                mock.patch.object(http.time, "sleep"):
+            tg = telegram.search_telegram(
+                "ai agents",
+                "2026-06-01",
+                "2026-06-30",
+                token=secret,
+                config={"TELEGRAM_SOURCES": "aipost"},
+            )
+
+        assert failures, "expected http.capture_failures to record the terminal HTTP error"
+        recorded = failures[0]
+        assert recorded.status_code == status_code
+        assert str(status_code) in str(recorded)
+        assert secret not in str(recorded)
+        assert "<redacted>" in str(recorded)
+        assert recorded.body is not None
+        assert secret not in recorded.body
+        assert "<redacted>" in recorded.body
+
+        assert tg["items"] == []
+        assert "error" in tg
+        assert str(status_code) in tg["error"]
+        assert secret not in tg["error"]
+        assert "<redacted>" in tg["error"]
+        assert secret not in capsys.readouterr().err
+
+    def test_telegram_non_http_error_sets_error_and_keeps_fetching_other_channels(self) -> None:
+        # All channels fail with a non-HTTPError (e.g. invalid UTF-8 decode).
+        decode_err = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        with mock.patch.object(telegram.http, "get", side_effect=decode_err):
+            all_failed = telegram.search_telegram(
+                "ai agents",
+                "2026-06-01",
+                "2026-06-30",
+                token="valid-sc-key",
+                config={"TELEGRAM_SOURCES": "broken_chan"},
+            )
+        assert all_failed["items"] == []
+        assert "error" in all_failed
+        assert "UnicodeDecodeError" in all_failed["error"]
+        assert "@broken_chan" in all_failed["error"]
+
+        # First channel hits UnicodeDecodeError, second channel succeeds -> partial result.
+        def mixed_get(url, **kwargs):
+            handle = (kwargs.get("params") or {}).get("handle")
+            if handle == "broken_chan":
+                raise decode_err
+            return {
+                "success": True,
+                "channel": {"handle": "good_chan", "name": "Good", "subscriber_count": 100},
+                "posts": [{
+                    "id": "1",
+                    "text": "AI agents shipped",
+                    "published_at": "2026-06-15T10:00:00Z",
+                    "view_count": 50,
+                    "reaction_count": 5,
+                }],
+                "has_more": False,
+            }
+
+        with mock.patch.object(telegram.http, "get", side_effect=mixed_get):
+            partial = telegram.search_telegram(
+                "ai agents",
+                "2026-06-01",
+                "2026-06-30",
+                token="valid-sc-key",
+                config={"TELEGRAM_SOURCES": "broken_chan,good_chan"},
+            )
+        assert len(partial["items"]) == 1
+        assert partial["items"][0]["handle"] == "good_chan"
+        assert partial.get("partial") is True
+        assert "UnicodeDecodeError" in partial.get("error", "")
 
     def test_real_http_client_putheader_error_shape_is_scrubbed(self) -> None:
         """Exercise Python's real http.client.HTTPConnection.putheader ValueError."""
@@ -669,6 +763,21 @@ class TestHigh184XiaohongshuBaseUrlValidation:
         assert len(verified) == 1
         assert verified[0][4][0] == allowed_ip
 
+    def test_local_bridge_resolver_preserves_trailing_dot_for_dns_lookup(self, monkeypatch) -> None:
+        seen_hosts: list[str] = []
+
+        def fake_getaddrinfo(host, port, *a, **kw):
+            seen_hosts.append(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.168.1.50", port))]
+
+        monkeypatch.setattr(http.socket, "getaddrinfo", fake_getaddrinfo)
+        verified = http._resolve_local_bridge_addresses("bridge.local.", 18060)
+        assert seen_hosts == ["bridge.local."]
+        assert verified[0][4] == ("192.168.1.50", 18060)
+
+        with pytest.raises(public_host.NonPublicAddressError):
+            http._resolve_local_bridge_addresses("bridge.local..", 18060)
+
     def test_http_request_rejects_mutually_exclusive_pinning_flags(self) -> None:
         with pytest.raises(ValueError, match="mutually exclusive"):
             http.request("GET", "https://example.com", public_only=True, local_bridge_only=True)
@@ -863,6 +972,11 @@ class TestHigh185LinkedInAuthorUrlValidation:
             "https://www.linkedin.com/in/.",
             "https://www.linkedin.com/in/./",
             "https://www.linkedin.com/in/%2e",
+            "https://www.linkedin.com/in/janedoe/details/",
+            "https://www.linkedin.com/in/janedoe/recent-activity/all/",
+            "https://www.linkedin.com/in/janedoe//",
+            "https://www.linkedin.com/in/janedoe%2fdetails",
+            "https://www.linkedin.com/in/janedoe%5cdetails",
             "https://www.linkedin.com/in/../company/acme",
             "https://www.linkedin.com/in/%2e%2e/company/acme",
             "https://www.linkedin.com../in/janedoe",
@@ -1101,6 +1215,20 @@ class TestHigh190GitHubQualifierSanitization:
         start2 = time.monotonic()
         assert github.strip_search_qualifiers(mixed) == ""
         assert time.monotonic() - start2 < 0.2
+
+    def test_strip_search_qualifiers_linear_time_on_long_backslash_run(self) -> None:
+        slashes = "\\" * 50000
+        start = time.monotonic()
+        result = github.strip_search_qualifiers(slashes)
+        elapsed = time.monotonic() - start
+        assert result == slashes
+        assert elapsed < 0.1, f"50k backslashes took {elapsed:.3f}s (expected linear O(N) < 0.1s)"
+
+        start2 = time.monotonic()
+        res2 = github.strip_search_qualifiers(f"auth {slashes} -is:public")
+        elapsed2 = time.monotonic() - start2
+        assert res2 == f"auth {slashes}"
+        assert elapsed2 < 0.1
 
     @pytest.mark.parametrize(
         "adversarial_topic",

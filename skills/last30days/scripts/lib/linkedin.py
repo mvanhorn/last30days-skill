@@ -542,24 +542,18 @@ def _is_valid_linkedin_profile_url(url: Any) -> bool:
     if host.startswith(".") or ".." in host:
         return False
     path = parts.path or ""
-    decoded_path = unquote(path)
-    if (
-        not path.lower().startswith("/in/")
-        or not decoded_path.lower().startswith("/in/")
-        or "\\" in decoded_path
-        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in decoded_path)
-    ):
+    if not path.lower().startswith("/in/"):
         return False
-    slug = decoded_path[4:].strip("/")
-    path_segments = path.split("/")
-    decoded_segments = decoded_path.split("/")
+    raw_slug = path[4:].removesuffix("/")
+    slug = unquote(raw_slug)
     if (
-        not slug
-        or slug == "."
-        or ".." in path_segments
-        or ".." in decoded_segments
-        or "." in path_segments
-        or "." in decoded_segments
+        not raw_slug
+        or not slug
+        or slug in (".", "..")
+        or "/" in raw_slug
+        or "/" in slug
+        or "\\" in slug
+        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in slug)
     ):
         return False
     return True

@@ -233,7 +233,7 @@ _WRAPPED_QUALIFIER_RE = re.compile(
     re.IGNORECASE,
 )
 
-_ESCAPED_QUOTE_RE = re.compile(r'\\+(?=")')
+_ESCAPED_QUOTE_RE = re.compile(r'(?<!\\)\\+(?=")')
 _BRACKET_OPEN_FOR_CLOSE = {")": "(", "]": "["}
 
 

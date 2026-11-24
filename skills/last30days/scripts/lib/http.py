@@ -171,11 +171,12 @@ def _resolve_local_bridge_addresses(host: str, port: int) -> list[tuple]:
     """Resolve ``host`` fresh and allow only verified local/LAN bridge IPs."""
     from . import public_host
 
-    bare = (host or "").strip()
-    if bare.startswith("[") and bare.endswith("]"):
-        bare = bare[1:-1]
-    bare = bare.removesuffix(".").lower()
-    if not bare:
+    raw_host = (host or "").strip()
+    if raw_host.startswith("[") and raw_host.endswith("]"):
+        raw_host = raw_host[1:-1]
+    dns_host = raw_host.lower()
+    bare = dns_host.removesuffix(".")
+    if not bare or bare.startswith(".") or bare.endswith(".") or ".." in bare:
         raise public_host.NonPublicAddressError("refused disallowed local-bridge address")
     literal = public_host._parse_ip_literal(bare)
     if literal is not None:
@@ -184,7 +185,8 @@ def _resolve_local_bridge_addresses(host: str, port: int) -> list[tuple]:
         family = socket.AF_INET6 if isinstance(literal, ipaddress.IPv6Address) else socket.AF_INET
         sockaddr = (str(literal), port, 0, 0) if family == socket.AF_INET6 else (str(literal), port)
         return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
-    answers = socket.getaddrinfo(bare, port, 0, socket.SOCK_STREAM)
+    # Preserve any single trailing dot for DNS lookup so search-domain expansion cannot redirect it.
+    answers = socket.getaddrinfo(dns_host, port, 0, socket.SOCK_STREAM)
     if not answers:
         raise public_host.NonPublicAddressError("refused disallowed local-bridge address")
     verified: list[tuple] = []
@@ -1412,11 +1414,15 @@ def request(
     # Proxy mode: a paid call backed by the proxy sentinel goes to the metered
     # proxy instead (lib/proxy.py). Rewritten before fixture capture so the
     # recorded request carries the proxy URL and the bearer key is redacted.
+    orig_header_secrets = _collect_secret_values(headers)
     usage_url = url
     try:
         routed = proxy.route(method, url, headers)
     except proxy.ProxyUnavailable as exc:
-        unavailable = HTTPError(f"API key proxy: {exc}", exc.status_code)
+        from . import auth_safety
+
+        safe_proxy_err = auth_safety.scrub_secrets(str(exc), orig_header_secrets)
+        unavailable = HTTPError(f"API key proxy: {safe_proxy_err}", exc.status_code)
         _raise(unavailable)
     call_key = None
     if routed is not None:
@@ -1426,7 +1432,7 @@ def request(
         headers[proxy.IDEMPOTENCY_HEADER] = call_key
 
     fixture_request = None if sensitive_url else _fixture_request(method, url, json_data, raw)
-    fixture_redactions = _fixture_redactions(url, headers, json_data)
+    fixture_redactions = _fixture_redactions(url, headers, json_data) | orig_header_secrets
     replayed = _fixture_replay(
         fixture_request if fixture_request is not None else {"method": method, "url": "<redacted>"},
         return_headers=return_headers,
@@ -1447,9 +1453,24 @@ def request(
     if local_bridge_only:
         setattr(req, _LOCAL_BRIDGE_ONLY_ATTR, True)
 
+    from . import auth_safety
+
+    def _scrub_error_text(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return auth_safety.scrub_secrets(
+            _URL_USERINFO_RE.sub(r"\1", value),
+            fixture_redactions,
+        )
+
     def log_request(message: str) -> None:
         if not sensitive_url:
-            log(_scrub_fixture_value(message, redactions=fixture_redactions))
+            log(
+                auth_safety.scrub_secrets(
+                    _scrub_fixture_value(message, redactions=fixture_redactions),
+                    fixture_redactions,
+                )
+            )
 
     safe_url = re.sub(r'([?&])(key|api_key|token|secret)=[^&]*', r'\1\2=***', url)
     log_request(f"{method} {safe_url}")
@@ -1661,19 +1682,18 @@ def request(
         except (DeadlineExceeded, ResponseTooLarge) as exc:
             raise_recorded(exc)
         except urllib.error.HTTPError as e:
-            log_request(f"HTTP Error {e.code}: {e.reason}")
-            if body:
-                snippet = _scrub_fixture_value(
-                    _URL_USERINFO_RE.sub(r"\1", " ".join(body.split())),
-                    redactions=fixture_redactions,
-                )
+            safe_reason = _scrub_error_text(str(e.reason)) or ""
+            safe_body = _scrub_error_text(body)
+            log_request(f"HTTP Error {e.code}: {safe_reason}")
+            if safe_body:
+                snippet = " ".join(safe_body.split())
                 log_request(f"Error body: {snippet[:200]}")
-            last_error = HTTPError(f"HTTP {e.code}: {e.reason}", e.code, body)
+            last_error = HTTPError(f"HTTP {e.code}: {safe_reason}", e.code, safe_body)
 
             # A proxy error that ends the lane (out of credits, spend ceiling,
             # provider off, duplicate call) is never retried.
             if routed is not None and proxy.observe_error(
-                routed.provider, e.code, body, getattr(e, "headers", None), call_key,
+                routed.provider, e.code, safe_body, getattr(e, "headers", None), call_key,
             ):
                 raise_recorded(last_error)
 
@@ -1708,14 +1728,15 @@ def request(
                 # widening is DNS-only — don't grant extra HTTP attempts.
                 break
         except urllib.error.URLError as e:
-            log_request(f"URL Error: {e.reason}")
+            safe_reason = _scrub_error_text(str(e.reason)) or ""
+            log_request(f"URL Error: {safe_reason}")
             reason = getattr(e, "reason", None)
             # urllib commonly wraps socket.timeout (an alias of TimeoutError
             # since 3.10) in URLError; classify those as timeouts, not
             # unreachable hosts, so the recovery guidance is right.
             wrapped_timeout = isinstance(reason, TimeoutError) or "timed out" in str(reason).lower()
             last_error = HTTPError(
-                f"URL Error: {e.reason}",
+                f"URL Error: {safe_reason}",
                 outcome_state=health.TIMEOUT if wrapped_timeout else health.UNREACHABLE,
             )
             last_error.no_host = _is_no_host(e)
@@ -1755,9 +1776,10 @@ def request(
                 # to non-DNS error paths.
                 break
         except json.JSONDecodeError as e:
-            log_request(f"JSON decode error: {e}")
+            safe_err = _scrub_error_text(str(e)) or ""
+            log_request(f"JSON decode error: {safe_err}")
             last_error = HTTPError(
-                f"Invalid JSON response: {e}",
+                f"Invalid JSON response: {safe_err}",
                 outcome_state=health.SCHEMA_DRIFT,
             )
             raise_recorded(last_error)
@@ -1765,10 +1787,11 @@ def request(
             # Handle socket-level errors (connection reset, timeout, etc.),
             # and a body cut off mid-read (``IncompleteRead``), which
             # ``http.client`` raises as an ``HTTPException``, not an OSError.
-            log_request(f"Connection error: {type(e).__name__}: {e}")
+            safe_err = _scrub_error_text(str(e)) or ""
+            log_request(f"Connection error: {type(e).__name__}: {safe_err}")
             state = health.TIMEOUT if isinstance(e, TimeoutError) else health.UNREACHABLE
             last_error = HTTPError(
-                f"Connection error: {type(e).__name__}: {e}",
+                f"Connection error: {type(e).__name__}: {safe_err}",
                 outcome_state=state,
             )
             last_error.no_host = _is_no_host(e)
