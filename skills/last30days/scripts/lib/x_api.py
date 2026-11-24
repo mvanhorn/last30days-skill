@@ -606,7 +606,7 @@ def _run_search(
     cancelled = cancel is not None and cancel.is_set()
     expired = deadline is not None and time.monotonic() >= deadline
     if cancelled or expired:
-        if deadline_is_warning and not cancelled:
+        if deadline_is_warning:
             _log(f"{label}: lane budget ({LANE_BUDGET_SECONDS:.0f}s) exhausted before the search started")
             return {"items": [], "warning": DEADLINE_DETAIL}
         _log(f"{label}: {ERR_TIMED_OUT}")

@@ -126,6 +126,37 @@ test('HIGH-162: extractCursorFromInstructions supports TimelineReplaceEntry sing
   assert.equal(extractCursorFromInstructions('not-array'), undefined);
 });
 
+test('HIGH-162: TimelineReplaceEntry overrides an earlier TimelineAddEntries cursor', () => {
+  const instructions = [
+    {
+      type: 'TimelineAddEntries',
+      entries: [
+        {
+          entryId: 'cursor-bottom-0',
+          content: {
+            entryType: 'TimelineTimelineCursor',
+            cursorType: 'Bottom',
+            value: 'OLD_CUR',
+          },
+        },
+      ],
+    },
+    {
+      type: 'TimelineReplaceEntry',
+      entry_id_to_replace: 'cursor-bottom-0',
+      entry: {
+        entryId: 'cursor-bottom-0',
+        content: {
+          entryType: 'TimelineTimelineCursor',
+          cursorType: 'Bottom',
+          value: 'NEW_CUR',
+        },
+      },
+    },
+  ];
+  assert.equal(extractCursorFromInstructions(instructions), 'NEW_CUR');
+});
+
 test('HIGH-162: renderContentState handles malformed blocks, entityMap, link ranges, and atomic blocks without TypeError', () => {
   assert.equal(renderContentState(null), undefined);
   assert.equal(renderContentState({ blocks: 'not-an-array' }), undefined);

@@ -263,6 +263,7 @@ def search_xquik(
     all_items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
     failures: List[str] = []
+    failure_states: List[tuple[str, str]] = []
     stop_reasons: List[str] = []
     window = (from_date, to_date)
     date_filters = x_date_filters(from_date, to_date)
@@ -282,6 +283,7 @@ def search_xquik(
             index_offset=len(all_items),
             deadline_monotonic=deadline,
             failure_out=failures,
+            failure_states_out=failure_states,
             stop_reasons=stop_reasons,
             cancel=cancel,
             window=window,
@@ -299,13 +301,14 @@ def search_xquik(
 
     if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
         return {"items": all_items, "error": "Xquik research cancelled or timed out"}
-    if not all_items and failures:
-        winning_error = min(
-            failures,
-            key=lambda msg: health.FAILURE_SPECIFICITY.get(
-                http.classify_failure(message=msg), 9
-            ),
-        )
+    if not all_items and (failure_states or failures):
+        if failure_states:
+            _, winning_error = min(
+                failure_states,
+                key=lambda pair: health.FAILURE_SPECIFICITY.get(pair[0], 9),
+            )
+        else:
+            winning_error = failures[0]
         return {"items": [], "error": winning_error}
     return {"items": all_items}
 
@@ -322,6 +325,7 @@ def _execute_search(
     index_offset: int = 0,
     deadline_monotonic: float | None = None,
     failure_out: Optional[List[str]] = None,
+    failure_states_out: Optional[List[tuple[str, str]]] = None,
     stop_reasons: Optional[List[str]] = None,
     cancel: Any = None,
     window: Optional[tuple[str, str]] = None,
@@ -343,12 +347,19 @@ def _execute_search(
     ``deadline_monotonic`` bounds the request including retries at the
     transport (mirrors ``x_api._get``).
     """
+    def _record_failure(state: str, msg: str) -> None:
+        if failure_out is not None:
+            failure_out.append(msg)
+        if failure_states_out is not None:
+            failure_states_out.append((state, msg))
+
     full_url = f"{_BASE_URL}/x/tweets/search?q={_url_encode(q)}&queryType=Top&limit={limit}"
     _log(f"Searching: {label}")
     try:
         request_headers = {"X-Api-Key": token}
         response = http.get(
             full_url, headers=request_headers, timeout=30, retries=2,
+            max_429_retries=1,
             deadline_monotonic=deadline_monotonic,
             cancel=cancel,
         )
@@ -376,18 +387,17 @@ def _execute_search(
                 if has_rate_limit_marker
                 else f"Xquik HTTP 429 rate limit for '{label}': {exc_text}"
             )
-            if failure_out is not None:
-                failure_out.append(msg)
+            _record_failure(health.RATE_LIMITED, msg)
             if stop_reasons is not None:
                 stop_reasons.append("rate_limited")
             return [], None
         if isinstance(exc, http.DeadlineExceeded):
-            if failure_out is not None:
-                failure_out.append(f"Xquik timed out for '{label}': {exc}")
+            _record_failure(health.TIMEOUT, f"Xquik timed out for '{label}': {exc}")
             if stop_reasons is not None:
                 stop_reasons.append("deadline")
             return [], None
-        if getattr(exc, "outcome_state", None) == health.TIMEOUT:
+        exc_state = getattr(exc, "outcome_state", None)
+        if exc_state == health.TIMEOUT:
             exc_text = str(exc)
             lowered = exc_text.lower()
             msg = (
@@ -395,39 +405,47 @@ def _execute_search(
                 if "timed out" in lowered or "timeout" in lowered
                 else f"Xquik timed out for '{label}': {exc_text}"
             )
-            if failure_out is not None:
-                failure_out.append(msg)
+            _record_failure(health.TIMEOUT, msg)
             return [], None
-        if failure_out is not None:
-            failure_out.append(f"Xquik HTTP error for '{label}': {exc}")
+        state = exc_state or http.classify_failure(status_code=status, message=str(exc))
+        _record_failure(state, f"Xquik HTTP error for '{label}': {exc}")
         return [], None
     except Exception as exc:
         _log(f"Error for '{label}': {exc}")
-        if failure_out is not None:
-            exc_text = str(exc)
-            lowered = exc_text.lower()
-            if isinstance(exc, TimeoutError) and "timed out" not in lowered and "timeout" not in lowered:
-                failure_out.append(f"Xquik timed out for '{label}': {exc_text or 'TimeoutError'}")
-            else:
-                failure_out.append(f"Xquik request failed for '{label}': {exc}")
+        exc_text = str(exc)
+        lowered = exc_text.lower()
+        if isinstance(exc, TimeoutError):
+            msg = (
+                f"Xquik request failed for '{label}': {exc_text}"
+                if "timed out" in lowered or "timeout" in lowered
+                else f"Xquik timed out for '{label}': {exc_text or 'TimeoutError'}"
+            )
+            _record_failure(health.TIMEOUT, msg)
+        elif isinstance(exc, OSError):
+            _record_failure(health.UNREACHABLE, f"Xquik request failed for '{label}': {exc}")
+        else:
+            _record_failure(
+                http.classify_failure(message=exc_text),
+                f"Xquik request failed for '{label}': {exc}",
+            )
         return [], None
 
     if not isinstance(response, dict):
         _log(f"Unexpected response payload for '{label}' (got {type(response).__name__})")
-        if failure_out is not None:
-            failure_out.append(
-                f"Xquik returned unexpected payload for '{label}' "
-                f"(got {type(response).__name__})"
-            )
+        _record_failure(
+            health.SCHEMA_DRIFT,
+            f"Xquik returned unexpected payload for '{label}' "
+            f"(got {type(response).__name__})",
+        )
         return [], None
 
     tweets = response.get("tweets", [])
     if not isinstance(tweets, list):
-        if failure_out is not None:
-            failure_out.append(
-                f"Xquik returned no tweets array for '{label}' "
-                f"(got {type(tweets).__name__})"
-            )
+        _record_failure(
+            health.SCHEMA_DRIFT,
+            f"Xquik returned no tweets array for '{label}' "
+            f"(got {type(tweets).__name__})",
+        )
         return [], None
     items: List[Dict[str, Any]] = []
     for tweet in tweets:

@@ -206,7 +206,8 @@ class TestHigh139GrokWrapperParsing:
         assert items[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
         assert "Debugging API payload:" in items[0]["text"]
 
-        # Same protection when author uses `username` (no `author_handle`/`handle`/`url`).
+        # Same protection when author uses `username` (no `author_handle`/`handle`/`url`),
+        # including when the embedded JSON lives in `content`.
         username_tweet = {
             "id": IN_WINDOW_ID,
             "username": "alice",
@@ -216,6 +217,18 @@ class TestHigh139GrokWrapperParsing:
         assert len(items_u) == 1
         assert items_u[0]["author_handle"] == "alice"
         assert items_u[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
+
+        username_content_tweet = {
+            "id": IN_WINDOW_ID,
+            "username": "alice",
+            "content": 'Example payload: {"id": "123", "username": "bob", "text": "err"}',
+            "likes": 25,
+        }
+        items_uc = grok_x.parse_x_response({"text": json.dumps(username_content_tweet)}, "alice", *WINDOW)
+        assert len(items_uc) == 1
+        assert items_uc[0]["author_handle"] == "alice"
+        assert items_uc[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
+        assert "Example payload:" in items_uc[0]["text"]
 
     def test_top_level_json_array_of_cli_wrappers_unwraps_prose_and_collections(self):
         prose_stream = [
@@ -585,6 +598,28 @@ class TestHigh148XApiHandleLaneErrorsAndPreStartBudget:
         assert expired == {"items": [], "error": x_api.ERR_TIMED_OUT}
         assert cancelled == {"items": [], "error": x_api.ERR_TIMED_OUT}
 
+    def test_cancelled_handle_lane_returns_warning_not_error(self, monkeypatch):
+        monkeypatch.setattr(x_api, "_utcnow", lambda: FIXED_NOW)
+        cancel = threading.Event()
+        cancel.set()
+        warnings: list[str] = []
+        errors: list[str] = []
+        with mock.patch("lib.x_api.http.get") as mock_get:
+            from_items = x_api.search_handles(
+                ["steipete"], "topic", FROM, TO, token=DUMMY_TOKEN,
+                warnings=warnings, errors=errors, cancel=cancel,
+            )
+            about_items = x_api.search_mentions(
+                ["steipete"], FROM, TO, topic="topic", token=DUMMY_TOKEN,
+                warnings=warnings, errors=errors, cancel=cancel,
+            )
+
+        mock_get.assert_not_called()
+        assert from_items == []
+        assert about_items == []
+        assert warnings == [x_api.DEADLINE_DETAIL]
+        assert errors == []
+
     def test_pipeline_xapi_handle_lane_401_records_auth_failed_and_skips_about_lane(self, monkeypatch):
         monkeypatch.setattr(x_api, "_utcnow", lambda: FIXED_NOW)
         bundle = schema.RetrievalBundle()
@@ -716,6 +751,44 @@ class TestHigh149XquikRateLimitAndErrorSurfacing:
             result = xquik.search_xquik("topic", FROM, TO, depth="deep", token="dummy-key")
 
         assert mock_get.call_count == 2
+        assert result["items"] == []
+        assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
+
+    def test_query_text_with_403_forbidden_does_not_outrank_real_429(self):
+        with mock.patch("lib.xquik.expand_xquik_queries", return_value=["403 Forbidden", "followup query"]), \
+             mock.patch(
+                 "lib.xquik.http.get",
+                 side_effect=[
+                     http.HTTPError("HTTP 503: Service Unavailable", status_code=503),
+                     http.HTTPError("Too Many Requests", status_code=429),
+                 ],
+             ) as mock_get:
+            result = xquik.search_xquik("403 Forbidden", FROM, TO, depth="default", token="dummy-key")
+
+        assert mock_get.call_count == 2
+        assert result["items"] == []
+        assert "followup query" in result["error"]
+        assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
+
+    def test_429_through_real_http_get_makes_single_attempt_without_retry(self, monkeypatch):
+        attempts: list[str] = []
+
+        def fake_urlopen(req, timeout=None):
+            attempts.append(req.full_url)
+            raise urllib.error.HTTPError(
+                req.full_url,
+                429,
+                "Too Many Requests",
+                hdrs={"Retry-After": "30"},
+                fp=BytesIO(b'{"error":"rate limited"}'),
+            )
+
+        monkeypatch.setattr(http.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(http.time, "sleep", lambda _s: (_ for _ in ()).throw(AssertionError("429 must not sleep/retry")))
+        with mock.patch("lib.xquik.expand_xquik_queries", return_value=["q1", "q2", "q3"]):
+            result = xquik.search_xquik("topic", FROM, TO, depth="deep", token="dummy-key")
+
+        assert len(attempts) == 1
         assert result["items"] == []
         assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
 
@@ -862,8 +935,27 @@ class TestHigh151XurlUtf8SubprocessDecoding:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not HAS_NODE, reason="node is required")
+def _node_major_version() -> int | None:
+    if not HAS_NODE:
+        return None
+    proc = subprocess.run(
+        ["node", "-v"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    head = proc.stdout.strip().lstrip("v").split(".", 1)[0]
+    return int(head) if head.isdigit() else None
+
+
 def test_high162_bird_search_utils_node_suite():
+    major = _node_major_version()
+    if major is None or major < 18:
+        pytest.skip(f"node >= 18 is required for `node --test` (found: {major})")
     proc = subprocess.run(
         ["node", "--test", str(BIRD_UTILS_TEST)],
         cwd=REPO_ROOT,

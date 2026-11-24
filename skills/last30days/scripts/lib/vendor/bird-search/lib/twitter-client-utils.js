@@ -513,12 +513,25 @@ export function extractCursorFromInstructions(instructions, cursorType = 'Bottom
     if (!Array.isArray(instructions)) {
         return undefined;
     }
-    const matchCursor = (entry) => {
-        const content = entry?.content;
-        if (content?.cursorType === cursorType && typeof content.value === 'string' && content.value.length > 0) {
-            return content.value;
+    let matchedCursor;
+    let matchedEntryId;
+    const inspectEntry = (entry, isReplacement) => {
+        if (!entry || typeof entry !== 'object') {
+            return;
         }
-        return undefined;
+        const content = entry.content;
+        if (content?.cursorType === cursorType && typeof content.value === 'string' && content.value.length > 0) {
+            if (
+                matchedCursor === undefined ||
+                isReplacement ||
+                (typeof entry.entryId === 'string' && entry.entryId === matchedEntryId)
+            ) {
+                matchedCursor = content.value;
+                if (typeof entry.entryId === 'string' && entry.entryId.length > 0) {
+                    matchedEntryId = entry.entryId;
+                }
+            }
+        }
     };
     for (const instruction of instructions) {
         if (!instruction || typeof instruction !== 'object') {
@@ -526,18 +539,14 @@ export function extractCursorFromInstructions(instructions, cursorType = 'Bottom
         }
         if (Array.isArray(instruction.entries)) {
             for (const entry of instruction.entries) {
-                const cursor = matchCursor(entry);
-                if (cursor) {
-                    return cursor;
-                }
+                inspectEntry(entry, false);
             }
         }
-        const replacedCursor = matchCursor(instruction.entry);
-        if (replacedCursor) {
-            return replacedCursor;
+        if (instruction.entry && typeof instruction.entry === 'object') {
+            inspectEntry(instruction.entry, true);
         }
     }
-    return undefined;
+    return matchedCursor;
 }
 export function parseUsersFromInstructions(instructions) {
     if (!Array.isArray(instructions)) {

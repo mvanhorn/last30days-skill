@@ -614,27 +614,14 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
             if posts:
                 return posts
     direct = _fields_from_json_obj(value)
-    if direct:
-        url = str(value.get("url") or value.get("link") or "")
-        if (
-            value.get("author_handle")
-            or value.get("handle")
-            or _STATUS_URL_RE.search(url)
-        ):
-            return [direct]
-    wrapper_keys = (
-        ("content", "message", "result", "output")
-        if direct is not None
-        else ("content", "message", "result", "text", "output")
-    )
-    for key in wrapper_keys:
+    if direct is not None:
+        return [direct]
+    for key in ("content", "message", "result", "text", "output"):
         inner = value.get(key)
         if isinstance(inner, (str, list, dict)):
             posts = _posts_from_json_value(inner, depth=depth + 1)
             if posts:
                 return posts
-    if direct:
-        return [direct]
     return []
 
 
