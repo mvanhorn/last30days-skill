@@ -79,6 +79,8 @@ def _extract_push_chunks(text: str) -> list[str]:
                 break
             pos = max(start + 1, exc.pos)
             continue
+        except RecursionError:
+            break
         if isinstance(data, list) and len(data) > 1 and isinstance(data[1], str):
             parts.append(data[1])
         pos = end
@@ -100,6 +102,20 @@ def _payload(html: str) -> str:
     return "".join(_extract_push_chunks(bounded))
 
 
+def _find_nested_role_list(obj: Any) -> list[dict[str, Any]] | None:
+    stack = [obj]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            candidate = node.get("jobs")
+            if isinstance(candidate, list) and all(isinstance(row, dict) for row in candidate):
+                return candidate
+            stack.extend(reversed(list(node.values())))
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+    return None
+
+
 def _role_list(payload: str) -> list[dict[str, Any]] | None:
     decoder = json.JSONDecoder()
     pos = 0
@@ -117,16 +133,22 @@ def _role_list(payload: str) -> list[dict[str, Any]] | None:
             pos = peek
             continue
         try:
-            rows, _end = decoder.raw_decode(payload, start)
+            rows, end = decoder.raw_decode(payload, start)
         except json.JSONDecodeError as exc:
             failures += 1
             if "Unterminated" in exc.msg or exc.pos >= limit - 1 or failures >= _MAX_DECODE_FAILURES:
                 break
             pos = max(start + 1, exc.pos)
             continue
-        if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
-            return rows
-        pos = start + 1
+        except RecursionError:
+            break
+        if isinstance(rows, list):
+            if all(isinstance(row, dict) for row in rows):
+                return rows
+            nested = _find_nested_role_list(rows)
+            if nested is not None:
+                return nested
+        pos = end
     return None
 
 

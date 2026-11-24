@@ -30,9 +30,10 @@ def _extract_entries(html: str) -> tuple[list[dict[str, str]], int | None]:
     bounded = html[:detect.MAX_HTML_CHARS]
     total_match = _TOTAL_RE.search(bounded)
     total = int(total_match.group(1)) if total_match else None
-    if "/job/" not in bounded:
+    lowered = bounded.lower()
+    if "/job/" not in bounded or "<li" not in lowered or "</li" not in lowered:
         return [], total
-    token_re = _TOKEN_RE if "</span" in bounded.lower() else _TOKEN_NO_SPAN_RE
+    token_re = _TOKEN_RE if "</span" in lowered else _TOKEN_NO_SPAN_RE
     entries: list[dict[str, str]] = []
     li_depth = 0
     current: dict[str, Any] | None = None

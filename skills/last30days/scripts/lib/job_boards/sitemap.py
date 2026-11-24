@@ -95,15 +95,18 @@ def _guard(url: str) -> Callable[[str], bool]:
 
 def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
     """``fetch``'s text, or None when the request was redirected off the
-    site ``url`` is on or to a private address: such a page never enters the
-    report."""
+    site ``url`` is on, downgraded from https to http, or sent to a private
+    address: such a page never enters the report."""
     host = detect.page_host(url)
     if not host or not detect.is_safe_public_url(url):
         return None
+    require_https = urlparse(url).scheme.lower() == "https"
     landed: list = []
     text = fetch(landed)
-    if text is not None and landed and not _public_url(str(landed[-1]), host):
-        return None
+    if text is not None and landed:
+        final = str(landed[-1])
+        if (require_https and urlparse(final).scheme.lower() != "https") or not _public_url(final, host):
+            return None
     return text
 
 

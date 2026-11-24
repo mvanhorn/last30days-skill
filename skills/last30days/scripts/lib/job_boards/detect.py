@@ -16,6 +16,7 @@ the shape of a registry entry in ``lib.jobs``.
 from __future__ import annotations
 
 from collections import OrderedDict
+import functools
 import ipaddress
 import re
 import socket
@@ -65,10 +66,11 @@ _VALID_HOST_RE = re.compile(
     r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
 )
 _VALID_TLD_RE = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{2,59}")
+_UNSAFE_URL_CHAR_RE = re.compile(r"[\s\x00-\x1f\x7f\\]")
 _HTML_ATTR_RE = re.compile(
     r'([A-Za-z_:][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+)))?'
 )
-_START_TAG_RE = re.compile(r"<[a-zA-Z][a-zA-Z0-9:-]*(?:\s+[^<>]*)?>")
+_START_TAG_RE = re.compile(r"<[a-zA-Z][a-zA-Z0-9:-]*(?:\s[^<>]*)?>")
 _SCRIPT_OPEN_RE = re.compile(r"<script\b([^<>]*)>", re.I)
 _META_TAG_RE = re.compile(r"<meta\b([^<>]*)>", re.I)
 _LINK_TAG_RE = re.compile(r"<link\b([^<>]*)>", re.I)
@@ -190,30 +192,12 @@ def page_host(url: str) -> str:
     return raw_host.rstrip(".")
 
 
-def is_safe_public_url(url: str) -> bool:
-    """Zero-DNS check: http(s) URL with standard port, no userinfo/backslash,
-    not an IP literal or reserved/internal domain."""
-    if not public_host.is_public_address_syntax(url):
-        return False
-    if "\\" in url:
-        return False
-    try:
-        parsed = urlparse(url)
-        port = parsed.port
-    except ValueError:
-        return False
-    scheme = parsed.scheme.lower()
-    if port is not None and not (
-        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
-    ):
-        return False
-    if not parsed.netloc.isascii() or "%" in parsed.netloc:
-        return False
-    raw_host = (parsed.hostname or "").lower()
+@functools.lru_cache(maxsize=1024)
+def _is_safe_public_host(raw_host: str) -> bool:
     if not raw_host or ".." in raw_host or raw_host.startswith("."):
         return False
     host = raw_host.rstrip(".")
-    if not host or not _VALID_HOST_RE.fullmatch(host):
+    if not host or len(host) > 253 or not _VALID_HOST_RE.fullmatch(host):
         return False
     if public_host._parse_ip_literal(host) is not None:
         return False
@@ -223,17 +207,47 @@ def is_safe_public_url(url: str) -> bool:
     return True
 
 
+def is_safe_public_url(url: str) -> bool:
+    """Zero-DNS check: http(s) URL with standard port, no userinfo/backslash,
+    not an IP literal or reserved/internal domain."""
+    if not isinstance(url, str) or not url or _UNSAFE_URL_CHAR_RE.search(url):
+        return False
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    if port is not None and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    ):
+        return False
+    if not parsed.netloc.isascii() or "%" in parsed.netloc:
+        return False
+    return _is_safe_public_host((parsed.hostname or "").lower())
+
+
+@functools.lru_cache(maxsize=1024)
 def registrable_domain(host: str) -> str:
     """Return the registrable site domain (eTLD+1), or '' for IP literals,
     malformed hosts, single-label hosts, or bare public suffixes."""
-    h = (host or "").strip().rstrip(".").lower()
-    if not h or ".." in h or not _VALID_HOST_RE.fullmatch(h):
+    raw = (host or "").strip().lower()
+    if not raw or ".." in raw or raw.startswith("."):
+        return ""
+    h = raw.rstrip(".")
+    if not h or len(h) > 253 or not _VALID_HOST_RE.fullmatch(h):
         return ""
     if public_host._parse_ip_literal(h) is not None:
         return ""
     parts = h.removeprefix("www.").split(".")
     if len(parts) < 2 or parts[-1] in _RESERVED_HOST_SUFFIXES or not _VALID_TLD_RE.fullmatch(parts[-1]):
         return ""
+    if len(parts) >= 3 and ".".join(parts[-3:]) in _MULTI_TENANT_SUFFIXES:
+        return ".".join(parts[-4:]) if len(parts) >= 4 else ""
     tail2 = ".".join(parts[-2:])
     if tail2 in _MULTI_TENANT_SUFFIXES or (
         len(parts[-1]) == 2 and parts[-2] in _SECOND_LEVEL_PUBLIC_LABELS
@@ -291,26 +305,30 @@ class _BoundedPublicResolver:
             self._cache.clear()
 
     def __call__(self, name: str) -> bool:
-        bare = (name or "").strip().rstrip(".").lower()
+        raw_host = (name or "").strip().lower()
+        if not raw_host or ".." in raw_host or raw_host.startswith("."):
+            return False
+        bare = raw_host.rstrip(".")
         if not bare or bare == "localhost" or bare.endswith(".localhost"):
             return False
         literal = public_host._parse_ip_literal(bare)
         if literal is not None:
             return public_host._is_public_ip(literal)
+        dns_host = raw_host
         now = time.monotonic()
         with self._lock:
-            cached = self._cache.get(bare)
+            cached = self._cache.get(dns_host)
             if cached is not None:
                 verdict, expires_at = cached
                 if now < expires_at:
-                    self._cache.move_to_end(bare)
+                    self._cache.move_to_end(dns_host)
                     return verdict
-                del self._cache[bare]
-        verdict = _resolve_all_public(bare)
+                del self._cache[dns_host]
+        verdict = _resolve_all_public(dns_host)
         expires_at = time.monotonic() + self.ttl_seconds
         with self._lock:
-            self._cache[bare] = (verdict, expires_at)
-            self._cache.move_to_end(bare)
+            self._cache[dns_host] = (verdict, expires_at)
+            self._cache.move_to_end(dns_host)
             while len(self._cache) > self.maxsize:
                 self._cache.popitem(last=False)
         return verdict
@@ -324,15 +342,30 @@ def public_site_url(
     site_host: str,
     *,
     resolves: Callable[[str], bool] | None = None,
+    require_https: bool = False,
 ) -> bool:
     """Whether ``url`` is a safe standard-port http(s) URL on the site of
     ``site_host`` whose host resolves exclusively to public IPs."""
     if not is_safe_public_url(url):
         return False
+    parsed = urlparse(url)
+    if require_https and parsed.scheme.lower() != "https":
+        return False
     target_host = page_host(url)
     if not target_host or not same_host_or_subdomain(target_host, site_host):
         return False
-    return (resolves or resolves_public)(target_host)
+    dns_host = (parsed.hostname or "").lower()
+    return (resolves or resolves_public)(dns_host or target_host)
+
+
+def public_redirect_guard(url: str) -> Callable[[str], bool]:
+    """Redirect guard allowing any safe public URL while forbidding
+    ``https -> http`` protocol downgrades."""
+    if not is_safe_public_url(url):
+        return lambda _target: False
+    if urlparse(url).scheme.lower() != "https":
+        return is_safe_public_url
+    return lambda target: is_safe_public_url(target) and urlparse(target).scheme.lower() == "https"
 
 
 def same_site_redirect_guard(
@@ -340,13 +373,17 @@ def same_site_redirect_guard(
     *,
     resolves: Callable[[str], bool] | None = None,
 ) -> Callable[[str], bool]:
-    """Redirect guard allowing only safe standard-port http(s) same-site URLs."""
+    """Redirect guard allowing only safe standard-port http(s) same-site URLs,
+    forbidding ``https -> http`` protocol downgrades."""
     if not is_safe_public_url(url):
         return lambda _target: False
     origin_host = page_host(url)
     if not origin_host:
         return lambda _target: False
-    return lambda target: public_site_url(target, origin_host, resolves=resolves)
+    require_https = urlparse(url).scheme.lower() == "https"
+    return lambda target: public_site_url(
+        target, origin_host, resolves=resolves, require_https=require_https,
+    )
 
 
 def detect_platform(html: str, page_url: str) -> tuple[str, dict[str, Any]] | None:

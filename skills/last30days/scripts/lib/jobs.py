@@ -1755,6 +1755,7 @@ def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
 def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, bool]:
     if not board_detect.is_safe_public_url(url):
         return None, False
+    guard = board_detect.public_redirect_guard(url)
     landed: list[str] = []
     budget = _BUDGET.get()
     with http.expected_misses(403, 404):
@@ -1764,7 +1765,7 @@ def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, b
             with http.capture_failures() as failures:
                 html = http.get_text(
                     url, accept="text/html", retries=1, retry_dns=False, landed=landed,
-                    public_only=True, redirect_guard=board_detect.is_safe_public_url,
+                    public_only=True, redirect_guard=guard,
                     max_bytes=board_detect.MAX_HTML_BYTES, **_bounds(GUESS_TIMEOUT_SECONDS),
                 )
             if any(failure.outcome_state == health.TIMEOUT for failure in failures):
@@ -1775,7 +1776,7 @@ def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, b
         with http.tee_failures() as failures:
             html = http.get_text(
                 url, accept="text/html", retries=1, landed=landed, public_only=True,
-                redirect_guard=board_detect.is_safe_public_url,
+                redirect_guard=guard,
                 max_bytes=board_detect.MAX_HTML_BYTES, **_bounds(PAGE_TIMEOUT_SECONDS),
             )
     if landed and budget is not None:
@@ -1862,8 +1863,12 @@ def _jobs_links(html: str, page_url: str) -> list[str]:
     if not page_host or not board_detect.is_safe_public_url(page_url):
         return []
     ranked: list[tuple[int, str]] = []
+    seen_links: set[str] = set()
     for href in re.findall(r"""href\s*=\s*["']([^"'#\s]+)""", (html or "")[:board_detect.MAX_HTML_CHARS], flags=re.I):
         link = urljoin(page_url, unescape(href))
+        if link in seen_links:
+            continue
+        seen_links.add(link)
         if not board_detect.is_safe_public_url(link):
             continue
         parsed = urlparse(link)
@@ -1880,8 +1885,7 @@ def _jobs_links(html: str, page_url: str) -> list[str]:
             rank = 1
         else:
             continue
-        if all(link != seen for _rank, seen in ranked):
-            ranked.append((rank, link))
+        ranked.append((rank, link))
     return [link for _rank, link in sorted(ranked, key=lambda entry: entry[0])]
 
 
