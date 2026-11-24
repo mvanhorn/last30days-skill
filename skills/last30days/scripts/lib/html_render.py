@@ -33,7 +33,7 @@ PASS_THROUGH_FOOTER_PATTERN = re.compile(
 _PASS_THROUGH_FOOTER_START = re.compile(r"^<!-- PASS-THROUGH FOOTER[^\n]*-->[ \t]*$")
 _PASS_THROUGH_FOOTER_END = re.compile(r"^<!-- END PASS-THROUGH FOOTER -->[ \t]*$")
 _SYNTHESIS_PASS_THROUGH_MARKER = re.compile(
-    r"<!--\s*(?:END\s+)?PASS-THROUGH FOOTER[^\n]*-->",
+    r"<!--\s*(?:END\s+)?PASS-THROUGH FOOTER(?:(?!-->)[^\n])*?-->",
     re.IGNORECASE,
 )
 # Line-by-line on purpose: no row inside the match may itself open or close a
@@ -52,13 +52,13 @@ CANONICAL_BOUNDARY_PATTERN = re.compile(r"\n?---\n# END OF last30days CANONICAL 
 # render_for_html emits metadata as <!-- META: ... --> so it survives the
 # markdown converter (which escapes raw HTML inside paragraphs). Promoted to
 # a styled <div class="meta"> at the block level.
-META_MARKER_PATTERN = re.compile(r"<!--\s*META:\s*((?:(?!-->).)*?)\s*-->")
-_STANDALONE_META_RAW_PATTERN = re.compile(r"<!--\s*META:\s*((?:(?!-->).)*?)\s*-->")
+META_MARKER_PATTERN = re.compile(r"<!--\s*META:((?:(?!-->).)*?)-->")
+_STANDALONE_META_RAW_PATTERN = re.compile(r"<!--\s*META:((?:(?!-->).)*?)-->")
 _STANDALONE_META_PROMOTE_PATTERNS = (
-    re.compile(r"<p>\s*&lt;!--\s*META:\s*((?:(?!--&gt;).)*?)\s*--&gt;\s*</p>"),
-    re.compile(r"&lt;!--\s*META:\s*((?:(?!--&gt;).)*?)\s*--&gt;"),
-    re.compile(r"<p>\s*<!--\s*META:\s*((?:(?!-->).)*?)\s*-->\s*</p>"),
-    re.compile(r"<!--\s*META:\s*((?:(?!-->).)*?)\s*-->"),
+    re.compile(r"<p>\s*&lt;!--\s*META:((?:(?!--&gt;).)*?)--&gt;\s*</p>"),
+    re.compile(r"&lt;!--\s*META:((?:(?!--&gt;).)*?)--&gt;"),
+    re.compile(r"<p>\s*<!--\s*META:((?:(?!-->).)*?)-->\s*</p>"),
+    re.compile(r"<!--\s*META:((?:(?!-->).)*?)-->"),
 )
 _OPEN_PRE_RE = re.compile(r"<pre(?:\s[^>]*)?>", re.IGNORECASE)
 _CLOSE_PRE_RE = re.compile(r"</pre\s*>", re.IGNORECASE)
@@ -434,9 +434,10 @@ def render_html(
     synthesis_md: str | None = None,
     register: str = "default",
 ) -> str:
+    prepared_synthesis, synthesis_bounds = _wrap_untrusted_synthesis(synthesis_md)
     md = render.render_for_html(
         report,
-        synthesis_md=_prepare_synthesis_md(synthesis_md),
+        synthesis_md=prepared_synthesis,
         save_path=save_path,
         fun_level=fun_level,
         register=register,
@@ -444,7 +445,7 @@ def render_html(
     md = _strip_evidence_block(md)
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
-    body = _markdown_to_html(md)
+    body = _markdown_to_html(md, untrusted_bounds=synthesis_bounds)
     body = _wrap_engine_footer(body)
     body = _promote_meta_marker(body)
     colophon = _build_colophon(report)
@@ -459,15 +460,16 @@ def render_html_comparison(
     synthesis_md: str | None = None,
 ) -> str:
     _ = fun_level
+    prepared_synthesis, synthesis_bounds = _wrap_untrusted_synthesis(synthesis_md)
     md = render.render_for_html_comparison(
         entity_reports,
-        synthesis_md=_prepare_synthesis_md(synthesis_md),
+        synthesis_md=prepared_synthesis,
         save_path=save_path,
     )
     md = _strip_evidence_block(md)
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
-    body = _markdown_to_html(md)
+    body = _markdown_to_html(md, untrusted_bounds=synthesis_bounds)
     body = _wrap_engine_footer(body)
     body = _promote_meta_marker(body)
     topic = " vs ".join(label for label, _ in entity_reports)
@@ -609,7 +611,25 @@ def _prepare_synthesis_md(synthesis_md: str | None) -> str | None:
     cleaned = _strip_synthesis_invitation(synthesis_md)
     if cleaned is None:
         return None
-    return _SYNTHESIS_PASS_THROUGH_MARKER.sub("", cleaned)
+    cleaned = _strip_canonical_boundary(cleaned)
+    while True:
+        updated = _SYNTHESIS_PASS_THROUGH_MARKER.sub("", cleaned)
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
+
+def _wrap_untrusted_synthesis(
+    synthesis_md: str | None,
+) -> tuple[str | None, tuple[str, str] | None]:
+    cleaned = _prepare_synthesis_md(synthesis_md)
+    if cleaned is None or not cleaned.strip():
+        return cleaned, None
+    nonce = secrets.token_hex(16)
+    start_marker = f"__LAST30DAYS_SYNTHESIS_START_{nonce}__"
+    end_marker = f"__LAST30DAYS_SYNTHESIS_END_{nonce}__"
+    return f"{start_marker}\n{cleaned.strip()}\n{end_marker}", (start_marker, end_marker)
 
 
 def _strip_canonical_boundary(md: str) -> str:
@@ -658,8 +678,12 @@ def _strip_html_comments_outside_code(md: str) -> str:
     return "".join(out)
 
 
-def _markdown_to_html(md: str) -> str:
-    md, footers = _protect_engine_footers(md)
+def _markdown_to_html(
+    md: str,
+    *,
+    untrusted_bounds: tuple[str, str] | None = None,
+) -> str:
+    md, footers = _protect_engine_footers(md, untrusted_bounds=untrusted_bounds)
     global _ENGINE_FOOTER_STORE
     _ENGINE_FOOTER_STORE = {}
     md = _strip_html_comments_outside_code(md)
@@ -807,13 +831,19 @@ def _markdown_to_html(md: str) -> str:
     return "\n".join(out).strip()
 
 
-def _protect_engine_footers(md: str) -> tuple[str, dict[str, str]]:
+def _protect_engine_footers(
+    md: str,
+    *,
+    untrusted_bounds: tuple[str, str] | None = None,
+) -> tuple[str, dict[str, str]]:
     footers: dict[str, str] = {}
     nonce = secrets.token_hex(16)
     lines = md.splitlines()
     out: list[str] = []
     index = 0
     in_code = False
+    in_untrusted = False
+    start_marker, end_marker = untrusted_bounds if untrusted_bounds is not None else (None, None)
 
     def next_token(content: str) -> str:
         token = f"__LAST30DAYS_ENGINE_FOOTER_{nonce}_{len(footers)}__"
@@ -823,6 +853,27 @@ def _protect_engine_footers(md: str) -> tuple[str, dict[str, str]]:
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
+
+        if start_marker is not None and stripped == start_marker:
+            in_untrusted = True
+            index += 1
+            continue
+        if end_marker is not None and stripped == end_marker:
+            in_untrusted = False
+            if in_code:
+                # Close any unclosed code fence left inside untrusted synthesis
+                # so it cannot swallow the real engine footer appended after it.
+                out.append("```")
+                in_code = False
+            index += 1
+            continue
+
+        if in_untrusted:
+            if stripped.startswith("```"):
+                in_code = not in_code
+            out.append(line)
+            index += 1
+            continue
 
         if in_code:
             out.append(line)
@@ -940,32 +991,10 @@ _SAFE_LIBRARY_LINK_SCHEMES = frozenset({"http", "https"})
 _INVALID_HOSTNAME_CHARS = frozenset(' "\'<>\\&;')
 
 
-def _is_safe_link_url(
+def _is_safe_url_candidate(
     url: str,
-    *,
-    allowed_schemes: frozenset[str] = _SAFE_LINK_SCHEMES,
+    allowed_schemes: frozenset[str],
 ) -> bool:
-    """Return True if a link URL is safe to render as an ``<a href>``.
-
-    A URL is safe if it either:
-    - has no scheme (relative URL, fragment, or path-only, excluding
-      protocol-relative ``//`` and backslash-led paths), or
-    - uses a scheme in ``allowed_schemes`` (default: http, https, mailto).
-
-    The scheme check is case-insensitive and tolerant of surrounding ASCII
-    spaces while rejecting all control characters.
-
-    Precondition: ``url`` must already have been through ``html.escape`` (as it
-    is in ``_inline_markdown`` and ``_safe_library_href``). The safety of the
-    no-scheme branch relies on ``&`` having been escaped to ``&amp;`` so an
-    entity-encoded colon like ``&#58;`` cannot survive into the rendered
-    ``href`` and be decoded back to ``:`` by the browser. Passing a *raw* URL
-    here (e.g. ``javascript&#58;alert(1)``) would see no literal ``:``, return
-    ``True``, and emit a clickable payload — do not call this on un-escaped
-    input.
-    """
-    if not isinstance(url, str):
-        return False
     # Reject any control characters (e.g. `java\x0Dscript:` or leading `\t`
     # stripped by browser URL parsers before scheme detection).
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
@@ -1003,6 +1032,40 @@ def _is_safe_link_url(
             return False
         if not hostname or any(ch in _INVALID_HOSTNAME_CHARS for ch in hostname):
             return False
+    return True
+
+
+def _is_safe_link_url(
+    url: str,
+    *,
+    allowed_schemes: frozenset[str] = _SAFE_LINK_SCHEMES,
+) -> bool:
+    """Return True if a link URL is safe to render as an ``<a href>``.
+
+    A URL is safe if it either:
+    - has no scheme (relative URL, fragment, or path-only, excluding
+      protocol-relative ``//`` and backslash-led paths), or
+    - uses a scheme in ``allowed_schemes`` (default: http, https, mailto).
+
+    The scheme check is case-insensitive and tolerant of surrounding ASCII
+    spaces while rejecting all control characters.
+
+    Precondition: ``url`` must already have been through ``html.escape`` (as it
+    is in ``_inline_markdown`` and ``_safe_library_href``). Checks the escaped
+    string as well as up to two rounds of ``html.unescape`` so entity-encoded
+    schemes like ``javascript&#58;alert(1)`` or ``&#106;avascript:alert(1)``
+    are also rejected even if a downstream consumer decodes entities.
+    """
+    if not isinstance(url, str):
+        return False
+    candidate = url
+    for _ in range(3):
+        if not _is_safe_url_candidate(candidate, allowed_schemes):
+            return False
+        decoded = html.unescape(candidate)
+        if decoded == candidate:
+            break
+        candidate = decoded
     return True
 
 
@@ -1083,7 +1146,7 @@ def _render_table(rows: list[str]) -> str:
 
 def _build_colophon(report: schema.Report, *, topic: str | None = None) -> str:
     display_topic = topic or report.topic
-    generated = _generated_date(report)
+    generated = html.escape(_generated_date(report))
     version = render._skill_version()
     escaped_topic = html.escape(display_topic)
     rerun = html.escape(f"/last30days {display_topic}")

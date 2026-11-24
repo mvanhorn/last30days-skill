@@ -13,6 +13,8 @@ from urllib.request import Request
 
 
 DEFAULT_ENDPOINT = "https://api.ht-ml.app/v1/sites"
+_MAX_RESPONSE_BYTES = 1024 * 1024  # 1 MiB
+_MAX_ERROR_BYTES = 64 * 1024  # 64 KiB
 _DEFAULT_URLOPEN = urllib.request.urlopen
 urlopen = _DEFAULT_URLOPEN
 
@@ -77,9 +79,27 @@ def _validate_https_url(url: str, *, label: str) -> str:
         raise HtmlPublishError(f"{label} must use https://")
     if not hostname:
         raise HtmlPublishError(f"{label} must include a hostname")
+    if "\\" in hostname or "\\" in parts.netloc:
+        raise HtmlPublishError(f"{label} contains invalid characters")
     if parts.username is not None or parts.password is not None or "@" in parts.netloc:
         raise HtmlPublishError(f"{label} must not contain credentials")
     return url
+
+
+def _read_bounded(stream: Any, max_bytes: int, *, truncate: bool = False) -> bytes:
+    """Read at most ``max_bytes`` from ``stream``, tolerating zero-arg test stubs."""
+    try:
+        data = stream.read(max_bytes + 1)
+    except TypeError:
+        data = stream.read()
+    if not isinstance(data, (bytes, bytearray)):
+        raise HtmlPublishError("publish endpoint returned invalid response stream")
+    raw = bytes(data)
+    if len(raw) > max_bytes:
+        if truncate:
+            return raw[:max_bytes]
+        raise HtmlPublishError(f"publish endpoint response exceeded {max_bytes} bytes")
+    return raw
 
 
 def _resolve_open_fn(opener: Callable[..., Any] | None) -> Callable[..., Any]:
@@ -118,15 +138,29 @@ def publish_html(
     open_fn = _resolve_open_fn(opener)
     try:
         with open_fn(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
+            raw_body = _read_bounded(response, _MAX_RESPONSE_BYTES)
+        body = raw_body.decode("utf-8")
     except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace") if exc.fp is not None else ""
-        if 300 <= exc.code < 400 and exc.reason:
-            raise HtmlPublishError(f"{exc.code}: {exc.reason}") from exc
-        raise HtmlPublishError(_error_message(exc.code, detail or str(exc.reason or ""))) from exc
+        try:
+            if 300 <= exc.code < 400:
+                reason = str(exc.reason or "publish endpoint redirects are not allowed")
+                raise HtmlPublishError(f"{exc.code}: {reason}") from exc
+            detail = ""
+            if exc.fp is not None:
+                detail = _read_bounded(exc, _MAX_ERROR_BYTES, truncate=True).decode(
+                    "utf-8", errors="replace"
+                )
+            raise HtmlPublishError(
+                _error_message(exc.code, detail or str(exc.reason or ""))
+            ) from exc
+        finally:
+            try:
+                exc.close()
+            except Exception:
+                pass
     except URLError as exc:
         raise HtmlPublishError(str(exc.reason)) from exc
-    except OSError as exc:
+    except (http.client.HTTPException, UnicodeDecodeError, OSError) as exc:
         raise HtmlPublishError(str(exc)) from exc
 
     try:

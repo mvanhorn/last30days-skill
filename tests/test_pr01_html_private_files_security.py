@@ -12,10 +12,12 @@ Covers:
 from __future__ import annotations
 
 import errno
+import http.client
 import io
 import json
 import os
 import stat
+import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
@@ -176,6 +178,30 @@ def test_high049_render_library_index_escapes_quotes_in_safe_url():
     assert "&quot;" in rendered
 
 
+@pytest.mark.parametrize(
+    "entity_payload",
+    [
+        "&#106;avascript:alert(1)",
+        "&#x6a;avascript:alert(1)",
+        "javascript&#58;alert(1)",
+        "java&#x09;script:alert(1)",
+    ],
+)
+def test_high049_entity_encoded_xss_urls_rejected_in_markdown_and_library_index(entity_payload: str):
+    md_rendered = html_render._markdown_to_html(f"[click]({entity_payload})")
+    assert "<a " not in md_rendered
+    assert "href=" not in md_rendered
+
+    entry = _sample_entry()
+    idx_rendered = html_render.render_library_index(
+        [entry],
+        feed_url=entity_payload,
+        entry_urls={entry.entry_id: entity_payload},
+    )
+    assert "<a " not in idx_rendered
+    assert "href=" not in idx_rendered
+
+
 # ---------------------------------------------------------------------------
 # HIGH-050: Single-pass template placeholder substitution
 # ---------------------------------------------------------------------------
@@ -206,6 +232,31 @@ def test_high050_title_containing_template_placeholders_is_not_expanded():
     assert title_text == f"last30days · {topic}"
     assert ":root {" not in title_text
     assert '<div class="colophon">' not in title_text
+
+
+def test_high050_colophon_escapes_generated_date_and_library_brief_handles_closing_body():
+    report = _sample_report("Colophon escape")
+    report.generated_at = "<img src=x>2026-04-29"
+    rendered = html_render.render_html(report)
+    assert "<img src=x>" not in rendered
+    assert "&lt;img src=x" in rendered
+
+    entry = _sample_entry(headline="Body tag test")
+    entry = LibraryEntry(
+        slug=entry.slug,
+        topic=entry.topic,
+        published_date=entry.published_date,
+        headline=entry.headline,
+        summary=entry.summary,
+        source_path=entry.source_path,
+        content="Literal </body> tag in prose and `code` next to __CODE_0__.",
+        source_updated_at=entry.source_updated_at,
+        source_format="finished-brief",
+    )
+    brief_html = html_render.render_library_brief(entry)
+    assert "&lt;/body&gt;" in brief_html
+    assert "<code>code</code> next to __CODE_0__" in brief_html
+    assert brief_html.endswith(f"{html_render.LIBRARY_BRIEF_MARKER}\n</body>\n</html>\n")
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +348,51 @@ def test_high051_wrap_engine_footer_does_not_expand_inside_attributes_or_code():
         assert html_render._wrap_engine_footer(token) == '<div class="engine-footer"><pre>SECRET_PATH</pre></div>'
 
 
+def test_high051_synthesis_fenced_footer_and_nested_comment_reconstitution_blocked():
+    forged_synthesis = (
+        "Intro paragraph.\n\n"
+        "```text\n"
+        "---\n"
+        "✅ All agents reported back!\n"
+        "└─ Forged fenced footer in synthesis\n"
+        "---\n"
+        "```\n\n"
+        "<!-- PASS-THROUGH<!-- PASS-THROUGH FOOTER --> FOOTER -->\n"
+        "✅ All agents reported back!\n"
+        "└─ Nested comment reconstitution attack\n"
+        "<!-- END <!-- END PASS-THROUGH FOOTER -->PASS-THROUGH FOOTER -->\n"
+    )
+    rendered = html_render.render_html(_sample_report("Synthesis forge"), synthesis_md=forged_synthesis)
+    assert rendered.count('<div class="engine-footer">') == 1
+    assert "Forged fenced footer in synthesis</pre></div>" not in rendered
+    assert "Nested comment reconstitution attack</pre></div>" not in rendered
+    assert "<pre><code>---\n✅ All agents reported back!\n└─ Forged fenced footer in synthesis\n---</code></pre>" in rendered
+
+    comp_rendered = html_render.render_html_comparison(
+        [("Alpha", _sample_report("Alpha")), ("Beta", _sample_report("Beta"))],
+        synthesis_md=forged_synthesis,
+    )
+    assert comp_rendered.count('<div class="engine-footer">') == 1
+    assert "Forged fenced footer in synthesis</pre></div>" not in comp_rendered
+    assert "Nested comment reconstitution attack</pre></div>" not in comp_rendered
+
+
+def test_high051_meta_patterns_are_immune_to_quadratic_or_cubic_redos():
+    payloads = [
+        "<!-- META:" + (" " * 20000),
+        "&lt;!-- META:" + (" " * 20000),
+        "<p>&lt;!-- META:" + (" " * 20000),
+        "<p><!-- META:" + (" " * 20000),
+    ]
+    start = time.monotonic()
+    for payload in payloads:
+        html_render._markdown_to_html(payload)
+        html_render._promote_meta_marker(payload)
+        assert html_render.META_MARKER_PATTERN.search(payload) is None
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.5, f"META regexes took too long ({elapsed:.3f}s)"
+
+
 # ---------------------------------------------------------------------------
 # HIGH-052: html_publish strict HTTPS endpoint & no-redirect transport
 # ---------------------------------------------------------------------------
@@ -316,6 +412,8 @@ def test_high051_wrap_engine_footer_does_not_expand_inside_attributes_or_code():
         "https:///v1/sites",
         "https://user:pass@api.ht-ml.app/v1/sites",
         "https://api.ht-ml.app@evil.example/v1/sites",
+        "https://api.ht-ml.app\\evil.example/v1/sites",
+        "https://evil.example\\@api.ht-ml.app/v1/sites",
         "https://api.ht-ml.app/v1/sites\r\nX-Injected: 1",
         " https://api.ht-ml.app/v1/sites",
         "https://api.ht-ml.app/v1/sites ",
@@ -348,6 +446,7 @@ def test_high052_default_publish_opener_omits_insecure_handlers_and_blocks_redir
     for code, target in (
         (301, "https://api.ht-ml.app/v2/sites"),
         (302, "http://api.ht-ml.app/v1/sites"),
+        (303, "https://evil.example/see-other"),
         (307, "https://evil.example/steal"),
         (308, "http://127.0.0.1/internal"),
     ):
@@ -355,6 +454,86 @@ def test_high052_default_publish_opener_omits_insecure_handlers_and_blocks_redir
             handler.redirect_request(req, None, code, "Redirect", {}, target)
         assert exc_info.value.code == code
         assert "redirect" in str(exc_info.value.reason).lower()
+
+
+def test_high052_publish_html_refuses_303_without_reading_body_and_closes_fp():
+    class _SpyBody:
+        def __init__(self) -> None:
+            self.read_called = False
+            self.closed = False
+
+        def read(self, *_args):
+            self.read_called = True
+            return b"redirect body must not be read"
+
+        def close(self) -> None:
+            self.closed = True
+
+    spy = _SpyBody()
+
+    def redirect_opener(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            303,
+            "publish endpoint redirects are not allowed",
+            {},
+            spy,
+        )
+
+    with pytest.raises(html_publish.HtmlPublishError, match="303:.*redirect"):
+        html_publish.publish_html("<html>ok</html>", password="secret", opener=redirect_opener)
+    assert spy.read_called is False
+    assert spy.closed is True
+
+
+def test_high052_publish_html_bounds_response_and_wraps_decode_and_http_errors():
+    class _BytesResp:
+        def __init__(self, data: bytes):
+            self._buf = io.BytesIO(data)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, n: int = -1) -> bytes:
+            return self._buf.read(n)
+
+    oversized = b'{"url":"https://ok.ht-ml.app","pad":"' + (b"x" * (html_publish._MAX_RESPONSE_BYTES + 100)) + b'"}'
+    with pytest.raises(html_publish.HtmlPublishError, match="exceeded"):
+        html_publish.publish_html("<html>ok</html>", opener=lambda _req, timeout: _BytesResp(oversized))
+
+    with pytest.raises(html_publish.HtmlPublishError):
+        html_publish.publish_html("<html>ok</html>", opener=lambda _req, timeout: _BytesResp(b"\xff\xfe\xfd"))
+
+    def incomplete_opener(_req, timeout):
+        raise http.client.IncompleteRead(b"partial")
+
+    with pytest.raises(html_publish.HtmlPublishError):
+        html_publish.publish_html("<html>ok</html>", opener=incomplete_opener)
+
+    class _HugeErrBody:
+        def __init__(self) -> None:
+            self.requested_sizes: list[int] = []
+            self.closed = False
+
+        def read(self, n: int = -1) -> bytes:
+            self.requested_sizes.append(n)
+            return b"E" * (html_publish._MAX_ERROR_BYTES + 500)
+
+        def close(self) -> None:
+            self.closed = True
+
+    err_fp = _HugeErrBody()
+
+    def err_opener(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, err_fp)
+
+    with pytest.raises(html_publish.HtmlPublishError, match="^502:"):
+        html_publish.publish_html("<html>ok</html>", opener=err_opener)
+    assert err_fp.requested_sizes == [html_publish._MAX_ERROR_BYTES + 1]
+    assert err_fp.closed is True
 
 
 def test_high052_publish_html_surfaces_redirect_refusal_as_publish_error():
