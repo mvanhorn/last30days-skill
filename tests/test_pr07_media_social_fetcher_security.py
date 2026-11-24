@@ -391,6 +391,84 @@ class TestHigh175YouTubeDirectTranscriptSSRF:
             server.server_close()
             thread.join(2)
 
+    def test_redirect_handler_closes_without_draining_redirect_body(self) -> None:
+        handler = http._StripAuthOnCrossOriginRedirect()
+        followed: list[urllib.request.Request] = []
+
+        class _FakeParent:
+            def open(self, new_req, timeout=None):
+                followed.append(new_req)
+                return io.BytesIO(b"destination-ok")
+
+        class _SpyFP:
+            def __init__(self):
+                self.closed = False
+
+            def read(self, *args, **kwargs):
+                raise AssertionError("redirect handler must not drain redirect body via fp.read()")
+
+            def close(self):
+                self.closed = True
+
+        handler.parent = _FakeParent()
+        req = urllib.request.Request("https://www.youtube.com/watch?v=abc123")
+        req.timeout = 5
+        fp = _SpyFP()
+        resp = handler.http_error_302(
+            req, fp, 302, "Found", {"location": "https://www.youtube.com/api/timedtext?v=abc123"},
+        )
+        assert fp.closed is True
+        assert resp.read() == b"destination-ok"
+        assert len(followed) == 1
+
+    def test_redirect_with_oversized_body_followed_without_draining_unmocked(self) -> None:
+        redirect_body_bytes = 16 * 1024 * 1024
+        bytes_written = [0]
+        stop_event = threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "/dest")
+                    self.send_header("Content-Length", str(redirect_body_bytes))
+                    self.end_headers()
+                    chunk = b"R" * 32768
+                    remaining = redirect_body_bytes
+                    try:
+                        while remaining > 0 and not stop_event.is_set():
+                            piece = chunk[:remaining]
+                            self.wfile.write(piece)
+                            self.wfile.flush()
+                            bytes_written[0] += len(piece)
+                            remaining -= len(piece)
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                else:
+                    body = b"final-destination"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{server.server_port}/start")
+            with http.open_request(req, 5) as resp:
+                assert resp.read() == b"final-destination"
+            assert bytes_written[0] < redirect_body_bytes
+        finally:
+            stop_event.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
 
 # ---------------------------------------------------------------------------
 # HIGH-178: youtube_yt.py video_id traversal, glob, collision, URL injection
@@ -594,19 +672,42 @@ class TestHigh176TranscribeHardening:
         assert result is None
         run_mock.assert_not_called()
 
-    def test_private_dns_resolution_rejected_for_remote_url(
-        self, tmp_path: Path, monkeypatch,
+    def test_url_syntax_check_does_not_block_on_dns_and_proxy_rejects_private_dns(
+        self, monkeypatch,
     ) -> None:
-        def fake_getaddrinfo(host, port, *_args, **_kwargs):
-            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("169.254.169.254", port))]
+        # _is_safe_remote_media_url must stay syntax-only so slow DNS stays inside yt-dlp's timeout.
+        with mock.patch.object(
+            public_host.socket,
+            "getaddrinfo",
+            side_effect=AssertionError("syntax check must not block on DNS"),
+        ):
+            assert transcribe._is_safe_remote_media_url("https://rebind.example/media.mp4") is True
 
-        monkeypatch.setattr(public_host.socket, "getaddrinfo", fake_getaddrinfo)
-        with mock.patch.object(transcribe, "_run") as run_mock:
-            result = transcribe._acquire_audio(
-                "https://rebind.example/media.mp4", str(tmp_path), timeout=30.0,
-            )
-        assert result is None
-        run_mock.assert_not_called()
+        # _PublicMediaProxy enforces fresh public DNS resolution at connect time.
+        orig_getaddrinfo = public_host.socket.getaddrinfo
+
+        def private_dns(host, port, *args, **kwargs):
+            if host == "rebind.example":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("169.254.169.254", port))]
+            return orig_getaddrinfo(host, port, *args, **kwargs)
+
+        monkeypatch.setattr(public_host.socket, "getaddrinfo", private_dns)
+        with transcribe._PublicMediaProxy(max_bytes=1024 * 1024) as proxy:
+            with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock:
+                sock.sendall(
+                    b"GET http://rebind.example/media.mp4 HTTP/1.1\r\nHost: rebind.example\r\n\r\n"
+                )
+                reply = sock.recv(1024).decode("latin-1")
+            assert reply.startswith("HTTP/1.1 403")
+            assert proxy.blocked_count == 1
+
+            with socket.create_connection(("127.0.0.1", proxy.port), timeout=5) as sock:
+                sock.sendall(
+                    b"CONNECT rebind.example:443 HTTP/1.1\r\nHost: rebind.example:443\r\n\r\n"
+                )
+                reply = sock.recv(1024).decode("latin-1")
+            assert reply.startswith("HTTP/1.1 403")
+            assert proxy.blocked_count == 2
 
     @pytest.mark.parametrize(
         "url",
@@ -619,10 +720,6 @@ class TestHigh176TranscribeHardening:
     def test_public_remote_url_uses_hardened_ytdlp_and_ffmpeg_flags(
         self, tmp_path: Path, monkeypatch, url: str,
     ) -> None:
-        def fake_getaddrinfo(host, port, *_args, **_kwargs):
-            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port))]
-
-        monkeypatch.setattr(public_host.socket, "getaddrinfo", fake_getaddrinfo)
         monkeypatch.setenv("NO_PROXY", "169.254.169.254,127.0.0.1,localhost")
         monkeypatch.setenv("ALL_PROXY", "socks5://attacker.example:1080")
         cmds: list[tuple[list[str], dict | None]] = []
@@ -631,9 +728,10 @@ class TestHigh176TranscribeHardening:
             cmds.append((cmd, env))
             if cmd[0] == "yt-dlp":
                 out_path = cmd[cmd.index("-o") + 1]
-                Path(out_path).write_bytes(b"fake-m4a")
+                # Minimal valid ISO BMFF M4A header so container demuxer validation passes.
+                Path(out_path).write_bytes(b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A ")
             elif cmd[0] == "ffmpeg":
-                Path(cmd[-1]).write_bytes(b"fake-mp3")
+                Path(cmd[-1]).write_bytes(b"ID3\x03\x00fake-mp3")
             return True
 
         with mock.patch.object(transcribe, "_run", side_effect=fake_run):
@@ -667,21 +765,80 @@ class TestHigh176TranscribeHardening:
         assert ffmpeg_cmd[0] == "ffmpeg"
         assert "-nostdin" in ffmpeg_cmd
         wl_idx = ffmpeg_cmd.index("-protocol_whitelist")
+        f_idx = ffmpeg_cmd.index("-f")
         i_idx = ffmpeg_cmd.index("-i")
         assert ffmpeg_cmd[wl_idx + 1] == "file"
+        assert ffmpeg_cmd[f_idx + 1] == "mov,mp4,m4a,3gp,3g2,mj2"
         assert wl_idx < i_idx
+        assert f_idx < i_idx
         assert "-vn" in ffmpeg_cmd
         assert ffmpeg_cmd[ffmpeg_cmd.index("-map_metadata") + 1] == "-1"
         assert os.path.isabs(ffmpeg_cmd[i_idx + 1])
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00", "mov,mp4,m4a,3gp,3g2,mj2"),
+            (b"\x1a\x45\xdf\xa3\x01\x00\x00\x00", "matroska,webm"),
+            (b"OggS\x00\x02\x00\x00", "ogg"),
+            (b"fLaC\x00\x00\x00\x22", "flac"),
+            (b"RIFF\x24\x00\x00\x00WAVEfmt ", "wav"),
+            (b"FORM\x00\x00\x00\x10AIFFCOMM", "aiff"),
+            (b"ID3\x03\x00\x00\x00\x00", "mp3"),
+            (b"\xff\xfb\x90\x00\x00\x00\x00\x00", "mp3"),
+            (b"\xff\xf1\x50\x80\x00\x1f\xfc\x00", "aac"),
+            (transcribe._ASF_GUID + b"\x00\x00", "asf"),
+            (b"#EXTM3U\n#EXTINF:1,\n/etc/passwd\n", None),
+            (b"ffconcat version 1.0\nfile '/tmp/secret.wav'\n", None),
+            (b"<?xml version='1.0'?><MPD/>", None),
+            (b"v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n", None),
+            (b"plain text file", None),
+        ],
+    )
+    def test_detect_safe_audio_demuxer_allowlist(
+        self, tmp_path: Path, payload: bytes, expected: str | None,
+    ) -> None:
+        sample = tmp_path / "sample.bin"
+        sample.write_bytes(payload)
+        assert transcribe._detect_safe_audio_demuxer(str(sample)) == expected
+
+    @pytest.mark.parametrize(
+        "playlist_payload",
+        [
+            b"#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:1.0,\n{secret}\n#EXT-X-ENDLIST\n",
+            b"ffconcat version 1.0\nfile '{secret}'\n",
+        ],
+    )
+    def test_remote_downloaded_playlist_referencing_local_file_rejected_before_ffmpeg(
+        self, tmp_path: Path, playlist_payload: bytes,
+    ) -> None:
+        secret_wav = tmp_path / "secret.wav"
+        secret_wav.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        cmds: list[list[str]] = []
+
+        def fake_run(cmd, timeout=120.0, *, env=None):
+            cmds.append(cmd)
+            if cmd[0] == "yt-dlp":
+                out_path = cmd[cmd.index("-o") + 1]
+                Path(out_path).write_bytes(
+                    playlist_payload.replace(b"{secret}", str(secret_wav).encode("utf-8"))
+                )
+            return True
+
+        with mock.patch.object(transcribe, "_run", side_effect=fake_run):
+            out = transcribe._acquire_audio(
+                "https://media.example.com/disguised.m4a", str(workdir), timeout=30.0,
+            )
+
+        assert out is None
+        assert [c[0] for c in cmds] == ["yt-dlp"]
 
     def test_oversized_ytdlp_download_rejected_before_ffmpeg(
         self, tmp_path: Path, monkeypatch,
     ) -> None:
         monkeypatch.setattr(transcribe, "MAX_DOWNLOAD_BYTES", 10)
-        monkeypatch.setattr(
-            public_host.socket, "getaddrinfo",
-            lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port))],
-        )
         cmds: list[list[str]] = []
 
         def fake_run(cmd, timeout=120.0, *, env=None):
@@ -697,6 +854,105 @@ class TestHigh176TranscribeHardening:
 
         assert out is None
         assert [c[0] for c in cmds] == ["yt-dlp"]
+
+    @pytest.mark.parametrize("mode", ["http", "connect"])
+    def test_media_proxy_closes_and_untracks_upstream_socket_on_relay_error(
+        self, mode: str,
+    ) -> None:
+        upstream_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        upstream_srv.bind(("127.0.0.1", 0))
+        upstream_srv.listen(4)
+        upstream_port = upstream_srv.getsockname()[1]
+
+        def serve_one() -> None:
+            upstream_srv.settimeout(2.0)
+            try:
+                conn, _ = upstream_srv.accept()
+            except OSError:
+                return
+            with conn:
+                if mode == "http":
+                    try:
+                        conn.recv(4096)
+                    except OSError:
+                        pass
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+                else:
+                    conn.sendall(b"hello")
+
+        thread = threading.Thread(target=serve_one, daemon=True)
+        thread.start()
+
+        def hybrid_resolver(host: str, port: int):
+            if host == "relay.test":
+                return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", upstream_port))]
+            return public_host.resolve_public_addresses(host, port)
+
+        created_upstreams: list[socket.socket] = []
+
+        try:
+            with transcribe._PublicMediaProxy(max_bytes=1024 * 1024, resolver=hybrid_resolver) as proxy:
+                orig_connect = proxy._connect_public
+
+                def spy_connect(host: str, port: int) -> socket.socket:
+                    sock = orig_connect(host, port)
+                    created_upstreams.append(sock)
+                    return sock
+
+                proxy._connect_public = spy_connect  # type: ignore[method-assign]
+
+                class _FailingClient:
+                    def __init__(self, real_sock: socket.socket):
+                        self._sock = real_sock
+                        self.calls = 0
+
+                    def fileno(self) -> int:
+                        return self._sock.fileno()
+
+                    def recv(self, n: int) -> bytes:
+                        return self._sock.recv(n)
+
+                    def sendall(self, data: bytes) -> None:
+                        self.calls += 1
+                        if mode == "connect" and self.calls == 1:
+                            # Allow 200 Connection Established, then fail on first relayed payload.
+                            self._sock.sendall(data)
+                            return
+                        raise BrokenPipeError("simulated client disconnect mid-relay")
+
+                    def shutdown(self, how: int) -> None:
+                        self._sock.shutdown(how)
+
+                c1, c2 = socket.socketpair()
+                try:
+                    failing_client = _FailingClient(c1)
+                    with pytest.raises(BrokenPipeError):
+                        if mode == "http":
+                            proxy._handle_http(
+                                failing_client,  # type: ignore[arg-type]
+                                "GET",
+                                "http://relay.test/ok",
+                                [],
+                                b"",
+                            )
+                        else:
+                            proxy._handle_connect(
+                                failing_client,  # type: ignore[arg-type]
+                                "relay.test:443",
+                                b"",
+                            )
+                finally:
+                    c1.close()
+                    c2.close()
+
+                assert len(created_upstreams) == 1
+                assert created_upstreams[0].fileno() == -1
+                with proxy._lock:
+                    assert created_upstreams[0] not in proxy._active_sockets
+        finally:
+            upstream_srv.close()
+            thread.join(2)
 
     def test_media_proxy_blocks_http_and_connect_ssrf_and_redirects(self) -> None:
         secret_hits: list[str] = []
@@ -793,7 +1049,9 @@ class TestHigh176TranscribeHardening:
 
     def test_media_proxy_aborts_chunked_stream_mid_transfer_at_max_bytes(self) -> None:
         bytes_written = [0]
-        total_stream_bytes = 2 * 1024 * 1024
+        # 64 MiB exceeds loopback kernel TCP buffers so the server cannot finish before proxy abort.
+        total_stream_bytes = 64 * 1024 * 1024
+        stop_event = threading.Event()
 
         class ChunkedHandler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -805,16 +1063,17 @@ class TestHigh176TranscribeHardening:
                 self.send_response(200)
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                payload = b"A" * 8192
+                payload = b"A" * 32768
                 frame = f"{len(payload):x}\r\n".encode("ascii") + payload + b"\r\n"
                 remaining = total_stream_bytes
                 try:
-                    while remaining > 0:
+                    while remaining > 0 and not stop_event.is_set():
                         self.wfile.write(frame)
                         self.wfile.flush()
                         bytes_written[0] += len(payload)
                         remaining -= len(payload)
-                    self.wfile.write(b"0\r\n\r\n")
+                    if not stop_event.is_set():
+                        self.wfile.write(b"0\r\n\r\n")
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
 
@@ -851,6 +1110,7 @@ class TestHigh176TranscribeHardening:
                     reply = sock.recv(1024).decode("latin-1")
                 assert reply.startswith("HTTP/1.1 413")
         finally:
+            stop_event.set()
             srv.shutdown()
             srv.server_close()
             thread.join(2)
@@ -862,7 +1122,7 @@ class TestHigh176TranscribeHardening:
         upstream_srv.listen(4)
         upstream_port = upstream_srv.getsockname()[1]
         bytes_written = [0]
-        total_bytes = 2 * 1024 * 1024
+        total_bytes = 64 * 1024 * 1024
         stop_event = threading.Event()
 
         def serve_stream() -> None:
@@ -872,7 +1132,7 @@ class TestHigh176TranscribeHardening:
             except OSError:
                 return
             with conn:
-                chunk = b"B" * 8192
+                chunk = b"B" * 32768
                 remaining = total_bytes
                 try:
                     while remaining > 0 and not stop_event.is_set():
@@ -923,6 +1183,7 @@ class TestHigh176TranscribeHardening:
         self, tmp_path: Path,
     ) -> None:
         secret_hits: list[str] = []
+        public_hits: list[str] = []
 
         class SecretHandler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -944,6 +1205,7 @@ class TestHigh176TranscribeHardening:
                 pass
 
             def do_GET(self):
+                public_hits.append(self.path)
                 if self.path == "/redirect":
                     self.send_response(302)
                     self.send_header("Location", f"http://127.0.0.1:{secret_srv.server_port}/secret.mp3")
@@ -953,10 +1215,10 @@ class TestHigh176TranscribeHardening:
                     body = (
                         "#EXTM3U\n"
                         "#EXT-X-VERSION:3\n"
-                        "#EXT-X-TARGETDURATION:2\n"
-                        "#EXTINF:2.0,\n"
-                        f"http://127.0.0.1:{secret_srv.server_port}/seg0.ts\n"
-                        "#EXT-X-ENDLIST\n"
+                        f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",DEFAULT=YES,'
+                        f'URI="http://127.0.0.1:{secret_srv.server_port}/audio.m3u8"\n'
+                        '#EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS="mp4a.40.2",AUDIO="a"\n'
+                        f"http://127.0.0.1:{secret_srv.server_port}/seg_list.m3u8\n"
                     ).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/vnd.apple.mpegurl")
@@ -980,10 +1242,21 @@ class TestHigh176TranscribeHardening:
         try:
             with transcribe._PublicMediaProxy(max_bytes=1024 * 1024, resolver=hybrid_resolver) as proxy:
                 env = transcribe._sanitized_ytdlp_env(proxy.url)
+                ytdlp_bin = shutil.which("yt-dlp")
+                assert ytdlp_bin is not None
+                # conftest.py overrides HOME to a temp dir; preserve user-site lookup when
+                # yt-dlp is installed under a user prefix (e.g., ~/.local/bin/yt-dlp).
+                prefix = Path(ytdlp_bin).resolve().parent.parent
+                if (prefix / "lib").is_dir():
+                    env["PYTHONUSERBASE"] = str(prefix)
+                if not transcribe._run([ytdlp_bin, "--ignore-config", "--no-plugin-dirs", "--version"], timeout=10.0, env=env):
+                    pytest.skip("yt-dlp binary is not runnable under isolated test environment")
                 for path in ("/redirect", "/evil.m3u8"):
+                    before_public = len(public_hits)
+                    before_blocked = proxy.blocked_count
                     out_file = str(tmp_path / f"out_{path.strip('/').replace('.', '_')}.m4a")
                     ok = transcribe._run([
-                        "yt-dlp",
+                        ytdlp_bin,
                         "--ignore-config",
                         "--no-plugin-dirs",
                         "--no-cookies-from-browser",
@@ -999,6 +1272,8 @@ class TestHigh176TranscribeHardening:
                         f"http://public.test{path}",
                     ], timeout=15.0, env=env)
                     assert ok is False
+                    assert len(public_hits) > before_public, f"yt-dlp never reached public server for {path}"
+                    assert proxy.blocked_count > before_blocked, f"proxy never saw blocked follow-up for {path}"
             assert secret_hits == []
         finally:
             front_srv.shutdown()
@@ -1120,6 +1395,20 @@ class TestHigh181BlueskySearchHostHardening:
         monkeypatch.setenv("BSKY_SEARCH_HOST", bad_host)
         url = bluesky._resolve_search_url()
         assert url == "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+
+    def test_invalid_bsky_search_host_warning_redacts_raw_value(
+        self, monkeypatch, capsys,
+    ) -> None:
+        monkeypatch.setenv(
+            "BSKY_SEARCH_HOST", "https://user:secretpass@evil.example/?sig=tok123",
+        )
+        url = bluesky._resolve_search_url()
+        assert url == "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+        err = capsys.readouterr().err
+        assert "BSKY_SEARCH_HOST" in err
+        assert "api.bsky.app" in err
+        for leaked in ("secretpass", "tok123", "evil.example", "user:"):
+            assert leaked not in err
 
     def test_poisoned_host_never_receives_bearer_jwt_in_search(self, monkeypatch) -> None:
         monkeypatch.setenv("BSKY_SEARCH_HOST", "api.bsky.app@attacker.example")

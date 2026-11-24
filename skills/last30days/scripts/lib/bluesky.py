@@ -137,8 +137,8 @@ def _resolve_search_url(config: Optional[Dict[str, Any]] = None) -> str:
     if not host:
         if raw != _DEFAULT_BSKY_SEARCH_HOST:
             _log(
-                f"BSKY_SEARCH_HOST={raw!r} is not a valid public hostname; "
-                f"falling back to default {_DEFAULT_BSKY_SEARCH_HOST!r}"
+                f"BSKY_SEARCH_HOST is not a valid public hostname; "
+                f"falling back to {_DEFAULT_BSKY_SEARCH_HOST}"
             )
         host = _DEFAULT_BSKY_SEARCH_HOST
     return f"https://{host}/xrpc/app.bsky.feed.searchPosts"
