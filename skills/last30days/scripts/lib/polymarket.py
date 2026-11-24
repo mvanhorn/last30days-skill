@@ -190,14 +190,23 @@ def _domain_word_fallback_allows(core_words: list[str], informative: list[str],
     return False
 
 
-def _acronym_credit(core_words: list[str], title_words: set[str]) -> int:
+_UPPERCASE_ACRONYM_RE = re.compile(r"(?<!\w)[A-Z]{3,}(?!\w)")
+
+
+def _uppercase_acronyms(text: Any) -> frozenset[str]:
+    """Extract original-case all-caps 3+ letter acronym tokens before casefolding."""
+    return frozenset(_UPPERCASE_ACRONYM_RE.findall(str(text or "")))
+
+
+def _acronym_credit(core_words: list[str], title_acronyms: set[str] | frozenset[str]) -> int:
     """Credit matches when the title abbreviates a phrase the topic spells out.
 
     Prediction-market titles use shorthand ("AGI by 2030?") while topics arrive
     spelled out ("artificial general intelligence"), so word overlap scores zero
     on a title that is squarely on topic. For each run of 3+ consecutive
-    informative words, build its initialism and, if the title carries it as a
-    whole word, credit one match per abbreviated word. Requiring at least three
+    informative words, build its initialism and, if the original-case title
+    carries it as an all-caps whole word (excluding noise words even in all-caps
+    titles), credit one match per abbreviated word. Requiring at least three
     letters avoids treating ambiguous tokens such as "ML" as expanded phrases.
     """
     informative_set = set(_informative_words(core_words))
@@ -209,7 +218,11 @@ def _acronym_credit(core_words: list[str], title_words: set[str]) -> int:
             continue
         if len(run) >= 3:
             acronym = "".join(w[0] for w in run)
-            if len(acronym) >= 3 and acronym in title_words:
+            if (
+                len(acronym) >= 3
+                and acronym not in _NOISE_WORDS
+                and acronym.upper() in title_acronyms
+            ):
                 credit = max(credit, len(run))
         run = []
     return credit
@@ -298,18 +311,24 @@ class _Term:
         self.words = [word for word in self.phrase.split() if len(word) > 1]
         self.informative = _informative_words(self.words)
 
-    def found_in(self, text: str) -> bool:
+    def found_in(
+        self,
+        text: str,
+        *,
+        acronyms: Optional[frozenset[str] | set[str]] = None,
+    ) -> bool:
         """Whether ``text`` (already through ``_match_text``) names this term:
-        the whole phrase at word boundaries, an initialism of a spelled-out
-        phrase ("AGI"), every informative word of a descriptive topic in any
-        order ("Nvidia earnings"), or, for a soft domain sweep ("AI frontier
-        developments"), its domain word."""
+        the whole phrase at word boundaries, an all-caps initialism of a
+        spelled-out phrase ("AGI"), every informative word of a descriptive
+        topic in any order ("Nvidia earnings"), or, for a soft domain sweep
+        ("AI frontier developments"), its domain word."""
         if self.pattern is None:
             return False
         if self.pattern.search(text):
             return True
         words = set(text.split())
-        if _acronym_credit(self.words, words):
+        title_acronyms = _uppercase_acronyms(text) if acronyms is None else acronyms
+        if title_acronyms and _acronym_credit(self.words, title_acronyms):
             return True
         if len(self.informative) >= 2 and all(_has_word(word, words) for word in self.informative):
             return True
@@ -321,9 +340,25 @@ def _topic_sides(topic: str) -> List[str]:
     return re.split(r"\s+(?:vs\.?|versus)\s+", _extract_core_subject(topic), flags=re.IGNORECASE)
 
 
-def _names_any(terms: List[_Term], texts: List[str]) -> bool:
+def _prepare_match_text(raw: Any) -> Tuple[str, frozenset[str]]:
+    return (_match_text(raw), _uppercase_acronyms(raw))
+
+
+def _names_any(
+    terms: List[_Term],
+    texts: List[str | Tuple[str, frozenset[str]]],
+) -> bool:
     """Whether any of ``terms`` is found in any non-empty text of ``texts``."""
-    return any(term.found_in(text) for term in terms for text in texts if text)
+    for entry in texts:
+        if isinstance(entry, tuple):
+            text, acronyms = entry
+        else:
+            text, acronyms = entry, None
+        if not text:
+            continue
+        if any(term.found_in(text, acronyms=acronyms) for term in terms):
+            return True
+    return False
 
 
 def _entity_terms(topic: str, aliases: Tuple[str, ...] = ()) -> List[str]:
@@ -389,17 +424,24 @@ class EntityMatcher:
         self.related = [(entry, _Term(entry.name)) for entry in self.hints.related]
 
     def match(
-        self, market: Dict[str, Any], event_title: str = "", *, title_text: Optional[str] = None,
+        self,
+        market: Dict[str, Any],
+        event_title: str = "",
+        *,
+        title_text: Optional[str] = None,
+        title_acronyms: Optional[frozenset[str]] = None,
     ) -> Optional[EntityMatch]:
         """``title_text``, when given, is ``event_title`` already through
         ``_match_text``, so a caller matching many markets of one event
         normalizes the title once."""
-        own = [_match_text(text) for text in _market_texts(market)]
+        own = [_prepare_match_text(text) for text in _market_texts(market)]
         if _names_any(self.terms, own):
             return EntityMatch("market")
-        if title_text is None:
-            title_text = _match_text(event_title)
-        if _names_any(self.terms, [title_text]):
+        title_pair = (
+            _match_text(event_title) if title_text is None else title_text,
+            _uppercase_acronyms(event_title) if title_acronyms is None else title_acronyms,
+        )
+        if _names_any(self.terms, [title_pair]):
             return EntityMatch("title")
         for entry, term in self.related:
             if _names_any([term], own):
@@ -407,8 +449,13 @@ class EntityMatcher:
         return None
 
     def outcome_kind(
-        self, market: Dict[str, Any], match: EntityMatch, event_title: str = "",
-        *, title_text: Optional[str] = None,
+        self,
+        market: Dict[str, Any],
+        match: EntityMatch,
+        event_title: str = "",
+        *,
+        title_text: Optional[str] = None,
+        title_acronyms: Optional[frozenset[str]] = None,
     ) -> Optional[str]:
         """How the subject (or the related name) is an outcome of the event:
         "label" when the market's ``groupItemTitle`` names it and, for the
@@ -417,17 +464,19 @@ class EntityMatcher:
         subject without the subject being one of the event's outcomes (a
         bracket of "OpenAI IPO Closing Market Cap"). ``title_text`` is as for
         ``match``."""
-        label = _match_text(market.get("groupItemTitle"))
+        label = _prepare_match_text(market.get("groupItemTitle"))
         if match.related:
             terms = [term for entry, term in self.related if entry.name == match.related]
-            return "label" if label and _names_any(terms, [label]) else None
-        if title_text is None:
-            title_text = _match_text(event_title)
-        if _names_any(self.terms, [title_text]):
+            return "label" if label[0] and _names_any(terms, [label]) else None
+        title_pair = (
+            _match_text(event_title) if title_text is None else title_text,
+            _uppercase_acronyms(event_title) if title_acronyms is None else title_acronyms,
+        )
+        if _names_any(self.terms, [title_pair]):
             return None
-        if label and _names_any(self.terms, [label]):
+        if label[0] and _names_any(self.terms, [label]):
             return "label"
-        if _names_any(self.terms, [_match_text(market.get("question"))]):
+        if _names_any(self.terms, [_prepare_match_text(market.get("question"))]):
             return None
         return "outcome" if self.matched_outcome(market, match) is not None else None
 
@@ -442,7 +491,7 @@ class EntityMatcher:
             name = str(outcome)
             if name.strip().casefold() in ("yes", "no"):
                 continue
-            if _names_any(terms, [_match_text(name)]):
+            if _names_any(terms, [_prepare_match_text(name)]):
                 return name
         return None
 
@@ -617,7 +666,7 @@ def search_polymarket(
     for event in events.values():
         live = _live_markets(event)
         if _is_race(event, live):
-            race_labels += [_match_text(market.get("groupItemTitle")) for market in live]
+            race_labels += [_prepare_match_text(market.get("groupItemTitle")) for market in live]
     related_terms = [
         entry.name for entry in hints.related[:HINT_CAP]
         if not _names_any([_Term(entry.name)], race_labels)
@@ -733,45 +782,38 @@ def _parse_outcome_prices(market: Dict[str, Any], *, book_aware: bool = True) ->
     two-outcome market quoted from its last trade prices its second outcome
     as the complement.
     """
-    outcomes_raw = market.get("outcomes") or []
-    prices_raw = market.get("outcomePrices")
+    outcomes = _json_list(market.get("outcomes"))
+    prices = _json_list(market.get("outcomePrices"))
 
-    if not prices_raw:
-        return []
-
-    # Both outcomes and outcomePrices can be JSON-encoded strings
-    try:
-        if isinstance(outcomes_raw, str):
-            outcomes = json.loads(outcomes_raw)
-        else:
-            outcomes = outcomes_raw
-    except (json.JSONDecodeError, TypeError):
-        outcomes = []
-
-    try:
-        if isinstance(prices_raw, str):
-            prices = json.loads(prices_raw)
-        else:
-            prices = prices_raw
-    except (json.JSONDecodeError, TypeError):
+    if not prices:
         return []
 
     result = []
+    has_first = False
     for i, price in enumerate(prices):
+        if isinstance(price, bool):
+            continue
         try:
             p = float(price)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             continue
-        name = outcomes[i] if i < len(outcomes) else f"Outcome {i+1}"
+        if not math.isfinite(p) or p < 0.0 or p > 1.0:
+            continue
+        if i == 0:
+            has_first = True
+        raw_name = outcomes[i] if i < len(outcomes) else None
+        name = str(raw_name) if raw_name is not None else f"Outcome {i+1}"
         result.append((name, p))
 
     if book_aware and result:
+        if not has_first:
+            return []
         quoted = _quoted_price(market, result[0][1])
         if quoted is None:
             return []
         if quoted != result[0][1]:
             result[0] = (result[0][0], quoted)
-            if len(result) == 2:
+            if len(prices) == 2 and len(result) == 2:
                 result[1] = (result[1][0], round(1 - quoted, 4))
 
     return result
@@ -1248,10 +1290,13 @@ def _legacy_shorten_question(question: str) -> str:
 
 def _safe_float(val, default=0.0) -> float:
     """Safely convert a value to float."""
-    try:
-        return float(val or default)
-    except (ValueError, TypeError):
+    if isinstance(val, bool):
         return default
+    try:
+        parsed = float(val or default)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def _market_volume(market: Dict[str, Any]) -> float:
@@ -1350,11 +1395,13 @@ def _event_entities(
     price among the live outcomes.
     """
     title = str(event.get("title") or "")
-    title_text = _match_text(title)
+    title_text, title_acronyms = _prepare_match_text(title)
     yes_prices = [_yes_price(market) for market in active_markets]
     found = _EventEntities(race=race, live_count=len(active_markets), named_by_market=False)
     for market in active_markets:
-        match = matcher.match(market, title, title_text=title_text)
+        match = matcher.match(
+            market, title, title_text=title_text, title_acronyms=title_acronyms,
+        )
         if match is None:
             continue
         if match.field == "market" and not match.related:
@@ -1374,7 +1421,12 @@ def _event_entities(
             volume=_market_volume(market), days=_days_to_close(market, event, today),
             priced_outcome=priced_outcome,
         )
-        kind = matcher.outcome_kind(market, match, title, title_text=title_text) if race else None
+        kind = (
+            matcher.outcome_kind(
+                market, match, title, title_text=title_text, title_acronyms=title_acronyms,
+            )
+            if race else None
+        )
         entity.race_outcome = kind is not None
         if kind == "label" and price is not None:
             entity.rank = 1 + sum(1 for other in yes_prices if other is not None and other > price)
@@ -1593,7 +1645,11 @@ def parse_polymarket_response(
                     continue
                 pairs = _parse_outcome_prices(m)
                 yes_price = next((p for name, p in pairs if name.lower() == "yes"), None)
-                if yes_price is not None and (yes_price > 0.005 or id(m) in chosen_ids):
+                if yes_price is not None and (
+                    include_all_outcomes
+                    or yes_price >= RACE_PRICE_FLOOR
+                    or id(m) in chosen_ids
+                ):
                     synth_outcomes.append((q, yes_price, m))
             sibling_names = [
                 _shorten_question(m["question"]) for m in active_markets if m.get("question")
@@ -1897,14 +1953,15 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     outcome_pairs = refreshed.get("outcome_prices") or []
     outcome_totals: dict[str, int] = {}
     for name, _price in outcome_pairs:
-        normalized = str(name).casefold()
+        normalized = str(name).strip().casefold()
         outcome_totals[normalized] = outcome_totals.get(normalized, 0) + 1
     outcome_counts: dict[str, int] = {}
     for name, price in outcome_pairs:
-        normalized = str(name).casefold()
+        clean_name = str(name).strip()
+        normalized = clean_name.casefold()
         occurrence = outcome_counts.get(normalized, 0)
         outcome_counts[normalized] = occurrence + 1
-        key = f"{name}\x1f{occurrence}" if outcome_totals[normalized] > 1 else str(name)
+        key = f"{clean_name}\x1f{occurrence}" if outcome_totals[normalized] > 1 else clean_name
         values[key] = price
     # Reports saved by older builds hold each market under its old cut name.
     # The same snapshot answers later claims on this event, so it carries
@@ -1912,7 +1969,7 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     questions = refreshed.get("outcome_questions") or []
     legacy_pairs = [
         (
-            _legacy_shorten_question(question).strip() if question else str(name),
+            _legacy_shorten_question(question).strip() if question else str(name).strip(),
             price,
         )
         for (name, price), question in zip(outcome_pairs, questions)
@@ -1943,7 +2000,7 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         dropped_names.add(_shorten_question(question).strip().casefold())
         dropped_names.add(_legacy_shorten_question(question).strip().casefold())
     for key in [k for k in values if "\x1f" in k]:
-        if key.rsplit("\x1f", 1)[0].casefold() in dropped_names:
+        if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_names:
             del values[key]
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
@@ -1951,24 +2008,29 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     if datum_key == "end_date":
         value = values.get("end_date")
     else:
+        occurrence: Optional[int]
         if "\x1f" in datum_key:
             outcome_name, raw_occurrence = datum_key.rsplit("\x1f", 1)
-            occurrence = int(raw_occurrence)
+            raw_occ_stripped = raw_occurrence.strip()
+            occurrence = int(raw_occ_stripped) if raw_occ_stripped.isdigit() else None
         else:
             outcome_name, occurrence = datum_key, 0
-        wanted = outcome_name.casefold()
-        matches = [
-            price for name, price in outcome_pairs if str(name).casefold() == wanted
-        ]
-        if occurrence >= len(matches):
-            # An old cut name; the nth repeat of it is the nth market it was
-            # cut from.
-            matches = [
-                price for name, price in legacy_pairs if name.casefold() == wanted
-            ]
-        value = matches[occurrence] if occurrence < len(matches) else None
-        if "\x1f" in datum_key and wanted in dropped_names:
+        wanted = outcome_name.strip().casefold()
+        if occurrence is None:
             value = None
+        else:
+            matches = [
+                price for name, price in outcome_pairs if str(name).strip().casefold() == wanted
+            ]
+            if occurrence >= len(matches):
+                # An old cut name; the nth repeat of it is the nth market it was
+                # cut from.
+                matches = [
+                    price for name, price in legacy_pairs if name.casefold() == wanted
+                ]
+            value = matches[occurrence] if occurrence < len(matches) else None
+            if "\x1f" in datum_key and wanted in dropped_names:
+                value = None
     snapshot = {
         "values": values,
         "url": str(getattr(item, "url", "")),
