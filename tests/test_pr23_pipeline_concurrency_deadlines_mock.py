@@ -516,7 +516,7 @@ def test_high016_rate_limit_signals_incrementally_before_slow_sibling_finishes(m
         sq2_observed_before_reddit.set()
         return [], {}
 
-    monkeypatch.setattr(pipeline, "_inner_max_workers", lambda *a, **k: 2)
+    monkeypatch.setattr(pipeline, "_inner_max_workers", lambda *a, **k: 3)
     monkeypatch.setattr(pipeline, "_retrieve_stream", fake_retrieve)
     monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
     report = pipeline.run(
@@ -536,8 +536,9 @@ def test_high016_rate_limit_signals_incrementally_before_slow_sibling_finishes(m
 def test_high016_busy_primary_pool_does_not_block_transient_5xx_retry(monkeypatch):
     monkeypatch.setattr(pipeline, "STREAM_FUTURE_TIMEOUT_SECONDS", 1.5)
     monkeypatch.setattr(pipeline, "_TRANSIENT_RETRY_DELAY_SECONDS", 0.05)
-    monkeypatch.setattr(pipeline, "_inner_max_workers", lambda *a, **k: 2)
 
+    # internal_subrun=True caps max_workers at 4 (3 primary + 1 reserved retry)
+    # across 5 streams: 1 fast 503 + 4 slow streams so primary saturates at 3.
     plan = {
         "intent": "general",
         "freshness_mode": "balanced_recent",
@@ -547,43 +548,56 @@ def test_high016_busy_primary_pool_does_not_block_transient_5xx_retry(monkeypatc
                 "label": "primary",
                 "search_query": "saturated pool probe",
                 "ranking_query": "saturated pool probe",
-                "sources": ["x", "reddit", "hackernews"],
+                "sources": ["x", "reddit", "hackernews", "bluesky", "arxiv"],
             },
         ],
-        "source_weights": {"x": 1.0, "reddit": 1.0, "hackernews": 1.0},
+        "source_weights": {
+            "x": 1.0, "reddit": 1.0, "hackernews": 1.0, "bluesky": 1.0, "arxiv": 1.0,
+        },
     }
     release_slow = threading.Event()
     retry_succeeded = threading.Event()
     slow_still_blocked_when_retried: list[bool] = []
     attempts: dict[str, int] = {"x": 0}
+    concurrency_lock = threading.Lock()
+    concurrency = {"active": 0, "peak": 0}
     today = dates.get_date_range(5)[0]
 
     def fake_retrieve(**kwargs):
         source = kwargs["source"]
-        if source in ("reddit", "hackernews"):
-            # Both primary workers become occupied by slow streams as soon as x fails.
-            release_slow.wait(timeout=5.0)
-            return [], {}
-        attempts["x"] += 1
-        if attempts["x"] == 1:
-            raise http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
-        slow_still_blocked_when_retried.append(not release_slow.is_set())
-        retry_succeeded.set()
-        release_slow.set()
-        return (
-            [
-                {
-                    "id": "X-RETRY",
-                    "text": "Saturated pool probe recovered via dedicated retry executor",
-                    "url": "https://x.com/alice/status/99",
-                    "author_handle": "alice",
-                    "date": today,
-                    "engagement": {"likes": 42},
-                    "relevance": 0.9,
-                }
-            ],
-            {},
-        )
+        with concurrency_lock:
+            concurrency["active"] += 1
+            concurrency["peak"] = max(concurrency["peak"], concurrency["active"])
+        try:
+            if source != "x":
+                # Keep all primary workers busy until the retry finishes.
+                release_slow.wait(timeout=5.0)
+                return [], {}
+            with concurrency_lock:
+                attempts["x"] += 1
+                attempt = attempts["x"]
+            if attempt == 1:
+                raise http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
+            slow_still_blocked_when_retried.append(not release_slow.is_set())
+            retry_succeeded.set()
+            release_slow.set()
+            return (
+                [
+                    {
+                        "id": "X-RETRY",
+                        "text": "Saturated pool probe recovered via reserved retry slot",
+                        "url": "https://x.com/alice/status/99",
+                        "author_handle": "alice",
+                        "date": today,
+                        "engagement": {"likes": 42},
+                        "relevance": 0.9,
+                    }
+                ],
+                {},
+            )
+        finally:
+            with concurrency_lock:
+                concurrency["active"] -= 1
 
     monkeypatch.setattr(pipeline, "_retrieve_stream", fake_retrieve)
     monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
@@ -592,10 +606,11 @@ def test_high016_busy_primary_pool_does_not_block_transient_5xx_retry(monkeypatc
             topic="saturated pool probe",
             config={},
             depth="default",
-            requested_sources=["x", "reddit", "hackernews"],
+            requested_sources=["x", "reddit", "hackernews", "bluesky", "arxiv"],
             mock=True,
             external_plan=plan,
             web_backend="none",
+            internal_subrun=True,
         )
     finally:
         release_slow.set()
@@ -603,6 +618,9 @@ def test_high016_busy_primary_pool_does_not_block_transient_5xx_retry(monkeypatc
     assert attempts["x"] == 2
     assert retry_succeeded.is_set()
     assert slow_still_blocked_when_retried == [True]
+    assert concurrency["peak"] <= 4, (
+        f"combined primary + retry concurrency exceeded sub-run max_workers=4 (peak={concurrency['peak']})"
+    )
     assert len(report.items_by_source.get("x", [])) == 1
     assert report.source_status["x"].state == health.OK
 
@@ -1034,7 +1052,7 @@ def test_high021_missing_github_auth_records_skipped_unconfigured_without_fallba
         "source_weights": {"github": 1.0},
     }
     extra = {"github_repos": ["acme/widget"]} if target == "project" else {"github_user": "octocat"}
-    with mock.patch("lib.pipeline.github.resolve_token", return_value=None), \
+    with mock.patch("lib.pipeline.github.resolve_token", return_value=None) as mock_resolve, \
          mock.patch("lib.pipeline.github.search_github_project", return_value=[]) as mock_project, \
          mock.patch("lib.pipeline.github.search_github_person", return_value=[]) as mock_person, \
          mock.patch("lib.pipeline._retrieve_stream") as mock_retrieve:
@@ -1049,17 +1067,54 @@ def test_high021_missing_github_auth_records_skipped_unconfigured_without_fallba
             **extra,
         )
 
-    if target == "project":
-        mock_project.assert_called_once()
-        mock_person.assert_not_called()
-    else:
-        mock_person.assert_called_once()
-        mock_project.assert_not_called()
+    mock_resolve.assert_called_once_with(None)
+    mock_project.assert_not_called()
+    mock_person.assert_not_called()
     mock_retrieve.assert_not_called()
     outcome = report.source_status["github"]
     assert outcome.state == schema.SKIPPED_UNCONFIGURED
     assert outcome.attempted is False
     assert "no GitHub token or gh login available" in outcome.detail
+
+
+@pytest.mark.parametrize("target", ["project", "person"])
+def test_high021_pinned_github_resolves_token_once_on_authenticated_empty_result(target):
+    plan = {
+        "intent": "product" if target == "project" else "person",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "none",
+        "subqueries": [
+            {"label": "primary", "search_query": "acme widget", "ranking_query": "acme widget", "sources": ["github"]},
+        ],
+        "source_weights": {"github": 1.0},
+    }
+    extra = {"github_repos": ["acme/widget"]} if target == "project" else {"github_user": "octocat"}
+    with mock.patch("lib.pipeline.github.resolve_token", return_value="ghp_from_cli") as mock_resolve, \
+         mock.patch("lib.pipeline.github.search_github_project", return_value=[]) as mock_project, \
+         mock.patch("lib.pipeline.github.search_github_person", return_value=[]) as mock_person, \
+         mock.patch("lib.pipeline._retrieve_stream") as mock_retrieve:
+        report = pipeline.run(
+            topic="acme widget",
+            config={},
+            depth="default",
+            requested_sources=["github"],
+            mock=False,
+            web_backend="none",
+            external_plan=plan,
+            **extra,
+        )
+
+    mock_resolve.assert_called_once_with(None)
+    if target == "project":
+        mock_project.assert_called_once()
+        assert mock_project.call_args.kwargs["token"] == "ghp_from_cli"
+        mock_person.assert_not_called()
+    else:
+        mock_person.assert_called_once()
+        assert mock_person.call_args.kwargs["token"] == "ghp_from_cli"
+        mock_project.assert_not_called()
+    mock_retrieve.assert_not_called()
+    assert report.source_status["github"].state == schema.NO_RESULTS
 
 
 def test_high021_person_and_project_preloop_pass_first_party_handles():
@@ -1112,7 +1167,7 @@ def test_high021_person_and_project_preloop_pass_first_party_handles():
          mock.patch("lib.pipeline.github.search_github_person", return_value=[low_overlap_own, high_overlap_other]):
         person_report = pipeline.run(
             topic="octocat",
-            config={},
+            config={"GITHUB_TOKEN": "dummy-token"},
             depth="quick",
             requested_sources=["github"],
             mock=False,
@@ -1134,7 +1189,7 @@ def test_high021_person_and_project_preloop_pass_first_party_handles():
          mock.patch("lib.pipeline.github.search_github_project", return_value=[low_overlap_own, high_overlap_other]):
         project_report = pipeline.run(
             topic="octocat",
-            config={},
+            config={"GITHUB_TOKEN": "dummy-token"},
             depth="quick",
             requested_sources=["github"],
             mock=False,

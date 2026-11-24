@@ -2970,89 +2970,96 @@ def run(
             or (not host_plan and "drill-mode" not in plan.notes)
         )
     )
+    _github_token = (
+        github.resolve_token(config.get("GITHUB_TOKEN"))
+        if _github_pinned_allowed and (github_repos or github_user)
+        else None
+    )
 
     # Project mode takes priority over person mode
     if github_repos and _github_pinned_allowed:
-        bundle.mark_attempted("github")
         _github_custom_done = True
-        try:
-            project_items = github.search_github_project(
-                github_repos, from_date, to_date,
-                depth=depth, token=config.get("GITHUB_TOKEN"),
+        if not _github_token:
+            bundle.record_failure(
+                "github",
+                schema.SKIPPED_UNCONFIGURED,
+                f"Project mode could not check {', '.join(github_repos)}: "
+                "no GitHub token or gh login available",
+                attempted=False,
             )
-            if project_items:
-                normalized = _normalize_score_dedupe(
-                    "github", project_items, from_date, to_date,
-                    freshness_mode=plan.freshness_mode,
-                    ranking_query=f"What are {', '.join(github_repos)} doing on GitHub?",
-                    first_party_handles=explicit_first_party,
+        else:
+            bundle.mark_attempted("github")
+            try:
+                project_items = github.search_github_project(
+                    github_repos, from_date, to_date,
+                    depth=depth, token=_github_token,
                 )
-                primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
-                bundle.add_items(primary_label, "github", normalized)
-                _github_enriched_repos = {r.lower() for r in github_repos}
-            elif not github.resolve_token(config.get("GITHUB_TOKEN")):
-                bundle.record_failure(
-                    "github",
-                    schema.SKIPPED_UNCONFIGURED,
-                    f"Project mode could not check {', '.join(github_repos)}: "
-                    "no GitHub token or gh login available",
-                    attempted=False,
-                )
-            else:
-                bundle.record_failure(
-                    "github",
-                    schema.NO_RESULTS,
-                    f"Project mode found no activity for {', '.join(github_repos)} in the window",
-                )
-        except Exception as exc:
-            bundle.errors_by_source["github"] = f"Project-mode failed: {exc}"
-            state, attempted = _classify_source_failure(exc)
-            bundle.record_failure("github", state, str(exc), attempted=attempted)
+                if project_items:
+                    normalized = _normalize_score_dedupe(
+                        "github", project_items, from_date, to_date,
+                        freshness_mode=plan.freshness_mode,
+                        ranking_query=f"What are {', '.join(github_repos)} doing on GitHub?",
+                        first_party_handles=explicit_first_party,
+                    )
+                    primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
+                    bundle.add_items(primary_label, "github", normalized)
+                    _github_enriched_repos = {r.lower() for r in github_repos}
+                else:
+                    bundle.record_failure(
+                        "github",
+                        schema.NO_RESULTS,
+                        f"Project mode found no activity for {', '.join(github_repos)} in the window",
+                    )
+            except Exception as exc:
+                bundle.errors_by_source["github"] = f"Project-mode failed: {exc}"
+                state, attempted = _classify_source_failure(exc)
+                bundle.record_failure("github", state, str(exc), attempted=attempted)
 
     _github_person_done = False
     if github_user and _github_pinned_allowed and not _github_custom_done:
-        bundle.mark_attempted("github")
         _github_person_done = True
-        try:
-            person_items = github.search_github_person(
-                github_user, from_date, to_date,
-                depth=depth, token=config.get("GITHUB_TOKEN"),
+        if not _github_token:
+            bundle.record_failure(
+                "github",
+                schema.SKIPPED_UNCONFIGURED,
+                f"Person mode could not check @{github_user}: "
+                "no GitHub token or gh login available",
+                attempted=False,
             )
-            if person_items:
-                normalized = _normalize_score_dedupe(
-                    "github", person_items, from_date, to_date,
-                    freshness_mode=plan.freshness_mode,
-                    ranking_query=f"What is @{github_user} doing on GitHub?",
-                    first_party_handles=explicit_first_party,
+        else:
+            bundle.mark_attempted("github")
+            try:
+                person_items = github.search_github_person(
+                    github_user, from_date, to_date,
+                    depth=depth, token=_github_token,
                 )
-                if person_ctx is not None:
-                    # Authored by the person's resolved account.
-                    for item in normalized:
-                        item.metadata["identity_anchor"] = True
-                # Use the first subquery's label so RRF can look up the weight
-                primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
-                bundle.add_items(primary_label, "github", normalized)
-            elif not github.resolve_token(config.get("GITHUB_TOKEN")):
-                bundle.record_failure(
-                    "github",
-                    schema.SKIPPED_UNCONFIGURED,
-                    f"Person mode could not check @{github_user}: "
-                    "no GitHub token or gh login available",
-                    attempted=False,
-                )
-            else:
-                # A pinned --github-user that yields nothing must not be
-                # silently backfilled by generic keyword search: the report
-                # would then present unrelated repos as this person's work.
-                bundle.record_failure(
-                    "github",
-                    schema.NO_RESULTS,
-                    f"Person mode found no activity for @{github_user} in the window",
-                )
-        except Exception as exc:
-            bundle.errors_by_source["github"] = f"Person-mode failed: {exc}"
-            state, attempted = _classify_source_failure(exc)
-            bundle.record_failure("github", state, str(exc), attempted=attempted)
+                if person_items:
+                    normalized = _normalize_score_dedupe(
+                        "github", person_items, from_date, to_date,
+                        freshness_mode=plan.freshness_mode,
+                        ranking_query=f"What is @{github_user} doing on GitHub?",
+                        first_party_handles=explicit_first_party,
+                    )
+                    if person_ctx is not None:
+                        # Authored by the person's resolved account.
+                        for item in normalized:
+                            item.metadata["identity_anchor"] = True
+                    # Use the first subquery's label so RRF can look up the weight
+                    primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
+                    bundle.add_items(primary_label, "github", normalized)
+                else:
+                    # A pinned --github-user that yields nothing must not be
+                    # silently backfilled by generic keyword search: the report
+                    # would then present unrelated repos as this person's work.
+                    bundle.record_failure(
+                        "github",
+                        schema.NO_RESULTS,
+                        f"Person mode found no activity for @{github_user} in the window",
+                    )
+            except Exception as exc:
+                bundle.errors_by_source["github"] = f"Person-mode failed: {exc}"
+                state, attempted = _classify_source_failure(exc)
+                bundle.record_failure("github", state, str(exc), attempted=attempted)
 
     # Trustpilot session warm-up happens inside search_trustpilot at the
     # first (capped, single) fetch -- lazily, so it never delays the other
@@ -3121,6 +3128,14 @@ def run(
         if source in available and source != "corpus"
     )
     max_workers = _inner_max_workers(stream_count, internal_subrun=internal_subrun)
+    # Reserve retry capacity within max_workers so busy primary workers cannot
+    # block transient 5xx retries and combined concurrency never exceeds max_workers.
+    if max_workers >= 2:
+        retry_workers = 1 if max_workers <= 4 else min(4, max_workers // 4)
+        primary_workers = max_workers - retry_workers
+    else:
+        retry_workers = 0
+        primary_workers = 1
     # One holder, shared by every copy of the config made below: the jobs
     # lane's time budget for this topic (see ``_jobs_lane_budget``).
     # It goes into a copy, so the caller's config is left as it was.
@@ -3137,7 +3152,7 @@ def run(
     batches = [(futures, stream_config, STREAM_FUTURE_TIMEOUT_SECONDS, False)]
     background_futures = {}
     with contextlib.ExitStack() as stack:
-        executor = stack.enter_context(_abandoning_executor(max_workers=max_workers))
+        executor = stack.enter_context(_abandoning_executor(max_workers=primary_workers))
         retry_executor: Any = None
         for subquery in plan.subqueries:
             for source in subquery.sources:
@@ -3311,10 +3326,14 @@ def run(
                         bundle.record_failure(source, state, str(exc), attempted=attempted)
                         continue
                     retry_at = now + _TRANSIENT_RETRY_DELAY_SECONDS
-                    if retry_executor is None:
-                        retry_executor = stack.enter_context(
-                            _abandoning_executor(max_workers=min(4, max(1, len(futures))))
-                        )
+                    if retry_workers > 0:
+                        if retry_executor is None:
+                            retry_executor = stack.enter_context(
+                                _abandoning_executor(max_workers=retry_workers)
+                            )
+                        target_executor = retry_executor
+                    else:
+                        target_executor = executor
                     retry_kwargs = dict(
                         topic=topic, subquery=subquery, source=source,
                         config=stream_config, depth=depth, date_range=(from_date, to_date),
@@ -3332,7 +3351,7 @@ def run(
                         run_started=run_started,
                         freshness_mode=plan.freshness_mode,
                     )
-                    retry_future = retry_executor.submit(
+                    retry_future = target_executor.submit(
                         _delayed_retry,
                         retry_at,
                         stream_config,
