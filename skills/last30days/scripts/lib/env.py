@@ -634,6 +634,20 @@ def _load_config_files(
     return file_env, project_env, project_path
 
 
+def resolve_searxng_url() -> str | None:
+    """Read only the approved SearXNG setting, without exporting process settings."""
+    key = "LAST30DAYS_SEARXNG_URL"
+    value = os.environ.get(key)
+    if value and not is_unsubstituted_template(value):
+        return value
+    file_env, project_env, _ = _load_config_files(ConfigLoadPolicy())
+    for layer in (project_env, file_env):
+        value = layer.get(key)
+        if value is not None and not is_unsubstituted_template(value):
+            return value
+    return None
+
+
 def has_recorded_browser_consent() -> bool:
     """Check whether setup can reuse explicit consent without opening credential stores."""
     file_env, project_env, _ = _load_config_files(ConfigLoadPolicy())

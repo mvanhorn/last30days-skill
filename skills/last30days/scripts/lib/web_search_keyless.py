@@ -42,7 +42,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunsplit
 
 from . import health, http, log, public_host
@@ -406,11 +406,13 @@ def keyless_search(
     freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
     cancel: Optional[threading.Event] = None,
+    accept_result: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[list[dict], dict]:
     """Run keyless web search; returns (items, artifact). Never raises.
 
     ``deadline_monotonic`` bounds every page fetch, and no further rung starts
     once it passes or ``cancel`` is set.
+    ``accept_result`` filters each rung before deciding whether it served.
 
     ``freshness`` (``day``/``week``/``month``/``year``) asks each HTML rung for
     results from that recent period only. The artifact's ``keyless_rungs``
@@ -445,6 +447,10 @@ def keyless_search(
             # A DuckDuckGo anomaly block (202 challenge page on a datacenter IP)
             # falls through to Startpage, which still serves organic results there.
             items, state = search(query, count, freshness, **bound)
+            if accept_result is not None and items:
+                items = [item for item in items if accept_result(item)]
+                if not items and state == OK:
+                    state = EMPTY
             tried[rung] = state
             RUNG_HEALTH.record(rung, state)
             used = rung
@@ -455,6 +461,8 @@ def keyless_search(
             if searxng_url and not stopped():
                 searxng_attempted = True
                 items = _search_searxng(query, count, searxng_url, **bound)
+                if accept_result is not None:
+                    items = [item for item in items if accept_result(item)]
                 used = "searxng"
     # These backends never return a publish date, so normalize's grounding
     # require_date would drop every result. Keep undated links only when the

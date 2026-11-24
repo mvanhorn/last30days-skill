@@ -255,9 +255,10 @@ class TestSearxngConfigHandoff:
 
         with mock.patch.object(web_search_keyless.http, "get_text", side_effect=self._throttled_html), \
              mock.patch.object(web_search_keyless.http, "get", side_effect=fake_get), \
-             mock.patch.object(env, "get_config", side_effect=AssertionError("should not reload config")):
+             mock.patch.object(env, "resolve_searxng_url", side_effect=AssertionError("should not reload config")) as load:
             floor = reddit_discover.web_refs("IQ3 quantization", config=cfg)
 
+        load.assert_not_called()
         assert seen_urls and seen_urls[0].startswith("https://searx.example/search?")
         assert [r.post_id for r in floor.refs] == ["1sx9abc"]
         assert floor.refs[0].url == "https://www.reddit.com/r/LocalLLaMA/comments/1sx9abc/"
@@ -295,42 +296,33 @@ class TestSearxngConfigHandoff:
         monkeypatch.setenv("LAST30DAYS_SEARXNG_URL", "https://ambient.example")
         with mock.patch.object(web_search_keyless.http, "get_text", side_effect=self._throttled_html), \
              mock.patch.object(web_search_keyless.http, "get") as sx_get, \
-             mock.patch.object(env, "get_config", side_effect=AssertionError("explicit config must not reload")):
+             mock.patch.object(env, "resolve_searxng_url", side_effect=AssertionError("explicit config must not reload")) as load:
             floor = reddit_discover.web_refs("IQ3 quantization", config=cfg)
 
+        load.assert_not_called()
         sx_get.assert_not_called()
         assert floor.refs == []
 
     def test_omitted_config_loads_user_approved_env_once_per_run(self, monkeypatch):
         monkeypatch.setenv("LAST30DAYS_SEARXNG_URL", "https://searx.example")
-        policies = []
-        real_get_config = env.get_config
-
-        def spy_get_config(policy=None):
-            policies.append(policy)
-            return real_get_config(policy=policy)
-
-        with mock.patch.object(env, "get_config", side_effect=spy_get_config), \
+        real_reader = env.resolve_searxng_url
+        with mock.patch.object(env, "resolve_searxng_url", wraps=real_reader) as load, \
              mock.patch.object(web_search_keyless.http, "get_text", side_effect=self._throttled_html), \
              mock.patch.object(web_search_keyless.http, "get", return_value=self._searxng_payload()):
             floor = reddit_discover.web_refs("IQ3 quantization", subreddits=["LocalLLaMA"])
 
-        assert len(policies) == 1
-        assert policies[0].browser_cookies == "off"
-        assert policies[0].allow_project_config is False
-        assert policies[0].inspect_ignored_project_config is False
-        assert policies[0].load_secret_stores is False
+        load.assert_called_once_with()
         assert [r.post_id for r in floor.refs] == ["1sx9abc"]
 
         # Resetting run state clears the memoized config for the next run.
         reddit_discover.reset_run_state()
         monkeypatch.delenv("LAST30DAYS_SEARXNG_URL", raising=False)
-        with mock.patch.object(env, "get_config", side_effect=spy_get_config), \
+        with mock.patch.object(env, "resolve_searxng_url", wraps=real_reader) as load, \
              mock.patch.object(web_search_keyless.http, "get_text", side_effect=self._throttled_html), \
              mock.patch.object(web_search_keyless.http, "get") as sx_get:
             floor2 = reddit_discover.web_refs("IQ3 quantization")
 
-        assert len(policies) == 2
+        load.assert_called_once_with()
         sx_get.assert_not_called()
         assert floor2.refs == []
 
@@ -361,14 +353,93 @@ class TestSearxngConfigHandoff:
         sx_get.assert_not_called()
         assert floor.refs and floor.rungs["brave"] == "ok"
 
+    @pytest.mark.parametrize("has_thread", [False, True])
+    def test_only_reddit_threads_can_stop_the_ladder(self, has_thread):
+        html_hits = [
+            _hit("https://www.reddit.com/r/LocalLLaMA/"),
+            _hit("https://www.reddit.com/r/LocalLLaMA/wiki/index/"),
+        ]
+        if has_thread:
+            html_hits.append(_hit("https://www.reddit.com/r/LocalLLaMA/comments/html123/"))
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        with mock.patch.object(web_search_keyless, "_brave_rung", return_value=(html_hits, "ok")), \
+             mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", return_value=self._searxng_payload()) as sx:
+            floor = reddit_discover.web_refs("IQ3 quantization", config=cfg)
+
+        assert [ref.post_id for ref in floor.refs] == (["html123"] if has_thread else ["1sx9abc"])
+        assert floor.rungs["brave"] == ("ok" if has_thread else "empty")
+        assert sx.call_count == (0 if has_thread else 1)
+
+    def test_empty_web_timeout_can_retry_the_same_query_with_more_time(self):
+        clock = [100.0]
+
+        def expire_first(query, count, freshness, **kwargs):
+            if clock[0] == 100.0:
+                clock[0] = 110.0
+            return [], "empty"
+
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(web_search_keyless, "_brave_rung", side_effect=expire_first), \
+             mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", return_value=self._searxng_payload()) as sx:
+            first = reddit_discover.web_refs("IQ3 quantization", deadline=110.0, config=cfg)
+            assert not first.refs and not sx.called
+            second = reddit_discover.web_refs("IQ3 quantization", deadline=140.0, config=cfg)
+
+        assert [ref.post_id for ref in second.refs] == ["1sx9abc"]
+        assert first.timed_out and not second.timed_out
+        sx.assert_called_once()
+
+    def test_waiter_gets_its_attempt_timeout_before_the_slot_is_retried(self):
+        from threading import Thread, current_thread
+
+        entered, waiting, release = Event(), Event(), Event()
+        calls, waiter_results = [], []
+        real_wait = Event.wait
+
+        def track_wait(event, timeout=None):
+            if current_thread().name == "reddit-floor-waiter":
+                waiting.set()
+            return real_wait(event, timeout)
+
+        def search(query, *args, **kwargs):
+            calls.append(query)
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(5)
+                return [], {"_source_outcome": {"state": health.TIMEOUT}}
+            return [_hit("https://www.reddit.com/r/LocalLLaMA/comments/new123/")], {}
+
+        def run():
+            return reddit_discover.web_refs("IQ3 quantization", search=search, config={})
+
+        waiter = Thread(name="reddit-floor-waiter", target=lambda: waiter_results.append(run()))
+        with mock.patch.object(Event, "wait", track_wait), ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(run)
+            try:
+                assert entered.wait(5)
+                waiter.start()
+                assert waiting.wait(5)
+            finally:
+                release.set()
+            assert first.result(timeout=5).timed_out
+            waiter.join(timeout=5)
+
+        assert not waiter.is_alive()
+        assert len(calls) == 1 and waiter_results[0].timed_out
+        assert [ref.post_id for ref in run().refs] == ["new123"]
+        assert len(calls) == 2
+
     def test_config_loader_exception_never_breaks_the_lane(self):
-        with mock.patch.object(env, "get_config", side_effect=RuntimeError("boom")), \
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=RuntimeError("boom")), \
              mock.patch.object(web_search_keyless.http, "get_text", return_value=None):
             floor = reddit_discover.web_refs("IQ3 quantization")
         assert floor.refs == []
 
     def test_config_loader_failure_runs_html_ladder_without_caching_empty(self):
-        with mock.patch.object(env, "get_config", side_effect=RuntimeError("boom")), \
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=RuntimeError("boom")), \
              mock.patch.object(web_search_keyless.http, "get_text", side_effect=_brave_only):
             floor = reddit_discover.web_refs(
                 "Kanye West", from_date=WINDOW[0], to_date=WINDOW[1],
@@ -384,11 +455,10 @@ class TestSearxngConfigHandoff:
         )
         assert any(r.post_id == "1xattdz" for r in second.refs)
 
-    @pytest.mark.parametrize("first_config", [OSError("config unavailable"), {}],
+    @pytest.mark.parametrize("first_config", [OSError("config unavailable"), None],
                              ids=["transient-error", "stable-absence"])
     def test_same_query_retries_html_miss_only_after_config_read_error(self, first_config):
-        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
-        with mock.patch.object(env, "get_config", side_effect=[first_config, cfg]) as load, \
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=[first_config, "https://searx.example"]) as load, \
              mock.patch.object(web_search_keyless.http, "get_text", return_value=None) as html, \
              mock.patch.object(web_search_keyless.http, "get", return_value=self._searxng_payload()):
             first = reddit_discover.web_refs("IQ3 quantization")
@@ -406,7 +476,7 @@ class TestSearxngConfigHandoff:
 
     def test_retryable_misses_do_not_free_slots_for_new_subreddit_queries(self):
         search, calls = _search_stub()
-        with mock.patch.object(env, "get_config", side_effect=OSError("config unavailable")):
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=OSError("config unavailable")):
             reddit_discover.web_refs("IQ3 quantization", subreddits=["LocalLLaMA"], search=search)
             reddit_discover.web_refs("IQ3 quantization", subreddits=["llama"], search=search)
 
@@ -446,26 +516,18 @@ class TestSearxngConfigHandoff:
         sx_get.assert_not_called()
         assert any(r.post_id == "1xattdz" for r in floor.refs)
 
-    def test_standalone_cache_stores_only_normalized_url_or_absence_without_secrets(self):
-        secret_cfg = {
-            "LAST30DAYS_SEARXNG_URL": "  https://searx.example  ",
-            "OPENAI_API_KEY": "sk-standalone-secret",
-            "AUTH_TOKEN": "cookie-standalone-secret",
-        }
-        with mock.patch.object(env, "get_config", return_value=secret_cfg), \
+    def test_standalone_cache_stores_normalized_url_or_absence(self):
+        with mock.patch.object(env, "resolve_searxng_url", return_value="  https://searx.example  "), \
              mock.patch.object(web_search_keyless.http, "get_text", side_effect=self._throttled_html), \
              mock.patch.object(web_search_keyless.http, "get", return_value=self._searxng_payload()):
             floor = reddit_discover.web_refs("IQ3 quantization")
 
         assert [r.post_id for r in floor.refs] == ["1sx9abc"]
-        assert not hasattr(reddit_discover, "_CONFIG")
         assert reddit_discover._SEARXNG_URL == "https://searx.example"
-        module_values = [repr(v) for v in vars(reddit_discover).values()]
-        assert all("sk-standalone-secret" not in v and "cookie-standalone-secret" not in v for v in module_values)
 
         reddit_discover.reset_run_state()
         assert reddit_discover._SEARXNG_URL is None
-        with mock.patch.object(env, "get_config", return_value={"LAST30DAYS_SEARXNG_URL": "   "}), \
+        with mock.patch.object(env, "resolve_searxng_url", return_value="   "), \
              mock.patch.object(web_search_keyless.http, "get_text", return_value=None), \
              mock.patch.object(web_search_keyless.http, "get") as sx_get:
             reddit_discover.web_refs("IQ3 quantization")
@@ -480,13 +542,13 @@ class TestSearxngConfigHandoff:
         barrier = threading.Barrier(4)
         seen_configs = []
 
-        def slow_get_config(policy=None):
+        def slow_url_read():
             nonlocal load_count
             with count_lock:
                 load_count += 1
             import time as _time
             _time.sleep(0.03)
-            return {"LAST30DAYS_SEARXNG_URL": "https://concurrent.example"}
+            return "https://concurrent.example"
 
         def search(query, date_range, config, count=5, **kwargs):
             with count_lock:
@@ -497,7 +559,7 @@ class TestSearxngConfigHandoff:
             barrier.wait(timeout=5)
             reddit_discover.web_refs(f"topic {idx}", search=search)
 
-        with mock.patch.object(env, "get_config", side_effect=slow_get_config):
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=slow_url_read):
             threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
             for t in threads:
                 t.start()
@@ -519,10 +581,10 @@ class TestSearxngConfigHandoff:
             entered.set()
             assert release.wait(timeout=5)
 
-        def old_config(policy=None):
+        def old_url():
             if blocked_at == "load":
                 block()
-            return {"LAST30DAYS_SEARXNG_URL": "https://stale.example"}
+            return "https://stale.example"
 
         def old_search(*args, **kwargs):
             if blocked_at == "search":
@@ -534,7 +596,7 @@ class TestSearxngConfigHandoff:
             new_hint: [_hit("https://www.reddit.com/r/NewSub/comments/new456/")],
         })
         new_config = {"LAST30DAYS_SEARXNG_URL": "https://fresh.example"}
-        with mock.patch.object(env, "get_config", side_effect=old_config), \
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=old_url), \
              ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(reddit_discover.web_refs, topic, subreddits=["OldSub"], search=old_search)
             try:
@@ -578,6 +640,29 @@ class TestSearxngConfigHandoff:
 
         assert seen_urls and seen_urls[0].startswith("https://trusted-project.example/search?")
         assert [r.post_id for r in floor.refs] == ["1sx9abc"]
+
+    def test_standalone_discovery_reads_trusted_url_without_exporting_settings(self, tmp_path, monkeypatch):
+        import os
+
+        project_env = tmp_path / ".claude" / "last30days.env"
+        project_env.parent.mkdir()
+        project_env.write_text(
+            "LAST30DAYS_SEARXNG_URL=https://trusted-project.example\n"
+            "SCRAPECREATORS_BASE_URL=https://local-provider.example\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("LAST30DAYS_TRUST_PROJECT_CONFIG", "1")
+        monkeypatch.setenv("LAST30DAYS_SEARXNG_URL", "${user_config.searxng_url}")
+        monkeypatch.delenv("SCRAPECREATORS_BASE_URL", raising=False)
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", return_value=self._searxng_payload()) as sx:
+            floor = reddit_discover.web_refs("IQ3 quantization")
+
+        assert [ref.post_id for ref in floor.refs] == ["1sx9abc"]
+        assert sx.call_args.args[0].startswith("https://trusted-project.example/search?")
+        assert "SCRAPECREATORS_BASE_URL" not in os.environ
+        assert os.environ.get("LAST30DAYS_SEARXNG_URL") == "${user_config.searxng_url}"
 
     def test_memoized_answers_are_reused_across_calls_with_config(self):
         cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
@@ -636,7 +721,7 @@ class TestSearxngConfigHandoff:
                                return_value={"top_comments": [], "comment_insights": [], "num_comments": None}), \
              mock.patch.object(web_search_keyless.http, "get_text", side_effect=html_fetch or self._throttled_html), \
              mock.patch.object(web_search_keyless.http, "get", side_effect=fake_get), \
-             mock.patch.object(env, "get_config", side_effect=AssertionError("already loaded config should be threaded")):
+             mock.patch.object(env, "resolve_searxng_url", side_effect=AssertionError("already loaded config should be threaded")):
             items, artifact = pipeline._retrieve_stream(
                 topic="IQ3 quantization",
                 subquery=schema.SubQuery(
@@ -723,6 +808,44 @@ class TestSearxngConfigHandoff:
              pytest.raises(pipeline.SourceRunError) as exc:
             self._run_pipeline_reddit_with_searxng(cfg, sc_search=sc_search)
         assert exc.value.outcome_state == health.AUTH_FAILED
+
+    @pytest.mark.parametrize("mode", ["public-first", "public-first-backfill", "sc-first", "sc-first-429"])
+    @pytest.mark.parametrize("wait_expired", [False, True], ids=["ladder", "wait"])
+    def test_nested_web_cutoff_is_visible_before_the_public_lane_expires(self, mode, wait_expired):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        exhausted_at = 128.0 if mode == "public-first-backfill" else 173.0
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": 200.0}
+        if mode != "public-first":
+            cfg["SCRAPECREATORS_API_KEY"] = "sc-dummy-key"
+        if mode.startswith("sc-first"):
+            cfg[env.REDDIT_BACKEND_PIN_VAR] = "scrapecreators"
+
+        def sc_search(*args, **kwargs):
+            if mode == "sc-first-429":
+                http._record_failure(http.HTTPError("HTTP 429", 429))
+            return {}
+
+        def html_fetch(*args, **kwargs):
+            clock[0] = exhausted_at  # Past discovery, before the public lane's deadline.
+            return ""
+
+        def run_inline(_wait_until, stage, default, call, /, *args, **kwargs):
+            if wait_expired and stage == "web floor":
+                clock[0] = exhausted_at
+                return default
+            return call(*args, **kwargs)
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(reddit_keyless, "_within", side_effect=run_inline):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=sc_search if mode != "public-first" else None, html_fetch=html_fetch,
+            )
+
+        assert not items and not seen_urls
+        expected = health.RATE_LIMITED if mode == "sc-first-429" else health.TIMEOUT
+        assert artifact.get("_source_outcome", {}).get("state") == expected
 
     @pytest.mark.parametrize("sc_primary", [False, True], ids=["public-primary", "sc-primary"])
     def test_pipeline_keeps_site_hit_without_late_searxng_on_either_primary_path(self, sc_primary):

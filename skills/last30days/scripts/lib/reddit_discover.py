@@ -28,9 +28,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from functools import partial
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from . import env, http, web_search_keyless
+from . import env, health, http, web_search_keyless
 from .reddit_refs import ThreadRef, canonical_thread
 
 MAX_QUERIES_PER_ENTITY = 2
@@ -52,6 +53,7 @@ class WebFloor:
     refs: list[ThreadRef] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     rungs: dict[str, str] = field(default_factory=dict)
+    timed_out: bool = False
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False,
     )
@@ -61,16 +63,23 @@ class WebFloor:
         query: str,
         rungs: Optional[dict[str, str]] = None,
         refs: Optional[Iterable[ThreadRef]] = None,
+        *,
+        timed_out: bool = False,
     ) -> None:
         """Atomically record a completed web query, its rung states, and refs."""
         with self._lock:
             self.queries.append(query)
+            self.timed_out = self.timed_out or timed_out
             for rung, state in (rungs or {}).items():
                 # A rung skipped on a later query keeps the state that took it out.
                 if state != web_search_keyless.SKIPPED or rung not in self.rungs:
                     self.rungs[rung] = state
             if refs is not None:
                 self.refs = list(refs)
+
+    def mark_timed_out(self) -> None:
+        with self._lock:
+            self.timed_out = True
 
     def record_rung(self, rung: str, state: str) -> None:
         """Record one rung state under the floor lock."""
@@ -94,6 +103,7 @@ class WebFloor:
                 refs=list(self.refs),
                 queries=list(self.queries),
                 rungs=dict(self.rungs),
+                timed_out=self.timed_out,
             )
 
 
@@ -110,21 +120,19 @@ class BarResult:
         return f"{len(self.dropped)} of {total} threads dropped for not naming the topic ({label})"
 
 
-# Per-run memo: topic key -> {query: completion event or None for a retryable
-# miss}, and topic key -> {query: results}. A second caller asking a query in
-# flight waits for the first one's answer instead of asking again.
-# Direct callers that omit ``config`` load user-approved settings once per run
-# without reading browser cookies, untrusted project files, or secret stores.
-_DISCOVER_CONFIG_POLICY = env.ConfigLoadPolicy(
-    browser_cookies="off",
-    allow_project_config=False,
-    inspect_ignored_project_config=False,
-    load_secret_stores=False,
-)
+@dataclass
+class _QueryAttempt:
+    done: threading.Event = field(default_factory=threading.Event)
+    items: list[dict] = field(default_factory=list)
+    timed_out: bool = False
+
+
+# Per-run memo: topic key -> {query: attempt or None for a retryable miss}.
+# Waiters keep the attempt they joined, even if the slot becomes retryable.
+# Direct callers that omit ``config`` read the approved SearXNG URL once per run.
 _LOCK = threading.Lock()
 _CONFIG_LOAD_LOCK = threading.Lock()
-_ASKED: dict[str, dict[str, Optional[threading.Event]]] = {}
-_ANSWERS: dict[str, dict[str, list[dict]]] = {}
+_ASKED: dict[str, dict[str, Optional[_QueryAttempt]]] = {}
 _SEARXNG_URL: Optional[str] = None
 _RUN_GENERATION = 0
 _WAIT_SECONDS = 30.0
@@ -135,7 +143,6 @@ def reset_run_state() -> None:
     global _SEARXNG_URL, _RUN_GENERATION
     with _LOCK:
         _ASKED.clear()
-        _ANSWERS.clear()
         _SEARXNG_URL = None
         _RUN_GENERATION += 1
 
@@ -165,11 +172,10 @@ def _standalone_searxng_url(generation: int) -> Optional[str]:
             if _SEARXNG_URL is not None:
                 return _SEARXNG_URL
         try:
-            loaded = env.get_config(policy=_DISCOVER_CONFIG_POLICY)
+            url = (env.resolve_searxng_url() or "").strip()
         except Exception as exc:
             _log(f"config load failed: {type(exc).__name__}")
             return None
-        url = _normalize_searxng_url(loaded)
         with _LOCK:
             if generation != _RUN_GENERATION:
                 return None
@@ -223,27 +229,32 @@ def _ask(
     generation: int, topic_key: str, query: str, search: SearchFn, date_range: tuple[str, str],
     freshness: Optional[str], config: Optional[Mapping[str, Any]] = None,
     deadline: Optional[float] = None,
-) -> tuple[Optional[list[dict]], dict]:
+) -> tuple[Optional[list[dict]], dict, bool]:
     """One web query, memoized per run and capped per entity.
 
-    Returns ``(None, {})`` when the entity's query budget is spent or the run ends.
+    An absent item list means the entity's query slots were spent or the run ended.
     """
     with _LOCK:
         if generation != _RUN_GENERATION:
-            return None, {}
+            return None, {}, False
         asked = _ASKED.setdefault(topic_key, {})
-        done = asked.get(query)
-        owner = done is None
+        attempt = asked.get(query)
+        owner = attempt is None
         if owner:
             if query not in asked and len(asked) >= MAX_QUERIES_PER_ENTITY:
-                return None, {}
-            done = asked[query] = threading.Event()
+                return None, {}, False
+            attempt = asked[query] = _QueryAttempt()
     if not owner:
-        done.wait(_WAIT_SECONDS)
+        wait = _WAIT_SECONDS
+        if deadline is not None:
+            wait = min(wait, max(0.0, deadline - time.monotonic()))
+        completed = attempt.done.wait(wait)
         with _LOCK:
             if generation != _RUN_GENERATION:
-                return None, {}
-            return list(_ANSWERS.get(topic_key, {}).get(query, [])), {}
+                return None, {}, False
+            if not completed:
+                return [], {}, True
+            return list(attempt.items), {}, attempt.timed_out
     items: list[dict] = []
     artifact: dict = {}
     url: Optional[str] = ""
@@ -253,7 +264,7 @@ def _ask(
         )
         with _LOCK:
             if generation != _RUN_GENERATION:
-                return None, {}
+                return None, {}, False
         search_config = {"LAST30DAYS_SEARXNG_URL": url} if url else {}
         extra = {"deadline_monotonic": deadline} if deadline is not None else {}
         # The web rungs' failures are the floor's own health, not the Reddit
@@ -266,15 +277,16 @@ def _ask(
     except Exception as exc:  # the floor must never break the lane
         _log(f"web search failed: {type(exc).__name__}: {exc}")
     finally:
+        timed_out = ((artifact or {}).get("_source_outcome") or {}).get("state") == health.TIMEOUT
         with _LOCK:
             if generation == _RUN_GENERATION:
-                if url is None and not items:
+                attempt.items = list(items or [])
+                attempt.timed_out = timed_out
+                if not items and (url is None or timed_out):
                     # Let this query try again without freeing its slot for a new hint.
                     asked[query] = None
-                else:
-                    _ANSWERS.setdefault(topic_key, {})[query] = list(items or [])
-            done.set()
-    return list(items or []), artifact or {}
+            attempt.done.set()
+    return list(items or []), artifact or {}, timed_out
 
 
 def web_refs(
@@ -302,16 +314,20 @@ def web_refs(
     topic = " ".join(str(topic or "").split())
     if not topic:
         return floor
-    search = search or web_search_keyless.keyless_search
+    search = search or partial(
+        web_search_keyless.keyless_search,
+        accept_result=lambda item: canonical_thread(str(item.get("url") or "")) is not None,
+    )
     date_range = (from_date or "", to_date or _today())
     freshness = _freshness(from_date, to_date)
     by_id: dict[str, ThreadRef] = {}
     skipped_links = 0
     for query in _queries(topic, subreddits):
         if deadline is not None and time.monotonic() >= deadline:
+            floor.mark_timed_out()
             _log("web floor stopped at its deadline; later queries skipped")
             break
-        items, artifact = _ask(
+        items, artifact, timed_out = _ask(
             generation, topic.lower(), query, search, date_range, freshness,
             config=config, deadline=deadline,
         )
@@ -328,7 +344,7 @@ def web_refs(
             ref.title = _clean_title(str(item.get("title") or ""))
             ref.date = item.get("date") or None
             by_id[ref.post_id] = ref
-        floor.record_query(query, artifact.get("keyless_rungs"), by_id.values())
+        floor.record_query(query, artifact.get("keyless_rungs"), by_id.values(), timed_out=timed_out)
     snap = floor.snapshot()
     if snap.queries:
         rungs = ", ".join(f"{rung} {state}" for rung, state in snap.rungs.items()) or "no rung"

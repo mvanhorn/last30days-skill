@@ -51,7 +51,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Mapping, Optional
 
-from . import http
+from . import health, http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
 from . import reddit_discover, reddit_envelope, reddit_health, reddit_hydrate, reddit_refs, reddit_session, web_search_keyless
 # High-upvote posts from targeted-sub listings can bury on-topic search hits
@@ -318,12 +318,15 @@ def _web_floor(
         discover_cutoff = _web_discover_deadline(deadline)
         discover_kw = {"deadline": discover_cutoff} if discover_cutoff is not None else {}
         found = _within(
-            discover_cutoff, "web floor", partial,
+            discover_cutoff, "web floor", None,
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
             floor=partial, **discover_kw,
             **({"config": config} if config is not None else {}),
         )
+        wait_expired = found is None
+        if wait_expired:
+            found = partial
         floor = (
             found.snapshot()
             if hasattr(found, "snapshot")
@@ -332,6 +335,8 @@ def _web_floor(
             )
         )
         _record_web_rungs(floor)
+        if wait_expired or floor.timed_out:
+            _mark("web", health.TIMEOUT)
         if not floor.refs:
             return []
         if deadline is not None and deadline - time.monotonic() < _WEB_HYDRATION_MIN_SECONDS:

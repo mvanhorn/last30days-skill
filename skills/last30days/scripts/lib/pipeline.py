@@ -5414,6 +5414,15 @@ def _outcome_artifact(
     }
 
 
+def _reddit_timeout_artifact() -> dict[str, Any]:
+    # Give the stream resolver first choice of any recorded transport failure.
+    if http.has_captured_failures():
+        return {}
+    return _outcome_artifact(
+        health.TIMEOUT, "Reddit ran out of search time before it found threads",
+    )
+
+
 def _result_outcome_artifact(source: str, result: Any) -> dict[str, Any]:
     """Convert a legacy ``{"error": ...}`` source result into typed status."""
     if not isinstance(result, dict) or not result.get("error"):
@@ -7260,7 +7269,8 @@ def _retrieve_stream_impl(
                 )
             public_failure: Exception | None = None
             try:
-                with reddit_keyless.lane_deadline(public_deadline):
+                with reddit_keyless.lane_deadline(public_deadline), \
+                        reddit_keyless.lane_paths() as lane_paths:
                     public_results = reddit_public.search_reddit_public(
                         reddit_query, from_date, to_date, depth=depth,
                         subreddits=subreddits, config=config,
@@ -7291,12 +7301,8 @@ def _retrieve_stream_impl(
                     f"Reddit primary and fallback produced no results after failure: {failure}",
                     state,
                 )
-            # Leave recorded failures from either search to the stream's resolver.
-            if reddit_keyless._out_of_time(public_deadline) and not http.has_captured_failures():
-                return [], _outcome_artifact(
-                    health.TIMEOUT,
-                    "Reddit had no time left in the run's budget before it found threads",
-                )
+            if lane_paths.get("web") == health.TIMEOUT or reddit_keyless._out_of_time(public_deadline):
+                return [], _reddit_timeout_artifact()
             return [], {}
 
         # Default: public Reddit first (free). ScrapeCreators backfills when the
@@ -7344,15 +7350,10 @@ def _retrieve_stream_impl(
             sys.stderr.write(", using ScrapeCreators backup\n")
         free_timed_out = (
             not public_results and public_failure is None
-            and reddit_keyless._out_of_time(lane_deadline)
+            and (lane_paths.get("web") == health.TIMEOUT or reddit_keyless._out_of_time(lane_deadline))
         )
         if free_timed_out and not has_sc_key:
-            # The lane started with no budget left (queued behind slower
-            # streams): that is a timeout, not a topic nobody posted about.
-            return [], _outcome_artifact(
-                health.TIMEOUT,
-                "Reddit had no time left in the run's budget before it found threads",
-            )
+            return [], _reddit_timeout_artifact()
         free_failed = (
             not public_results and public_failure is None
             and reddit_health.every_path_failed(lane_paths)
@@ -7434,6 +7435,8 @@ def _retrieve_stream_impl(
         merged = _merge_reddit_items(public_results, sc_items)
         if not merged and free_failed:
             return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
+        if not merged and free_timed_out:
+            return [], _reddit_timeout_artifact()
         if public_failure is not None:
             state = reddit.classify_run_failure(str(public_failure))
             return merged, _outcome_artifact(
