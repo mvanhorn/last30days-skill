@@ -298,14 +298,23 @@ class TestHigh180BlueskySessionConcurrency:
 
     def test_singleflight_clears_slot_and_wakes_waiters_on_leader_base_exception(self) -> None:
         entered = threading.Event()
+        waiter_waiting = threading.Event()
         release = threading.Event()
+        orig_wait = bluesky._wait_for_inflight_auth
 
         def aborting_request(method, url, **kwargs):
             entered.set()
-            release.wait(timeout=5)
+            assert release.wait(timeout=5)
             raise KeyboardInterrupt("simulated abort")
 
-        with mock.patch.object(bluesky.http, "request", side_effect=aborting_request):
+        def tracked_wait(inflight):
+            waiter_waiting.set()
+            return orig_wait(inflight)
+
+        with (
+            mock.patch.object(bluesky.http, "request", side_effect=aborting_request),
+            mock.patch.object(bluesky, "_wait_for_inflight_auth", side_effect=tracked_wait),
+        ):
             leader_exc: list[BaseException] = []
             waiter_result: list[tuple] = []
 
@@ -316,7 +325,7 @@ class TestHigh180BlueskySessionConcurrency:
                     leader_exc.append(exc)
 
             def run_waiter() -> None:
-                entered.wait(timeout=5)
+                assert entered.wait(timeout=5)
                 waiter_result.append(
                     bluesky._create_session("alice.bsky.social", "abcd-efgh-ijkl-mnop")
                 )
@@ -325,8 +334,8 @@ class TestHigh180BlueskySessionConcurrency:
             t2 = threading.Thread(target=run_waiter)
             t1.start()
             t2.start()
-            entered.wait(timeout=5)
-            time.sleep(0.05)
+            assert entered.wait(timeout=5)
+            assert waiter_waiting.wait(timeout=5)
             release.set()
             t1.join(timeout=5)
             t2.join(timeout=5)
@@ -336,6 +345,68 @@ class TestHigh180BlueskySessionConcurrency:
         assert waiter_result[0][0] is None
         assert "KeyboardInterrupt" in (waiter_result[0][1] or "")
         assert bluesky._inflight_auth == {}
+
+    def test_create_session_log_failure_clears_inflight_slot_and_wakes_waiters(self) -> None:
+        handle = "alice.bsky.social"
+        app_password = "abcd-efgh-ijkl-mnop"
+        cred_key = bluesky._credential_key(handle, app_password)
+        bluesky._session_cache[cred_key] = bluesky._SessionEntry(
+            access_token="tok-expired",
+            refresh_token="ref-expired",
+            created_at=time.monotonic() - bluesky._TOKEN_MAX_AGE_SECONDS - 10,
+        )
+
+        log_entered = threading.Event()
+        waiter_waiting = threading.Event()
+        orig_wait = bluesky._wait_for_inflight_auth
+
+        def failing_log(msg: str) -> None:
+            if "Session token expired" in msg:
+                log_entered.set()
+                assert waiter_waiting.wait(timeout=5)
+                raise OSError("stderr closed")
+
+        def tracked_wait(inflight) -> None:
+            waiter_waiting.set()
+            return orig_wait(inflight)
+
+        leader_exc: list[BaseException] = []
+        waiter_result: list[tuple] = []
+
+        def run_leader() -> None:
+            try:
+                bluesky._create_session(handle, app_password)
+            except BaseException as exc:
+                leader_exc.append(exc)
+
+        def run_waiter() -> None:
+            assert log_entered.wait(timeout=5)
+            waiter_result.append(bluesky._create_session(handle, app_password))
+
+        with (
+            mock.patch.object(bluesky, "_log", side_effect=failing_log),
+            mock.patch.object(bluesky, "_wait_for_inflight_auth", side_effect=tracked_wait),
+        ):
+            t1 = threading.Thread(target=run_leader)
+            t2 = threading.Thread(target=run_waiter)
+            t1.start()
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        assert not t1.is_alive() and not t2.is_alive()
+        assert len(leader_exc) == 1 and isinstance(leader_exc[0], OSError)
+        assert waiter_result[0][0] is None
+        assert "OSError" in (waiter_result[0][1] or "")
+        assert bluesky._inflight_auth == {}
+
+        with mock.patch.object(
+            bluesky.http,
+            "request",
+            return_value={"accessJwt": "tok-after-log-err", "refreshJwt": "ref-after"},
+        ):
+            tok, err, status = bluesky._create_session(handle, app_password)
+        assert (tok, err, status) == ("tok-after-log-err", None, None)
 
     def test_concurrent_401_single_use_refresh_rotation_reuses_fresh_token(self) -> None:
         cfg = {"BSKY_HANDLE": "alice.bsky.social", "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop"}
@@ -467,7 +538,9 @@ class TestHigh180BlueskySessionConcurrency:
         )
 
         login_entered = threading.Event()
+        waiter_waiting = threading.Event()
         release_login = threading.Event()
+        orig_wait = bluesky._wait_for_inflight_auth
         state_lock = threading.Lock()
         session_calls = 0
         refresh_calls = 0
@@ -487,6 +560,10 @@ class TestHigh180BlueskySessionConcurrency:
             assert kwargs["headers"] == {"Authorization": "Bearer tok-newer-login"}
             return {"posts": [{"uri": "at://did/app.bsky.feed.post/ok", "author": {"handle": "u"}, "record": {"text": "fresh"}}]}
 
+        def tracked_wait(inflight) -> None:
+            waiter_waiting.set()
+            return orig_wait(inflight)
+
         login_result: list[dict] = []
         recovery_result: list[tuple] = []
 
@@ -503,14 +580,16 @@ class TestHigh180BlueskySessionConcurrency:
                 )
             )
 
-        with mock.patch.object(bluesky.http, "request", side_effect=fake_request):
+        with (
+            mock.patch.object(bluesky.http, "request", side_effect=fake_request),
+            mock.patch.object(bluesky, "_wait_for_inflight_auth", side_effect=tracked_wait),
+        ):
             t_login = threading.Thread(target=run_expired_search)
             t_recover = threading.Thread(target=run_401_recovery)
             t_login.start()
             t_recover.start()
             assert login_entered.wait(timeout=5)
-            # Wait briefly so t_recover enters _recover_session and awaits _inflight_auth.
-            time.sleep(0.05)
+            assert waiter_waiting.wait(timeout=5)
             release_login.set()
             t_login.join(timeout=5)
             t_recover.join(timeout=5)
@@ -536,7 +615,9 @@ class TestHigh180BlueskySessionConcurrency:
         )
 
         refresh_entered = threading.Event()
+        waiter_waiting = threading.Event()
         release_refresh = threading.Event()
+        orig_wait = bluesky._wait_for_inflight_auth
         state_lock = threading.Lock()
         session_calls = 0
         refresh_calls = 0
@@ -556,6 +637,10 @@ class TestHigh180BlueskySessionConcurrency:
             assert kwargs["headers"] == {"Authorization": "Bearer tok-refreshed"}
             return {"posts": [{"uri": "at://did/app.bsky.feed.post/ok", "author": {"handle": "u"}, "record": {"text": "refreshed"}}]}
 
+        def tracked_wait(inflight) -> None:
+            waiter_waiting.set()
+            return orig_wait(inflight)
+
         recovery_result: list[tuple] = []
         search_result: list[dict] = []
 
@@ -572,14 +657,16 @@ class TestHigh180BlueskySessionConcurrency:
                 bluesky.search_bluesky("ai", "2026-08-01", "2026-09-01", config=cfg)
             )
 
-        with mock.patch.object(bluesky.http, "request", side_effect=fake_request):
+        with (
+            mock.patch.object(bluesky.http, "request", side_effect=fake_request),
+            mock.patch.object(bluesky, "_wait_for_inflight_auth", side_effect=tracked_wait),
+        ):
             t_recover = threading.Thread(target=run_401_recovery)
             t_search = threading.Thread(target=run_expired_search)
             t_recover.start()
             t_search.start()
             assert refresh_entered.wait(timeout=5)
-            # Wait briefly so t_search enters _create_session and awaits _inflight_auth.
-            time.sleep(0.05)
+            assert waiter_waiting.wait(timeout=5)
             release_refresh.set()
             t_recover.join(timeout=5)
             t_search.join(timeout=5)

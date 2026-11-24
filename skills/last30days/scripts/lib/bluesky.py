@@ -201,6 +201,10 @@ def _log(msg: str):
     log.source_log("Bluesky", msg, tty_only=False)
 
 
+def _wait_for_inflight_auth(inflight: _InflightAuth) -> None:
+    inflight.event.wait()
+
+
 def _credential_key(handle: str, app_password: str) -> tuple[str, str]:
     digest = hashlib.sha256(app_password.encode("utf-8")).hexdigest()
     return (handle, digest)
@@ -348,16 +352,15 @@ def _create_session(
             is_leader = True
 
     if not is_leader:
-        inflight.event.wait()
+        _wait_for_inflight_auth(inflight)
         return inflight.token, inflight.error_msg, inflight.error_status
-
-    if expired_cached:
-        _log("Session token expired, re-authenticating")
 
     token: Optional[str] = None
     error_msg: Optional[str] = "Bluesky session creation failed (unknown error)"
     error_status: Optional[int] = None
     try:
+        if expired_cached:
+            _log("Session token expired, re-authenticating")
         token, error_msg, error_status = _execute_create_session_request(
             handle, app_password, cred_key, generation,
         )
@@ -416,7 +419,7 @@ def _refresh_session(
             is_leader = True
 
     if not is_leader:
-        inflight.event.wait()
+        _wait_for_inflight_auth(inflight)
         return inflight.token, inflight.error_msg, inflight.error_status
 
     token: Optional[str] = None
@@ -475,7 +478,7 @@ def _recover_session(
             is_leader = True
 
     if not is_leader:
-        inflight.event.wait()
+        _wait_for_inflight_auth(inflight)
         if inflight.token and inflight.token != failed_token:
             return inflight.token, None, inflight.did_reauth
         with _session_lock:
