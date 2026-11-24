@@ -17,6 +17,7 @@ JOURNAL_ENV = "LAST30DAYS_USAGE_JOURNAL"
 _JOURNAL_TIMEOUT_SECONDS = 30.0
 _BUSY_TIMEOUT_MS = 30_000
 _WRITE_LOCK = threading.Lock()
+_BEGIN_FAILED_JOURNALS: set[str] = set()
 
 _PAID_HOSTS = {
     "openrouter.ai": "openrouter",
@@ -44,6 +45,39 @@ def _log_journal_error(operation: str, exc: sqlite3.Error) -> None:
         f"journal {operation} failed: {type(exc).__name__}: {exc}",
         tty_only=False,
     )
+
+
+def _journal_key(path: Path | str) -> str:
+    return os.path.abspath(os.fspath(path))
+
+
+def _unknown_sentinel_path(path: Path | str) -> Path:
+    return Path(f"{os.fspath(path)}.unknown")
+
+
+def _mark_begin_failed(path: Path | str) -> None:
+    """Record a fail-closed unknown-cost marker in-process and on disk."""
+    key = _journal_key(path)
+    sentinel = _unknown_sentinel_path(path)
+    flags = os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    with _WRITE_LOCK:
+        _BEGIN_FAILED_JOURNALS.add(key)
+        try:
+            fd = os.open(sentinel, flags, 0o600)
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _has_begin_failed(path: Path | str) -> bool:
+    key = _journal_key(path)
+    with _WRITE_LOCK:
+        if key in _BEGIN_FAILED_JOURNALS:
+            return True
+    try:
+        return os.path.lexists(_unknown_sentinel_path(path))
+    except OSError:
+        return False
 
 
 @contextmanager
@@ -79,6 +113,11 @@ def create_journal(path: Path) -> None:
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(fd)
     with _WRITE_LOCK:
+        _BEGIN_FAILED_JOURNALS.discard(_journal_key(path))
+        try:
+            _unknown_sentinel_path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
         conn = sqlite3.connect(
             path,
             timeout=_JOURNAL_TIMEOUT_SECONDS,
@@ -119,6 +158,7 @@ def begin(provider: str) -> tuple[str, str, str] | None:
             conn.execute("INSERT INTO attempts (id, provider) VALUES (?, ?)", (attempt_id, provider))
     except sqlite3.Error as exc:
         _log_journal_error("begin", exc)
+        _mark_begin_failed(path)
         return None
     return path, attempt_id, provider
 
@@ -183,6 +223,7 @@ def finish(attempt: tuple[str, str, str] | None, payload: object) -> None:
 
 
 def read_journal(path: Path) -> dict:
+    unknown_from_begin = _has_begin_failed(path)
     try:
         with _connection(path, write=False) as conn:
             row = conn.execute(
@@ -193,7 +234,7 @@ def read_journal(path: Path) -> dict:
         return {"token_cost": 0.0, "cost_unknown": 1, "prompt_tokens": 0, "completion_tokens": 0}
     return {
         "token_cost": row[0],
-        "cost_unknown": int(row[1] > 0),
+        "cost_unknown": int(row[1] > 0 or unknown_from_begin),
         "prompt_tokens": row[2],
         "completion_tokens": row[3],
     }

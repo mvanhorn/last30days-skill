@@ -1232,7 +1232,10 @@ def parse_budget(raw: object) -> float:
             raise ValueError("Invalid daily_budget value: empty")
         value = float(text)
     elif isinstance(raw, (int, float)):
-        value = float(raw)
+        try:
+            value = float(raw)
+        except OverflowError as exc:
+            raise ValueError(f"Invalid daily_budget value: {raw!r} (overflow)") from exc
     else:
         raise ValueError(f"Invalid daily_budget value: {raw!r}")
     if not math.isfinite(value) or value < 0:

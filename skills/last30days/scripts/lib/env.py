@@ -237,7 +237,7 @@ def _project_config_trusted(policy: ConfigLoadPolicy, file_env: dict[str, Any]) 
     if policy.allow_project_config:
         return True
     process_value = os.environ.get("LAST30DAYS_TRUST_PROJECT_CONFIG")
-    if process_value is not None:
+    if process_value is not None and not is_unsubstituted_template(process_value):
         return _truthy(process_value)
     return _truthy(file_env.get("LAST30DAYS_TRUST_PROJECT_CONFIG"))
 

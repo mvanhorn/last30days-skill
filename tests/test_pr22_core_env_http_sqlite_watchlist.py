@@ -833,3 +833,115 @@ def test_high214_all_library_index_paths_close_sqlite_connections(tmp_path, monk
     assert rebuilt.rebuilt is True
     assert closed_before_remove and all(closed_before_remove)
     assert_all_closed()
+
+
+def test_high057_transient_begin_failure_forces_cost_unknown_in_and_cross_process(
+    tmp_path, monkeypatch
+):
+    journal = tmp_path / "usage-transient.db"
+    sentinel = Path(f"{journal}.unknown")
+    usage.create_journal(journal)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal))
+
+    class Response(io.BytesIO):
+        status = 200
+
+    monkeypatch.setattr(
+        http,
+        "_open_request",
+        lambda req, timeout: Response(b'{"choices": [], "usage": {"cost": 0.42}}'),
+    )
+    real_connection = usage._connection
+
+    def fail_begin_locked(path, *, write=False):
+        if write:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connection(path, write=write)
+
+    monkeypatch.setattr(usage, "_connection", fail_begin_locked)
+    result = http.post("https://openrouter.ai/api/v1/chat/completions", {}, retries=1)
+    assert result["choices"] == []
+
+    # Restore real SQLite access: attempts table is intact & empty, yet read_journal fails closed.
+    monkeypatch.setattr(usage, "_connection", real_connection)
+    with sqlite3.connect(journal) as check:
+        assert check.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+    assert sentinel.exists()
+    if os.name == "posix":
+        assert sentinel.stat().st_mode & 0o777 == 0o600
+
+    # In-process sentinel forces cost_unknown=1.
+    assert usage.read_journal(journal)["cost_unknown"] == 1
+
+    # Cross-process simulation: clearing in-memory state still sees the .unknown sidecar.
+    usage._BEGIN_FAILED_JOURNALS.clear()
+    assert usage.read_journal(journal)["cost_unknown"] == 1
+
+    # Recreating the journal at the same path clears both the sentinel file and memory state.
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        Path(f"{journal}{suffix}").unlink(missing_ok=True)
+    usage.create_journal(journal)
+    assert not sentinel.exists()
+    assert usage.read_journal(journal)["cost_unknown"] == 0
+
+
+def test_high058_project_config_trusted_ignores_unsubstituted_template(monkeypatch, tmp_path):
+    _isolate_env(monkeypatch, tmp_path)
+    global_env = tmp_path / "global.env"
+    global_env.write_text("LAST30DAYS_TRUST_PROJECT_CONFIG=1\n", encoding="utf-8")
+    global_env.chmod(0o600)
+    project_dir = tmp_path / ".claude"
+    project_dir.mkdir()
+    project_env = project_dir / "last30days.env"
+    project_env.write_text("BROWSER_CONSENT=true\nFROM_BROWSER=chrome\n", encoding="utf-8")
+    project_env.chmod(0o600)
+
+    monkeypatch.setattr(env, "CONFIG_FILE", global_env)
+    monkeypatch.setattr(env, "_find_project_env", lambda: project_env)
+    monkeypatch.setenv("LAST30DAYS_TRUST_PROJECT_CONFIG", "${user_config.trust_project_config}")
+
+    assert env.has_recorded_browser_consent() is True
+
+
+def test_high209_parse_budget_converts_overflow_error_to_value_error():
+    with pytest.raises(ValueError, match="overflow"):
+        store.parse_budget(10**400)
+
+
+def test_high214_connect_closes_connection_on_base_exception(tmp_path, monkeypatch):
+    db_path = tmp_path / "interrupted.db"
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    class InterruptOnScriptConn:
+        def __init__(self, inner: sqlite3.Connection):
+            self._inner = inner
+
+        def executescript(self, _sql):
+            raise KeyboardInterrupt("interrupted during schema setup")
+
+        def close(self):
+            self._inner.close()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def __setattr__(self, name, value):
+            if name == "_inner":
+                super().__setattr__(name, value)
+            else:
+                setattr(self._inner, name, value)
+
+    def tracked_connect(database, *args, **kwargs):
+        conn = real_connect(database, *args, **kwargs)
+        opened.append(conn)
+        return InterruptOnScriptConn(conn)
+
+    monkeypatch.setattr(library_index.sqlite3, "connect", tracked_connect)
+    with pytest.raises(KeyboardInterrupt, match="interrupted during schema setup"):
+        library_index._connect(db_path)
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
+
