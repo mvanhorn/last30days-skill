@@ -1,3 +1,5 @@
+import { redactSecrets } from './cookies.js';
+import { QUERY_ID_REGEX } from './runtime-query-ids.js';
 import { TWITTER_API_BASE } from './twitter-client-constants.js';
 import { buildSearchFeatures } from './twitter-client-features.js';
 import { extractCursorFromInstructions, parseTweetsFromInstructions } from './twitter-client-utils.js';
@@ -38,6 +40,9 @@ export function withSearch(Base) {
             return this.searchPaged(query, Number.POSITIVE_INFINITY, options);
         }
         async searchPaged(query, limit, options = {}) {
+            if (limit !== Number.POSITIVE_INFINITY && (!Number.isFinite(limit) || limit <= 0)) {
+                return { success: false, error: 'Invalid search count' };
+            }
             const features = buildSearchFeatures();
             const pageSize = 20;
             const seen = new Set();
@@ -46,11 +51,16 @@ export function withSearch(Base) {
             let nextCursor;
             let pagesFetched = 0;
             const { includeRaw = false, maxPages, product = 'Latest' } = options;
+            const redact = (msg) =>
+                typeof this.redactError === 'function' ? this.redactError(msg) : redactSecrets(msg);
             const fetchPage = async (pageCount, pageCursor) => {
                 let lastError;
                 let had404 = false;
                 const queryIds = await this.getSearchTimelineQueryIds();
                 for (const queryId of queryIds) {
+                    if (typeof queryId !== 'string' || !QUERY_ID_REGEX.test(queryId)) {
+                        continue;
+                    }
                     const variables = {
                         rawQuery: query,
                         count: pageCount,
@@ -78,7 +88,7 @@ export function withSearch(Base) {
                             const shouldRefreshQueryIds = (response.status === 400 || response.status === 422) && isQueryIdMismatch(text);
                             return {
                                 success: false,
-                                error: `HTTP ${response.status}: ${text.slice(0, 200)}`,
+                                error: `HTTP ${response.status}: ${redact(text).slice(0, 200)}`,
                                 had404: had404 || shouldRefreshQueryIds,
                             };
                         }
@@ -87,7 +97,7 @@ export function withSearch(Base) {
                             const shouldRefreshQueryIds = data.errors.some((error) => error?.extensions?.code === 'GRAPHQL_VALIDATION_FAILED');
                             return {
                                 success: false,
-                                error: data.errors.map((e) => e.message).join(', '),
+                                error: redact(data.errors.map((e) => e.message).join(', ')),
                                 had404: had404 || shouldRefreshQueryIds,
                             };
                         }
@@ -97,7 +107,7 @@ export function withSearch(Base) {
                         return { success: true, tweets: pageTweets, cursor: nextCursor, had404 };
                     }
                     catch (error) {
-                        lastError = error instanceof Error ? error.message : String(error);
+                        lastError = redact(error instanceof Error ? error.message : String(error));
                     }
                 }
                 return { success: false, error: lastError ?? 'Unknown error fetching search results', had404 };

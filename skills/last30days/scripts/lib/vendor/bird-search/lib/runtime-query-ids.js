@@ -10,7 +10,8 @@ const DISCOVERY_PAGES = [
     'https://x.com/settings/profile',
 ];
 const BUNDLE_URL_REGEX = /https:\/\/abs\.twimg\.com\/responsive-web\/client-web(?:-legacy)?\/[A-Za-z0-9.-]+\.js/g;
-const QUERY_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+export const QUERY_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const OPERATION_PATTERNS = [
     {
         regex: /e\.exports=\{queryId\s*:\s*["']([^"']+)["']\s*,\s*operationName\s*:\s*["']([^"']+)["']/gs,
@@ -53,14 +54,14 @@ function resolveDefaultCachePath() {
     }
     return path.join(homedir(), '.config', 'bird', DEFAULT_CACHE_FILENAME);
 }
-function parseSnapshot(raw) {
+export function parseSnapshot(raw) {
     if (!raw || typeof raw !== 'object') {
         return null;
     }
     const record = raw;
     const fetchedAt = typeof record.fetchedAt === 'string' ? record.fetchedAt : null;
     const ttlMs = typeof record.ttlMs === 'number' && Number.isFinite(record.ttlMs) ? record.ttlMs : null;
-    const ids = record.ids && typeof record.ids === 'object' ? record.ids : null;
+    const ids = record.ids && typeof record.ids === 'object' && !Array.isArray(record.ids) ? record.ids : null;
     const discovery = record.discovery && typeof record.discovery === 'object' ? record.discovery : null;
     if (!fetchedAt || !ttlMs || !ids || !discovery) {
         return null;
@@ -70,10 +71,16 @@ function parseSnapshot(raw) {
     if (!pages || !bundles) {
         return null;
     }
-    const normalizedIds = {};
+    const normalizedIds = Object.create(null);
     for (const [key, value] of Object.entries(ids)) {
-        if (typeof value === 'string' && value.trim().length > 0) {
-            normalizedIds[key] = value.trim();
+        if (FORBIDDEN_KEYS.has(key)) {
+            continue;
+        }
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (trimmed.length > 0 && QUERY_ID_REGEX.test(trimmed)) {
+                normalizedIds[key] = trimmed;
+            }
         }
     }
     return {
@@ -203,11 +210,15 @@ export function createRuntimeQueryIdStore(options = {}) {
         return { snapshot, cachePath, ageMs, isFresh };
     };
     const getQueryId = async (operationName) => {
+        if (typeof operationName !== 'string' || FORBIDDEN_KEYS.has(operationName)) {
+            return null;
+        }
         const info = await getSnapshotInfo();
         if (!info) {
             return null;
         }
-        return info.snapshot.ids[operationName] ?? null;
+        const value = info.snapshot.ids[operationName];
+        return typeof value === 'string' && QUERY_ID_REGEX.test(value) ? value : null;
     };
     const refresh = async (operationNames, opts = {}) => {
         if (refreshInFlight) {
@@ -224,10 +235,13 @@ export function createRuntimeQueryIdStore(options = {}) {
             if (discovered.size === 0) {
                 return current ?? null;
             }
-            const ids = {};
+            const ids = Object.create(null);
             for (const name of operationNames) {
+                if (FORBIDDEN_KEYS.has(name)) {
+                    continue;
+                }
                 const entry = discovered.get(name);
-                if (entry?.queryId) {
+                if (entry?.queryId && QUERY_ID_REGEX.test(entry.queryId)) {
                     ids[name] = entry.queryId;
                 }
             }
