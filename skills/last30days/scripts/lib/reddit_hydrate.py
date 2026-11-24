@@ -176,13 +176,13 @@ def _stamp_uploader(post: dict) -> None:
 
     Set while the post author is still on the item; the normalized item drops it.
     """
-    author = str(post.get("author") or "").strip().lower()
+    author = str(post.get("author") or "").strip().lower().removeprefix("/").removeprefix("u/")
     if not author or author in ("[deleted]", "[removed]"):
         return
     for comment in post.get("top_comments") or []:
         if isinstance(comment, dict) and not isinstance(comment.get("is_uploader"), bool):
-            name = str(comment.get("author") or "").strip().lower()
-            if name:
+            name = str(comment.get("author") or "").strip().lower().removeprefix("/").removeprefix("u/")
+            if name and name not in ("[deleted]", "[removed]"):
                 comment["is_uploader"] = name == author
 
 

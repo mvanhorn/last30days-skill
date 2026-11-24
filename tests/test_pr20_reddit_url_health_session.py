@@ -144,17 +144,18 @@ class TestHigh124ShredditUrlSafety:
             "url": "https://reddit.com/r/Rakuten/comments/1taeiw0/x/c1/",
             "depth": 0,
         }
+        future_deadline = time.monotonic() + 999.0
         with mock.patch.object(reddit_shreddit.http, "reddit_keyless_get_text") as get_text, \
              mock.patch.object(
                  reddit_shreddit.reddit_arctic, "fetch_post_comments", return_value=[arctic_comment],
              ) as arctic:
-            out = reddit_shreddit.fetch_comments(url, deadline=999.0)
+            out = reddit_shreddit.fetch_comments(url, deadline=future_deadline)
         get_text.assert_not_called()
         arctic.assert_called_once_with(
             "1taeiw0",
             limit=reddit_shreddit.MAX_COMMENTS,
             skip_author=reddit_shreddit._is_bot_author,
-            deadline=999.0,
+            deadline=future_deadline,
         )
         assert len(out["top_comments"]) == 1
         assert out["top_comments"][0]["score"] == 55

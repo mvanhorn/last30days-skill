@@ -85,6 +85,10 @@ _CHALLENGE_MARKERS = re.compile(
     re.IGNORECASE,
 )
 _OP_ATTR_NAMES = ("is-op", "is-submitter", "is_op", "is_submitter")
+_TAG_HEAD = re.compile(r"^<\s*[^\s>/]+")
+_TAG_ATTR = re.compile(
+    r'([A-Za-z_:][A-Za-z0-9_.:-]*)(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+)))?'
+)
 
 
 def _log(msg: str) -> None:
@@ -92,14 +96,17 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
-def _accepts_named_kwarg(fn: Any, name: str) -> bool:
+def _accepts_kwarg(fn: Any, name: str) -> bool:
     target = getattr(fn, "side_effect", None)
     if callable(target):
         fn = target
     try:
-        return name in inspect.signature(fn).parameters
+        params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return False
+    return name in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def unrecognized_comments_body(text: str) -> Optional[str]:
@@ -153,11 +160,14 @@ def _attr(tag: str, name: str) -> str:
 
 def _bool_attr(tag: str, names: tuple[str, ...]) -> Optional[bool]:
     """Read an explicit HTML boolean/valued flag from a start tag, or None if absent."""
-    for name in names:
-        m = re.search(rf'(?:^|[\s<]){re.escape(name)}(?:="([^"]*)"|(?=[\s>/]))', tag, re.IGNORECASE)
-        if not m:
+    wanted = {n.lower() for n in names}
+    body = _TAG_HEAD.sub("", tag.strip()).rstrip(">/ \t\r\n")
+    for m in _TAG_ATTR.finditer(body):
+        if m.group(1).lower() not in wanted:
             continue
-        raw = m.group(1)
+        raw = m.group(2) if m.group(2) is not None else (
+            m.group(3) if m.group(3) is not None else m.group(4)
+        )
         if raw is None or raw.strip() == "":
             return True
         lowered = raw.strip().lower()
@@ -262,7 +272,7 @@ def _total_comments(html_text: str) -> Optional[int]:
 
 
 def _clean_post_author(post_author: Optional[str]) -> str:
-    cleaned = str(post_author or "").strip().lower()
+    cleaned = str(post_author or "").strip().lower().removeprefix("/").removeprefix("u/")
     return "" if cleaned in ("", "[deleted]", "[removed]") else cleaned
 
 
@@ -288,6 +298,8 @@ def fetch_comments(
     ref = extract_post_ref(post_url)
     if not ref:
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
+    if deadline is not None and time.monotonic() >= deadline:
+        return {"top_comments": [], "comment_insights": [], "num_comments": None}
     sub, post_id = ref
 
     html_text: Optional[str] = None
@@ -301,7 +313,7 @@ def fetch_comments(
                 "accept": "text/html",
                 "validate": unrecognized_comments_body,
             }
-            if deadline is not None and _accepts_named_kwarg(
+            if deadline is not None and _accepts_kwarg(
                 http.reddit_keyless_get_text, "deadline_monotonic",
             ):
                 get_kwargs["deadline_monotonic"] = deadline
@@ -314,6 +326,8 @@ def fetch_comments(
     # Skip Arctic Shift when shreddit returned a recognized 0-comment thread page.
     skip_arctic = html_text is not None and total == 0
     if not comments and not skip_arctic:
+        if deadline is not None and time.monotonic() >= deadline:
+            return {"top_comments": [], "comment_insights": [], "num_comments": total}
         # The shreddit comment partials 403 on some hosts (datacenter egress).
         # Fall back to the arctic-shift archive, which serves scored comments
         # from any IP keyless (ranked by score client-side).
@@ -341,7 +355,7 @@ def fetch_comments(
         if isinstance(c.get("is_uploader"), bool):
             entry["is_uploader"] = c["is_uploader"]
         elif op_author:
-            cname = str(c.get("author") or "").strip().lower()
+            cname = _clean_post_author(c.get("author"))
             if cname:
                 entry["is_uploader"] = cname == op_author
         top_comments.append(entry)

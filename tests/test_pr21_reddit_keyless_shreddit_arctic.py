@@ -617,12 +617,13 @@ class TestHigh119ShredditFetchHardening:
     URL = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
 
     def test_expired_deadline_skips_both_shreddit_and_arctic(self):
-        with mock.patch.object(reddit_shreddit.http, "reddit_keyless_get_text") as shreddit_get, \
-             mock.patch.object(reddit_arctic.http, "get") as arctic_get:
-            out = reddit_shreddit.fetch_comments(self.URL, deadline=time.monotonic() - 1.0)
-        assert out == {"top_comments": [], "comment_insights": [], "num_comments": None}
-        shreddit_get.assert_not_called()
-        arctic_get.assert_not_called()
+        for url in (self.URL, "https://www.reddit.com/comments/1taeiw0/"):
+            with mock.patch.object(reddit_shreddit.http, "reddit_keyless_get_text") as shreddit_get, \
+                 mock.patch.object(reddit_shreddit.reddit_arctic, "fetch_post_comments") as arctic_fetch:
+                out = reddit_shreddit.fetch_comments(url, deadline=time.monotonic() - 1.0)
+            assert out == {"top_comments": [], "comment_insights": [], "num_comments": None}
+            shreddit_get.assert_not_called()
+            arctic_fetch.assert_not_called()
 
     def test_uses_retries_1_and_clamps_timeout_to_deadline(self):
         seen_kwargs: dict = {}
@@ -638,6 +639,7 @@ class TestHigh119ShredditFetchHardening:
         assert out["top_comments"]
         assert seen_kwargs["retries"] == 1
         assert seen_kwargs["timeout"] == pytest.approx(3.5)
+        assert seen_kwargs["deadline_monotonic"] == 1003.5
 
     def test_forwards_deadline_monotonic_when_transport_supports_it(self):
         seen: dict = {}
@@ -766,3 +768,192 @@ class TestHigh123SearchDeadlinesAndElection:
         assert pages_fetched[0][1] == pytest.approx(3.0)
         assert [p["metadata"]["post_id"] for p in posts] == ["p1"]
         assert posts[0]["author"] == "alice"
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: real http.reddit_keyless_* deadline_monotonic, u/ prefix OP
+# matching, strict start-tag attribute tokenization, expired fetch_scores gate
+# ---------------------------------------------------------------------------
+
+
+class TestReviewFixes:
+    def test_bool_attr_tokenizes_attributes_without_value_false_positives(self):
+        html = (
+            '<shreddit-comment-tree-stats total-comments="4"></shreddit-comment-tree-stats>'
+            + _shreddit_comment_html(
+                "NoteUser", "t1_note", 100, "Quoted text mentioning OP",
+                extra_attrs='aria-label="a is-op note" data-note=\'is-submitter\'',
+            )
+            + _shreddit_comment_html(
+                "SingleFalse", "t1_sf", 90, "Single-quoted false",
+                extra_attrs="is-op='false'",
+            )
+            + _shreddit_comment_html(
+                "SingleTrue", "t1_st", 80, "Single-quoted true",
+                extra_attrs="is-op='true'",
+            )
+            + _shreddit_comment_html(
+                "PrefixedAttr", "t1_pref", 70, "Different attribute name",
+                extra_attrs='author-is-op="true"',
+            )
+        )
+        parsed = {c["author"]: c for c in reddit_shreddit.parse_comments(html)}
+        assert "is_uploader" not in parsed["NoteUser"]
+        assert parsed["SingleFalse"]["is_uploader"] is False
+        assert parsed["SingleTrue"]["is_uploader"] is True
+        assert "is_uploader" not in parsed["PrefixedAttr"]
+
+    def test_u_prefix_stripped_when_matching_op_author(self):
+        html = (
+            '<shreddit-comment-tree-stats total-comments="3"></shreddit-comment-tree-stats>'
+            + _shreddit_comment_html("u/Alice", "t1_a1", 50, "OP with u/ prefix")
+            + _shreddit_comment_html("/u/Alice", "t1_a2", 40, "OP with /u/ prefix")
+            + _shreddit_comment_html("u/Bob", "t1_b1", 30, "Other user with u/ prefix")
+        )
+        url = "https://www.reddit.com/r/test/comments/abc123/slug/"
+        with mock.patch.object(reddit_shreddit.http, "get_text", return_value=html):
+            out = reddit_shreddit.fetch_comments(url, post_author="Alice")
+        marks = {c["author"]: c["is_uploader"] for c in out["top_comments"]}
+        assert marks == {"u/Alice": True, "/u/Alice": True, "u/Bob": False}
+
+        # Also verify post_author with u/ prefix matches bare comment author,
+        # and reddit_hydrate._stamp_uploader strips u/ and /u/ consistently.
+        post = {
+            "author": "/u/Alice",
+            "top_comments": [
+                {"author": "Alice", "excerpt": "bare op"},
+                {"author": "u/alice", "excerpt": "prefixed op"},
+                {"author": "u/other", "excerpt": "community"},
+                {"author": "u/[deleted]", "excerpt": "deleted"},
+            ],
+        }
+        reddit_hydrate._stamp_uploader(post)
+        assert [c.get("is_uploader") for c in post["top_comments"]] == [True, True, False, None]
+
+    def test_expired_fetch_scores_returns_cached_hits_without_registering_inflight(self):
+        with reddit_arctic._memo_lock:
+            reddit_arctic._cache["cached1"] = {"score": 42, "num_comments": 7}
+
+        seen_inserts: list[str] = []
+
+        class SpyDict(dict):
+            def __setitem__(self, key, value):
+                seen_inserts.append(key)
+                super().__setitem__(key, value)
+
+        spy_inflight = SpyDict()
+        with mock.patch.object(reddit_arctic, "_score_inflight", spy_inflight), \
+             mock.patch.object(reddit_arctic.http, "get") as http_get:
+            out = reddit_arctic.fetch_scores(
+                ["cached1", "uncached2"], deadline=time.monotonic() - 1.0,
+            )
+
+        assert out == {"cached1": {"score": 42, "num_comments": 7}}
+        http_get.assert_not_called()
+        assert seen_inserts == []
+        assert spy_inflight == {}
+
+    def test_http_reddit_keyless_get_text_enforces_deadline_on_limiter_waiter_and_get_text(self, monkeypatch):
+        url_limiter = "https://www.reddit.com/svc/shreddit/comments/r/test/t3_lim1?sort=top"
+        # 1. Drained limiter fails fast inside acquire(deadline_monotonic=...) without calling get_text.
+        slow_limiter = http.RateLimiter(rate_per_sec=0.05, burst=1)
+        slow_limiter.acquire()  # drain the single token (next refill in 20s)
+        monkeypatch.setattr(http, "REDDIT_KEYLESS_LIMITER", slow_limiter)
+
+        with mock.patch.object(http, "get_text") as gt, \
+             http.capture_failures() as failures:
+            t0 = time.monotonic()
+            body = http.reddit_keyless_get_text(
+                url_limiter, timeout=12, retries=1, deadline_monotonic=time.monotonic() + 0.1,
+            )
+            elapsed = time.monotonic() - t0
+        assert body is None
+        assert elapsed < 1.0
+        gt.assert_not_called()
+        assert any(isinstance(f, http.DeadlineExceeded) for f in failures)
+
+        # 2. Coalesced waiter respects deadline_monotonic and does not block on wait allowance.
+        monkeypatch.setattr(http, "REDDIT_KEYLESS_LIMITER", http.RateLimiter(rate_per_sec=100.0, burst=100))
+        url_waiter = "https://www.reddit.com/svc/shreddit/comments/r/test/t3_wait1?sort=top"
+        owner_started = threading.Event()
+        release_owner = threading.Event()
+        seen_get_text_kwargs: dict = {}
+
+        def slow_owner_get(u, **kwargs):
+            seen_get_text_kwargs.update(kwargs)
+            owner_started.set()
+            release_owner.wait(timeout=5.0)
+            return SHREDDIT_HTML
+
+        with mock.patch.object(http, "get_text", side_effect=slow_owner_get):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                owner_deadline = time.monotonic() + 5.0
+                f_owner = pool.submit(
+                    http.reddit_keyless_get_text,
+                    url_waiter,
+                    timeout=12,
+                    retries=1,
+                    deadline_monotonic=owner_deadline,
+                )
+                assert owner_started.wait(timeout=3.0)
+
+                t0 = time.monotonic()
+                waiter_res = http.reddit_keyless_get_text(
+                    url_waiter, timeout=12, retries=1, deadline_monotonic=time.monotonic() + 0.08,
+                )
+                elapsed = time.monotonic() - t0
+                assert waiter_res is None
+                assert elapsed < 1.0
+
+                release_owner.set()
+                assert f_owner.result(timeout=5.0) == SHREDDIT_HTML
+
+        assert seen_get_text_kwargs["deadline_monotonic"] == owner_deadline
+        assert seen_get_text_kwargs["timeout"] <= 5.0
+
+    def test_http_reddit_keyless_retry_429_respects_deadline_monotonic(self):
+        url = "https://www.reddit.com/svc/shreddit/search/?q=ghostty&type=posts&t=month&sort=relevance"
+
+        # Case A: insufficient remaining budget after 429 skips sleep & retry.
+        def always_429(u, **kwargs):
+            http._record_failure(http.HTTPError("HTTP 429: Too Many Requests", 429))
+            return None
+
+        with mock.patch.object(http, "get_text", side_effect=always_429) as gt, \
+             mock.patch.object(http.time, "sleep") as slept, \
+             http.capture_failures() as failures:
+            body, err = http.reddit_keyless_get_text_retry_429(
+                url,
+                timeout=15,
+                accept="text/html",
+                deadline_monotonic=time.monotonic() + 0.3,
+            )
+
+        assert body is None
+        assert err is not None and "429" in err
+        assert gt.call_count == 1
+        slept.assert_not_called()
+        assert any(f.status_code == 429 for f in failures)
+
+        # Case B: sufficient budget sleeps once, forwards deadline_monotonic to both attempts, and recovers.
+        seen_deadlines: list[float | None] = []
+        responses = [None, _search_page_html("p429", author="alice")]
+
+        def recover_429(u, **kwargs):
+            seen_deadlines.append(kwargs.get("deadline_monotonic"))
+            val = responses.pop(0)
+            if val is None:
+                http._record_failure(http.HTTPError("HTTP 429: Too Many Requests", 429))
+            return val
+
+        future_deadline = time.monotonic() + 10.0
+        with mock.patch.object(http, "get_text", side_effect=recover_429), \
+             mock.patch.object(http.time, "sleep") as slept, \
+             http.capture_failures() as failures:
+            body, err = reddit_search._fetch_page(url, deadline=future_deadline)
+
+        assert body is not None and err is None
+        assert seen_deadlines == [future_deadline, future_deadline]
+        slept.assert_called_once()
+        assert failures == []
+

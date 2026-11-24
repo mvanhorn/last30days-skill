@@ -229,6 +229,10 @@ def fetch_scores(
                 waiting.append((clean, _score_inflight[clean]))
             else:
                 todo.append(clean)
+        if deadline is not None and time.monotonic() >= deadline:
+            if todo:
+                _log(f"lookup stopped at its deadline; {len(todo)} ids left unscored")
+            return out
         batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)][:MAX_BATCHES]
         batch_gates: List[tuple[List[str], threading.Event]] = []
         for batch in batches:

@@ -278,7 +278,7 @@ def _fetch_page(
         "validate": unrecognized_body,
     }
     if deadline is not None and _accepts_kwarg(
-        http.reddit_keyless_get_text_retry_429, "deadline_monotonic",
+        http.reddit_keyless_get_text_retry_429, "deadline_monotonic", allow_var_keyword=True,
     ):
         kwargs["deadline_monotonic"] = deadline
     try:

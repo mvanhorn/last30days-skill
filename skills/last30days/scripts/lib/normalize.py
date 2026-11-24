@@ -333,7 +333,7 @@ def _normalize_reddit(
     top_comments = item.get("top_comments") or []
     comment_text = _join_comment_excerpts(top_comments, "excerpt")
     post_author = str(item.get("author") or "").strip()
-    if post_author.lower() in ("[deleted]", "[removed]"):
+    if post_author.lower().removeprefix("/").removeprefix("u/") in ("", "[deleted]", "[removed]"):
         post_author = ""
     body = "\n".join(
         part
