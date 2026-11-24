@@ -793,8 +793,6 @@ def test_greptile_f1_lookback_days_3650_round_trips_and_over_limit_rejected_befo
     [
         ("New Balance", "New Balance"),
         ("On Running", "On Running"),
-        ("Best Buy", "Best Buy"),
-        ("The Verge", "The Verge"),
         ("Open AI", "Open AI"),
         ("New Balance shoes", "New Balance"),
         ("On Running review", "On Running"),
@@ -818,13 +816,45 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
         "GitHub Actions"
     ]
     assert query.extract_compound_terms("Best AI Tools") == []
+    assert query.extract_compound_terms("Best VPN for travel") == []
+    assert query.extract_compound_terms("Top CRM for startups") == []
+    assert query.extract_compound_terms("Top AI tools for coding") == []
+    assert query.extract_compound_terms("The best CRM for startups") == []
+    assert query.extract_compound_terms("New VPN for travel") == []
     assert query.extract_compound_terms("New Balance vs On Running") == [
         "New Balance",
         "On Running",
     ]
 
 
-@pytest.mark.parametrize("brand", ["New Balance", "On Running", "Best Buy"])
+@pytest.mark.parametrize(
+    "topic,expected_search",
+    [
+        ("Best VPN for travel", "vpn travel"),
+        ("Top CRM for startups", "crm startups"),
+        ("Top AI tools for coding", "ai coding"),
+        ("The best CRM for startups", "crm startups"),
+    ],
+)
+def test_greptile_r2_f1_recommendation_prompts_never_quote_prompt_filler(
+    topic: str, expected_search: str,
+):
+    core = query.extract_core_subject(topic, max_words=6, strip_suffixes=True)
+    kw = planner._keyword_query(topic, core)
+    assert '"' not in kw
+    assert kw == expected_search
+
+    plan = planner._fallback_plan(
+        topic=topic,
+        available_sources=["reddit", "x"],
+        requested_sources=None,
+        depth="default",
+    )
+    assert plan.subqueries
+    assert plan.subqueries[0].search_query == expected_search
+
+
+@pytest.mark.parametrize("brand", ["New Balance", "On Running"])
 def test_greptile_f2_planner_keeps_full_brand_intact_in_fallback_queries(brand: str):
     core = query.extract_core_subject(brand, max_words=6, strip_suffixes=True)
     kw = planner._keyword_query(brand, core)
@@ -997,4 +1027,21 @@ def test_greptile_f5_resolve_github_and_prose_url_segment_boundaries():
     assert resolve._extract_x_handle([
         {"title": "Bluesky", "snippet": "Follow @alice.bsky.social on Bluesky", "url": ""},
     ]) == ""
+
+    # Curly quotes around handles, subreddits, and GitHub links still extract cleanly.
+    assert resolve._extract_x_handle([
+        {"title": "Quote", "snippet": "Follow \u201c@SpaceX\u201d for launch updates", "url": ""},
+    ]) == "spacex"
+    assert resolve._extract_x_handle([
+        {"title": "SingleQuote", "snippet": "Follow \u2018@SpaceX\u2019", "url": ""},
+    ]) == "spacex"
+    assert resolve._extract_x_handle([
+        {"title": "QuotePeriod", "snippet": "Follow \u201c@SpaceX.\u201d", "url": ""},
+    ]) == "spacex"
+    assert resolve._extract_subreddits([
+        {"title": "QuoteSub", "snippet": "Check \u201cr/python\u201d and \u2018r/rust\u2019", "url": ""},
+    ]) == ["python", "rust"]
+    assert resolve._extract_github_user([
+        {"title": "QuoteGH", "snippet": "See \u201chttps://github.com/team\u201d", "url": ""},
+    ]) == "team"
 
