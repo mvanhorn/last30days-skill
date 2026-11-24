@@ -179,20 +179,11 @@ def _parse_post(
     }
 
 
-_ERROR_SEVERITY_RANK = {
-    health.AUTH_FAILED: 0,
-    health.PAYMENT_REQUIRED: 0,
-    health.RATE_LIMITED: 1,
-    health.SCHEMA_DRIFT: 2,
-    health.ERROR: 3,
-    health.UNREACHABLE: 4,
-    health.TIMEOUT: 5,
-}
-
-
 def _error_severity(message: str, status_code: int | None = None) -> int:
     state = http.classify_failure(status_code=status_code, message=message)
-    return _ERROR_SEVERITY_RANK.get(state, 3)
+    return health.FAILURE_SPECIFICITY.get(
+        state, health.FAILURE_SPECIFICITY[health.ERROR],
+    )
 
 
 def _select_primary_error(errors: list[tuple[int, str]]) -> str:

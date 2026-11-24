@@ -544,74 +544,114 @@ class TestHigh183TokenValidationAndSecretScrubbing:
         assert partial.get("partial") is True
         assert "UnicodeDecodeError" in partial.get("error", "")
 
-    def test_http_request_passes_unredacted_body_to_proxy_observe_error_while_scrubbing_error_and_logs(
+    def test_http_request_passes_unredacted_body_to_real_proxy_observe_error_stopping_retries(
         self, capsys,
     ) -> None:
         secret = "PROXY_ECHO_SECRET_555444"
+        # "Invalid header value ..." gets truncated by auth_safety.scrub_secrets;
+        # real proxy.observe_error must still receive the raw JSON to see
+        # "code": "provider_unavailable" and stop retries on a retryable HTTP 503.
         raw_body = json.dumps({
             "detail": f"Invalid header value {secret}",
-            "code": "out_of_credits",
+            "code": "provider_unavailable",
         })
-        observed_bodies: list[str | None] = []
+        attempts = 0
 
         class _FakeRouted:
             provider = "scrapecreators"
             url = "https://proxy.example/v1/telegram/channel/posts"
             headers = {"x-api-key": secret}
 
-        def fake_observe(provider, code, body, headers, call_key):
-            observed_bodies.append(body)
-            return True
-
         def fake_urlopen(req, timeout=None):
+            nonlocal attempts
+            attempts += 1
             raise urllib.error.HTTPError(
                 _FakeRouted.url,
-                402,
-                f"Payment Required ({secret})",
+                503,
+                f"Service Unavailable ({secret})",
                 hdrs={},
                 fp=io.BytesIO(raw_body.encode("utf-8")),
             )
 
-        with http.capture_failures() as failures, \
-                mock.patch.object(http.proxy, "route", return_value=_FakeRouted()), \
-                mock.patch.object(http.proxy, "new_idempotency_key", return_value="k1"), \
-                mock.patch.object(http.proxy, "ensure_open"), \
-                mock.patch.object(http.proxy, "deadline_value", return_value="30"), \
-                mock.patch.object(http.proxy, "observe_error", side_effect=fake_observe), \
-                mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            with pytest.raises(http.HTTPError) as exc_info:
-                http.get(
-                    "https://api.scrapecreators.com/v1/telegram/channel/posts",
-                    headers={"x-api-key": secret},
-                    retries=2,
-                )
+        with http.proxy._lock:
+            http.proxy._unavailable.discard("scrapecreators")
+        try:
+            with http.capture_failures() as failures, \
+                    mock.patch.object(http.proxy, "route", return_value=_FakeRouted()), \
+                    mock.patch.object(http.proxy, "new_idempotency_key", return_value="k1"), \
+                    mock.patch.object(http.proxy, "ensure_open"), \
+                    mock.patch.object(http.proxy, "deadline_value", return_value="30"), \
+                    mock.patch.object(http.time, "sleep"), \
+                    mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                with pytest.raises(http.HTTPError) as exc_info:
+                    http.get(
+                        "https://api.scrapecreators.com/v1/telegram/channel/posts",
+                        headers={"x-api-key": secret},
+                        retries=3,
+                    )
 
-        # proxy.observe_error gets the original JSON body so "code": "out_of_credits" is intact.
-        assert observed_bodies == [raw_body]
-        assert json.loads(observed_bodies[0])["code"] == "out_of_credits"
-        # Raised HTTPError, captured failure sink, and logs remain scrubbed.
-        assert exc_info.value.status_code == 402
-        assert secret not in str(exc_info.value)
-        assert secret not in (exc_info.value.body or "")
-        assert failures and secret not in str(failures[0]) and secret not in (failures[0].body or "")
-        assert secret not in capsys.readouterr().err
+            # Real proxy.observe_error saw "provider_unavailable" and stopped retries after 1 attempt,
+            # even though scrubbing truncated the JSON body after "Invalid header value ".
+            assert attempts == 1
+            assert http.proxy.provider_unavailable("scrapecreators") is True
+            # Raised HTTPError, captured failure sink, and logs remain scrubbed.
+            assert exc_info.value.status_code == 503
+            assert secret not in str(exc_info.value)
+            assert secret not in (exc_info.value.body or "")
+            assert "provider_unavailable" not in (exc_info.value.body or "")
+            assert failures and secret not in str(failures[0]) and secret not in (failures[0].body or "")
+            assert secret not in capsys.readouterr().err
+        finally:
+            with http.proxy._lock:
+                http.proxy._unavailable.discard("scrapecreators")
 
     @pytest.mark.parametrize(
-        ("second_exc", "expected_marker"),
+        ("first_exc", "second_exc", "expected_channel", "expected_marker"),
         [
-            (http.HTTPError("HTTP 429: Too Many Requests", status_code=429), "429"),
-            (http.HTTPError("Too Many Requests", status_code=429), "429"),
-            (http.HTTPError("HTTP 401: Unauthorized", status_code=401), "401"),
-            (http.HTTPError("HTTP 402: Payment Required", status_code=402), "402"),
+            (
+                http.HTTPError("Request timed out"),
+                http.HTTPError("HTTP 429: Too Many Requests", status_code=429),
+                "@chan_second",
+                "429",
+            ),
+            (
+                http.HTTPError("Request timed out"),
+                http.HTTPError("Too Many Requests", status_code=429),
+                "@chan_second",
+                "429",
+            ),
+            (
+                http.HTTPError("Request timed out"),
+                http.HTTPError("HTTP 401: Unauthorized", status_code=401),
+                "@chan_second",
+                "401",
+            ),
+            (
+                http.HTTPError("Request timed out"),
+                http.HTTPError("HTTP 402: Payment Required", status_code=402),
+                "@chan_second",
+                "402",
+            ),
+            # health.FAILURE_SPECIFICITY ranks AUTH_FAILED (401) ahead of PAYMENT_REQUIRED (402).
+            (
+                http.HTTPError("HTTP 402: Payment Required", status_code=402),
+                http.HTTPError("HTTP 401: Unauthorized", status_code=401),
+                "@chan_second",
+                "401",
+            ),
         ],
     )
-    def test_telegram_prioritizes_rate_limit_and_auth_errors_over_earlier_timeout(
-        self, second_exc: http.HTTPError, expected_marker: str,
+    def test_telegram_prioritizes_failures_by_health_specificity(
+        self,
+        first_exc: http.HTTPError,
+        second_exc: http.HTTPError,
+        expected_channel: str,
+        expected_marker: str,
     ) -> None:
         def fake_get(url, **kwargs):
             handle = (kwargs.get("params") or {}).get("handle")
-            if handle == "chan_timeout":
-                raise http.HTTPError("Request timed out")
+            if handle == "chan_first":
+                raise first_exc
             raise second_exc
 
         with mock.patch.object(telegram.http, "get", side_effect=fake_get):
@@ -620,11 +660,11 @@ class TestHigh183TokenValidationAndSecretScrubbing:
                 "2026-06-01",
                 "2026-06-30",
                 token="valid-sc-key",
-                config={"TELEGRAM_SOURCES": "chan_timeout,chan_severe"},
+                config={"TELEGRAM_SOURCES": "chan_first,chan_second"},
             )
 
         assert res["items"] == []
-        assert "@chan_severe" in res["error"]
+        assert expected_channel in res["error"]
         assert expected_marker in res["error"]
 
     def test_real_http_client_putheader_error_shape_is_scrubbed(self) -> None:
