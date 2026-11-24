@@ -1172,9 +1172,8 @@ class TestSearxngConfigHandoff:
         baseline = run(lambda *a, **k: {"results": []})
         noted = run(refuse)
 
-        assert noted["_source_outcome"]["state"] == baseline["_source_outcome"]["state"]
-        # The reason stays first and intact. The note only follows it.
-        assert noted["_source_outcome"]["detail"] == f"{baseline['_source_outcome']['detail']}; SearXNG fallback refused (403)"
+        # The typed outcome is exactly what it was. The note travels beside it as separate data.
+        assert noted["_source_outcome"] == baseline["_source_outcome"]
         assert "SearXNG" not in baseline.get("_source_outcome_detail", "")
         assert "SearXNG fallback refused (403)" in noted["_source_outcome_detail"]
 
@@ -1236,7 +1235,7 @@ class TestSearxngConfigHandoff:
 
         assert not items
         assert artifact["_source_outcome"]["state"] == health.TIMEOUT
-        assert artifact["_source_outcome"]["detail"] == f"{note}; SearXNG fallback throttled (429)"
+        assert artifact["_source_outcome"]["detail"] == note
         assert artifact["_source_outcome_detail"] == "SearXNG fallback throttled (429)"
 
     @staticmethod
@@ -1341,87 +1340,6 @@ class TestSearxngConfigHandoff:
         assert outcome.state == health.OK and outcome.items_returned >= 1
         assert "SearXNG fallback refused (403)" in outcome.detail
 
-    @pytest.mark.parametrize("note_first", [True, False], ids=["note-first", "note-second"])
-    def test_report_keeps_the_note_from_either_stream_of_the_same_source(self, note_first):
-        import time
-
-        from lib import pipeline
-
-        reason = "Reddit ran out of search time before it found threads"
-        plain = {"_source_outcome": {"state": health.TIMEOUT, "detail": reason, "attempted": True}}
-        noted = {**plain, "_source_outcome_detail": "SearXNG fallback refused (403)"}
-
-        def stream(*args, **kwargs):
-            is_noted = kwargs["subquery"].label == "noted"
-            if is_noted != note_first:
-                time.sleep(0.4)  # Streams are recorded as they finish, so this one finishes second.
-            return [], dict(noted if is_noted else plain)
-
-        labels = ("noted", "plain") if note_first else ("plain", "noted")
-        with mock.patch.object(pipeline, "_retrieve_stream_impl", side_effect=stream):
-            report, _, _ = self._run_pipeline_reddit_with_searxng(
-                {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}, full_report=True, labels=labels,
-                report_depth="default",
-            )
-
-        outcome = report.source_status["reddit"]
-        assert outcome.state == health.TIMEOUT
-        assert outcome.detail == f"{reason}; SearXNG fallback refused (403)"
-        assert report.errors_by_source["reddit"] == outcome.detail
-
-    def test_keep_lane_notes_helper_edge_cases(self):
-        from lib import pipeline, schema
-
-        def bundle_with(detail, failed=True):
-            bundle = schema.RetrievalBundle()
-            if failed:
-                bundle.record_failure("reddit", health.TIMEOUT, detail)
-            else:
-                bundle.add_items("primary", "reddit", [])
-            return bundle
-
-        nothing = schema.RetrievalBundle()
-        pipeline._keep_reddit_lane_notes(nothing, "a note")
-        assert "reddit" not in nothing.source_status
-
-        held = bundle_with("the reason")
-        pipeline._keep_reddit_lane_notes(held, "a note")
-        assert held.source_status["reddit"].detail == "the reason; a note"
-        assert held.source_status["reddit"].state == health.TIMEOUT
-        assert held.errors_by_source["reddit"] == "the reason; a note"
-
-        again = bundle_with("the reason; a note")
-        pipeline._keep_reddit_lane_notes(again, "a note")
-        assert again.source_status["reddit"].detail == "the reason; a note"
-
-        partly = bundle_with("the reason; one")
-        pipeline._keep_reddit_lane_notes(partly, "one; two")
-        assert partly.source_status["reddit"].detail == "the reason; one; two"
-
-        served = bundle_with(None, failed=False)
-        pipeline._keep_reddit_lane_notes(served, "a note")
-        assert served.source_status["reddit"].detail is None
-
-        # A delivered source that only carries a detail is not a failure and is left alone.
-        detailed = bundle_with(None, failed=False)
-        detailed.record_detail("reddit", "search served 1")
-        pipeline._keep_reddit_lane_notes(detailed, "a note")
-        assert detailed.source_status["reddit"].detail == "search served 1"
-        assert "reddit" not in detailed.errors_by_source
-
-        # The error text is only extended when it lacks the notes, and a missing entry is fine.
-        known = bundle_with("the reason")
-        known.errors_by_source["reddit"] = "the reason; a note"
-        pipeline._keep_reddit_lane_notes(known, "a note")
-        assert known.errors_by_source["reddit"] == "the reason; a note"
-        assert known.source_status["reddit"].detail == "the reason; a note"
-
-        unlisted = bundle_with("the reason")
-        unlisted.errors_by_source.pop("reddit")
-        pipeline._keep_reddit_lane_notes(unlisted, "a note")
-        assert "reddit" not in unlisted.errors_by_source
-        assert unlisted.source_status["reddit"].detail == "the reason; a note"
-
     def test_another_sources_note_never_lands_on_reddit(self):
         import time
 
@@ -1449,6 +1367,243 @@ class TestSearxngConfigHandoff:
         assert report.source_status["polymarket"].state == health.ERROR
         assert report.source_status["polymarket"].detail == "market feed broke"
 
+    _NOTE = "SearXNG fallback refused (403)"
+    _SLOW = "Reddit ran out of search time before it found threads"
+    _DRIFT = "Reddit answered with a page the parser could not read"
+    _THREAD = {
+        "id": "R1",
+        "title": "IQ3 quantization notes",
+        "url": "https://www.reddit.com/r/LocalLLaMA/comments/1sx9abc/iq3_quantization_notes/",
+        "score": 40,
+        "num_comments": 7,
+        "subreddit": "LocalLLaMA",
+        "created_utc": 1_779_000_000,
+        "author": "u",
+        "selftext": "IQ3 notes",
+        "date": "2026-05-20",
+        "engagement": {"score": 40, "num_comments": 7, "upvote_ratio": None},
+        "relevance": 1.0,
+        "why_relevant": "Reddit listing",
+        "metadata": {"post_id": "1sx9abc"},
+    }
+
+    def _scripted_report(self, scripts, labels, *, sources=("reddit",)):
+        """Run the whole pipeline with each stream scripted by source or label.
+
+        A script is a tuple of items, artifact and delay. Streams are recorded as they
+        finish, so the delay sets which one the report sees second.
+        """
+        import time
+
+        from lib import pipeline
+
+        def stream(*args, **kwargs):
+            key = kwargs["source"] if kwargs["source"] in scripts else kwargs["subquery"].label
+            # Anything unscripted, such as the thin-results retry, is an empty clean stream.
+            items, artifact, delay = scripts.get(key, ([], {}, 0))
+            if delay:
+                time.sleep(delay)
+            return list(items), dict(artifact)
+
+        with mock.patch.object(pipeline, "_retrieve_stream_impl", side_effect=stream):
+            report, _, _ = self._run_pipeline_reddit_with_searxng(
+                {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}, full_report=True,
+                labels=labels, report_depth="default", report_sources=sources,
+            )
+        return report
+
+    def _typed(self, state, detail, note=None):
+        artifact = {"_source_outcome": {"state": state, "detail": detail, "attempted": True}}
+        if note:
+            artifact["_source_outcome_detail"] = note
+        return artifact
+
+    @pytest.mark.parametrize("note_stream_first", [True, False], ids=["noted-first", "noted-second"])
+    @pytest.mark.parametrize("noted_wins", [True, False], ids=["noted-wins", "plain-wins"])
+    def test_report_keeps_the_note_when_the_competing_failure_has_higher_priority(self, noted_wins, note_stream_first):
+        # SCHEMA_DRIFT outranks TIMEOUT in the bundle's own rules, so the winner is never in doubt.
+        noted_state, noted_reason = (health.SCHEMA_DRIFT, self._DRIFT) if noted_wins else (health.TIMEOUT, self._SLOW)
+        plain_state, plain_reason = (health.TIMEOUT, self._SLOW) if noted_wins else (health.SCHEMA_DRIFT, self._DRIFT)
+        slow = 0.4
+        report = self._scripted_report(
+            {
+                "noted": ([], self._typed(noted_state, noted_reason, self._NOTE), 0 if note_stream_first else slow),
+                "plain": ([], self._typed(plain_state, plain_reason), slow if note_stream_first else 0),
+            },
+            labels=("noted", "plain") if note_stream_first else ("plain", "noted"),
+        )
+
+        outcome = report.source_status["reddit"]
+        winner_reason = noted_reason if noted_wins else plain_reason
+        assert outcome.state == health.SCHEMA_DRIFT
+        # The winner's own reason stays first and the note follows it exactly once.
+        assert outcome.detail == f"{winner_reason}; {self._NOTE}"
+        assert report.errors_by_source["reddit"] == winner_reason
+
+    @pytest.mark.parametrize("noted_first", [True, False], ids=["noted-first", "noted-second"])
+    def test_report_keeps_the_note_when_the_other_stream_fails_alike(self, noted_first):
+        slow = 0.4
+        report = self._scripted_report(
+            {
+                "noted": ([], self._typed(health.TIMEOUT, self._SLOW, self._NOTE), 0 if noted_first else slow),
+                "plain": ([], self._typed(health.TIMEOUT, self._SLOW), slow if noted_first else 0),
+            },
+            labels=("noted", "plain") if noted_first else ("plain", "noted"),
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.TIMEOUT
+        assert outcome.detail == f"{self._SLOW}; {self._NOTE}"
+        assert report.errors_by_source["reddit"] == self._SLOW
+
+    def test_report_carries_a_note_seen_by_both_streams_once(self):
+        report = self._scripted_report(
+            {
+                "one": ([], self._typed(health.TIMEOUT, self._SLOW, self._NOTE), 0),
+                "two": ([], self._typed(health.TIMEOUT, self._SLOW, self._NOTE), 0.4),
+            },
+            labels=("one", "two"),
+        )
+
+        assert report.source_status["reddit"].detail == f"{self._SLOW}; {self._NOTE}"
+
+    @pytest.mark.parametrize("served_first", [True, False], ids=["served-first", "served-second"])
+    def test_report_keeps_a_served_streams_note_beside_a_later_failure(self, served_first):
+        slow = 0.4
+        report = self._scripted_report(
+            {
+                "served": ([self._THREAD], {"_source_outcome_detail": f"search served 1; {self._NOTE}"}, 0 if served_first else slow),
+                "failed": ([], self._typed(health.TIMEOUT, self._SLOW), slow if served_first else 0),
+            },
+            labels=("served", "failed") if served_first else ("failed", "served"),
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.PARTIAL and outcome.items_returned == 1
+        assert outcome.detail == f"{self._SLOW}; {self._NOTE}"
+
+    def test_report_for_two_served_streams_shows_the_note_once_and_stays_ok(self):
+        report = self._scripted_report(
+            {
+                "one": ([self._THREAD], {"_source_outcome_detail": self._NOTE}, 0),
+                "two": ([], {"_source_outcome_detail": self._NOTE}, 0.4),
+            },
+            labels=("one", "two"),
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.OK
+        assert outcome.detail == self._NOTE
+
+    def test_report_with_no_note_anywhere_shows_only_the_reason(self):
+        report = self._scripted_report(
+            {
+                "one": ([], self._typed(health.TIMEOUT, self._SLOW), 0),
+                "two": ([], self._typed(health.SCHEMA_DRIFT, self._DRIFT), 0.4),
+            },
+            labels=("one", "two"),
+        )
+
+        assert report.source_status["reddit"].detail == self._DRIFT
+
+    def test_report_keeps_a_note_that_arrives_on_the_thin_results_retry(self):
+        report = self._scripted_report(
+            {
+                "primary": ([], {}, 0),
+                "retry": ([], self._typed(health.TIMEOUT, self._SLOW, self._NOTE), 0),
+            },
+            labels=("primary",),
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.TIMEOUT
+        assert outcome.detail == f"{self._SLOW}; {self._NOTE}"
+
+    def test_a_note_on_another_source_never_reaches_reddit_and_reddit_notes_never_reach_it(self):
+        report = self._scripted_report(
+            {
+                "reddit": ([], self._typed(health.TIMEOUT, self._SLOW, self._NOTE), 0),
+                "polymarket": ([], self._typed(health.ERROR, "market feed broke", "a market note"), 0.4),
+            },
+            labels=("primary",), sources=("reddit", "polymarket"),
+        )
+
+        assert report.source_status["reddit"].detail == f"{self._SLOW}; {self._NOTE}"
+        assert report.source_status["polymarket"].detail == "market feed broke"
+
+    def test_text_that_looks_like_a_note_on_another_source_is_never_read_for_reddit(self):
+        report = self._scripted_report(
+            {
+                "reddit": ([], self._typed(health.TIMEOUT, self._SLOW), 0),
+                "polymarket": ([], self._typed(health.ERROR, "market feed broke", self._NOTE), 0.4),
+            },
+            labels=("primary",), sources=("reddit", "polymarket"),
+        )
+
+        assert report.source_status["reddit"].detail == self._SLOW
+        assert report.source_status["polymarket"].detail == "market feed broke"
+
+    def test_attach_step_edge_cases(self):
+        from lib import pipeline, schema
+
+        note = "SearXNG fallback refused (403)"
+
+        def status(state, detail):
+            return {"reddit": schema.SourceOutcome(source="reddit", state=state, detail=detail)}
+
+        def bundle(detail):
+            held = schema.RetrievalBundle()
+            held.detail_by_source["reddit"] = detail
+            held.errors_by_source["reddit"] = "the reason"
+            return held
+
+        # A failure gets the note after its own reason, once, and keeps its state.
+        failed = status(health.TIMEOUT, "the reason")
+        pipeline._attach_reddit_lane_notes(bundle(f"search served 1; {note}; {note}"), failed)
+        assert failed["reddit"].detail == f"the reason; {note}"
+        assert failed["reddit"].state == health.TIMEOUT
+
+        # A note the detail already holds is not repeated.
+        held = status(health.TIMEOUT, f"the reason; {note}")
+        pipeline._attach_reddit_lane_notes(bundle(note), held)
+        assert held["reddit"].detail == f"the reason; {note}"
+
+        # Only the bounded SearXNG vocabulary is ever shown. Other lane text and unknown text are not.
+        other = status(health.TIMEOUT, "the reason")
+        pipeline._attach_reddit_lane_notes(
+            bundle("search served 1; SearXNG fallback refused (HTTP 403); https://searx.example"), other,
+        )
+        assert other["reddit"].detail == "the reason"
+
+        # Delivered, empty, missing and detail-less outcomes are left alone.
+        for state in (health.OK, schema.NO_RESULTS):
+            untouched = status(state, "search served 1")
+            pipeline._attach_reddit_lane_notes(bundle(note), untouched)
+            assert untouched["reddit"].detail == "search served 1"
+        pipeline._attach_reddit_lane_notes(bundle(note), {})
+        nodetail = status(health.TIMEOUT, None)
+        pipeline._attach_reddit_lane_notes(bundle(note), nodetail)
+        assert nodetail["reddit"].detail is None
+
+        # The typed error text is never changed.
+        held_bundle = bundle(note)
+        pipeline._attach_reddit_lane_notes(held_bundle, status(health.TIMEOUT, "the reason"))
+        assert held_bundle.errors_by_source["reddit"] == "the reason"
+
+    @pytest.mark.parametrize("source", ["reddit", "hackernews"])
+    def test_the_stream_wrapper_leaves_every_typed_outcome_untouched(self, source):
+        from lib import pipeline
+
+        artifact = {
+            "_source_outcome": {"state": health.ERROR, "detail": "boom", "attempted": True},
+            "_source_outcome_detail": "a side note",
+        }
+        with mock.patch.object(pipeline, "_retrieve_stream_impl", return_value=([], dict(artifact))):
+            _, result = pipeline._retrieve_stream(source=source, config={})
+
+        assert result["_source_outcome"] == artifact["_source_outcome"]
+        assert result["_source_outcome_detail"] == "a side note"
+
     def test_report_without_any_note_stays_unchanged_across_two_streams(self):
         from lib import pipeline
 
@@ -1461,41 +1616,6 @@ class TestSearxngConfigHandoff:
             )
 
         assert report.source_status["reddit"].detail == reason
-
-    def test_fold_helper_edge_cases(self):
-        from lib import pipeline
-
-        typed = {"state": health.TIMEOUT, "detail": "ran out of time", "attempted": True}
-        served = {"_source_outcome_detail": "search served 1"}
-        no_note = {"_source_outcome": typed}
-        already = {"_source_outcome": {**typed, "detail": "ran out of time; a note"}, "_source_outcome_detail": "a note"}
-        original = {"_source_outcome": typed, "_source_outcome_detail": "a note"}
-
-        assert pipeline._fold_reddit_lane_notes(None) is None
-        assert pipeline._fold_reddit_lane_notes(served) is served
-        assert pipeline._fold_reddit_lane_notes(no_note) is no_note
-        assert pipeline._fold_reddit_lane_notes(already) is already
-        folded = pipeline._fold_reddit_lane_notes(original)
-        assert folded["_source_outcome"]["detail"] == "ran out of time; a note"
-        assert folded["_source_outcome"]["state"] == health.TIMEOUT
-        # The input is never changed, so a replayed artifact cannot pick up the note twice.
-        assert typed["detail"] == "ran out of time" and original["_source_outcome"] is typed
-        assert pipeline._fold_reddit_lane_notes(folded) is folded
-
-    @pytest.mark.parametrize("source, folded", [("reddit", True), ("hackernews", False)])
-    def test_only_reddit_outcomes_get_their_lane_notes_folded(self, source, folded):
-        from lib import pipeline
-
-        artifact = {
-            "_source_outcome": {"state": health.ERROR, "detail": "boom", "attempted": True},
-            "_source_outcome_detail": "a side note",
-        }
-        with mock.patch.object(pipeline, "_retrieve_stream_impl", return_value=([], dict(artifact))):
-            _, result = pipeline._retrieve_stream(source=source, config={})
-
-        assert result["_source_outcome"]["state"] == health.ERROR
-        assert result["_source_outcome"]["detail"] == ("boom; a side note" if folded else "boom")
-        assert result["_source_outcome_detail"] == "a side note"
 
     @pytest.mark.parametrize("detail", [
         "Reddit ran out of search time before it found threads",

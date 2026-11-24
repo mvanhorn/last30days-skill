@@ -385,6 +385,11 @@ _SEARXNG_NOTES = {
 }
 
 
+def searxng_note_texts() -> frozenset[str]:
+    """Every note the SearXNG fallback can produce. Nothing else is ever shown as one."""
+    return frozenset(f"SearXNG fallback {note}" for note in _SEARXNG_NOTES.values())
+
+
 def _note_searxng_rung(floor: "reddit_discover.WebFloor") -> None:
     for state in floor.searxng_failures:
         note = _SEARXNG_NOTES.get(state)

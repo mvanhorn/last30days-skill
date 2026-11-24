@@ -3554,8 +3554,6 @@ def run(
                     bundle.record_detail(
                         source, detail_note, state=lane_state
                     )
-                    if source == "reddit" and outcome_note is not None:
-                        _keep_reddit_lane_notes(bundle, detail_note)
                     if detail_rate_limited:
                         # Do not re-fan-out against a host still inside its window.
                         with rate_limit_lock:
@@ -3861,6 +3859,7 @@ def run(
                 item for item in stream if source_item_key(item) in retained_markets
             ]
     source_status = _finalize_source_status(bundle.source_status, items_by_source)
+    _attach_reddit_lane_notes(bundle, source_status)
 
     candidates = weighted_rrf(
         bundle.items_by_source_and_query,
@@ -5819,43 +5818,27 @@ def _with_reddit_lane_notes(artifact: dict[str, Any], notes: list[str]) -> dict[
     return artifact
 
 
-def _keep_reddit_lane_notes(bundle: schema.RetrievalBundle, note: str) -> None:
-    """Keep a later Reddit stream's lane notes on the failure the bundle already holds.
+def _attach_reddit_lane_notes(
+    bundle: schema.RetrievalBundle,
+    source_status: dict[str, schema.SourceOutcome],
+) -> None:
+    """Show the run's observed SearXNG notes on Reddit's final failure detail.
 
-    When two streams of one source fail alike, the bundle keeps the earlier failure's detail,
-    so a note carried by the later stream would be lost. The state and the reason it kept
-    are never touched. Only notes the detail does not already hold are added.
+    The bundle keeps a hard failure's own detail and drops the staged notes, and between
+    streams it keeps whichever failure outranks the others. So the notes stay as separate
+    data in ``detail_by_source`` until the winning outcome is chosen and classified. Only
+    then are the missing ones added after the winner's own reason. The state, the reason
+    and ``errors_by_source`` are never touched. A delivered or empty outcome already shows
+    its notes and is left alone.
     """
-    status = bundle.source_status.get("reddit")
-    if status is None or not status.detail or "reddit" not in bundle.failed_sources:
+    outcome = source_status.get("reddit")
+    if outcome is None or not outcome.detail or outcome.state in (health.OK, schema.NO_RESULTS):
         return
-    missing = [part for part in note.split("; ") if part and part not in status.detail]
-    if not missing:
-        return
-    status.detail = "; ".join([status.detail, *missing])
-    held = bundle.errors_by_source.get("reddit")
-    if held and not any(part in held for part in missing):
-        bundle.errors_by_source["reddit"] = "; ".join([held, *missing])
-
-
-def _fold_reddit_lane_notes(artifact: Any) -> Any:
-    """Append the Reddit lane's notes to a typed outcome's own detail.
-
-    A typed failure or timeout is recorded as a hard failure, and the bundle keeps its
-    detail rather than a separately staged note. The reason stays first and the state is
-    untouched. The notes are worded so they cannot change how a detail is classified.
-    """
-    if not isinstance(artifact, dict):
-        return artifact
-    outcome = artifact.get("_source_outcome")
-    note = artifact.get("_source_outcome_detail")
-    if not isinstance(outcome, dict) or not note or note in str(outcome.get("detail") or ""):
-        return artifact
-    folded = dict(artifact)
-    folded["_source_outcome"] = {
-        **outcome, "detail": "; ".join(filter(None, [str(outcome.get("detail") or ""), note])),
-    }
-    return folded
+    known = reddit_keyless.searxng_note_texts()
+    seen = (bundle.detail_by_source.get("reddit") or "").split("; ")
+    missing = [note for note in dict.fromkeys(seen) if note in known and note not in outcome.detail]
+    if missing:
+        outcome.detail = "; ".join([outcome.detail, *missing])
 
 
 def _reddit_sc_incomplete_notes(result: Any) -> list[str]:
@@ -7274,8 +7257,6 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
             artifact["_source_outcome_detail_state"] = min(
                 states, key=lambda state: _FAILURE_SPECIFICITY.get(state, 9)
             )
-    if source == "reddit":
-        artifact = _fold_reddit_lane_notes(artifact)
     publish_rate_limit((artifact.get("_source_outcome") or {}).get("state"))
     if _detail_rate_limits_source(source, artifact):
         publish_rate_limit(health.RATE_LIMITED)
