@@ -7723,10 +7723,22 @@ def _retrieve_stream_impl(
                     return items, (
                         {"_source_outcome_detail": "; ".join(sc_notes)} if sc_notes else {}
                     )
-                sys.stderr.write(
-                    "[Reddit] ScrapeCreators primary returned no items, "
-                    "using public fallback\n"
-                )
+                if isinstance(result, dict) and result.get("incomplete"):
+                    primary_failure = TimeoutError(
+                        str(
+                            result.get("incomplete_note")
+                            or "Reddit ScrapeCreators search timed out before completing"
+                        )
+                    )
+                    sys.stderr.write(
+                        f"[Reddit] ScrapeCreators primary incomplete with no usable items "
+                        f"({primary_failure}), using public fallback\n"
+                    )
+                else:
+                    sys.stderr.write(
+                        "[Reddit] ScrapeCreators primary returned no items, "
+                        "using public fallback\n"
+                    )
             except Exception as exc:
                 primary_failure = exc
                 sys.stderr.write(
@@ -7928,6 +7940,14 @@ def _retrieve_stream_impl(
         sc_notes = _reddit_sc_incomplete_notes(result)
         if not merged and free_failed:
             return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
+        if not merged and isinstance(result, dict) and result.get("incomplete"):
+            return [], _outcome_artifact(
+                health.TIMEOUT,
+                str(
+                    result.get("incomplete_note")
+                    or "Reddit ScrapeCreators backfill timed out before completing"
+                ),
+            )
         if public_failure is not None:
             state = (
                 health.TIMEOUT

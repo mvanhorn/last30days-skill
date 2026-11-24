@@ -1236,15 +1236,21 @@ class TestGreptileP1CancelledBackfillStopsSpend:
         monkeypatch.setattr(pipeline, "REDDIT_SC_BACKFILL_MIN_SECONDS", 0.05)
         monkeypatch.setattr(pipeline, "REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS", 0.0)
 
+        import json as _json
+        from lib import bounded_get
+
         worker_done = threading.Event()
         endpoints: list[str] = []
 
-        def fake_http_get(url, **kwargs):
+        def fake_bounded_get(req, *, timeout, deadline_monotonic, cancel=None, on_start=None, **_kwargs):
+            url = req.full_url
             endpoints.append(url)
             if "/subreddit/search" in url:
+                if on_start is not None:
+                    on_start()
                 # Sleep past wait_deadline (~0.15s) before returning.
                 time.sleep(0.25)
-                return {
+                payload = _json.dumps({
                     "posts": [{
                         "id": "p2",
                         "title": "SQLite WAL benchmark",
@@ -1254,10 +1260,13 @@ class TestGreptileP1CancelledBackfillStopsSpend:
                         "ups": 50,
                         "num_comments": 12,
                     }]
-                }
+                }).encode("utf-8")
+                return 200, payload, None
             raise AssertionError(f"paid ScrapeCreators call fired past deadline: {url}")
 
-        monkeypatch.setattr(reddit.http, "get", fake_http_get)
+        monkeypatch.setattr(bounded_get, "get", fake_bounded_get)
+        monkeypatch.setattr(http.usage, "begin_http", lambda *_a, **_kw: None)
+        monkeypatch.setattr(http.usage, "finish", lambda *_a, **_kw: None)
 
         def call():
             try:
@@ -1275,11 +1284,11 @@ class TestGreptileP1CancelledBackfillStopsSpend:
             )
 
         assert worker_done.wait(timeout=2.0), "worker thread should stop after deadline expiry"
-        assert len(endpoints) == 1 and endpoints[0].endswith("/subreddit/search")
+        assert len(endpoints) == 1 and "/subreddit/search" in endpoints[0]
         assert not any(
-            url.endswith("/reddit/search") or "/post/comments" in url for url in endpoints
+            "/reddit/search?" in url or "/post/comments" in url for url in endpoints
         )
-        # Paid request already started before deadline -> cached in _SC_MEMO.
+        # Paid request already dispatched via on_start before deadline -> cached in _SC_MEMO.
         assert len(reddit._SC_MEMO) == 1
 
 
@@ -1638,7 +1647,7 @@ class TestGreptileRound2P1MemoNoDoubleSpend:
 
         def fake_http_get(url, **kwargs):
             http_calls.append(url)
-            raise http.DeadlineExceeded()
+            raise http.DeadlineExceeded(dispatched=True)
 
         monkeypatch.setattr(reddit.http, "get", fake_http_get)
 
@@ -1801,3 +1810,446 @@ class TestGreptileRound2P2JudgeRetryPreservesErrorDetail:
         assert artifact["x_receipts"] == ["X: grok narrowed window"]
         assert artifact["_source_outcome"]["state"] == schema.AUTH_FAILED
         assert "re-login needed" in artifact["_source_outcome"]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Greptile Round 3 P1 #1: Preserve finished sibling search results on timeout
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileRound3P1BatchPartialSurvival:
+    def test_global_batch_preserves_finished_sibling_when_other_query_times_out(self, monkeypatch):
+        release = threading.Event()
+        call_index = [0]
+        lock = threading.Lock()
+
+        def fake_global(query, token, sort, timeframe, **_kwargs):
+            with lock:
+                idx = call_index[0]
+                call_index[0] += 1
+            if idx == 0:
+                return [{
+                    "id": "fast1",
+                    "title": "SQLite WAL concurrency benchmarks",
+                    "permalink": "/r/sqlite/comments/fast1/wal/",
+                    "subreddit": "sqlite",
+                    "created_utc": 1793836800,
+                    "ups": 90,
+                    "num_comments": 18,
+                }]
+            release.wait(timeout=5.0)
+            return []
+
+        comment_mock = mock.Mock(side_effect=AssertionError("Comments must not run after incomplete search"))
+        sub_mock = mock.Mock(side_effect=AssertionError("Phase 3 must not run after incomplete Phase 2"))
+        monkeypatch.setattr(
+            reddit,
+            "expand_reddit_queries",
+            lambda *_a, **_kw: ["sqlite wal concurrency", "sqlite wal benchmark"],
+        )
+        monkeypatch.setattr(reddit, "_global_search", fake_global)
+        monkeypatch.setattr(reddit, "_subreddit_search", sub_mock)
+        monkeypatch.setattr(reddit, "fetch_post_comments", comment_mock)
+
+        try:
+            res = reddit.search_and_enrich(
+                "SQLite WAL concurrency", "2026-10-10", "2026-11-10",
+                depth="default", token="dummy-sc-key",
+                deadline_monotonic=time.monotonic() + 0.3,
+            )
+        finally:
+            release.set()
+
+        assert len(res["items"]) == 1
+        assert res["items"][0]["reddit_id"] == "fast1"
+        assert res.get("incomplete") is True
+        assert res.get("incomplete_note")
+        assert res.get("comments_incomplete") is True
+        sub_mock.assert_not_called()
+        comment_mock.assert_not_called()
+
+    def test_preresolved_subreddit_batch_preserves_finished_sibling_and_skips_global(self, monkeypatch):
+        release = threading.Event()
+
+        def fake_sub(sub, query, token, sort, timeframe, **_kwargs):
+            if sub == "sqlite":
+                return [{
+                    "id": "sub1",
+                    "title": "SQLite WAL checkpoint tuning",
+                    "permalink": "/r/sqlite/comments/sub1/wal/",
+                    "subreddit": "sqlite",
+                    "created_utc": 1793836800,
+                    "ups": 75,
+                    "num_comments": 12,
+                }]
+            release.wait(timeout=5.0)
+            return []
+
+        global_mock = mock.Mock(side_effect=AssertionError("Phase 2 must not run after incomplete Phase 1.5"))
+        monkeypatch.setattr(reddit, "_subreddit_search", fake_sub)
+        monkeypatch.setattr(reddit, "_global_search", global_mock)
+
+        try:
+            res = reddit.search_reddit(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                subreddits=["sqlite", "slowsub"],
+                deadline_monotonic=time.monotonic() + 0.3,
+            )
+        finally:
+            release.set()
+
+        assert len(res["items"]) == 1
+        assert res["items"][0]["reddit_id"] == "sub1"
+        assert res.get("incomplete") is True
+        global_mock.assert_not_called()
+
+    def test_global_batch_raises_timeout_when_zero_posts_collected(self, monkeypatch):
+        release = threading.Event()
+
+        def fake_global(*_args, **_kwargs):
+            release.wait(timeout=5.0)
+            return []
+
+        monkeypatch.setattr(reddit, "_global_search", fake_global)
+
+        try:
+            with pytest.raises(TimeoutError):
+                reddit.search_reddit(
+                    "SQLite WAL concurrency", "2026-10-10", "2026-11-10",
+                    depth="default", token="dummy-sc-key",
+                    deadline_monotonic=time.monotonic() + 0.25,
+                )
+        finally:
+            release.set()
+
+
+# ---------------------------------------------------------------------------
+# Greptile Round 3 P2 #2: Dispatch-aware paid tracking in http.py + reddit.py
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileRound3P2DispatchAwarePaidTracking:
+    def test_presend_deadline_exceeded_does_not_cache_memo_and_allows_retry(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        fail_first = [True]
+        calls: list[str] = []
+
+        def fake_http_get(url, **kwargs):
+            calls.append(url)
+            if fail_first[0]:
+                # Default dispatched=False signals expiry before any network send.
+                raise http.DeadlineExceeded()
+            if url.endswith("/reddit/search"):
+                return {
+                    "posts": [{
+                        "id": "ok1",
+                        "title": "SQLite WAL write-ahead logging",
+                        "permalink": "/r/sqlite/comments/ok1/wal/",
+                        "subreddit": "sqlite",
+                        "created_utc": 1793836800,
+                        "ups": 60,
+                        "num_comments": 5,
+                    }]
+                }
+            return {"posts": [], "comments": []}
+
+        monkeypatch.setattr(reddit.http, "get", fake_http_get)
+
+        with pytest.raises(TimeoutError):
+            reddit.search_and_enrich_memo(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                deadline_monotonic=time.monotonic() + 10.0,
+            )
+        assert reddit._SC_MEMO == {}
+
+        fail_first[0] = False
+        res = reddit.search_and_enrich_memo(
+            "SQLite WAL", "2026-10-10", "2026-11-10",
+            depth="quick", token="dummy-sc-key",
+            deadline_monotonic=time.monotonic() + 60.0,
+        )
+        assert len(res["items"]) == 1
+        assert res["items"][0]["reddit_id"] == "ok1"
+
+    def test_real_http_request_presend_expiry_leaves_memo_uncached(self, monkeypatch):
+        import json as _json
+        from lib import bounded_get
+
+        reddit.reset_scrapecreators_memo()
+        transport_calls: list[str] = []
+        expire_in_http = [True]
+
+        def fake_bounded_get(req, *, timeout, deadline_monotonic, cancel=None, on_start=None, **_kwargs):
+            transport_calls.append(req.full_url)
+            if on_start is not None:
+                on_start()
+            if "/reddit/search" in req.full_url:
+                body = _json.dumps({
+                    "posts": [{
+                        "id": "real1",
+                        "title": "SQLite WAL write-ahead logging",
+                        "permalink": "/r/sqlite/comments/real1/wal/",
+                        "subreddit": "sqlite",
+                        "created_utc": 1793836800,
+                        "ups": 80,
+                        "num_comments": 7,
+                    }]
+                }).encode("utf-8")
+                return 200, body, None
+            return 200, b'{"posts": [], "comments": []}', None
+
+        real_monotonic = time.monotonic
+
+        def fake_http_monotonic():
+            base = real_monotonic()
+            return base + 100.0 if expire_in_http[0] else base
+
+        monkeypatch.setattr(bounded_get, "get", fake_bounded_get)
+        monkeypatch.setattr(http.time, "monotonic", fake_http_monotonic)
+        monkeypatch.setattr(http.usage, "begin_http", lambda *_a, **_kw: None)
+        monkeypatch.setattr(http.usage, "finish", lambda *_a, **_kw: None)
+
+        # Deadline is still live in reddit._check_sc_spend, then expired by the time
+        # http.request checks remaining budget before launching bounded_get.
+        with pytest.raises(TimeoutError):
+            reddit.search_and_enrich_memo(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                deadline_monotonic=real_monotonic() + 10.0,
+            )
+        assert transport_calls == []
+        assert reddit._SC_MEMO == {}
+
+        # Fresh call succeeds once budget is live inside http.request.
+        expire_in_http[0] = False
+        res = reddit.search_and_enrich_memo(
+            "SQLite WAL", "2026-10-10", "2026-11-10",
+            depth="quick", token="dummy-sc-key",
+            deadline_monotonic=real_monotonic() + 60.0,
+        )
+        assert len(res["items"]) == 1
+        assert res["items"][0]["reddit_id"] == "real1"
+        assert len(transport_calls) >= 1
+
+    def test_real_http_request_midflight_timeout_marks_dispatched_and_caches_memo(self, monkeypatch):
+        from lib import bounded_get
+
+        reddit.reset_scrapecreators_memo()
+        release = threading.Event()
+        transport_calls: list[str] = []
+
+        def blocking_bounded_get(req, *, timeout, deadline_monotonic, cancel=None, on_start=None, **_kwargs):
+            transport_calls.append(req.full_url)
+            if on_start is not None:
+                on_start()
+            release.wait(timeout=5.0)
+            raise bounded_get.GetTimeout("in flight", started=True)
+
+        monkeypatch.setattr(bounded_get, "get", blocking_bounded_get)
+        monkeypatch.setattr(http.usage, "begin_http", lambda *_a, **_kw: None)
+        monkeypatch.setattr(http.usage, "finish", lambda *_a, **_kw: None)
+
+        try:
+            with pytest.raises(TimeoutError):
+                reddit.search_and_enrich_memo(
+                    "SQLite WAL", "2026-10-10", "2026-11-10",
+                    depth="quick", token="dummy-sc-key",
+                    deadline_monotonic=time.monotonic() + 0.3,
+                )
+        finally:
+            release.set()
+
+        first_opens = len(transport_calls)
+        assert first_opens >= 1
+        assert len(reddit._SC_MEMO) == 1
+
+        # Second call replays cached TimeoutError without dispatching any new request.
+        with pytest.raises(TimeoutError):
+            reddit.search_and_enrich_memo(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                deadline_monotonic=time.monotonic() + 60.0,
+            )
+        assert len(transport_calls) == first_opens
+
+    def test_unowned_http_request_tracks_presend_vs_midflight_dispatch(self, monkeypatch):
+        release = threading.Event()
+        open_calls: list[str] = []
+
+        def blocking_open(req, timeout, **kwargs):
+            open_calls.append(req.full_url)
+            release.wait(timeout=5.0)
+            raise TimeoutError("socket timed out")
+
+        monkeypatch.setattr(http, "_open_request", blocking_open)
+        monkeypatch.setattr(http.usage, "begin_http", lambda *_a, **_kw: None)
+        monkeypatch.setattr(http.usage, "finish", lambda *_a, **_kw: None)
+
+        # Pre-send expiry: _open_request never runs and dispatched=False.
+        dispatched: list[bool] = []
+        with pytest.raises(http.DeadlineExceeded) as exc_pre:
+            with http.observe_dispatch(lambda: dispatched.append(True)):
+                http.get(
+                    "https://api.scrapecreators.com/v1/reddit/search",
+                    deadline_monotonic=time.monotonic() - 1.0,
+                )
+        assert exc_pre.value.dispatched is False
+        assert dispatched == []
+        assert open_calls == []
+
+        # Mid-flight timeout: _open_request starts, observe_dispatch fires, and dispatched=True.
+        try:
+            with pytest.raises(http.DeadlineExceeded) as exc_mid:
+                with http.observe_dispatch(lambda: dispatched.append(True)):
+                    http.get(
+                        "https://api.scrapecreators.com/v1/reddit/search",
+                        deadline_monotonic=time.monotonic() + 0.15,
+                    )
+        finally:
+            release.set()
+        assert exc_mid.value.dispatched is True
+        assert dispatched == [True]
+        assert len(open_calls) == 1
+
+    def test_owned_get_timeout_dispatched_matches_bounded_get_started_flag(self, monkeypatch):
+        from lib import bounded_get
+
+        monkeypatch.setattr(http.usage, "begin_http", lambda *_a, **_kw: None)
+        monkeypatch.setattr(http.usage, "cancel", lambda *_a, **_kw: None)
+
+        dispatched_events: list[bool] = []
+        monkeypatch.setattr(
+            bounded_get,
+            "get",
+            lambda *_a, **_kw: (_ for _ in ()).throw(bounded_get.GetTimeout("before launch", started=False)),
+        )
+        with pytest.raises(http.DeadlineExceeded) as exc_unstarted:
+            with http.observe_dispatch(lambda: dispatched_events.append(True)):
+                http.get(
+                    "https://api.scrapecreators.com/v1/reddit/post/comments",
+                    owned_get=True,
+                    deadline_monotonic=time.monotonic() + 10.0,
+                )
+        assert exc_unstarted.value.dispatched is False
+        assert dispatched_events == []
+
+        monkeypatch.setattr(
+            bounded_get,
+            "get",
+            lambda *_a, **_kw: (_ for _ in ()).throw(bounded_get.GetTimeout("in flight", started=True)),
+        )
+        with pytest.raises(http.DeadlineExceeded) as exc_started:
+            with http.observe_dispatch(lambda: dispatched_events.append(True)):
+                http.get(
+                    "https://api.scrapecreators.com/v1/reddit/post/comments",
+                    owned_get=True,
+                    deadline_monotonic=time.monotonic() + 10.0,
+                )
+        assert exc_started.value.dispatched is True
+        assert dispatched_events == [True]
+
+
+# ---------------------------------------------------------------------------
+# Greptile Round 3 P2 #3: Pinned SC-primary incomplete empty -> TIMEOUT
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileRound3P2PinnedIncompleteEmptyTimeout:
+    def test_pinned_scrapecreators_incomplete_empty_after_date_filter_raises_timeout(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        now = [1000.0]
+        monkeypatch.setattr(reddit.time, "monotonic", lambda: now[0])
+
+        # Phase 2 returns an out-of-window post (date filtered out in Phase 5),
+        # and exhausts the budget before Phase 3 so search_reddit returns
+        # {"items": [], "incomplete": True, "incomplete_note": ...}.
+        def fake_global(*_args, **_kwargs):
+            now[0] = 1050.0
+            return [{
+                "id": "old1",
+                "title": "SQLite WAL write-ahead logging old post",
+                "permalink": "/r/sqlite/comments/old1/wal/",
+                "subreddit": "sqlite",
+                "created_utc": 1700000000,  # 2023-11-14: outside 2026-10-10..2026-11-10
+                "ups": 90,
+                "num_comments": 10,
+            }]
+
+        monkeypatch.setattr(reddit, "_global_search", fake_global)
+        monkeypatch.setattr(reddit, "_subreddit_search", mock.Mock(side_effect=AssertionError("Phase 3 must not run")))
+        monkeypatch.setattr(pipeline.reddit_public, "search_reddit_public", lambda *_a, **_kw: [])
+
+        config = {
+            "SCRAPECREATORS_API_KEY": "dummy-sc-key",
+            pipeline.env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+            "_research_deadline": 1050.0,
+        }
+        with pytest.raises(pipeline.SourceRunError) as exc_info:
+            pipeline._retrieve_stream_impl(
+                topic="SQLite WAL",
+                subquery=schema.SubQuery(
+                    label="primary",
+                    search_query="SQLite WAL",
+                    ranking_query="SQLite WAL",
+                    sources=["reddit"],
+                ),
+                source="reddit",
+                config=config,
+                depth="quick",
+                date_range=("2026-10-10", "2026-11-10"),
+                runtime=_runtime("xquik"),
+                mock=False,
+                raw_topic="SQLite WAL",
+            )
+        assert exc_info.value.outcome_state == health.TIMEOUT
+        assert "deadline" in str(exc_info.value).lower() or "incomplete" in str(exc_info.value).lower()
+
+    def test_pinned_scrapecreators_incomplete_empty_with_public_fallback_surfaces_timeout(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        monkeypatch.setattr(
+            reddit,
+            "search_and_enrich_memo",
+            lambda *_a, **_kw: {
+                "items": [],
+                "incomplete": True,
+                "incomplete_note": "Reddit search incomplete (deadline reached)",
+            },
+        )
+        public_item = {
+            "id": "R1",
+            "title": "SQLite WAL public fallback item",
+            "url": "https://www.reddit.com/r/sqlite/comments/pub1/wal/",
+            "subreddit": "sqlite",
+            "date": "2026-11-01",
+            "score": 45,
+        }
+        monkeypatch.setattr(
+            pipeline.reddit_public,
+            "search_reddit_public",
+            lambda *_a, **_kw: [public_item],
+        )
+
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="SQLite WAL",
+            subquery=schema.SubQuery(
+                label="primary",
+                search_query="SQLite WAL",
+                ranking_query="SQLite WAL",
+                sources=["reddit"],
+            ),
+            source="reddit",
+            config={
+                "SCRAPECREATORS_API_KEY": "dummy-sc-key",
+                pipeline.env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+            },
+            depth="quick",
+            date_range=("2026-10-10", "2026-11-10"),
+            runtime=_runtime("xquik"),
+            mock=False,
+            raw_topic="SQLite WAL",
+        )
+        assert items == [public_item]
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+        assert "deadline" in artifact["_source_outcome"]["detail"].lower()

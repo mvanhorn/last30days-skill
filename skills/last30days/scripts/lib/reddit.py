@@ -172,6 +172,11 @@ def _effective_spend_limit(
     return eff_deadline, tuple(cancels)
 
 
+def _sc_cancelled(cancel: threading.Event | None = None) -> bool:
+    _, cancels = _effective_spend_limit(None, cancel)
+    return any(ev.is_set() for ev in cancels)
+
+
 def _sc_spend_stopped(
     deadline_monotonic: float | None = None,
     cancel: threading.Event | None = None,
@@ -193,41 +198,69 @@ def _check_sc_spend(
     return eff_deadline, eff_cancel
 
 
+def _search_batch_deadline(eff_deadline: float | None) -> float | None:
+    """Reserve a short return margin before ``eff_deadline`` for batch collection."""
+    if eff_deadline is None:
+        return None
+    rem = max(0.0, eff_deadline - time.monotonic())
+    return eff_deadline - min(1.5, rem * 0.1)
+
+
 def _collect_bounded(
     executor: ThreadPoolExecutor,
     futures: dict,
     *,
     deadline_monotonic: float | None = None,
     cancel: threading.Event | None = None,
-) -> list[tuple[Any, Any]]:
-    """Collect ``(tag, future.result())`` pairs, stopping on cancel or deadline."""
+) -> tuple[list[tuple[Any, Any]], bool]:
+    """Collect finished ``(tag, value)`` pairs and whether any sibling timed out.
+
+    Fatal auth/payment HTTP errors still propagate immediately.
+    """
     eff_deadline, cancels = _effective_spend_limit(deadline_monotonic, cancel)
     if eff_deadline is None and not cancels:
-        results = []
+        results: list[tuple[Any, Any]] = []
+        incomplete = False
         for future in as_completed(futures):
-            results.append((futures[future], future.result()))
-        return results
+            try:
+                results.append((futures[future], future.result()))
+            except TimeoutError:
+                incomplete = True
+        return results, incomplete
     pending = set(futures)
     results = []
+    incomplete = False
     try:
         while pending:
-            # Rescue already-finished futures before checking deadline so paid
-            # posts that arrived right at the cutoff are never discarded.
+            # Always harvest already-finished futures before checking the
+            # cutoff so sibling posts that arrived in time are never discarded.
             finished = {f for f in pending if f.done() and not f.cancelled()}
             if finished:
                 pending -= finished
                 for future in finished:
-                    results.append((futures[future], future.result(timeout=0)))
+                    try:
+                        results.append((futures[future], future.result(timeout=0)))
+                    except TimeoutError:
+                        incomplete = True
                 continue
-            if _sc_spend_stopped(eff_deadline, cancel):
-                raise TimeoutError(_SC_STOPPED_MSG)
+            if any(ev.is_set() for ev in cancels) or (
+                eff_deadline is not None and time.monotonic() >= eff_deadline
+            ):
+                incomplete = True
+                for future in pending:
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
             timeout = 0.1
             if eff_deadline is not None:
                 timeout = max(0.0, min(0.1, eff_deadline - time.monotonic()))
             done, pending = futures_wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
             for future in done:
-                results.append((futures[future], future.result(timeout=0)))
-        return results
+                try:
+                    results.append((futures[future], future.result(timeout=0)))
+                except TimeoutError:
+                    incomplete = True
+        return results, incomplete
     except BaseException:
         for future in pending:
             future.cancel()
@@ -500,7 +533,6 @@ def _global_search(
         List of post dicts
     """
     eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
-    _mark_sc_paid_started()
     extra: Dict[str, Any] = {}
     if eff_deadline is not None:
         extra["deadline_monotonic"] = eff_deadline
@@ -508,23 +540,29 @@ def _global_search(
     if eff_cancel is not None:
         extra["cancel"] = eff_cancel
     try:
-        data = http.get(
-            f"{_sc_base()}/search",
-            headers=http.scrapecreators_headers(token),
-            params={"query": query, "sort": sort, "timeframe": timeframe},
-            timeout=30,
-            retries=2,
-            **extra,
-        )
+        with http.observe_dispatch(_mark_sc_paid_started):
+            data = http.get(
+                f"{_sc_base()}/search",
+                headers=http.scrapecreators_headers(token),
+                params={"query": query, "sort": sort, "timeframe": timeframe},
+                timeout=30,
+                retries=2,
+                **extra,
+            )
+        _mark_sc_paid_started()
         return data.get("posts", data.get("data", []))
-    except http.DeadlineExceeded:
+    except http.DeadlineExceeded as e:
+        if getattr(e, "dispatched", False):
+            _mark_sc_paid_started()
         raise TimeoutError(_SC_STOPPED_MSG) from None
     except http.HTTPError as e:
+        _mark_sc_paid_started()
         if e.status_code in (401, 402, 403):
             raise
         _log(f"Global search error: {e}")
         return []
     except Exception as e:
+        _mark_sc_paid_started()
         if _sc_spend_stopped(deadline_monotonic, cancel):
             raise TimeoutError(_SC_STOPPED_MSG) from None
         _log(f"Global search error: {e}")
@@ -554,7 +592,6 @@ def _subreddit_search(
         List of post dicts
     """
     eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
-    _mark_sc_paid_started()
     extra: Dict[str, Any] = {}
     if eff_deadline is not None:
         extra["deadline_monotonic"] = eff_deadline
@@ -562,28 +599,34 @@ def _subreddit_search(
     if eff_cancel is not None:
         extra["cancel"] = eff_cancel
     try:
-        data = http.get(
-            f"{_sc_base()}/subreddit/search",
-            headers=http.scrapecreators_headers(token),
-            params={
-                "subreddit": subreddit,
-                "query": query,
-                "sort": sort,
-                "timeframe": timeframe,
-            },
-            timeout=30,
-            retries=2,
-            **extra,
-        )
+        with http.observe_dispatch(_mark_sc_paid_started):
+            data = http.get(
+                f"{_sc_base()}/subreddit/search",
+                headers=http.scrapecreators_headers(token),
+                params={
+                    "subreddit": subreddit,
+                    "query": query,
+                    "sort": sort,
+                    "timeframe": timeframe,
+                },
+                timeout=30,
+                retries=2,
+                **extra,
+            )
+        _mark_sc_paid_started()
         return data.get("posts", data.get("data", []))
-    except http.DeadlineExceeded:
+    except http.DeadlineExceeded as e:
+        if getattr(e, "dispatched", False):
+            _mark_sc_paid_started()
         raise TimeoutError(_SC_STOPPED_MSG) from None
     except http.HTTPError as e:
+        _mark_sc_paid_started()
         if e.status_code in (401, 402, 403):
             raise
         _log(f"Subreddit search error for r/{subreddit}: {e}")
         return []
     except Exception as e:
+        _mark_sc_paid_started()
         if _sc_spend_stopped(deadline_monotonic, cancel):
             raise TimeoutError(_SC_STOPPED_MSG) from None
         _log(f"Subreddit search error for r/{subreddit}: {e}")
@@ -607,27 +650,32 @@ def fetch_post_comments(
         List of comment dicts with score, author, body, etc.
     """
     eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
-    _mark_sc_paid_started()
     try:
-        data = http.get(
-            f"{_sc_base()}/post/comments",
-            headers=http.scrapecreators_headers(token),
-            params={"url": url},
-            timeout=30,
-            retries=2,
-            deadline_monotonic=eff_deadline,
-            cancel=eff_cancel,
-            owned_get=eff_deadline is not None,
-        )
+        with http.observe_dispatch(_mark_sc_paid_started):
+            data = http.get(
+                f"{_sc_base()}/post/comments",
+                headers=http.scrapecreators_headers(token),
+                params={"url": url},
+                timeout=30,
+                retries=2,
+                deadline_monotonic=eff_deadline,
+                cancel=eff_cancel,
+                owned_get=eff_deadline is not None,
+            )
+        _mark_sc_paid_started()
         return data.get("comments", data.get("data", []))
-    except http.DeadlineExceeded:
+    except http.DeadlineExceeded as e:
+        if getattr(e, "dispatched", False):
+            _mark_sc_paid_started()
         raise TimeoutError(_SC_STOPPED_MSG) from None
     except http.HTTPError as e:
+        _mark_sc_paid_started()
         if e.status_code in (401, 402, 403):
             raise
         _log(f"Comment fetch error: {e}")
         return []
     except Exception as e:
+        _mark_sc_paid_started()
         if _sc_spend_stopped(deadline_monotonic, cancel):
             raise TimeoutError(_SC_STOPPED_MSG) from None
         _log(f"Comment fetch error: {e}")
@@ -745,92 +793,144 @@ def search_reddit(
 
         core = _extract_core_subject(topic)
 
+        outer_deadline, _ = _effective_spend_limit()
+
         # === Phase 1.5: Pre-resolved subreddit search (high-signal) ===
-        all_raw_posts = []
+        all_raw_posts: List[Dict[str, Any]] = []
         all_items: List[Dict[str, Any]] = []
+        search_incomplete = False
+        collected_any = False
         if subreddits:
             _check_sc_spend()
             _log(f"Searching pre-resolved subreddits: {subreddits}")
-            executor = ThreadPoolExecutor(max_workers=min(5, len(subreddits)))
-            completed_cleanly = False
-            try:
-                futures = {}
-                for sub in subreddits:
-                    _check_sc_spend()
-                    futures[http.submit_with_context(
-                        executor, _subreddit_search, sub, core, token, "relevance", timeframe,
-                    )] = sub
-                for sub, sub_posts in _collect_bounded(executor, futures):
-                    _log(f"  -> {len(sub_posts)} results from pre-resolved r/{sub}")
-                    for j, post in enumerate(sub_posts):
-                        item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
-                        all_items.append(item)
-                completed_cleanly = True
-            finally:
-                executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
+            batch_deadline = _search_batch_deadline(outer_deadline)
+            batch_ctx = (
+                sc_spend_until(deadline=batch_deadline)
+                if batch_deadline is not None
+                else contextlib.nullcontext()
+            )
+            with batch_ctx:
+                executor = ThreadPoolExecutor(max_workers=min(5, len(subreddits)))
+                completed_cleanly = False
+                try:
+                    futures = {}
+                    for sub in subreddits:
+                        if _sc_spend_stopped():
+                            search_incomplete = True
+                            break
+                        futures[http.submit_with_context(
+                            executor, _subreddit_search, sub, core, token, "relevance", timeframe,
+                        )] = sub
+                    batch_results, batch_incomplete = _collect_bounded(executor, futures)
+                    for sub, sub_posts in batch_results:
+                        _log(f"  -> {len(sub_posts)} results from pre-resolved r/{sub}")
+                        for j, post in enumerate(sub_posts):
+                            item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
+                            all_items.append(item)
+                            collected_any = True
+                    if batch_incomplete:
+                        search_incomplete = True
+                    completed_cleanly = not search_incomplete
+                finally:
+                    executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
+
+        if _sc_cancelled():
+            raise TimeoutError(_SC_STOPPED_MSG)
 
         # === Phase 2: Global Discovery ===
-        _check_sc_spend()
-        max_global = config["global_searches"]
+        if not search_incomplete and _sc_spend_stopped():
+            search_incomplete = True
+        if not search_incomplete:
+            max_global = config["global_searches"]
+            batch_deadline = _search_batch_deadline(outer_deadline)
+            batch_ctx = (
+                sc_spend_until(deadline=batch_deadline)
+                if batch_deadline is not None
+                else contextlib.nullcontext()
+            )
+            with batch_ctx:
+                executor = ThreadPoolExecutor(max_workers=max_global or 1)
+                completed_cleanly = False
+                try:
+                    futures = {}
+                    for i, query in enumerate(queries[:max_global]):
+                        if _sc_spend_stopped():
+                            search_incomplete = True
+                            break
+                        # Product/comparison queries: sort=top surfaces high-engagement posts
+                        # from relevant communities instead of keyword-matched noise.
+                        sort = "top" if intent in ("product", "comparison") else ("relevance" if i == 0 else "top")
+                        _log(f"Global search {i+1}/{max_global}: '{query}' (sort={sort})")
+                        futures[http.submit_with_context(
+                            executor, _global_search, query, token, sort, timeframe,
+                        )] = query
+                    batch_results, batch_incomplete = _collect_bounded(executor, futures)
+                    for query, posts in batch_results:
+                        _log(f"  -> {len(posts)} results for '{query}'")
+                        all_raw_posts.extend(posts)
+                        if posts:
+                            collected_any = True
+                    if batch_incomplete:
+                        search_incomplete = True
+                    completed_cleanly = not search_incomplete
+                finally:
+                    executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
 
-        executor = ThreadPoolExecutor(max_workers=max_global or 1)
-        completed_cleanly = False
-        try:
-            futures = {}
-            for i, query in enumerate(queries[:max_global]):
-                _check_sc_spend()
-                # Product/comparison queries: sort=top surfaces high-engagement posts
-                # from relevant communities instead of keyword-matched noise.
-                sort = "top" if intent in ("product", "comparison") else ("relevance" if i == 0 else "top")
-                _log(f"Global search {i+1}/{max_global}: '{query}' (sort={sort})")
-                futures[http.submit_with_context(
-                    executor, _global_search, query, token, sort, timeframe,
-                )] = query
-            for query, posts in _collect_bounded(executor, futures):
-                _log(f"  -> {len(posts)} results for '{query}'")
-                all_raw_posts.extend(posts)
-            completed_cleanly = True
-        finally:
-            executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
+            # Normalize all posts (with query for relevance scoring)
+            for i, post in enumerate(all_raw_posts):
+                item = _normalize_post(post, i + 1, "global", query=core)
+                all_items.append(item)
 
-        # Normalize all posts (with query for relevance scoring)
-        for i, post in enumerate(all_raw_posts):
-            item = _normalize_post(post, i + 1, "global", query=core)
-            all_items.append(item)
+        if _sc_cancelled():
+            raise TimeoutError(_SC_STOPPED_MSG)
 
         # === Phase 3: Subreddit Discovery + Targeted Search ===
         subreddit_budget = 0 if intent == "how_to" else config["subreddit_searches"]
         discovered_subs = discover_subreddits(all_raw_posts, topic=topic, max_subs=subreddit_budget)
         _log(f"Discovered subreddits: {discovered_subs}")
 
-        search_incomplete = False
         subreddit_limit = subreddit_budget
         if subreddit_limit > 0 and discovered_subs:
-            try:
-                _check_sc_spend()
-                executor = ThreadPoolExecutor(max_workers=subreddit_limit)
-                completed_cleanly = False
-                try:
-                    futures = {}
-                    for sub in discovered_subs[:subreddit_limit]:
-                        _check_sc_spend()
-                        _log(f"Subreddit search: r/{sub} for '{core}'")
-                        futures[http.submit_with_context(
-                            executor, _subreddit_search, sub, core, token, "relevance", timeframe,
-                        )] = sub
-                    for sub, sub_posts in _collect_bounded(executor, futures):
-                        _log(f"  -> {len(sub_posts)} results from r/{sub}")
-                        for j, post in enumerate(sub_posts):
-                            item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
-                            all_items.append(item)
-                    completed_cleanly = True
-                finally:
-                    executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
-            except TimeoutError:
-                if not all_items:
-                    raise
+            if search_incomplete or _sc_spend_stopped():
                 search_incomplete = True
-                _log("Subreddit drill-down stopped at deadline; keeping already-fetched posts")
+                _log("Subreddit drill-down skipped at deadline; keeping already-fetched posts")
+            else:
+                batch_deadline = _search_batch_deadline(outer_deadline)
+                batch_ctx = (
+                    sc_spend_until(deadline=batch_deadline)
+                    if batch_deadline is not None
+                    else contextlib.nullcontext()
+                )
+                with batch_ctx:
+                    executor = ThreadPoolExecutor(max_workers=subreddit_limit)
+                    completed_cleanly = False
+                    try:
+                        futures = {}
+                        for sub in discovered_subs[:subreddit_limit]:
+                            if _sc_spend_stopped():
+                                search_incomplete = True
+                                break
+                            _log(f"Subreddit search: r/{sub} for '{core}'")
+                            futures[http.submit_with_context(
+                                executor, _subreddit_search, sub, core, token, "relevance", timeframe,
+                            )] = sub
+                        batch_results, batch_incomplete = _collect_bounded(executor, futures)
+                        for sub, sub_posts in batch_results:
+                            _log(f"  -> {len(sub_posts)} results from r/{sub}")
+                            for j, post in enumerate(sub_posts):
+                                item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
+                                all_items.append(item)
+                                collected_any = True
+                        if batch_incomplete:
+                            search_incomplete = True
+                        completed_cleanly = not search_incomplete
+                    finally:
+                        executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
+
+        if _sc_cancelled():
+            raise TimeoutError(_SC_STOPPED_MSG)
+        if search_incomplete and not collected_any:
+            raise TimeoutError(_SC_STOPPED_MSG)
 
         # === Phase 4: Deduplicate ===
         all_items = _dedupe_posts(all_items)
@@ -1090,7 +1190,7 @@ def search_and_enrich(
         if items and token:
             eff_deadline, cancels = _effective_spend_limit()
             comment_deadline: float | None = None
-            skip_comments = _sc_spend_stopped()
+            skip_comments = bool(result.get("incomplete")) or _sc_spend_stopped()
             if not skip_comments and eff_deadline is not None:
                 # Reserve a return margin so already-paid posts make it back
                 # before the outer backfill wait gives up on the worker.
