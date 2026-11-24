@@ -17,6 +17,15 @@ var (
 	signalProcessGroupFunc = func(pid int, sig syscall.Signal) error {
 		return syscall.Kill(-pid, sig)
 	}
+	signalDirectChildFunc = func(cmd *exec.Cmd, sig syscall.Signal) error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if sig == syscall.SIGKILL {
+			return cmd.Process.Kill()
+		}
+		return cmd.Process.Signal(sig)
+	}
 	waitChildNoReapFunc = waitChildNoReap
 	waitCmdFunc         = func(cmd *exec.Cmd) error {
 		return cmd.Wait()
@@ -102,6 +111,10 @@ func waitCommand(ctx context.Context, cmd *exec.Cmd, grace time.Duration) error 
 	}
 }
 
+// waitCommandFallback is used only when waitChildNoReap cannot pin the child
+// leader unreaped. Because cmd.Wait() runs concurrently, it avoids raw numeric
+// -pid group signals and signals only the direct child through os.Process,
+// which Go synchronizes internally against PID reuse during reaping.
 func waitCommandFallback(ctx context.Context, cmd *exec.Cmd, grace time.Duration) error {
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- waitCmdFunc(cmd) }()
@@ -110,12 +123,7 @@ func waitCommandFallback(ctx context.Context, cmd *exec.Cmd, grace time.Duration
 	case err := <-waitCh:
 		return err
 	case <-ctx.Done():
-		select {
-		case err := <-waitCh:
-			return err
-		default:
-		}
-		termProcessGroup(cmd)
+		_ = signalDirectChildFunc(cmd, syscall.SIGTERM)
 		return waitCommandFallbackAfterTermCh(cmd, waitCh, grace)
 	}
 }
@@ -132,15 +140,9 @@ func waitCommandFallbackAfterTermCh(cmd *exec.Cmd, waitCh <-chan error, grace ti
 
 	select {
 	case err := <-waitCh:
-		// Never signal -pid after cmd.Wait() has reaped the leader.
 		return err
 	case <-timer.C:
-		select {
-		case err := <-waitCh:
-			return err
-		default:
-		}
-		killProcessGroup(cmd)
+		_ = signalDirectChildFunc(cmd, syscall.SIGKILL)
 		return <-waitCh
 	}
 }

@@ -309,10 +309,12 @@ func installLifecycleHooks(t *testing.T) *signalLifecycleRecorder {
 	t.Helper()
 	rec := &signalLifecycleRecorder{}
 	origSignal := signalProcessGroupFunc
+	origDirect := signalDirectChildFunc
 	origWait := waitCmdFunc
 	origNoReap := waitChildNoReapFunc
 	t.Cleanup(func() {
 		signalProcessGroupFunc = origSignal
+		signalDirectChildFunc = origDirect
 		waitCmdFunc = origWait
 		waitChildNoReapFunc = origNoReap
 	})
@@ -324,6 +326,12 @@ func installLifecycleHooks(t *testing.T) *signalLifecycleRecorder {
 		rec.events = append(rec.events, "signal:"+sig.String())
 		rec.mu.Unlock()
 		return origSignal(pid, sig)
+	}
+	signalDirectChildFunc = func(cmd *exec.Cmd, sig syscall.Signal) error {
+		rec.mu.Lock()
+		rec.events = append(rec.events, "direct:"+sig.String())
+		rec.mu.Unlock()
+		return origDirect(cmd, sig)
 	}
 	waitCmdFunc = func(cmd *exec.Cmd) error {
 		rec.reapStarted.Store(true)
@@ -441,7 +449,7 @@ func TestWaitCommandNeverSignalsAfterReap(t *testing.T) {
 		}
 	})
 
-	t.Run("fallback path never calls killProcessGroup after cmd.Wait returns", func(t *testing.T) {
+	t.Run("fallback path uses direct child signals only and never numeric group signals", func(t *testing.T) {
 		rec := installLifecycleHooks(t)
 		waitChildNoReapFunc = func(int) error { return errWaitNoReapUnsupported }
 
@@ -466,22 +474,24 @@ func TestWaitCommandNeverSignalsAfterReap(t *testing.T) {
 		if err := waitCommand(ctx, cmd, 2*time.Second); err != nil {
 			t.Fatalf("waitCommand fallback: %v", err)
 		}
-		events := rec.snapshot()
-		waitDoneIdx := slices.Index(events, "wait:done")
-		if waitDoneIdx < 0 {
-			t.Fatalf("missing wait:done event: %v", events)
+		if rec.postReapSig.Load() {
+			t.Fatalf("fallback delivered numeric group signal after wait started: %v", rec.snapshot())
 		}
-		for _, ev := range events[waitDoneIdx+1:] {
+		events := rec.snapshot()
+		for _, ev := range events {
 			if strings.HasPrefix(ev, "signal:") {
-				t.Fatalf("fallback delivered post-reap signal %q: %v", ev, events)
+				t.Fatalf("fallback unexpectedly used numeric group signal %q: %v", ev, events)
 			}
 		}
-		if slices.Contains(events, "signal:"+syscall.SIGKILL.String()) {
-			t.Fatalf("fallback unexpectedly sent SIGKILL after clean exit: %v", events)
+		if !slices.Contains(events, "direct:"+syscall.SIGTERM.String()) {
+			t.Fatalf("fallback did not send direct SIGTERM: %v", events)
+		}
+		if slices.Contains(events, "direct:"+syscall.SIGKILL.String()) {
+			t.Fatalf("fallback unexpectedly sent direct SIGKILL after clean exit: %v", events)
 		}
 	})
 
-	t.Run("non-ENOSYS waitChildNoReap error falls back and honors timeout and grace", func(t *testing.T) {
+	t.Run("non-ENOSYS waitChildNoReap error falls back to direct child signals and honors grace", func(t *testing.T) {
 		for _, mode := range []string{"outer-select", "inner-select-grace"} {
 			t.Run(mode, func(t *testing.T) {
 				rec := installLifecycleHooks(t)
@@ -537,18 +547,26 @@ func TestWaitCommandNeverSignalsAfterReap(t *testing.T) {
 				if elapsed > 3*time.Second {
 					t.Fatalf("waitCommand took %s; dropped cancellation/timeout on EPERM", elapsed)
 				}
+				if rec.postReapSig.Load() {
+					t.Fatalf("EPERM fallback sent numeric group signal concurrently with cmd.Wait(): %v", rec.snapshot())
+				}
 				events := rec.snapshot()
-				waitDoneIdx := slices.Index(events, "wait:done")
-				if waitDoneIdx < 0 {
-					t.Fatalf("missing wait:done event: %v", events)
-				}
-				for _, ev := range events[waitDoneIdx+1:] {
-					if strings.HasPrefix(ev, "signal:") {
-						t.Fatalf("EPERM fallback delivered post-reap signal %q: %v", ev, events)
+				if mode == "outer-select" {
+					for _, ev := range events {
+						if strings.HasPrefix(ev, "signal:") {
+							t.Fatalf("outer-select fallback used numeric group signal %q: %v", ev, events)
+						}
 					}
-				}
-				if !slices.Contains(events, "signal:"+syscall.SIGTERM.String()) || !slices.Contains(events, "signal:"+syscall.SIGKILL.String()) {
-					t.Fatalf("expected SIGTERM then SIGKILL escalation, got %v", events)
+					if !slices.Contains(events, "direct:"+syscall.SIGTERM.String()) || !slices.Contains(events, "direct:"+syscall.SIGKILL.String()) {
+						t.Fatalf("expected direct SIGTERM then direct SIGKILL, got %v", events)
+					}
+				} else {
+					if slices.Contains(events, "signal:"+syscall.SIGKILL.String()) {
+						t.Fatalf("inner-select fallback used numeric group SIGKILL while cmd.Wait() ran: %v", events)
+					}
+					if !slices.Contains(events, "signal:"+syscall.SIGTERM.String()) || !slices.Contains(events, "direct:"+syscall.SIGKILL.String()) {
+						t.Fatalf("expected pre-reap group SIGTERM then direct SIGKILL escalation, got %v", events)
+					}
 				}
 			})
 		}
