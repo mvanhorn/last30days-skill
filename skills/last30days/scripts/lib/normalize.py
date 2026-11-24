@@ -332,6 +332,9 @@ def _normalize_reddit(
 ) -> schema.SourceItem:
     top_comments = item.get("top_comments") or []
     comment_text = _join_comment_excerpts(top_comments, "excerpt")
+    post_author = str(item.get("author") or "").strip()
+    if post_author.lower().removeprefix("/").removeprefix("u/") in ("", "[deleted]", "[removed]"):
+        post_author = ""
     body = "\n".join(
         part
         for part in [
@@ -358,6 +361,9 @@ def _normalize_reddit(
         metadata={
             "top_comments": top_comments,
             "comment_insights": item.get("comment_insights") or [],
+            # Preserve the OP username for post-normalization comment enrichment
+            # while keeping SourceItem.author = None on Reddit items.
+            **({"post_author": post_author} if post_author else {}),
             # Where the score and the comments came from (reddit_refs labels),
             # so a merge keeps the live score and render can say "score pending".
             **{

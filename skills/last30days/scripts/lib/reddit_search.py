@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
@@ -68,11 +69,92 @@ _NEXT_PAGE = re.compile(
 # the first such answer stops the remaining searches of the command instead of
 # spending a rate-limit token on each subreddit. The lane is dispatched with
 # the raw topic for every subquery, so one search also serves them all.
+class _StreamCollector:
+    """Thread-safe per-stream buffer so earlier pages survive a timeout."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._posts: List[Dict[str, Any]] = []
+        self._incomplete = False
+
+    def add(self, posts: List[Dict[str, Any]]) -> None:
+        if not posts:
+            return
+        with self._lock:
+            self._posts.extend(posts)
+
+    def mark_incomplete(self) -> None:
+        with self._lock:
+            self._incomplete = True
+
+    @property
+    def incomplete(self) -> bool:
+        with self._lock:
+            return self._incomplete
+
+    def snapshot(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._posts)
+
+
+def _merge_streams(
+    streams: List[List[Dict[str, Any]]],
+    limit: int,
+    *,
+    deepcopy_posts: bool = False,
+) -> List[Dict[str, Any]]:
+    """Round-robin interleave across streams, dedupe by URL/post_id, and cap to ``limit``."""
+    results = [
+        stream[i]
+        for i in range(max((len(s) for s in streams), default=0))
+        for stream in streams
+        if i < len(stream)
+    ]
+    seen_urls: set = set()
+    seen_ids: set = set()
+    unique: List[Dict[str, Any]] = []
+    for post in results:
+        url = post.get("url")
+        pid = (post.get("metadata") or {}).get("post_id")
+        if (url and url in seen_urls) or (pid and pid in seen_ids):
+            continue
+        if url:
+            seen_urls.add(url)
+        if pid:
+            seen_ids.add(pid)
+        copied = copy.deepcopy(post) if deepcopy_posts else {**post}
+        copied["id"] = f"R{len(unique) + 1}"
+        unique.append(copied)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+@dataclass
+class _InflightSearch:
+    """In-flight search coordination slot shared between owner and waiting callers."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+    partial: Optional[List[Dict[str, Any]]] = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _collectors: List[_StreamCollector] = field(default_factory=list, init=False, repr=False)
+
+    def set_collectors(self, collectors: List[_StreamCollector]) -> None:
+        with self._lock:
+            self._collectors = list(collectors)
+
+    def live_snapshot(self, limit: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            collectors = list(self._collectors)
+        streams = [snap for c in collectors if (snap := c.snapshot())]
+        return _merge_streams(streams, limit, deepcopy_posts=True)
+
+
 _run_lock = threading.Lock()
 _blocked_reason: Optional[str] = None
 _failed_reason: Optional[str] = None
 _run_results: Dict[tuple, List[Dict[str, Any]]] = {}
-_run_inflight: Dict[tuple, threading.Event] = {}
+_run_inflight: Dict[tuple, _InflightSearch] = {}
 _BLOCK_SIGNALS = ("HTTP 403: Blocked", "not a Reddit search results page")
 
 
@@ -202,6 +284,9 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
 
         sub_ctx = ctx.get("subreddit")
         subreddit = str(sub_ctx.get("name") or "") if isinstance(sub_ctx, dict) else ""
+        profile_ctx = ctx.get("profile")
+        raw_author = profile_ctx.get("name") if isinstance(profile_ctx, dict) else None
+        author = raw_author.strip() if isinstance(raw_author, str) else ""
         title = str(ctx["post"].get("title") or "")
         href_match = _TITLE_HREF.search(chunk)
         href = _html.unescape((href_match.group(1) or href_match.group(2))) if href_match else ""
@@ -228,7 +313,7 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
             "num_comments": num_comments,
             "subreddit": subreddit,
             "created_utc": reddit_listing._to_epoch(ts),
-            "author": "",
+            "author": author,
             "selftext": "",
             "date": reddit_listing._to_date(ts),
             "engagement": {
@@ -243,15 +328,25 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
     return posts, _next_cursor(html_text)
 
 
-def _fetch_page(url: str) -> Tuple[Optional[str], Optional[str]]:
+def _fetch_page(
+    url: str, deadline: Optional[float] = None,
+) -> Tuple[Optional[str], Optional[str]]:
     """(body, error). Shared limiter, run memo, one 429 retry, failure sink."""
+    req_timeout: float = SEARCH_TIMEOUT
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, "deadline exceeded"
+        req_timeout = min(float(SEARCH_TIMEOUT), remaining)
+    kwargs: Dict[str, Any] = {
+        "timeout": req_timeout,
+        "accept": "text/html",
+        "validate": unrecognized_body,
+    }
+    if deadline is not None:
+        kwargs["deadline_monotonic"] = deadline
     try:
-        return http.reddit_keyless_get_text_retry_429(
-            url,
-            timeout=SEARCH_TIMEOUT,
-            accept="text/html",
-            validate=unrecognized_body,
-        )
+        return http.reddit_keyless_get_text_retry_429(url, **kwargs)
     except Exception as e:  # defensive: one bad page must not sink the run
         _log(f"search fetch failed for {url}: {e}")
         return None, str(e)
@@ -262,6 +357,8 @@ def _search_stream(
     time_filter: str,
     max_pages: int,
     subreddit: Optional[str] = None,
+    deadline: Optional[float] = None,
+    collector: Optional[_StreamCollector] = None,
 ) -> List[Dict[str, Any]]:
     """Page one search sequentially. Keeps earlier pages when a later one fails."""
     label = f"r/{subreddit}" if subreddit else "global"
@@ -272,16 +369,28 @@ def _search_stream(
     for page in range(1, max_pages + 1):
         if _blocked_reason:
             break
-        text, error = _fetch_page(search_url(query, time_filter, subreddit, cursor))
+        if deadline is not None and time.monotonic() >= deadline:
+            if collector is not None:
+                collector.mark_incomplete()
+            _log(f"{label} stopped before page {page}: deadline reached")
+            break
+        text, error = _fetch_page(
+            search_url(query, time_filter, subreddit, cursor),
+            deadline=deadline,
+        )
         if text is None:
             _log(f"{label} page {page} failed: {error or 'no response'}")
             _note_block(error)
+            if collector is not None and not _blocked_reason:
+                collector.mark_incomplete()
             break
         page_posts, next_cursor = parse_page(text, query)
         new = [p for p in page_posts if p["metadata"]["post_id"] not in seen_ids]
         for p in new:
             seen_ids.add(p["metadata"]["post_id"])
         posts.extend(new)
+        if collector is not None:
+            collector.add(new)
         if not new or not next_cursor or next_cursor in used_cursors:
             break
         used_cursors.add(next_cursor)
@@ -328,35 +437,143 @@ def search(
             sub = (raw or "").strip().removeprefix("r/").strip("/")
             if sub and sub.lower() not in {s.lower() for s in subs}:
                 subs.append(sub)
+        limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
         key = (query, depth, time_filter, tuple(sub.lower() for sub in subs))
+        owner = False
+        slot: Optional[_InflightSearch] = None
+        partial_fallback: Optional[List[Dict[str, Any]]] = None
         for _round in range(2):
             with _run_lock:
                 if key in _run_results:
                     return copy.deepcopy(_run_results[key])
-                gate = _run_inflight.get(key)
-                owner = gate is None
+                if deadline is not None and time.monotonic() >= deadline:
+                    return copy.deepcopy(partial_fallback or [])
+                slot = _run_inflight.get(key)
+                owner = slot is None
                 if owner:
-                    gate = threading.Event()
-                    _run_inflight[key] = gate
+                    slot = _InflightSearch()
+                    _run_inflight[key] = slot
             if owner:
                 break
-            gate.wait(timeout=_result_timeout(len(subs) + global_pages, global_pages))
+            wait = _result_timeout(len(subs) + global_pages, global_pages)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return copy.deepcopy(partial_fallback or [])
+                wait = min(wait, remaining)
+            slot.done.wait(timeout=wait)
+            if slot.partial:
+                partial_fallback = slot.partial
+            else:
+                live = slot.live_snapshot(limit)
+                if live:
+                    partial_fallback = live
+            if deadline is not None and time.monotonic() >= deadline:
+                with _run_lock:
+                    if key in _run_results:
+                        return copy.deepcopy(_run_results[key])
+                return copy.deepcopy(partial_fallback or [])
+        else:
+            with _run_lock:
+                if key in _run_results:
+                    return copy.deepcopy(_run_results[key])
+            return copy.deepcopy(partial_fallback or [])
         try:
-            unique = _search_uncached(query, depth, subs, time_filter, global_pages, deadline)
-            # A clean empty page or a drifted one is asked for again by the
-            # next caller; found posts and a refused endpoint are shared.
-            if unique or (unique is not None and _blocked_reason):
+            unique, complete = _search_uncached_with_status(
+                query, depth, subs, time_filter, global_pages, deadline, inflight=slot,
+            )
+            # Only cache complete non-empty runs or network-wide blocks;
+            # partial runs from a timeout stay uncached so later callers with
+            # more time can fetch all pages, while concurrent waiters can still
+            # fall back to the salvaged posts if they have no time left.
+            if (complete and unique) or (unique is not None and _blocked_reason):
                 with _run_lock:
                     _run_results[key] = unique
-            return copy.deepcopy(unique or [])
+            elif unique:
+                slot.partial = unique
+            return copy.deepcopy(unique if unique else (partial_fallback or []))
         finally:
             if owner:
                 with _run_lock:
-                    _run_inflight.pop(key, None)
-                gate.set()
+                    if _run_inflight.get(key) is slot:
+                        _run_inflight.pop(key, None)
+                if slot is not None:
+                    slot.done.set()
     except Exception as e:  # defensive: discovery must never raise into the pipeline
         _log(f"search failed: {e}")
         return []
+
+
+def _search_uncached_with_status(
+    query: str,
+    depth: str,
+    subs: List[str],
+    time_filter: str,
+    global_pages: int,
+    deadline: Optional[float] = None,
+    inflight: Optional[_InflightSearch] = None,
+) -> Tuple[Optional[List[Dict[str, Any]]], bool]:
+    """One run of the search streams: ``(posts_or_none, complete)``."""
+    global _failed_reason
+    try:
+        if deadline is not None and time.monotonic() >= deadline:
+            return [], False
+        limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
+        jobs = [(sub, SUB_PAGE_CAP) for sub in subs] + [(None, global_pages)]
+        batch = sum(pages for _sub, pages in jobs)
+        streams: List[List[Dict[str, Any]]] = []
+        complete = True
+        executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)))
+        try:
+            # submit_with_context, not executor.submit: a plain submit starts the
+            # worker with an empty context, dropping the pipeline's
+            # capture_failures() sink so a 429/403 or a challenge page is
+            # silently discarded (issue #899).
+            collectors = [_StreamCollector() for _ in jobs]
+            if inflight is not None:
+                inflight.set_collectors(collectors)
+            futures = [
+                (
+                    http.submit_with_context(
+                        executor, _search_stream, query, time_filter, pages, sub,
+                        deadline=deadline, collector=collector,
+                    ),
+                    sub,
+                    pages,
+                    collector,
+                )
+                for (sub, pages), collector in zip(jobs, collectors)
+            ]
+            for future, sub, pages, collector in futures:
+                wait = _result_timeout(batch, pages)
+                if deadline is not None:
+                    wait = max(0.0, min(wait, deadline - time.monotonic()))
+                try:
+                    streams.append(future.result(timeout=wait))
+                    if collector.incomplete:
+                        complete = False
+                except (Exception, FuturesTimeoutError) as e:
+                    complete = False
+                    salvaged = collector.snapshot()
+                    if salvaged:
+                        streams.append(salvaged)
+                    _log(
+                        f"{'r/' + sub if sub else 'global'} search future failed: "
+                        f"{e or 'still running at the deadline'}"
+                        + (f" (kept {len(salvaged)} posts from earlier pages)" if salvaged else "")
+                    )
+        finally:
+            # Under a deadline a stream still queued or running is not waited for.
+            executor.shutdown(wait=deadline is None, cancel_futures=deadline is not None)
+
+        unique = _merge_streams(streams, limit)
+        _log(f"{len(unique)} posts (t={time_filter}, {len(subs)} targeted subs)")
+        if not unique and _blocked_reason:
+            _failed_reason = _blocked_reason
+        return unique, complete
+    except Exception as e:  # defensive: discovery must never raise into the pipeline
+        _log(f"search failed: {e}")
+        return None, False
 
 
 def _search_uncached(
@@ -368,58 +585,7 @@ def _search_uncached(
     deadline: Optional[float] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """One run of the search streams; None when it raised."""
-    global _failed_reason
-    try:
-        limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
-        jobs = [(sub, SUB_PAGE_CAP) for sub in subs] + [(None, global_pages)]
-        batch = sum(pages for _sub, pages in jobs)
-        streams: List[List[Dict[str, Any]]] = []
-        executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)))
-        try:
-            # submit_with_context, not executor.submit: a plain submit starts the
-            # worker with an empty context, dropping the pipeline's
-            # capture_failures() sink so a 429/403 or a challenge page is
-            # silently discarded (issue #899).
-            futures = [
-                (http.submit_with_context(executor, _search_stream, query, time_filter, pages, sub), sub, pages)
-                for sub, pages in jobs
-            ]
-            for future, sub, pages in futures:
-                wait = _result_timeout(batch, pages)
-                if deadline is not None:
-                    wait = max(0.0, min(wait, deadline - time.monotonic()))
-                try:
-                    streams.append(future.result(timeout=wait))
-                except (Exception, FuturesTimeoutError) as e:
-                    _log(
-                        f"{'r/' + sub if sub else 'global'} search future failed: "
-                        f"{e or 'still running at the deadline'}"
-                    )
-        finally:
-            # Under a deadline a stream still queued or running is not waited for.
-            executor.shutdown(wait=deadline is None, cancel_futures=deadline is not None)
-
-        # Round-robin across streams, each in its own relevance order, so the
-        # depth cap keeps a share of every stream.
-        results = [
-            stream[i]
-            for i in range(max((len(s) for s in streams), default=0))
-            for stream in streams
-            if i < len(stream)
-        ]
-        seen: set = set()
-        unique: List[Dict[str, Any]] = []
-        for post in results:
-            if post["url"] not in seen:
-                seen.add(post["url"])
-                unique.append(post)
-        unique = unique[:limit]
-        for i, post in enumerate(unique):
-            post["id"] = f"R{i + 1}"
-        _log(f"{len(unique)} posts (t={time_filter}, {len(subs)} targeted subs)")
-        if not unique and _blocked_reason:
-            _failed_reason = _blocked_reason
-        return unique
-    except Exception as e:  # defensive: discovery must never raise into the pipeline
-        _log(f"search failed: {e}")
-        return None
+    unique, _complete = _search_uncached_with_status(
+        query, depth, subs, time_filter, global_pages, deadline,
+    )
+    return unique

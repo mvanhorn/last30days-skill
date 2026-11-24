@@ -271,6 +271,34 @@ def _scored_listings(
     return posts
 
 
+# Reserve up to 8s (capped at 40% of remaining budget) before the lane deadline
+# so a slow second web query leaves room to hydrate query one's refs without
+# starving the first query when only a few seconds remain.
+_WEB_HYDRATION_RESERVE_SECONDS = 8.0
+_WEB_HYDRATION_MIN_SECONDS = 0.5
+
+
+def _web_discover_deadline(
+    deadline: Optional[float], now: Optional[float] = None,
+) -> Optional[float]:
+    if deadline is None:
+        return None
+    current = time.monotonic() if now is None else now
+    remaining = deadline - current
+    if remaining <= _WEB_HYDRATION_MIN_SECONDS:
+        return deadline
+    reserve = min(_WEB_HYDRATION_RESERVE_SECONDS, remaining * 0.4)
+    return deadline - reserve
+
+
+def _hydrate_stage_deadline(deadline: Optional[float]) -> Dict[str, float]:
+    if deadline is None:
+        return {}
+    remaining = max(0.0, deadline - time.monotonic())
+    margin = min(STAGE_RETURN_MARGIN_SECONDS, remaining * 0.25)
+    return {"deadline": deadline - margin}
+
+
 def _web_floor(
     topic: str,
     depth: str,
@@ -283,33 +311,43 @@ def _web_floor(
     """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
     reddit_health.seed_web_rungs()
     try:
-        # Filled in place, so a floor still running at the deadline hands back
-        # the threads its earlier queries found.
+        # Filled in place, so a floor still running at its cutoff hands back
+        # the threads its earlier queries found with time left to hydrate them.
         partial = reddit_discover.WebFloor()
+        discover_cutoff = _web_discover_deadline(deadline)
+        discover_kw = {"deadline": discover_cutoff} if discover_cutoff is not None else {}
         found = _within(
-            deadline, "web floor", partial,
+            discover_cutoff, "web floor", partial,
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
-            floor=partial, **_stage_deadline(deadline),
+            floor=partial, **discover_kw,
         )
-        floor = reddit_discover.WebFloor(
-            refs=list(found.refs), queries=list(found.queries), rungs=dict(found.rungs),
+        floor = (
+            found.snapshot()
+            if hasattr(found, "snapshot")
+            else reddit_discover.WebFloor(
+                refs=list(found.refs), queries=list(found.queries), rungs=dict(found.rungs),
+            )
         )
         _record_web_rungs(floor)
         if not floor.refs:
             return []
-        if _out_of_time(deadline):
+        if deadline is not None and deadline - time.monotonic() < _WEB_HYDRATION_MIN_SECONDS:
             _log("web floor hydration skipped: lane budget spent")
             return []
+        hydrate_kw = _hydrate_stage_deadline(deadline)
+        hydrate_deadline = hydrate_kw.get("deadline", deadline)
         session = reddit_session.current()
         extra: Dict[str, Any] = {}
         if session is not None and session.alive:
-            extra["session_hydrator"] = reddit_session.hydrator(session, depth=depth, deadline=deadline)
+            extra["session_hydrator"] = reddit_session.hydrator(
+                session, depth=depth, deadline=hydrate_deadline,
+            )
         hydrated = _within(
             deadline, "web floor hydration", None,
             reddit_hydrate.hydrate,
             floor.refs, topic=topic, depth=depth, from_date=from_date, to_date=to_date,
-            **extra, **_stage_deadline(deadline),
+            **extra, **hydrate_kw,
         )
     except Exception as exc:  # the floor must never break the lane
         _log(f"web floor failed: {type(exc).__name__}: {exc}")
@@ -683,26 +721,48 @@ def _discover(
     return merged
 
 
+def _fetch_enrichment(
+    url: str,
+    deadline: Optional[float] = None,
+    post_author: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fetch shreddit comments for ``url`` without touching any post dict. Never raises."""
+    try:
+        data = reddit_shreddit.fetch_comments(
+            url, deadline=deadline, post_author=post_author,
+        )
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _apply_enrichment(post: Dict[str, Any], data: Optional[Dict[str, Any]]) -> None:
+    """Apply fetched comment data to ``post`` on the calling thread."""
+    if not isinstance(data, dict):
+        return
+    if data.get("top_comments"):
+        post["top_comments"] = data["top_comments"]
+        reddit_hydrate._stamp_uploader(post)
+    if data.get("comment_insights"):
+        post["comment_insights"] = data["comment_insights"]
+    num = data.get("num_comments")
+    if num is not None:
+        post["num_comments"] = num
+        post.setdefault("engagement", {})["num_comments"] = num
+
+
 def _enrich_one(post: Dict[str, Any], deadline: Optional[float] = None) -> Dict[str, Any]:
-    """Attach shreddit comments + real comment count. Never raises.
+    """Fetch shreddit comments + real comment count without mutating ``post``. Never raises.
 
     A thread that already has comments (the web floor's archive comments)
-    is left as it is."""
+    is left as it is and returns ``{}``."""
     if post.get("top_comments"):
-        return post
-    try:
-        data = reddit_shreddit.fetch_comments(post.get("url", ""), deadline=deadline)
-        if data.get("top_comments"):
-            post["top_comments"] = data["top_comments"]
-        if data.get("comment_insights"):
-            post["comment_insights"] = data["comment_insights"]
-        num = data.get("num_comments")
-        if num is not None:
-            post["num_comments"] = num
-            post.setdefault("engagement", {})["num_comments"] = num
-    except Exception:
-        pass  # keep the post with whatever discovery gave us
-    return post
+        return {}
+    return _fetch_enrichment(
+        str(post.get("url") or ""),
+        deadline=deadline,
+        post_author=post.get("author"),
+    )
 
 
 @contextlib.contextmanager
@@ -730,7 +790,6 @@ def _enrich(
         _log("comment enrichment skipped: lane budget spent")
         return posts
 
-    result_map: Dict[int, Dict[str, Any]] = {}
     # Leaving the executor joins running workers, so the archive fallback
     # must stop by the same budget the wait below enforces.
     budget = ENRICH_BUDGET
@@ -742,24 +801,31 @@ def _enrich(
     deadline = time.monotonic() + budget
     try:
         with _enrich_executor(min(limit, MAX_ENRICH_WORKERS), lane_deadline) as executor:
-            futures = {
-                http.submit_with_context(executor, _enrich_one, post, deadline): i
-                for i, post in enumerate(to_enrich)
-            }
-            # The budget covers the fetches; the allowance covers the shared
-            # bucket's queue (other lanes, other entities in compare mode).
-            done, not_done = concurrent.futures.wait(futures, timeout=wait_timeout)
-            for future in done:
-                idx = futures[future]
-                try:
-                    result_map[idx] = future.result(timeout=0)
-                except Exception:
-                    result_map[idx] = to_enrich[idx]
-            for future in not_done:
-                idx = futures[future]
-                result_map[idx] = to_enrich[idx]
-                future.cancel()
-        enriched = [result_map[i] for i in range(len(to_enrich))]
+            futures = {}
+            for i, post in enumerate(to_enrich):
+                if post.get("top_comments"):
+                    continue
+                # Snapshot immutable values before submitting so an abandoned
+                # worker never reads or mutates the returned post dict.
+                url = str(post.get("url") or "")
+                author = post.get("author")
+                futures[http.submit_with_context(
+                    executor, _fetch_enrichment, url, deadline, author,
+                )] = i
+            if futures:
+                # The budget covers the fetches; the allowance covers the shared
+                # bucket's queue (other lanes, other entities in compare mode).
+                done, not_done = concurrent.futures.wait(futures, timeout=max(0.0, wait_timeout))
+                for future in done:
+                    idx = futures[future]
+                    try:
+                        data = future.result(timeout=0)
+                    except Exception:
+                        data = None
+                    _apply_enrichment(to_enrich[idx], data)
+                for future in not_done:
+                    future.cancel()
+        enriched = list(to_enrich)
     except Exception:
         enriched = to_enrich
 
@@ -962,7 +1028,13 @@ def enrich_source_items(
     executor = ThreadPoolExecutor(max_workers=min(len(targets), MAX_ENRICH_WORKERS))
     try:
         futures = {
-            http.submit_with_context(executor, reddit_shreddit.fetch_comments, item.url, deadline=end): item
+            http.submit_with_context(
+                executor,
+                _fetch_enrichment,
+                item.url,
+                end,
+                (item.metadata or {}).get("post_author") or item.author,
+            ): item
             for item in targets
         }
         done, _not_done = concurrent.futures.wait(futures, timeout=budget)
@@ -974,6 +1046,12 @@ def enrich_source_items(
                 continue
             if data.get("top_comments"):
                 item.metadata["top_comments"] = data["top_comments"]
+                post_author = (item.metadata or {}).get("post_author") or item.author
+                if post_author:
+                    reddit_hydrate._stamp_uploader({
+                        "author": post_author,
+                        "top_comments": item.metadata["top_comments"],
+                    })
                 item.metadata["comment_insights"] = data.get("comment_insights") or []
             if data.get("num_comments") is not None:
                 item.engagement["num_comments"] = data["num_comments"]

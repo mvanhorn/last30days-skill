@@ -176,13 +176,13 @@ def _stamp_uploader(post: dict) -> None:
 
     Set while the post author is still on the item; the normalized item drops it.
     """
-    author = str(post.get("author") or "").strip().lower()
+    author = str(post.get("author") or "").strip().lower().removeprefix("/").removeprefix("u/")
     if not author or author in ("[deleted]", "[removed]"):
         return
     for comment in post.get("top_comments") or []:
         if isinstance(comment, dict) and not isinstance(comment.get("is_uploader"), bool):
-            name = str(comment.get("author") or "").strip().lower()
-            if name:
+            name = str(comment.get("author") or "").strip().lower().removeprefix("/").removeprefix("u/")
+            if name and name not in ("[deleted]", "[removed]"):
                 comment["is_uploader"] = name == author
 
 
@@ -280,10 +280,17 @@ def _attach_comments(
         if end - time.monotonic() < 1:
             _log("comment budget spent; remaining threads keep no comments")
             break
-        rows = reddit_arctic.fetch_comment_tree(item["metadata"]["post_id"], deadline=end)
+        pid = item["metadata"]["post_id"]
+        if reddit_arctic.fetch_comment_tree is getattr(reddit_arctic, "_ORIG_FETCH_COMMENT_TREE", None):
+            rows, was_throttled = reddit_arctic._fetch_comment_tree_with_status(pid, deadline=end)
+        else:
+            if "last_tree_throttled" not in vars(reddit_arctic):
+                reddit_arctic._set_thread_tree_throttled(False)
+            rows = reddit_arctic.fetch_comment_tree(pid, deadline=end)
+            was_throttled = bool(getattr(reddit_arctic, "last_tree_throttled", False))
         if rows is None:
             failed += 1
-            throttled += bool(getattr(reddit_arctic, "last_tree_throttled", False))
+            throttled += bool(was_throttled)
             if failed >= 2 and not filled:
                 _log("archive comments failing; remaining threads keep no comments")
                 break
