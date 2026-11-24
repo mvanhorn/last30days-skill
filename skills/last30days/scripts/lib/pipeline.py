@@ -678,6 +678,12 @@ MOCK_AVAILABLE_SOURCES = [
     "devto",
 ]
 
+# Full set of searchable source names accepted by --search /
+# LAST30DAYS_DEFAULT_SEARCH. Superset of MOCK_AVAILABLE_SOURCES so live-only
+# sources without mock fixtures (e.g. StockTwits) are accepted on the CLI
+# without altering mock-mode source availability.
+KNOWN_SEARCH_SOURCES: frozenset[str] = frozenset(MOCK_AVAILABLE_SOURCES) | {"stocktwits"}
+
 
 def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
     if not sources:
@@ -2550,6 +2556,16 @@ def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
     return max(4, min(16, stream_count or 1))
 
 
+def is_scoped_save_dir(save_dir: Path | str | None) -> bool:
+    """True when ``save_dir`` points to a directory other than DEFAULT_MEMORY_DIR."""
+    if not save_dir or (isinstance(save_dir, str) and not save_dir.strip()):
+        return False
+    return (
+        Path(save_dir).expanduser().resolve()
+        != Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve()
+    )
+
+
 def library_context_index_path(
     config: dict[str, Any], save_dir: Path | str | None,
 ) -> Path | None:
@@ -2558,7 +2574,7 @@ def library_context_index_path(
         return None
     if path := config.get("_LAST30DAYS_LIBRARY_DB"):
         return Path(path).expanduser()
-    if save_dir is not None:
+    if is_scoped_save_dir(save_dir):
         return Path(save_dir).expanduser().resolve() / ".last30days-library.db"
     return library_index.DEFAULT_LIBRARY_DB
 
@@ -2581,6 +2597,7 @@ def _load_library_context(
     if db_path is None:
         return [], None
 
+    scoped = is_scoped_save_dir(save_dir)
     memory_dir = (
         save_dir
         if save_dir is not None
@@ -2588,7 +2605,7 @@ def _load_library_context(
     )
     briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or (
         Path(memory_dir).expanduser() / "briefings"
-        if save_dir is not None
+        if scoped
         else library.DEFAULT_BRIEFS_DIR
     )
     store_db = config.get("_LAST30DAYS_STORE_DB")
@@ -2597,7 +2614,7 @@ def _load_library_context(
         # the shared store would leak other scopes' sightings into this one.
         store_db = (
             Path(memory_dir).expanduser().resolve() / "research.db"
-            if save_dir is not None
+            if scoped
             else library_index.DEFAULT_STORE_DB
         )
     queries = [topic, x_handle or "", github_user or "", *(github_repos or [])]

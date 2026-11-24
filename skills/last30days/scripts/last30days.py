@@ -108,7 +108,7 @@ def parse_search_flag(raw: str, flag_name: str = "--search") -> list[str]:
         if not source:
             continue
         normalized = pipeline.SEARCH_ALIAS.get(source, source)
-        if normalized not in pipeline.MOCK_AVAILABLE_SOURCES:
+        if normalized not in pipeline.KNOWN_SEARCH_SOURCES:
             raise SystemExit(f"Unknown search source in {flag_name}: {source}")
         if normalized not in sources:
             sources.append(normalized)
@@ -397,7 +397,7 @@ def save_output(
                 # A scoped save must sync a per-directory index with the
                 # same paths scoped search uses; syncing the shared DB
                 # from one scope's scan would prune other scopes' rows.
-                if db_path == library_index.DEFAULT_LIBRARY_DB:
+                if not _is_scoped_save_dir(save_root):
                     library_index.sync_library(save_root)
                 else:
                     library_index.sync_library(save_root, save_root / "briefings", db_path=db_path)
@@ -618,10 +618,15 @@ def read_synthesis_file(path: str) -> str:
         raise SystemExit(2)
 
 
+def _is_scoped_save_dir(save_dir: Path | str | None) -> bool:
+    """True when ``save_dir`` is set and resolves to a dir other than DEFAULT_MEMORY_DIR."""
+    return pipeline.is_scoped_save_dir(save_dir)
+
+
 def _scoped_store_db(args: argparse.Namespace) -> Path | None:
     """Scoped runs write findings inside the save dir, matching scoped reads."""
     save_dir = getattr(args, "save_dir", None)
-    if save_dir:
+    if _is_scoped_save_dir(save_dir):
         return Path(save_dir).expanduser().resolve() / "research.db"
     return None
 
@@ -2137,6 +2142,16 @@ def _validate_publish_html(args: argparse.Namespace) -> int | None:
     return None
 
 
+def _validate_comparison_emit(args: argparse.Namespace, *, is_comparison: bool) -> int | None:
+    if is_comparison and args.emit == "brief":
+        sys.stderr.write(
+            "[last30days] --emit=brief is not supported for comparison or competitor runs; "
+            "use --emit=compact, md, context, json, or html.\n"
+        )
+        return 2
+    return None
+
+
 def _resolve_synthesis_md(args: argparse.Namespace) -> str | None:
     if not args.synthesis_file:
         return None
@@ -2160,6 +2175,9 @@ def _run_cached_freshness(
     if cached is None:
         return 2
     report, entity_reports, cache_path = cached.report, cached.entity_reports, cached.path
+    comp_emit_exit = _validate_comparison_emit(args, is_comparison=bool(entity_reports))
+    if comp_emit_exit is not None:
+        return comp_emit_exit
     _verify_report_set(report, entity_reports, allow_network=not args.mock)
     if _update_cached_freshness(cached):
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
@@ -3097,6 +3115,9 @@ def _render_save_and_print(
     publish_exit = _validate_publish_html(args)
     if publish_exit is not None:
         return publish_exit
+    comp_emit_exit = _validate_comparison_emit(args, is_comparison=bool(entity_reports))
+    if comp_emit_exit is not None:
+        return comp_emit_exit
     fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
     try:
         audience = _audience_register_for_run(args, config, entity_reports)
@@ -3180,7 +3201,7 @@ def _render_save_and_print(
                     json_profile=args.json_profile,
                     register=audience.name,
                 )
-            if args.emit not in {"json", "html"} and not entity_reports:
+            if args.emit not in {"json", "html"}:
                 # Markdown saves keep the complete debug artifact (all clusters
                 # and per-source items), matching the render_fn-less path in
                 # save_output and the comparison peer saves. Saving the compact
@@ -4157,6 +4178,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         )
         return 2
 
+    scoped = _is_scoped_save_dir(args.save_dir)
     memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
     output_dir = memory_dir.resolve()
     # Scoped libraries (--save-dir) must not mix in the global briefing
@@ -4164,7 +4186,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     # briefings could publish them publicly. The default library keeps the
     # archive; a scoped one reads only its own directory.
     briefs_dir = (
-        library.DEFAULT_BRIEFS_DIR if not args.save_dir else memory_dir / "briefings"
+        memory_dir / "briefings" if scoped else library.DEFAULT_BRIEFS_DIR
     )
     entries, notes = library.scan_library(memory_dir, briefs_dir)
     feed_author = str(
@@ -4342,24 +4364,25 @@ def _run_library_search(
         )
         return 2
 
+    scoped = _is_scoped_save_dir(args.save_dir)
     memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
     try:
         matches, synced = library_index.sync_and_search(
             query,
             memory_dir=memory_dir,
             briefs_dir=(
-                memory_dir / "briefings" if args.save_dir else library.DEFAULT_BRIEFS_DIR
+                memory_dir / "briefings" if scoped else library.DEFAULT_BRIEFS_DIR
             ),
             db_path=(
                 memory_dir.resolve() / ".last30days-library.db"
-                if args.save_dir else library_index.DEFAULT_LIBRARY_DB
+                if scoped else library_index.DEFAULT_LIBRARY_DB
             ),
             # A scoped search must never merge in the shared store: one
             # client's sightings would leak into another client's scope. A
             # scoped store is read only if it exists inside the save dir.
             store_db_path=(
                 memory_dir.resolve() / "research.db"
-                if args.save_dir else library_index.DEFAULT_STORE_DB
+                if scoped else library_index.DEFAULT_STORE_DB
             ),
         )
     except library_index.LibrarySearchUnavailable as exc:
@@ -4426,7 +4449,7 @@ def _run_library_harvest(
         try:
             save_root = memory_dir.resolve()
             db_path = library_index.saved_report_index_path(save_root)
-            if db_path == library_index.DEFAULT_LIBRARY_DB:
+            if not _is_scoped_save_dir(save_root):
                 library_index.sync_library(save_root)
             else:
                 library_index.sync_library(save_root, save_root / "briefings", db_path=db_path)
@@ -5528,6 +5551,11 @@ def _main(
     publish_exit = _validate_publish_html(args)
     if publish_exit is not None:
         return publish_exit
+    comp_emit_exit = _validate_comparison_emit(
+        args, is_comparison=_comparison_requested(args, topic)
+    )
+    if comp_emit_exit is not None:
+        return comp_emit_exit
 
     synthesis_md = _resolve_synthesis_md(args)
 
