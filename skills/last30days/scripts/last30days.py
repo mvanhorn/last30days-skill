@@ -2130,10 +2130,32 @@ def _load_followup_report(
     return cached
 
 
+def _validate_publish_html(args: argparse.Namespace) -> int | None:
+    if args.publish_html and args.emit != "html":
+        sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
+        return 2
+    return None
+
+
+def _resolve_synthesis_md(args: argparse.Namespace) -> str | None:
+    if not args.synthesis_file:
+        return None
+    if args.emit == "html":
+        return read_synthesis_file(args.synthesis_file)
+    sys.stderr.write(
+        "[last30days] Warning: --synthesis-file is only used with --emit=html; ignoring.\n"
+    )
+    return None
+
+
 def _run_cached_freshness(
     args: argparse.Namespace,
     config: dict[str, object],
 ) -> int:
+    publish_exit = _validate_publish_html(args)
+    if publish_exit is not None:
+        return publish_exit
+    synthesis_md = _resolve_synthesis_md(args)
     cached = _load_followup_report(args, config)
     if cached is None:
         return 2
@@ -2143,7 +2165,7 @@ def _run_cached_freshness(
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
     else:
         sys.stderr.write("[last30days] warning: freshness cache update failed\n")
-    return _render_save_and_print(args, report, entity_reports, None, config)
+    return _render_save_and_print(args, report, entity_reports, synthesis_md, config)
 
 
 def _drill_config(config: dict[str, object], sources: list[str]) -> dict[str, object]:
@@ -2305,15 +2327,7 @@ def _run_drill(
             f"{counts['updated']} updated findings\n"
         )
 
-    synthesis_md = None
-    if args.synthesis_file:
-        if args.emit == "html":
-            synthesis_md = read_synthesis_file(args.synthesis_file)
-        else:
-            sys.stderr.write(
-                "[last30days] Warning: --synthesis-file is only used with "
-                "--emit=html; ignoring.\n"
-            )
+    synthesis_md = _resolve_synthesis_md(args)
     return _render_save_and_print(args, merged, None, synthesis_md, config)
 
 
@@ -3080,6 +3094,9 @@ def _render_save_and_print(
     synthesis_md: str | None,
     config: dict[str, object],
 ) -> int:
+    publish_exit = _validate_publish_html(args)
+    if publish_exit is not None:
+        return publish_exit
     fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
     try:
         audience = _audience_register_for_run(args, config, entity_reports)
@@ -3301,11 +3318,81 @@ def _propagate_config_to_environ(config: dict[str, object]) -> None:
             os.environ[key] = val
 
 
+_NON_AUTO_SETUP_FLAGS = frozenset({
+    "--openclaw",
+    "--github",
+    "--github-start",
+    "--github-poll",
+    "--device-auth",
+    "--reddit-session",
+    "--no-reddit-session",
+})
+
+_SETUP_NO_SECRET_STORE_FLAGS = frozenset({
+    "--github",
+    "--github-start",
+    "--github-poll",
+    "--device-auth",
+    "--reddit-session",
+    "--no-reddit-session",
+})
+
+
+def _setup_is_non_auto(extra_argv: list[str]) -> bool:
+    store_key_present, _, remaining = _split_store_key(extra_argv)
+    if store_key_present:
+        return True
+    install_target, uninstall_target, remaining = _split_hook_flags(remaining)
+    if install_target is not None or uninstall_target is not None:
+        return True
+    return any(flag in _NON_AUTO_SETUP_FLAGS for flag in remaining)
+
+
+def _setup_skips_secret_stores(extra_argv: list[str]) -> bool:
+    store_key_present, _, remaining = _split_store_key(extra_argv)
+    if store_key_present:
+        return True
+    install_target, uninstall_target, remaining = _split_hook_flags(remaining)
+    if install_target is not None or uninstall_target is not None:
+        return True
+    # Mirror setup dispatch precedence: --openclaw runs before --reddit-session
+    # and --github*/--device-auth, and reports stored provider keys.
+    if "--openclaw" in remaining:
+        return False
+    return any(flag in _SETUP_NO_SECRET_STORE_FLAGS for flag in remaining)
+
+
+def _is_library_command(command_topic: str) -> bool:
+    return (
+        command_topic == "library feed"
+        or command_topic == "library harvest"
+        or command_topic == "library search"
+        or command_topic.startswith("library search ")
+    )
+
+
+def _is_queue_command(command_topic: str) -> bool:
+    return (
+        command_topic == "queue list"
+        or command_topic == "queue cover"
+        or command_topic.startswith("queue cover ")
+    )
+
+
+def _is_admin_command(command_topic: str) -> bool:
+    return (
+        command_topic in {"setup", "doctor"}
+        or _is_library_command(command_topic)
+        or _is_queue_command(command_topic)
+    )
+
+
 def _setup_has_fresh_browser_consent(args: argparse.Namespace, extra_argv: list[str]) -> bool:
     return (
         not args.no_browser_cookies
         and not args.diagnose
         and not args.preflight
+        and not _setup_is_non_auto(extra_argv)
         and "--allow-browser-cookies" in extra_argv
     )
 
@@ -3880,27 +3967,86 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
     parser.error("unsupported Python CLI argument(s): " + ", ".join(extra_argv))
 
 
+def _has_invalid_cli_combination(args: argparse.Namespace, topic: str) -> bool:
+    """True when parsed research flags are guaranteed to exit 2 before retrieval."""
+    if args.discover is not None:
+        return bool(
+            topic
+            or args.drill
+            or args.as_of_date
+            or args.emit == "html"
+            or args.publish_html
+            or args.deep_research
+            or (args.nominate_only and (args.judgments is not None or args.finalize))
+            or (args.judgments is not None and args.finalize)
+            or (args.angles is not None and not args.finalize)
+        )
+    if (
+        args.discover_shallow
+        or args.nominate_only
+        or args.judgments is not None
+        or args.finalize
+        or args.angles is not None
+    ):
+        return True
+    if args.drill:
+        return bool(topic or args.deep_research or (args.publish_html and args.emit != "html"))
+    if args.deep_research and (not topic or _comparison_requested(args, topic)):
+        return True
+    if not topic:
+        return True
+    if (args.clarify_angle is not None or args.clarify_broadly) and not _will_tentatively_use_hosted_api(args, topic):
+        return True
+    if args.publish_html and args.emit != "html":
+        return True
+    return False
+
+
+def _will_tentatively_use_hosted_api(args: argparse.Namespace, topic: str) -> bool:
+    """True when process env and CLI flags may route a research topic to the hosted backend.
+
+    Corpus flags/env vars do not disqualify hosted mode here because
+    ``EXCLUDE_SOURCES=corpus`` in ``.env`` can disable the corpus and keep the
+    run hosted. Local fallback reloads full config once ``uses_hosted_api`` is
+    confirmed False.
+    """
+    if not topic or not env.hosted_backend_configured():
+        return False
+    if (
+        args.cached_report
+        or args.mock
+        or args.record_fixtures
+        or args.deep_research
+        or args.discover is not None
+        or args.drill
+    ):
+        return False
+    if args.perplexity_search_type is not None and env.read_secret_env("PERPLEXITY_API_KEY"):
+        return False
+    return True
+
+
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
     normalized_topic = "" if args.research_only or args.cached_report else topic.lower()
     reuse_browser_consent = normalized_topic == "setup" and USE_RECORDED_BROWSER_CONSENT_FLAG in extra_argv
-    is_library_command = (
-        normalized_topic == "library feed"
-        or normalized_topic == "library harvest"
-        or normalized_topic == "library search"
-        or normalized_topic.startswith("library search ")
-    )
+    is_library_command = _is_library_command(normalized_topic)
     # Queue commands are local SQLite reads/writes: like library commands they
     # must never trigger browser-cookie extraction or Keychain prompts.
-    is_queue_command = (
-        normalized_topic == "queue list"
-        or normalized_topic == "queue cover"
-        or normalized_topic.startswith("queue cover ")
+    is_queue_command = _is_queue_command(normalized_topic)
+    is_cached_verification = (
+        bool(getattr(args, "verify_freshness", None))
+        and not topic
+        and not args.drill
+        and args.discover is None
     )
-    is_cached_verification = bool(getattr(args, "verify_freshness", None)) and not normalized_topic
+    is_inspection = bool(args.diagnose or args.preflight or normalized_topic == "doctor")
+    is_invalid = _has_invalid_cli_combination(args, topic)
+    tentative_hosted = _will_tentatively_use_hosted_api(args, topic)
+    law7_blocked = bool(_law7_host_plan_signal(args, topic))
     if args.no_browser_cookies:
         browser_mode = "off"
     elif (
-        args.diagnose or args.preflight or args.cached_report or normalized_topic == "doctor"
+        is_inspection or args.cached_report
         or is_library_command or is_queue_command or is_cached_verification
     ):
         # doctor is plan-only like --diagnose: it must never read cookies.
@@ -3909,18 +4055,58 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
         browser_mode = (
-            "read" if reuse_browser_consent or _setup_has_fresh_browser_consent(args, extra_argv)
+            "read"
+            if not _setup_is_non_auto(extra_argv)
+            and (reuse_browser_consent or _setup_has_fresh_browser_consent(args, extra_argv))
             else "off"
         )
-    elif _law7_host_plan_signal(args, topic):
+    elif (
+        args.mock
+        or args.finalize
+        or is_invalid
+        or tentative_hosted
+    ):
+        # Mock runs, offline discovery finalize, empty/invalid invocations, and
+        # tentative hosted-API runs never read local browser cookies.
+        browser_mode = "off"
+    elif law7_blocked:
         # Hosted and cached paths need config before dispatch, but no browser read.
         browser_mode = "plan_only"
     else:
         browser_mode = "read"
+
+    # Skip Keychain / pass app-credential lookups on modes that do not need
+    # local provider keys (mock, offline, cached, library, queue, invalid, or
+    # hosted API runs). Hosted runs that fall back locally reload with stores on.
+    if args.mock:
+        load_secret_stores = False
+    elif is_inspection:
+        load_secret_stores = True
+    elif (
+        args.cached_report
+        or is_library_command
+        or is_queue_command
+        or is_cached_verification
+    ):
+        load_secret_stores = False
+    elif normalized_topic == "setup":
+        load_secret_stores = not _setup_skips_secret_stores(extra_argv)
+    elif (
+        args.finalize
+        or is_invalid
+        or (tentative_hosted and args.perplexity_search_type is None)
+    ):
+        load_secret_stores = False
+    elif law7_blocked and not (args.emit == "html" and args.synthesis_file and not args.deep_research):
+        load_secret_stores = False
+    else:
+        load_secret_stores = True
+
     return env.ConfigLoadPolicy(
         browser_cookies=browser_mode,
-        inspect_ignored_project_config=args.diagnose or args.preflight or normalized_topic == "doctor",
+        inspect_ignored_project_config=is_inspection,
         require_recorded_browser_consent=reuse_browser_consent,
+        load_secret_stores=load_secret_stores,
     )
 
 
@@ -4290,6 +4476,12 @@ def main() -> int:
         ):
             parser.error("--no-research-persistence requires --research-only and a topic without output or cache modes")
         args.save_dir = ""
+    if args.record_fixtures and (args.diagnose or args.preflight):
+        # Reject before recording_requests() starts so read-only inspection
+        # never creates or truncates a fixture file on exit.
+        flag = "--preflight" if args.preflight else "--diagnose"
+        sys.stderr.write(f"[last30days] --record-fixtures cannot be combined with {flag}.\n")
+        return 2
     try:
         if args.record_fixtures:
             with http.recording_requests(Path(args.record_fixtures)):
@@ -4408,6 +4600,10 @@ def _main(
     finalization_deadline = command_started + pipeline.FINALIZATION_WORK_CUTOFF_SECONDS
     if args.include_research_backend and not args.diagnose:
         parser.error("--include-research-backend requires --diagnose")
+    if args.record_fixtures and (args.diagnose or args.preflight):
+        flag = "--preflight" if args.preflight else "--diagnose"
+        sys.stderr.write(f"[last30days] --record-fixtures cannot be combined with {flag}.\n")
+        return 2
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
@@ -4495,6 +4691,14 @@ def _main(
             "[last30days] --source, --since, and --dry-run are only supported by the 'library harvest' command.\n"
         )
         return 2
+    if (args.preflight or args.diagnose) and _is_admin_command(command_topic):
+        flag = "--preflight" if args.preflight else "--diagnose"
+        sys.stderr.write(
+            f"[last30days] {flag} cannot be combined with the '{command_topic}' "
+            "command. Omit it to run the command, or pass --research-only to "
+            "inspect a research topic with that name.\n"
+        )
+        return 2
     if command_topic == "setup":
         # Persisting a credential or managing local hook configs needs no
         # config load (no Keychain / pass probes, no cookie policy), so these
@@ -4506,7 +4710,17 @@ def _main(
         if install_target is not None or uninstall_target is not None:
             return _run_hook_setup(install_target, uninstall_target)
 
-    config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    config_policy = _config_policy_for_args(args, topic, extra_argv)
+    hosted_deferred_local_load = (
+        not args.diagnose
+        and not args.preflight
+        and not _is_admin_command(command_topic)
+        and not args.mock
+        and not args.finalize
+        and not _has_invalid_cli_combination(args, topic)
+        and _will_tentatively_use_hosted_api(args, topic)
+    )
+    config = env.get_config(policy=config_policy)
     if args.no_research_persistence:
         config["_no_research_persistence"] = True
     if args.perplexity_search_type is not None:
@@ -4521,8 +4735,14 @@ def _main(
     reddit_health.reset_run_state()
     reddit_session.reset_run_state()
     web_search_keyless.reset_rung_health()
+    is_recordable_research = (
+        bool(topic) or bool(args.drill) or (args.discover is not None and not args.finalize)
+    )
     if (
-        args.record_fixtures and topic and command_topic not in ("setup", "doctor")
+        args.record_fixtures
+        and is_recordable_research
+        and not _is_admin_command(command_topic)
+        and not (args.diagnose or args.preflight or args.welcome or args.cached_report)
         and reddit_session.gate(config)[0]
     ):
         # Recorded fixtures are shared artifacts; a logged-in session's pages
@@ -4754,7 +4974,7 @@ def _main(
         )
         return 2
 
-    if args.discover is not None:
+    if args.discover is not None and not args.diagnose:
         if topic:
             sys.stderr.write(
                 "[last30days] --discover supplies the domain and cannot be combined "
@@ -4815,7 +5035,7 @@ def _main(
             return _run_discover_protocol_leg(args, config)
         return _run_discover(args, config)
 
-    if args.discover_shallow:
+    if args.discover_shallow and not args.diagnose:
         # Without --discover this flag would silently no-op into a full
         # research run - reject it instead of ignoring the requested mode.
         sys.stderr.write(
@@ -4826,34 +5046,35 @@ def _main(
 
     # Same orphan rule for every protocol-leg flag: without --discover each
     # would silently no-op into a normal research run.
-    for flag_label, present in (
-        ("--nominate-only", args.nominate_only),
-        ("--judgments", args.judgments is not None),
-        ("--finalize", args.finalize),
-    ):
-        if present:
+    if not args.diagnose:
+        for flag_label, present in (
+            ("--nominate-only", args.nominate_only),
+            ("--judgments", args.judgments is not None),
+            ("--finalize", args.finalize),
+        ):
+            if present:
+                sys.stderr.write(
+                    f"[last30days] {flag_label} only applies to --discover runs; "
+                    "add --discover [domain] or drop the flag.\n"
+                )
+                return 2
+        if args.angles is not None:
             sys.stderr.write(
-                f"[last30days] {flag_label} only applies to --discover runs; "
-                "add --discover [domain] or drop the flag.\n"
+                "[last30days] --angles only applies to --discover --finalize runs; "
+                "add --discover --finalize or drop the flag.\n"
             )
             return 2
-    if args.angles is not None:
-        sys.stderr.write(
-            "[last30days] --angles only applies to --discover --finalize runs; "
-            "add --discover --finalize or drop the flag.\n"
-        )
-        return 2
 
-    if args.drill:
+    if args.drill and not args.diagnose:
         if topic:
             sys.stderr.write(
                 "[last30days] --drill uses the cached topic and cannot be "
                 "combined with a new topic.\n"
             )
             return 2
-        if args.publish_html and args.emit != "html":
-            sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
-            return 2
+        publish_exit = _validate_publish_html(args)
+        if publish_exit is not None:
+            return publish_exit
         if args.dedicated_subreddits:
             config["_dedicated_subreddits"] = [
                 value.strip().removeprefix("r/")
@@ -4868,12 +5089,20 @@ def _main(
             ]
         return _run_drill(args, {**config, "_finalization_deadline": finalization_deadline})
 
-    if args.verify_freshness and not topic:
+    if args.verify_freshness and not topic and not args.diagnose:
+        publish_exit = _validate_publish_html(args)
+        if publish_exit is not None:
+            return publish_exit
         return _run_cached_freshness(args, config)
 
     if args.deep_research and not args.diagnose:
-        from lib import planner as _planner
-
+        if _comparison_requested(args, topic):
+            sys.stderr.write(
+                "Error: --deep-research cannot be combined with competitor or vs-mode. "
+                "It permits one paid Deep Research run per user action; run each topic "
+                "separately.\n"
+            )
+            return 2
         if not (
             config.get("PERPLEXITY_API_KEY")
             or config.get("OPENROUTER_API_KEY")
@@ -4884,21 +5113,6 @@ def _main(
                 file=sys.stderr,
             )
             return 1
-        comparison_requested = any(
-            value is not None
-            for value in (
-                args.competitors,
-                args.competitors_list,
-                args.competitors_plan,
-            )
-        ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
-        if comparison_requested:
-            sys.stderr.write(
-                "Error: --deep-research cannot be combined with competitor or vs-mode. "
-                "It permits one paid Deep Research run per user action; run each topic "
-                "separately.\n"
-            )
-            return 2
         config["_deep_research"] = True
         try:
             enable_deep_research_source(config)
@@ -4963,6 +5177,8 @@ def _main(
         and not args.deep_research
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     )
+    # Validate hosted-only clarification flags before reloading local cookies or
+    # Keychain/pass secrets on a local bypass.
     if (args.clarify_angle is not None or args.clarify_broadly) and not (
         topic and not args.diagnose and uses_hosted_api
     ):
@@ -4971,6 +5187,49 @@ def _main(
             "clarification, so they apply only to a hosted run.\n"
         )
         return 2
+    law7_blocked = bool(_law7_host_plan_signal(args, topic))
+    may_reuse_html_cache = (
+        args.emit == "html"
+        and bool(args.synthesis_file)
+        and not args.deep_research
+        and not args.cached_report
+    )
+    target_browser_mode: env.BrowserCookieMode = (
+        "off" if (args.no_browser_cookies or law7_blocked) else "read"
+    )
+    if (
+        hosted_deferred_local_load
+        and topic
+        and not args.diagnose
+        and not uses_hosted_api
+        and (not law7_blocked or may_reuse_html_cache)
+        and (
+            config_policy.browser_cookies != target_browser_mode
+            or not config_policy.load_secret_stores
+        )
+    ):
+        # Confirmed local fallback (corpus or direct Perplexity key); reload
+        # secret stores (and browser cookies only when research can run, never
+        # on a LAW-7-blocked HTML cache-reuse lookup).
+        config = env.get_config(
+            policy=env.ConfigLoadPolicy(
+                browser_cookies=target_browser_mode,
+                load_secret_stores=True,
+            )
+        )
+        if args.no_research_persistence:
+            config["_no_research_persistence"] = True
+        if args.perplexity_search_type is not None:
+            config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
+        if resolved_corpus_dirs:
+            config["_CORPUS_DIRS"] = [str(path) for path in resolved_corpus_dirs]
+        if _config_truthy(config.get("LAST30DAYS_CORPUS_IN_EXPORT")):
+            config["_CORPUS_IN_EXPORT"] = True
+        _propagate_config_to_environ(config)
+        research_options = _cache_research_options(
+            args, config, supplied_only=args.cached_report,
+            resolved_corpus_dirs=resolved_corpus_dirs, external_plan=external_plan,
+        )
     if topic and not args.diagnose and uses_hosted_api:
         if args.require_local_report:
             sys.stderr.write(
@@ -5217,16 +5476,11 @@ def _main(
     if not topic:
         parser.print_usage(sys.stderr)
         return 2
-    if args.publish_html and args.emit != "html":
-        sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
-        return 2
+    publish_exit = _validate_publish_html(args)
+    if publish_exit is not None:
+        return publish_exit
 
-    synthesis_md = None
-    if args.synthesis_file:
-        if args.emit == "html":
-            synthesis_md = read_synthesis_file(args.synthesis_file)
-        else:
-            sys.stderr.write("[last30days] Warning: --synthesis-file is only used with --emit=html; ignoring.\n")
+    synthesis_md = _resolve_synthesis_md(args)
 
     if not os.environ.get("LAST30DAYS_SKIP_PREFLIGHT"):
         from lib import preflight
@@ -5603,10 +5857,11 @@ def _main(
         if dedicated_subreddits:
             config["_dedicated_subreddits"] = dedicated_subreddits
 
-        def _main_runner() -> schema.Report:
+        def _main_runner(run_config: dict[str, object] | None = None) -> schema.Report:
+            main_config = dict(config if run_config is None else run_config)
             r = pipeline.run(
                 topic=topic,
-                config=config,
+                config=main_config,
                 depth=depth,
                 requested_sources=requested_sources,
                 mock=args.mock,
@@ -5644,16 +5899,16 @@ def _main(
                 "github_user": (github_user or ""),
                 "github_repos": list(github_repos or []),
                 "trustpilot_domain": (trustpilot_domain or ""),
-                "context": config.get("_auto_resolve_context", "") or "",
+                "context": main_config.get("_auto_resolve_context", "") or "",
                 **main_company,
             }
             # The share-price window of a listed company. A mock run resolved
             # no company, so it never reaches the price CLI, and neither does
             # a run with EXCLUDE_SOURCES=yahoo_finance.
             if host_tickers is None:
-                yahoo_finance.attach_market_data(r, main_company, config)
+                yahoo_finance.attach_market_data(r, main_company, main_config)
                 return r
-            checked = yahoo_finance.attach_host_tickers(r, host_tickers, config)
+            checked = yahoo_finance.attach_host_tickers(r, host_tickers, main_config)
             # The company Wikidata named stays; the host's fills an empty one.
             host_company = checked.pop("company", "")
             r.artifacts["resolved"].update(checked)
@@ -5745,6 +6000,11 @@ def _main(
             # Each entity's jobs lane leaves every entity's name out of the
             # story terms it searches its board for.
             config["_comparison_entities"] = [topic, *discovered]
+            # Snapshot an immutable-by-convention base dict before fan-out
+            # spawns worker threads so no thread iterates or mutates a shared
+            # config concurrently.
+            peer_base_config = dict(config)
+            main_run_config = dict(peer_base_config)
 
             sys.stderr.write(
                 f"[Competitors] Comparing: {topic} vs " + " vs ".join(discovered) + "\n"
@@ -5752,11 +6012,20 @@ def _main(
 
             def _competitor_runner(entity: str) -> schema.Report:
                 # Resolution belongs to each entity, not the shared command.
-                entity_config = dict(config)
+                entity_config = dict(peer_base_config)
                 entity_config.pop("_auto_resolve_context", None)
-                # The main topic's company flags are not a peer's.
+                # The main topic's company flags and run-scoped transient keys
+                # are not a peer's.
+                entity_config.pop("_company", None)
                 entity_config.pop("_company_signal", None)
                 entity_config.pop("_jobs_board", None)
+                entity_config.pop("_jobs_story_terms", None)
+                entity_config.pop("_financial_topic", None)
+                entity_config.pop("_person", None)
+                entity_config.pop("_x_envelope", None)
+                entity_config.pop("_x_lane_missing", None)
+                entity_config.pop("_reddit_envelope", None)
+                entity_config.pop("_shortform_envelope", None)
                 # The Amazon keyword is entity-SPECIFIC, unlike the depth caps
                 # this shallow copy exists to inherit. Leaving the main topic's
                 # keyword in place would search Weber SKUs for a Traeger peer,
@@ -5865,7 +6134,7 @@ def _main(
 
             entity_reports = fanout.run_competitor_fanout(
                 main_topic=topic,
-                main_runner=_main_runner,
+                main_runner=lambda: _main_runner(main_run_config),
                 competitors=discovered,
                 competitor_runner=_competitor_runner,
             )
