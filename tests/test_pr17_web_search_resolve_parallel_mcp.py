@@ -1237,14 +1237,18 @@ def test_grounding_enrich_reddit_items_forwards_deadline_and_preserves_items_on_
         seen_deadlines.append(kwargs.get("deadline"))
         raise http.DeadlineExceeded()
 
-    deadline = time.monotonic() + 12.0
+    deadline = time.monotonic() + 30.0
+    expected_enrich_deadline = deadline - grounding._REDDIT_ENRICH_HEADROOM_SECONDS
     with patch.object(reddit_hydrate, "hydrate", side_effect=timeout_hydrate):
         kept = grounding._enrich_reddit_items(list(web_items), deadline_monotonic=deadline)
 
-    assert seen_deadlines == [deadline]
+    assert len(seen_deadlines) == 1
+    assert seen_deadlines[0] is not None
+    assert seen_deadlines[0] <= expected_enrich_deadline
+    assert seen_deadlines[0] == pytest.approx(expected_enrich_deadline)
     assert kept == web_items
 
-    # Live path through grounding.web_search() forwards `_research_deadline` into hydrate()
+    # Live path through grounding.web_search() forwards headroom-trimmed deadline into hydrate()
     # and keeps web results intact when optional Reddit enrichment times out.
     seen_deadlines.clear()
     with patch.object(web_search_keyless, "keyless_search", return_value=(list(web_items), {"keyless_backend": "ddg"})), \
@@ -1255,9 +1259,33 @@ def test_grounding_enrich_reddit_items_forwards_deadline_and_preserves_items_on_
             {"_research_deadline": deadline},
             backend="keyless",
         )
-    assert seen_deadlines == [deadline]
+    assert len(seen_deadlines) == 1
+    assert seen_deadlines[0] is not None
+    assert seen_deadlines[0] <= expected_enrich_deadline
+    assert seen_deadlines[0] == pytest.approx(expected_enrich_deadline)
     assert items == web_items
     assert artifact["keyless_backend"] == "ddg"
+
+    # When remaining run budget is within headroom (e.g. 1.0s < 3.0s), skip Reddit enrichment
+    # completely and return the retrieved web items intact without calling hydrate().
+    tight_deadline = time.monotonic() + 1.0
+    with patch.object(web_search_keyless, "keyless_search", return_value=(list(web_items), {"keyless_backend": "ddg"})), \
+         patch.object(reddit_hydrate, "hydrate") as mock_hydrate:
+        items, artifact = grounding.web_search(
+            "python",
+            ("2026-10-01", "2026-11-01"),
+            {"_research_deadline": tight_deadline},
+            backend="keyless",
+        )
+    mock_hydrate.assert_not_called()
+    assert items == web_items
+    assert artifact["keyless_backend"] == "ddg"
+
+    # Direct _enrich_reddit_items() with tight deadline also skips hydrate() cleanly.
+    with patch.object(reddit_hydrate, "hydrate") as mock_hydrate:
+        kept_tight = grounding._enrich_reddit_items(list(web_items), deadline_monotonic=tight_deadline)
+    mock_hydrate.assert_not_called()
+    assert kept_tight == web_items
 
 
 def test_keyless_search_counts_searxng_attempt_when_html_rungs_skipped_and_searxng_times_out():

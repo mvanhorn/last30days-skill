@@ -538,9 +538,10 @@ def _web_search_with(
         raise ValueError(f"Unsupported web backend: {backend!r}")
     else:
         return [], {}
+    enrich_deadline = _reddit_enrich_deadline(effective_deadline)
     budget_stopped = bool(
         (effective_cancel is not None and effective_cancel.is_set())
-        or (effective_deadline is not None and time.monotonic() >= effective_deadline)
+        or (enrich_deadline is not None and time.monotonic() >= enrich_deadline)
     )
     if items and not _reddit_excluded(config) and not budget_stopped:
         # Reddit enrichment is a best-effort secondary fetch on already-retrieved
@@ -556,6 +557,17 @@ def _web_search_with(
         with http.capture_failures():
             items = _enrich_reddit_items(items, **enrich_kwargs)
     return items, artifact
+
+
+# Reserve headroom before the outer run deadline so optional Reddit enrichment
+# never crowds the stream future timeout and causes retrieved web results to be discarded.
+_REDDIT_ENRICH_HEADROOM_SECONDS = 3.0
+
+
+def _reddit_enrich_deadline(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        return None
+    return deadline_monotonic - _REDDIT_ENRICH_HEADROOM_SECONDS
 
 
 def _reddit_excluded(config: dict) -> bool:
@@ -589,8 +601,9 @@ def _enrich_reddit_items(
     """
     from . import reddit_hydrate, reddit_refs
 
+    enrich_deadline = _reddit_enrich_deadline(deadline_monotonic)
     if (cancel is not None and cancel.is_set()) or (
-        deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
+        enrich_deadline is not None and time.monotonic() >= enrich_deadline
     ):
         return items
     refs_by_item: list[tuple[dict, reddit_refs.ThreadRef]] = []
@@ -602,8 +615,8 @@ def _enrich_reddit_items(
     if not refs_by_item:
         return items
     hydrate_kwargs: dict = {}
-    if deadline_monotonic is not None:
-        hydrate_kwargs["deadline"] = deadline_monotonic
+    if enrich_deadline is not None:
+        hydrate_kwargs["deadline"] = enrich_deadline
     try:
         hydrated = reddit_hydrate.hydrate(
             [ref for _item, ref in refs_by_item],
