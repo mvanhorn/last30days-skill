@@ -581,9 +581,9 @@ def test_high016_two_source_subrun_uses_full_max_workers_concurrently(monkeypatc
     assert state["peak"] == 2
 
 
-def test_high016_ready_retry_preempts_queued_primary_under_strict_max_workers_cap(monkeypatch):
-    """Backoff consumes zero worker slots, active work never exceeds max_workers,
-    and once ready a retry runs ahead of queued primary searches."""
+def test_high016_ready_retry_preempts_queued_primary_deterministically(monkeypatch):
+    """Backoff consumes zero regular slots, and once a retry is scheduled and due
+    it deterministically runs ahead of queued primary searches (no fixed-sleep race)."""
     monkeypatch.setattr(pipeline, "STREAM_FUTURE_TIMEOUT_SECONDS", 2.0)
     monkeypatch.setattr(pipeline, "_TRANSIENT_RETRY_DELAY_SECONDS", 0.05)
     monkeypatch.setattr(pipeline, "_inner_max_workers", lambda *a, **k: 2)
@@ -603,13 +603,21 @@ def test_high016_ready_retry_preempts_queued_primary_under_strict_max_workers_ca
         "source_weights": {"x": 1.0, "reddit": 1.0, "hackernews": 1.0, "bluesky": 1.0},
     }
     hn_entered = threading.Event()
-    release_reddit = threading.Event()
+    retry_scheduled = threading.Event()
+    retry_ready_at: list[float] = []
     release_hn = threading.Event()
     order: list[str] = []
     attempts: dict[str, int] = {"x": 0}
     lock = threading.Lock()
     state = {"active": 0, "peak": 0}
     today = dates.get_date_range(5)[0]
+
+    orig_submit_delayed = pipeline._DaemonExecutor.submit_delayed
+
+    def spy_submit_delayed(self, ready_at, fn, /, *args, **kwargs):
+        retry_ready_at.append(ready_at)
+        retry_scheduled.set()
+        return orig_submit_delayed(self, ready_at, fn, *args, **kwargs)
 
     def fake_retrieve(**kwargs):
         source = kwargs["source"]
@@ -641,11 +649,13 @@ def test_high016_ready_retry_preempts_queued_primary_under_strict_max_workers_ca
                     {},
                 )
             if source == "reddit":
-                # Wait until hackernews took x's freed slot (proving backoff holds 0 slots)
-                # and until x's retry_at (0.05s) has elapsed, then free this worker.
+                # Wait deterministically until hackernews grabbed x's freed slot
+                # AND the retry is both scheduled and past its ready_at timestamp.
                 assert hn_entered.wait(timeout=2.0)
-                time.sleep(0.1)
-                release_reddit.set()
+                assert retry_scheduled.wait(timeout=2.0)
+                wait_left = retry_ready_at[0] - time.monotonic() + 0.01
+                if wait_left > 0:
+                    time.sleep(wait_left)
                 return [], {}
             if source == "hackernews":
                 hn_entered.set()
@@ -658,6 +668,7 @@ def test_high016_ready_retry_preempts_queued_primary_under_strict_max_workers_ca
             with lock:
                 state["active"] -= 1
 
+    monkeypatch.setattr(pipeline._DaemonExecutor, "submit_delayed", spy_submit_delayed)
     monkeypatch.setattr(pipeline, "_retrieve_stream", fake_retrieve)
     monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
     try:
@@ -675,12 +686,148 @@ def test_high016_ready_retry_preempts_queued_primary_under_strict_max_workers_ca
         release_hn.set()
 
     assert attempts["x"] == 2
-    assert state["peak"] == 2
+    assert state["peak"] <= 3  # max_workers (2) + at most 1 overflow retry worker
     assert order == ["x-retry", "bluesky"], (
         f"ready retry must run ahead of queued primary search: {order}"
     )
     assert len(report.items_by_source.get("x", [])) == 1
     assert report.source_status["x"].state == health.OK
+
+
+def test_high016_full_pool_during_backoff_still_runs_retry_within_bounded_burst(monkeypatch):
+    """When all max_workers regular workers fill with long searches during a 503's
+    backoff (S1 503s, S5 takes S1's slot, S2..S5 stay busy), the single bounded
+    overflow worker must still wake at retry_at and complete S1's retry while
+    keeping total active concurrency <= max_workers + 1."""
+    monkeypatch.setattr(pipeline, "STREAM_FUTURE_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(pipeline, "_TRANSIENT_RETRY_DELAY_SECONDS", 0.05)
+
+    # internal_subrun=True -> max_workers=4 across 5 streams (x + 4 slow sources).
+    plan = {
+        "intent": "general",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "story",
+        "subqueries": [
+            {
+                "label": "primary",
+                "search_query": "saturated backoff probe",
+                "ranking_query": "saturated backoff probe",
+                "sources": ["x", "reddit", "hackernews", "bluesky", "arxiv"],
+            },
+        ],
+        "source_weights": {
+            "x": 1.0, "reddit": 1.0, "hackernews": 1.0, "bluesky": 1.0, "arxiv": 1.0,
+        },
+    }
+    release_slow = threading.Event()
+    all_four_slow_active = threading.Event()
+    slow_seen: set[str] = set()
+    retry_saw_all_slow_blocked: list[bool] = []
+    attempts: dict[str, int] = {"x": 0}
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
+    today = dates.get_date_range(5)[0]
+
+    def fake_retrieve(**kwargs):
+        source = kwargs["source"]
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        try:
+            if source != "x":
+                with lock:
+                    slow_seen.add(source)
+                    if len(slow_seen) == 4:
+                        all_four_slow_active.set()
+                release_slow.wait(timeout=5.0)
+                return [], {}
+            with lock:
+                attempts["x"] += 1
+                attempt = attempts["x"]
+            if attempt == 1:
+                raise http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
+            # All 4 slow searches must already be holding the 4 regular workers,
+            # and none have been released yet when the overflow retry runs.
+            assert all_four_slow_active.wait(timeout=2.0)
+            retry_saw_all_slow_blocked.append(not release_slow.is_set())
+            release_slow.set()
+            return (
+                [
+                    {
+                        "id": "X-OVERFLOW",
+                        "text": "Saturated backoff probe recovered via single overflow retry worker",
+                        "url": "https://x.com/alice/status/101",
+                        "author_handle": "alice",
+                        "date": today,
+                        "engagement": {"likes": 55},
+                        "relevance": 0.9,
+                    }
+                ],
+                {},
+            )
+        finally:
+            with lock:
+                state["active"] -= 1
+
+    monkeypatch.setattr(pipeline, "_retrieve_stream", fake_retrieve)
+    monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
+    try:
+        report = pipeline.run(
+            topic="saturated backoff probe",
+            config={},
+            depth="default",
+            requested_sources=["x", "reddit", "hackernews", "bluesky", "arxiv"],
+            mock=True,
+            external_plan=plan,
+            web_backend="none",
+            internal_subrun=True,
+        )
+    finally:
+        release_slow.set()
+
+    assert attempts["x"] == 2
+    assert len(slow_seen) == 4
+    assert retry_saw_all_slow_blocked == [True]
+    assert state["peak"] <= 5, f"peak concurrency exceeded max_workers + 1 (peak={state['peak']})"
+    assert len(report.items_by_source.get("x", [])) == 1
+    assert report.source_status["x"].state == health.OK
+
+
+def test_high016_priority_queue_beats_pending_on_shared_regular_worker():
+    """Directly verify _priority_pending preempts _pending when a regular worker
+    frees up while the single overflow worker is already occupied."""
+    release_s1 = threading.Event()
+    release_r1 = threading.Event()
+    s1_started = threading.Event()
+    r1_started = threading.Event()
+    order: list[str] = []
+
+    try:
+        with pipeline._abandoning_executor(max_workers=1) as pool:
+            f_s1 = pool.submit(lambda: (s1_started.set(), release_s1.wait(timeout=5.0))[1])
+            assert s1_started.wait(timeout=2.0)
+
+            # Occupy the single overflow worker with r1.
+            f_r1 = pool.submit_delayed(
+                time.monotonic(), lambda: (r1_started.set(), release_r1.wait(timeout=5.0))[1],
+            )
+            assert r1_started.wait(timeout=2.0)
+
+            # Queue regular s2 first, then ready retry r2; when s1 frees the
+            # regular worker, r2 must run before s2.
+            f_s2 = pool.submit(lambda: order.append("s2"))
+            f_r2 = pool.submit_delayed(time.monotonic(), lambda: order.append("r2"))
+            release_s1.set()
+            f_s1.result(timeout=2.0)
+            f_r2.result(timeout=2.0)
+            f_s2.result(timeout=2.0)
+            release_r1.set()
+            f_r1.result(timeout=2.0)
+    finally:
+        release_s1.set()
+        release_r1.set()
+
+    assert order == ["r2", "s2"]
 
 
 def test_high016_multiple_delayed_retries_run_in_parallel_and_cancel_cleanly_on_shutdown():

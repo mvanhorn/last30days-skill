@@ -317,7 +317,9 @@ class _DaemonExecutor:
 
     Supports :meth:`submit_delayed` for retries whose backoff consumes zero
     worker slots while waiting and whose ready work runs ahead of queued
-    regular submissions.
+    regular submissions. When all ``max_workers`` regular workers are busy and
+    a delayed or priority retry needs to run, at most one bounded overflow
+    daemon worker is spawned for priority retries only (never regular work).
     """
 
     def __init__(self, max_workers: int) -> None:
@@ -333,6 +335,7 @@ class _DaemonExecutor:
             tuple[float, int, Future, Callable[..., Any], tuple[Any, ...], dict[str, Any]]
         ] = []
         self._threads: set[threading.Thread] = set()
+        self._overflow_worker: threading.Thread | None = None
         self._idle_workers = 0
         self._shutdown = False
         self._next_worker_id = 0
@@ -356,6 +359,33 @@ class _DaemonExecutor:
         while needed > 0 and len(self._threads) < self._max_workers:
             self._spawn_worker_locked()
             needed -= 1
+        if (
+            (self._delayed or self._priority_pending)
+            and self._idle_workers == 0
+            and len(self._threads) >= self._max_workers
+            and self._overflow_worker is None
+        ):
+            worker = threading.Thread(
+                target=self._overflow_worker_loop,
+                name="last30days-daemon-retry-overflow",
+                daemon=True,
+            )
+            self._overflow_worker = worker
+            worker.start()
+
+    def _execute_item(
+        self,
+        item: tuple[Future, Callable[..., Any], tuple[Any, ...], dict[str, Any]],
+    ) -> None:
+        future, fn, args, kwargs = item
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as exc:
+            future.set_exception(exc)
+        else:
+            future.set_result(result)
 
     def _promote_delayed_locked(self) -> int:
         promoted = 0
@@ -415,7 +445,11 @@ class _DaemonExecutor:
                             item = None
                         if item is not None:
                             self._ensure_workers_locked()
-                            if self._priority_pending or self._pending:
+                            if (
+                                self._priority_pending
+                                or self._pending
+                                or self._overflow_worker is not None
+                            ):
                                 self._cond.notify_all()
                             break
                         if self._shutdown and not self._delayed:
@@ -429,21 +463,43 @@ class _DaemonExecutor:
                             self._cond.wait(timeout=wait_timeout)
                         finally:
                             self._idle_workers -= 1
-                future, fn, args, kwargs = item
-                if not future.set_running_or_notify_cancel():
-                    item = future = fn = args = kwargs = None
-                    continue
-                try:
-                    result = fn(*args, **kwargs)
-                except BaseException as exc:
-                    future.set_exception(exc)
-                else:
-                    future.set_result(result)
-                finally:
-                    item = future = fn = args = kwargs = None
+                self._execute_item(item)
+                item = None
         finally:
             with self._cond:
                 self._threads.discard(threading.current_thread())
+
+    def _overflow_worker_loop(self) -> None:
+        try:
+            while True:
+                with self._cond:
+                    while True:
+                        self._promote_delayed_locked()
+                        if self._priority_pending:
+                            if self._idle_workers > 0:
+                                self._cond.notify_all()
+                                self._cond.wait(timeout=0.05)
+                                continue
+                            item = self._priority_pending.popleft()
+                            if self._priority_pending:
+                                self._cond.notify_all()
+                            break
+                        if self._delayed:
+                            if self._idle_workers > 0:
+                                self._cond.notify_all()
+                                self._overflow_worker = None
+                                return
+                            wait_timeout = max(0.0, self._delayed[0][0] - time.monotonic())
+                            self._cond.wait(timeout=wait_timeout)
+                            continue
+                        self._overflow_worker = None
+                        return
+                self._execute_item(item)
+                item = None
+        finally:
+            with self._cond:
+                if self._overflow_worker is threading.current_thread():
+                    self._overflow_worker = None
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
         with self._cond:
@@ -460,6 +516,8 @@ class _DaemonExecutor:
                     future.cancel()
             self._cond.notify_all()
             threads = list(self._threads) if wait else []
+            if wait and self._overflow_worker is not None:
+                threads.append(self._overflow_worker)
         current = threading.current_thread()
         for thread in threads:
             if thread is not current:
