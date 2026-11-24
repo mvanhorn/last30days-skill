@@ -230,6 +230,27 @@ class TestHigh139GrokWrapperParsing:
         assert items_uc[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
         assert "Example payload:" in items_uc[0]["text"]
 
+    def test_wrapper_with_numeric_id_username_and_structured_result_still_unwraps(self):
+        structured_wrapper = {
+            "id": 42,
+            "username": "cli_bot",
+            "result": {
+                "posts": [
+                    {
+                        "id": IN_WINDOW_ID,
+                        "username": "alice",
+                        "text": "wrapped inside structured result",
+                        "likes": 77,
+                    }
+                ]
+            },
+        }
+        items = grok_x.parse_x_response({"text": json.dumps(structured_wrapper)}, "alice", *WINDOW)
+        assert len(items) == 1
+        assert items[0]["author_handle"] == "alice"
+        assert items[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
+        assert items[0]["text"] == "wrapped inside structured result"
+
     def test_top_level_json_array_of_cli_wrappers_unwraps_prose_and_collections(self):
         prose_stream = [
             {"type": "system", "message": "init"},
@@ -754,7 +775,31 @@ class TestHigh149XquikRateLimitAndErrorSurfacing:
         assert result["items"] == []
         assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
 
-    def test_query_text_with_403_forbidden_does_not_outrank_real_429(self):
+    def test_query_text_with_403_forbidden_does_not_outrank_real_429_or_misclassify_503(self):
+        # Single-query 503 for topic "403 Forbidden" must stay health.ERROR (never AUTH_FAILED)
+        # both directly and downstream in pipeline._attempt_x_backend.
+        with mock.patch("lib.xquik.expand_xquik_queries", return_value=["403 Forbidden"]), \
+             mock.patch(
+                 "lib.xquik.http.get",
+                 side_effect=http.HTTPError("HTTP 503: Service Unavailable", status_code=503),
+             ):
+            single = xquik.search_xquik("403 Forbidden", FROM, TO, depth="quick", token="dummy-key")
+        assert single["items"] == []
+        assert "403 Forbidden" not in single["error"]
+        assert http.classify_failure(message=single["error"]) == health.ERROR
+
+        with mock.patch("lib.xquik.expand_xquik_queries", return_value=["403 Forbidden"]), \
+             mock.patch(
+                 "lib.xquik.http.get",
+                 side_effect=http.HTTPError("HTTP 503: Service Unavailable", status_code=503),
+             ):
+            _, detail, state = pipeline._attempt_x_backend(
+                "xquik", "403 Forbidden", FROM, TO, "quick", {"XQUIK_API_KEY": "dummy-key"},
+            )
+        assert detail
+        assert state == health.ERROR
+
+        # Multi-query: 503 on "403 Forbidden" followed by 429 -> 429 wins as RATE_LIMITED.
         with mock.patch("lib.xquik.expand_xquik_queries", return_value=["403 Forbidden", "followup query"]), \
              mock.patch(
                  "lib.xquik.http.get",
@@ -767,7 +812,8 @@ class TestHigh149XquikRateLimitAndErrorSurfacing:
 
         assert mock_get.call_count == 2
         assert result["items"] == []
-        assert "followup query" in result["error"]
+        assert "403 Forbidden" not in result["error"]
+        assert "Too Many Requests" in result["error"]
         assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
 
     def test_429_through_real_http_get_makes_single_attempt_without_retry(self, monkeypatch):
@@ -791,6 +837,52 @@ class TestHigh149XquikRateLimitAndErrorSurfacing:
         assert len(attempts) == 1
         assert result["items"] == []
         assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
+
+    def test_handle_search_keeps_default_429_retry_while_topic_search_caps_at_one(self, monkeypatch):
+        # Mocked check: search_xquik passes max_429_retries=1; search_handles does not.
+        with mock.patch("lib.xquik.http.get", return_value={"tweets": []}) as mock_get:
+            xquik.search_xquik("topic", FROM, TO, depth="quick", token="dummy-key")
+            assert mock_get.call_args.kwargs.get("max_429_retries") == 1
+            mock_get.reset_mock()
+            xquik.search_handles(["alice"], "topic", FROM, TO, token="dummy-key")
+            assert "max_429_retries" not in mock_get.call_args.kwargs
+
+        # End-to-end check: a brief 429 on search_handles retries and recovers the handle's post.
+        calls = {"n": 0}
+        tweet_payload = json.dumps({
+            "tweets": [
+                {
+                    "id": "555",
+                    "text": "recovered after transient 429",
+                    "createdAt": "2026-08-20T12:00:00Z",
+                    "author": {"username": "alice"},
+                }
+            ]
+        }).encode("utf-8")
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    429,
+                    "Too Many Requests",
+                    hdrs={"Retry-After": "0.01"},
+                    fp=BytesIO(b'{"error":"brief rate limit"}'),
+                )
+            resp = mock.MagicMock()
+            resp.__enter__.return_value = resp
+            resp.__exit__.return_value = False
+            resp.status = 200
+            resp.read.return_value = tweet_payload
+            return resp
+
+        monkeypatch.setattr(http.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(http.time, "sleep", lambda _s: None)
+        items = xquik.search_handles(["alice"], "topic", FROM, TO, token="dummy-key")
+        assert calls["n"] == 2
+        assert len(items) == 1
+        assert items[0]["url"] == "https://x.com/alice/status/555"
 
     def test_429_after_first_query_items_stops_remaining_queries_and_keeps_items(self):
         tweet = {

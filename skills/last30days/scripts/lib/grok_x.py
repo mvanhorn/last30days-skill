@@ -613,12 +613,18 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
             posts = _posts_from_json_value(value[key], depth=depth + 1)
             if posts:
                 return posts
+    for key in ("content", "message", "result", "text", "output"):
+        inner = value.get(key)
+        if isinstance(inner, (list, dict)):
+            posts = _posts_from_json_value(inner, depth=depth + 1)
+            if posts:
+                return posts
     direct = _fields_from_json_obj(value)
     if direct is not None:
         return [direct]
     for key in ("content", "message", "result", "text", "output"):
         inner = value.get(key)
-        if isinstance(inner, (str, list, dict)):
+        if isinstance(inner, str):
             posts = _posts_from_json_value(inner, depth=depth + 1)
             if posts:
                 return posts
