@@ -246,6 +246,21 @@ def _merge_reddit_fields(existing: schema.SourceItem, incoming: schema.SourceIte
         } - {None, ""}
         if sources:
             existing.metadata["comments_source"] = "+".join(sorted(sources))
+    in_meta = incoming.metadata if isinstance(incoming.metadata, dict) else {}
+    mine_date = str(existing.metadata.get("matched_comment_date") or "").strip()
+    theirs_date = str(in_meta.get("matched_comment_date") or "").strip()
+    mine_url = str(existing.metadata.get("matched_comment_url") or "").strip()
+    theirs_url = str(in_meta.get("matched_comment_url") or "").strip()
+    if theirs_date and (
+        not mine_date
+        or theirs_date > mine_date
+        or (theirs_date == mine_date and not mine_url and theirs_url)
+    ):
+        existing.metadata["matched_comment_date"] = theirs_date
+        if theirs_url:
+            existing.metadata["matched_comment_url"] = theirs_url
+        else:
+            existing.metadata.pop("matched_comment_url", None)
 
 
 def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.SourceItem]:

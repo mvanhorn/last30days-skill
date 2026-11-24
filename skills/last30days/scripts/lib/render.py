@@ -2134,12 +2134,13 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                 else []
             )
             if top_comments:
-                vote_label = _vote_label_for(item.source)
+                comment_source = _comment_source(item)
+                vote_label = _vote_label_for(comment_source)
                 for tc in top_comments:
                     excerpt = str(
                         tc.get("excerpt") or tc.get("body") or tc.get("text") or ""
                     )
-                    attribution = _comment_attribution(item.source, tc.get("author"))
+                    attribution = _comment_attribution(comment_source, tc.get("author"))
                     vote_part = _format_vote_part(tc.get("score", ""), vote_label)
                     lines.append(
                         f"  Top comment {attribution}{vote_part}: "
@@ -3262,11 +3263,11 @@ def _render_candidate(
         lines.append(
             f"   - Evidence: {_format_untrusted_evidence(candidate.snippet, 360)}"
         )
+    comment_source = _comment_source(primary) if primary else None
     for tc in _top_comments_list(primary):
         excerpt = str(tc.get("excerpt") or tc.get("body") or tc.get("text") or "")
-        vote_label = _vote_label_for(primary.source) if primary else "upvotes"
-        source = primary.source if primary else None
-        attribution = _comment_attribution(source, tc.get("author"))
+        vote_label = _vote_label_for(comment_source) if comment_source else "upvotes"
+        attribution = _comment_attribution(comment_source, tc.get("author"))
         vote_part = _format_vote_part(tc.get("score", ""), vote_label)
         # HN comment lines carry their own link: the candidate URL above is
         # the article, not where the quote was said.
@@ -5184,14 +5185,15 @@ def _top_comments_list(
     """
     if not item:
         return []
-    raw_comments = (item.metadata or {}).get("top_comments")
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    raw_comments = metadata.get("top_comments")
     if not isinstance(raw_comments, (list, tuple)):
         return []
     comments = [c for c in raw_comments if isinstance(c, dict)]
     if not comments:
         return []
     if min_score is None:
-        min_score = _TOP_COMMENT_MIN_SCORE.get(item.source, 0)
+        min_score = _TOP_COMMENT_MIN_SCORE.get(_comment_source(item), 0)
     # A pending comment (a fresh archive snapshot, score withheld) is exempt
     # from the vote floor; it is listed after every scored comment and printed
     # with no vote count.

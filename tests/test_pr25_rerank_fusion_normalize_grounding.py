@@ -742,6 +742,139 @@ class TestHigh105FusionMultiItemIntegrity:
             c["excerpt"] = "overwritten"
         assert low.metadata["top_comments"][0]["excerpt"] == "second comment"
 
+    def test_reddit_promotion_and_merge_preserve_paired_matched_comment_date_and_url(self):
+        thread_url = "https://www.reddit.com/r/python/comments/abc123/old_thread/"
+        comment_url = "https://www.reddit.com/r/python/comments/abc123/old_thread/c1/"
+        matched_copy = schema.SourceItem(
+            item_id="R-comment",
+            source="reddit",
+            title="Old thread with fresh comment",
+            body="Old thread with fresh comment",
+            url=comment_url,
+            published_at="2024-01-01",
+            date_confidence="high",
+            local_relevance=0.4,
+            freshness=50,
+            source_quality=0.6,
+            engagement={"score": 20, "num_comments": 5},
+            metadata={
+                "matched_comment_date": "2026-11-20",
+                "matched_comment_url": comment_url,
+            },
+        )
+        higher_copy = schema.SourceItem(
+            item_id="R-thread",
+            source="reddit",
+            title="Old thread with fresh comment (higher rank)",
+            body="Old thread with fresh comment",
+            url=thread_url,
+            published_at="2024-01-01",
+            date_confidence="high",
+            local_relevance=0.95,
+            freshness=50,
+            source_quality=0.6,
+            engagement={"score": 300, "num_comments": 50},
+            metadata={},
+        )
+        plan = _plan("python", ["reddit"])
+        streams = {
+            ("primary", "reddit"): [matched_copy],
+            ("secondary", "reddit"): [higher_copy],
+        }
+        [cand] = fusion.weighted_rrf(
+            streams,
+            plan,
+            pool_limit=10,
+            range_from="2026-10-25",
+            range_to="2026-11-24",
+        )
+        primary = schema.candidate_primary_item(cand)
+        assert primary is cand.source_items[0]
+        assert primary.item_id == "R-thread"
+        assert primary.metadata["matched_comment_date"] == "2026-11-20"
+        assert primary.metadata["matched_comment_url"] == comment_url
+        assert not schema.candidate_out_of_window(cand)
+
+        # Newer matched_comment_date wins together with its paired matched_comment_url.
+        older = schema.SourceItem(
+            item_id="R-old",
+            source="reddit",
+            title="Old thread",
+            body="Old thread",
+            url=thread_url,
+            published_at="2024-01-01",
+            metadata={
+                "matched_comment_date": "2026-11-10",
+                "matched_comment_url": "https://www.reddit.com/r/python/comments/abc123/old_thread/c_old/",
+            },
+        )
+        newer = schema.SourceItem(
+            item_id="R-new",
+            source="reddit",
+            title="Old thread",
+            body="Old thread",
+            url=thread_url,
+            published_at="2024-01-01",
+            metadata={
+                "matched_comment_date": "2026-11-22",
+                "matched_comment_url": "https://www.reddit.com/r/python/comments/abc123/old_thread/c_new/",
+            },
+        )
+        merged_newer = fusion.merge_source_items(older, newer)
+        assert merged_newer.metadata["matched_comment_date"] == "2026-11-22"
+        assert merged_newer.metadata["matched_comment_url"] == (
+            "https://www.reddit.com/r/python/comments/abc123/old_thread/c_new/"
+        )
+
+        # When a newer date has no URL, stale URL from the older reply is cleared (never mismatched).
+        newer_no_url = schema.SourceItem(
+            item_id="R-new-nourl",
+            source="reddit",
+            title="Old thread",
+            body="Old thread",
+            url=thread_url,
+            published_at="2024-01-01",
+            metadata={"matched_comment_date": "2026-11-24"},
+        )
+        merged_no_url = fusion.merge_source_items(merged_newer, newer_no_url)
+        assert merged_no_url.metadata["matched_comment_date"] == "2026-11-24"
+        assert "matched_comment_url" not in merged_no_url.metadata
+
+        # Same date backfills a missing URL; an older incoming date never overwrites a newer one.
+        same_date_with_url = schema.SourceItem(
+            item_id="R-same",
+            source="reddit",
+            title="Old thread",
+            body="Old thread",
+            url=thread_url,
+            published_at="2024-01-01",
+            metadata={
+                "matched_comment_date": "2026-11-24",
+                "matched_comment_url": "https://www.reddit.com/r/python/comments/abc123/old_thread/c_24/",
+            },
+        )
+        fusion.merge_source_items(merged_no_url, same_date_with_url)
+        assert merged_no_url.metadata["matched_comment_url"] == (
+            "https://www.reddit.com/r/python/comments/abc123/old_thread/c_24/"
+        )
+        stale_incoming = schema.SourceItem(
+            item_id="R-stale",
+            source="reddit",
+            title="Old thread",
+            body="Old thread",
+            url=thread_url,
+            published_at="2024-01-01",
+            metadata={
+                "matched_comment_date": "2026-11-01",
+                "matched_comment_url": "https://www.reddit.com/r/python/comments/abc123/old_thread/c_01/",
+            },
+        )
+        fusion.merge_source_items(merged_no_url, stale_incoming)
+        assert merged_no_url.metadata["matched_comment_date"] == "2026-11-24"
+        assert merged_no_url.metadata["matched_comment_url"] == (
+            "https://www.reddit.com/r/python/comments/abc123/old_thread/c_24/"
+        )
+
 
 # ---------------------------------------------------------------------------
 # HIGH-106: Recompute engagement_score, longer enrichment strings, no input mutation
@@ -1671,6 +1804,114 @@ class TestHigh107GroundingRedditCommentsAndDates:
         assert "15 upvotes" in quote_lines_pending[0]
         assert "pending_one" in quote_lines_pending[1]
         assert not any("pending_two" in ln for ln in quote_lines_pending)
+
+    def test_arctic_web_reddit_comments_apply_reddit_rules_in_cards_and_render_full(self):
+        thread_url = "https://www.reddit.com/r/python/comments/card99/hermes_agent/"
+        web_reddit = schema.SourceItem(
+            item_id="W-card",
+            source="grounding",
+            title="Hermes Agent Reddit discussion found via web",
+            body="Hermes Agent Reddit discussion found via web",
+            snippet="Web snippet for Hermes Agent thread",
+            url=thread_url,
+            published_at="2026-10-20",
+            date_confidence="high",
+            metadata={
+                "enriched_via": "arctic",
+                "reddit_thread_score": 120,
+                "reddit_subreddit": "python",
+                "top_comments": [
+                    {
+                        "id": "c0",
+                        "score": 0,
+                        "author": "zero_user",
+                        "excerpt": "Zero-vote reply should never appear on ranked cards.",
+                        "depth": 0,
+                    },
+                    {
+                        "id": "c5",
+                        "score": 5,
+                        "author": "five_user",
+                        "excerpt": "Five-vote reply is below Reddit card floor.",
+                        "depth": 0,
+                    },
+                    {
+                        "id": "c14",
+                        "score": 14,
+                        "author": "alice",
+                        "excerpt": "Fourteen-vote reply clears Reddit card floor cleanly.",
+                        "depth": 0,
+                    },
+                ],
+            },
+        )
+        # _top_comments_list enforces Reddit's 10-upvote floor for web-found Reddit threads.
+        filtered = render._top_comments_list(web_reddit)
+        assert [c["id"] for c in filtered] == ["c14"]
+
+        cand = schema.Candidate(
+            candidate_id=thread_url,
+            item_id="W-card",
+            source="grounding",
+            title=web_reddit.title,
+            url=thread_url,
+            snippet=web_reddit.snippet,
+            subquery_labels=["primary"],
+            native_ranks={"primary:grounding": 1},
+            local_relevance=0.9,
+            freshness=85,
+            engagement=None,
+            source_quality=1.0,
+            rrf_score=0.03,
+            sources=["grounding"],
+            source_items=[web_reddit],
+            final_score=72.0,
+        )
+        cluster = schema.Cluster(
+            cluster_id="cl1",
+            title=web_reddit.title,
+            candidate_ids=[cand.candidate_id],
+            representative_ids=[cand.candidate_id],
+            sources=["grounding"],
+            score=cand.final_score,
+        )
+        report = schema.Report(
+            topic="Hermes Agent",
+            range_from="2026-10-01",
+            range_to="2026-10-31",
+            generated_at="2026-10-31T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("local", "m", "m"),
+            query_plan=_plan("Hermes Agent", ["grounding"]),
+            clusters=[cluster],
+            ranked_candidates=[cand],
+            items_by_source={"grounding": [web_reddit]},
+            errors_by_source={},
+        )
+
+        # Ranked card keeps [grounding] badge (item.source stays "grounding", never rewritten to reddit),
+        # rejects <10-vote replies, and formats qualifying replies with Reddit's u/ byline and "upvotes" label.
+        card_text = "\n".join(render._render_candidate(cand, "1.", report))
+        assert "1. [grounding]" in card_text
+        assert "1. [reddit]" not in card_text
+        assert "zero_user" not in card_text
+        assert "five_user" not in card_text
+        assert "u/alice (14 upvotes):" in card_text
+        assert "14 votes" not in card_text
+
+        compact_text = render.render_compact(report)
+        clusters_section = compact_text.split("## Top Community Comments")[0]
+        assert "[grounding]" in clusters_section
+        assert "[reddit]" not in clusters_section
+        assert "u/alice (14 upvotes):" in clusters_section
+        assert "zero_user" not in compact_text
+        assert "five_user" not in clusters_section
+
+        # render_full also uses Reddit's u/ byline and "upvotes" label while keeping source="grounding".
+        full_text = render.render_full(report)
+        assert "Top comment u/alice (14 upvotes):" in full_text
+        assert "Top comment u/zero_user (0 upvotes):" in full_text
+        assert "14 votes" not in full_text
+        assert web_reddit.source == "grounding"
 
 
 # ---------------------------------------------------------------------------
