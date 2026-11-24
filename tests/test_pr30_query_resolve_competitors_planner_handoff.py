@@ -796,9 +796,15 @@ def test_greptile_f1_lookback_days_3650_round_trips_and_over_limit_rejected_befo
         ("Best Buy", "Best Buy"),
         ("Best Buy earnings", "Best Buy"),
         ("Best Buy layoffs", "Best Buy"),
+        ("Best Buy in 2026", "Best Buy"),
+        ("Best Buy for laptops", "Best Buy"),
+        ("Best Buy deals", "Best Buy"),
         ("Best Buy vs Target", "Best Buy"),
         ("Target vs Best Buy", "Best Buy"),
+        ("Best Western", "Best Western"),
         ("The Verge", "The Verge"),
+        ("The Verge on AI", "The Verge"),
+        ("The Verge in 2026", "The Verge"),
         ("The Verge review", "The Verge"),
         ("The Verge layoffs", "The Verge"),
         ("The Economist", "The Economist"),
@@ -829,7 +835,9 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     assert query.extract_compound_terms("Best AI Tools") == []
     assert query.extract_compound_terms("Best VPN for travel") == []
     assert query.extract_compound_terms("Best VPN") == []
+    assert query.extract_compound_terms("Best Camera deals") == []
     assert query.extract_compound_terms("Best Camera for travel") == []
+    assert query.extract_compound_terms("Best Monitor") == []
     assert query.extract_compound_terms("Best Laptops") == []
     assert query.extract_compound_terms("Best Laptops for travel") == []
     assert query.extract_compound_terms("Top CRM for startups") == []
@@ -840,6 +848,7 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     assert query.extract_compound_terms("The Future of AI agents") == []
     assert query.extract_compound_terms("The State of Python") == []
     assert query.extract_compound_terms("The State of Python programming") == []
+    assert query.extract_compound_terms("The Rise of Rust") == []
     assert query.extract_compound_terms("New VPN for travel") == []
     assert query.extract_compound_terms("New Balance vs On Running") == [
         "New Balance",
@@ -852,7 +861,9 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     [
         ("Best VPN for travel", "vpn travel"),
         ("Best VPN", "vpn"),
+        ("Best Camera deals", "camera deals"),
         ("Best Camera for travel", "camera travel"),
+        ("Best Monitor", "monitor"),
         ("Best Laptops for travel", "laptops travel"),
         ("Top CRM for startups", "crm startups"),
         ("Top AI tools for coding", "ai coding"),
@@ -860,6 +871,7 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
         ("The Best VPN for travel", "vpn travel"),
         ("The Future of AI agents", "future ai agents"),
         ("The State of Python", "state python"),
+        ("The Rise of Rust", "rise rust"),
         ("New VPN for travel", "vpn travel"),
     ],
 )
@@ -889,7 +901,12 @@ def test_greptile_r2_f1_recommendation_prompts_never_quote_prompt_filler(
         ("Best Buy", '"Best Buy"'),
         ("Best Buy earnings", '"Best Buy" earnings'),
         ("Best Buy layoffs", '"Best Buy" layoffs'),
+        ("Best Buy in 2026", '"Best Buy" 2026'),
+        ("Best Buy for laptops", '"Best Buy" laptops'),
+        ("Best Buy deals", '"Best Buy" deals'),
         ("The Verge", '"The Verge"'),
+        ("The Verge on AI", '"The Verge" ai'),
+        ("The Verge in 2026", '"The Verge" 2026'),
         ("The Verge review", '"The Verge"'),
     ],
 )

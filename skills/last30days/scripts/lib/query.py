@@ -194,6 +194,7 @@ _COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
 # "New York Times", "On Running", "On Running Cloudmonster") and stay intact
 # unless paired directly with an ALL-CAPS generic acronym ("New VPN for travel").
 _BRAND_LEADING_WORDS = frozenset({'new', 'on'})
+_BEST_BRAND_SECOND_WORDS = frozenset({'buy', 'western'})
 # All other edge noise words (recommendation/superlative/question/grammar
 # prompt fillers such as "best", "top", "good", "great", "free", "the", "for")
 # trim unconditionally from the start of a capitalized run so recommendation
@@ -205,14 +206,7 @@ _TITLE_CASE_CONNECTORS = frozenset({
     'a', 'an', 'the', 'for', 'of', 'in', 'on', 'to', 'with', 'and', 'or', 'vs',
 })
 _ENTITY_JOINERS = frozenset({'and', 'or', 'vs'})
-_RECOMMENDATION_TRAILING_RE = re.compile(
-    r"^\s+(?:for|in|to|under|of|on|with|by|near|around|20\d\d)\b",
-    re.IGNORECASE,
-)
-_THE_GENERIC_TRAILING_RE = re.compile(
-    r"^\s+(?:of|for|in|to|about|behind|around|between|on|with)\b",
-    re.IGNORECASE,
-)
+_THE_OF_PHRASE_RE = re.compile(r"^\s+of\b", re.IGNORECASE)
 
 
 def _is_capitalized_or_brand(tok: str) -> bool:
@@ -230,15 +224,16 @@ def _should_preserve_leading_word(
     topic: str,
 ) -> bool:
     """Keep leading noise words only when they open a real multi-word brand
-    ('New Balance', 'On Running', 'The Verge', 'Best Buy earnings') rather
-    than generic/recommendation phrases ('The Future of AI agents', 'Best VPN
-    for travel', 'Best Camera for travel', 'Best Laptops', 'The Best VPN')."""
+    ('New Balance', 'On Running', 'The Verge', 'Best Buy', 'Best Western')
+    rather than generic/recommendation phrases ('The Future of AI agents',
+    'Best VPN for travel', 'Best Camera deals', 'Best Laptops', 'The Best VPN')."""
     if len(words) < 2:
         return False
     first = words[0].lower()
     if first in _BRAND_LEADING_WORDS:
         return not (len(words) == 2 and words[1].isupper())
-    after = topic[match.end():]
+    if first == 'best':
+        return len(words) == 2 and words[1].lower() in _BEST_BRAND_SECOND_WORDS
     if first == 'the':
         if not (
             len(words) == 2
@@ -246,16 +241,8 @@ def _should_preserve_leading_word(
             and words[1].lower() not in _COMPOUND_EDGE_NOISE
         ):
             return False
-        return not _THE_GENERIC_TRAILING_RE.match(after)
-    if first == 'best':
-        if not (
-            len(words) == 2
-            and _is_title_case_word(words[1])
-            and not words[1].lower().endswith('s')
-            and words[1].lower() not in _COMPOUND_EDGE_NOISE
-        ):
-            return False
-        return not _RECOMMENDATION_TRAILING_RE.match(after)
+        after = topic[match.end():]
+        return not _THE_OF_PHRASE_RE.match(after)
     return False
 
 
@@ -266,9 +253,9 @@ def _is_title_cased_prompt(topic: str) -> bool:
     Recognizes both strict every-word Title Case ("Best AI Coding Tools For
     Python Developers") and standard English Title Case with lowercase minor
     connectors ("Best AI Coding Tools for Python Developers"), while keeping
-    bare multi-entity pairs like "Claude Code and React Native", "New Balance
-    vs On Running", "Best Buy vs Target", or "React Server Components vs Astro
-    Islands" eligible.
+    short brand-plus-subject queries ("The Verge on AI") and bare multi-entity
+    pairs ("Claude Code and React Native", "New Balance vs On Running",
+    "Best Buy vs Target") eligible.
     """
     alpha_words = [
         tok for tok in re.findall(r"\w+(?:['\u2019-]\w+)*", topic)
@@ -281,10 +268,13 @@ def _is_title_cased_prompt(topic: str) -> bool:
     lowercase_words = [tok for tok in alpha_words if not _is_capitalized_or_brand(tok)]
     if not all(tok in _TITLE_CASE_CONNECTORS for tok in lowercase_words):
         return False
-    # All non-connector words are capitalized. Treat as a Title-Cased prompt
-    # unless the only lowercase words are entity list/comparison joiners
-    # ("and"/"or"/"vs") with no prompt-only framing words among the rest.
+    # All non-connector words are capitalized. Require at least 4 capitalized
+    # words so short queries like "The Verge on AI" stay eligible, and keep
+    # bare entity comparisons/lists ("and"/"or"/"vs") eligible unless they
+    # carry prompt-only framing noise.
     non_connector_words = [tok for tok in alpha_words if tok not in _TITLE_CASE_CONNECTORS]
+    if len(non_connector_words) < 4:
+        return False
     if all(tok in _ENTITY_JOINERS for tok in lowercase_words) and not any(
         tok.lower() in _PROMPT_ONLY_NOISE for tok in non_connector_words
     ):
