@@ -8429,6 +8429,7 @@ def _retrieve_stream_impl(
         # Use raw_topic so expand_tiktok_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         tiktok_query = raw_topic or subquery.search_query
+        has_ytdlp, ssh_host = _resolve_ytdlp(config)
 
         def _fetch_tiktok() -> tuple[list[dict], dict]:
             # Leave time to publish collected videos before the outer stream wait expires.
@@ -8506,23 +8507,26 @@ def _retrieve_stream_impl(
                     result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
 
-        return fetch_memo.fetch_once(
-            (
-                "tiktok", tiktok_query, from_date, to_date, depth,
-                bool(env.get_tiktok_token(config)),
-                tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
-                env.is_tiktok_comments_available(config),
-                env.is_tiktok_public_comments_on(config),
-            ),
-            _fetch_tiktok,
-            timeout=_memo_wait_seconds(config),
-            cacheable=_clean_stream_result,
-            cancel=config.get("_enrich_cancel"),
-        )
+        with youtube_yt.ssh_host_scope(ssh_host):
+            return fetch_memo.fetch_once(
+                (
+                    "tiktok", tiktok_query, from_date, to_date, depth,
+                    bool(env.get_tiktok_token(config)),
+                    has_ytdlp, ssh_host,
+                    tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
+                    env.is_tiktok_comments_available(config),
+                    env.is_tiktok_public_comments_on(config),
+                ),
+                _fetch_tiktok,
+                timeout=_memo_wait_seconds(config),
+                cacheable=_clean_stream_result,
+                cancel=config.get("_enrich_cancel"),
+            )
     if source == "instagram":
         # Use raw_topic so expand_instagram_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         ig_query = raw_topic or subquery.search_query
+        has_ytdlp, ssh_host = _resolve_ytdlp(config)
         ig_deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
         # Leave time to publish collected reels before the outer stream wait expires.
         remaining = max(0, ig_deadline - time.monotonic())
@@ -8558,18 +8562,20 @@ def _retrieve_stream_impl(
                 )
             return items, _result_outcome_artifact(source, result)
 
-        return fetch_memo.fetch_once(
-            (
-                "instagram", ig_query, from_date, to_date, depth,
-                bool(env.get_instagram_token(config)),
-                tuple(ig_creators or ()),
-                env.is_instagram_comments_available(config),
-            ),
-            _fetch_instagram,
-            timeout=_memo_wait_seconds(config),
-            cacheable=_clean_stream_result,
-            cancel=ig_cancel,
-        )
+        with youtube_yt.ssh_host_scope(ssh_host):
+            return fetch_memo.fetch_once(
+                (
+                    "instagram", ig_query, from_date, to_date, depth,
+                    bool(env.get_instagram_token(config)),
+                    has_ytdlp, ssh_host,
+                    tuple(ig_creators or ()),
+                    env.is_instagram_comments_available(config),
+                ),
+                _fetch_instagram,
+                timeout=_memo_wait_seconds(config),
+                cacheable=_clean_stream_result,
+                cancel=ig_cancel,
+            )
     if source == "linkedin":
         token = config.get("SCRAPECREATORS_API_KEY", "")
         result = linkedin.search_linkedin(

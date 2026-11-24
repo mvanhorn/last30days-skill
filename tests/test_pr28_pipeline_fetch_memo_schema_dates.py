@@ -684,6 +684,101 @@ class TestHigh023YoutubeSshHostAvailabilityAndStream:
         assert "_source_outcome" not in artifact
         assert "LAST30DAYS_YOUTUBE_SSH_HOST" not in os.environ
 
+    @pytest.mark.parametrize(
+        ("source", "urls"),
+        [
+            (
+                "tiktok",
+                [
+                    "https://www.tiktok.com/@acmedev/video/7621000000000000001",
+                    "https://www.tiktok.com/@acmedev/video/7621000000000000002",
+                ],
+            ),
+            (
+                "instagram",
+                [
+                    "https://www.instagram.com/reel/DWabcd12341/",
+                    "https://www.instagram.com/reel/DWabcd12342/",
+                ],
+            ),
+        ],
+    )
+    def test_shortform_streams_and_multibatch_workers_inherit_config_ssh_host_scope(
+        self, monkeypatch, source, urls,
+    ):
+        import json
+        from lib import shortform_oss, subproc
+
+        monkeypatch.setattr(youtube_yt.shutil, "which", lambda _cmd: None)
+        monkeypatch.delenv("LAST30DAYS_YOUTUBE_SSH_HOST", raising=False)
+
+        config = {
+            "LAST30DAYS_YOUTUBE_SSH_HOST": "macmini",
+            "EXCLUDE_SOURCES": "tiktok_comments,instagram_comments",
+        }
+        assert source in pipeline.available_sources(config)
+
+        seen_cmds: list[list[str]] = []
+        seen_enrich_worker_hosts: list[str | None] = []
+        lock = threading.Lock()
+
+        def _fake_run(cmd, *, input_text="", **_kwargs):
+            with lock:
+                seen_cmds.append(list(cmd))
+            if "--flat-playlist" in " ".join(cmd):
+                return subproc.SubprocResult(returncode=0, stdout="", stderr="")
+            url = input_text.strip()
+            vid = url.rstrip("/").split("/")[-1]
+            with lock:
+                seen_enrich_worker_hosts.append(youtube_yt._ytdlp_ssh_host())
+            payload = json.dumps(
+                {
+                    "id": vid,
+                    "uploader": "acmedev",
+                    "timestamp": 1774000000,  # 2026-03-20 UTC
+                    "view_count": 500,
+                    "like_count": 40,
+                    "comment_count": 5,
+                    "description": "Acme launch benchmark review",
+                    "webpage_url": url,
+                }
+            )
+            return subproc.SubprocResult(returncode=0, stdout=payload + "\n", stderr="")
+
+        with mock.patch.object(
+            shortform_oss, "discover_urls", return_value=(urls, "keyless"),
+        ), mock.patch.object(
+            shortform_oss, "_outside_window", return_value=False,
+        ), mock.patch.object(
+            shortform_oss.subproc, "run_with_timeout", side_effect=_fake_run,
+        ), mock.patch.object(
+            pipeline.tiktok, "enrich_with_comments", side_effect=lambda items, **_k: items,
+        ), mock.patch.object(
+            pipeline.instagram, "enrich_with_comments", side_effect=lambda items, **_k: items,
+        ):
+            items, artifact = pipeline._retrieve_stream_impl(
+                topic="Acme launch",
+                subquery=schema.SubQuery(
+                    label="primary",
+                    search_query="Acme launch",
+                    ranking_query="Acme launch",
+                    sources=[source],
+                ),
+                source=source,
+                config=config,
+                depth="default",
+                date_range=("2026-03-01", "2026-03-31"),
+                runtime=_make_runtime(),
+                mock=False,
+            )
+
+        assert "_source_outcome" not in artifact
+        assert len(items) == 2
+        assert len(seen_cmds) >= 2
+        assert all(cmd[0] == "ssh" and "macmini" in cmd for cmd in seen_cmds)
+        assert seen_enrich_worker_hosts == ["macmini", "macmini"]
+        assert "LAST30DAYS_YOUTUBE_SSH_HOST" not in os.environ
+
     def test_invalid_ssh_host_does_not_enable_ytdlp(self, monkeypatch, capsys):
         monkeypatch.setattr(youtube_yt.shutil, "which", lambda _cmd: None)
         monkeypatch.delenv("LAST30DAYS_YOUTUBE_SSH_HOST", raising=False)

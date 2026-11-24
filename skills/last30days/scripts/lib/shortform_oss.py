@@ -609,7 +609,10 @@ def enrich_urls(
     else:
         workers = min(_ENRICH_WORKERS, len(batches))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_enrich_batch, kind, b, deadline, cancel) for b in batches]
+            futures = [
+                http.submit_with_context(pool, _enrich_batch, kind, b, deadline, cancel)
+                for b in batches
+            ]
             outputs = [f.result() for f in futures]
     items: List[Dict[str, Any]] = []
     seen: set[str] = set()
