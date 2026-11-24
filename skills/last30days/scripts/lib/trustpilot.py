@@ -109,6 +109,9 @@ _STRICT_DOMAIN_RE = re.compile(
 _URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,15}://)[^\s/?#]+@")
 
 
+_INVALID_DOMAIN_ERROR = "Invalid Trustpilot domain: use a bare hostname without a scheme or path."
+
+
 def _scrub_url_userinfo(text: str) -> str:
     return _URL_USERINFO_RE.sub(r"\1", text) if text else text
 
@@ -494,8 +497,8 @@ def search_trustpilot(
     """
     raw_explicit = (explicit_domain or "").strip() if isinstance(explicit_domain, str) else ""
     if raw_explicit and not _is_valid_domain(raw_explicit):
-        _log(f"rejecting invalid explicit domain: {raw_explicit!r}")
-        return {"results": []}
+        _log(_INVALID_DOMAIN_ERROR)
+        return {"results": [], "error": _INVALID_DOMAIN_ERROR}
     explicit_domain = raw_explicit or None
     user_domain = bool(explicit_domain) and not domain_is_hint
     # Only a USER-set domain proves brand intent and bypasses the brand-shape

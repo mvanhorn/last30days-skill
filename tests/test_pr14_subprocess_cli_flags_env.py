@@ -130,6 +130,21 @@ def test_high182_url_encoded_secret_and_whitespace_child_env_fallback(monkeypatc
     assert encoded_secret not in scrubbed
 
 
+def test_high182_json_authorization_and_hyphen_prefixed_api_key_redacted(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "different-env-key")
+    payload = (
+        '{"Authorization": "Basic ZHVtbXk6c2VjcmV0", '
+        '"x-api-key": "dummy_secret_123", '
+        '"status": "unauthorized"} '
+        "x-api-key: header_secret_456"
+    )
+    scrubbed = brightdata._scrub(payload, "different-env-key")
+    assert "ZHVtbXk6c2VjcmV0" not in scrubbed
+    assert "dummy_secret_123" not in scrubbed
+    assert "header_secret_456" not in scrubbed
+    assert '"status": "unauthorized"' in scrubbed
+
+
 def test_high182_exception_messages_also_scrub_secrets(monkeypatch):
     secret = "bd-exc-secret-777"
     monkeypatch.setenv("BRIGHTDATA_API_KEY", secret)
@@ -503,14 +518,25 @@ def test_high199_trustpilot_rejects_invalid_explicit_domain_before_cli(
     monkeypatch, bad_domain, domain_is_hint
 ):
     called = []
+    logged: list[tuple[str, bool]] = []
     monkeypatch.setattr(trustpilot, "_is_available", lambda: True)
     monkeypatch.setattr(trustpilot, "_run_cli", lambda *a, **k: called.append(a) or {})
+    monkeypatch.setattr(
+        trustpilot.log, "source_log",
+        lambda _n, msg, **k: logged.append((msg, k.get("tty_only", True))),
+    )
     out = trustpilot.search_trustpilot(
         "ChowNow", "2026-10-01", "2026-10-31",
         explicit_domain=bad_domain, domain_is_hint=domain_is_hint,
     )
-    assert out == {"results": []}
+    assert out == {
+        "results": [],
+        "error": "Invalid Trustpilot domain: use a bare hostname without a scheme or path.",
+    }
+    assert bad_domain not in out["error"]
     assert called == []
+    assert logged == [(out["error"], False)]
+    assert all(bad_domain not in msg for msg, _ in logged)
 
 
 @pytest.mark.parametrize("valid_domain", ["example.xn--p1ai", "example.XN--P1AI", "example.xn--a"])
@@ -695,6 +721,36 @@ def test_high216_run_last30days_omits_research_only_for_legacy_engine(tmp_path):
     assert "--research-only" not in cmd
     assert "--json-profile=raw" not in cmd
     assert cmd[-2:] == ["--", "--store"]
+
+
+@pytest.mark.parametrize(
+    "reserved_topic",
+    [
+        "setup",
+        "SETUP",
+        "doctor",
+        "library feed --publish",
+        "library search secrets",
+        "queue list",
+        "watchlist add foo",
+        "update",
+        "briefing",
+    ],
+)
+def test_high216_run_last30days_rejects_reserved_admin_topics_on_legacy_engine(
+    tmp_path, reserved_topic
+):
+    engine = tmp_path / "skills" / "last30days" / "scripts" / "last30days.py"
+    engine.parent.mkdir(parents=True)
+    engine.write_text('parser.add_argument("--emit")\n')
+
+    with mock.patch.object(evaluator.subprocess, "run") as run:
+        with pytest.raises(ValueError, match="without --research-only"):
+            evaluator.run_last30days(
+                tmp_path, reserved_topic, search="", timeout_seconds=30,
+                quick=False, mock=False, env={"PATH": "/bin"},
+            )
+    run.assert_not_called()
 
 
 @pytest.mark.parametrize("bad_rev", ["--orphan", "-b", "--checkout", "", "  HEAD  ", "HEAD\n--evil", "HEAD\x00"])

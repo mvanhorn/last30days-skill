@@ -109,11 +109,11 @@ _URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,15}://)[^\s/?#]+@")
 _BEARER_RE = re.compile(r"(?i)\b(Bearer)\s+[^\s,;\"']+")
 _BASIC_AUTH_RE = re.compile(r"(?i)\b(Authorization\s*:\s*Basic)\s+[^\s,;\"']+")
 _JSON_SECRET_RE = re.compile(
-    r'(?i)(["\'](?:[A-Za-z0-9_-]*_)?(?:api[_-]?key|access[_-]?token|auth[_-]?token|token)["\']\s*:\s*)'
+    r'(?i)(["\'](?:[A-Za-z0-9_-]*[_-])?(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|authorization)["\']\s*:\s*)'
     r'(?:"(?:[^"\\\r\n]|\\.)*"|\'(?:[^\'\\\r\n]|\\.)*\')'
 )
 _KV_SECRET_RE = re.compile(
-    r'(?i)((?<![A-Za-z0-9-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|token)\s*[:=]\s*)'
+    r'(?i)((?<![A-Za-z0-9])(?:api[_-]?key|access[_-]?token|auth[_-]?token|token)\s*[:=]\s*)'
     r'(?:"(?:[^"\\\r\n]|\\.)*"|\'(?:[^\'\\\r\n]|\\.)*\'|[^\s,;\"\']+)'
 )
 _SPACED_SECRET_RE = re.compile(
