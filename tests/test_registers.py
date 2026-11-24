@@ -224,8 +224,9 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
         # (platform name, `· count`), posts beside comments, each naming its
         # cluster or thread, chosen and ordered by position in its item
         # (top comment, then #2), not by like count, and #1449's Stats top
-        # voices filling @handle slots in engagement order.
-        "19662fd040d081a09a82b1b4fdc5ae12e259c5e11740e5ba122a13076cfdb23b"
+        # voices filling @handle slots in engagement order, and Best Takes
+        # reading `excerpt` comments across all sources.
+        "1a8fbbb9ee8070f37569fb2276781f25a22fe40d3d5ad5875812d450e3f3290e"
     )
 
 

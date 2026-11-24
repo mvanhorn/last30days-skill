@@ -5074,7 +5074,12 @@ def _main(
                 "config dir.\n"
             )
             return 2
-        config = {**config, "_finalization_deadline": finalization_deadline}
+        # --discover --judgments runs a multi-wave enrichment batch with its own
+        # LAST30DAYS_ENRICH_BUDGET_SECONDS (default 450s) budget; injecting the
+        # 280s foreground cutoff here aborts transcript backfill and reranking
+        # for every topic finalizing past 280s.
+        if args.judgments is None:
+            config = {**config, "_finalization_deadline": finalization_deadline}
         if protocol_leg:
             return _run_discover_protocol_leg(args, config)
         return _run_discover(args, config)
@@ -5591,7 +5596,20 @@ def _main(
             and not any(entry.get("_x_envelope") for entry in comp_plan.values())
         ),
     )
-    config = {**config, "_finalization_deadline": finalization_deadline}
+    if args.deep_research:
+        from lib import perplexity
+
+        # Deep Research defaults to a 600s Perplexity wait; anchor the command
+        # finalization cutoff past that timeout plus a finalization reserve.
+        research_finalization_deadline = (
+            command_started
+            + perplexity.deep_timeout_seconds(config)
+            + pipeline.DEEP_RESEARCH_RECEIPT_SECONDS
+            + pipeline.FINALIZATION_WORK_CUTOFF_SECONDS
+        )
+    else:
+        research_finalization_deadline = finalization_deadline
+    config = {**config, "_finalization_deadline": research_finalization_deadline}
 
     # Competitor sub-runs shallow-copy this config. The shared object makes the
     # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
@@ -6254,7 +6272,15 @@ def _main(
             research_options=research_options,
         )
         if _research_store_enabled(args, config):
-            counts = persist_report(report, store_db=_scoped_store_db(args))
+            store_db = _scoped_store_db(args)
+            reports_to_store = (
+                [item for _, item in entity_reports] if entity_reports else [report]
+            )
+            counts = {"new": 0, "updated": 0}
+            for current in reports_to_store:
+                current_counts = persist_report(current, store_db=store_db)
+                counts["new"] += current_counts["new"]
+                counts["updated"] += current_counts["updated"]
             sys.stderr.write(
                 f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"
             )
