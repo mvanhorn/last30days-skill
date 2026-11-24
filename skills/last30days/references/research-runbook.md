@@ -105,7 +105,7 @@ Known keyword-trap classes and how to handle each:
 - Action: **Ask ONE clarifying question upfront**:
   > "Before I research, tell me a bit more - hobbies (cooks / runs / reads / gaming / outdoors / golf / music)? Relationship (husband / dad / friend / boss / brother)? Budget range? A 'gift for a 42 year old man' is a wide net; hobbies + relationship narrow it 10x."
 - If the user declines to narrow ("just run it"), reframe to generic-demographic and scope to gift subreddits:
-  - Drop the literal age (age 42 reads identically to 41 or 43 in social content; the number causes keyword collisions like Jackie Robinson #42)
+  - Drop the literal age (causes collisions like Jackie Robinson #42)
   - Rewrite as `gifts for men in their 40s` or `gifts for men who [hobby]`
   - For local engine research, scope `--subreddits=GiftIdeas,BuyItForLife,AskMen,malefashionadvice,Dads` (plus hobby-specific subs when known)
   - Note in the Resolved block: "Reframed demographic shopping query. Dropping literal age; scoping to gift communities."
@@ -113,7 +113,7 @@ Known keyword-trap classes and how to handle each:
 **Class 2: Numeric / age keyword trap**
 - Pattern: topic contains a specific number that collides with unrelated content (42 = Jackie Robinson + Hitchhiker's + a 42" quilt; 40 = 40th anniversary posts; 50 = state-count posts; 100 = bench-press posts).
 - Why it fails: numbers dominate retrieval ("42" pulls jersey-number posts; "the 100" pulls TV-show posts).
-- Action: Strip the number from the engine search query unless changing or removing it would change the topic itself (e.g., "GPT-4" yes, "40 year old man" no, "Area 51" yes, "top 10 foods" no). Keep the number in the user's original framing for context; drop it from the engine query. Document in Resolved: "Dropping '{number}' from the search query - it is a keyword trap that pulls in unrelated content. Search will cover the concept generically."
+- Action: Strip the number from the engine query unless integral to the topic ("GPT-4", "Area 51" keep; "40 year old man", "top 10 foods" drop). Keep it only in user-facing framing. Document in Resolved: "Dropping '{number}' from the search query - it is a keyword trap that pulls in unrelated content. Search will cover the concept generically."
 
 **Class 3: Overly-literal concept phrase**
 - Pattern: `how to use X`, `what is Y`, `tutorial for Z`, `explain A` — tutorial-shaped phrasing where social posts are in different vocabulary.
@@ -410,15 +410,15 @@ Label conservatively: only a sub clearly named for / dedicated to the entity goe
 **2b. Host Reddit threads.** Keep each `reddit.com/r/<sub>/comments/<id>/` URL found (no `/s/` share or redirect links; max 50). The engine reads only `url`, drops off-topic or stale ones. If any, write one-line JSON in the same shell as the engine call (fresh 12-char `{NONCE}`) and add `--reddit-threads="$REDDIT_THREADS_FILE"` (single-topic runs, as for 2c):
 
 ```bash
-REDDIT_THREADS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/last30days-reddit-threads.XXXXXX")
+REDDIT_THREADS_DIR=${X_POSTS_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/last30days-reddit-threads.XXXXXX")}
 REDDIT_THREADS_FILE="$REDDIT_THREADS_DIR/threads.json"
-trap 'rm -rf -- "$REDDIT_THREADS_DIR"' EXIT
+trap 'rm -rf -- ${X_POSTS_DIR:+"$X_POSTS_DIR"} ${REDDIT_THREADS_DIR:+"$REDDIT_THREADS_DIR"}' EXIT
 cat >| "$REDDIT_THREADS_FILE" <<'THREADS_EOF_{NONCE}'
 {"schema": "last30days-reddit-threads/1", "topic": "{TOPIC}", "threads": [{"url": "{THREAD_URL}"}]}
 THREADS_EOF_{NONCE}
 ```
 
-**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches (`{TOPIC} site:tiktok.com`, `{TOPIC} tiktok account`, `site:instagram.com reel {TOPIC}`); keep post and `@creator` URLs, even old (max 40). Add up to 5 handles posting on it (official, fan, reviewer) to `RESOLVED_TIKTOK_CREATORS`. If any, write `shortform.json` in a private `mktemp -d` dir with an `EXIT` trap (reuse `$REDDIT_THREADS_DIR` when 2b ran) via `cat >|` + nonced single-quoted heredoc as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls="$SHORTFORM_FILE"`.
+**2c. Host TikTok/Instagram URLs.** Only if `tiktok` or `instagram` is active and `has_scrapecreators` is false: run 2-3 searches (`{TOPIC} site:tiktok.com`, `{TOPIC} tiktok account`, `site:instagram.com reel {TOPIC}`); keep post and `@creator` URLs, even old (max 40). Add up to 5 handles posting on it (official, fan, reviewer) to `RESOLVED_TIKTOK_CREATORS`. If any, write `shortform.json` in a private `mktemp -d` dir with an `EXIT` trap (reuse `$REDDIT_THREADS_DIR` or `$X_POSTS_DIR` when set) via `cat >|` + nonced single-quoted heredoc as `{"schema": "last30days-shortform-urls/1", "topic": "{TOPIC}", "urls": [{"url": "{URL}"}]}` and add `--shortform-urls="$SHORTFORM_FILE"`.
 
 **3. TikTok hashtags + creators** - **INFER these from topic knowledge. Never WebSearch for a TikTok account (2c aside); most people and CEOs have none.**
 

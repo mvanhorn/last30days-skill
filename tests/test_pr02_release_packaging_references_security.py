@@ -93,15 +93,116 @@ def test_research_runbook_host_envelopes_use_private_mktemp_noclobber_and_cleanu
     )[0]
 
     assert 'mktemp -d "${TMPDIR:-/tmp}/last30days-reddit-threads.XXXXXX"' in section_2b
+    assert 'REDDIT_THREADS_DIR=${X_POSTS_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/last30days-reddit-threads.XXXXXX")}' in section_2b
     assert 'REDDIT_THREADS_FILE="$REDDIT_THREADS_DIR/threads.json"' in section_2b
-    assert "trap 'rm -rf -- \"$REDDIT_THREADS_DIR\"' EXIT" in section_2b
+    assert (
+        'trap \'rm -rf -- ${X_POSTS_DIR:+"$X_POSTS_DIR"} ${REDDIT_THREADS_DIR:+"$REDDIT_THREADS_DIR"}\' EXIT'
+        in section_2b
+    )
     assert "cat >| \"$REDDIT_THREADS_FILE\" <<'THREADS_EOF_{NONCE}'" in section_2b
     assert '--reddit-threads="$REDDIT_THREADS_FILE"' in section_2b
 
     assert "mktemp -d" in section_2c
     assert "EXIT" in section_2c
     assert ">|" in section_2c
+    assert "$REDDIT_THREADS_DIR" in section_2c and "$X_POSTS_DIR" in section_2c
     assert '--shortform-urls="$SHORTFORM_FILE"' in section_2c
+
+
+@pytest.mark.parametrize("order", ["x_then_reddit", "reddit_then_x"])
+def test_grok_bot_x_and_reddit_threads_traps_clean_up_all_temp_dirs_in_both_orders(
+    tmp_path: Path, order: str
+) -> None:
+    runbook = reference_text("research-runbook")
+    section_2b = runbook.split("**2b. Host Reddit threads.**", 1)[1].split(
+        "**2c. Host TikTok/Instagram URLs.**", 1
+    )[0]
+    reddit_block = _extract_bash_blocks(section_2b)[0]
+    reddit_block = reddit_block.replace("{NONCE}", "Ab12Cd34Ef56")
+    reddit_block = re.sub(
+        r'\{"schema": "last30days-reddit-threads/1".*\}',
+        lambda _: json.dumps(
+            {
+                "schema": "last30days-reddit-threads/1",
+                "topic": "test topic",
+                "threads": [
+                    {"url": "https://www.reddit.com/r/python/comments/abc123/test_post/"}
+                ],
+            }
+        ),
+        reddit_block,
+    )
+
+    grok_block = _extract_bash_blocks(reference_text("grok-bot-x"))[0]
+    grok_block = grok_block.replace("{X_POSTS_NONCE}", "Zy98Xw76Vu54").replace(
+        "{X_POSTS_ENVELOPE_JSON}",
+        json.dumps({"schema": "last30days-x-posts/1", "topic": "test topic", "calls": []}),
+    )
+
+    combined = (
+        grok_block + "\n" + reddit_block
+        if order == "x_then_reddit"
+        else reddit_block + "\n" + grok_block
+    )
+    script = (
+        "set -euo pipefail\n"
+        "set -o noclobber\n"
+        + combined
+        + "\n"
+        + 'test -f "$X_POSTS_FILE"\n'
+        + 'test -f "$REDDIT_THREADS_FILE"\n'
+        + 'printf "X_DIR=%s\\nR_DIR=%s\\n" "$X_POSTS_DIR" "$REDDIT_THREADS_DIR"\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "TMPDIR": str(tmp_path)},
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    x_dir = Path(re.search(r"^X_DIR=(.+)$", result.stdout, re.MULTILINE).group(1))
+    r_dir = Path(re.search(r"^R_DIR=(.+)$", result.stdout, re.MULTILINE).group(1))
+    assert not x_dir.exists(), f"X_POSTS_DIR leaked for order={order}: {x_dir}"
+    assert not r_dir.exists(), f"REDDIT_THREADS_DIR leaked for order={order}: {r_dir}"
+    assert list(tmp_path.iterdir()) == [], f"Leftover temp dirs in TMPDIR: {list(tmp_path.iterdir())}"
+
+
+def test_grok_bot_x_and_reddit_threads_traps_clean_distinct_dirs_when_prepopulated(
+    tmp_path: Path,
+) -> None:
+    """Even if both directories were created independently, either EXIT trap cleans both."""
+    runbook = reference_text("research-runbook")
+    section_2b = runbook.split("**2b. Host Reddit threads.**", 1)[1].split(
+        "**2c. Host TikTok/Instagram URLs.**", 1
+    )[0]
+    reddit_block = _extract_bash_blocks(section_2b)[0]
+    reddit_trap = next(line for line in reddit_block.splitlines() if line.startswith("trap "))
+    grok_block = _extract_bash_blocks(reference_text("grok-bot-x"))[0]
+    grok_trap = next(line for line in grok_block.splitlines() if line.startswith("trap "))
+
+    for label, trap_line in (("reddit", reddit_trap), ("grok", grok_trap)):
+        dir_a = tmp_path / f"{label}-x"
+        dir_b = tmp_path / f"{label}-reddit"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "x-posts.json").write_text("{}", encoding="utf-8")
+        (dir_b / "threads.json").write_text("{}", encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", trap_line],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "X_POSTS_DIR": str(dir_a),
+                "REDDIT_THREADS_DIR": str(dir_b),
+            },
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not dir_a.exists(), f"{label} trap leaked X_POSTS_DIR"
+        assert not dir_b.exists(), f"{label} trap leaked REDDIT_THREADS_DIR"
 
 
 def test_research_runbook_host_threads_snippet_runs_under_noclobber_and_cleans_up(
