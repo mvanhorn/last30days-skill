@@ -48,6 +48,55 @@ class ProvidersV3Tests(unittest.TestCase):
         self.assertEqual("local-score", runtime.rerank_model)
         self.assertIsNone(client)
 
+    def test_explicit_local_forces_local_runtime_even_with_keys(self):
+        runtime, client = providers.resolve_runtime(
+            {
+                "GOOGLE_API_KEY": "test-google",
+                "OPENAI_API_KEY": "test-openai",
+                "OPENAI_AUTH_STATUS": "ok",
+                "XAI_API_KEY": "test-xai",
+                "OPENROUTER_API_KEY": "test-or",
+                "LAST30DAYS_REASONING_PROVIDER": "local",
+            },
+            depth="default",
+        )
+        self.assertEqual("local", runtime.reasoning_provider)
+        self.assertEqual("deterministic", runtime.planner_model)
+        self.assertEqual("local-score", runtime.rerank_model)
+        self.assertIsNone(client)
+
+    def test_explicit_off_and_none_force_local_runtime(self):
+        for provider_val in ("off", "none", " LOCAL ", " Off "):
+            runtime, client = providers.resolve_runtime(
+                {
+                    "GOOGLE_API_KEY": "test-google",
+                    "LAST30DAYS_REASONING_PROVIDER": provider_val,
+                },
+                depth="default",
+            )
+            self.assertEqual("local", runtime.reasoning_provider)
+            self.assertEqual("deterministic", runtime.planner_model)
+            self.assertEqual("local-score", runtime.rerank_model)
+            self.assertIsNone(client)
+
+    def test_mock_runtime_supports_local_and_off(self):
+        for provider_val in ("local", "off", "none"):
+            runtime = providers.mock_runtime(
+                {"LAST30DAYS_REASONING_PROVIDER": provider_val},
+                depth="default",
+            )
+            self.assertEqual("local", runtime.reasoning_provider)
+            self.assertEqual("deterministic", runtime.planner_model)
+            self.assertEqual("local-score", runtime.rerank_model)
+
+    def test_pipeline_diagnose_reports_local_mode_when_forced_local(self):
+        from lib import pipeline
+        res = pipeline.diagnose(
+            {"GOOGLE_API_KEY": "test", "LAST30DAYS_REASONING_PROVIDER": "local"}
+        )
+        self.assertTrue(res["local_mode"])
+        self.assertEqual("local", res["reasoning_provider"])
+
     def test_explicit_gemini_without_key_still_raises(self):
         with self.assertRaises(RuntimeError):
             providers.resolve_runtime(
