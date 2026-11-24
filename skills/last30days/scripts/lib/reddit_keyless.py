@@ -45,7 +45,6 @@ ScrapeCreators backup when every keyless lane comes up empty.
 import concurrent.futures
 import contextlib
 import contextvars
-import inspect
 import math
 import sys
 import time
@@ -272,6 +271,33 @@ def _scored_listings(
     return posts
 
 
+# Reserve room before the lane deadline so a stalled second web query still
+# leaves enough time to hydrate the refs the first query already found.
+_WEB_HYDRATION_RESERVE_SECONDS = 8.0
+
+
+def _web_discover_deadline(deadline: Optional[float]) -> Optional[float]:
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= MIN_STAGE_SECONDS:
+        return deadline
+    reserve = min(
+        _WEB_HYDRATION_RESERVE_SECONDS,
+        max(MIN_STAGE_SECONDS + 1.0, remaining * 0.4),
+    )
+    reserve = min(reserve, max(0.0, remaining - 0.1))
+    return deadline - reserve
+
+
+def _hydrate_stage_deadline(deadline: Optional[float]) -> Dict[str, float]:
+    if deadline is None:
+        return {}
+    remaining = max(0.0, deadline - time.monotonic())
+    margin = min(STAGE_RETURN_MARGIN_SECONDS, remaining * 0.25)
+    return {"deadline": deadline - margin}
+
+
 def _web_floor(
     topic: str,
     depth: str,
@@ -284,14 +310,16 @@ def _web_floor(
     """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
     reddit_health.seed_web_rungs()
     try:
-        # Filled in place, so a floor still running at the deadline hands back
-        # the threads its earlier queries found.
+        # Filled in place, so a floor still running at its cutoff hands back
+        # the threads its earlier queries found with time left to hydrate them.
         partial = reddit_discover.WebFloor()
+        discover_cutoff = _web_discover_deadline(deadline)
+        discover_kw = {"deadline": discover_cutoff} if discover_cutoff is not None else {}
         found = _within(
-            deadline, "web floor", partial,
+            discover_cutoff, "web floor", partial,
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
-            floor=partial, **_stage_deadline(deadline),
+            floor=partial, **discover_kw,
         )
         floor = (
             found.snapshot()
@@ -314,7 +342,7 @@ def _web_floor(
             deadline, "web floor hydration", None,
             reddit_hydrate.hydrate,
             floor.refs, topic=topic, depth=depth, from_date=from_date, to_date=to_date,
-            **extra, **_stage_deadline(deadline),
+            **extra, **_hydrate_stage_deadline(deadline),
         )
     except Exception as exc:  # the floor must never break the lane
         _log(f"web floor failed: {type(exc).__name__}: {exc}")
@@ -688,19 +716,6 @@ def _discover(
     return merged
 
 
-def _accepts_kwarg(fn: Any, name: str) -> bool:
-    target = getattr(fn, "side_effect", None)
-    if callable(target):
-        fn = target
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
-    return name in params or any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
-
-
 def _fetch_enrichment(
     url: str,
     deadline: Optional[float] = None,
@@ -708,10 +723,9 @@ def _fetch_enrichment(
 ) -> Dict[str, Any]:
     """Fetch shreddit comments for ``url`` without touching any post dict. Never raises."""
     try:
-        kwargs: Dict[str, Any] = {"deadline": deadline}
-        if post_author and _accepts_kwarg(reddit_shreddit.fetch_comments, "post_author"):
-            kwargs["post_author"] = post_author
-        data = reddit_shreddit.fetch_comments(url, **kwargs)
+        data = reddit_shreddit.fetch_comments(
+            url, deadline=deadline, post_author=post_author,
+        )
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}

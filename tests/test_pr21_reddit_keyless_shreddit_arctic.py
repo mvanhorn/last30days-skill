@@ -957,3 +957,237 @@ class TestReviewFixes:
         slept.assert_called_once()
         assert failures == []
 
+
+# ---------------------------------------------------------------------------
+# Greptile review fixes: partial page salvage, web-floor hydration reserve,
+# incremental/full-cache fetch_scores handoff, direct kwarg forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileFixes:
+    def test_search_salvages_page_one_when_page_two_stalls_past_deadline(self):
+        page2_started = threading.Event()
+        release_page2 = threading.Event()
+
+        def fake_retry_get(url, **kwargs):
+            if "cursor=" not in url:
+                return _search_page_html("p1keep", author="alice", cursor="nextcur1"), None
+            page2_started.set()
+            release_page2.wait(timeout=5.0)
+            return _search_page_html("p2late", author="bob"), None
+
+        t0 = time.monotonic()
+        try:
+            with mock.patch.object(
+                reddit_search.http, "reddit_keyless_get_text_retry_429", side_effect=fake_retry_get,
+            ):
+                posts = reddit_search.search(
+                    "Ghostty", depth="quick", deadline=time.monotonic() + 0.15,
+                )
+        finally:
+            release_page2.set()
+
+        assert page2_started.is_set()
+        assert time.monotonic() - t0 < 1.5
+        assert [p["metadata"]["post_id"] for p in posts] == ["p1keep"]
+        assert posts[0]["author"] == "alice"
+
+    def test_web_floor_hydrates_query_one_threads_when_query_two_blocks(self):
+        query2_started = threading.Event()
+        release_query2 = threading.Event()
+
+        def fake_keyless_search(query, date_range, config, count=20, freshness=None):
+            if "r/ghostty" not in query:
+                return (
+                    [{
+                        "url": "https://www.reddit.com/r/ghostty/comments/q1hit/ghostty_fast/",
+                        "title": "r/ghostty on Reddit: Ghostty fast terminal",
+                        "snippet": "",
+                        "date": "2026-10-10",
+                    }],
+                    {"keyless_backend": "brave", "keyless_rungs": {"brave": "ok"}},
+                )
+            query2_started.set()
+            release_query2.wait(timeout=5.0)
+            return ([], {"keyless_backend": "brave", "keyless_rungs": {"brave": "ok"}})
+
+        archived = {
+            "id": "",
+            "title": "Ghostty fast terminal",
+            "url": "https://www.reddit.com/r/ghostty/comments/q1hit/ghostty_fast/",
+            "score": 88,
+            "num_comments": 12,
+            "subreddit": "ghostty",
+            "created_utc": 1700000000,
+            "author": "op_user",
+            "selftext": "",
+            "date": "2026-10-10",
+            "engagement": {"score": 88, "num_comments": 12},
+            "relevance": 0.9,
+            "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "q1hit"},
+        }
+
+        t0 = time.monotonic()
+        try:
+            with mock.patch.object(
+                reddit_discover.web_search_keyless, "keyless_search", side_effect=fake_keyless_search,
+            ), mock.patch.object(
+                reddit_keyless.reddit_arctic, "fetch_posts_by_ids",
+                return_value=({"q1hit": dict(archived)}, "ok"),
+            ), mock.patch.object(
+                reddit_keyless.reddit_arctic, "fetch_comment_tree", return_value=[],
+            ):
+                # 3.5s lane budget reserves 3.0s for hydration and gives discovery ~0.5s,
+                # so blocked query 2 cuts off early while query 1's ref is still hydrated.
+                kept = reddit_keyless._web_floor(
+                    "Ghostty", "quick", ["ghostty"], None, "2026-10-01", "2026-10-31",
+                    deadline=time.monotonic() + 3.5,
+                )
+        finally:
+            release_query2.set()
+
+        assert query2_started.is_set()
+        assert time.monotonic() - t0 < 2.5
+        assert [p["metadata"]["post_id"] for p in kept] == ["q1hit"]
+
+    def test_fetch_scores_waiter_fetches_batch_two_when_owner_expires_after_batch_one(self):
+        batch1_started = threading.Event()
+        release_batch1 = threading.Event()
+        calls: list[tuple[str, int]] = []
+        calls_lock = threading.Lock()
+        owner_tid: list[int] = []
+        waiter_tid: list[int] = []
+
+        def fake_get(url, **_kwargs):
+            tid = threading.get_ident()
+            with calls_lock:
+                calls.append((url, tid))
+            if "ids=b1" in url:
+                batch1_started.set()
+                release_batch1.wait(timeout=5.0)
+                return {"data": [{"id": "b1", "score": 11, "num_comments": 1}]}
+            if "ids=b2" in url:
+                return {"data": [{"id": "b2", "score": 22, "num_comments": 2}]}
+            return {"data": []}
+
+        def run_owner():
+            owner_tid.append(threading.get_ident())
+            return reddit_arctic.fetch_scores(["b1", "b2"], time.monotonic() + 0.12)
+
+        def run_waiter():
+            waiter_tid.append(threading.get_ident())
+            return reddit_arctic.fetch_scores(["b1", "b2"], time.monotonic() + 5.0)
+
+        with mock.patch.object(reddit_arctic, "BATCH", 1), \
+             mock.patch.object(reddit_arctic, "PACE_SECONDS", 0.0), \
+             mock.patch.object(reddit_arctic.http, "get", side_effect=fake_get):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                # Owner has a tight deadline that expires while batch 1 is in flight,
+                # so owner must NOT block waiter from fetching batch 2 ("b2").
+                f_owner = pool.submit(run_owner)
+                assert batch1_started.wait(timeout=3.0)
+                f_waiter = pool.submit(run_waiter)
+                time.sleep(0.15)  # let owner's deadline expire before releasing batch 1
+                release_batch1.set()
+                owner_res = f_owner.result(timeout=5.0)
+                waiter_res = f_waiter.result(timeout=5.0)
+
+        assert owner_res["b1"] == {"score": 11, "num_comments": 1}
+        assert waiter_res == {
+            "b1": {"score": 11, "num_comments": 1},
+            "b2": {"score": 22, "num_comments": 2},
+        }
+        assert len(calls) == 2
+        by_batch = {("b1" if "ids=b1" in url else "b2"): tid for url, tid in calls}
+        assert by_batch == {"b1": owner_tid[0], "b2": waiter_tid[0]}
+
+    def test_fetch_scores_waiter_retries_slot_when_owner_fails_mid_batch(self):
+        started = threading.Event()
+        release = threading.Event()
+        attempt = {"n": 0}
+        lock = threading.Lock()
+
+        def flaky_get(url, **_kwargs):
+            with lock:
+                attempt["n"] += 1
+                n = attempt["n"]
+            if n == 1:
+                started.set()
+                release.wait(timeout=5.0)
+                raise http.DeadlineExceeded()
+            return {"data": [{"id": "retry1", "score": 99, "num_comments": 8}]}
+
+        with mock.patch.object(reddit_arctic.http, "get", side_effect=flaky_get):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f_owner = pool.submit(
+                    reddit_arctic.fetch_scores, ["retry1"], time.monotonic() + 0.1,
+                )
+                assert started.wait(timeout=3.0)
+                f_waiter = pool.submit(
+                    reddit_arctic.fetch_scores, ["retry1"], time.monotonic() + 5.0,
+                )
+                time.sleep(0.03)
+                release.set()
+                owner_res = f_owner.result(timeout=5.0)
+                waiter_res = f_waiter.result(timeout=5.0)
+
+        assert owner_res == {}
+        assert waiter_res == {"retry1": {"score": 99, "num_comments": 8}}
+        assert attempt["n"] == 2
+
+    def test_fetch_scores_waiter_receives_scores_even_when_cache_is_full(self):
+        with reddit_arctic._memo_lock:
+            reddit_arctic._cache["existing"] = {"score": 1, "num_comments": 0}
+
+        started = threading.Event()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def slow_get(url, **_kwargs):
+            calls.append(url)
+            started.set()
+            release.wait(timeout=5.0)
+            return {"data": [{"id": "fresh1", "score": 333, "num_comments": 44}]}
+
+        with mock.patch.object(reddit_arctic, "CACHE_MAX", 1), \
+             mock.patch.object(reddit_arctic.http, "get", side_effect=slow_get):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f_owner = pool.submit(reddit_arctic.fetch_scores, ["fresh1"])
+                assert started.wait(timeout=3.0)
+                f_waiter = pool.submit(reddit_arctic.fetch_scores, ["fresh1"])
+                time.sleep(0.03)
+                release.set()
+                owner_res = f_owner.result(timeout=5.0)
+                waiter_res = f_waiter.result(timeout=5.0)
+
+        assert len(calls) == 1
+        assert owner_res == {"fresh1": {"score": 333, "num_comments": 44}}
+        assert waiter_res == {"fresh1": {"score": 333, "num_comments": 44}}
+        # Cache stayed strictly bounded at CACHE_MAX == 1.
+        assert len(reddit_arctic._cache) == 1
+        assert "fresh1" not in reddit_arctic._cache
+
+    def test_no_reflection_helpers_and_direct_kwarg_forwarding(self):
+        assert not hasattr(reddit_search, "_accepts_kwarg")
+        assert not hasattr(reddit_shreddit, "_accepts_kwarg")
+        assert not hasattr(reddit_shreddit, "_accepts_named_kwarg")
+        assert not hasattr(reddit_keyless, "_accepts_kwarg")
+
+        # Direct post_author forwarding from reddit_keyless._fetch_enrichment.
+        with mock.patch.object(
+            reddit_keyless.reddit_shreddit, "fetch_comments",
+            return_value={"top_comments": [], "comment_insights": [], "num_comments": None},
+        ) as fc:
+            reddit_keyless._fetch_enrichment(
+                "https://www.reddit.com/r/test/comments/abc123/slug/",
+                deadline=1234.5,
+                post_author="Alice",
+            )
+        fc.assert_called_once_with(
+            "https://www.reddit.com/r/test/comments/abc123/slug/",
+            deadline=1234.5,
+            post_author="Alice",
+        )
+
+

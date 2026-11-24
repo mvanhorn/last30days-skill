@@ -19,6 +19,7 @@ import re
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlencode
@@ -75,11 +76,20 @@ _cache: Dict[str, Dict[str, int]] = {}
 # at 1.5s spacing alike, with or without a ``fields`` selection), and a retry
 # right after one tends to be refused again. A comment lookup retries once
 # after a pause; a listing walk asks again for its refused slices at the end.
+@dataclass
+class _ScoreSlot:
+    """In-flight score batch shared between the owner and waiting callers."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+    scores: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    attempted: bool = False
+
+
 MEMO_MAX = 512
 RETRY_422_PAUSE = 1.5
 _memo: Dict[str, Any] = {}
 _inflight: Dict[str, threading.Event] = {}
-_score_inflight: Dict[str, threading.Event] = {}
+_score_inflight: Dict[str, _ScoreSlot] = {}
 _memo_lock = threading.Lock()
 _tree_state = threading.local()
 
@@ -216,116 +226,170 @@ def fetch_scores(
     point count for those threads).
     """
     out: Dict[str, Dict[str, int]] = {}
-    todo: List[str] = []
-    waiting: List[tuple[str, threading.Event]] = []
     clean_ids = list(dict.fromkeys(
         clean for pid in post_ids if (clean := reddit_refs.normalize_post_id(pid))
     ))
-    with _memo_lock:
-        for clean in clean_ids:
-            if clean in _cache:
-                out[clean] = dict(_cache[clean])
-            elif clean in _score_inflight:
-                waiting.append((clean, _score_inflight[clean]))
-            else:
-                todo.append(clean)
-        if deadline is not None and time.monotonic() >= deadline:
-            if todo:
-                _log(f"lookup stopped at its deadline; {len(todo)} ids left unscored")
-            return out
-        batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)][:MAX_BATCHES]
-        batch_gates: List[tuple[List[str], threading.Event]] = []
-        for batch in batches:
-            gate = threading.Event()
-            for pid in batch:
-                _score_inflight[pid] = gate
-            batch_gates.append((batch, gate))
+    if not clean_ids:
+        return out
 
-    try:
-        for n, (batch, gate) in enumerate(batch_gates):
-            if n:
-                if deadline is not None:
-                    pace = min(PACE_SECONDS, max(0.0, deadline - time.monotonic()))
-                    if pace > 0:
-                        time.sleep(pace)
-                else:
-                    time.sleep(PACE_SECONDS)
-            bound: Dict[str, Any] = {"timeout": TIMEOUT}
+    pending: List[str] = list(clean_ids)
+    batches_fetched = 0
+    stop_fetching = False
+    wait_retries = 0
+    wait_end = (
+        deadline
+        if deadline is not None
+        else time.monotonic() + TIMEOUT * MAX_BATCHES + PACE_SECONDS * MAX_BATCHES
+    )
+
+    for _round in range(MAX_BATCHES + 3):
+        if batches_fetched > 0 and not stop_fetching:
             if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _log(f"lookup stopped at its deadline; {len(batch)} ids left unscored")
-                    break
-                bound = {"timeout": min(TIMEOUT, remaining), "retries": 1, "deadline_monotonic": deadline}
-            try:
-                query = urlencode({"ids": ",".join(batch)}, safe=",")
-                data = http.get(
-                    f"{API}?{query}",
-                    headers={"User-Agent": http.BROWSER_USER_AGENT},
-                    **bound,
-                )
-            except Exception as e:  # network error / non-200 — degrade, never raise
-                _log(f"lookup failed ({e}); {len(batch)} ids left unscored")
-                break
-            rows = (data or {}).get("data")
-            if not isinstance(rows, list):
-                # arctic-shift returns {"error": "..."} on rate-limit / bad request.
-                _log(f"unexpected response (rate-limited?): {str(data)[:80]}")
-                break
-            entries: Dict[str, Dict[str, int]] = {}
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                rid = str(row.get("id") or "").removeprefix("t3_")
-                if not rid:
-                    continue
-                try:
-                    entries[rid] = {
-                        "score": int(row.get("score") or 0),
-                        "num_comments": int(row.get("num_comments") or 0),
-                    }
-                except (TypeError, ValueError):
-                    continue
-            with _memo_lock:
-                for rid, entry in entries.items():
-                    if rid in _cache or len(_cache) < CACHE_MAX:
-                        _cache[rid] = dict(entry)
-                    out[rid] = dict(entry)
-                for pid in batch:
-                    if _score_inflight.get(pid) is gate:
-                        _score_inflight.pop(pid, None)
-            gate.set()
-    finally:
-        with _memo_lock:
-            for batch, gate in batch_gates:
-                for pid in batch:
-                    if _score_inflight.get(pid) is gate:
-                        _score_inflight.pop(pid, None)
-        for _batch, gate in batch_gates:
-            gate.set()
+                pace = min(PACE_SECONDS, max(0.0, deadline - time.monotonic()))
+                if pace > 0:
+                    time.sleep(pace)
+            else:
+                time.sleep(PACE_SECONDS)
 
-    if waiting:
-        unique_gates: List[threading.Event] = []
-        seen_gate_ids: set[int] = set()
-        for _pid, gate in waiting:
-            gid = id(gate)
-            if gid not in seen_gate_ids:
-                seen_gate_ids.add(gid)
-                unique_gates.append(gate)
-        wait_end = (
-            deadline
-            if deadline is not None
-            else time.monotonic() + TIMEOUT * MAX_BATCHES + PACE_SECONDS * MAX_BATCHES
-        )
-        for gate in unique_gates:
+        todo: List[str] = []
+        waiting: List[tuple[str, _ScoreSlot]] = []
+        batch: List[str] = []
+        slot: Optional[_ScoreSlot] = None
+
+        with _memo_lock:
+            for clean in pending:
+                if clean in out:
+                    continue
+                if clean in _cache:
+                    out[clean] = dict(_cache[clean])
+                elif clean in _score_inflight:
+                    waiting.append((clean, _score_inflight[clean]))
+                else:
+                    todo.append(clean)
+            if todo and not stop_fetching and batches_fetched < MAX_BATCHES:
+                if deadline is not None and time.monotonic() >= deadline:
+                    _log(f"lookup stopped at its deadline; {len(todo)} ids left unscored")
+                    stop_fetching = True
+                else:
+                    # Claim one batch at a time so an owner that expires after
+                    # batch 1 never blocks waiting callers from fetching batch 2.
+                    batch = todo[:BATCH]
+                    slot = _ScoreSlot()
+                    for pid in batch:
+                        _score_inflight[pid] = slot
+
+        remaining_todo = todo[len(batch):]
+
+        if slot is not None:
+            try:
+                bound: Dict[str, Any] = {"timeout": TIMEOUT}
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _log(f"lookup stopped at its deadline; {len(batch)} ids left unscored")
+                        stop_fetching = True
+                    else:
+                        bound = {
+                            "timeout": min(TIMEOUT, remaining),
+                            "retries": 1,
+                            "deadline_monotonic": deadline,
+                        }
+                if not stop_fetching:
+                    batches_fetched += 1
+                    try:
+                        query = urlencode({"ids": ",".join(batch)}, safe=",")
+                        data = http.get(
+                            f"{API}?{query}",
+                            headers={"User-Agent": http.BROWSER_USER_AGENT},
+                            **bound,
+                        )
+                    except Exception as e:  # network error / non-200 — degrade, never raise
+                        _log(f"lookup failed ({e}); {len(batch)} ids left unscored")
+                        stop_fetching = True
+                    else:
+                        rows = (data or {}).get("data")
+                        if not isinstance(rows, list):
+                            # arctic-shift returns {"error": "..."} on rate-limit / bad request.
+                            _log(f"unexpected response (rate-limited?): {str(data)[:80]}")
+                            stop_fetching = True
+                        else:
+                            entries: Dict[str, Dict[str, int]] = {}
+                            for row in rows:
+                                if not isinstance(row, dict):
+                                    continue
+                                rid = str(row.get("id") or "").removeprefix("t3_")
+                                if not rid:
+                                    continue
+                                try:
+                                    entries[rid] = {
+                                        "score": int(row.get("score") or 0),
+                                        "num_comments": int(row.get("num_comments") or 0),
+                                    }
+                                except (TypeError, ValueError):
+                                    continue
+                            with _memo_lock:
+                                for rid, entry in entries.items():
+                                    if rid in _cache or len(_cache) < CACHE_MAX:
+                                        _cache[rid] = dict(entry)
+                                    slot.scores[rid] = dict(entry)
+                                    out[rid] = dict(entry)
+                                slot.attempted = True
+                                for pid in batch:
+                                    if _score_inflight.get(pid) is slot:
+                                        _score_inflight.pop(pid, None)
+            finally:
+                with _memo_lock:
+                    for pid in batch:
+                        if _score_inflight.get(pid) is slot:
+                            _score_inflight.pop(pid, None)
+                slot.done.set()
+
+            if remaining_todo and not stop_fetching and batches_fetched < MAX_BATCHES:
+                pending = remaining_todo + [pid for pid, _ in waiting]
+                continue
+
+        if not waiting:
+            break
+
+        unique_slots: List[_ScoreSlot] = []
+        seen_slot_ids: set[int] = set()
+        for _pid, wslot in waiting:
+            sid = id(wslot)
+            if sid not in seen_slot_ids:
+                seen_slot_ids.add(sid)
+                unique_slots.append(wslot)
+        timed_out = False
+        for wslot in unique_slots:
             remaining = wait_end - time.monotonic()
             if remaining <= 0:
+                timed_out = True
                 break
-            gate.wait(timeout=remaining)
+            if not wslot.done.wait(timeout=remaining):
+                timed_out = True
+                break
+
+        retry_ids: List[str] = []
         with _memo_lock:
-            for pid, _gate in waiting:
-                if pid in _cache:
+            for pid, wslot in waiting:
+                if pid in wslot.scores:
+                    out[pid] = dict(wslot.scores[pid])
+                elif pid in _cache:
                     out[pid] = dict(_cache[pid])
+                elif wslot.done.is_set() and not wslot.attempted:
+                    retry_ids.append(pid)
+
+        if (
+            timed_out
+            or not retry_ids
+            or stop_fetching
+            or batches_fetched >= MAX_BATCHES
+            or wait_retries >= 1
+            or (deadline is not None and time.monotonic() >= deadline)
+        ):
+            break
+        wait_retries += 1
+        pending = retry_ids
+
     return out
 
 

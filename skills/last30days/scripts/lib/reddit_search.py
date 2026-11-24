@@ -19,7 +19,6 @@ code is unaffected.
 
 import copy
 import html as _html
-import inspect
 import json
 import re
 import sys
@@ -247,19 +246,22 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
     return posts, _next_cursor(html_text)
 
 
-def _accepts_kwarg(fn: Any, name: str, *, allow_var_keyword: bool = False) -> bool:
-    target = getattr(fn, "side_effect", None)
-    if callable(target):
-        fn = target
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
-    if name in params:
-        return True
-    return allow_var_keyword and any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
+class _StreamCollector:
+    """Thread-safe per-stream buffer so earlier pages survive a timeout."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._posts: List[Dict[str, Any]] = []
+
+    def add(self, posts: List[Dict[str, Any]]) -> None:
+        if not posts:
+            return
+        with self._lock:
+            self._posts.extend(posts)
+
+    def snapshot(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._posts)
 
 
 def _fetch_page(
@@ -277,9 +279,7 @@ def _fetch_page(
         "accept": "text/html",
         "validate": unrecognized_body,
     }
-    if deadline is not None and _accepts_kwarg(
-        http.reddit_keyless_get_text_retry_429, "deadline_monotonic", allow_var_keyword=True,
-    ):
+    if deadline is not None:
         kwargs["deadline_monotonic"] = deadline
     try:
         return http.reddit_keyless_get_text_retry_429(url, **kwargs)
@@ -294,6 +294,7 @@ def _search_stream(
     max_pages: int,
     subreddit: Optional[str] = None,
     deadline: Optional[float] = None,
+    collector: Optional[_StreamCollector] = None,
 ) -> List[Dict[str, Any]]:
     """Page one search sequentially. Keeps earlier pages when a later one fails."""
     label = f"r/{subreddit}" if subreddit else "global"
@@ -320,6 +321,8 @@ def _search_stream(
         for p in new:
             seen_ids.add(p["metadata"]["post_id"])
         posts.extend(new)
+        if collector is not None:
+            collector.add(new)
         if not new or not next_cursor or next_cursor in used_cursors:
             break
         used_cursors.add(next_cursor)
@@ -436,34 +439,38 @@ def _search_uncached(
         jobs = [(sub, SUB_PAGE_CAP) for sub in subs] + [(None, global_pages)]
         batch = sum(pages for _sub, pages in jobs)
         streams: List[List[Dict[str, Any]]] = []
-        pass_deadline = _accepts_kwarg(_search_stream, "deadline", allow_var_keyword=True)
         executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)))
         try:
             # submit_with_context, not executor.submit: a plain submit starts the
             # worker with an empty context, dropping the pipeline's
             # capture_failures() sink so a 429/403 or a challenge page is
             # silently discarded (issue #899).
-            futures = [
-                (
+            futures = []
+            for sub, pages in jobs:
+                collector = _StreamCollector()
+                futures.append((
                     http.submit_with_context(
                         executor, _search_stream, query, time_filter, pages, sub,
-                        **({"deadline": deadline} if pass_deadline else {}),
+                        deadline=deadline, collector=collector,
                     ),
                     sub,
                     pages,
-                )
-                for sub, pages in jobs
-            ]
-            for future, sub, pages in futures:
+                    collector,
+                ))
+            for future, sub, pages, collector in futures:
                 wait = _result_timeout(batch, pages)
                 if deadline is not None:
                     wait = max(0.0, min(wait, deadline - time.monotonic()))
                 try:
                     streams.append(future.result(timeout=wait))
                 except (Exception, FuturesTimeoutError) as e:
+                    salvaged = collector.snapshot()
+                    if salvaged:
+                        streams.append(salvaged)
                     _log(
                         f"{'r/' + sub if sub else 'global'} search future failed: "
                         f"{e or 'still running at the deadline'}"
+                        + (f" (kept {len(salvaged)} posts from earlier pages)" if salvaged else "")
                     )
         finally:
             # Under a deadline a stream still queued or running is not waited for.

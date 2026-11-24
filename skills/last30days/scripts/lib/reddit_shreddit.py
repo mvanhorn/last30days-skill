@@ -15,7 +15,6 @@ cannot be recovered keylessly here (ScrapeCreators backup still provides it).
 """
 
 import html as _html
-import inspect
 import re
 import sys
 import time
@@ -94,19 +93,6 @@ _TAG_ATTR = re.compile(
 def _log(msg: str) -> None:
     sys.stderr.write(f"[RedditShreddit] {msg}\n")
     sys.stderr.flush()
-
-
-def _accepts_kwarg(fn: Any, name: str) -> bool:
-    target = getattr(fn, "side_effect", None)
-    if callable(target):
-        fn = target
-    try:
-        params = inspect.signature(fn).parameters
-    except (TypeError, ValueError):
-        return False
-    return name in params or any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
 
 
 def unrecognized_comments_body(text: str) -> Optional[str]:
@@ -313,9 +299,7 @@ def fetch_comments(
                 "accept": "text/html",
                 "validate": unrecognized_comments_body,
             }
-            if deadline is not None and _accepts_kwarg(
-                http.reddit_keyless_get_text, "deadline_monotonic",
-            ):
+            if deadline is not None:
                 get_kwargs["deadline_monotonic"] = deadline
             html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), **get_kwargs)
         comments = parse_comments(html_text, limit=MAX_COMMENTS) if html_text else []

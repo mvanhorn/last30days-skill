@@ -288,7 +288,7 @@ class TestLaneReturnsWhatItHasInsideItsBudget:
     def test_enrichment_wait_is_capped_by_the_lane_deadline(self):
         release = threading.Event()
 
-        def slow_comments(_url, deadline=None):
+        def slow_comments(_url, deadline=None, post_author=None):
             release.wait(5)
             return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
@@ -520,7 +520,7 @@ def _kept(pid, num_comments=9, top_comments=None):
     )
 
 
-def _comments_for(url, deadline=None):
+def _comments_for(url, deadline=None, post_author=None):
     pid = url.rstrip("/").split("/")[-2]
     return {
         "top_comments": [{
@@ -578,7 +578,7 @@ class TestKeptThreadsGetTheirTopComments:
         release = threading.Event()
         monkeypatch.setattr(reddit_keyless, "FINAL_ENRICH_BUDGET", 2.2)
 
-        def fetch(url, deadline=None):
+        def fetch(url, deadline=None, post_author=None):
             if url.endswith("/slow/x/"):
                 release.wait(5)
             return _comments_for(url)
@@ -732,7 +732,7 @@ class TestStagesReturnPartialResultsBeforeTheWait:
     def test_site_search_with_a_targeted_sub_returns_its_posts(self):
         release = threading.Event()
 
-        def stream(query, time_filter, pages, subreddit=None):
+        def stream(query, time_filter, pages, subreddit=None, deadline=None, collector=None):
             if subreddit is None:
                 release.wait(10)
                 return []
