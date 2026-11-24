@@ -814,6 +814,76 @@ class TestHigh022PostPlanWeightNormalization:
         assert multi_plan.source_weights["youtube"] == pytest.approx(2.0 / 6.0)
         assert multi_plan.source_weights["x"] == pytest.approx(1.0 / 6.0)
 
+    def test_sanitize_plan_ignores_filtered_out_and_overflow_weights_for_default(self):
+        from lib import planner
+
+        base_raw = {
+            "intent": "product",
+            "freshness_mode": "last30days",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "Acme Corp",
+                    "ranking_query": "Acme Corp reviews",
+                    "sources": ["reddit", "x"],
+                }
+            ],
+            "source_weights": {"reddit": 0.6, "x": 0.4},
+        }
+        baseline = planner._sanitize_plan(
+            base_raw, "Acme Corp", ["reddit", "x", "digg"], None, "default",
+            honor_plan_sources=True,
+        )
+        # Filtered weights sum to 1.0 (0.6 + 0.4), so unweighted digg gets 0.5 -> 0.5 / 1.5 = 1/3.
+        assert baseline.source_weights["reddit"] == pytest.approx(0.6 / 1.5)
+        assert baseline.source_weights["x"] == pytest.approx(0.4 / 1.5)
+        assert baseline.source_weights["digg"] == pytest.approx(0.5 / 1.5)
+
+        # Adding a weight for an unavailable source must not skew the default weight.
+        with_unavailable = {
+            **base_raw,
+            "source_weights": {"reddit": 0.6, "x": 0.4, "youtube": 0.2},
+        }
+        plan_unavailable = planner._sanitize_plan(
+            with_unavailable, "Acme Corp", ["reddit", "x", "digg"], None, "default",
+            honor_plan_sources=True,
+        )
+        assert plan_unavailable.source_weights == pytest.approx(baseline.source_weights)
+
+        # Adding a weight for a source excluded via requested_sources must not skew it either.
+        plan_excluded = planner._sanitize_plan(
+            with_unavailable,
+            "Acme Corp",
+            ["reddit", "x", "digg", "youtube"],
+            ["reddit", "x", "digg"],
+            "default",
+            honor_plan_sources=True,
+        )
+        assert plan_excluded.source_weights == pytest.approx(baseline.source_weights)
+
+        # Huge / non-finite / bool weights on excluded or eligible sources must not crash planning.
+        with_huge_excluded = {
+            **base_raw,
+            "source_weights": {"reddit": 0.6, "x": 0.4, "youtube": 10**400},
+        }
+        plan_huge_excluded = planner._sanitize_plan(
+            with_huge_excluded, "Acme Corp", ["reddit", "x", "digg"], None, "default",
+            honor_plan_sources=True,
+        )
+        assert plan_huge_excluded.source_weights == pytest.approx(baseline.source_weights)
+
+        for bad_weight in (10**400, -10**400, float("inf"), float("nan"), True, "not-a-number"):
+            with_bad_eligible = {
+                **base_raw,
+                "source_weights": {"reddit": 0.6, "x": 0.4, "digg": bad_weight},
+            }
+            plan_bad_eligible = planner._sanitize_plan(
+                with_bad_eligible, "Acme Corp", ["reddit", "x", "digg"], None, "default",
+                honor_plan_sources=True,
+            )
+            assert plan_bad_eligible.source_weights == pytest.approx(baseline.source_weights)
+
 
 # ---------------------------------------------------------------------------
 # HIGH-023: YouTube SSH host routing without local yt-dlp binary
