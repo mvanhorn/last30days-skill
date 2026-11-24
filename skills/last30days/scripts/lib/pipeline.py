@@ -7,6 +7,7 @@ import copy
 from collections.abc import Callable, Iterable, Iterator, Mapping
 import heapq
 import math
+import os
 import queue
 import re
 import sqlite3
@@ -717,13 +718,33 @@ class NoRequestedSourceAvailable(RuntimeError):
     """None of the sources the user asked for with --search is configured."""
 
 
+_ORIGINAL_IS_YTDLP_INSTALLED = youtube_yt.is_ytdlp_installed
+
+
+def _resolve_ytdlp(config: Mapping[str, Any] | None = None) -> tuple[bool, str | None]:
+    """Return ``(has_ytdlp, validated_ssh_host)``, validating the SSH alias once."""
+    raw_ssh = (config or {}).get("LAST30DAYS_YOUTUBE_SSH_HOST")
+    with youtube_yt.ssh_host_scope(raw_ssh):
+        ssh_host = youtube_yt._ytdlp_ssh_host()
+    if ssh_host:
+        return True, ssh_host
+    if which is not _ORIGINAL_WHICH:
+        return bool(which("yt-dlp")), None
+    # Clear any rejected config alias so is_ytdlp_installed() does not re-warn;
+    # if an invalid alias lives in os.environ, bypass _ytdlp_ssh_host unless
+    # is_ytdlp_installed was monkeypatched by a test.
+    with youtube_yt.ssh_host_scope(None):
+        if (
+            "LAST30DAYS_YOUTUBE_SSH_HOST" in os.environ
+            and youtube_yt.is_ytdlp_installed is _ORIGINAL_IS_YTDLP_INSTALLED
+        ):
+            return youtube_yt.shutil.which("yt-dlp") is not None, None
+        return youtube_yt.is_ytdlp_installed(), None
+
+
 def _has_ytdlp(config: Mapping[str, Any] | None = None) -> bool:
     """Return True when yt-dlp is available locally or via SSH routing."""
-    ssh_host = (config or {}).get("LAST30DAYS_YOUTUBE_SSH_HOST")
-    with youtube_yt.ssh_host_scope(ssh_host):
-        if which is not _ORIGINAL_WHICH:
-            return bool(youtube_yt._ytdlp_ssh_host() or which("yt-dlp"))
-        return youtube_yt.is_ytdlp_installed()
+    return _resolve_ytdlp(config)[0]
 
 
 def available_sources(
@@ -756,31 +777,33 @@ def available_sources(
         config.get("_CORPUS_DIRS"), config.get("LAST30DAYS_CORPUS_DIRS")
     ):
         available.append("corpus")
-    if env.is_tiktok_available(config):
-        available.append("tiktok")
-    if env.is_instagram_available(config):
-        available.append("instagram")
-    if env.get_x_source(config, local_only=local_only):
-        available.append("x")
-    elif x_envelope or (
-        not suppress_x_host_lane and env.x_host_lane_declared(config)
-    ):
-        # Host-fetched X lane: the model passes connector results through
-        # --x-posts, so X is served without an engine backend.
-        available.append("x")
-    else:
-        # Safe inspection (--diagnose/--preflight) skips browser-cookie
-        # extraction, so get_x_source is None even though a real run would
-        # authenticate X via FROM_BROWSER. Report it as available so consumers
-        # of available_sources (SKILL.md ACTIVE_SOURCES_LIST) don't under-report.
-        # diagnose() precomputes the predicate and passes it via x_pending to
-        # avoid evaluating it twice in one diagnose() call.
-        if x_pending is None:
-            x_pending = env.x_pending_browser_auth(config, local_only=local_only)
-        if x_pending and health.probe_dependency("node").status == health.OK:
+    has_ytdlp, validated_ssh = _resolve_ytdlp(config)
+    with youtube_yt.ssh_host_scope(validated_ssh):
+        if env.is_tiktok_available(config):
+            available.append("tiktok")
+        if env.is_instagram_available(config):
+            available.append("instagram")
+        if env.get_x_source(config, local_only=local_only):
             available.append("x")
-    if _has_ytdlp(config) or env.is_youtube_sc_available(config):
-        available.append("youtube")
+        elif x_envelope or (
+            not suppress_x_host_lane and env.x_host_lane_declared(config)
+        ):
+            # Host-fetched X lane: the model passes connector results through
+            # --x-posts, so X is served without an engine backend.
+            available.append("x")
+        else:
+            # Safe inspection (--diagnose/--preflight) skips browser-cookie
+            # extraction, so get_x_source is None even though a real run would
+            # authenticate X via FROM_BROWSER. Report it as available so consumers
+            # of available_sources (SKILL.md ACTIVE_SOURCES_LIST) don't under-report.
+            # diagnose() precomputes the predicate and passes it via x_pending to
+            # avoid evaluating it twice in one diagnose() call.
+            if x_pending is None:
+                x_pending = env.x_pending_browser_auth(config, local_only=local_only)
+            if x_pending and health.probe_dependency("node").status == health.OK:
+                available.append("x")
+        if has_ytdlp or env.is_youtube_sc_available(config):
+            available.append("youtube")
     available.extend(["hackernews", "polymarket"])
     # StockTwits is gated to ticker/crypto topics only (flag set in run()).
     if config.get("_financial_topic"):
@@ -7537,6 +7560,9 @@ def _attempt_x_backend_memo(
     return items, err, err_state
 
 
+_SSH_HOST_UNSET: Any = object()
+
+
 def _fetch_youtube_stream(
     yt_query: str,
     from_date: str,
@@ -7546,12 +7572,18 @@ def _fetch_youtube_stream(
     *,
     has_ytdlp: bool,
     freshness_mode: str | None = None,
+    ssh_host: Any = _SSH_HOST_UNSET,
 ) -> tuple[list[dict], dict]:
     """Search, backfill, transcribe, and comment-enrich one YouTube query."""
     # An abandoned lane keeps running after the report is saved; once the
     # run is over, every ScrapeCreators call in it is wasted credit (#1315).
     deadline = config.get("_research_deadline")
-    with youtube_yt.ssh_host_scope(config.get("LAST30DAYS_YOUTUBE_SSH_HOST")), \
+    scoped_ssh = (
+        config.get("LAST30DAYS_YOUTUBE_SSH_HOST")
+        if ssh_host is _SSH_HOST_UNSET
+        else ssh_host
+    )
+    with youtube_yt.ssh_host_scope(scoped_ssh), \
          youtube_yt.sc_spend_until(
         lambda: _research_stopped(config),
         cancel=config.get("_enrich_cancel"),
@@ -8371,9 +8403,8 @@ def _retrieve_stream_impl(
         # Use raw_topic so expand_youtube_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         yt_query = raw_topic or subquery.search_query
-        with youtube_yt.ssh_host_scope(config.get("LAST30DAYS_YOUTUBE_SSH_HOST")):
-            has_ytdlp = _has_ytdlp(config)
-            ssh_host = youtube_yt._ytdlp_ssh_host()
+        has_ytdlp, ssh_host = _resolve_ytdlp(config)
+        with youtube_yt.ssh_host_scope(ssh_host):
             # One memo unit covers yt-dlp search, the ScrapeCreators fallback and
             # merge, transcripts, and comments, so subquery streams and the
             # thin-source retry share one fetch (hosts without yt-dlp included).
@@ -8382,13 +8413,13 @@ def _retrieve_stream_impl(
                     "youtube", yt_query, from_date, to_date, depth, freshness_mode, has_ytdlp,
                     ssh_host,
                     env.is_youtube_sc_available(config),
-                    env.youtube_sc_min_items(config),
                     env.is_youtube_comments_available(config),
+                    env.youtube_sc_min_items(config),
                     _comparison_entity_count(config),
                 ),
                 lambda: _fetch_youtube_stream(
                     yt_query, from_date, to_date, depth, config, has_ytdlp=has_ytdlp,
-                    freshness_mode=freshness_mode,
+                    freshness_mode=freshness_mode, ssh_host=ssh_host,
                 ),
                 timeout=_memo_wait_seconds(config),
                 cacheable=_clean_stream_result,

@@ -134,10 +134,10 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime]:
         return None
 
     if isinstance(date_str, (int, float)):
-        ts = float(date_str)
-        if not math.isfinite(ts) or not (_MIN_UNIX_SECONDS <= ts < _MAX_UNIX_SECONDS):
-            return None
         try:
+            ts = float(date_str)
+            if not math.isfinite(ts) or not (_MIN_UNIX_SECONDS <= ts < _MAX_UNIX_SECONDS):
+                return None
             return datetime.fromtimestamp(ts, tz=timezone.utc)
         except (ValueError, TypeError, OverflowError, OSError):
             return None
@@ -173,10 +173,13 @@ def timestamp_to_date(ts: Optional[float]) -> Optional[str]:
     """Convert Unix timestamp to YYYY-MM-DD string."""
     if ts is None or isinstance(ts, bool):
         return None
-    if not isinstance(ts, (int, float)) or not math.isfinite(ts):
+    if not isinstance(ts, (int, float)):
         return None
     try:
-        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        ts_f = float(ts)
+        if not math.isfinite(ts_f):
+            return None
+        dt = datetime.fromtimestamp(ts_f, tz=timezone.utc)
         return dt.date().isoformat()
     except (ValueError, TypeError, OverflowError, OSError):
         return None

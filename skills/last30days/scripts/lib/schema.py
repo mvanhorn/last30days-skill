@@ -469,7 +469,12 @@ class RetrievalBundle:
             return
         existing = self.detail_by_source.get(source)
         if existing:
-            detail = existing if detail in existing else f"{existing}; {detail}"
+            if detail in existing:
+                detail = existing
+            elif existing in detail:
+                detail = detail
+            else:
+                detail = f"{existing}; {detail}"
         self.detail_by_source[source] = detail
         if state:
             prev_lane_state = self.lane_state_by_source.get(source)

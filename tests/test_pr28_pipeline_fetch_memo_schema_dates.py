@@ -276,11 +276,20 @@ class TestHigh014FetchMemoLifecycleAndEviction:
         with ThreadPoolExecutor(max_workers=2) as pool:
             f_owner = pool.submit(fetch_memo.fetch_once, "shared", _slow_owner, timeout=5)
             assert owner_entered.wait(timeout=5)
+            waiter_waiting = threading.Event()
+            with fetch_memo._LOCK:
+                live_slot = fetch_memo._INFLIGHT["shared"]
+            real_wait = live_slot.event.wait
+
+            def _observed_wait(timeout=None):
+                waiter_waiting.set()
+                return real_wait(timeout)
+
+            live_slot.event.wait = _observed_wait
             f_waiter = pool.submit(
                 fetch_memo.fetch_once, "shared", lambda: {"version": "unused"}, timeout=5,
             )
-            # Let waiter register on the in-flight slot before resetting.
-            threading.Event().wait(0.05)
+            assert waiter_waiting.wait(timeout=5)
 
             fetch_memo.reset()
             # Fill cache past MAX_ENTRIES after reset while old owner is still running.
@@ -606,10 +615,15 @@ class TestHigh023YoutubeSshHostAvailabilityAndStream:
         monkeypatch.setattr(youtube_yt.shutil, "which", lambda _cmd: None)
         monkeypatch.delenv("LAST30DAYS_YOUTUBE_SSH_HOST", raising=False)
 
-        assert "youtube" not in pipeline.available_sources({})
-        assert "youtube" in pipeline.available_sources(
-            {"LAST30DAYS_YOUTUBE_SSH_HOST": "macmini"},
-        )
+        without_ssh = pipeline.available_sources({})
+        assert "youtube" not in without_ssh
+        assert "tiktok" not in without_ssh
+        assert "instagram" not in without_ssh
+
+        with_ssh = pipeline.available_sources({"LAST30DAYS_YOUTUBE_SSH_HOST": "macmini"})
+        assert "youtube" in with_ssh
+        assert "tiktok" in with_ssh
+        assert "instagram" in with_ssh
         # Config-scoped check must not pollute process-wide os.environ.
         assert "LAST30DAYS_YOUTUBE_SSH_HOST" not in os.environ
 
@@ -670,12 +684,14 @@ class TestHigh023YoutubeSshHostAvailabilityAndStream:
         assert "_source_outcome" not in artifact
         assert "LAST30DAYS_YOUTUBE_SSH_HOST" not in os.environ
 
-    def test_invalid_ssh_host_does_not_enable_ytdlp(self, monkeypatch):
+    def test_invalid_ssh_host_does_not_enable_ytdlp(self, monkeypatch, capsys):
         monkeypatch.setattr(youtube_yt.shutil, "which", lambda _cmd: None)
         monkeypatch.delenv("LAST30DAYS_YOUTUBE_SSH_HOST", raising=False)
 
         bad_config = {"LAST30DAYS_YOUTUBE_SSH_HOST": "-oProxyCommand=evil"}
         assert "youtube" not in pipeline.available_sources(bad_config)
+        avail_err = capsys.readouterr().err
+        assert avail_err.count("does not look like a plain hostname/alias") == 1
 
         with mock.patch.object(youtube_yt, "search_and_transcribe") as ytdlp_search:
             items, _artifact = pipeline._retrieve_stream_impl(
@@ -693,6 +709,8 @@ class TestHigh023YoutubeSshHostAvailabilityAndStream:
                 runtime=_make_runtime(),
                 mock=False,
             )
+        stream_err = capsys.readouterr().err
+        assert stream_err.count("does not look like a plain hostname/alias") == 1
         ytdlp_search.assert_not_called()
         assert items == []
 
@@ -711,6 +729,18 @@ class TestHigh031RecordDetailPreservationAndSpecificity:
 
         bundle.record_detail("reddit", full, state=schema.RATE_LIMITED)
         bundle.record_detail("reddit", shorter, state=schema.RATE_LIMITED)
+
+        assert bundle.detail_by_source["reddit"] == full
+        assert bundle.source_status["reddit"].detail == full
+
+    def test_longer_superset_detail_replaces_shorter_without_duplication(self):
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("reddit")
+        shorter = "1 sub-request blocked (HTTP 403)"
+        full = "3 sub-requests rate-limited (HTTP 429); 1 sub-request blocked (HTTP 403)"
+
+        bundle.record_detail("reddit", shorter, state=schema.RATE_LIMITED)
+        bundle.record_detail("reddit", full, state=schema.RATE_LIMITED)
 
         assert bundle.detail_by_source["reddit"] == full
         assert bundle.source_status["reddit"].detail == full
@@ -1081,6 +1111,8 @@ class TestHigh034And035DatesParsing:
             float("nan"),
             1e20,
             -1e20,
+            10**400,
+            -(10**400),
             None,
             "",
             "   ",
@@ -1101,6 +1133,8 @@ class TestHigh034And035DatesParsing:
             1e20,
             -1e20,
             10**25,
+            10**400,
+            -(10**400),
             "bad",
             "1768435200",
         ],
