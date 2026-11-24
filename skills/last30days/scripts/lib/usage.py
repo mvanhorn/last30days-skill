@@ -5,12 +5,18 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
+import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import log
+
 JOURNAL_ENV = "LAST30DAYS_USAGE_JOURNAL"
+_JOURNAL_TIMEOUT_SECONDS = 30.0
+_BUSY_TIMEOUT_MS = 30_000
+_WRITE_LOCK = threading.Lock()
 
 _PAID_HOSTS = {
     "openrouter.ai": "openrouter",
@@ -32,25 +38,75 @@ _PAID_HOSTS = {
 }
 
 
+def _log_journal_error(operation: str, exc: sqlite3.Error) -> None:
+    log.source_log(
+        "Usage",
+        f"journal {operation} failed: {type(exc).__name__}: {exc}",
+        tty_only=False,
+    )
+
+
 @contextmanager
-def _connection(path):
-    conn = sqlite3.connect(path)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+def _connection(path, *, write: bool = False):
+    lock = _WRITE_LOCK if write else nullcontext()
+    with lock:
+        conn = sqlite3.connect(
+            path,
+            timeout=_JOURNAL_TIMEOUT_SECONDS,
+            isolation_level=None,
+        )
+        try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            if write:
+                conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                if write and conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                raise
+            else:
+                if write and conn.in_transaction:
+                    conn.execute("COMMIT")
+        finally:
+            conn.close()
 
 
 def create_journal(path: Path) -> None:
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(fd)
-    with _connection(path) as conn:
-        conn.execute(
-            "CREATE TABLE attempts (id TEXT PRIMARY KEY, provider TEXT NOT NULL, "
-            "cost REAL, unknown INTEGER NOT NULL DEFAULT 1, "
-            "prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0)"
+    with _WRITE_LOCK:
+        conn = sqlite3.connect(
+            path,
+            timeout=_JOURNAL_TIMEOUT_SECONDS,
+            isolation_level=None,
         )
+        try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error:
+                pass
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "CREATE TABLE attempts (id TEXT PRIMARY KEY, provider TEXT NOT NULL, "
+                    "cost REAL, unknown INTEGER NOT NULL DEFAULT 1, "
+                    "prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0)"
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                raise
+        finally:
+            conn.close()
 
 
 def begin(provider: str) -> tuple[str, str, str] | None:
@@ -58,8 +114,12 @@ def begin(provider: str) -> tuple[str, str, str] | None:
     if not path:
         return None
     attempt_id = uuid.uuid4().hex
-    with _connection(path) as conn:
-        conn.execute("INSERT INTO attempts (id, provider) VALUES (?, ?)", (attempt_id, provider))
+    try:
+        with _connection(path, write=True) as conn:
+            conn.execute("INSERT INTO attempts (id, provider) VALUES (?, ?)", (attempt_id, provider))
+    except sqlite3.Error as exc:
+        _log_journal_error("begin", exc)
+        return None
     return path, attempt_id, provider
 
 
@@ -83,8 +143,11 @@ def cancel(attempt: tuple[str, str, str] | None) -> None:
     """Remove an attempt when the transport provably never started."""
     if attempt is not None:
         path, attempt_id, _ = attempt
-        with _connection(path) as conn:
-            conn.execute("DELETE FROM attempts WHERE id = ?", (attempt_id,))
+        try:
+            with _connection(path, write=True) as conn:
+                conn.execute("DELETE FROM attempts WHERE id = ?", (attempt_id,))
+        except sqlite3.Error as exc:
+            _log_journal_error("cancel", exc)
 
 
 def finish(attempt: tuple[str, str, str] | None, payload: object) -> None:
@@ -109,16 +172,19 @@ def finish(attempt: tuple[str, str, str] | None, payload: object) -> None:
     completion = usage.get("completion_tokens", usage.get("output_tokens", 0))
     prompt = prompt if type(prompt) is int and prompt >= 0 else 0
     completion = completion if type(completion) is int and completion >= 0 else 0
-    with _connection(path) as conn:
-        conn.execute(
-            "UPDATE attempts SET cost = ?, unknown = ?, prompt_tokens = ?, completion_tokens = ? WHERE id = ?",
-            (cost, unknown, prompt, completion, attempt_id),
-        )
+    try:
+        with _connection(path, write=True) as conn:
+            conn.execute(
+                "UPDATE attempts SET cost = ?, unknown = ?, prompt_tokens = ?, completion_tokens = ? WHERE id = ?",
+                (cost, unknown, prompt, completion, attempt_id),
+            )
+    except sqlite3.Error as exc:
+        _log_journal_error("finish", exc)
 
 
 def read_journal(path: Path) -> dict:
     try:
-        with _connection(path) as conn:
+        with _connection(path, write=False) as conn:
             row = conn.execute(
                 "SELECT COALESCE(SUM(cost), 0), COALESCE(SUM(unknown), 0), "
                 "COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0) FROM attempts"

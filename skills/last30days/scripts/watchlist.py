@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal
 import json
 import math
 import os
@@ -19,6 +20,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
 from lib import env as envlib, health, http, public_host, schema, usage
+
+_parse_budget = store.parse_budget
 
 
 # --- Webhook Delivery Functions ---
@@ -41,7 +44,7 @@ def _validate_webhook_url(url: str) -> urllib.parse.ParseResult:
     """Require a public https:// webhook URL with no userinfo or non-public literals.
 
     DNS resolution and IP pinning happen fresh at connect time inside
-    ``http.post(..., public_only=True)`` so offline configuration stays
+    ``http.post_raw(..., public_only=True)`` so offline configuration stays
     network-free and DNS rebinding cannot bypass the check.
     """
     err = "delivery_channel must be a public https:// URL"
@@ -147,7 +150,7 @@ def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
 def _send_slack_webhook(url: str, text: str) -> None:
     """POST to Slack incoming webhook."""
     _validate_webhook_url(url)
-    http.post(
+    http.post_raw(
         url,
         json_data={"text": text},
         timeout=10,
@@ -161,7 +164,7 @@ def _send_slack_webhook(url: str, text: str) -> None:
 def _send_generic_webhook(url: str, text: str) -> None:
     """POST JSON payload to generic webhook."""
     _validate_webhook_url(url)
-    http.post(
+    http.post_raw(
         url,
         json_data={
             "message": text,
@@ -205,17 +208,28 @@ def cmd_remove(args):
     }))
 
 
+def _read_daily_budget() -> tuple[float | None, str | None]:
+    raw_budget = store.get_setting("daily_budget", "5.00")
+    try:
+        return _parse_budget(raw_budget), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
 def cmd_list(args):
     del args
     topics = store.list_topics()
     budget_used, budget_unknown_runs = store.get_daily_usage()
-    budget_limit = float(store.get_setting("daily_budget", "5.00"))
-    print(json.dumps({
+    budget_limit, budget_error = _read_daily_budget()
+    payload = {
         "topics": topics,
         "budget_used": budget_used,
         "budget_limit": budget_limit,
         "budget_unknown_runs": budget_unknown_runs,
-    }, default=str))
+    }
+    if budget_error is not None:
+        payload["budget_error"] = budget_error
+    print(json.dumps(payload, default=str))
 
 
 def cmd_delta(args):
@@ -241,23 +255,35 @@ def cmd_run_all(args):
         print(json.dumps({"message": "No enabled topics to research."}))
         return
 
-    budget_limit = float(store.get_setting("daily_budget", "5.00"))
+    budget_limit, budget_error = _read_daily_budget()
     results = []
     for topic in topics:
         results.append(_budget_skip(topic) or _run_topic(topic))
 
     budget_used, budget_unknown_runs = store.get_daily_usage()
-    print(json.dumps({
+    payload = {
         "action": "run_all",
         "results": results,
         "budget_used": budget_used,
         "budget_limit": budget_limit,
         "budget_unknown_runs": budget_unknown_runs,
-    }, default=str))
+    }
+    if budget_error is not None:
+        payload["budget_error"] = budget_error
+    print(json.dumps(payload, default=str))
 
 
 def _budget_skip(topic: dict) -> dict | None:
-    limit = float(store.get_setting("daily_budget", "5.00"))
+    limit, budget_error = _read_daily_budget()
+    if limit is None:
+        return {
+            "topic": topic["name"],
+            "status": "skipped",
+            "reason": (
+                f"Invalid daily_budget setting ({budget_error}); "
+                "refusing to run until reconfigured"
+            ),
+        }
     cost, unknown = store.get_daily_usage()
     if cost >= limit:
         reason = f"Budget exceeded: ${cost:.2f}/${limit:.2f}"
@@ -424,8 +450,13 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
 
 def cmd_config(args):
     if args.key == "budget":
-        store.set_setting("daily_budget", str(args.value))
-        print(json.dumps({"action": "config", "key": "daily_budget", "value": str(args.value)}))
+        try:
+            value = _parse_budget(args.value)
+        except ValueError:
+            raise SystemExit("daily_budget must be a finite non-negative number")
+        canonical = format(Decimal(str(value)), "f")
+        store.set_setting("daily_budget", canonical)
+        print(json.dumps({"action": "config", "key": "daily_budget", "value": canonical}))
         return
     if args.key == "delivery":
         value = str(args.value)

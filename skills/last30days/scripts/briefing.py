@@ -26,6 +26,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import store
 from lib.private_files import write_private_text
 
+_parse_budget = store.parse_budget
+
 BRIEFS_DIR = Path.home() / ".local" / "share" / "last30days" / "briefs"
 
 
@@ -103,7 +105,13 @@ def generate_daily(since: str = None) -> dict:
 
     # Cost info
     daily_cost = store.get_daily_cost()
-    budget = float(store.get_setting("daily_budget", "5.00"))
+    raw_budget = store.get_setting("daily_budget", "5.00")
+    try:
+        budget: float | None = _parse_budget(raw_budget)
+        budget_error = None
+    except ValueError as exc:
+        budget = None
+        budget_error = str(exc)
 
     # Find the single top finding across all topics (for TL;DR)
     all_findings = []
@@ -115,6 +123,13 @@ def generate_daily(since: str = None) -> dict:
     top_overall = None
     if all_findings:
         top_overall = max(all_findings, key=lambda f: f.get("engagement_score") or 0)
+
+    cost_info: dict = {
+        "daily": daily_cost,
+        "budget": budget,
+    }
+    if budget_error is not None:
+        cost_info["budget_error"] = budget_error
 
     result = {
         "status": "ok",
@@ -130,10 +145,7 @@ def generate_daily(since: str = None) -> dict:
             "topic": top_overall.get("_topic", ""),
             "engagement": top_overall.get("engagement_score", 0),
         } if top_overall else None,
-        "cost": {
-            "daily": daily_cost,
-            "budget": budget,
-        },
+        "cost": cost_info,
         "failed_topics": [
             t["name"] for t in briefing_topics if t["last_status"] == "failed"
         ],
