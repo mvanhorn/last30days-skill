@@ -746,7 +746,11 @@ def _sanitize_plan(
     raw_subqueries = raw.get("subqueries")
     if not isinstance(raw_subqueries, list):
         raw_subqueries = []
-    for index, subquery in enumerate(raw_subqueries[:_max_subqueries(intent_hint, topic)], start=1):
+    max_subqueries = _max_subqueries(intent_hint, topic)
+    if honor_plan_sources:
+        raw_subqueries = raw_subqueries[:max_subqueries]
+    # A malformed provider row should not cost a usable query its slot.
+    for index, subquery in enumerate(raw_subqueries, start=1):
         if not isinstance(subquery, dict):
             continue
         raw_sources = subquery.get("sources")
@@ -793,6 +797,8 @@ def _sanitize_plan(
                 weight=max(0.05, weight),
             )
         )
+        if len(subqueries) == max_subqueries:
+            break
     if (
         depth != "quick"
         and subqueries
