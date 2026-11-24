@@ -378,7 +378,10 @@ def _upsert_entry(
     ):
         source_path = str(entry.source_path)
     else:
-        source_path = str(entry.source_path.resolve())
+        try:
+            source_path = str(entry.source_path.resolve(strict=True))
+        except (OSError, RuntimeError):
+            source_path = str(entry.source_path)
     replaced = conn.execute(
         "SELECT entry_id FROM library_documents WHERE source_path = ? AND entry_id != ?",
         (source_path, entry.entry_id),
@@ -560,7 +563,7 @@ def _ensure_private_directory(path: Path) -> Path:
         st = current.lstat()
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
             raise OSError(f"Expected a directory for private file: {current}")
-        verified = current.resolve()
+        verified = current.resolve(strict=True)
 
     for name in reversed(missing_names):
         verified = verified / name

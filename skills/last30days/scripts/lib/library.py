@@ -606,7 +606,7 @@ def _win32_fd_real_path(fd: int) -> Path | None:
         import msvcrt
 
         handle = msvcrt.get_osfhandle(fd)
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         get_path = kernel32.GetFinalPathNameByHandleW
         get_path.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
         get_path.restype = ctypes.c_uint32
@@ -795,13 +795,14 @@ def _read_regular_text(
                 expected_parent_id=expected_parent_id,
             )
             fd_path = _fd_real_path(fd)
-            if fd_path is not None:
-                if not _path_is_within(fd_path, root_resolved):
-                    raise OSError(f"Opened file escapes library root: {path}")
-                if expected_parent_dir is not None and not _same_normalized_path(
-                    fd_path, expected_parent_dir / path.name
-                ):
-                    raise OSError(f"Opened file escapes checked directory: {path}")
+            if fd_path is None:
+                raise OSError(f"Unable to verify opened file location: {path}")
+            if not _path_is_within(fd_path, root_resolved):
+                raise OSError(f"Opened file escapes library root: {path}")
+            if expected_parent_dir is not None and not _same_normalized_path(
+                fd_path, expected_parent_dir / path.name
+            ):
+                raise OSError(f"Opened file escapes checked directory: {path}")
         if st.st_size > limit:
             raise ValueError(f"file exceeds {limit} byte limit")
         chunks: list[bytes] = []

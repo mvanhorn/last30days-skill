@@ -675,7 +675,10 @@ def test_high211_get_or_create_library_id_rejects_symlink(tmp_path: Path):
         library.get_or_create_library_id(memory)
 
 
-@pytest.mark.skipif(not library._SUPPORTS_DIR_FD, reason="POSIX dir_fd pinning")
+@pytest.mark.skipif(
+    not (library._SUPPORTS_DIR_FD and library._SUPPORTS_LISTDIR_FD),
+    reason="POSIX dir_fd and fd listdir pinning",
+)
 def test_high211_scan_library_pins_finished_dir_fd_across_mid_scan_symlink_swap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -729,6 +732,54 @@ def test_high211_scan_library_pins_finished_dir_fd_across_mid_scan_symlink_swap(
     assert library_index.search(
         "LEGIT_PINNED_CONTENT", db_path=db_path, store_db_path=tmp_path / "none.db"
     )
+
+
+@pytest.mark.skipif(not library._SUPPORTS_DIR_FD, reason="POSIX dir_fd pinning")
+def test_high211_scan_library_pins_finished_dir_fd_with_path_based_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "brief-2026-07-10.md").write_text(
+        "# External Secret\n\nEVIL_OUTSIDE_SECRET_PAYLOAD\n",
+        encoding="utf-8",
+    )
+    (outside / "extra-outside-2026-07-10.md").write_text(
+        "# Extra Outside Secret\n\nEXTRA_EVIL_OUTSIDE_PAYLOAD\n",
+        encoding="utf-8",
+    )
+
+    memory = tmp_path / "memory"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    (finished / "brief-2026-07-10.md").write_text(
+        "# Legit Pinned Brief\n\nLEGIT_PINNED_CONTENT\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(library, "_SUPPORTS_LISTDIR_FD", False)
+    real_listdir = os.listdir
+    resolved_finished = finished.resolve()
+    swapped = False
+
+    def swap_finished_during_path_listing(target):
+        nonlocal swapped
+        if not swapped and isinstance(target, Path) and target == resolved_finished:
+            swapped = True
+            moved = tmp_path / "finished-moved-path-list"
+            finished.rename(moved)
+            finished.symlink_to(outside)
+        return real_listdir(target)
+
+    monkeypatch.setattr(library.os, "listdir", swap_finished_during_path_listing)
+
+    entries, notes = library.scan_library(memory, tmp_path / "no-briefs")
+    assert swapped is True
+    assert [e.topic for e in entries] == ["Legit Pinned Brief"]
+    assert "LEGIT_PINNED_CONTENT" in entries[0].content
+    assert "EVIL_OUTSIDE_SECRET_PAYLOAD" not in entries[0].content
+    assert all("EXTRA_EVIL_OUTSIDE_PAYLOAD" not in e.content for e in entries)
+    assert any("extra-outside-2026-07-10.md" in note for note in notes)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX symlink+parent traversal")
@@ -917,6 +968,26 @@ def test_high211_fallback_scan_rejects_finished_swap_after_check(
     entries3, notes3 = library.scan_library(memory3, tmp_path / "no-briefs")
     assert entries3 == []
     assert any("escapes" in note.lower() for note in notes3)
+
+
+def test_high211_fallback_fails_closed_when_fd_real_path_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(library, "_SUPPORTS_DIR_FD", False)
+    monkeypatch.setattr(library, "_fd_real_path", lambda _fd: None)
+
+    memory = tmp_path / "memory-unverifiable-fd"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    brief = finished / "brief-2026-07-15.md"
+    brief.write_text("# Unverifiable FD\n\nFALLBACK_FAIL_CLOSED_BODY\n", encoding="utf-8")
+
+    with pytest.raises(OSError, match="Unable to verify opened file location"):
+        library._read_regular_text(brief, root=memory)
+
+    entries, notes = library.scan_library(memory, tmp_path / "no-briefs")
+    assert entries == []
+    assert any("Unable to verify opened file location" in note for note in notes)
 
 
 # ---------------------------------------------------------------------------
