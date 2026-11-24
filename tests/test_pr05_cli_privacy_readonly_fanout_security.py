@@ -187,6 +187,42 @@ class TestRecordFixturesRedditSessionGuard:
         assert rc == 0, err
         handler.assert_called_once()
 
+    @pytest.mark.parametrize("flag", ["--diagnose", "--preflight"])
+    @pytest.mark.parametrize("target_kind", ["existing_file", "existing_dir", "missing_file"])
+    def test_diagnose_and_preflight_reject_record_fixtures_without_touching_files(
+        self, tmp_path: Path, flag: str, target_kind: str,
+    ):
+        sentinel = '{"format": "sentinel", "exchanges": [{"id": 1}]}\n'
+        if target_kind == "existing_file":
+            fixture_arg = tmp_path / "existing.json"
+            fixture_arg.write_text(sentinel, encoding="utf-8")
+            check_path = fixture_arg
+        elif target_kind == "existing_dir":
+            fixture_arg = tmp_path / "existing_dir"
+            fixture_arg.mkdir()
+            check_path = fixture_arg / "http.json"
+            check_path.write_text(sentinel, encoding="utf-8")
+        else:
+            fixture_arg = tmp_path / "never-created.json"
+            check_path = fixture_arg
+
+        with mock.patch.object(
+            cli.http, "recording_requests",
+            side_effect=AssertionError("recording_requests must not start"),
+        ), mock.patch.object(
+            cli.env, "get_config",
+            side_effect=AssertionError("must reject before loading config"),
+        ):
+            rc, out, err = _run_cli([flag, "--record-fixtures", str(fixture_arg)])
+
+        assert rc == 2
+        assert out == ""
+        assert f"--record-fixtures cannot be combined with {flag}" in err
+        if target_kind == "missing_file":
+            assert not check_path.exists()
+        else:
+            assert check_path.read_text(encoding="utf-8") == sentinel
+
 
 # ---------------------------------------------------------------------------
 # HIGH-003: Offline, --mock, hosted-API, empty/invalid, non-auto setup cookie guard
@@ -268,35 +304,87 @@ class TestConfigPolicyNoUnexpectedCookieReads:
 
         parser = cli.build_parser()
         args, extra = parser.parse_known_args(["Ghostty terminal"])
-        assert cli._config_policy_for_args(args, "Ghostty terminal", extra).browser_cookies == "off"
+        hosted_policy = cli._config_policy_for_args(args, "Ghostty terminal", extra)
+        assert hosted_policy.browser_cookies == "off"
+        assert hosted_policy.load_secret_stores is False
 
-        # Local-bypass flags/modes keep "read" policy.
+        # --corpus under hosted env stays deferred ("off", no secret stores)
+        # until .env EXCLUDE_SOURCES is checked; unconditional local modes keep "read".
+        corpus_args, corpus_extra = parser.parse_known_args(
+            ["Ghostty terminal", "--corpus", str(tmp_path)]
+        )
+        corpus_policy = cli._config_policy_for_args(corpus_args, "Ghostty terminal", corpus_extra)
+        assert corpus_policy.browser_cookies == "off"
+        assert corpus_policy.load_secret_stores is False
+
         for bypass_argv in (
             ["Ghostty terminal", "--deep-research"],
-            ["Ghostty terminal", "--corpus", str(tmp_path)],
             ["Ghostty terminal", "--record-fixtures", str(tmp_path / "rec")],
         ):
             b_args, b_extra = parser.parse_known_args(bypass_argv)
-            assert cli._config_policy_for_args(b_args, "Ghostty terminal", b_extra).browser_cookies == "read"
+            b_policy = cli._config_policy_for_args(b_args, "Ghostty terminal", b_extra)
+            assert b_policy.browser_cookies == "read"
+            assert b_policy.load_secret_stores is True
 
-        with mock.patch.object(env, "_load_keychain", return_value={}), \
-             mock.patch.object(env, "_load_pass", return_value={}), \
-             mock.patch.object(
-                 env, "_discover_and_apply_x_credentials",
-                 side_effect=AssertionError("hosted run must not extract browser cookies"),
-             ), \
-             mock.patch.object(
-                 cookie_extract, "extract_cookies",
-                 side_effect=AssertionError("hosted run must not extract browser cookies"),
-             ), \
-             mock.patch("lib.hosted.run_hosted", return_value=0) as run_hosted:
+        with mock.patch.object(
+            env, "_load_keychain",
+            side_effect=AssertionError("hosted run must not query Keychain"),
+        ), mock.patch.object(
+            env, "_load_pass",
+            side_effect=AssertionError("hosted run must not query pass"),
+        ), mock.patch.object(
+            env, "_discover_and_apply_x_credentials",
+            side_effect=AssertionError("hosted run must not extract browser cookies"),
+        ), mock.patch.object(
+            cookie_extract, "extract_cookies",
+            side_effect=AssertionError("hosted run must not extract browser cookies"),
+        ), mock.patch("lib.hosted.run_hosted", return_value=0) as run_hosted:
             rc, _out, err = _run_cli(["Ghostty terminal"])
 
         assert rc == 0, err
         run_hosted.assert_called_once()
 
-    def test_hosted_dotenv_corpus_bypass_reloads_browser_cookies_for_local_run(
+    def test_hosted_excluded_corpus_stays_hosted_without_cookie_or_secret_store_reads(
         self, tmp_path: Path, monkeypatch,
+    ):
+        notes = tmp_path / "notes"
+        notes.mkdir()
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            f"FROM_BROWSER=chrome\nBROWSER_CONSENT=true\n"
+            f"LAST30DAYS_CORPUS_DIRS={notes}\nEXCLUDE_SOURCES=corpus\n",
+            encoding="utf-8",
+        )
+        env_file.chmod(0o600)
+        monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "sk_live_DUMMY_TEST_KEY_00000")
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://api.example.test/api/v1")
+        monkeypatch.delenv("LAST30DAYS_API_MODE", raising=False)
+        monkeypatch.setenv("LAST30DAYS_CORPUS_DIRS", str(notes))
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+
+        with mock.patch.object(
+            env, "_load_keychain",
+            side_effect=AssertionError("hosted excluded-corpus run must not query Keychain"),
+        ), mock.patch.object(
+            env, "_load_pass",
+            side_effect=AssertionError("hosted excluded-corpus run must not query pass"),
+        ), mock.patch.object(
+            env, "_discover_and_apply_x_credentials",
+            side_effect=AssertionError("hosted excluded-corpus run must not read browser cookies"),
+        ), mock.patch.object(
+            cookie_extract, "extract_cookies",
+            side_effect=AssertionError("hosted excluded-corpus run must not read browser cookies"),
+        ), mock.patch("lib.hosted.run_hosted", return_value=0) as run_hosted:
+            rc, _out, err = _run_cli(["Ghostty terminal", "--corpus", str(notes)])
+
+        assert rc == 0, err
+        run_hosted.assert_called_once()
+
+    @pytest.mark.parametrize("no_cookies", [False, True])
+    def test_hosted_dotenv_corpus_bypass_reloads_browser_cookies_for_local_run(
+        self, tmp_path: Path, monkeypatch, no_cookies: bool,
     ):
         notes = tmp_path / "notes"
         notes.mkdir()
@@ -312,45 +400,270 @@ class TestConfigPolicyNoUnexpectedCookieReads:
         monkeypatch.setenv("LAST30DAYS_API_BASE", "https://api.example.test/api/v1")
         monkeypatch.delenv("LAST30DAYS_API_MODE", raising=False)
         monkeypatch.delenv("LAST30DAYS_CORPUS_DIRS", raising=False)
-        monkeypatch.setenv("LAST30DAYS_SKIP_KEYCHAIN", "1")
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
         monkeypatch.setenv("LAST30DAYS_ALLOW_ENGINE_PLAN", "1")
+        monkeypatch.setenv("LAST30DAYS_NO_PATENT_DIGEST", "1")
 
         discovered: list[str] = []
+        keychain_calls = 0
 
         def fake_discover(cfg):
             discovered.append(str(cfg.get("_BROWSER_COOKIE_MODE")))
             cfg["AUTH_TOKEN"] = "dummy-reloaded-auth-token"
             cfg["CT0"] = "dummy-reloaded-ct0"
 
-        with mock.patch.object(env, "_load_keychain", return_value={}), \
+        def fake_keychain(keys, aliases=None):
+            nonlocal keychain_calls
+            keychain_calls += 1
+            return {"XQUIK_API_KEY": "dummy-keychain-xquik"}
+
+        argv = [
+            "Ghostty",
+            "--search=corpus",
+            "--quick",
+            "--web-backend=none",
+            "--x-handle=ghostty",
+        ]
+        if no_cookies:
+            argv.append("--no-browser-cookies")
+
+        with mock.patch.object(env, "_load_keychain", side_effect=fake_keychain), \
              mock.patch.object(env, "_load_pass", return_value={}), \
              mock.patch.object(env, "_discover_and_apply_x_credentials", side_effect=fake_discover), \
+             mock.patch.object(cli, "_resolved_company", return_value={}), \
              mock.patch.object(cli.pipeline, "diagnose", return_value={"available_sources": ["corpus"]}), \
              mock.patch.object(cli.pipeline, "run", return_value=_sample_report("Ghostty")) as run_mock, \
              mock.patch.object(cli, "_render_save_and_print", return_value=0):
-            rc, _out, err = _run_cli(["Ghostty", "--search=corpus", "--quick", "--web-backend=none"])
+            rc, _out, err = _run_cli(argv)
 
         assert rc == 0, err
-        assert discovered == ["read"]
+        # Keychain is skipped on the tentative hosted load and queried once on local reload.
+        assert keychain_calls == 1
         reloaded_cfg = run_mock.call_args.kwargs["config"]
-        assert reloaded_cfg["_BROWSER_COOKIE_MODE"] == "read"
-        assert reloaded_cfg["AUTH_TOKEN"] == "dummy-reloaded-auth-token"
-        # Verify cached research_options refreshed config_sha256 after cookie reload.
+        assert reloaded_cfg["XQUIK_API_KEY"] == "dummy-keychain-xquik"
+        if no_cookies:
+            assert discovered == []
+            assert reloaded_cfg["_BROWSER_COOKIE_MODE"] == "off"
+            assert not reloaded_cfg.get("AUTH_TOKEN")
+        else:
+            assert discovered == ["read"]
+            assert reloaded_cfg["_BROWSER_COOKIE_MODE"] == "read"
+            assert reloaded_cfg["AUTH_TOKEN"] == "dummy-reloaded-auth-token"
+        # Verify cached research_options refreshed config_sha256 after local reload.
         cached_payload = json.loads((tmp_path / "last-report.json").read_text(encoding="utf-8"))
         cached_sha = cached_payload["research_options"]["config_sha256"]
         parser = cli.build_parser()
-        check_args = parser.parse_args(["Ghostty", "--search=corpus", "--quick", "--web-backend=none"])
-        without_cookies = dict(reloaded_cfg)
-        without_cookies.pop("AUTH_TOKEN", None)
-        without_cookies.pop("CT0", None)
+        check_args = parser.parse_args(argv)
+        without_reloaded = dict(reloaded_cfg)
+        without_reloaded.pop("AUTH_TOKEN", None)
+        without_reloaded.pop("CT0", None)
+        without_reloaded.pop("XQUIK_API_KEY", None)
         expected_with = cli._cache_research_options(
             check_args, reloaded_cfg, resolved_corpus_dirs=[notes],
         )["config_sha256"]
         expected_without = cli._cache_research_options(
-            check_args, without_cookies, resolved_corpus_dirs=[notes],
+            check_args, without_reloaded, resolved_corpus_dirs=[notes],
         )["config_sha256"]
         assert expected_with != expected_without
         assert cached_sha == expected_with
+
+    @pytest.mark.parametrize(
+        "clarify_args",
+        [["--clarify-angle", "pricing"], ["--clarify-broadly"]],
+    )
+    def test_clarify_flags_with_dotenv_corpus_reject_before_cookie_or_secret_store_reload(
+        self, tmp_path: Path, monkeypatch, clarify_args: list[str],
+    ):
+        notes = tmp_path / "notes"
+        notes.mkdir()
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            f"FROM_BROWSER=chrome\nBROWSER_CONSENT=true\nLAST30DAYS_CORPUS_DIRS={notes}\n",
+            encoding="utf-8",
+        )
+        env_file.chmod(0o600)
+        monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "sk_live_DUMMY_TEST_KEY_00000")
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://api.example.test/api/v1")
+        monkeypatch.delenv("LAST30DAYS_API_MODE", raising=False)
+        monkeypatch.delenv("LAST30DAYS_CORPUS_DIRS", raising=False)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+
+        with mock.patch.object(
+            env, "_load_keychain",
+            side_effect=AssertionError("invalid clarify run must not query Keychain"),
+        ), mock.patch.object(
+            env, "_load_pass",
+            side_effect=AssertionError("invalid clarify run must not query pass"),
+        ), mock.patch.object(
+            env, "_discover_and_apply_x_credentials",
+            side_effect=AssertionError("invalid clarify run must not extract browser cookies"),
+        ):
+            rc, out, err = _run_cli(["Ghostty", *clarify_args])
+
+        assert rc == 2
+        assert out == ""
+        assert "--clarify-angle and --clarify-broadly" in err
+
+    @pytest.mark.parametrize(
+        "clarify_args",
+        [["--clarify-angle", "pricing"], ["--clarify-broadly"]],
+    )
+    def test_clarify_flags_without_hosted_env_skip_cookies_and_secret_stores(
+        self, tmp_path: Path, monkeypatch, clarify_args: list[str],
+    ):
+        env_file = tmp_path / ".env"
+        env_file.write_text("FROM_BROWSER=chrome\nBROWSER_CONSENT=true\n", encoding="utf-8")
+        env_file.chmod(0o600)
+        monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.delenv("LAST30DAYS_API_KEY", raising=False)
+        monkeypatch.delenv("LAST30DAYS_API_BASE", raising=False)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+
+        with mock.patch.object(
+            env, "_load_keychain",
+            side_effect=AssertionError("invalid clarify run must not query Keychain"),
+        ), mock.patch.object(
+            env, "_load_pass",
+            side_effect=AssertionError("invalid clarify run must not query pass"),
+        ), mock.patch.object(
+            env, "_discover_and_apply_x_credentials",
+            side_effect=AssertionError("invalid clarify run must not extract browser cookies"),
+        ):
+            rc, out, err = _run_cli(["Ghostty", *clarify_args])
+
+        assert rc == 2
+        assert out == ""
+        assert "--clarify-angle and --clarify-broadly" in err
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["OpenAI vs Anthropic", "--deep-research"],
+            ["OpenAI", "--competitors", "--deep-research"],
+            ["OpenAI", "--competitors-list", "Anthropic", "--deep-research"],
+        ],
+    )
+    def test_deep_research_with_comparison_rejects_before_cookies_or_secret_stores(
+        self, tmp_path: Path, monkeypatch, argv: list[str],
+    ):
+        env_file = tmp_path / ".env"
+        env_file.write_text("FROM_BROWSER=chrome\nBROWSER_CONSENT=true\n", encoding="utf-8")
+        env_file.chmod(0o600)
+        monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+
+        with mock.patch.object(
+            env, "_load_keychain",
+            side_effect=AssertionError("invalid deep-research comparison must not query Keychain"),
+        ), mock.patch.object(
+            env, "_load_pass",
+            side_effect=AssertionError("invalid deep-research comparison must not query pass"),
+        ), mock.patch.object(
+            env, "_discover_and_apply_x_credentials",
+            side_effect=AssertionError("invalid deep-research comparison must not extract browser cookies"),
+        ):
+            rc, out, err = _run_cli(argv)
+
+        assert rc == 2
+        assert out == ""
+        assert "--deep-research cannot be combined with competitor or vs-mode" in err
+
+    def test_env_get_config_skips_keychain_and_pass_when_policy_disables_secret_stores(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        monkeypatch.setattr(env, "CONFIG_FILE", tmp_path / "missing.env")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+
+        with mock.patch.object(
+            env, "_load_keychain", side_effect=AssertionError("Keychain must not be queried"),
+        ), mock.patch.object(
+            env, "_load_pass", side_effect=AssertionError("pass must not be queried"),
+        ):
+            cfg = env.get_config(policy=env.ConfigLoadPolicy(load_secret_stores=False))
+
+        assert cfg["_CONFIG_SOURCE"] == "env_only"
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_rc"),
+        [
+            (["Ghostty", "--mock", "--quick"], 0),
+            (["--diagnose", "--mock"], 0),
+            (["--discover", "--finalize"], 0),
+            ([], 2),
+            (["--discover-shallow"], 2),
+            (["--deep-research"], 2),
+            (["OpenAI vs Anthropic", "--deep-research"], 2),
+            (["--verify-freshness", "--mock"], 0),
+            (["queue", "list"], 0),
+            (["setup", "--github-start"], 0),
+        ],
+    )
+    def test_offline_mock_finalize_and_invalid_modes_never_query_keychain_or_pass(
+        self, tmp_path: Path, monkeypatch, argv: list[str], expected_rc: int,
+    ):
+        env_file = tmp_path / ".env"
+        env_file.write_text("FROM_BROWSER=chrome\nBROWSER_CONSENT=true\n", encoding="utf-8")
+        env_file.chmod(0o600)
+        monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.delenv("LAST30DAYS_API_KEY", raising=False)
+        monkeypatch.delenv("LAST30DAYS_API_BASE", raising=False)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+        monkeypatch.setenv("LAST30DAYS_ALLOW_ENGINE_PLAN", "1")
+        if "--verify-freshness" in argv:
+            assert cli._write_last_run("OpenClaw", _sample_report("OpenClaw"))
+
+        with mock.patch.object(
+            env, "_load_keychain", side_effect=AssertionError("Keychain must not be queried"),
+        ), mock.patch.object(
+            env, "_load_pass", side_effect=AssertionError("pass must not be queried"),
+        ), mock.patch.object(
+            env, "_discover_and_apply_x_credentials",
+            side_effect=AssertionError("browser cookies must not be extracted"),
+        ), mock.patch.object(cli.pipeline, "diagnose", return_value={"available_sources": ["reddit"]}), \
+             mock.patch.object(cli.pipeline, "run", return_value=_sample_report("Ghostty")), \
+             mock.patch.object(cli, "_render_save_and_print", return_value=0), \
+             mock.patch.object(cli, "_run_discover_protocol_leg", return_value=0), \
+             mock.patch.object(cli, "_run_queue_list", return_value=0), \
+             mock.patch("lib.setup_wizard.run_github_start", return_value={"status": "started"}):
+            rc, _out, err = _run_cli(argv)
+
+        assert rc == expected_rc, err
+
+    def test_cached_report_export_skips_keychain_pass_and_browser_cookies(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        env_file = tmp_path / ".env"
+        env_file.write_text("FROM_BROWSER=chrome\nBROWSER_CONSENT=true\n", encoding="utf-8")
+        env_file.chmod(0o600)
+        monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+        assert cli._write_last_run("OpenClaw", _sample_report("OpenClaw"))
+        syn = tmp_path / "syn.md"
+        syn.write_text("# Cached export synthesis\n", encoding="utf-8")
+
+        with mock.patch.object(
+            env, "_load_keychain", side_effect=AssertionError("Keychain must not be queried"),
+        ), mock.patch.object(
+            env, "_load_pass", side_effect=AssertionError("pass must not be queried"),
+        ), mock.patch.object(
+            env, "_discover_and_apply_x_credentials",
+            side_effect=AssertionError("browser cookies must not be extracted"),
+        ):
+            rc, out, err = _run_cli([
+                "OpenClaw", "--cached-report", "--emit=html", "--synthesis-file", str(syn),
+            ])
+
+        assert rc == 0, err
+        assert "Cached export synthesis" in out
 
     @pytest.mark.parametrize(
         "argv",

@@ -126,6 +126,7 @@ class ConfigLoadPolicy:
     allow_project_config: bool = False
     inspect_ignored_project_config: bool = False
     require_recorded_browser_consent: bool = False
+    load_secret_stores: bool = True
 
 
 def _truthy(value: Any) -> bool:
@@ -675,28 +676,32 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     # Merge file sources: project > global
     merged_env = {**file_env, **project_env}
 
-    # Keychain is the lowest-priority source (Darwin only; no-op elsewhere).
-    # Loaded before openai_auth so OPENAI_API_KEY can come from Keychain too.
-    keychain_aliases_raw = os.environ.get(KEYCHAIN_ALIASES_ENV) or merged_env.get(KEYCHAIN_ALIASES_ENV)
-    keychain_aliases = _parse_keychain_aliases(keychain_aliases_raw)
-    keychain_env = _load_keychain(list(KEYCHAIN_KEYS), keychain_aliases)
-    merged_env = {**keychain_env, **merged_env}
-    # pass(1) store: Linux/Unix analog of Keychain at convention path
-    # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
-    # plaintext .env). Lowest priority: Keychain, the config files, and process
-    # env all win over it. Two efficiency guards so a user who merely has `pass`
-    # on PATH doesn't pay for it: resolve the prefix from the loaded config/env
-    # (not import time, so a .env-set LAST30DAYS_PASS_PREFIX is honored), and
-    # probe ONLY keys still unset after the higher-priority sources — an empty
-    # list short-circuits with no gpg/pinentry calls at all.
-    pass_prefix = (
-        os.environ.get("LAST30DAYS_PASS_PREFIX")
-        or merged_env.get("LAST30DAYS_PASS_PREFIX")
-        or DEFAULT_PASS_PATH_PREFIX
-    )
-    pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
-    pass_env = _load_pass(pass_missing, pass_prefix)
-    merged_env = {**pass_env, **merged_env}
+    # Keychain and pass(1) are the lowest-priority credential stores. Skip both
+    # when the caller's ConfigLoadPolicy opts out (e.g. offline, mock, invalid,
+    # or hosted-API invocations) so users are never prompted for unused secrets.
+    keychain_env: dict[str, str] = {}
+    pass_env: dict[str, str] = {}
+    if policy.load_secret_stores:
+        keychain_aliases_raw = os.environ.get(KEYCHAIN_ALIASES_ENV) or merged_env.get(KEYCHAIN_ALIASES_ENV)
+        keychain_aliases = _parse_keychain_aliases(keychain_aliases_raw)
+        keychain_env = _load_keychain(list(KEYCHAIN_KEYS), keychain_aliases)
+        merged_env = {**keychain_env, **merged_env}
+        # pass(1) store: Linux/Unix analog of Keychain at convention path
+        # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
+        # plaintext .env). Lowest priority: Keychain, the config files, and process
+        # env all win over it. Two efficiency guards so a user who merely has `pass`
+        # on PATH doesn't pay for it: resolve the prefix from the loaded config/env
+        # (not import time, so a .env-set LAST30DAYS_PASS_PREFIX is honored), and
+        # probe ONLY keys still unset after the higher-priority sources — an empty
+        # list short-circuits with no gpg/pinentry calls at all.
+        pass_prefix = (
+            os.environ.get("LAST30DAYS_PASS_PREFIX")
+            or merged_env.get("LAST30DAYS_PASS_PREFIX")
+            or DEFAULT_PASS_PATH_PREFIX
+        )
+        pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
+        pass_env = _load_pass(pass_missing, pass_prefix)
+        merged_env = {**pass_env, **merged_env}
 
     openai_auth = get_openai_auth(merged_env)
 

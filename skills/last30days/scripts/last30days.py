@@ -3328,6 +3328,15 @@ _NON_AUTO_SETUP_FLAGS = frozenset({
     "--no-reddit-session",
 })
 
+_SETUP_NO_SECRET_STORE_FLAGS = frozenset({
+    "--github",
+    "--github-start",
+    "--github-poll",
+    "--device-auth",
+    "--reddit-session",
+    "--no-reddit-session",
+})
+
 
 def _setup_is_non_auto(extra_argv: list[str]) -> bool:
     store_key_present, _, remaining = _split_store_key(extra_argv)
@@ -3337,6 +3346,16 @@ def _setup_is_non_auto(extra_argv: list[str]) -> bool:
     if install_target is not None or uninstall_target is not None:
         return True
     return any(flag in _NON_AUTO_SETUP_FLAGS for flag in remaining)
+
+
+def _setup_skips_secret_stores(extra_argv: list[str]) -> bool:
+    store_key_present, _, remaining = _split_store_key(extra_argv)
+    if store_key_present:
+        return True
+    install_target, uninstall_target, remaining = _split_hook_flags(remaining)
+    if install_target is not None or uninstall_target is not None:
+        return True
+    return any(flag in _SETUP_NO_SECRET_STORE_FLAGS for flag in remaining)
 
 
 def _is_library_command(command_topic: str) -> bool:
@@ -3968,9 +3987,11 @@ def _has_invalid_cli_combination(args: argparse.Namespace, topic: str) -> bool:
         return True
     if args.drill:
         return bool(topic or args.deep_research or (args.publish_html and args.emit != "html"))
-    if args.deep_research and not topic:
+    if args.deep_research and (not topic or _comparison_requested(args, topic)):
         return True
     if not topic:
+        return True
+    if (args.clarify_angle is not None or args.clarify_broadly) and not _will_tentatively_use_hosted_api(args, topic):
         return True
     if args.publish_html and args.emit != "html":
         return True
@@ -3978,7 +3999,13 @@ def _has_invalid_cli_combination(args: argparse.Namespace, topic: str) -> bool:
 
 
 def _will_tentatively_use_hosted_api(args: argparse.Namespace, topic: str) -> bool:
-    """True when process env and CLI flags route a research topic to the hosted backend."""
+    """True when process env and CLI flags may route a research topic to the hosted backend.
+
+    Corpus flags/env vars do not disqualify hosted mode here because
+    ``EXCLUDE_SOURCES=corpus`` in ``.env`` can disable the corpus and keep the
+    run hosted. Local fallback reloads full config once ``uses_hosted_api`` is
+    confirmed False.
+    """
     if not topic or not env.hosted_backend_configured():
         return False
     if (
@@ -3988,8 +4015,6 @@ def _will_tentatively_use_hosted_api(args: argparse.Namespace, topic: str) -> bo
         or args.deep_research
         or args.discover is not None
         or args.drill
-        or args.corpus
-        or os.environ.get("LAST30DAYS_CORPUS_DIRS")
     ):
         return False
     if args.perplexity_search_type is not None and env.read_secret_env("PERPLEXITY_API_KEY"):
@@ -4010,10 +4035,14 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         and not args.drill
         and args.discover is None
     )
+    is_inspection = bool(args.diagnose or args.preflight or normalized_topic == "doctor")
+    is_invalid = _has_invalid_cli_combination(args, topic)
+    tentative_hosted = _will_tentatively_use_hosted_api(args, topic)
+    law7_blocked = bool(_law7_host_plan_signal(args, topic))
     if args.no_browser_cookies:
         browser_mode = "off"
     elif (
-        args.diagnose or args.preflight or args.cached_report or normalized_topic == "doctor"
+        is_inspection or args.cached_report
         or is_library_command or is_queue_command or is_cached_verification
     ):
         # doctor is plan-only like --diagnose: it must never read cookies.
@@ -4030,21 +4059,50 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
     elif (
         args.mock
         or args.finalize
-        or _has_invalid_cli_combination(args, topic)
-        or _will_tentatively_use_hosted_api(args, topic)
+        or is_invalid
+        or tentative_hosted
     ):
         # Mock runs, offline discovery finalize, empty/invalid invocations, and
-        # remote hosted-API runs never read local browser cookies.
+        # tentative hosted-API runs never read local browser cookies.
         browser_mode = "off"
-    elif _law7_host_plan_signal(args, topic):
+    elif law7_blocked:
         # Hosted and cached paths need config before dispatch, but no browser read.
         browser_mode = "plan_only"
     else:
         browser_mode = "read"
+
+    # Skip Keychain / pass app-credential lookups on modes that do not need
+    # local provider keys (mock, offline, cached, library, queue, invalid, or
+    # hosted API runs). Hosted runs that fall back locally reload with stores on.
+    if args.mock:
+        load_secret_stores = False
+    elif is_inspection:
+        load_secret_stores = True
+    elif (
+        args.cached_report
+        or is_library_command
+        or is_queue_command
+        or is_cached_verification
+    ):
+        load_secret_stores = False
+    elif normalized_topic == "setup":
+        load_secret_stores = not _setup_skips_secret_stores(extra_argv)
+    elif (
+        args.finalize
+        or is_invalid
+        or (tentative_hosted and args.perplexity_search_type is None)
+    ):
+        load_secret_stores = False
+    elif law7_blocked and not (args.emit == "html" and args.synthesis_file and not args.deep_research):
+        load_secret_stores = False
+    else:
+        load_secret_stores = True
+
     return env.ConfigLoadPolicy(
         browser_cookies=browser_mode,
-        inspect_ignored_project_config=args.diagnose or args.preflight or normalized_topic == "doctor",
+        inspect_ignored_project_config=is_inspection,
         require_recorded_browser_consent=reuse_browser_consent,
+        load_secret_stores=load_secret_stores,
     )
 
 
@@ -4414,6 +4472,12 @@ def main() -> int:
         ):
             parser.error("--no-research-persistence requires --research-only and a topic without output or cache modes")
         args.save_dir = ""
+    if args.record_fixtures and (args.diagnose or args.preflight):
+        # Reject before recording_requests() starts so read-only inspection
+        # never creates or truncates a fixture file on exit.
+        flag = "--preflight" if args.preflight else "--diagnose"
+        sys.stderr.write(f"[last30days] --record-fixtures cannot be combined with {flag}.\n")
+        return 2
     try:
         if args.record_fixtures:
             with http.recording_requests(Path(args.record_fixtures)):
@@ -4532,6 +4596,10 @@ def _main(
     finalization_deadline = command_started + pipeline.FINALIZATION_WORK_CUTOFF_SECONDS
     if args.include_research_backend and not args.diagnose:
         parser.error("--include-research-backend requires --diagnose")
+    if args.record_fixtures and (args.diagnose or args.preflight):
+        flag = "--preflight" if args.preflight else "--diagnose"
+        sys.stderr.write(f"[last30days] --record-fixtures cannot be combined with {flag}.\n")
+        return 2
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
@@ -4639,9 +4707,9 @@ def _main(
             return _run_hook_setup(install_target, uninstall_target)
 
     config_policy = _config_policy_for_args(args, topic, extra_argv)
-    hosted_withheld_cookies = (
-        config_policy.browser_cookies == "off"
-        and not args.no_browser_cookies
+    hosted_deferred_local_load = (
+        not args.diagnose
+        and not args.preflight
         and not _is_admin_command(command_topic)
         and not args.mock
         and not args.finalize
@@ -5024,8 +5092,13 @@ def _main(
         return _run_cached_freshness(args, config)
 
     if args.deep_research and not args.diagnose:
-        from lib import planner as _planner
-
+        if _comparison_requested(args, topic):
+            sys.stderr.write(
+                "Error: --deep-research cannot be combined with competitor or vs-mode. "
+                "It permits one paid Deep Research run per user action; run each topic "
+                "separately.\n"
+            )
+            return 2
         if not (
             config.get("PERPLEXITY_API_KEY")
             or config.get("OPENROUTER_API_KEY")
@@ -5036,21 +5109,6 @@ def _main(
                 file=sys.stderr,
             )
             return 1
-        comparison_requested = any(
-            value is not None
-            for value in (
-                args.competitors,
-                args.competitors_list,
-                args.competitors_plan,
-            )
-        ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
-        if comparison_requested:
-            sys.stderr.write(
-                "Error: --deep-research cannot be combined with competitor or vs-mode. "
-                "It permits one paid Deep Research run per user action; run each topic "
-                "separately.\n"
-            )
-            return 2
         config["_deep_research"] = True
         try:
             enable_deep_research_source(config)
@@ -5115,28 +5173,8 @@ def _main(
         and not args.deep_research
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     )
-    if (
-        hosted_withheld_cookies
-        and topic
-        and not args.diagnose
-        and not uses_hosted_api
-        and not _law7_host_plan_signal(args, topic)
-    ):
-        # Local bypass triggered from .env (corpus dir or direct Perplexity
-        # key); re-load with browser cookies enabled for the local run.
-        config = env.get_config(policy=env.ConfigLoadPolicy(browser_cookies="read"))
-        if args.no_research_persistence:
-            config["_no_research_persistence"] = True
-        if args.perplexity_search_type is not None:
-            config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
-        if resolved_corpus_dirs:
-            config["_CORPUS_DIRS"] = [str(path) for path in resolved_corpus_dirs]
-        if _config_truthy(config.get("LAST30DAYS_CORPUS_IN_EXPORT")):
-            config["_CORPUS_IN_EXPORT"] = True
-        research_options = _cache_research_options(
-            args, config, supplied_only=args.cached_report,
-            resolved_corpus_dirs=resolved_corpus_dirs, external_plan=external_plan,
-        )
+    # Validate hosted-only clarification flags before reloading local cookies or
+    # Keychain/pass secrets on a local bypass.
     if (args.clarify_angle is not None or args.clarify_broadly) and not (
         topic and not args.diagnose and uses_hosted_api
     ):
@@ -5145,6 +5183,39 @@ def _main(
             "clarification, so they apply only to a hosted run.\n"
         )
         return 2
+    target_browser_mode: env.BrowserCookieMode = "off" if args.no_browser_cookies else "read"
+    if (
+        hosted_deferred_local_load
+        and topic
+        and not args.diagnose
+        and not uses_hosted_api
+        and not _law7_host_plan_signal(args, topic)
+        and (
+            config_policy.browser_cookies != target_browser_mode
+            or not config_policy.load_secret_stores
+        )
+    ):
+        # Confirmed local fallback (corpus or direct Perplexity key); reload
+        # full config with local secret stores and permitted browser cookies.
+        config = env.get_config(
+            policy=env.ConfigLoadPolicy(
+                browser_cookies=target_browser_mode,
+                load_secret_stores=True,
+            )
+        )
+        if args.no_research_persistence:
+            config["_no_research_persistence"] = True
+        if args.perplexity_search_type is not None:
+            config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
+        if resolved_corpus_dirs:
+            config["_CORPUS_DIRS"] = [str(path) for path in resolved_corpus_dirs]
+        if _config_truthy(config.get("LAST30DAYS_CORPUS_IN_EXPORT")):
+            config["_CORPUS_IN_EXPORT"] = True
+        _propagate_config_to_environ(config)
+        research_options = _cache_research_options(
+            args, config, supplied_only=args.cached_report,
+            resolved_corpus_dirs=resolved_corpus_dirs, external_plan=external_plan,
+        )
     if topic and not args.diagnose and uses_hosted_api:
         if args.require_local_report:
             sys.stderr.write(
