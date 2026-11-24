@@ -4,8 +4,8 @@
  * Subset of @steipete/bird v0.8.0 (MIT License, Peter Steinberger).
  *
  * Usage:
- *   node bird-search.mjs [--count N] [--json] [--top] -- <query>
- *   node bird-search.mjs <query> [--count N] [--json] [--top]
+ *   node bird-search.mjs [--count N] [--timeout-ms MS] [--json] [--top] -- <query>
+ *   node bird-search.mjs <query> [--count N] [--timeout-ms MS] [--json] [--top]
  *   node bird-search.mjs --whoami
  *   node bird-search.mjs --check
  */
@@ -27,6 +27,8 @@ function writeStderr(text) {
   if (text) process.stderr.write(text);
 }
 
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 function parsePositiveCount(raw) {
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) {
     return null;
@@ -45,6 +47,7 @@ async function main() {
   // option parsing.
   let mode = 'search';
   let count = 20;
+  let timeoutMs = 30000;
   let jsonOutput = false;
   // --top reads X's Top tab (engagement-ranked) instead of Latest. Topic
   // searches need it: on a busy topic Latest holds only the last few minutes.
@@ -74,12 +77,20 @@ async function main() {
       }
       count = parsedCount;
       i++;
+    } else if (arg === '--timeout-ms') {
+      const parsedTimeoutMs = parsePositiveCount(args[i + 1]);
+      if (parsedTimeoutMs === null || parsedTimeoutMs > MAX_TIMEOUT_MS) {
+        writeStderr(`Error: Invalid ${arg} value (expected positive integer <= ${MAX_TIMEOUT_MS})\n`);
+        return 1;
+      }
+      timeoutMs = parsedTimeoutMs;
+      i++;
     } else if (arg === '--json') {
       jsonOutput = true;
     } else if (arg === '--top') {
       product = 'Top';
     } else if (arg.startsWith('-')) {
-      writeStderr('Unknown option\nUsage: node bird-search.mjs [--count N] [--json] [--top] -- <query>\n');
+      writeStderr('Unknown option\nUsage: node bird-search.mjs [--count N] [--timeout-ms MS] [--json] [--top] -- <query>\n');
       return 1;
     } else {
       positional.push(arg);
@@ -122,7 +133,7 @@ async function main() {
 
   const query = positional.join(' ');
   if (!query || !query.trim()) {
-    writeStderr('Usage: node bird-search.mjs [--count N] [--json] [--top] -- <query>\n');
+    writeStderr('Usage: node bird-search.mjs [--count N] [--timeout-ms MS] [--json] [--top] -- <query>\n');
     return 1;
   }
 
@@ -153,15 +164,16 @@ async function main() {
         ct0: cookies.ct0,
         cookieHeader: cookies.cookieHeader,
       },
-      timeoutMs: 30000,
+      timeoutMs,
     });
 
     const result = await client.search(query, count, { product });
 
     if (!result.success) {
       const msg = redactSecrets(result.error, resolvedSecrets);
+      const partialItems = Array.isArray(result.tweets) ? result.tweets : [];
       if (jsonOutput) {
-        writeStdout(JSON.stringify({ error: msg, items: [] }));
+        writeStdout(JSON.stringify({ error: msg, items: partialItems }));
       } else {
         writeStderr(`Search failed: ${msg}\n`);
       }

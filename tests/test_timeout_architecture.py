@@ -650,7 +650,7 @@ def test_bird_decode_retry_skipped_when_delay_exceeds_budget(monkeypatch):
     timeouts, sleeps = [], []
     monkeypatch.setattr(
         bird_x, "_invoke_bird_subprocess",
-        lambda q, c, timeout, top=False: (timeouts.append(timeout), (_interstitial(), None))[1],
+        lambda q, c, timeout, top=False, **_kwargs: (timeouts.append(timeout), (_interstitial(), None))[1],
     )
     monkeypatch.setattr(bird_x.time, "sleep", lambda s: sleeps.append(s))
     response = bird_x._run_bird_search(
@@ -667,7 +667,7 @@ def test_bird_decode_retry_reclamps_timeout_to_remaining_budget(monkeypatch):
     timeouts = []
     monkeypatch.setattr(
         bird_x, "_invoke_bird_subprocess",
-        lambda q, c, timeout, top=False: (timeouts.append(timeout), (_interstitial(), None))[1],
+        lambda q, c, timeout, top=False, **_kwargs: (timeouts.append(timeout), (_interstitial(), None))[1],
     )
     monkeypatch.setattr(bird_x.time, "sleep", lambda s: None)
     bird_x._run_bird_search("q", count=10, timeout=60, deadline=time.monotonic() + 30)

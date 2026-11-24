@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 // biome-ignore lint/correctness/useImportExtensions: JSON module import doesn't use .js extension.
 import defaultOverrides from './features.json' with { type: 'json' };
+import { writeFileAtomicPrivate } from './runtime-query-ids.js';
 const DEFAULT_CACHE_FILENAME = 'features.json';
 let cachedOverrides = null;
 function normalizeFeatureMap(value) {
@@ -91,7 +91,7 @@ function readOverridesFromEnv() {
 }
 function writeOverridesToDisk(cachePath, overrides) {
     const payload = toFeatureOverrides(overrides);
-    return mkdir(path.dirname(cachePath), { recursive: true }).then(() => writeFile(cachePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8'));
+    return writeFileAtomicPrivate(cachePath, `${JSON.stringify(payload, null, 2)}\n`);
 }
 export function loadFeatureOverrides() {
     if (cachedOverrides) {

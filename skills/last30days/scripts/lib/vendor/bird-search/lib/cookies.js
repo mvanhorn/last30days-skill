@@ -81,12 +81,31 @@ function normalizeValue(value) {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
 }
+const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
 function envFlagEnabled(name) {
     const value = normalizeValue(process.env[name]);
     if (!value) {
         return false;
     }
-    return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+    return TRUTHY_ENV_VALUES.has(value.toLowerCase());
+}
+function browserCookiesDeniedByEnv() {
+    if (envFlagEnabled('BIRD_DISABLE_BROWSER_COOKIES') ||
+        envFlagEnabled('LAST30DAYS_DISABLE_BROWSER_COOKIES')) {
+        return true;
+    }
+    const fromBrowser = process.env.FROM_BROWSER;
+    if (typeof fromBrowser === 'string' && fromBrowser.trim().toLowerCase() === 'off') {
+        return true;
+    }
+    const browserConsent = process.env.BROWSER_CONSENT;
+    if (browserConsent !== undefined) {
+        const normalized = String(browserConsent).trim().toLowerCase();
+        if (!TRUTHY_ENV_VALUES.has(normalized)) {
+            return true;
+        }
+    }
+    return false;
 }
 function cookieHeader(authToken, ct0) {
     if (!isValidCookieValue(authToken) || !isValidCookieValue(ct0)) {
@@ -216,8 +235,7 @@ export async function extractCookiesFromFirefox(profile) {
 export async function resolveCredentials(options) {
     const warnings = [];
     const cookies = buildEmpty();
-    const disableBrowserCookies = envFlagEnabled('BIRD_DISABLE_BROWSER_COOKIES') ||
-        envFlagEnabled('LAST30DAYS_DISABLE_BROWSER_COOKIES');
+    const disableBrowserCookies = browserCookiesDeniedByEnv();
     const cookieTimeoutMs = typeof options.cookieTimeoutMs === 'number' &&
         Number.isFinite(options.cookieTimeoutMs) &&
         options.cookieTimeoutMs > 0
