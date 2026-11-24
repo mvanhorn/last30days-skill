@@ -28,10 +28,12 @@ from lib import (
     health,
     http,
     pipeline,
+    reddit,
     reddit_keyless,
     schema,
     subproc,
     x_api,
+    youtube_yt,
 )
 
 
@@ -1076,3 +1078,374 @@ class TestHigh032AddItemsOrderIndependence:
         assert timeout_bundle.source_status["x"].state == schema.PARTIAL
         assert timeout_bundle.source_status["x"].detail == "timed out"
         assert timeout_bundle.source_status["x"].fix_hint == "doctor"
+
+
+# ---------------------------------------------------------------------------
+# Greptile P1 #1: Deadline-skipped enrichments record [] for fixture replay
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileP1DeadlineSkippedFixtureReplay:
+    @pytest.mark.parametrize("source", ["youtube", "digg", "reddit", "devto", "amazon"])
+    def test_deadline_skipped_enrichment_records_empty_and_replays_cleanly(
+        self, tmp_path, monkeypatch, source,
+    ):
+        fixture_dir = tmp_path / source
+        now = [1000.0]
+        monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+
+        def _make_item() -> schema.SourceItem:
+            if source == "digg":
+                return _source_item(
+                    "digg", "item-1", "https://di.gg/ai/item-1",
+                    engagement={"postCount": 5}, metadata={"clusterUrlId": "item-1"},
+                )
+            if source == "reddit":
+                return _source_item(
+                    "reddit", "item-1", "https://www.reddit.com/r/test/comments/item1/x/",
+                    engagement={"score": 20, "num_comments": 5}, metadata={"existing": "keep"},
+                )
+            if source == "devto":
+                return _source_item(
+                    "devto", "item-1", "https://dev.to/alice/post-1",
+                    engagement={"reactions": 10, "comments": 4}, metadata={"existing": "keep"},
+                )
+            if source == "amazon":
+                return _source_item(
+                    "amazon", "item-1", "https://www.amazon.com/dp/B0001",
+                    metadata={"asin": "B0001", "existing": "keep"},
+                )
+            return _source_item(
+                "youtube", "item-1", "https://www.youtube.com/watch?v=item1",
+                metadata={"existing": "keep"},
+            )
+
+        fail_live = lambda *_a, **_k: pytest.fail(f"live enrichment ran for {source}")
+
+        item = _make_item()
+        original_metadata = dict(item.metadata)
+
+        # Record mode after finalization_deadline has expired: live call skipped,
+        # but empty exchange [] must still be recorded for offline replay.
+        with mock.patch.object(pipeline.youtube_yt, "backfill_transcripts", side_effect=fail_live), \
+             mock.patch.object(pipeline.digg, "enrich_source_items", side_effect=fail_live), \
+             mock.patch.object(pipeline.reddit_keyless, "enrich_source_items", side_effect=fail_live), \
+             mock.patch.object(pipeline.devto, "enrich_source_items", side_effect=fail_live), \
+             mock.patch.object(pipeline.amazon, "enrich_source_items", side_effect=fail_live):
+            with http.recording_requests(fixture_dir):
+                recorded = pipeline._finalize_items_by_source(
+                    {source: [item]},
+                    topic="agents",
+                    config={"_finalization_deadline": 999.0},
+                    depth="quick",
+                    mock=False,
+                )
+
+        assert recorded[source][0].metadata == original_metadata
+
+        # Replay mode (even with a generous deadline) must match the recorded
+        # empty exchange without raising Unrecorded CLI-backed source request
+        # and leave item metadata untouched.
+        replay_item = _make_item()
+        with mock.patch.object(pipeline.youtube_yt, "backfill_transcripts", side_effect=fail_live), \
+             mock.patch.object(pipeline.digg, "enrich_source_items", side_effect=fail_live), \
+             mock.patch.object(pipeline.reddit_keyless, "enrich_source_items", side_effect=fail_live), \
+             mock.patch.object(pipeline.devto, "enrich_source_items", side_effect=fail_live), \
+             mock.patch.object(pipeline.amazon, "enrich_source_items", side_effect=fail_live):
+            with http.replaying_requests(fixture_dir):
+                replayed = pipeline._finalize_items_by_source(
+                    {source: [replay_item]},
+                    topic="agents",
+                    config={"_finalization_deadline": 1500.0},
+                    depth="quick",
+                    mock=False,
+                )
+
+        assert len(replayed[source]) == 1
+        assert replayed[source][0].metadata == original_metadata
+
+
+# ---------------------------------------------------------------------------
+# Greptile P1 #2: Cancelled / expired Reddit SC backfill stops paid HTTP spend
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileP1CancelledBackfillStopsSpend:
+    def test_enrich_cancel_during_subreddit_search_stops_global_and_comment_calls(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        cancel = threading.Event()
+        worker_done = threading.Event()
+        endpoints: list[str] = []
+
+        def fake_http_get(url, **kwargs):
+            endpoints.append(url)
+            if "/subreddit/search" in url:
+                # Cancel arrives while first paid subreddit call is in flight.
+                cancel.set()
+                return {
+                    "posts": [{
+                        "id": "p1",
+                        "title": "SQLite WAL write-ahead logging",
+                        "permalink": "/r/sqlite/comments/p1/wal/",
+                        "subreddit": "sqlite",
+                        "created_utc": 1793836800,
+                        "ups": 40,
+                        "num_comments": 10,
+                    }]
+                }
+            raise AssertionError(f"paid ScrapeCreators call fired after cancel: {url}")
+
+        monkeypatch.setattr(reddit.http, "get", fake_http_get)
+
+        def call():
+            try:
+                return reddit.search_and_enrich_memo(
+                    "SQLite WAL", "2026-10-10", "2026-11-10",
+                    depth="default", token="dummy-sc-key", subreddits=["sqlite"],
+                )
+            finally:
+                worker_done.set()
+
+        with pytest.raises(TimeoutError, match="timed out"):
+            pipeline._run_reddit_backfill(
+                {
+                    "_research_deadline": time.monotonic() + 120.0,
+                    "_enrich_cancel": cancel,
+                },
+                call,
+            )
+
+        assert worker_done.wait(timeout=2.0), "worker thread should exit promptly after cancel"
+        assert len(endpoints) == 1 and endpoints[0].endswith("/subreddit/search")
+        assert not any(
+            url.endswith("/reddit/search") or "/post/comments" in url for url in endpoints
+        )
+        # Cancelled run must NOT be cached in _SC_MEMO.
+        assert reddit._SC_MEMO == {}
+
+    def test_wait_deadline_expiry_during_subreddit_search_stops_subsequent_paid_calls(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        monkeypatch.setattr(pipeline, "REDDIT_SC_BACKFILL_MIN_SECONDS", 0.05)
+        monkeypatch.setattr(pipeline, "REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS", 0.0)
+
+        worker_done = threading.Event()
+        endpoints: list[str] = []
+
+        def fake_http_get(url, **kwargs):
+            endpoints.append(url)
+            if "/subreddit/search" in url:
+                # Sleep past wait_deadline (~0.15s) before returning.
+                time.sleep(0.25)
+                return {
+                    "posts": [{
+                        "id": "p2",
+                        "title": "SQLite WAL benchmark",
+                        "permalink": "/r/sqlite/comments/p2/wal/",
+                        "subreddit": "sqlite",
+                        "created_utc": 1793836800,
+                        "ups": 50,
+                        "num_comments": 12,
+                    }]
+                }
+            raise AssertionError(f"paid ScrapeCreators call fired past deadline: {url}")
+
+        monkeypatch.setattr(reddit.http, "get", fake_http_get)
+
+        def call():
+            try:
+                return reddit.search_and_enrich_memo(
+                    "SQLite WAL", "2026-10-10", "2026-11-10",
+                    depth="default", token="dummy-sc-key", subreddits=["sqlite"],
+                )
+            finally:
+                worker_done.set()
+
+        with pytest.raises(TimeoutError, match="timed out"):
+            pipeline._run_reddit_backfill(
+                {"_research_deadline": time.monotonic() + 0.15},
+                call,
+            )
+
+        assert worker_done.wait(timeout=2.0), "worker thread should stop after deadline expiry"
+        assert len(endpoints) == 1 and endpoints[0].endswith("/subreddit/search")
+        assert not any(
+            url.endswith("/reddit/search") or "/post/comments" in url for url in endpoints
+        )
+        assert reddit._SC_MEMO == {}
+
+
+# ---------------------------------------------------------------------------
+# Greptile P1 #3: Timeout must not hide PAYMENT_REQUIRED / AUTH_FAILED in X chain
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileP1XChainTimeoutSpecificity:
+    @pytest.mark.parametrize(
+        "primary_backend,primary_err,primary_state",
+        [
+            ("xapi", "payment required (X API credits exhausted)", health.PAYMENT_REQUIRED),
+            ("grok", "grok session expired", health.AUTH_FAILED),
+        ],
+    )
+    def test_specific_primary_failure_beats_later_chain_timeout(
+        self, monkeypatch, primary_backend, primary_err, primary_state,
+    ):
+        now = [1000.0]
+        monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda _cfg: [primary_backend, "xai"])
+        monkeypatch.setattr(pipeline.fetch_memo, "fetch_once", lambda _k, fn, **_kw: fn())
+
+        def fake_attempt(backend, *_a, **_k):
+            if backend == primary_backend:
+                return [], primary_err, primary_state
+            # Second backend exhausts the chain deadline.
+            now[0] += 200.0
+            return [], "request timed out", health.TIMEOUT
+
+        monkeypatch.setattr(pipeline, "_attempt_x_backend", fake_attempt)
+
+        with pytest.raises(pipeline.SourceRunError) as exc_info:
+            pipeline._retrieve_stream_impl(
+                topic="SQLite",
+                subquery=schema.SubQuery(
+                    label="primary", search_query="SQLite", ranking_query="SQLite", sources=["x"],
+                ),
+                source="x",
+                config={"_research_deadline": 1050.0},
+                depth="quick",
+                date_range=("2026-10-10", "2026-11-10"),
+                runtime=_runtime(primary_backend),
+                mock=False,
+                raw_topic="SQLite",
+            )
+
+        assert exc_info.value.outcome_state == primary_state
+        assert f"{primary_backend}: {primary_err}" in str(exc_info.value)
+
+    def test_chain_timeout_beats_generic_primary_error_with_matching_message(self, monkeypatch):
+        now = [1000.0]
+        monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda _cfg: ["xai", "xquik"])
+        monkeypatch.setattr(pipeline.fetch_memo, "fetch_once", lambda _k, fn, **_kw: fn())
+
+        def fake_attempt(backend, *_a, **_k):
+            if backend == "xai":
+                return [], "unexpected server glitch", health.ERROR
+            # Second backend returns generic error after exhausting chain_deadline.
+            now[0] += 200.0
+            return [], "incomplete response", health.ERROR
+
+        monkeypatch.setattr(pipeline, "_attempt_x_backend", fake_attempt)
+
+        with pytest.raises(pipeline.SourceRunError) as exc_info:
+            pipeline._retrieve_stream_impl(
+                topic="SQLite",
+                subquery=schema.SubQuery(
+                    label="primary", search_query="SQLite", ranking_query="SQLite", sources=["x"],
+                ),
+                source="x",
+                config={"_research_deadline": 1050.0},
+                depth="quick",
+                date_range=("2026-10-10", "2026-11-10"),
+                runtime=_runtime("xai"),
+                mock=False,
+                raw_topic="SQLite",
+            )
+
+        assert exc_info.value.outcome_state == health.TIMEOUT
+        assert "timed out" in str(exc_info.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Greptile P2 #4: Skip x_judge retry when serving backend reported AUTH_FAILED
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileP2SkipJudgeRetryOnRevokedBackend:
+    def test_mixed_result_with_auth_failed_skips_judge_retry_but_still_prunes(self, monkeypatch):
+        monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda _cfg: ["grok"])
+        monkeypatch.setattr(pipeline.fetch_memo, "fetch_once", lambda _k, fn, **_kw: fn())
+
+        attempt_calls: list[tuple[str, str]] = []
+
+        def fake_attempt(backend, q, *_a, **_k):
+            attempt_calls.append((backend, q))
+            return [
+                _x_post("1", "Unrelated movie review about action heroes"),
+                _x_post("2", "Unrelated baseball game score from yesterday"),
+                _x_post("3", "Unrelated weather alert for coastal cities"),
+                _x_post("4", "SQLite write-ahead logging concurrency benchmark"),
+            ], "grok session expired", health.AUTH_FAILED
+
+        monkeypatch.setattr(pipeline, "_attempt_x_backend", fake_attempt)
+
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="SQLite write-ahead logging",
+            subquery=schema.SubQuery(
+                label="primary",
+                search_query="SQLite write-ahead logging",
+                ranking_query="SQLite write-ahead logging",
+                sources=["x"],
+            ),
+            source="x",
+            config={},
+            depth="default",
+            date_range=("2026-10-10", "2026-11-10"),
+            runtime=_runtime("grok"),
+            mock=False,
+            raw_topic="SQLite write-ahead logging",
+        )
+
+        # Revoked backend must NOT be called a second time by x_judge retry!
+        assert len(attempt_calls) == 1
+        # Off-topic pruning must still run on the returned items.
+        assert [it["id"] for it in items] == ["4"]
+        assert artifact["_source_outcome"]["state"] == health.AUTH_FAILED
+
+    def test_healthy_fallback_after_primary_auth_failed_still_runs_judge_retry(self, monkeypatch):
+        monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda _cfg: ["grok", "xai"])
+        monkeypatch.setattr(pipeline.fetch_memo, "fetch_once", lambda _k, fn, **_kw: fn())
+
+        xai_calls: list[str] = []
+
+        def fake_attempt(backend, q, *_a, **_k):
+            if backend == "grok":
+                return [], "grok session expired", health.AUTH_FAILED
+            xai_calls.append(q)
+            if len(xai_calls) == 1:
+                return [
+                    _x_post("1", "Unrelated movie review about action heroes"),
+                    _x_post("2", "Unrelated baseball game score from yesterday"),
+                    _x_post("3", "Unrelated weather alert for coastal cities"),
+                    _x_post("4", "SQLite write-ahead logging concurrency benchmark"),
+                ], "", None
+            return [
+                _x_post("10", "SQLite write-ahead logging checkpoint tuning"),
+                _x_post("11", "SQLite write-ahead logging read scalability"),
+            ], "", None
+
+        monkeypatch.setattr(pipeline, "_attempt_x_backend", fake_attempt)
+
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="SQLite write-ahead logging",
+            subquery=schema.SubQuery(
+                label="primary",
+                search_query="SQLite write-ahead logging",
+                ranking_query="SQLite write-ahead logging",
+                sources=["x"],
+            ),
+            source="x",
+            config={"XAI_API_KEY": "dummy"},
+            depth="default",
+            date_range=("2026-10-10", "2026-11-10"),
+            runtime=_runtime("grok"),
+            mock=False,
+            raw_topic="SQLite write-ahead logging",
+        )
+
+        # Healthy fallback xai must still run x_judge retry (initial + retry = 2 calls).
+        assert len(xai_calls) == 2
+        assert [it["id"] for it in items] == ["10", "11"]
+        # Primary grok AUTH_FAILED outcome must still be preserved.
+        assert artifact["_source_outcome"]["state"] == schema.AUTH_FAILED
+        assert "re-login needed for primary backend" in artifact["_source_outcome"]["detail"]

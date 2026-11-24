@@ -4608,6 +4608,8 @@ def _finalize_items_by_source(
                         entity_count=_comparison_entity_count(config),
                     )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
         # Post-merge topic bar for Polymarket: the entity matcher, with the
         # run's hints, over each item's matched market and event title. It
         # stands in for the generic relevance floor, which exempts matched
@@ -4641,6 +4643,8 @@ def _finalize_items_by_source(
                     items, top_k=3, deadline=finalization_deadline, cancel=cancel,
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
         if source == "reddit" and items and not mock:
             # The lane enriched its own top picks before this ranking; give
             # the threads that survived their top comments too.
@@ -4652,6 +4656,8 @@ def _finalize_items_by_source(
                     items, depth=depth, deadline=finalization_deadline,
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
         if source == "devto" and items and not mock:
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
@@ -4659,6 +4665,8 @@ def _finalize_items_by_source(
             elif time.monotonic() < finalization_deadline:
                 devto.enrich_source_items(items, deadline=finalization_deadline)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
         if source == "amazon" and items and not mock:
             # Attach-if-missing: review enrichment now runs at search time in
             # _retrieve_stream_impl, so items arriving here should already have
@@ -4678,6 +4686,8 @@ def _finalize_items_by_source(
                     deadline=finalization_deadline,
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
         finalized[source] = items
     return finalized
 
@@ -5763,13 +5773,23 @@ def _run_reddit_backfill(config: dict[str, Any], call) -> Any:
     else:
         wait_deadline = time.monotonic() + STREAM_FUTURE_TIMEOUT_SECONDS
         timeout_detail = "ScrapeCreators backfill timed out: research cancelled or timed out"
+    backfill_cancel = threading.Event()
+
+    def _bounded_call():
+        with reddit.sc_spend_until(deadline=wait_deadline, cancel=cancel), \
+                reddit.sc_spend_until(deadline=wait_deadline, cancel=backfill_cancel):
+            return call()
+
     with _abandoning_executor(max_workers=1) as executor:
-        future = http.submit_with_context(executor, call)
+        future = http.submit_with_context(executor, _bounded_call)
         wait_config = {**config, "_research_deadline": wait_deadline}
         done, _pending = _wait_for_research([future], wait_config)
         if future in done or (future.done() and not future.cancelled()):
             return future.result(timeout=0)
         future.cancel()
+        if future.done() and not future.cancelled():
+            return future.result(timeout=0)
+        backfill_cancel.set()
         raise TimeoutError(timeout_detail)
 
 
@@ -7676,11 +7696,15 @@ def _retrieve_stream_impl(
                 )
             primary_failure: Exception | None = None
             try:
-                result = reddit.search_and_enrich_memo(
-                    reddit_query, from_date, to_date, depth=depth,
-                    token=config.get("SCRAPECREATORS_API_KEY"),
-                    subreddits=subreddits,
-                )
+                with reddit.sc_spend_until(
+                    deadline=config.get("_research_deadline"),
+                    cancel=config.get("_enrich_cancel"),
+                ):
+                    result = reddit.search_and_enrich_memo(
+                        reddit_query, from_date, to_date, depth=depth,
+                        token=config.get("SCRAPECREATORS_API_KEY"),
+                        subreddits=subreddits,
+                    )
                 items = reddit.parse_reddit_response(result)
                 if items:
                     return items, {}
@@ -7949,6 +7973,7 @@ def _retrieve_stream_impl(
         last_state = health.ERROR
         items = []
         used_backend = None
+        used_backend_auth_failed = False
         x_warnings: list[str] = []
         artifact: dict[str, Any] = {}
         chain_deadline = _research_deadline(config, X_CHAIN_DEADLINE_SECONDS)
@@ -8021,6 +8046,7 @@ def _retrieve_stream_impl(
                         f"X returned {len(items)} items but also errored: {err}",
                     )
                 used_backend = backend
+                used_backend_auth_failed = bool(err and err_state == schema.AUTH_FAILED)
                 break
             if err:
                 last_error = f"{backend}: {err}"
@@ -8028,20 +8054,33 @@ def _retrieve_stream_impl(
                 chain_errors.append((last_error, last_state))
                 print(f"[X] backend '{backend}' failed ({err}); trying next", file=sys.stderr)
 
-        if not items and last_error:
-            if chain_errors:
-                last_error, last_state = min(
-                    chain_errors,
-                    key=lambda entry: _FAILURE_SPECIFICITY.get(entry[1], 9),
+        if not items and (last_error or chain_errors):
+            candidates: list[tuple[str, schema.RunOutcomeState]] = [
+                (
+                    err_msg,
+                    bird_x.classify_run_failure(err_msg)
+                    if err_msg.startswith("bird:") and err_st == health.ERROR
+                    else err_st,
                 )
-            state = (
-                health.TIMEOUT
-                if _research_stopped(config) or time.monotonic() >= chain_deadline
-                else bird_x.classify_run_failure(last_error)
-                if last_error.startswith("bird:")
-                else last_state
+                for err_msg, err_st in chain_errors
+            ]
+            if not candidates and last_error:
+                candidates.append((
+                    last_error,
+                    bird_x.classify_run_failure(last_error)
+                    if last_error.startswith("bird:")
+                    else last_state,
+                ))
+            if _research_stopped(config) or time.monotonic() >= chain_deadline:
+                if not any(st == health.TIMEOUT for _, st in candidates):
+                    candidates.append(
+                        ("X search timed out before completing failover chain", health.TIMEOUT)
+                    )
+            winning_error, winning_state = min(
+                candidates,
+                key=lambda entry: _FAILURE_SPECIFICITY.get(entry[1], 9),
             )
-            raise SourceRunError(f"All X backends failed — {last_error}", state)
+            raise SourceRunError(f"All X backends failed — {winning_error}", winning_state)
 
         # Retrieve-judge-retry: judge corpus and retry if off-topic flood.
         # Skip retry on quick/mock (same as Phase 2).
@@ -8055,7 +8094,11 @@ def _retrieve_stream_impl(
                 {"author_handle": it.get("author_handle", ""), "text": it.get("text", "")}
                 for it in items
             ]
-            if x_judge.should_retry_x_search(items_for_judge, x_query, ranking_query=ranking_query, depth=depth):
+            if (
+                used_backend
+                and not used_backend_auth_failed
+                and x_judge.should_retry_x_search(items_for_judge, x_query, ranking_query=ranking_query, depth=depth)
+            ):
                 # Retry with cleaned query (1 retry, ≤2 extra grok calls)
                 # Strip noise words but preserve all significant terms to avoid
                 # losing disambiguating terms (e.g., "react server components")
@@ -8063,35 +8106,34 @@ def _retrieve_stream_impl(
                 retry_query = core_tokens or x_query
                 print(f"[X] corpus off-topic; retrying with '{retry_query}'", file=sys.stderr)
 
-                if used_backend:
-                    if _research_stopped(config) or time.monotonic() >= chain_deadline:
-                        print("[X] chain budget exhausted; skipping judge retry", file=sys.stderr)
-                    else:
-                        retry_items, retry_err, _ = _attempt_x_backend_memo(
-                            used_backend, retry_query, from_date, to_date, depth, config,
-                            deadline=chain_deadline,
+                if _research_stopped(config) or time.monotonic() >= chain_deadline:
+                    print("[X] chain budget exhausted; skipping judge retry", file=sys.stderr)
+                else:
+                    retry_items, retry_err, _ = _attempt_x_backend_memo(
+                        used_backend, retry_query, from_date, to_date, depth, config,
+                        deadline=chain_deadline,
+                    )
+                    if retry_items:
+                        # Judge retry corpus
+                        retry_for_judge = [
+                            {"author_handle": it.get("author_handle", ""), "text": it.get("text", "")}
+                            for it in retry_items
+                        ]
+                        retry_judgment = x_judge.judge_x_corpus(
+                            retry_for_judge, x_query, ranking_query=ranking_query
                         )
-                        if retry_items:
-                            # Judge retry corpus
-                            retry_for_judge = [
-                                {"author_handle": it.get("author_handle", ""), "text": it.get("text", "")}
-                                for it in retry_items
-                            ]
-                            retry_judgment = x_judge.judge_x_corpus(
-                                retry_for_judge, x_query, ranking_query=ranking_query
+                        orig_judgment = x_judge.judge_x_corpus(
+                            items_for_judge, x_query, ranking_query=ranking_query
+                        )
+                        # Use retry if better on-topic ratio
+                        if retry_judgment["on_topic_ratio"] > orig_judgment["on_topic_ratio"]:
+                            print(
+                                f"[X] retry improved on-topic ratio: "
+                                f"{orig_judgment['on_topic_ratio']:.0%} -> "
+                                f"{retry_judgment['on_topic_ratio']:.0%}",
+                                file=sys.stderr,
                             )
-                            orig_judgment = x_judge.judge_x_corpus(
-                                items_for_judge, x_query, ranking_query=ranking_query
-                            )
-                            # Use retry if better on-topic ratio
-                            if retry_judgment["on_topic_ratio"] > orig_judgment["on_topic_ratio"]:
-                                print(
-                                    f"[X] retry improved on-topic ratio: "
-                                    f"{orig_judgment['on_topic_ratio']:.0%} -> "
-                                    f"{retry_judgment['on_topic_ratio']:.0%}",
-                                    file=sys.stderr,
-                                )
-                                items = retry_items
+                            items = retry_items
 
             # Prune off-topic items before the pool. Eight on-topic → ok with 8.
             # Zero on-topic after retry → no-results, not ok with 40 junk.

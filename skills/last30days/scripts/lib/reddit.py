@@ -7,17 +7,20 @@ Requires SCRAPECREATORS_API_KEY in config (same key as TikTok + Instagram).
 API docs: https://scrapecreators.com/docs
 """
 
+import contextlib
+import contextvars
 import copy
 import math
 import re
 import sys
 import threading
 import time
-from contextlib import ExitStack
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait as futures_wait
+from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterator, List, Optional, Set
 
 def _first_of(*values, default=None):
     """Return first value that is not None."""
@@ -84,6 +87,128 @@ NOISE_WORDS = frozenset({
 
 def _log(msg: str):
     log.source_log("Reddit", msg, tty_only=False)
+
+
+# Run-scoped spend bound for ScrapeCreators Reddit calls. Pool workers inherit
+# it via http.submit_with_context so an abandoned backfill thread stops before
+# starting additional paid subreddit/global searches or comment fetches.
+@dataclass(frozen=True)
+class _SCSpendLimit:
+    deadline: Optional[float] = None
+    cancels: tuple[threading.Event, ...] = ()
+
+
+_sc_spend_limit: contextvars.ContextVar[Optional[_SCSpendLimit]] = (
+    contextvars.ContextVar("reddit_sc_spend_limit", default=None)
+)
+
+_SC_STOPPED_MSG = "ScrapeCreators Reddit backfill cancelled or timed out"
+
+
+@contextlib.contextmanager
+def sc_spend_until(
+    *,
+    deadline: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
+) -> Iterator[None]:
+    """Refuse ScrapeCreators Reddit HTTP calls once ``cancel`` or ``deadline`` fires.
+
+    Nested contexts tighten the deadline and accumulate cancel events so both
+    external run cancellation and backfill-local abandonment stop paid spend.
+    """
+    outer = _sc_spend_limit.get()
+    merged_deadline = deadline
+    cancels: list[threading.Event] = []
+    if outer is not None:
+        if outer.deadline is not None:
+            merged_deadline = (
+                outer.deadline
+                if merged_deadline is None
+                else min(outer.deadline, merged_deadline)
+            )
+        cancels.extend(outer.cancels)
+    if cancel is not None and cancel not in cancels:
+        cancels.append(cancel)
+    token = _sc_spend_limit.set(_SCSpendLimit(deadline=merged_deadline, cancels=tuple(cancels)))
+    try:
+        yield
+    finally:
+        _sc_spend_limit.reset(token)
+
+
+def _effective_spend_limit(
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+) -> tuple[float | None, tuple[threading.Event, ...]]:
+    limit = _sc_spend_limit.get()
+    eff_deadline = deadline_monotonic
+    cancels: list[threading.Event] = []
+    if limit is not None:
+        if limit.deadline is not None:
+            eff_deadline = (
+                limit.deadline
+                if eff_deadline is None
+                else min(eff_deadline, limit.deadline)
+            )
+        cancels.extend(limit.cancels)
+    if cancel is not None and cancel not in cancels:
+        cancels.append(cancel)
+    return eff_deadline, tuple(cancels)
+
+
+def _sc_spend_stopped(
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+) -> bool:
+    eff_deadline, cancels = _effective_spend_limit(deadline_monotonic, cancel)
+    if any(ev.is_set() for ev in cancels):
+        return True
+    return eff_deadline is not None and time.monotonic() >= eff_deadline
+
+
+def _check_sc_spend(
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+) -> tuple[float | None, threading.Event | None]:
+    if _sc_spend_stopped(deadline_monotonic, cancel):
+        raise TimeoutError(_SC_STOPPED_MSG)
+    eff_deadline, cancels = _effective_spend_limit(deadline_monotonic, cancel)
+    eff_cancel = cancel if cancel is not None else (cancels[0] if cancels else None)
+    return eff_deadline, eff_cancel
+
+
+def _collect_bounded(
+    executor: ThreadPoolExecutor,
+    futures: dict,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+) -> list[tuple[Any, Any]]:
+    """Collect ``(tag, future.result())`` pairs, stopping on cancel or deadline."""
+    eff_deadline, cancels = _effective_spend_limit(deadline_monotonic, cancel)
+    if eff_deadline is None and not cancels:
+        results = []
+        for future in as_completed(futures):
+            results.append((futures[future], future.result()))
+        return results
+    pending = set(futures)
+    results = []
+    try:
+        while pending:
+            if _sc_spend_stopped(eff_deadline, cancel):
+                raise TimeoutError(_SC_STOPPED_MSG)
+            timeout = 0.1
+            if eff_deadline is not None:
+                timeout = max(0.0, min(0.1, eff_deadline - time.monotonic()))
+            done, pending = futures_wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+            for future in done:
+                results.append((futures[future], future.result(timeout=0)))
+        return results
+    except BaseException:
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
 
 
 def classify_run_failure(detail: str) -> str:
@@ -335,6 +460,9 @@ def _global_search(
     token: str,
     sort: str = "relevance",
     timeframe: str = "month",
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Search across all of Reddit via ScrapeCreators global search.
 
@@ -347,6 +475,13 @@ def _global_search(
     Returns:
         List of post dicts
     """
+    eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
+    extra: Dict[str, Any] = {}
+    if eff_deadline is not None:
+        extra["deadline_monotonic"] = eff_deadline
+        extra["owned_get"] = True
+    if eff_cancel is not None:
+        extra["cancel"] = eff_cancel
     try:
         data = http.get(
             f"{_sc_base()}/search",
@@ -354,14 +489,19 @@ def _global_search(
             params={"query": query, "sort": sort, "timeframe": timeframe},
             timeout=30,
             retries=2,
+            **extra,
         )
         return data.get("posts", data.get("data", []))
+    except http.DeadlineExceeded:
+        raise TimeoutError(_SC_STOPPED_MSG) from None
     except http.HTTPError as e:
         if e.status_code in (401, 402, 403):
             raise
         _log(f"Global search error: {e}")
         return []
     except Exception as e:
+        if _sc_spend_stopped(deadline_monotonic, cancel):
+            raise TimeoutError(_SC_STOPPED_MSG) from None
         _log(f"Global search error: {e}")
         return []
 
@@ -372,6 +512,9 @@ def _subreddit_search(
     token: str,
     sort: str = "relevance",
     timeframe: str = "month",
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Search within a specific subreddit via ScrapeCreators.
 
@@ -385,6 +528,13 @@ def _subreddit_search(
     Returns:
         List of post dicts
     """
+    eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
+    extra: Dict[str, Any] = {}
+    if eff_deadline is not None:
+        extra["deadline_monotonic"] = eff_deadline
+        extra["owned_get"] = True
+    if eff_cancel is not None:
+        extra["cancel"] = eff_cancel
     try:
         data = http.get(
             f"{_sc_base()}/subreddit/search",
@@ -397,14 +547,19 @@ def _subreddit_search(
             },
             timeout=30,
             retries=2,
+            **extra,
         )
         return data.get("posts", data.get("data", []))
+    except http.DeadlineExceeded:
+        raise TimeoutError(_SC_STOPPED_MSG) from None
     except http.HTTPError as e:
         if e.status_code in (401, 402, 403):
             raise
         _log(f"Subreddit search error for r/{subreddit}: {e}")
         return []
     except Exception as e:
+        if _sc_spend_stopped(deadline_monotonic, cancel):
+            raise TimeoutError(_SC_STOPPED_MSG) from None
         _log(f"Subreddit search error for r/{subreddit}: {e}")
         return []
 
@@ -425,6 +580,7 @@ def fetch_post_comments(
     Returns:
         List of comment dicts with score, author, body, etc.
     """
+    eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
     try:
         data = http.get(
             f"{_sc_base()}/post/comments",
@@ -432,17 +588,21 @@ def fetch_post_comments(
             params={"url": url},
             timeout=30,
             retries=2,
-            deadline_monotonic=deadline_monotonic,
-            cancel=cancel,
-            owned_get=deadline_monotonic is not None,
+            deadline_monotonic=eff_deadline,
+            cancel=eff_cancel,
+            owned_get=eff_deadline is not None,
         )
         return data.get("comments", data.get("data", []))
+    except http.DeadlineExceeded:
+        raise TimeoutError(_SC_STOPPED_MSG) from None
     except http.HTTPError as e:
         if e.status_code in (401, 402, 403):
             raise
         _log(f"Comment fetch error: {e}")
         return []
     except Exception as e:
+        if _sc_spend_stopped(deadline_monotonic, cancel):
+            raise TimeoutError(_SC_STOPPED_MSG) from None
         _log(f"Comment fetch error: {e}")
         return []
 
@@ -519,6 +679,9 @@ def search_reddit(
     depth: str = "default",
     token: str = None,
     subreddits: List[str] | None = None,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> Dict[str, Any]:
     """Full Reddit search: multi-query global discovery + subreddit drill-down.
 
@@ -538,124 +701,146 @@ def search_reddit(
     if not token:
         return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
 
-    config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    timeframe = _window_to_time_filter(from_date, to_date)
-    intent = infer_query_intent(topic)
+    spend_ctx = (
+        sc_spend_until(deadline=deadline_monotonic, cancel=cancel)
+        if (deadline_monotonic is not None or cancel is not None)
+        else contextlib.nullcontext()
+    )
+    with spend_ctx:
+        _check_sc_spend()
+        config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+        timeframe = _window_to_time_filter(from_date, to_date)
+        intent = infer_query_intent(topic)
 
-    # === Phase 1: Query Expansion ===
-    queries = expand_reddit_queries(topic, depth)
-    _log(f"Expanded '{topic}' into {len(queries)} queries: {queries}")
+        # === Phase 1: Query Expansion ===
+        queries = expand_reddit_queries(topic, depth)
+        _log(f"Expanded '{topic}' into {len(queries)} queries: {queries}")
 
-    core = _extract_core_subject(topic)
+        core = _extract_core_subject(topic)
 
-    # === Phase 1.5: Pre-resolved subreddit search (high-signal) ===
-    all_raw_posts = []
-    all_items: List[Dict[str, Any]] = []
-    if subreddits:
-        _log(f"Searching pre-resolved subreddits: {subreddits}")
-        with ThreadPoolExecutor(max_workers=min(5, len(subreddits))) as executor:
+        # === Phase 1.5: Pre-resolved subreddit search (high-signal) ===
+        all_raw_posts = []
+        all_items: List[Dict[str, Any]] = []
+        if subreddits:
+            _check_sc_spend()
+            _log(f"Searching pre-resolved subreddits: {subreddits}")
+            executor = ThreadPoolExecutor(max_workers=min(5, len(subreddits)))
+            completed_cleanly = False
+            try:
+                futures = {}
+                for sub in subreddits:
+                    _check_sc_spend()
+                    futures[http.submit_with_context(
+                        executor, _subreddit_search, sub, core, token, "relevance", timeframe,
+                    )] = sub
+                for sub, sub_posts in _collect_bounded(executor, futures):
+                    _log(f"  -> {len(sub_posts)} results from pre-resolved r/{sub}")
+                    for j, post in enumerate(sub_posts):
+                        item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
+                        all_items.append(item)
+                completed_cleanly = True
+            finally:
+                executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
+
+        # === Phase 2: Global Discovery ===
+        _check_sc_spend()
+        max_global = config["global_searches"]
+
+        executor = ThreadPoolExecutor(max_workers=max_global or 1)
+        completed_cleanly = False
+        try:
             futures = {}
-            for sub in subreddits:
+            for i, query in enumerate(queries[:max_global]):
+                _check_sc_spend()
+                # Product/comparison queries: sort=top surfaces high-engagement posts
+                # from relevant communities instead of keyword-matched noise.
+                sort = "top" if intent in ("product", "comparison") else ("relevance" if i == 0 else "top")
+                _log(f"Global search {i+1}/{max_global}: '{query}' (sort={sort})")
                 futures[http.submit_with_context(
-                    executor, _subreddit_search, sub, core, token, "relevance", timeframe,
-                )] = sub
-            for future in as_completed(futures):
-                sub = futures[future]
-                sub_posts = future.result()
-                _log(f"  -> {len(sub_posts)} results from pre-resolved r/{sub}")
-                for j, post in enumerate(sub_posts):
-                    item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
-                    all_items.append(item)
+                    executor, _global_search, query, token, sort, timeframe,
+                )] = query
+            for query, posts in _collect_bounded(executor, futures):
+                _log(f"  -> {len(posts)} results for '{query}'")
+                all_raw_posts.extend(posts)
+            completed_cleanly = True
+        finally:
+            executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
 
-    # === Phase 2: Global Discovery ===
-    max_global = config["global_searches"]
+        # Normalize all posts (with query for relevance scoring)
+        for i, post in enumerate(all_raw_posts):
+            item = _normalize_post(post, i + 1, "global", query=core)
+            all_items.append(item)
 
-    with ThreadPoolExecutor(max_workers=max_global or 1) as executor:
-        futures = {}
-        for i, query in enumerate(queries[:max_global]):
-            # Product/comparison queries: sort=top surfaces high-engagement posts
-            # from relevant communities instead of keyword-matched noise.
-            sort = "top" if intent in ("product", "comparison") else ("relevance" if i == 0 else "top")
-            _log(f"Global search {i+1}/{max_global}: '{query}' (sort={sort})")
-            futures[http.submit_with_context(
-                executor, _global_search, query, token, sort, timeframe,
-            )] = query
-        for future in as_completed(futures):
-            query = futures[future]
-            posts = future.result()
-            _log(f"  -> {len(posts)} results for '{query}'")
-            all_raw_posts.extend(posts)
+        # === Phase 3: Subreddit Discovery + Targeted Search ===
+        subreddit_budget = 0 if intent == "how_to" else config["subreddit_searches"]
+        discovered_subs = discover_subreddits(all_raw_posts, topic=topic, max_subs=subreddit_budget)
+        _log(f"Discovered subreddits: {discovered_subs}")
 
-    # Normalize all posts (with query for relevance scoring)
-    for i, post in enumerate(all_raw_posts):
-        item = _normalize_post(post, i + 1, "global", query=core)
-        all_items.append(item)
+        subreddit_limit = subreddit_budget
+        if subreddit_limit > 0 and discovered_subs:
+            _check_sc_spend()
+            executor = ThreadPoolExecutor(max_workers=subreddit_limit)
+            completed_cleanly = False
+            try:
+                futures = {}
+                for sub in discovered_subs[:subreddit_limit]:
+                    _check_sc_spend()
+                    _log(f"Subreddit search: r/{sub} for '{core}'")
+                    futures[http.submit_with_context(
+                        executor, _subreddit_search, sub, core, token, "relevance", timeframe,
+                    )] = sub
+                for sub, sub_posts in _collect_bounded(executor, futures):
+                    _log(f"  -> {len(sub_posts)} results from r/{sub}")
+                    for j, post in enumerate(sub_posts):
+                        item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
+                        all_items.append(item)
+                completed_cleanly = True
+            finally:
+                executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
 
-    # === Phase 3: Subreddit Discovery + Targeted Search ===
-    subreddit_budget = 0 if intent == "how_to" else config["subreddit_searches"]
-    discovered_subs = discover_subreddits(all_raw_posts, topic=topic, max_subs=subreddit_budget)
-    _log(f"Discovered subreddits: {discovered_subs}")
+        # === Phase 4: Deduplicate ===
+        all_items = _dedupe_posts(all_items)
+        _log(f"After dedup: {len(all_items)} unique posts")
 
-    subreddit_limit = subreddit_budget
-    if subreddit_limit > 0:
-        with ThreadPoolExecutor(max_workers=subreddit_limit) as executor:
-            futures = {}
-            for sub in discovered_subs[:subreddit_limit]:
-                _log(f"Subreddit search: r/{sub} for '{core}'")
-                futures[http.submit_with_context(
-                    executor, _subreddit_search, sub, core, token, "relevance", timeframe,
-                )] = sub
-            for future in as_completed(futures):
-                sub = futures[future]
-                sub_posts = future.result()
-                _log(f"  -> {len(sub_posts)} results from r/{sub}")
-                for j, post in enumerate(sub_posts):
-                    item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
-                    all_items.append(item)
+        # === Phase 5: Date filter ===
+        in_range = []
+        out_of_range = 0
+        for item in all_items:
+            if item["date"] and from_date <= item["date"] <= to_date:
+                in_range.append(item)
+            elif item["date"] is None:
+                in_range.append(item)  # Keep unknown dates
+            else:
+                out_of_range += 1
 
-    # === Phase 4: Deduplicate ===
-    all_items = _dedupe_posts(all_items)
-    _log(f"After dedup: {len(all_items)} unique posts")
+        all_items = in_range
+        if out_of_range:
+            _log(f"Filtered {out_of_range} posts outside date range")
 
-    # === Phase 5: Date filter ===
-    in_range = []
-    out_of_range = 0
-    for item in all_items:
-        if item["date"] and from_date <= item["date"] <= to_date:
-            in_range.append(item)
-        elif item["date"] is None:
-            in_range.append(item)  # Keep unknown dates
+        # === Phase 6: Relevance floor + relevance-weighted ranking ===
+        # Drop the off-topic tail when enough on-topic posts remain. When too few clear
+        # the soft floor, still strip zero-overlap posts (relevance exactly 0 = no
+        # title/body token match at all, never on-topic) whenever anything relevant
+        # remains, so viral high-upvote junk can't fill the section. Then rank by
+        # relevance with a bounded engagement bonus (see RELEVANCE_FLOOR note above).
+        before = len(all_items)
+        on_topic = [it for it in all_items if (it.get("relevance") or 0) >= RELEVANCE_FLOOR]
+        if len(on_topic) >= MIN_ON_TOPIC:
+            all_items = on_topic
         else:
-            out_of_range += 1
+            nonzero = [it for it in all_items if (it.get("relevance") or 0) > 0]
+            if nonzero:
+                all_items = nonzero
+        if len(all_items) < before:
+            _log(f"Relevance floor dropped {before - len(all_items)} off-topic posts")
+        all_items.sort(key=_relevance_rank_key, reverse=True)
 
-    all_items = in_range
-    if out_of_range:
-        _log(f"Filtered {out_of_range} posts outside date range")
+        # Re-index IDs
+        for i, item in enumerate(all_items):
+            item["id"] = f"R{i+1}"
 
-    # === Phase 6: Relevance floor + relevance-weighted ranking ===
-    # Drop the off-topic tail when enough on-topic posts remain. When too few clear
-    # the soft floor, still strip zero-overlap posts (relevance exactly 0 = no
-    # title/body token match at all, never on-topic) whenever anything relevant
-    # remains, so viral high-upvote junk can't fill the section. Then rank by
-    # relevance with a bounded engagement bonus (see RELEVANCE_FLOOR note above).
-    before = len(all_items)
-    on_topic = [it for it in all_items if (it.get("relevance") or 0) >= RELEVANCE_FLOOR]
-    if len(on_topic) >= MIN_ON_TOPIC:
-        all_items = on_topic
-    else:
-        nonzero = [it for it in all_items if (it.get("relevance") or 0) > 0]
-        if nonzero:
-            all_items = nonzero
-    if len(all_items) < before:
-        _log(f"Relevance floor dropped {before - len(all_items)} off-topic posts")
-    all_items.sort(key=_relevance_rank_key, reverse=True)
-
-    # Re-index IDs
-    for i, item in enumerate(all_items):
-        item["id"] = f"R{i+1}"
-
-    _log(f"Final: {len(all_items)} Reddit posts")
-    return {"items": all_items}
+        _log(f"Final: {len(all_items)} Reddit posts")
+        return {"items": all_items}
 
 
 def enrich_with_comments(
@@ -663,6 +848,9 @@ def enrich_with_comments(
     token: str,
     depth: str = "default",
     budget_seconds: int = 60,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Enrich top items with comment data from ScrapeCreators.
 
@@ -682,104 +870,141 @@ def enrich_with_comments(
     if not items or not token or max_comments <= 0 or budget_seconds <= 0:
         return items
 
-    # Select the top threads by total engagement (upvotes + comment count),
-    # not by list position. This ensures high-comment threads like [FRESH ALBUM]
-    # always get enriched even if their upvote score is low.
-    ranked = sorted(items, key=_total_engagement, reverse=True)
-    top_items = ranked[:max_comments]
-    _log(f"Enriching comments for {len(top_items)} posts (by total engagement)")
+    spend_ctx = (
+        sc_spend_until(deadline=deadline_monotonic, cancel=cancel)
+        if (deadline_monotonic is not None or cancel is not None)
+        else contextlib.nullcontext()
+    )
+    with spend_ctx:
+        outer_deadline, outer_cancels = _effective_spend_limit()
+        if _sc_spend_stopped():
+            raise TimeoutError(_SC_STOPPED_MSG)
 
-    start = time.monotonic()
-    deadline = start + budget_seconds
-    cancel = threading.Event()
+        # Select the top threads by total engagement (upvotes + comment count),
+        # not by list position. This ensures high-comment threads like [FRESH ALBUM]
+        # always get enriched even if their upvote score is low.
+        ranked = sorted(items, key=_total_engagement, reverse=True)
+        top_items = ranked[:max_comments]
+        _log(f"Enriching comments for {len(top_items)} posts (by total engagement)")
 
-    def fetch(item):
-        if cancel.is_set() or time.monotonic() >= deadline:
-            return None
-        comments = fetch_post_comments(
-            item.get("url", ""), token,
-            deadline_monotonic=deadline, cancel=cancel,
-        )
-        return comments if time.monotonic() < deadline else None
+        start = time.monotonic()
+        deadline = start + budget_seconds
+        if outer_deadline is not None:
+            deadline = min(deadline, outer_deadline)
+        local_cancel = threading.Event()
 
-    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor, ExitStack() as cleanup:
-        cleanup.callback(cancel.set)
-        futures = {
-            http.submit_with_context(
-                executor, fetch, item,
-            ): item
-            for item in top_items
-            if item.get("url")
-        }
+        def fetch(item):
+            if local_cancel.is_set() or _sc_spend_stopped(deadline, local_cancel):
+                return None
+            comments = fetch_post_comments(
+                item.get("url", ""), token,
+                deadline_monotonic=deadline, cancel=local_cancel,
+            )
+            return comments if not local_cancel.is_set() and time.monotonic() < deadline else None
 
-        # Wait with budget instead of unbounded as_completed
-        remaining = max(0, budget_seconds - (time.monotonic() - start))
-        done, not_done = futures_wait(futures, timeout=remaining)
-        if not_done:
-            cancel.set()
+        executor = ThreadPoolExecutor(max_workers=min(4, len(top_items)))
+        abandoned = False
+        try:
+            with ExitStack() as cleanup:
+                cleanup.callback(local_cancel.set)
+                futures = {
+                    http.submit_with_context(
+                        executor, fetch, item,
+                    ): item
+                    for item in top_items
+                    if item.get("url")
+                }
 
-        enriched_count = 0
-        for future in done:
-            item = futures[future]
-            try:
-                raw_comments = future.result(timeout=0)
-            except Exception:
-                continue
-            if not raw_comments:
-                continue
+                done = set()
+                not_done = set(futures)
+                if outer_deadline is None and not outer_cancels:
+                    remaining = max(0, budget_seconds - (time.monotonic() - start))
+                    done, not_done = futures_wait(futures, timeout=remaining)
+                else:
+                    while not_done:
+                        if _sc_spend_stopped():
+                            abandoned = True
+                            break
+                        rem = deadline - time.monotonic()
+                        if rem <= 0:
+                            if outer_deadline is not None and time.monotonic() >= outer_deadline:
+                                abandoned = True
+                            break
+                        completed, not_done = futures_wait(
+                            not_done, timeout=min(0.1, rem), return_when=FIRST_COMPLETED,
+                        )
+                        done.update(completed)
 
-            top_comments = []
-            insights = []
+                if not_done or abandoned:
+                    local_cancel.set()
+                    for future in not_done:
+                        future.cancel()
 
-            for ci, c in enumerate(raw_comments[:10]):
-                body = c.get("body", "")
-                if not body or body in ("[deleted]", "[removed]"):
-                    continue
+                if abandoned:
+                    raise TimeoutError(_SC_STOPPED_MSG)
 
-                score = c.get("ups") or c.get("score", 0)
-                author = c.get("author", "[deleted]")
-                permalink = c.get("permalink", "")
-                comment_url = f"https://reddit.com{permalink}" if permalink else ""
+                enriched_count = 0
+                for future in done:
+                    item = futures[future]
+                    try:
+                        raw_comments = future.result(timeout=0)
+                    except Exception:
+                        continue
+                    if not raw_comments:
+                        continue
 
-                top_comments.append({
-                    "score": score,
-                    "date": _parse_date(c.get("created_utc")),
-                    "author": author,
-                    "excerpt": snippet.cut_quote(body),
-                    "url": comment_url,
-                    # The thread's own poster, when the payload says so.
-                    **(
-                        {"is_uploader": c["is_submitter"]}
-                        if isinstance(c.get("is_submitter"), bool)
-                        else {}
-                    ),
-                })
+                    top_comments = []
+                    insights = []
 
-                if len(body) >= 30 and author not in ("[deleted]", "[removed]", "AutoModerator"):
-                    insight = body[:150]
-                    if len(body) > 150:
-                        for i, char in enumerate(insight):
-                            if char in '.!?' and i > 50:
-                                insight = insight[:i+1]
-                                break
-                        else:
-                            insight = insight.rstrip() + "..."
-                    insights.append(insight)
+                    for ci, c in enumerate(raw_comments[:10]):
+                        body = c.get("body", "")
+                        if not body or body in ("[deleted]", "[removed]"):
+                            continue
 
-            top_comments.sort(key=lambda c: c.get("score", 0), reverse=True)
-            item["top_comments"] = top_comments[:10]
-            item["comment_insights"] = insights[:10]
-            enriched_count += 1
+                        score = c.get("ups") or c.get("score", 0)
+                        author = c.get("author", "[deleted]")
+                        permalink = c.get("permalink", "")
+                        comment_url = f"https://reddit.com{permalink}" if permalink else ""
 
-        if not_done:
-            _log(f"Enrichment budget hit ({budget_seconds}s): {enriched_count}/{len(futures)} posts enriched, {len(not_done)} skipped")
-            for future in not_done:
-                future.cancel()
-        else:
-            elapsed = time.monotonic() - start
-            _log(f"Enriched {enriched_count}/{len(futures)} posts in {elapsed:.1f}s")
+                        top_comments.append({
+                            "score": score,
+                            "date": _parse_date(c.get("created_utc")),
+                            "author": author,
+                            "excerpt": snippet.cut_quote(body),
+                            "url": comment_url,
+                            # The thread's own poster, when the payload says so.
+                            **(
+                                {"is_uploader": c["is_submitter"]}
+                                if isinstance(c.get("is_submitter"), bool)
+                                else {}
+                            ),
+                        })
 
-    return items
+                        if len(body) >= 30 and author not in ("[deleted]", "[removed]", "AutoModerator"):
+                            insight = body[:150]
+                            if len(body) > 150:
+                                for i, char in enumerate(insight):
+                                    if char in '.!?' and i > 50:
+                                        insight = insight[:i+1]
+                                        break
+                                else:
+                                    insight = insight.rstrip() + "..."
+                            insights.append(insight)
+
+                    top_comments.sort(key=lambda c: c.get("score", 0), reverse=True)
+                    item["top_comments"] = top_comments[:10]
+                    item["comment_insights"] = insights[:10]
+                    enriched_count += 1
+
+                if not_done:
+                    _log(f"Enrichment budget hit ({budget_seconds}s): {enriched_count}/{len(futures)} posts enriched, {len(not_done)} skipped")
+                else:
+                    elapsed = time.monotonic() - start
+                    _log(f"Enriched {enriched_count}/{len(futures)} posts in {elapsed:.1f}s")
+        finally:
+            executor.shutdown(wait=not abandoned and not bool(not_done), cancel_futures=abandoned or bool(not_done))
+
+        return items
 
 
 def search_and_enrich(
@@ -789,6 +1014,9 @@ def search_and_enrich(
     depth: str = "default",
     token: str = None,
     subreddits: List[str] | None = None,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> Dict[str, Any]:
     """Full Reddit pipeline: search + comment enrichment.
 
@@ -805,14 +1033,22 @@ def search_and_enrich(
     Returns:
         Dict with 'items' list. Items include top_comments and comment_insights.
     """
-    result = search_reddit(topic, from_date, to_date, depth, token, subreddits=subreddits)
-    items = result.get("items", [])
+    spend_ctx = (
+        sc_spend_until(deadline=deadline_monotonic, cancel=cancel)
+        if (deadline_monotonic is not None or cancel is not None)
+        else contextlib.nullcontext()
+    )
+    with spend_ctx:
+        _check_sc_spend()
+        result = search_reddit(topic, from_date, to_date, depth, token, subreddits=subreddits)
+        items = result.get("items", [])
 
-    if items and token:
-        items = enrich_with_comments(items, token, depth)
-        result["items"] = items
+        if items and token:
+            _check_sc_spend()
+            items = enrich_with_comments(items, token, depth)
+            result["items"] = items
 
-    return result
+        return result
 
 
 # Run-scoped memo for the paid ScrapeCreators Reddit call (R9). All subquery
@@ -853,47 +1089,70 @@ def search_and_enrich_memo(
     depth: str = "default",
     token: str = None,
     subreddits: List[str] | None = None,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> Dict[str, Any]:
     """:func:`search_and_enrich`, at most once per key per command.
 
     Keyed by query, date window, depth, and sorted subreddits.
     """
-    key = (topic, from_date, to_date, depth, tuple(sorted(subreddits or ())))
-    while True:
-        with _SC_MEMO_LOCK:
-            entry = _SC_MEMO.get(key)
-            if entry is None:
-                gate = _SC_INFLIGHT.get(key)
-                owner = gate is None
-                if owner:
-                    gate = threading.Event()
-                    _SC_INFLIGHT[key] = gate
-        if entry is not None:
-            return _sc_memo_outcome(entry)
-        if owner:
-            break
-        gate.wait()
-        # Loop: read the owner's cached outcome, or re-elect if it was
-        # interrupted before caching one (e.g. KeyboardInterrupt).
-    try:
-        with http.tee_failures() as recorded:
-            try:
-                result = search_and_enrich(
-                    topic, from_date, to_date, depth=depth, token=token,
-                    subreddits=subreddits,
-                )
-                outcome = (True, result)
-            except Exception as exc:
-                outcome = (False, exc)
-        entry = (*outcome, list(recorded))
-        with _SC_MEMO_LOCK:
-            _SC_MEMO[key] = entry
-    finally:
-        with _SC_MEMO_LOCK:
-            _SC_INFLIGHT.pop(key, None)
-        gate.set()
-    # The owner's failures already reached its own sink through tee_failures.
-    return _sc_memo_outcome(entry, replay_failures=False)
+    spend_ctx = (
+        sc_spend_until(deadline=deadline_monotonic, cancel=cancel)
+        if (deadline_monotonic is not None or cancel is not None)
+        else contextlib.nullcontext()
+    )
+    with spend_ctx:
+        eff_deadline, cancels = _effective_spend_limit()
+        key = (topic, from_date, to_date, depth, tuple(sorted(subreddits or ())))
+        while True:
+            with _SC_MEMO_LOCK:
+                entry = _SC_MEMO.get(key)
+                if entry is None:
+                    if _sc_spend_stopped():
+                        raise TimeoutError(_SC_STOPPED_MSG)
+                    gate = _SC_INFLIGHT.get(key)
+                    owner = gate is None
+                    if owner:
+                        gate = threading.Event()
+                        _SC_INFLIGHT[key] = gate
+            if entry is not None:
+                return _sc_memo_outcome(entry)
+            if owner:
+                break
+            if eff_deadline is None and not cancels:
+                gate.wait()
+            else:
+                while not gate.wait(timeout=0.1):
+                    _check_sc_spend()
+            # Loop: read the owner's cached outcome, or re-elect if it was
+            # interrupted before caching one (e.g. KeyboardInterrupt or cancel).
+        cancelled_or_timed_out = False
+        try:
+            with http.tee_failures() as recorded:
+                try:
+                    result = search_and_enrich(
+                        topic, from_date, to_date, depth=depth, token=token,
+                        subreddits=subreddits,
+                    )
+                    outcome = (True, result)
+                except TimeoutError as exc:
+                    cancelled_or_timed_out = True
+                    outcome = (False, exc)
+                except Exception as exc:
+                    if _sc_spend_stopped():
+                        cancelled_or_timed_out = True
+                    outcome = (False, exc)
+            entry = (*outcome, list(recorded))
+            if not cancelled_or_timed_out:
+                with _SC_MEMO_LOCK:
+                    _SC_MEMO[key] = entry
+        finally:
+            with _SC_MEMO_LOCK:
+                _SC_INFLIGHT.pop(key, None)
+            gate.set()
+        # The owner's failures already reached its own sink through tee_failures.
+        return _sc_memo_outcome(entry, replay_failures=False)
 
 
 def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
