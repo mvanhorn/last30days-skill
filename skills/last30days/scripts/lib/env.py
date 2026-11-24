@@ -1410,7 +1410,7 @@ def reddit_session_gate(config: dict[str, Any]) -> tuple[bool, str]:
 def reddit_scrapecreators_primary(config: dict[str, Any]) -> bool:
     return bool(
         config.get("SCRAPECREATORS_API_KEY")
-        and (config.get(REDDIT_BACKEND_PIN_VAR) or "").lower() == "scrapecreators"
+        and (config.get(REDDIT_BACKEND_PIN_VAR) or "").strip().lower() == "scrapecreators"
     )
 
 

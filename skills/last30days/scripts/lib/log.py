@@ -12,7 +12,7 @@ def _sanitize_for_stream(text: str, stream) -> str:
     before ``write()`` prevents poisoning the stream's pending text buffer.
     """
     encoding = getattr(stream, "encoding", None)
-    if not encoding:
+    if not isinstance(encoding, str) or not encoding:
         return text
     try:
         text.encode(encoding)

@@ -20,7 +20,7 @@ def _stderr_supports_utf8(stream=None) -> bool:
     """Return False when stderr declares a non-UTF encoding (e.g. cp1252, ascii)."""
     target = sys.stderr if stream is None else stream
     encoding = getattr(target, "encoding", None)
-    if not encoding:
+    if not isinstance(encoding, str) or not encoding:
         return True
     normalized = encoding.lower().replace("_", "-")
     return normalized in ("utf-8", "utf8", "utf-16", "utf16", "utf-32", "utf32") or normalized.startswith("utf-")

@@ -149,6 +149,23 @@ class TestHigh055StderrEncodingSafety:
         log.safe_stderr_write("✓ hello 🔥", stream=bad)
         assert "".join(bad.chunks) == "? hello ?"
 
+        class _NonStringEncodingStream:
+            encoding = 123
+
+            def __init__(self):
+                self.chunks = []
+
+            def write(self, text):
+                self.chunks.append(text)
+
+            def flush(self):
+                pass
+
+        non_str = _NonStringEncodingStream()
+        log.safe_stderr_write("✓ ok", stream=non_str)
+        assert "".join(non_str.chunks) == "✓ ok"
+        assert ui._stderr_supports_utf8(non_str) is True
+
     def test_source_log_tty_only_contract_preserved(self):
         buf = io.StringIO()
         with redirect_stderr(buf):
@@ -601,6 +618,7 @@ class TestHigh074BackendsPinAndParallelMcp:
         res_reddit = backends.resolve("reddit", config_reddit)
         assert res_reddit.pinned is True
         assert res_reddit.pin == "scrapecreators"
+        assert env.reddit_scrapecreators_primary(config_reddit) is True
 
     def test_explicit_pin_propagated_into_specs_for_policy_on_grok_bot(self):
         config = {
@@ -721,6 +739,8 @@ class TestHigh076ProviderTextExtraction:
                     "summary": [{"type": "summary_text", "text": "Internal reasoning"}],
                     "content": [{"type": "reasoning_text", "text": "Do not return this"}],
                 },
+                {"type": "thinking", "text": "Top-level thinking block"},
+                {"thought": True, "text": "Top-level thought item"},
                 {
                     "type": "message",
                     "content": [

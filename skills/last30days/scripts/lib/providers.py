@@ -713,7 +713,7 @@ def extract_openai_text(payload: dict[str, Any]) -> str:
             continue
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "reasoning":
+        if item.get("type") in _OPENAI_REASONING_PART_TYPES or item.get("thought") is True:
             continue
         item_text = item.get("text")
         if isinstance(item_text, str) and item_text.strip():
