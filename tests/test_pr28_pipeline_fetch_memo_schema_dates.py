@@ -769,6 +769,51 @@ class TestHigh022PostPlanWeightNormalization:
         assert explicit_plan.source_weights["reddit"] == pytest.approx(0.6)
         assert explicit_plan.source_weights["digg"] == pytest.approx(0.2)
 
+    def test_sanitize_plan_preserves_raw_unnormalized_source_boosts_and_demotions(self):
+        from lib import planner
+
+        # Raw boost map (reddit=3.0, x unweighted): x defaults to 1.0 so reddit keeps 3:1 boost.
+        boosted_raw = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "source_weights": {"reddit": 3.0},
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "Acme Corp",
+                    "ranking_query": "What is new with Acme Corp?",
+                    "sources": ["reddit", "x"],
+                    "weight": 1.0,
+                }
+            ],
+        }
+        boosted_plan = planner._sanitize_plan(
+            boosted_raw, "Acme Corp", ["reddit", "x"], None, "default",
+            honor_plan_sources=True,
+        )
+        assert boosted_plan.source_weights["reddit"] == pytest.approx(0.75)
+        assert boosted_plan.source_weights["x"] == pytest.approx(0.25)
+
+        # Raw demotion map (reddit=0.5, x unweighted): x defaults to 1.0 so reddit stays 1:2.
+        demoted_raw = {**boosted_raw, "source_weights": {"reddit": 0.5}}
+        demoted_plan = planner._sanitize_plan(
+            demoted_raw, "Acme Corp", ["reddit", "x"], None, "default",
+            honor_plan_sources=True,
+        )
+        assert demoted_plan.source_weights["reddit"] == pytest.approx(1.0 / 3)
+        assert demoted_plan.source_weights["x"] == pytest.approx(2.0 / 3)
+
+        # Multi-source raw boost map (reddit=3.0, youtube=2.0, x unweighted -> x=1.0).
+        multi_raw = {**boosted_raw, "source_weights": {"reddit": 3.0, "youtube": 2.0}}
+        multi_plan = planner._sanitize_plan(
+            multi_raw, "Acme Corp", ["reddit", "youtube", "x"], None, "default",
+            honor_plan_sources=True,
+        )
+        assert multi_plan.source_weights["reddit"] == pytest.approx(3.0 / 6.0)
+        assert multi_plan.source_weights["youtube"] == pytest.approx(2.0 / 6.0)
+        assert multi_plan.source_weights["x"] == pytest.approx(1.0 / 6.0)
+
 
 # ---------------------------------------------------------------------------
 # HIGH-023: YouTube SSH host routing without local yt-dlp binary

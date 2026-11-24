@@ -674,15 +674,28 @@ def _sanitize_plan(
         source_weights = {source: weight for source, weight in source_weights.items() if source in requested}
     if not source_weights:
         source_weights = _default_source_weights(_infer_intent(topic), eligible_sources)
-    # Ensure all eligible sources are available for subqueries. The LLM may
-    # assign high weights to its preferred sources, but omitted sources still
-    # participate with the mean positive weight of the existing map (not raw
-    # 1.0, which would outweigh already-normalized weights on renormalization).
+    # Ensure all eligible sources are available for subqueries. Preserve the
+    # base weight of 1.0 for raw unnormalized boost maps (e.g. {"reddit": 3.0}
+    # keeps Reddit's 3:1 boost over an unweighted source), and use the mean
+    # weight only when the raw plan's weights already sum to ~1.0 so omitted
+    # or backfilled sources do not outweigh normalized planned sources.
+    raw_positive: list[float] = []
+    for weight in (raw.get("source_weights") or {}).values():
+        try:
+            numeric = float(weight)
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0:
+            raw_positive.append(numeric)
     positive_weights = [weight for weight in source_weights.values() if weight > 0]
-    default_weight = (
-        (sum(positive_weights) / len(positive_weights))
-        if positive_weights else 1.0
-    )
+    if (
+        len(raw_positive) >= 2
+        and positive_weights
+        and abs(sum(raw_positive) - 1.0) <= 0.05
+    ):
+        default_weight = sum(positive_weights) / len(positive_weights)
+    else:
+        default_weight = 1.0
     for source in eligible_sources:
         source_weights.setdefault(source, default_weight)
     if intent_hint in DEFAULT_INTENT_CAPABILITIES and depth != "quick":
