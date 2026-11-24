@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import base64
 from email.message import Message
+import http.client as http_client
 import io
 import json
+import os
+import shutil
 import socket
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -22,6 +26,12 @@ from lib import subproc
 
 # Reserve TERM and KILL/reap time inside the caller's operation budget.
 CLEANUP_GRACE_SECONDS = 0.1
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_ERROR_BODY_BYTES = 64 * 1024
+MAX_META_BYTES = 256 * 1024
+_STREAM_CHUNK_BYTES = 64 * 1024
+_MAX_HEADER_COUNT = 256
+_MAX_HEADER_BYTES = 64 * 1024
 
 
 class GetTimeout(TimeoutError):
@@ -34,10 +44,16 @@ class GetLaunchError(OSError):
     """GET worker launch failed before the worker received a request."""
 
 
+class ResponseTooLarge(OSError):
+    """Raised when an upstream response body exceeds the configured byte limit."""
+
+
 def _error_record(exc):
     if isinstance(exc, urllib.error.URLError):
         reason = exc.reason
         return {"kind": "URLError", "reason": _error_record(reason) if isinstance(reason, BaseException) else str(reason)}
+    if isinstance(exc, http_client.IncompleteRead):
+        return {"kind": "IncompleteRead", "message": str(exc), "expected": exc.expected}
     return {"kind": type(exc).__name__, "message": str(exc), "errno": getattr(exc, "errno", None)}
 
 
@@ -45,12 +61,15 @@ def _error_from_record(record):
     if record["kind"] == "URLError":
         reason = record["reason"]
         return urllib.error.URLError(_error_from_record(reason) if isinstance(reason, dict) else reason)
+    if record["kind"] == "IncompleteRead":
+        return http_client.IncompleteRead(b"", record.get("expected"))
     kinds = {
         "gaierror": socket.gaierror,
         "TimeoutError": TimeoutError,
         "ConnectionResetError": ConnectionResetError,
         "ConnectionRefusedError": ConnectionRefusedError,
         "OSError": OSError,
+        "ResponseTooLarge": ResponseTooLarge,
         "SSLError": ssl.SSLError,
         "SSLCertVerificationError": ssl.SSLCertVerificationError,
     }
@@ -58,6 +77,96 @@ def _error_from_record(record):
     if record.get("errno") is not None:
         return kind(record["errno"], record["message"])
     return kind(record["message"])
+
+
+def _serialize_headers(raw_headers) -> list[list[str]]:
+    if not raw_headers:
+        return []
+    pairs: list[list[str]] = []
+    used = 0
+    for key, value in raw_headers.items():
+        if len(pairs) >= _MAX_HEADER_COUNT:
+            break
+        pair = [str(key), str(value)]
+        # Measure actual ASCII JSON-encoded length (ensure_ascii=True) so
+        # \uXXXX escaping cannot expand metadata past MAX_META_BYTES and
+        # stdout stays pure ASCII on Windows cp1252 under python -I.
+        entry_len = len(json.dumps(pair)) + 2
+        if used + entry_len > _MAX_HEADER_BYTES:
+            break
+        used += entry_len
+        pairs.append(pair)
+    return pairs
+
+
+def _declared_content_length(headers) -> int | None:
+    if not headers or not hasattr(headers, "get"):
+        return None
+    raw = headers.get("Content-Length")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _check_incomplete_read(response, *, truncate: bool) -> None:
+    if (
+        not truncate
+        and isinstance(response, http_client.HTTPResponse)
+        and not response.chunked
+        and getattr(response, "_method", None) != "HEAD"
+        and isinstance(response.length, int)
+        and response.length > 0
+    ):
+        raise http_client.IncompleteRead(b"", response.length)
+
+
+def _stream_body_to_file(response, body_path: str, limit: int, *, truncate: bool) -> None:
+    if not truncate:
+        declared = _declared_content_length(getattr(response, "headers", None))
+        if declared is not None and declared > limit:
+            raise ResponseTooLarge(
+                f"Response Content-Length {declared} exceeds limit of {limit} bytes"
+            )
+    budget = limit if truncate else limit + 1
+    total = 0
+    write_flags = os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(body_path, write_flags)
+    with os.fdopen(fd, "wb") as out:
+        while total < budget:
+            to_read = min(_STREAM_CHUNK_BYTES, budget - total)
+            chunk = response.read(to_read)
+            if not chunk:
+                break
+            if not truncate and total + len(chunk) > limit:
+                raise ResponseTooLarge(f"Response body exceeded limit of {limit} bytes")
+            if truncate and total + len(chunk) > limit:
+                chunk = chunk[: limit - total]
+            out.write(chunk)
+            total += len(chunk)
+    _check_incomplete_read(response, truncate=truncate)
+
+
+def _read_body_inline(response, limit: int, *, truncate: bool) -> bytes:
+    if not truncate:
+        declared = _declared_content_length(getattr(response, "headers", None))
+        if declared is not None and declared > limit:
+            raise ResponseTooLarge(
+                f"Response Content-Length {declared} exceeds limit of {limit} bytes"
+            )
+    read_size = limit if truncate else limit + 1
+    data = response.read(read_size)
+    if data is None:
+        return b""
+    if truncate:
+        return data[:limit]
+    if len(data) > limit:
+        raise ResponseTooLarge(f"Response body exceeded limit of {limit} bytes")
+    _check_incomplete_read(response, truncate=truncate)
+    return data
 
 
 def get(
@@ -69,6 +178,7 @@ def get(
     read_body: bool = True,
     read_error_body: bool = True,
     with_headers: bool = False,
+    max_bytes: int = MAX_RESPONSE_BYTES,
 ):
     """Run one GET in a child process killed at the deadline.
 
@@ -77,49 +187,89 @@ def get(
     """
     if req.get_method() != "GET":
         raise ValueError("bounded transport supports GET only")
-    payload = {
-        "url": req.full_url,
-        "headers": req.headers,
-        "unredirected_headers": req.unredirected_hdrs,
-        "origin_req_host": req.origin_req_host,
-        "timeout": timeout,
-        "read_body": read_body,
-        "read_error_body": read_error_body,
-    }
-    transport_deadline = deadline_monotonic - 2 * CLEANUP_GRACE_SECONDS
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    body_dir: str | None = None
+    body_path: str | None = None
     try:
-        result = subproc.run_with_timeout(
-            [sys.executable, "-I", str(Path(__file__).resolve())],
-            timeout=max(0, transport_deadline - time.monotonic()),
-            deadline_monotonic=transport_deadline,
-            input_text=json.dumps(payload),
-            cancel=cancel,
-            cleanup_grace=CLEANUP_GRACE_SECONDS,
-        )
-    except subproc.SubprocTimeout as exc:
-        raise GetTimeout("GET exceeded operation deadline or was cancelled", started=exc.started) from exc
-    except OSError as exc:
-        if not getattr(exc, "_last30days_subproc_launch_failed", False):
-            raise
-        raise GetLaunchError(*exc.args) from exc
-    if result.returncode != 0:
-        raise OSError("bounded GET worker failed")
-    record = json.loads(result.stdout)
-    if "error" in record:
-        raise _error_from_record(record["error"])
-    body = base64.b64decode(record["body"]) if record["body"] is not None else None
-    error = None
-    if record.get("http_error") is not None:
-        headers = Message()
-        for key, value in record["headers"]:
-            headers[key] = value
-        error = urllib.error.HTTPError(
-            record["url"], record["status"], record["http_error"],
-            headers, io.BytesIO(body or b""),
-        )
-    if with_headers:
-        return record["status"], body, error, list(record.get("headers") or [])
-    return record["status"], body, error
+        if read_body or read_error_body:
+            body_dir = tempfile.mkdtemp(prefix="last30days-bget-")
+            try:
+                os.chmod(body_dir, 0o700)
+            except OSError:
+                pass
+            body_path = os.path.join(body_dir, "body.bin")
+            create_flags = (
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_WRONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_BINARY", 0)
+            )
+            fd = os.open(body_path, create_flags, 0o600)
+            os.close(fd)
+        payload = {
+            "url": req.full_url,
+            "headers": req.headers,
+            "unredirected_headers": req.unredirected_hdrs,
+            "origin_req_host": req.origin_req_host,
+            "timeout": timeout,
+            "read_body": read_body,
+            "read_error_body": read_error_body,
+            "with_headers": with_headers,
+            "max_bytes": max_bytes,
+            "body_path": body_path,
+        }
+        transport_deadline = deadline_monotonic - 2 * CLEANUP_GRACE_SECONDS
+        try:
+            result = subproc.run_with_timeout(
+                [sys.executable, "-I", str(Path(__file__).resolve())],
+                timeout=max(0, transport_deadline - time.monotonic()),
+                deadline_monotonic=transport_deadline,
+                input_text=json.dumps(payload),
+                cancel=cancel,
+                cleanup_grace=CLEANUP_GRACE_SECONDS,
+                capture_limit_bytes=MAX_META_BYTES,
+            )
+        except subproc.SubprocTimeout as exc:
+            raise GetTimeout("GET exceeded operation deadline or was cancelled", started=exc.started) from exc
+        except OSError as exc:
+            if not getattr(exc, "_last30days_subproc_launch_failed", False):
+                raise
+            raise GetLaunchError(*exc.args) from exc
+        if result.returncode != 0:
+            raise OSError("bounded GET worker failed")
+        try:
+            record = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise OSError("bounded GET worker returned invalid metadata") from exc
+        if "error" in record:
+            raise _error_from_record(record["error"])
+        body: bytes | None = None
+        if record.get("has_body") and body_path is not None:
+            read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            fd = os.open(body_path, read_flags)
+            with os.fdopen(fd, "rb") as fh:
+                body = fh.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise ResponseTooLarge(f"Response body exceeded limit of {max_bytes} bytes")
+        elif record.get("body") is not None:
+            body = base64.b64decode(record["body"])
+        error = None
+        if record.get("http_error") is not None:
+            headers = Message()
+            for key, value in record.get("headers") or []:
+                headers[key] = value
+            error = urllib.error.HTTPError(
+                record["url"], record["status"], record["http_error"],
+                headers, io.BytesIO(body or b""),
+            )
+        if with_headers:
+            return record["status"], body, error, list(record.get("headers") or [])
+        return record["status"], body, error
+    finally:
+        if body_dir is not None:
+            shutil.rmtree(body_dir, ignore_errors=True)
 
 
 def _main():
@@ -132,6 +282,11 @@ def _main():
     )
     for key, value in payload["unredirected_headers"].items():
         req.add_unredirected_header(key, value)
+    max_bytes = int(payload.get("max_bytes") or MAX_RESPONSE_BYTES)
+    if max_bytes <= 0:
+        max_bytes = MAX_RESPONSE_BYTES
+    body_path = payload.get("body_path")
+    want_headers = bool(payload.get("with_headers", True))
     error_reason = None
     try:
         try:
@@ -141,23 +296,35 @@ def _main():
             error_reason = str(exc.reason)
         with response:
             body = None
+            has_body = False
             read_body = payload["read_error_body"] if error_reason is not None else payload["read_body"]
+            is_error = error_reason is not None
+            limit = min(max_bytes, MAX_ERROR_BODY_BYTES) if is_error else max_bytes
             if read_body:
                 try:
-                    body = response.read()
-                except OSError:
-                    if error_reason is None:
+                    if body_path:
+                        _stream_body_to_file(response, body_path, limit, truncate=is_error)
+                        has_body = True
+                    else:
+                        body = _read_body_inline(response, limit, truncate=is_error)
+                except (OSError, http_client.HTTPException):
+                    if not is_error:
                         raise
             result = {
                 "status": getattr(response, "status", 200) or 200,
                 "body": base64.b64encode(body).decode("ascii") if body is not None else None,
-                "headers": list(response.headers.items()),
-                "url": response.geturl(),
-                "http_error": error_reason,
+                "has_body": has_body,
+                "headers": _serialize_headers(response.headers) if (want_headers or is_error) else [],
+                "url": str(response.geturl())[:4096],
+                "http_error": error_reason[:512] if error_reason is not None else None,
             }
     except Exception as exc:
         result = {"error": _error_record(exc)}
-    json.dump(result, sys.stdout)
+    encoded = json.dumps(result)
+    if len(encoded) > MAX_META_BYTES and "headers" in result:
+        result["headers"] = []
+        encoded = json.dumps(result)
+    sys.stdout.write(encoded)
 
 
 if __name__ == "__main__":

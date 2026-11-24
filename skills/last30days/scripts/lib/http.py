@@ -8,6 +8,7 @@ import os
 import random
 import re
 import socket
+import string
 import threading
 import time
 import urllib.error
@@ -17,12 +18,14 @@ from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit, quote
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunparse, urlunsplit, quote
 
 from . import bounded_get, health, proxy, usage
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_ERROR_BODY_BYTES = 64 * 1024
 
 
 def log(msg: str):
@@ -233,6 +236,50 @@ def _build_http_opener(
 
 
 class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def http_error_302(self, req, fp, code, msg, headers):
+        if "location" in headers:
+            newurl = headers["location"]
+        elif "uri" in headers:
+            newurl = headers["uri"]
+        else:
+            return
+        urlparts = urlparse(newurl)
+        if urlparts.scheme not in ("http", "https", ""):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                403,
+                f"redirect refused: unsupported URL scheme: {urlparts.scheme}",
+                headers,
+                fp,
+            )
+        if not urlparts.path and urlparts.netloc:
+            urlparts = list(urlparts)
+            urlparts[2] = "/"
+        newurl = urlunparse(urlparts)
+        newurl = quote(newurl, encoding="iso-8859-1", safe=string.punctuation)
+        newurl = urljoin(req.full_url, newurl)
+        new = self.redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return
+        if hasattr(req, "redirect_dict"):
+            visited = new.redirect_dict = req.redirect_dict
+            if (
+                visited.get(newurl, 0) >= self.max_repeats
+                or len(visited) >= self.max_redirections
+            ):
+                raise urllib.error.HTTPError(
+                    req.full_url, code, self.inf_msg + msg, headers, fp
+                )
+        else:
+            visited = new.redirect_dict = req.redirect_dict = {}
+        visited[newurl] = visited.get(newurl, 0) + 1
+        # Close without calling unbounded fp.read() on untrusted 3xx bodies.
+        if fp is not None:
+            fp.close()
+        return self.parent.open(new, timeout=req.timeout)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         try:
             _check_http_scheme(newurl)
@@ -833,6 +880,55 @@ class DeadlineExceeded(HTTPError):
         )
 
 
+class ResponseTooLarge(HTTPError):
+    """An upstream response exceeded the configured byte limit."""
+
+    def __init__(self, message: str):
+        super().__init__(message, outcome_state=health.ERROR)
+
+
+def _content_length(headers) -> Optional[int]:
+    if not headers or not hasattr(headers, "get"):
+        return None
+    raw = headers.get("Content-Length")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _read_bounded(stream, max_bytes: int, *, truncate: bool = False) -> bytes:
+    if not truncate:
+        declared = _content_length(getattr(stream, "headers", None))
+        if declared is not None and declared > max_bytes:
+            raise ResponseTooLarge(
+                f"Response Content-Length {declared} exceeds limit of {max_bytes} bytes"
+            )
+    limit = max_bytes if truncate else max_bytes + 1
+    try:
+        data = stream.read(limit)
+    except TypeError:
+        data = stream.read()
+    if data is None:
+        return b""
+    if truncate:
+        return data[:max_bytes]
+    if len(data) > max_bytes:
+        raise ResponseTooLarge(f"Response body exceeded limit of {max_bytes} bytes")
+    if (
+        isinstance(stream, http.client.HTTPResponse)
+        and not stream.chunked
+        and getattr(stream, "_method", None) != "HEAD"
+        and isinstance(stream.length, int)
+        and stream.length > 0
+    ):
+        raise http.client.IncompleteRead(data, stream.length)
+    return data
+
+
 @contextmanager
 def capture_failures():
     """Capture terminal request failures in the current retrieval context.
@@ -1072,6 +1168,7 @@ def request(
     redirect_guard: Callable[[str], bool] | None = None,
     sensitive_url: bool = False,
     public_only: bool = False,
+    max_bytes: Optional[int] = None,
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
@@ -1100,6 +1197,9 @@ def request(
             available with owned_get, whose child process reports no headers.
         sensitive_url: Exclude credential-bearing URLs and their responses
             from request diagnostics and fixture capture.
+        max_bytes: Maximum response body size in bytes (defaults to
+            ``MAX_RESPONSE_BYTES``). Oversized responses fail fast with
+            ``ResponseTooLarge``.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True. With
@@ -1108,6 +1208,9 @@ def request(
     Raises:
         HTTPError: On request failure
     """
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    effective_max_bytes = MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
     if owned_get and (method != "GET" or json_data is not None):
         raise ValueError("owned transport requires a bodyless GET")
     if owned_get and deadline_monotonic is None:
@@ -1242,15 +1345,29 @@ def request(
                     response_headers = ResponseHeaders(response.headers.items())
                     final = response.geturl() if hasattr(response, "geturl") else ""
                     response_headers.url = final if isinstance(final, str) else ""
-                return response.status, response.read().decode('utf-8'), None
+                return (
+                    response.status,
+                    _read_bounded(response, effective_max_bytes).decode('utf-8'),
+                    None,
+                )
         except urllib.error.HTTPError as error:
             # Error bodies can stall just like successful bodies. Read both
             # inside the same deadline-protected worker before classification.
             body = None
             try:
-                body = error.read().decode('utf-8')
-            except (OSError, UnicodeDecodeError):
+                raw_error = _read_bounded(error, MAX_ERROR_BODY_BYTES, truncate=True)
+                body = raw_error.decode(
+                    'utf-8',
+                    errors='replace' if len(raw_error) == MAX_ERROR_BODY_BYTES else 'strict',
+                )
+            except (OSError, UnicodeDecodeError, ValueError):
                 pass
+            finally:
+                if isinstance(getattr(error, "fp", None), http.client.HTTPResponse):
+                    try:
+                        error.close()
+                    except Exception:
+                        pass
             return error.code, body, error
 
     def open_and_read_before_deadline(
@@ -1259,11 +1376,16 @@ def request(
         """Stop waiting at the wall deadline, even during DNS or body reads."""
         if owned_get:
             try:
+                owned_kwargs: Dict[str, Any] = {}
+                if routed is not None:
+                    # Only a proxied call needs the charge header back.
+                    owned_kwargs["with_headers"] = True
+                if max_bytes is not None:
+                    owned_kwargs["max_bytes"] = max_bytes
                 owned = bounded_get.get(
                     req, timeout=request_timeout,
                     deadline_monotonic=deadline_monotonic, cancel=cancel,
-                    # Only a proxied call needs the charge header back.
-                    **({"with_headers": True} if routed is not None else {}),
+                    **owned_kwargs,
                 )
             except bounded_get.GetLaunchError:
                 usage.cancel(charge)
@@ -1272,6 +1394,8 @@ def request(
                 if not exc.started:
                     usage.cancel(charge)
                 raise deadline_error() from exc
+            except bounded_get.ResponseTooLarge as exc:
+                raise ResponseTooLarge(str(exc)) from exc
             if routed is not None:
                 status, body, error, owned_headers = owned
                 if error is None:
@@ -1279,7 +1403,12 @@ def request(
             else:
                 status, body, error = owned
             try:
-                decoded = body.decode("utf-8") if body is not None else None
+                if body is None:
+                    decoded = None
+                elif error is not None:
+                    decoded = body.decode("utf-8", errors="replace")
+                else:
+                    decoded = body.decode("utf-8")
             except UnicodeDecodeError:
                 if error is None:
                     raise
@@ -1370,7 +1499,7 @@ def request(
             if return_headers:
                 return value, response_headers
             return value
-        except DeadlineExceeded as exc:
+        except (DeadlineExceeded, ResponseTooLarge) as exc:
             raise_recorded(exc)
         except urllib.error.HTTPError as e:
             log_request(f"HTTP Error {e.code}: {e.reason}")
@@ -1530,6 +1659,7 @@ def get_text(
     landed: Optional[list] = None,
     redirect_guard: Optional[Callable[[str], bool]] = None,
     public_only: bool = False,
+    max_bytes: Optional[int] = None,
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1550,6 +1680,7 @@ def get_text(
             appended to it on success, or ``url`` when that is not known.
         redirect_guard: When given, a redirect to an address it returns False
             for is refused before it is followed, and the call returns None.
+        max_bytes: Optional response byte cap passed through to ``request``.
 
     Returns:
         Decoded response body as text, or None on failure.
@@ -1573,6 +1704,8 @@ def get_text(
         bounds["redirect_guard"] = redirect_guard
     if public_only:
         bounds["public_only"] = True
+    if max_bytes is not None:
+        bounds["max_bytes"] = max_bytes
     try:
         answer = request(
             "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,
