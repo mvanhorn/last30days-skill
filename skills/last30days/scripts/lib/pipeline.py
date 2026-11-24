@@ -349,13 +349,10 @@ class _DaemonExecutor:
         self._threads.add(worker)
         worker.start()
 
-    def _ensure_workers_locked(self, *, active_self: bool = False) -> None:
+    def _ensure_workers_locked(self) -> None:
         ready_count = len(self._priority_pending) + len(self._pending)
-        if active_self:
-            ready_count = max(0, ready_count - 1)
-        needed = ready_count - self._idle_workers
-        if needed <= 0 and self._delayed and self._idle_workers == 0 and not active_self:
-            needed = 1
+        timer_slot = 1 if self._delayed else 0
+        needed = (ready_count + timer_slot) - self._idle_workers
         while needed > 0 and len(self._threads) < self._max_workers:
             self._spawn_worker_locked()
             needed -= 1
@@ -409,16 +406,17 @@ class _DaemonExecutor:
             while True:
                 with self._cond:
                     while True:
-                        promoted = self._promote_delayed_locked()
-                        if promoted:
-                            self._ensure_workers_locked(active_self=True)
-                            if len(self._priority_pending) + len(self._pending) > 1:
-                                self._cond.notify_all()
+                        self._promote_delayed_locked()
                         if self._priority_pending:
                             item = self._priority_pending.popleft()
-                            break
-                        if self._pending:
+                        elif self._pending:
                             item = self._pending.popleft()
+                        else:
+                            item = None
+                        if item is not None:
+                            self._ensure_workers_locked()
+                            if self._priority_pending or self._pending:
+                                self._cond.notify_all()
                             break
                         if self._shutdown and not self._delayed:
                             return

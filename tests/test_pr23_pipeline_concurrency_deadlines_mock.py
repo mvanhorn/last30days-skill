@@ -705,6 +705,37 @@ def test_high016_multiple_delayed_retries_run_in_parallel_and_cancel_cleanly_on_
     assert ran_late == []
 
 
+def test_high016_regular_submit_while_delayed_pending_keeps_timer_watcher_alive():
+    """When an idle worker watching _delayed is pulled onto a new regular submit()
+    with free slots still available under max_workers, a fresh worker must be
+    spawned so the delayed retry still fires on time without waiting for busy tasks."""
+    release = threading.Event()
+    slow1_started = threading.Event()
+    slow2_started = threading.Event()
+
+    def slow(flag: threading.Event) -> str:
+        flag.set()
+        release.wait(timeout=5.0)
+        return "slow"
+
+    try:
+        with pipeline._abandoning_executor(max_workers=4) as pool:
+            pool.submit(slow, slow1_started)
+            assert slow1_started.wait(timeout=2.0)
+
+            # Schedule a delayed retry while 1 worker is busy and 1 idle worker watches _delayed.
+            t0 = time.monotonic()
+            f_delayed = pool.submit_delayed(t0 + 0.05, lambda: "retry-ok")
+            # Submit a second slow task before +0.05s; must not strand f_delayed.
+            pool.submit(slow, slow2_started)
+            assert slow2_started.wait(timeout=2.0)
+
+            assert f_delayed.result(timeout=0.8) == "retry-ok"
+            assert not release.is_set()
+    finally:
+        release.set()
+
+
 # ---------------------------------------------------------------------------
 # HIGH-017: Single-fetch caps & thread-safe _jobs_lane / LaneBudget
 # ---------------------------------------------------------------------------
