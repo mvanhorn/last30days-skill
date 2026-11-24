@@ -1305,6 +1305,10 @@ def test_greptile_p2_parse_budget_rejects_tiny_negative_underflow(tmp_path, monk
     assert store.get_setting("daily_budget") == "5.00"
 
 
+@pytest.mark.skipif(
+    not store._SUPPORTS_RETURNING,
+    reason="SQLite < 3.35 uses fallback SELECT path",
+)
 def test_greptile_p2_store_findings_has_no_redundant_select_or_conflict_count_query(
     tmp_path, monkeypatch
 ):
@@ -1354,5 +1358,44 @@ def test_greptile_p2_store_findings_has_no_redundant_select_or_conflict_count_qu
     )
     assert counts2 == {"new": 1, "updated": 1}
     assert not any("FROM findings" in sql and sql.upper().startswith("SELECT") for sql in executed_sql)
+
+
+def test_greptile_p1_finish_gets_fresh_window_after_slow_response_without_hard_deadline(
+    tmp_path, monkeypatch
+):
+    """When deadline_monotonic is None and a paid response arrives after the pre-request
+    begin cutoff, usage.finish() gets its own fresh short window and records the charge."""
+    journal = tmp_path / "usage-slow-resp.db"
+    usage.create_journal(journal)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal))
+
+    class Response(io.BytesIO):
+        status = 200
+
+    payload = json.dumps({
+        "choices": [],
+        "usage": {"cost": 0.42, "prompt_tokens": 12, "completion_tokens": 8},
+    }).encode("utf-8")
+
+    def slow_open(req, timeout):
+        # Sleep longer than timeout=0.05 so the pre-request begin_deadline has already expired
+        # by the time the response finishes, while the socket itself returns 200 cleanly.
+        time.sleep(0.12)
+        return Response(payload)
+
+    monkeypatch.setattr(http, "_open_request", slow_open)
+    result = http.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {},
+        timeout=0.05,
+        retries=1,
+    )
+    assert result["choices"] == []
+    totals = usage.read_journal(journal)
+    assert totals["token_cost"] == pytest.approx(0.42)
+    assert totals["cost_unknown"] == 0
+    assert totals["prompt_tokens"] == 12
+    assert totals["completion_tokens"] == 8
+
 
 

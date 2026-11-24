@@ -674,8 +674,9 @@ def store_findings(
                     urls,
                 ).fetchall()
             }
-            updated_count = len(existing_urls)
-            new_count = len(with_urls) - updated_count
+            unique_new = len(set(urls) - existing_urls)
+            new_count = unique_new
+            updated_count = len(with_urls) - unique_new
             conn.executemany(upsert_sql, upsert_rows)
             _record_sightings(conn, run_id, topic_id, with_urls)
         conn.execute(
