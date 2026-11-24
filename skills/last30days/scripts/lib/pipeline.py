@@ -6480,7 +6480,7 @@ def _fetch_x_backend(backend, query, from_date, to_date, depth, config, warnings
     elif backend == "xai":
         model = config.get("LAST30DAYS_X_MODEL") or config.get("XAI_MODEL_PIN") or providers.XAI_DEFAULT
         result = xai_x.search_x(config["XAI_API_KEY"], model, query, from_date, to_date, depth=depth, deadline_monotonic=deadline, cancel=cancel)
-        items = xai_x.parse_x_response(result)
+        items = xai_x.parse_x_response(result, from_date=from_date, to_date=to_date)
     elif backend == "xurl":
         result = xurl_x.search_x(query, depth=depth, deadline=deadline)
         items = xurl_x.parse_x_response(result, topic=query)

@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import stat
@@ -115,6 +116,12 @@ CATEGORY_CREDITS = "credits"
 CATEGORY_NOT_CONNECTED = "not-connected"
 CATEGORY_UNAVAILABLE = "unavailable"
 CATEGORY_WINDOW_UNSUPPORTED = "window-unsupported"
+_ALLOWED_ERROR_CATEGORIES = frozenset({
+    CATEGORY_CREDITS,
+    CATEGORY_NOT_CONNECTED,
+    CATEGORY_UNAVAILABLE,
+    CATEGORY_WINDOW_UNSUPPORTED,
+})
 _CATEGORY_GENERATED = "generated"
 
 _REMEDY = (
@@ -333,13 +340,13 @@ def _parse_iso(value: str) -> datetime | None:
 
 
 def _category(raw: str) -> str:
-    """The short error class: first token, lowercased, [a-z0-9-] only."""
+    """Allowlisted error class from the first token, or '' if unrecognized."""
     cleaned = _CONTROL_ANY_RE.sub("", raw or "").strip().lower()
     if not cleaned:
         return ""
     token = cleaned.split()[0]
     token = re.sub(r"[^a-z0-9-]", "", token)
-    return token[:40]
+    return token if token in _ALLOWED_ERROR_CATEGORIES else ""
 
 
 _MAX_UNESCAPE_PASSES = 3
@@ -401,10 +408,16 @@ def _clean_text(value: str) -> str:
 def _int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
     try:
         return max(0, int(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _reject_constant(token: str) -> Any:
+    raise ValueError(f"invalid JSON constant: {token}")
 
 
 def _post_id(value: Any) -> str:
@@ -511,7 +524,7 @@ def read(
     except UnicodeDecodeError:
         raise fail("is not valid UTF-8") from None
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, parse_constant=_reject_constant)
     except (RecursionError, MemoryError):
         raise fail("is too deeply nested or too large to parse") from None
     except ValueError:
