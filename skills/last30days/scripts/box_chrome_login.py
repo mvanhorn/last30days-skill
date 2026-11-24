@@ -28,9 +28,12 @@ Contract, matching the rest of the feature:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -43,7 +46,6 @@ from lib import chrome_cdp, env  # noqa: E402
 
 # The last30days extras NUX port — single source of truth is chrome_cdp.
 EXTRAS_CDP_PORT = chrome_cdp._BOX_CHROME_PORT
-DEFAULT_PROFILE_DIR = "/tmp/last30days-x-chrome"
 LOGIN_URL = "https://x.com/login"
 BOX_CHROME_BIN = "box-chrome"
 # Printed on an official-only host instead of the MacBook note. Names no
@@ -54,10 +56,235 @@ OFFICIAL_HOST_NOTE = (
 )
 
 
+def _ancestor_chain(path: Path) -> List[Path]:
+    """Return existing/planned ancestors of ``path`` from filesystem root down to ``path.parent``."""
+    return list(reversed(path.parents))
+
+
+def _check_trusted_ancestor(anc: Path, *, is_immediate_parent: bool, uid: int) -> None:
+    """Verify an existing ancestor directory cannot be tampered with by another local user."""
+    st = os.lstat(anc)
+    if stat.S_ISLNK(st.st_mode):
+        # Never allow a symlink at the immediate parent or owned by a non-root user.
+        if is_immediate_parent or os.name == "nt" or st.st_uid != 0:
+            raise OSError(f"Refusing symlink in profile path: {anc}")
+        # Allow root-owned system symlinks strictly above the immediate parent
+        # (e.g., macOS /var -> private/var) only when the target dir is also trusted.
+        try:
+            st = os.stat(anc)
+        except FileNotFoundError as exc:
+            raise OSError(f"Refusing broken symlink in profile path: {anc}") from exc
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Ancestor in profile path is not a directory: {anc}")
+    if os.name == "nt":
+        return
+
+    mode = stat.S_IMODE(st.st_mode)
+    other_writable = bool(mode & 0o022)
+    is_sticky = bool(mode & stat.S_ISVTX)
+
+    if is_immediate_parent:
+        if st.st_uid != uid:
+            raise PermissionError(
+                f"Profile parent directory is not owned by uid {uid}: {anc}"
+            )
+        if other_writable:
+            raise PermissionError(
+                f"Profile parent directory is writable by group or others: {anc}"
+            )
+        return
+
+    if st.st_uid not in (0, uid):
+        raise PermissionError(
+            f"Profile ancestor directory has untrusted owner: {anc}"
+        )
+    # A root-owned sticky directory (e.g., /tmp with mode 1777) prevents other
+    # non-root users from replacing a uid-owned child directory beneath it; any
+    # other group/world-writable ancestor allows path substitution.
+    if other_writable and not (st.st_uid == 0 and is_sticky):
+        raise PermissionError(
+            f"Profile ancestor directory is writable by group or others: {anc}"
+        )
+
+
+def _is_safe_owner_dir(path: Path) -> bool:
+    """True when ``path`` is an existing owner-only dir inside a trusted ancestor chain."""
+    try:
+        if ".." in path.parts:
+            return False
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return False
+        uid = os.getuid() if os.name != "nt" else 0
+        if os.name != "nt":
+            if st.st_uid != uid:
+                return False
+            if stat.S_IMODE(st.st_mode) & 0o077:
+                return False
+        for anc in _ancestor_chain(path):
+            _check_trusted_ancestor(anc, is_immediate_parent=False, uid=uid)
+        canonical = path.resolve(strict=True)
+        for anc in _ancestor_chain(canonical):
+            _check_trusted_ancestor(anc, is_immediate_parent=False, uid=uid)
+    except OSError:
+        return False
+    return True
+
+
+def _default_profile_dir() -> str:
+    """Return an owner-only per-user runtime/cache profile path (never a fixed /tmp path)."""
+    xdg_runtime = (os.environ.get("XDG_RUNTIME_DIR") or "").strip()
+    if xdg_runtime and os.path.isabs(xdg_runtime):
+        runtime_path = Path(xdg_runtime)
+        if _is_safe_owner_dir(runtime_path):
+            return str(runtime_path / "last30days-x-chrome")
+    xdg_cache = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    if xdg_cache and os.path.isabs(xdg_cache):
+        cache_candidate = Path(xdg_cache)
+        if _is_safe_owner_dir(cache_candidate):
+            return str(cache_candidate / "last30days" / "x-chrome")
+    return str(Path.home() / ".cache" / "last30days" / "x-chrome")
+
+
+DEFAULT_PROFILE_DIR = _default_profile_dir()
+
+
+def _harden_owned_dir_0700(path: Path, uid: int) -> tuple[int, int]:
+    """Verify non-symlink ownership and enforce mode 0700 on ``path``, returning ``(st_dev, st_ino)``."""
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(f"Refusing symlink directory: {path}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Path is not a directory: {path}")
+    if os.name == "nt":
+        return (st.st_dev, st.st_ino)
+    if st.st_uid != uid:
+        raise PermissionError(f"Directory is not owned by uid {uid}: {path}")
+    if hasattr(os, "O_DIRECTORY") and hasattr(os, "fchmod"):
+        open_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(path), open_flags)
+        try:
+            fst = os.fstat(fd)
+            if not stat.S_ISDIR(fst.st_mode):
+                raise OSError(f"Path is not a directory: {path}")
+            if fst.st_uid != uid:
+                raise PermissionError(f"Directory is not owned by uid {uid}: {path}")
+            if stat.S_IMODE(fst.st_mode) != 0o700:
+                os.fchmod(fd, 0o700)
+                fst = os.fstat(fd)
+                if stat.S_IMODE(fst.st_mode) != 0o700:
+                    raise PermissionError(
+                        f"Could not enforce 0700 permissions on directory: {path}"
+                    )
+            return (fst.st_dev, fst.st_ino)
+        finally:
+            os.close(fd)
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        os.chmod(str(path), 0o700)
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise OSError(f"Directory changed unexpectedly: {path}")
+        if st.st_uid != uid:
+            raise PermissionError(f"Directory is not owned by uid {uid}: {path}")
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            raise PermissionError(f"Could not enforce 0700 permissions on directory: {path}")
+    return (st.st_dev, st.st_ino)
+
+
+def _ensure_private_profile_dir(profile_dir: str) -> str:
+    """Create and verify a non-symlink, owner-only (0o700) profile dir; return canonical path."""
+    if not profile_dir or not profile_dir.strip():
+        raise OSError("Profile directory path must not be empty")
+
+    raw_path = Path(profile_dir)
+    if ".." in raw_path.parts:
+        raise OSError(f"Refusing traversal segments in profile directory: {profile_dir}")
+    target = raw_path if raw_path.is_absolute() else Path(os.path.abspath(profile_dir))
+
+    uid = os.getuid() if os.name != "nt" else 0
+    ancestors = _ancestor_chain(target)
+    if not ancestors:
+        raise OSError(f"Refusing root as profile directory: {profile_dir}")
+
+    # Phase 1 (read-only): validate every existing unresolved ancestor AND the
+    # full resolved ancestor chain of the deepest existing ancestor BEFORE
+    # creating any directories or changing any permissions.
+    deepest_existing: Optional[Path] = None
+    deepest_idx = -1
+    for idx, anc in enumerate(ancestors):
+        is_immediate = idx == len(ancestors) - 1
+        try:
+            _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
+        except FileNotFoundError:
+            break
+        deepest_existing = anc
+        deepest_idx = idx
+
+    if deepest_existing is None:
+        raise FileNotFoundError(
+            f"No existing ancestor directory for profile path: {profile_dir}"
+        )
+
+    resolved_existing = deepest_existing.resolve(strict=True)
+    resolved_chain = _ancestor_chain(resolved_existing) + [resolved_existing]
+    deepest_is_immediate = deepest_idx == len(ancestors) - 1
+    for idx, anc in enumerate(resolved_chain):
+        _check_trusted_ancestor(
+            anc,
+            is_immediate_parent=(deepest_is_immediate and idx == len(resolved_chain) - 1),
+            uid=uid,
+        )
+
+    # Phase 2: create any missing per-user intermediate directories beneath the
+    # verified existing prefix with explicit 0700 mode.
+    for idx in range(deepest_idx + 1, len(ancestors)):
+        anc = ancestors[idx]
+        is_immediate = idx == len(ancestors) - 1
+        os.makedirs(str(anc), mode=0o700, exist_ok=True)
+        _harden_owned_dir_0700(anc, uid)
+        _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
+
+    try:
+        os.lstat(target)
+    except FileNotFoundError:
+        os.makedirs(str(target), mode=0o700, exist_ok=True)
+
+    verified_id = _harden_owned_dir_0700(target, uid)
+
+    # Resolve the full canonical path (expanding any root-owned system symlinks
+    # like macOS /var -> /private/var), validate every resolved ancestor from /
+    # downward, and confirm canonical still refers to the exact verified inode.
+    canonical = target.resolve(strict=True)
+    canonical_ancestors = _ancestor_chain(canonical)
+    if not canonical_ancestors:
+        raise OSError(f"Refusing root as profile directory: {profile_dir}")
+    for idx, anc in enumerate(canonical_ancestors):
+        _check_trusted_ancestor(
+            anc, is_immediate_parent=(idx == len(canonical_ancestors) - 1), uid=uid
+        )
+
+    cst = os.lstat(canonical)
+    if stat.S_ISLNK(cst.st_mode) or not stat.S_ISDIR(cst.st_mode):
+        raise OSError(f"Resolved profile path is not a directory: {canonical}")
+    if os.name != "nt":
+        if cst.st_uid != uid:
+            raise PermissionError(
+                f"Resolved profile directory is not owned by uid {uid}: {canonical}"
+            )
+        if stat.S_IMODE(cst.st_mode) != 0o700:
+            raise PermissionError(
+                f"Resolved profile directory does not have mode 0700: {canonical}"
+            )
+        if (cst.st_dev, cst.st_ino) != verified_id:
+            raise OSError(f"Profile directory changed during verification: {canonical}")
+
+    return str(canonical)
+
+
 def build_recipe(
     config: Dict[str, Any],
     *,
-    profile_dir: str = DEFAULT_PROFILE_DIR,
+    profile_dir: Optional[str] = None,
     url: str = LOGIN_URL,
 ) -> Dict[str, Any]:
     """Return the gated launch recipe. Never spawns, never reads cookies.
@@ -66,6 +293,7 @@ def build_recipe(
     ``profile_dir``, ``url``, ``env`` (launch env overrides or None),
     ``command`` (argv or None), ``note`` (human guidance).
     """
+    profile_dir = _default_profile_dir() if profile_dir is None else profile_dir
     # Official-only host (LAST30DAYS_HOST=grok-bot): the same no-launch
     # recipe as a MacBook, checked BEFORE the extras signals so a Linux or
     # Mac mini Grok Bot computer never gets a launch command. The note is
@@ -156,13 +384,24 @@ def render_recipe(recipe: Dict[str, Any]) -> str:
         lines.append(recipe["note"])
         return "\n".join(lines)
 
-    env_prefix = " ".join(f"{k}={v}" for k, v in recipe["env"].items())
-    cmd = " ".join(recipe["command"])
-    lines.append("[box-chrome login] Extras host. Launch the throwaway login Chrome:")
+    helper_cmd = [sys.executable or "python3", str(Path(__file__).resolve()), "--exec"]
+    if recipe["profile_dir"] != _default_profile_dir():
+        helper_cmd.extend(["--profile-dir", str(recipe["profile_dir"])])
+    if recipe["url"] != LOGIN_URL:
+        helper_cmd.extend(["--url", str(recipe["url"])])
+    launch_line = " ".join(shlex.quote(part) for part in helper_cmd)
+    lines.append(
+        "[box-chrome login] Extras host. Launch the throwaway login Chrome "
+        "via --exec (verifies trusted 0700 profile dir):"
+    )
     lines.append("")
-    lines.append(f"  mkdir -p {recipe['profile_dir']}")
-    lines.append(f"  {env_prefix} {cmd}")
+    lines.append(f"  {launch_line}")
     lines.append("")
+    lines.append(
+        f"Launches {recipe['command'][0]} with "
+        f"SAND_CHROME_REMOTE_DEBUG_PORT={recipe['port']} and "
+        f"CHROME_USER_DATA_DIR={recipe['profile_dir']}."
+    )
     lines.append(recipe["note"])
     lines.append(
         "For this first-run harvest, set AGENTCOOKIE=off so a sidecar can't mix "
@@ -171,31 +410,46 @@ def render_recipe(recipe: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Print or launch the host-gated box-chrome X login helper."
+    )
+    parser.add_argument("--exec", dest="do_exec", action="store_true")
+    parser.add_argument("--json", dest="as_json", action="store_true")
+    parser.add_argument("--profile-dir", dest="profile_dir", default=None)
+    parser.add_argument("--url", dest="url", default=LOGIN_URL)
+    return parser.parse_args(argv)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    do_exec = "--exec" in argv
-    as_json = "--json" in argv
+    args = _parse_args(list(sys.argv[1:] if argv is None else argv))
 
     config = env.get_config()  # default policy: no cookie reads, no discovery
-    recipe = build_recipe(config)
+    recipe = build_recipe(config, profile_dir=args.profile_dir, url=args.url)
 
-    if as_json:
+    if args.as_json:
         printable = {k: v for k, v in recipe.items() if k != "box_chrome"}
         printable["box_chrome_present"] = recipe["box_chrome"] is not None
         print(json.dumps(printable))
     else:
         print(render_recipe(recipe))
 
-    if do_exec:
+    if args.do_exec:
         # Refuse to spawn on a non-extras host, or when box-chrome is missing.
         if not recipe["applies"] or not recipe["command"]:
             return 0
         try:
-            os.makedirs(recipe["profile_dir"], exist_ok=True)
-        except OSError:
-            pass
+            verified_profile_dir = _ensure_private_profile_dir(recipe["profile_dir"])
+        except OSError as exc:
+            print(
+                f"[box-chrome login] unsafe or unusable profile directory: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
         launch_env = os.environ.copy()
         launch_env.update(recipe["env"])
+        launch_env["CHROME_USER_DATA_DIR"] = verified_profile_dir
         try:
             subprocess.Popen(recipe["command"], env=launch_env)
         except OSError as exc:
