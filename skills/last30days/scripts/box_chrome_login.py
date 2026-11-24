@@ -70,7 +70,10 @@ def _check_trusted_ancestor(anc: Path, *, is_immediate_parent: bool, uid: int) -
             raise OSError(f"Refusing symlink in profile path: {anc}")
         # Allow root-owned system symlinks strictly above the immediate parent
         # (e.g., macOS /var -> private/var) only when the target dir is also trusted.
-        st = os.stat(anc)
+        try:
+            st = os.stat(anc)
+        except FileNotFoundError as exc:
+            raise OSError(f"Refusing broken symlink in profile path: {anc}") from exc
     if not stat.S_ISDIR(st.st_mode):
         raise OSError(f"Ancestor in profile path is not a directory: {anc}")
     if os.name == "nt":
@@ -203,16 +206,43 @@ def _ensure_private_profile_dir(profile_dir: str) -> str:
     if not ancestors:
         raise OSError(f"Refusing root as profile directory: {profile_dir}")
 
-    # Validate existing ancestors from root downward and create missing per-user
-    # intermediate directories with explicit 0700 mode only beneath trusted parents.
+    # Phase 1 (read-only): validate every existing unresolved ancestor AND the
+    # full resolved ancestor chain of the deepest existing ancestor BEFORE
+    # creating any directories or changing any permissions.
+    deepest_existing: Optional[Path] = None
+    deepest_idx = -1
     for idx, anc in enumerate(ancestors):
         is_immediate = idx == len(ancestors) - 1
         try:
             _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
         except FileNotFoundError:
-            os.makedirs(str(anc), mode=0o700, exist_ok=True)
-            _harden_owned_dir_0700(anc, uid)
-            _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
+            break
+        deepest_existing = anc
+        deepest_idx = idx
+
+    if deepest_existing is None:
+        raise FileNotFoundError(
+            f"No existing ancestor directory for profile path: {profile_dir}"
+        )
+
+    resolved_existing = deepest_existing.resolve(strict=True)
+    resolved_chain = _ancestor_chain(resolved_existing) + [resolved_existing]
+    deepest_is_immediate = deepest_idx == len(ancestors) - 1
+    for idx, anc in enumerate(resolved_chain):
+        _check_trusted_ancestor(
+            anc,
+            is_immediate_parent=(deepest_is_immediate and idx == len(resolved_chain) - 1),
+            uid=uid,
+        )
+
+    # Phase 2: create any missing per-user intermediate directories beneath the
+    # verified existing prefix with explicit 0700 mode.
+    for idx in range(deepest_idx + 1, len(ancestors)):
+        anc = ancestors[idx]
+        is_immediate = idx == len(ancestors) - 1
+        os.makedirs(str(anc), mode=0o700, exist_ok=True)
+        _harden_owned_dir_0700(anc, uid)
+        _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
 
     try:
         os.lstat(target)

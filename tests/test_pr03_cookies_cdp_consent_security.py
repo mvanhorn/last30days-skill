@@ -1044,6 +1044,66 @@ class TestHigh083BoxChromeLoginProfileDir:
             profile_in_target.resolve(strict=True)
         )
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX pre-mutation resolved ancestor checks")
+    def test_exec_fails_before_creating_dirs_or_chmodding_behind_unsafe_root_symlink(self, tmp_path):
+        # Case 1: missing subdirectories behind a root-owned symlink into an unsafe
+        # resolved ancestor must NOT be created before rejection.
+        unsafe_parent = tmp_path / "unsafe-precheck-parent"
+        unsafe_parent.mkdir()
+        os.chmod(unsafe_parent, 0o777)
+        safe_target = unsafe_parent / "safe-target"
+        safe_target.mkdir(mode=0o700)
+        os.chmod(safe_target, 0o700)
+
+        root_link = tmp_path / "sys-precheck-link"
+        root_link.symlink_to(safe_target)
+        missing_parent = root_link / "should-not-be-created"
+        missing_profile = missing_parent / "x-chrome"
+
+        # Case 2: existing profile with loose mode (0o755) behind the unsafe resolved
+        # ancestor must NOT have its mode modified before rejection.
+        existing_parent = safe_target / "existing-parent"
+        existing_parent.mkdir(mode=0o700)
+        os.chmod(existing_parent, 0o700)
+        existing_profile = existing_parent / "x-chrome"
+        existing_profile.mkdir()
+        os.chmod(existing_profile, 0o755)
+        via_existing = root_link / "existing-parent" / "x-chrome"
+
+        real_lstat = os.lstat
+
+        def root_owned_symlink_lstat(path, *args, **kwargs):
+            st = real_lstat(path, *args, **kwargs)
+            if Path(path) == root_link:
+                fake = mock.MagicMock()
+                fake.st_mode = st.st_mode
+                fake.st_uid = 0
+                fake.st_dev = st.st_dev
+                fake.st_ino = st.st_ino
+                return fake
+            return st
+
+        try:
+            with mock.patch("os.lstat", side_effect=root_owned_symlink_lstat):
+                with pytest.raises(PermissionError):
+                    bcl._ensure_private_profile_dir(str(missing_profile))
+                assert not (safe_target / "should-not-be-created").exists()
+
+                with pytest.raises(PermissionError):
+                    bcl._ensure_private_profile_dir(str(via_existing))
+                assert stat.S_IMODE(real_lstat(existing_profile).st_mode) == 0o755
+        finally:
+            os.chmod(unsafe_parent, 0o700)
+            os.chmod(existing_profile, 0o700)
+
+    def test_configuration_md_documents_profile_dir_flag_and_trust_requirement(self):
+        cfg_doc = (
+            Path(__file__).resolve().parents[1] / "CONFIGURATION.md"
+        ).read_text(encoding="utf-8")
+        assert "box_chrome_login.py --exec" in cfg_doc
+        assert "--profile-dir" in cfg_doc
+        assert "trusted non-symlink" in cfg_doc
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode/uid checks")
     def test_exec_creates_0700_dir_and_tightens_loose_owner_dir(self, tmp_path):
         profile = tmp_path / "new-profile"
