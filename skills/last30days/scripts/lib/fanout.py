@@ -16,7 +16,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from . import fetch_memo, log, schema, youtube_yt
+from . import fetch_memo, http, log, schema, youtube_yt
 
 # Sub-runs hit the same upstream APIs as the main topic. Cap parallelism so a
 # 6-way fan-out does not stampede a single backend's rate limit.
@@ -57,11 +57,10 @@ def run_competitor_fanout(
         report = main_runner()
         return [(main_topic, report)]
 
-    # One clear for the whole comparison so entity sub-runs share the YouTube
-    # search cache and source fetch memo without inheriting a prior run's
-    # results in this process.
+    # One isolated fetch_memo scope for the whole comparison so entity sub-runs
+    # share in-run hits without inheriting a prior run's results or wiping a
+    # concurrent run's active fetches in this process.
     youtube_yt.reset_search_cache()
-    fetch_memo.reset()
 
     workers = min(len(competitors) + 1, MAX_PARALLEL_SUBRUNS)
 
@@ -77,9 +76,9 @@ def run_competitor_fanout(
     for entity in competitors:
         submissions.append((entity, lambda e=entity: competitor_runner(e)))
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    with fetch_memo.run_scope(), ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(_run_one, label, fn): label
+            http.submit_with_context(executor, _run_one, label, fn): label
             for label, fn in submissions
         }
         results: dict[str, schema.Report] = {}

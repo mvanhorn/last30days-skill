@@ -84,7 +84,11 @@ def reader_end_date(to_date: str, now: Optional[datetime] = None) -> date:
     """
     end = date.fromisoformat(to_date)
     now = now or _local_now()
-    if end == now.astimezone(timezone.utc).date() and now.date() < end:
+    try:
+        utc_date = now.astimezone(timezone.utc).date()
+    except OverflowError:
+        return end
+    if end == utc_date and now.date() < end:
         return now.date()
     return end
 
@@ -98,7 +102,11 @@ def is_today(value: str, now: Optional[datetime] = None) -> bool:
     """
     day = date.fromisoformat(value)
     now = now or _local_now()
-    return day in (now.astimezone(timezone.utc).date(), now.date())
+    try:
+        utc_date = now.astimezone(timezone.utc).date()
+    except OverflowError:
+        return day == now.date()
+    return day in (utc_date, now.date())
 
 
 def format_window(from_date: str, to_date: str, now: Optional[datetime] = None) -> str:
@@ -165,7 +173,7 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime]:
         if dt.tzinfo is not None:
             return dt.astimezone(timezone.utc)
         return dt.replace(tzinfo=timezone.utc)
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 

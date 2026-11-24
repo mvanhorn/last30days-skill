@@ -19,10 +19,12 @@ Reset once per command (``last30days.py``) and between tests (``conftest``).
 from __future__ import annotations
 
 from collections import OrderedDict
+import contextlib
+import contextvars
 import copy
 import threading
 import time
-from typing import Any, Callable, Hashable, TypeVar
+from typing import Any, Callable, Hashable, Iterator, TypeVar
 
 from . import health, http
 
@@ -46,16 +48,47 @@ class _Slot:
         self.outcome: tuple[bool, Any, list] | None = None
 
 
-_CACHE: OrderedDict[Hashable, Any] = OrderedDict()
-_INFLIGHT: dict[Hashable, _Slot] = {}
-_LOCK = threading.Lock()
+class _MemoStore:
+    __slots__ = ("cache", "inflight", "lock")
+
+    def __init__(self) -> None:
+        self.cache: OrderedDict[Hashable, Any] = OrderedDict()
+        self.inflight: dict[Hashable, _Slot] = {}
+        self.lock = threading.Lock()
+
+
+_DEFAULT_STORE = _MemoStore()
+_CACHE: OrderedDict[Hashable, Any] = _DEFAULT_STORE.cache
+_INFLIGHT: dict[Hashable, _Slot] = _DEFAULT_STORE.inflight
+_LOCK = _DEFAULT_STORE.lock
+
+_CURRENT_STORE: contextvars.ContextVar[_MemoStore | None] = contextvars.ContextVar(
+    "fetch_memo_store", default=None,
+)
+
+
+def _active_store() -> _MemoStore:
+    store = _CURRENT_STORE.get()
+    return store if store is not None else _DEFAULT_STORE
+
+
+@contextlib.contextmanager
+def run_scope() -> Iterator[_MemoStore]:
+    """Scope fetch memo state to a single top-level run without touching concurrent runs."""
+    store = _MemoStore()
+    token = _CURRENT_STORE.set(store)
+    try:
+        yield store
+    finally:
+        _CURRENT_STORE.reset(token)
 
 
 def reset() -> None:
-    """Forget cached and in-flight fetches. Called at run/fanout/enrichment boundaries and by tests."""
-    with _LOCK:
-        _CACHE.clear()
-        _INFLIGHT.clear()
+    """Forget cached and in-flight fetches in the active store."""
+    store = _active_store()
+    with store.lock:
+        store.cache.clear()
+        store.inflight.clear()
 
 
 def _always(_value: Any) -> bool:
@@ -89,21 +122,22 @@ def fetch_once(
     callers unblock promptly with :class:`MemoWaitTimeout`. Every caller gets
     its own copy.
     """
+    store = _active_store()
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
         if cancel is not None and cancel.is_set():
             raise MemoWaitTimeout("fetch cancelled")
-        with _LOCK:
-            hit = key in _CACHE
+        with store.lock:
+            hit = key in store.cache
             if hit:
-                _CACHE.move_to_end(key)
-                cached = _CACHE[key]
+                store.cache.move_to_end(key)
+                cached = store.cache[key]
             else:
-                slot = _INFLIGHT.get(key)
+                slot = store.inflight.get(key)
                 owner = slot is None
                 if owner:
                     slot = _Slot()
-                    _INFLIGHT[key] = slot
+                    store.inflight[key] = slot
         if hit:
             return copy.deepcopy(cached)
         if owner:
@@ -137,18 +171,18 @@ def fetch_once(
         # owner's own value, which the owner's caller may mutate.
         shared = copy.deepcopy(value) if ok else value
         slot.outcome = (ok, shared, list(recorded))
-        with _LOCK:
+        with store.lock:
             # Slot identity guards against a reset() during the fetch.
-            if clean and _INFLIGHT.get(key) is slot:
+            if clean and store.inflight.get(key) is slot:
                 if MAX_ENTRIES > 0:
-                    _CACHE[key] = shared
-                    _CACHE.move_to_end(key)
-                    while len(_CACHE) > MAX_ENTRIES:
-                        _CACHE.popitem(last=False)
+                    store.cache[key] = shared
+                    store.cache.move_to_end(key)
+                    while len(store.cache) > MAX_ENTRIES:
+                        store.cache.popitem(last=False)
     finally:
-        with _LOCK:
-            if _INFLIGHT.get(key) is slot:
-                _INFLIGHT.pop(key)
+        with store.lock:
+            if store.inflight.get(key) is slot:
+                store.inflight.pop(key)
         slot.event.set()
     if not ok:
         raise value

@@ -469,12 +469,14 @@ class RetrievalBundle:
             return
         existing = self.detail_by_source.get(source)
         if existing:
-            if detail in existing:
+            existing_clauses = [clause.strip() for clause in existing.split(";") if clause.strip()]
+            incoming_clauses = [clause.strip() for clause in detail.split(";") if clause.strip()]
+            if set(incoming_clauses).issubset(existing_clauses):
                 detail = existing
-            elif existing in detail:
-                detail = detail
+            elif set(existing_clauses).issubset(incoming_clauses):
+                detail = "; ".join(dict.fromkeys(incoming_clauses))
             else:
-                detail = f"{existing}; {detail}"
+                detail = "; ".join(dict.fromkeys(existing_clauses + incoming_clauses))
         self.detail_by_source[source] = detail
         if state:
             prev_lane_state = self.lane_state_by_source.get(source)

@@ -676,13 +676,18 @@ def _sanitize_plan(
         source_weights = _default_source_weights(_infer_intent(topic), eligible_sources)
     # Ensure all eligible sources are available for subqueries. The LLM may
     # assign high weights to its preferred sources, but omitted sources still
-    # participate with base weight so retrieval can overfetch and let fusion
-    # decide quality.
+    # participate with the mean positive weight of the existing map (not raw
+    # 1.0, which would outweigh already-normalized weights on renormalization).
+    positive_weights = [weight for weight in source_weights.values() if weight > 0]
+    default_weight = (
+        (sum(positive_weights) / len(positive_weights))
+        if positive_weights else 1.0
+    )
     for source in eligible_sources:
-        source_weights.setdefault(source, 1.0)
+        source_weights.setdefault(source, default_weight)
     if intent_hint in DEFAULT_INTENT_CAPABILITIES and depth != "quick":
         for source in _default_sources_for_intent(intent_hint, eligible_sources):
-            source_weights.setdefault(source, 1.0)
+            source_weights.setdefault(source, default_weight)
     source_weights = _normalize_weights(source_weights)
 
     subqueries: list[schema.SubQuery] = []

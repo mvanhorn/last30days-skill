@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import copy
+import functools
 from collections.abc import Callable, Iterable, Iterator, Mapping
 import heapq
 import math
@@ -417,11 +419,12 @@ class _DaemonExecutor:
         return promoted
 
     def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
+        ctx = contextvars.copy_context()
         with self._cond:
             if self._shutdown:
                 raise RuntimeError("cannot schedule new futures after shutdown")
             future: Future = Future()
-            self._pending.append((future, fn, args, kwargs))
+            self._pending.append((future, ctx.run, (fn, *args), kwargs))
             self._ensure_workers_locked()
             self._cond.notify()
             return future
@@ -429,18 +432,19 @@ class _DaemonExecutor:
     def submit_delayed(
         self, ready_at: float, fn: Callable[..., Any], /, *args: Any, **kwargs: Any,
     ) -> Future:
+        ctx = contextvars.copy_context()
         with self._cond:
             if self._shutdown:
                 raise RuntimeError("cannot schedule new futures after shutdown")
             future: Future = Future()
             if ready_at <= time.monotonic():
-                self._priority_pending.append((future, fn, args, kwargs))
+                self._priority_pending.append((future, ctx.run, (fn, *args), kwargs))
                 self._ensure_workers_locked()
                 self._cond.notify()
             else:
                 seq = self._next_seq
                 self._next_seq += 1
-                heapq.heappush(self._delayed, (ready_at, seq, future, fn, args, kwargs))
+                heapq.heappush(self._delayed, (ready_at, seq, future, ctx.run, (fn, *args), kwargs))
                 self._ensure_workers_locked()
                 self._cond.notify_all()
             return future
@@ -1612,7 +1616,6 @@ def enrich_nominations(
     # internal_subrun passes write nothing to disk (no save, no library sync,
     # no store), and every fetch layer inside run() carries its own timeout.
     youtube_yt.reset_search_cache()
-    fetch_memo.reset()
     enriched: dict[str, EnrichedTopic] = {}
     results_queue: queue.Queue[tuple[Nomination, schema.Report | None, Exception | None]] = queue.Queue()
     slots = threading.Semaphore(max(1, max_workers))
@@ -1627,13 +1630,15 @@ def enrich_nominations(
             except Exception as exc:  # noqa: BLE001 - containment is the contract
                 results_queue.put((nomination, None, exc))
 
-    for nomination in nominations:
-        threading.Thread(
-            target=_worker,
-            args=(nomination,),
-            name=f"discover-enrich-{nomination.name[:32]}",
-            daemon=True,
-        ).start()
+    with fetch_memo.run_scope():
+        for nomination in nominations:
+            ctx = contextvars.copy_context()
+            threading.Thread(
+                target=ctx.run,
+                args=(_worker, nomination),
+                name=f"discover-enrich-{nomination.name[:32]}",
+                daemon=True,
+            ).start()
 
     def _record_result(
         nomination: Nomination,
@@ -1784,7 +1789,6 @@ def _discovery_sweep(
     Shared verbatim by ``run_discover`` (one-shot) and
     ``run_discover_nominate`` (protocol leg 1) so the two paths can never
     drift on what a sweep means."""
-    fetch_memo.reset()
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
     requested = normalize_requested_sources(requested_sources)
     unsupported = sorted(set(requested or []) - set(DISCOVERY_SOURCES))
@@ -1822,18 +1826,19 @@ def _discovery_sweep(
         notes=["discover-mode", "listing-sweep"],
     )
 
-    bundle = nominate_candidates(
-        plan,
-        from_date=from_date,
-        to_date=to_date,
-        depth=depth,
-        mock=mock,
-        config=config,
-        lookback_days=lookback_days,
-        # Global trending has no keyword to gate against - the river feeds' own
-        # hot ranking is the signal and the confidence floor culls the junk.
-        keyword_gate=not global_mode,
-    )
+    with fetch_memo.run_scope():
+        bundle = nominate_candidates(
+            plan,
+            from_date=from_date,
+            to_date=to_date,
+            depth=depth,
+            mock=mock,
+            config=config,
+            lookback_days=lookback_days,
+            # Global trending has no keyword to gate against - the river feeds' own
+            # hot ranking is the signal and the confidence floor culls the junk.
+            keyword_gate=not global_mode,
+        )
 
     source_status: dict[str, schema.SourceOutcome] = {}
     for source in DISCOVERY_SOURCES:
@@ -2747,6 +2752,18 @@ def _load_library_context(
     return contexts, None
 
 
+def _scoped_fetch_memo(fn: Callable[..., schema.Report]) -> Callable[..., schema.Report]:
+    """Isolate top-level ``pipeline.run`` calls in their own ``fetch_memo.run_scope()``."""
+    @functools.wraps(fn)
+    def _wrapped(*args: Any, **kwargs: Any) -> schema.Report:
+        if kwargs.get("internal_subrun"):
+            return fn(*args, **kwargs)
+        with fetch_memo.run_scope():
+            return fn(*args, **kwargs)
+    return _wrapped
+
+
+@_scoped_fetch_memo
 def run(
     *,
     topic: str,
@@ -2797,7 +2814,6 @@ def run(
     # parallel entity sub-runs can still share in-run hits.
     if not internal_subrun:
         youtube_yt.reset_search_cache()
-        fetch_memo.reset()
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
     local_corpus_drill = config.get("_drill_mode") and requested_sources == ["corpus"]

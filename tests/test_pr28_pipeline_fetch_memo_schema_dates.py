@@ -100,8 +100,9 @@ def _make_report(
 
 
 class TestHigh014FetchMemoLifecycleAndEviction:
-    def test_pipeline_run_resets_fetch_memo_standalone_but_preserves_internal_subrun(self):
-        fetch_memo.fetch_once(("x", "stale-key"), lambda: {"stale": True}, timeout=1)
+    def test_pipeline_run_isolates_fetch_memo_standalone_and_shares_internal_subrun(self):
+        # Populate the ambient default store before any run starts.
+        fetch_memo.fetch_once(("x", "stale-key"), lambda: {"gen": "ambient"}, timeout=1)
         assert ("x", "stale-key") in fetch_memo._CACHE
 
         plan = {
@@ -118,8 +119,17 @@ class TestHigh014FetchMemoLifecycleAndEviction:
             ],
             "source_weights": {"reddit": 1.0},
         }
-        # Standalone run clears stale cross-run cache entries.
-        with mock.patch.object(pipeline, "_retrieve_stream", return_value=([], {})):
+        seen_standalone: list[dict] = []
+
+        def _retrieve_standalone(**_kwargs):
+            seen_standalone.append(
+                fetch_memo.fetch_once(("x", "stale-key"), lambda: {"gen": "fresh"}, timeout=1)
+            )
+            return [], {}
+
+        # Standalone run enters an isolated run_scope: it fetches fresh instead
+        # of seeing the ambient entry AND does not wipe the ambient store.
+        with mock.patch.object(pipeline, "_retrieve_stream", side_effect=_retrieve_standalone):
             pipeline.run(
                 topic="test topic",
                 config={},
@@ -130,24 +140,106 @@ class TestHigh014FetchMemoLifecycleAndEviction:
                 web_backend="none",
                 internal_subrun=False,
             )
-        assert ("x", "stale-key") not in fetch_memo._CACHE
+        assert seen_standalone == [{"gen": "fresh"}]
+        assert fetch_memo._CACHE[("x", "stale-key")] == {"gen": "ambient"}
 
-        # Internal subrun preserves shared in-run memo entries.
-        fetch_memo.fetch_once(("x", "shared-in-run"), lambda: {"shared": True}, timeout=1)
-        with mock.patch.object(pipeline, "_retrieve_stream", return_value=([], {})):
+        # Internal subrun shares the caller's active run_scope.
+        seen_subrun: list[dict] = []
+
+        def _retrieve_subrun(**_kwargs):
+            seen_subrun.append(
+                fetch_memo.fetch_once(
+                    ("x", "shared-in-run"), lambda: {"gen": "should-not-run"}, timeout=1
+                )
+            )
+            return [], {}
+
+        with fetch_memo.run_scope():
+            fetch_memo.fetch_once(("x", "shared-in-run"), lambda: {"gen": "shared"}, timeout=1)
+            with mock.patch.object(pipeline, "_retrieve_stream", side_effect=_retrieve_subrun):
+                pipeline.run(
+                    topic="test topic",
+                    config={},
+                    depth="quick",
+                    requested_sources=["reddit"],
+                    mock=True,
+                    external_plan=plan,
+                    web_backend="none",
+                    internal_subrun=True,
+                )
+        assert seen_subrun == [{"gen": "shared"}]
+
+    def test_concurrent_overlapping_pipeline_runs_isolate_fetch_memo_and_sequential_start_fresh(self):
+        plan = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "sq1",
+                    "search_query": "topic",
+                    "ranking_query": "topic",
+                    "sources": ["reddit"],
+                }
+            ],
+            "source_weights": {"reddit": 1.0},
+        }
+        both_started = threading.Barrier(2, timeout=5)
+        b_finished = threading.Event()
+        fetch_counts = {"A": 0, "B": 0, "C": 0}
+        lock = threading.Lock()
+        observed: dict[str, list[dict]] = {"A": [], "B": [], "C": []}
+
+        def _retrieve(**kwargs):
+            run_id = kwargs["topic"]
+
+            def _fetch():
+                with lock:
+                    fetch_counts[run_id] += 1
+                    return {"run": run_id, "n": fetch_counts[run_id]}
+
+            first = fetch_memo.fetch_once(("shared", "key"), _fetch, timeout=5)
+            observed[run_id].append(first)
+            if run_id in ("A", "B"):
+                both_started.wait()
+                if run_id == "A":
+                    # Wait until concurrent run B has populated its own scope and exited.
+                    assert b_finished.wait(timeout=5)
+                # Second lookup inside the same run must still hit this run's own entry
+                # (neither cleared nor overwritten by the overlapping run).
+                second = fetch_memo.fetch_once(("shared", "key"), _fetch, timeout=5)
+                observed[run_id].append(second)
+            return [], {}
+
+        def _invoke(run_id: str) -> None:
             pipeline.run(
-                topic="test topic",
+                topic=run_id,
                 config={},
                 depth="quick",
                 requested_sources=["reddit"],
                 mock=True,
                 external_plan=plan,
                 web_backend="none",
-                internal_subrun=True,
+                internal_subrun=False,
             )
-        assert ("x", "shared-in-run") in fetch_memo._CACHE
+            if run_id == "B":
+                b_finished.set()
 
-    def test_competitor_fanout_resets_fetch_memo_before_parallel_subruns(self):
+        with mock.patch.object(pipeline, "_retrieve_stream", side_effect=_retrieve):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fa = pool.submit(_invoke, "A")
+                fb = pool.submit(_invoke, "B")
+                fa.result(timeout=10)
+                fb.result(timeout=10)
+            # Sequential run C starts fresh without seeing A or B's entries.
+            _invoke("C")
+
+        assert fetch_counts == {"A": 1, "B": 1, "C": 1}
+        assert observed["A"] == [{"run": "A", "n": 1}, {"run": "A", "n": 1}]
+        assert observed["B"] == [{"run": "B", "n": 1}, {"run": "B", "n": 1}]
+        assert observed["C"] == [{"run": "C", "n": 1}]
+
+    def test_competitor_fanout_scopes_fetch_memo_for_parallel_subruns_without_wiping_ambient(self):
         stale_calls = 0
 
         def _stale():
@@ -190,17 +282,25 @@ class TestHigh014FetchMemoLifecycleAndEviction:
             competitor_runner=_subrun,
         )
         assert len(results) == 2
-        # Stale entry was cleared, and the two parallel subruns coalesced onto one fresh fetch.
+        # Parallel subruns ignored stale ambient entry and coalesced onto one fresh fetch.
         assert fresh_calls == 1
+        # Ambient store outside fanout was never wiped.
+        assert fetch_memo._CACHE[("digg", "shared")] == {"gen": "stale"}
 
-    def test_enrich_nominations_resets_fetch_memo_before_subruns(self):
+    def test_enrich_nominations_scopes_fetch_memo_across_subruns(self):
         fetch_memo.fetch_once(("polymarket", "stale"), lambda: {"old": 1}, timeout=1)
         assert ("polymarket", "stale") in fetch_memo._CACHE
 
-        seen_present: list[bool] = []
+        fresh_calls = 0
+        seen: list[dict] = []
+
+        def _fresh():
+            nonlocal fresh_calls
+            fresh_calls += 1
+            return {"fresh": fresh_calls}
 
         def _fake_run(**_kwargs):
-            seen_present.append(("polymarket", "stale") in fetch_memo._CACHE)
+            seen.append(fetch_memo.fetch_once(("polymarket", "stale"), _fresh, timeout=5))
             return _make_report(
                 subqueries=[
                     schema.SubQuery(
@@ -213,30 +313,41 @@ class TestHigh014FetchMemoLifecycleAndEviction:
                 items_by_source={},
             )
 
-        nomination = pipeline.Nomination(
-            name="Test Nomination",
-            seed_score=50.0,
-            items=[],
-            summary="summary",
-        )
+        nominations = [
+            pipeline.Nomination(name="Nom 1", seed_score=50.0, items=[], summary="s1"),
+            pipeline.Nomination(name="Nom 2", seed_score=40.0, items=[], summary="s2"),
+        ]
         with mock.patch.object(pipeline, "run", side_effect=_fake_run):
             enriched = pipeline.enrich_nominations(
-                [nomination], config={}, mock=True, max_workers=1,
+                nominations, config={}, mock=True, max_workers=1,
             )
-        assert len(enriched) == 1
-        assert seen_present == [False]
+        assert len(enriched) == 2
+        # Both nominations shared one fresh fetch in the batch scope (ignoring ambient stale).
+        assert fresh_calls == 1
+        assert seen == [{"fresh": 1}, {"fresh": 1}]
+        assert fetch_memo._CACHE[("polymarket", "stale")] == {"old": 1}
 
-    def test_discovery_sweep_resets_fetch_memo(self):
+    def test_discovery_sweep_isolates_fetch_memo(self):
         fetch_memo.fetch_once(("x", "old-sweep"), lambda: {"old": True}, timeout=1)
         assert ("x", "old-sweep") in fetch_memo._CACHE
 
-        pipeline.run_discover_nominate(
-            domain="ai",
-            config={},
-            requested_sources=["reddit"],
-            mock=True,
-        )
-        assert ("x", "old-sweep") not in fetch_memo._CACHE
+        seen: list[dict] = []
+
+        def _fake_fetch(*_args, **_kwargs):
+            seen.append(
+                fetch_memo.fetch_once(("x", "old-sweep"), lambda: {"old": False}, timeout=1)
+            )
+            return [], None
+
+        with mock.patch.object(pipeline, "_fetch_discovery_source", side_effect=_fake_fetch):
+            pipeline.run_discover_nominate(
+                domain="ai",
+                config={},
+                requested_sources=["reddit"],
+                mock=True,
+            )
+        assert seen == [{"old": False}]
+        assert fetch_memo._CACHE[("x", "old-sweep")] == {"old": True}
 
     def test_lru_eviction_bounds_cache_and_keeps_recently_used_entries(self, monkeypatch):
         monkeypatch.setattr(fetch_memo, "MAX_ENTRIES", 3)
@@ -594,6 +705,70 @@ class TestHigh022PostPlanWeightNormalization:
         assert plan.subqueries[0].weight == pytest.approx(1.0)
         assert plan.source_weights["perplexity"] == pytest.approx(1.0)
 
+    def test_sanitize_plan_and_backfill_use_planned_mean_and_preserve_explicit_weights(self):
+        from lib import planner
+
+        raw = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "source_weights": {source: 0.1 for source in self.TEN_SOURCES},
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "Acme Corp",
+                    "ranking_query": "What is new with Acme Corp?",
+                    "sources": list(self.TEN_SOURCES),
+                    "weight": 1.0,
+                }
+            ],
+        }
+        available = [*self.TEN_SOURCES, "digg"]
+        plan = planner._sanitize_plan(
+            raw, "Acme Corp", available, None, "default", honor_plan_sources=True,
+        )
+        pipeline._ensure_unplanned_lanes_in_host_plan(plan, available, installed=True)
+
+        assert "digg" in plan.subqueries[0].sources
+        assert sum(plan.source_weights.values()) == pytest.approx(1.0)
+        assert plan.source_weights["digg"] == pytest.approx(1.0 / 11)
+        assert plan.source_weights["reddit"] == pytest.approx(1.0 / 11)
+
+        # Explicit unequal weights are preserved while omitted eligible source gets their mean.
+        weighted_raw = {
+            **raw,
+            "source_weights": {"reddit": 0.6, "x": 0.4},
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "Acme Corp",
+                    "ranking_query": "What is new with Acme Corp?",
+                    "sources": ["reddit", "x"],
+                    "weight": 1.0,
+                }
+            ],
+        }
+        weighted_plan = planner._sanitize_plan(
+            weighted_raw, "Acme Corp", ["reddit", "x", "digg"], None, "default",
+            honor_plan_sources=True,
+        )
+        # mean(0.6, 0.4) = 0.5 -> normalized [0.6/1.5, 0.4/1.5, 0.5/1.5]
+        assert weighted_plan.source_weights["reddit"] == pytest.approx(0.6 / 1.5)
+        assert weighted_plan.source_weights["x"] == pytest.approx(0.4 / 1.5)
+        assert weighted_plan.source_weights["digg"] == pytest.approx(0.5 / 1.5)
+
+        # Explicit weight for a backfilled source in raw plan is respected.
+        explicit_raw = {
+            **weighted_raw,
+            "source_weights": {"reddit": 0.6, "x": 0.2, "digg": 0.2},
+        }
+        explicit_plan = planner._sanitize_plan(
+            explicit_raw, "Acme Corp", ["reddit", "x", "digg"], None, "default",
+            honor_plan_sources=True,
+        )
+        assert explicit_plan.source_weights["reddit"] == pytest.approx(0.6)
+        assert explicit_plan.source_weights["digg"] == pytest.approx(0.2)
+
 
 # ---------------------------------------------------------------------------
 # HIGH-023: YouTube SSH host routing without local yt-dlp binary
@@ -809,6 +984,66 @@ class TestHigh023YoutubeSshHostAvailabilityAndStream:
         ytdlp_search.assert_not_called()
         assert items == []
 
+    def test_youtube_search_cache_isolates_different_ssh_hosts_and_inflight_slots(
+        self, monkeypatch,
+    ):
+        import json
+        from lib import subproc
+
+        youtube_yt.reset_search_cache()
+        monkeypatch.setattr(youtube_yt.shutil, "which", lambda _cmd: "/usr/bin/yt-dlp")
+        monkeypatch.delenv("LAST30DAYS_YOUTUBE_SSH_HOST", raising=False)
+
+        calls: list[str | None] = []
+        both_inflight = threading.Barrier(2, timeout=5)
+        lock = threading.Lock()
+
+        def _fake_run(cmd, **_kwargs):
+            host = youtube_yt._ytdlp_ssh_host()
+            with lock:
+                calls.append(host)
+            if host in ("host-a", "host-b"):
+                both_inflight.wait()
+            label = host or "local"
+            payload = json.dumps(
+                {
+                    "id": f"vid_{label}",
+                    "title": f"Acme from {label}",
+                    "upload_date": "20260320",
+                    "view_count": 100,
+                    "like_count": 10,
+                    "comment_count": 1,
+                }
+            )
+            return subproc.SubprocResult(returncode=0, stdout=payload + "\n", stderr="")
+
+        def _run_search(host: str | None):
+            with youtube_yt.ssh_host_scope(host):
+                return youtube_yt.search_youtube(
+                    "Acme", "2026-03-01", "2026-03-31", depth="quick",
+                )
+
+        try:
+            with mock.patch.object(youtube_yt.subproc, "run_with_timeout", side_effect=_fake_run):
+                # Concurrent in-flight calls on host-a vs host-b must not coalesce onto each other.
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    fa = pool.submit(_run_search, "host-a")
+                    fb = pool.submit(_run_search, "host-b")
+                    res_a = fa.result(timeout=5)
+                    res_b = fb.result(timeout=5)
+                # Local call must also miss both SSH cache entries.
+                res_local = _run_search(None)
+                # Repeating host-a hits host-a's cached result without another subprocess call.
+                res_a_cached = _run_search("host-a")
+
+            assert [i["video_id"] for i in res_a["items"]] == ["vid_host-a"]
+            assert [i["video_id"] for i in res_b["items"]] == ["vid_host-b"]
+            assert [i["video_id"] for i in res_local["items"]] == ["vid_local"]
+            assert [i["video_id"] for i in res_a_cached["items"]] == ["vid_host-a"]
+            assert sorted(c or "local" for c in calls) == ["host-a", "host-b", "local"]
+        finally:
+            youtube_yt.reset_search_cache()
+
 
 # ---------------------------------------------------------------------------
 # HIGH-031: RetrievalBundle.record_detail substring preservation & specificity
@@ -839,6 +1074,31 @@ class TestHigh031RecordDetailPreservationAndSpecificity:
 
         assert bundle.detail_by_source["reddit"] == full
         assert bundle.source_status["reddit"].detail == full
+
+    def test_distinct_failure_counts_with_shared_suffix_are_both_preserved(self):
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("reddit")
+        twelve = "12 sub-requests rate-limited (HTTP 429)"
+        two = "2 sub-requests rate-limited (HTTP 429)"
+
+        bundle.record_detail("reddit", twelve, state=schema.RATE_LIMITED)
+        bundle.record_detail("reddit", two, state=schema.RATE_LIMITED)
+        assert bundle.detail_by_source["reddit"] == f"{twelve}; {two}"
+        assert bundle.source_status["reddit"].detail == f"{twelve}; {two}"
+
+        # Reverse order preserves both clauses too.
+        bundle_rev = schema.RetrievalBundle()
+        bundle_rev.mark_attempted("reddit")
+        bundle_rev.record_detail("reddit", two, state=schema.RATE_LIMITED)
+        bundle_rev.record_detail("reddit", twelve, state=schema.RATE_LIMITED)
+        assert bundle_rev.detail_by_source["reddit"] == f"{two}; {twelve}"
+
+        # Overlapping multi-clause details deduplicate exact clauses without losing distinct ones.
+        bundle_overlap = schema.RetrievalBundle()
+        bundle_overlap.mark_attempted("reddit")
+        bundle_overlap.record_detail("reddit", "clause A; clause B")
+        bundle_overlap.record_detail("reddit", "clause B; clause C")
+        assert bundle_overlap.detail_by_source["reddit"] == "clause A; clause B; clause C"
 
     def test_distinct_detail_appends_and_exact_repeat_does_not_duplicate(self):
         bundle = schema.RetrievalBundle()
@@ -1208,6 +1468,10 @@ class TestHigh034And035DatesParsing:
             -1e20,
             10**400,
             -(10**400),
+            "9999-12-31 23:59:59-01:00",
+            "9999-12-31T23:59:59-01:00",
+            "0001-01-01 00:00:00+01:00",
+            "0001-01-01T00:00:00+01:00",
             None,
             "",
             "   ",
@@ -1215,6 +1479,14 @@ class TestHigh034And035DatesParsing:
     )
     def test_parse_date_returns_none_on_overflow_nonfinite_and_bool(self, bad_value):
         assert dates.parse_date(bad_value) is None
+
+    def test_reader_end_date_and_is_today_survive_astimezone_overflow(self):
+        from datetime import date, timedelta
+
+        boundary_now = datetime(9999, 12, 31, 23, 30, tzinfo=timezone(timedelta(hours=-2)))
+        assert dates.reader_end_date("2026-04-01", now=boundary_now) == date(2026, 4, 1)
+        assert dates.is_today("2026-04-01", now=boundary_now) is False
+        assert dates.is_today("9999-12-31", now=boundary_now) is True
 
     @pytest.mark.parametrize(
         "bad_ts",
