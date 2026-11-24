@@ -166,12 +166,7 @@ def infer_query_intent(topic: str) -> str:
     return "breaking_news"
 
 
-# Mixed-case brand token (requires at least one lowercase letter so ALL-CAPS
-# generic acronyms like "VPN", "CRM", "AI" never form false phrases such as
-# "Best VPN" or "Top CRM") plus optional non-leading model/version suffix tokens
-# like "R1", "V3", "M4" (e.g. "DeepSeek R1").
-_COMPOUND_BRAND_TOKEN = r'(?:[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*|[a-z]+[A-Z][A-Za-z0-9]*)'
-_COMPOUND_VERSION_TOKEN = r'[A-Z][0-9][A-Za-z0-9]*'
+_COMPOUND_BRAND_TOKEN = r'(?:[A-Z][A-Za-z0-9]*|[a-z]+[A-Z][A-Za-z0-9]*)'
 _COMPOUND_BRAND_TOKEN_RE = re.compile(rf'^{_COMPOUND_BRAND_TOKEN}$')
 # Unicode- and symbol-safe boundaries: reject mid-word slices across non-ASCII
 # letters (\w), dotted brands (Next.JS), straight/curly apostrophes (O'Reilly,
@@ -179,12 +174,11 @@ _COMPOUND_BRAND_TOKEN_RE = re.compile(rf'^{_COMPOUND_BRAND_TOKEN}$')
 # (C++, C#), while still allowing trailing sentence punctuation like periods
 # not followed by a word character.
 _COMPOUND_CAPITALIZED_RUN_RE = re.compile(
-    rf"(?<![\w'.\u2019+#&-]){_COMPOUND_BRAND_TOKEN}"
-    rf"(?:\s+(?:{_COMPOUND_BRAND_TOKEN}|{_COMPOUND_VERSION_TOKEN}))+"
+    rf"(?<![\w'.\u2019+#&-])(?:{_COMPOUND_BRAND_TOKEN}\s+)+{_COMPOUND_BRAND_TOKEN}"
     rf"(?![\w'\u2019+#&-]|\.\w)"
 )
 COMPOUND_ENTITY_PHRASE_RE = re.compile(
-    rf"^{_COMPOUND_BRAND_TOKEN}(?:\s+(?:{_COMPOUND_BRAND_TOKEN}|{_COMPOUND_VERSION_TOKEN})){{1,2}}$"
+    rf"^{_COMPOUND_BRAND_TOKEN}(?:\s+{_COMPOUND_BRAND_TOKEN}){{1,2}}$"
 )
 _COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
     'i', 'you', 'we', 'my', 'your', 'our', 'me', 'can', 'do', 'did',
@@ -197,8 +191,8 @@ _COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
     'practice', 'production',
     'case', 'cases',
 })
-# Question, action, and research/meta words that never open a brand name and
-# are always trimmed from the start of a capitalized run.
+# Question and research/meta words that never open a brand name and are always
+# trimmed from the start of a capitalized run.
 _UNAMBIGUOUS_LEADING_PROMPT_WORDS = frozenset({
     'how', 'what', 'which', 'who', 'why', 'when', 'where',
     'does', 'do', 'did', 'should', 'could', 'would', 'can',
@@ -206,7 +200,6 @@ _UNAMBIGUOUS_LEADING_PROMPT_WORDS = frozenset({
     'i', 'you', 'we', 'my', 'your', 'our', 'me',
     'using', 'uses', 'use',
     'latest', 'trending', 'trendiest', 'hottest', 'popular', 'viral',
-    'install', 'installing', 'configure', 'deploy', 'setup', 'debug', 'fix',
     'compare', 'versus', 'vs', 'comparison',
     'alternative', 'alternatives',
     'review', 'reviews', 'guide', 'tutorial', 'tutorials',
@@ -308,8 +301,16 @@ def extract_compound_terms(topic: str) -> List[str]:
             words.pop(0)
         while words and words[-1].lower() in _COMPOUND_EDGE_NOISE:
             words.pop()
-        if 2 <= len(words) <= 3 and not all(
-            w.lower() in _COMPOUND_EDGE_NOISE for w in words
+        if (
+            len(words) == 2
+            and words[0].lower() in _COMPOUND_EDGE_NOISE
+            and words[1].isupper()
+        ):
+            continue
+        if (
+            2 <= len(words) <= 3
+            and not all(len(w) == 1 for w in words)
+            and not all(w.lower() in _COMPOUND_EDGE_NOISE for w in words)
         ):
             phrase = " ".join(words)
             if phrase not in terms:
