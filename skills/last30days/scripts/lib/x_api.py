@@ -581,6 +581,7 @@ def _run_search(
     label: str,
     deadline: Optional[float] = None,
     cancel: Any = None,
+    deadline_is_warning: bool = False,
 ) -> Dict[str, Any]:
     """Full-archive search with the recent-search fallback.
 
@@ -602,21 +603,35 @@ def _run_search(
         "tweet.fields": "created_at,public_metrics,note_tweet,entities",
         "user.fields": "username",
     }
-    if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
-        _log(f"{label}: lane budget ({LANE_BUDGET_SECONDS:.0f}s) exhausted before the search started")
-        return {"items": [], "warning": DEADLINE_DETAIL}
+    cancelled = cancel is not None and cancel.is_set()
+    expired = deadline is not None and time.monotonic() >= deadline
+    if cancelled or expired:
+        if deadline_is_warning and not cancelled:
+            _log(f"{label}: lane budget ({LANE_BUDGET_SECONDS:.0f}s) exhausted before the search started")
+            return {"items": [], "warning": DEADLINE_DETAIL}
+        _log(f"{label}: {ERR_TIMED_OUT}")
+        return {"items": [], "error": ERR_TIMED_OUT}
     _log(f"Searching: {label}")
     warnings: List[str] = []
     if deadline is None:
         deadline = time.monotonic() + DEADLINE_SECONDS
     try:
-        response = _search_pages(token, _SEARCH_ALL_URL, params, count, deadline, **({"cancel": cancel} if cancel is not None else {}))
+        # Full-archive search returns HTTP 403 on Basic/Pro projects that are
+        # not enrolled; exclude that probe 403 from http._failure_sink so a
+        # clean recent-search fallback is never misreported as AUTH_FAILED.
+        # Non-enrollment 403s still surface via ERR_FORBIDDEN below.
+        with http.expected_misses(403):
+            response = _search_pages(token, _SEARCH_ALL_URL, params, count, deadline, **({"cancel": cancel} if cancel is not None else {}))
     except _XApiFailure as exc:
         if not exc.enrollment:
             _log(f"{label}: {exc}")
             return {"items": [], "error": str(exc)}
-        _log(f"{label}: full-archive search not enrolled; retrying recent search ({TRUNCATION_DETAIL})")
         floor = _recent_floor()
+        truncated_window = floor > start
+        if truncated_window:
+            _log(f"{label}: full-archive search not enrolled; retrying recent search ({TRUNCATION_DETAIL})")
+        else:
+            _log(f"{label}: full-archive search not enrolled; retrying recent search")
         if floor >= end:
             # The whole window predates what recent search can reach: an
             # empty, truncated result, never a start_time after end_time.
@@ -628,7 +643,8 @@ def _run_search(
         except _XApiFailure as exc2:
             _log(f"{label}: {exc2}")
             return {"items": [], "error": str(exc2)}
-        warnings.append(TRUNCATION_DETAIL)
+        if truncated_window:
+            warnings.append(TRUNCATION_DETAIL)
     if response.get("truncated"):
         warnings.append(DEADLINE_DETAIL)
     items = parse_v2_response(response, topic, (from_date, to_date), id_prefix=id_prefix)
@@ -704,12 +720,15 @@ def _run_handle_lanes(
     id_prefix: str,
     keep: Optional[Callable[[Dict[str, Any], str], bool]] = None,
     warnings: Optional[List[str]] = None,
+    errors: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Run one search per handle on a bounded pool and merge in handle order.
 
     Per-handle receipts (``"warning"`` on a result, e.g. a deadline stop)
-    are appended to ``warnings`` once each, so the caller can report
-    incomplete lane coverage instead of presenting it as complete.
+    are appended to ``warnings`` once each, and per-handle errors
+    (``"error"``, e.g. 401/402/403/429/timeout) are appended to ``errors``
+    once each, so the caller can report incomplete or failed lane coverage
+    instead of presenting it as a clean empty result.
 
     Mirrors ``bird_x.search_handles``: at most five handles in flight. A
     fatal auth/payment result stops further handles from being scheduled;
@@ -744,6 +763,9 @@ def _run_handle_lanes(
         note = (result or {}).get("warning")
         if note and warnings is not None and note not in warnings:
             warnings.append(note)
+        err = (result or {}).get("error")
+        if err and errors is not None and err not in errors:
+            errors.append(err)
         for item in (result or {}).get("items", []):
             post_id = item.get("post_id", "")
             if post_id in seen_ids:
@@ -766,6 +788,7 @@ def search_handles(
     token: str = "",
     deadline: Optional[float] = None,
     warnings: Optional[List[str]] = None,
+    errors: Optional[List[str]] = None,
     cancel: Any = None,
 ) -> List[Dict[str, Any]]:
     """FROM lane: posts authored BY each handle (their own timeline).
@@ -782,10 +805,11 @@ def search_handles(
         return _run_search(
             token, f"from:{handle} -is:retweet", from_date, to_date, count_per,
             topic=topic, id_prefix="XF", label=f"from:{handle}", deadline=deadline,
+            deadline_is_warning=True,
             **({"cancel": cancel} if cancel is not None else {}),
         )
 
-    return _run_handle_lanes(clean, _search_one, id_prefix="XF", warnings=warnings)
+    return _run_handle_lanes(clean, _search_one, id_prefix="XF", warnings=warnings, errors=errors)
 
 
 def search_mentions(
@@ -798,6 +822,7 @@ def search_mentions(
     token: str = "",
     deadline: Optional[float] = None,
     warnings: Optional[List[str]] = None,
+    errors: Optional[List[str]] = None,
     cancel: Any = None,
 ) -> List[Dict[str, Any]]:
     """ABOUT lane: posts mentioning each handle, authored by OTHERS.
@@ -814,6 +839,7 @@ def search_mentions(
         return _run_search(
             token, f"@{handle} -from:{handle} -is:retweet", from_date, to_date, count_per,
             topic=topic, id_prefix="XA", label=f"@{handle}", deadline=deadline,
+            deadline_is_warning=True,
             **({"cancel": cancel} if cancel is not None else {}),
         )
 
@@ -821,4 +847,5 @@ def search_mentions(
         clean, _search_one, id_prefix="XA",
         keep=lambda item, handle: not is_own_post(item.get("url", ""), handle),
         warnings=warnings,
+        errors=errors,
     )

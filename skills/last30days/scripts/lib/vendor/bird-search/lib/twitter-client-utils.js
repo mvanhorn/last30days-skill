@@ -63,7 +63,7 @@ export function uniqueOrdered(values) {
  * Handles blocks (paragraphs, headers, lists) and entities (code blocks, links, tweets, dividers).
  */
 export function renderContentState(contentState) {
-    if (!contentState?.blocks || contentState.blocks.length === 0) {
+    if (!Array.isArray(contentState?.blocks) || contentState.blocks.length === 0) {
         return undefined;
     }
     // Build entity lookup map from array/object formats
@@ -71,13 +71,16 @@ export function renderContentState(contentState) {
     const rawEntityMap = contentState.entityMap ?? [];
     if (Array.isArray(rawEntityMap)) {
         for (const entry of rawEntityMap) {
+            if (!entry || typeof entry !== 'object') {
+                continue;
+            }
             const key = Number.parseInt(entry.key, 10);
             if (!Number.isNaN(key)) {
                 entityMap.set(key, entry.value);
             }
         }
     }
-    else {
+    else if (rawEntityMap && typeof rawEntityMap === 'object') {
         for (const [key, value] of Object.entries(rawEntityMap)) {
             const keyNumber = Number.parseInt(key, 10);
             if (!Number.isNaN(keyNumber)) {
@@ -89,6 +92,9 @@ export function renderContentState(contentState) {
     let orderedListCounter = 0;
     let previousBlockType;
     for (const block of contentState.blocks) {
+        if (!block || typeof block !== 'object') {
+            continue;
+        }
         // Reset ordered list counter when leaving ordered list context
         if (block.type !== 'ordered-list-item' && previousBlockType === 'ordered-list-item') {
             orderedListCounter = 0;
@@ -170,18 +176,28 @@ export function renderContentState(contentState) {
  * Renders text content of a block, applying inline link entities.
  */
 function renderBlockText(block, entityMap) {
+    if (typeof block?.text !== 'string') {
+        return '';
+    }
     let text = block.text;
+    const rawRanges = Array.isArray(block.entityRanges) ? block.entityRanges : [];
     // Handle LINK entities by appending URL in markdown format
     // Process in reverse order to not mess up offsets
-    const linkRanges = (block.entityRanges ?? [])
+    const linkRanges = rawRanges
         .filter((range) => {
+        if (!range || typeof range !== 'object') {
+            return false;
+        }
+        if (typeof range.offset !== 'number' || typeof range.length !== 'number') {
+            return false;
+        }
         const entity = entityMap.get(range.key);
-        return entity?.type === 'LINK' && entity.data.url;
+        return entity?.type === 'LINK' && typeof entity?.data?.url === 'string' && entity.data.url.length > 0;
     })
         .sort((a, b) => b.offset - a.offset);
     for (const range of linkRanges) {
         const entity = entityMap.get(range.key);
-        if (entity?.data.url) {
+        if (typeof entity?.data?.url === 'string' && entity.data.url.length > 0) {
             const linkText = text.slice(range.offset, range.offset + range.length);
             const markdownLink = `[${linkText}](${entity.data.url})`;
             text = text.slice(0, range.offset) + markdownLink + text.slice(range.offset + range.length);
@@ -193,28 +209,31 @@ function renderBlockText(block, entityMap) {
  * Renders an atomic block by looking up its entity and returning appropriate content.
  */
 function renderAtomicBlock(block, entityMap) {
-    const entityRanges = block.entityRanges ?? [];
-    if (entityRanges.length === 0) {
+    const entityRanges = Array.isArray(block?.entityRanges) ? block.entityRanges : [];
+    const firstRange = entityRanges[0];
+    if (!firstRange || typeof firstRange !== 'object') {
         return undefined;
     }
-    const entityKey = entityRanges[0].key;
+    const entityKey = firstRange.key;
     const entity = entityMap.get(entityKey);
-    if (!entity) {
+    if (!entity || typeof entity !== 'object') {
         return undefined;
     }
     switch (entity.type) {
         case 'MARKDOWN':
             // Code blocks and other markdown content - output as-is
-            return entity.data.markdown?.trim();
+            return typeof entity.data?.markdown === 'string'
+                ? entity.data.markdown.trim() || undefined
+                : undefined;
         case 'DIVIDER':
             return '---';
         case 'TWEET':
-            if (entity.data.tweetId) {
+            if (entity.data?.tweetId) {
                 return `[Embedded Tweet: https://x.com/i/status/${entity.data.tweetId}]`;
             }
             return undefined;
         case 'LINK':
-            if (entity.data.url) {
+            if (typeof entity.data?.url === 'string' && entity.data.url) {
                 return `[Link: ${entity.data.url}]`;
             }
             return undefined;
@@ -227,10 +246,11 @@ function renderAtomicBlock(block, entityMap) {
 }
 export function extractArticleText(result) {
     const article = result?.article;
-    if (!article) {
+    if (!article || typeof article !== 'object') {
         return undefined;
     }
-    const articleResult = article.article_results?.result ?? article;
+    const rawArticleResult = article.article_results?.result;
+    const articleResult = rawArticleResult && typeof rawArticleResult === 'object' ? rawArticleResult : article;
     if (process.env.BIRD_DEBUG_ARTICLE === '1') {
         console.error('[bird][debug][article] payload:', JSON.stringify({
             rest_id: result?.rest_id,
@@ -290,10 +310,11 @@ export function extractTweetText(result) {
 }
 export function extractArticleMetadata(result) {
     const article = result?.article;
-    if (!article) {
+    if (!article || typeof article !== 'object') {
         return undefined;
     }
-    const articleResult = article.article_results?.result ?? article;
+    const rawArticleResult = article.article_results?.result;
+    const articleResult = rawArticleResult && typeof rawArticleResult === 'object' ? rawArticleResult : article;
     const title = firstText(articleResult.title, article.title);
     if (!title) {
         return undefined;
@@ -305,12 +326,12 @@ export function extractArticleMetadata(result) {
 export function extractMedia(result) {
     // Prefer extended_entities (has video info), fall back to entities
     const rawMedia = result?.legacy?.extended_entities?.media ?? result?.legacy?.entities?.media;
-    if (!rawMedia || rawMedia.length === 0) {
+    if (!Array.isArray(rawMedia) || rawMedia.length === 0) {
         return undefined;
     }
     const media = [];
     for (const item of rawMedia) {
-        if (!item.type || !item.media_url_https) {
+        if (!item || typeof item !== 'object' || !item.type || !item.media_url_https) {
             continue;
         }
         const mediaItem = {
@@ -332,9 +353,9 @@ export function extractMedia(result) {
             mediaItem.previewUrl = `${item.media_url_https}:small`;
         }
         // Extract video URL for video/animated_gif
-        if ((item.type === 'video' || item.type === 'animated_gif') && item.video_info?.variants) {
+        if ((item.type === 'video' || item.type === 'animated_gif') && Array.isArray(item.video_info?.variants)) {
             // Prefer highest bitrate MP4, fall back to first MP4 when bitrate is missing.
-            const mp4Variants = item.video_info.variants.filter((v) => v.content_type === 'video/mp4' && typeof v.url === 'string');
+            const mp4Variants = item.video_info.variants.filter((v) => v && typeof v === 'object' && v.content_type === 'video/mp4' && typeof v.url === 'string');
             const mp4WithBitrate = mp4Variants
                 .filter((v) => typeof v.bitrate === 'number')
                 .sort((a, b) => b.bitrate - a.bitrate);
@@ -351,17 +372,19 @@ export function extractMedia(result) {
     return media.length > 0 ? media : undefined;
 }
 export function unwrapTweetResult(result) {
-    if (!result) {
+    if (!result || typeof result !== 'object') {
         return undefined;
     }
-    if (result.tweet) {
+    if (result.tweet && typeof result.tweet === 'object') {
         return result.tweet;
     }
     return result;
 }
 export function mapTweetResult(result, quoteDepthOrOptions) {
-    const options = typeof quoteDepthOrOptions === 'number' ? { quoteDepth: quoteDepthOrOptions } : quoteDepthOrOptions;
-    const { quoteDepth, includeRaw = false } = options;
+    const options = typeof quoteDepthOrOptions === 'number'
+        ? { quoteDepth: quoteDepthOrOptions }
+        : (quoteDepthOrOptions ?? {});
+    const { quoteDepth = 1, includeRaw = false } = options;
     const userResult = result?.core?.user_results?.result;
     const userLegacy = userResult?.legacy;
     const userCore = userResult?.core;
@@ -408,12 +431,13 @@ export function mapTweetResult(result, quoteDepthOrOptions) {
     return tweetData;
 }
 export function findTweetInInstructions(instructions, tweetId) {
-    if (!instructions) {
+    if (!Array.isArray(instructions)) {
         return undefined;
     }
     for (const instruction of instructions) {
-        for (const entry of instruction.entries || []) {
-            const result = entry.content?.itemContent?.tweet_results?.result;
+        const entries = Array.isArray(instruction?.entries) ? instruction.entries : [];
+        for (const entry of entries) {
+            const result = unwrapTweetResult(entry?.content?.itemContent?.tweet_results?.result);
             if (result?.rest_id === tweetId) {
                 return result;
             }
@@ -423,31 +447,58 @@ export function findTweetInInstructions(instructions, tweetId) {
 }
 export function collectTweetResultsFromEntry(entry) {
     const results = [];
+    if (!entry || typeof entry !== 'object') {
+        return results;
+    }
     const pushResult = (result) => {
-        if (result?.rest_id) {
-            results.push(result);
+        const unwrapped = unwrapTweetResult(result);
+        if (unwrapped?.rest_id) {
+            results.push(unwrapped);
         }
     };
     const content = entry.content;
     pushResult(content?.itemContent?.tweet_results?.result);
     pushResult(content?.item?.itemContent?.tweet_results?.result);
-    for (const item of content?.items ?? []) {
-        pushResult(item?.item?.itemContent?.tweet_results?.result);
-        pushResult(item?.itemContent?.tweet_results?.result);
-        pushResult(item?.content?.itemContent?.tweet_results?.result);
+    if (Array.isArray(content?.items)) {
+        for (const item of content.items) {
+            pushResult(item?.item?.itemContent?.tweet_results?.result);
+            pushResult(item?.itemContent?.tweet_results?.result);
+            pushResult(item?.content?.itemContent?.tweet_results?.result);
+        }
     }
     return results;
 }
 export function parseTweetsFromInstructions(instructions, quoteDepthOrOptions) {
-    const options = typeof quoteDepthOrOptions === 'number' ? { quoteDepth: quoteDepthOrOptions } : quoteDepthOrOptions;
-    const { quoteDepth, includeRaw = false } = options;
+    const options = typeof quoteDepthOrOptions === 'number'
+        ? { quoteDepth: quoteDepthOrOptions }
+        : (quoteDepthOrOptions ?? {});
+    const { quoteDepth = 1, includeRaw = false } = options;
     const tweets = [];
     const seen = new Set();
-    for (const instruction of instructions ?? []) {
-        for (const entry of instruction.entries ?? []) {
+    if (!Array.isArray(instructions)) {
+        return tweets;
+    }
+    for (const instruction of instructions) {
+        if (!instruction || typeof instruction !== 'object') {
+            continue;
+        }
+        const entries = [];
+        if (Array.isArray(instruction.entries)) {
+            entries.push(...instruction.entries);
+        }
+        if (instruction.entry && typeof instruction.entry === 'object') {
+            entries.push(instruction.entry);
+        }
+        for (const entry of entries) {
             const results = collectTweetResultsFromEntry(entry);
             for (const result of results) {
-                const mapped = mapTweetResult(result, { quoteDepth, includeRaw });
+                let mapped;
+                try {
+                    mapped = mapTweetResult(result, { quoteDepth, includeRaw });
+                }
+                catch {
+                    continue;
+                }
                 if (!mapped || seen.has(mapped.id)) {
                     continue;
                 }
@@ -459,23 +510,42 @@ export function parseTweetsFromInstructions(instructions, quoteDepthOrOptions) {
     return tweets;
 }
 export function extractCursorFromInstructions(instructions, cursorType = 'Bottom') {
-    for (const instruction of instructions ?? []) {
-        for (const entry of instruction.entries ?? []) {
-            const content = entry.content;
-            if (content?.cursorType === cursorType && typeof content.value === 'string' && content.value.length > 0) {
-                return content.value;
+    if (!Array.isArray(instructions)) {
+        return undefined;
+    }
+    const matchCursor = (entry) => {
+        const content = entry?.content;
+        if (content?.cursorType === cursorType && typeof content.value === 'string' && content.value.length > 0) {
+            return content.value;
+        }
+        return undefined;
+    };
+    for (const instruction of instructions) {
+        if (!instruction || typeof instruction !== 'object') {
+            continue;
+        }
+        if (Array.isArray(instruction.entries)) {
+            for (const entry of instruction.entries) {
+                const cursor = matchCursor(entry);
+                if (cursor) {
+                    return cursor;
+                }
             }
+        }
+        const replacedCursor = matchCursor(instruction.entry);
+        if (replacedCursor) {
+            return replacedCursor;
         }
     }
     return undefined;
 }
 export function parseUsersFromInstructions(instructions) {
-    if (!instructions) {
+    if (!Array.isArray(instructions)) {
         return [];
     }
     const users = [];
     for (const instruction of instructions) {
-        if (!instruction.entries) {
+        if (!Array.isArray(instruction?.entries)) {
             continue;
         }
         for (const entry of instruction.entries) {

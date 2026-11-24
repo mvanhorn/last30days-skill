@@ -5,6 +5,7 @@ import math
 import re
 import sys
 import unicodedata
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -77,11 +78,42 @@ def _topic_literal(topic: str) -> str:
     return "".join(out)
 
 
+_ENGAGEMENT_STR_RE = re.compile(
+    r"^\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?\s*([KMB])?\s*$",
+    re.IGNORECASE | re.ASCII,
+)
+_SUFFIX_MULTIPLIER = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+
+
 def _safe_int(value: Any) -> Optional[int]:
     if value is None or isinstance(value, bool):
         return None
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= MAX_ENGAGEMENT_COUNT else None
+    if isinstance(value, float):
+        if not math.isfinite(value) or value < 0 or value > MAX_ENGAGEMENT_COUNT:
+            return None
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or len(stripped) > 32:
+            return None
+        match = _ENGAGEMENT_STR_RE.fullmatch(stripped)
+        if not match:
+            return None
+        whole = match.group(1).replace(",", "")
+        frac = match.group(2)
+        suffix = match.group(3)
+        try:
+            if frac is None and suffix is None:
+                parsed = int(whole)
+            else:
+                num_str = f"{whole}.{frac}" if frac is not None else whole
+                mult = _SUFFIX_MULTIPLIER[suffix.lower()] if suffix else 1
+                parsed = int(Decimal(num_str) * mult)
+        except (ValueError, OverflowError, InvalidOperation):
+            return None
+        return parsed if 0 <= parsed <= MAX_ENGAGEMENT_COUNT else None
     try:
         parsed = int(value)
     except (TypeError, ValueError, OverflowError):
@@ -286,26 +318,36 @@ def parse_x_response(
             for item in output:
                 if isinstance(item, dict):
                     if item.get("type") == "message":
-                        content = item.get("content", [])
-                        for c in content:
-                            if isinstance(c, dict) and c.get("type") == "output_text":
-                                output_text = c.get("text", "")
-                                break
-                    elif "text" in item:
+                        content = item.get("content")
+                        if isinstance(content, str):
+                            output_text = content
+                        elif isinstance(content, list):
+                            for c in content:
+                                if isinstance(c, dict) and c.get("type") == "output_text":
+                                    candidate = c.get("text")
+                                    if isinstance(candidate, str) and candidate.strip():
+                                        output_text = candidate
+                                        break
+                    elif "text" in item and isinstance(item["text"], str) and item["text"].strip():
                         output_text = item["text"]
-                elif isinstance(item, str):
+                elif isinstance(item, str) and item.strip():
                     output_text = item
                 if output_text:
                     break
 
     # Also check for choices (older format)
-    if not output_text and "choices" in response:
+    if not output_text and isinstance(response.get("choices"), list):
         for choice in response["choices"]:
-            if "message" in choice:
-                output_text = choice["message"].get("content", "")
-                break
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if isinstance(message, dict):
+                candidate = message.get("content")
+                if isinstance(candidate, str) and candidate.strip():
+                    output_text = candidate
+                    break
 
-    if not output_text:
+    if not isinstance(output_text, str) or not output_text:
         raise http.HTTPError(
             "xAI API returned empty response (no output text found)",
             outcome_state=health.SCHEMA_DRIFT,

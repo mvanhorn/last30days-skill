@@ -6452,6 +6452,8 @@ def _run_supplemental_searches(
         xapi_token = config.get("X_BEARER_TOKEN") or ""
         xapi_deadline = supplemental_deadline
 
+        xapi_fatal_payment = False
+
         def _xapi_lane_receipt(lane_warnings: list[str]) -> None:
             # A deadline stop is incomplete coverage, reported in
             # report.warnings (the x_partial_coverage artifact), never a
@@ -6462,24 +6464,53 @@ def _run_supplemental_searches(
                 if line not in sink:
                     sink.append(line)
 
+        def _record_xapi_lane_errors(lane: str, lane_errors: list[str]) -> bool:
+            nonlocal xapi_fatal_payment
+            if not lane_errors:
+                return False
+            detail = "; ".join(lane_errors[:3])
+            if len(lane_errors) > 3:
+                detail += f" (+{len(lane_errors) - 3} more)"
+            winning_state = min(
+                (http.classify_failure(message=err) for err in lane_errors),
+                key=lambda st: _FAILURE_SPECIFICITY.get(st, 9),
+            )
+            if winning_state == health.AUTH_FAILED:
+                return True
+            if winning_state == health.PAYMENT_REQUIRED:
+                xapi_fatal_payment = True
+            bundle.record_failure(
+                x_slug,
+                winning_state,
+                f"Phase 2 {lane}-lane: {detail}",
+                attempted=True,
+            )
+            return False
+
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
+            if xapi_fatal_payment:
+                return [], False
             # x_api.search_handles doesn't support and_topic; topic ranks only
             lane_warnings: list[str] = []
+            lane_errors: list[str] = []
             items = x_api.search_handles(
                 hs, topic, from_date, to_date, count_per=count, token=xapi_token,
-                deadline=xapi_deadline, warnings=lane_warnings, cancel=cancel,
+                deadline=xapi_deadline, warnings=lane_warnings, errors=lane_errors, cancel=cancel,
             )
             _xapi_lane_receipt(lane_warnings)
-            return items, False
+            return items, _record_xapi_lane_errors("FROM", lane_errors)
 
         def _about_lane(hs: list, count: int) -> tuple[list, bool]:
+            if xapi_fatal_payment:
+                return [], False
             lane_warnings: list[str] = []
+            lane_errors: list[str] = []
             items = x_api.search_mentions(
                 hs, from_date, to_date, topic=topic, count_per=count, token=xapi_token,
-                deadline=xapi_deadline, warnings=lane_warnings, cancel=cancel,
+                deadline=xapi_deadline, warnings=lane_warnings, errors=lane_errors, cancel=cancel,
             )
             _xapi_lane_receipt(lane_warnings)
-            return items, False
+            return items, _record_xapi_lane_errors("ABOUT", lane_errors)
     elif primary == "xquik":
         xquik_token = env.get_xquik_token(config)
 

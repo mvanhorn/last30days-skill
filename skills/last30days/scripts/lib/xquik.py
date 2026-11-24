@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import http, log
+from . import health, http, log
 from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
 from .x_api import _clean_handle, is_own_post
@@ -262,6 +262,8 @@ def search_xquik(
     queries = expand_xquik_queries(topic, depth)
     all_items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
+    failures: List[str] = []
+    stop_reasons: List[str] = []
     window = (from_date, to_date)
     date_filters = x_date_filters(from_date, to_date)
 
@@ -279,6 +281,8 @@ def search_xquik(
             seen_ids=seen_ids, relevance_query=query_text,
             index_offset=len(all_items),
             deadline_monotonic=deadline,
+            failure_out=failures,
+            stop_reasons=stop_reasons,
             cancel=cancel,
             window=window,
         )
@@ -288,9 +292,21 @@ def search_xquik(
             # settles honestly instead of silently empty.
             return {"items": [], "error": auth_error}
         all_items.extend(items)
+        if stop_reasons:
+            if "rate_limited" in stop_reasons:
+                _log("rate limited (HTTP 429); skipping remaining queries")
+            break
 
     if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
         return {"items": all_items, "error": "Xquik research cancelled or timed out"}
+    if not all_items and failures:
+        winning_error = min(
+            failures,
+            key=lambda msg: health.FAILURE_SPECIFICITY.get(
+                http.classify_failure(message=msg), 9
+            ),
+        )
+        return {"items": [], "error": winning_error}
     return {"items": all_items}
 
 
@@ -306,6 +322,7 @@ def _execute_search(
     index_offset: int = 0,
     deadline_monotonic: float | None = None,
     failure_out: Optional[List[str]] = None,
+    stop_reasons: Optional[List[str]] = None,
     cancel: Any = None,
     window: Optional[tuple[str, str]] = None,
 ) -> tuple[List[Dict[str, Any]], str | None]:
@@ -347,13 +364,48 @@ def _execute_search(
         if status in (401, 403):
             return [], f"Xquik auth failed ({status})"
         _log(f"HTTP error for '{label}': {exc}")
+        if status == 429:
+            exc_text = str(exc)
+            lowered = exc_text.lower()
+            msg = (
+                f"Xquik HTTP error for '{label}': {exc_text}"
+                if "429" in exc_text or "rate limit" in lowered or "too many requests" in lowered
+                else f"Xquik HTTP 429 rate limit for '{label}': {exc_text}"
+            )
+            if failure_out is not None:
+                failure_out.append(msg)
+            if stop_reasons is not None:
+                stop_reasons.append("rate_limited")
+            return [], None
+        if isinstance(exc, http.DeadlineExceeded):
+            if failure_out is not None:
+                failure_out.append(f"Xquik timed out for '{label}': {exc}")
+            if stop_reasons is not None:
+                stop_reasons.append("deadline")
+            return [], None
+        if getattr(exc, "outcome_state", None) == health.TIMEOUT:
+            exc_text = str(exc)
+            lowered = exc_text.lower()
+            msg = (
+                f"Xquik HTTP error for '{label}': {exc_text}"
+                if "timed out" in lowered or "timeout" in lowered
+                else f"Xquik timed out for '{label}': {exc_text}"
+            )
+            if failure_out is not None:
+                failure_out.append(msg)
+            return [], None
         if failure_out is not None:
             failure_out.append(f"Xquik HTTP error for '{label}': {exc}")
         return [], None
     except Exception as exc:
         _log(f"Error for '{label}': {exc}")
         if failure_out is not None:
-            failure_out.append(f"Xquik request failed for '{label}': {exc}")
+            exc_text = str(exc)
+            lowered = exc_text.lower()
+            if isinstance(exc, TimeoutError) and "timed out" not in lowered and "timeout" not in lowered:
+                failure_out.append(f"Xquik timed out for '{label}': {exc_text or 'TimeoutError'}")
+            else:
+                failure_out.append(f"Xquik request failed for '{label}': {exc}")
         return [], None
 
     if not isinstance(response, dict):

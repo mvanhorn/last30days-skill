@@ -530,13 +530,16 @@ def _fields_from_json_obj(obj: Any) -> Optional[Dict[str, Any]]:
     post_id_s = str(post_id or "").strip()
     if not post_id_s.isdigit():
         return None
+    handle_s = str(handle or "").strip().lstrip("@")
+    if not handle_s:
+        return None
     text = obj.get("text") or obj.get("full_text") or ""
     # `content` is often the CLI wrapper payload, not post text.
     if not text and "content" in obj and not isinstance(obj.get("content"), (dict, list)):
         text = obj.get("content") or ""
     return {
         "post_id": post_id_s,
-        "author_handle": str(handle or "").strip().lstrip("@"),
+        "author_handle": handle_s,
         "text": str(text or ""),
         "likes": obj.get("likes") if obj.get("likes") is not None else obj.get("favorite_count"),
         "reposts": obj.get("reposts") if obj.get("reposts") is not None else obj.get("retweets"),
@@ -598,9 +601,6 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
         return []
     if not isinstance(value, dict):
         return []
-    direct = _fields_from_json_obj(value)
-    if direct:
-        return [direct]
     for key in ("posts", "items", "results", "data", "tweets"):
         if key in value:
             posts = _posts_from_json_value(value[key], depth=depth + 1)
@@ -612,6 +612,34 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
             posts = _posts_from_json_value(inner, depth=depth + 1)
             if posts:
                 return posts
+    direct = _fields_from_json_obj(value)
+    if direct:
+        return [direct]
+    return []
+
+
+def _fields_from_wrapped_text(value: Any, *, depth: int = 0) -> List[Dict[str, Any]]:
+    """Extract post records from JSON wrapper text fields without stopping on status strings."""
+    if depth > 4:
+        return []
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        return _fields_from_json_text(value) or _fields_from_blocks(value)
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, (str, dict, list)):
+                raw = _fields_from_wrapped_text(item, depth=depth + 1)
+                if raw:
+                    return raw
+        return []
+    if isinstance(value, dict):
+        for key in ("content", "message", "result", "text", "output"):
+            inner = value.get(key)
+            if isinstance(inner, (str, dict, list)):
+                raw = _fields_from_wrapped_text(inner, depth=depth + 1)
+                if raw:
+                    return raw
     return []
 
 
@@ -682,20 +710,14 @@ def _parse_x_response_with_reason(
     text = response.get("text") or ""
     raw = _fields_from_json_text(text)
     if not raw:
-        probe = text
         try:
             loaded = json.loads(text)
         except (json.JSONDecodeError, TypeError):
             loaded = None
         if isinstance(loaded, dict):
-            for key in ("content", "message", "result", "text", "output"):
-                inner = loaded.get(key)
-                if isinstance(inner, str) and inner.strip():
-                    probe = inner
-                    raw = _fields_from_json_text(probe)
-                    break
+            raw = _fields_from_wrapped_text(loaded)
         if not raw:
-            raw = _fields_from_blocks(probe)
+            raw = _fields_from_blocks(text)
 
     kept, reason = _validate_items(raw, from_date, to_date) if from_date else (raw, "")
     if reason:
