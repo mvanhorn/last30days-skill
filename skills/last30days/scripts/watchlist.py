@@ -158,6 +158,7 @@ def _send_slack_webhook(url: str, text: str) -> None:
         sensitive_url=True,
         redirect_guard=_refuse_webhook_redirect,
         public_only=True,
+        decode_errors="replace",
     )
 
 
@@ -176,6 +177,7 @@ def _send_generic_webhook(url: str, text: str) -> None:
         sensitive_url=True,
         redirect_guard=_refuse_webhook_redirect,
         public_only=True,
+        decode_errors="replace",
     )
 
 
@@ -294,6 +296,21 @@ def _budget_skip(topic: dict) -> dict | None:
     return {"topic": topic["name"], "status": "skipped", "reason": reason}
 
 
+def _has_unknown_cost_marker(*streams: object) -> bool:
+    for stream in streams:
+        if not stream:
+            continue
+        if isinstance(stream, bytes):
+            text = stream.decode("utf-8", errors="replace")
+        elif isinstance(stream, str):
+            text = stream
+        else:
+            continue
+        if usage.UNKNOWN_COST_MARKER in text:
+            return True
+    return False
+
+
 def _run_topic(topic: dict) -> dict:
     topic_id = topic["id"]
     with tempfile.TemporaryDirectory(prefix="last30days-usage-") as temp_dir:
@@ -306,10 +323,15 @@ def _run_topic(topic: dict) -> dict:
             usage.JOURNAL_ENV: str(journal), "LAST30DAYS_STORE": "0", "LAST30DAYS_SCHEDULED_RUN": "1",
         })
         run_id = store.record_run(topic_id, source_mode="v3", status="running")
+        unknown_cost_flag = [False]
         try:
-            result = _research_topic(topic, run_id, child_env)
+            result = _research_topic(
+                topic, run_id, child_env, unknown_cost_flag=unknown_cost_flag
+            )
         finally:
             costs = usage.read_journal(journal)
+            if unknown_cost_flag[0]:
+                costs["cost_unknown"] = 1
             store.update_run(run_id, **costs)
         result.update(costs)
         return result
@@ -351,7 +373,13 @@ def _findings_from_output(output: str) -> list[dict]:
     return findings
 
 
-def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
+def _research_topic(
+    topic: dict,
+    run_id: int,
+    child_env: dict,
+    *,
+    unknown_cost_flag: list[bool] | None = None,
+) -> dict:
     start_time = time.time()
     topic_id = topic["id"]
 
@@ -382,7 +410,9 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             timeout=300,
             env={**child_env, envlib.ALLOW_ENGINE_PLAN_VAR: "1"},
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        if unknown_cost_flag is not None and _has_unknown_cost_marker(exc.stderr, exc.stdout):
+            unknown_cost_flag[0] = True
         duration = time.time() - start_time
         store.update_run(
             run_id,
@@ -399,6 +429,9 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             duration_seconds=time.time() - start_time,
         )
         return {"topic": topic["name"], "status": "failed", "error": f"parse error: {exc}"}
+
+    if unknown_cost_flag is not None and _has_unknown_cost_marker(result.stderr, result.stdout):
+        unknown_cost_flag[0] = True
 
     duration = time.time() - start_time
     degraded = result.returncode == health.STRICT_EXIT_CODE and any(

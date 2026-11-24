@@ -110,12 +110,12 @@ def test_high057_journal_sqlite_errors_never_crash_http_or_mask_transport_errors
     monkeypatch.setenv(usage.JOURNAL_ENV, str(journal2))
     real_connect = usage._connection
 
-    def fail_finish_only(path, *, write=False):
+    def fail_finish_only(path, *, write=False, **kwargs):
         if write:
             with sqlite3.connect(path) as conn:
                 if conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] > 0:
                     raise sqlite3.OperationalError("database is locked")
-        return real_connect(path, write=write)
+        return real_connect(path, write=write, **kwargs)
 
     monkeypatch.setattr(usage, "_connection", fail_finish_only)
     fake_stderr2 = NonTTYStderr()
@@ -131,12 +131,12 @@ def test_high057_journal_sqlite_errors_never_crash_http_or_mask_transport_errors
     usage.create_journal(journal3)
     monkeypatch.setenv(usage.JOURNAL_ENV, str(journal3))
 
-    def fail_cancel_only(path, *, write=False):
+    def fail_cancel_only(path, *, write=False, **kwargs):
         if write:
             with sqlite3.connect(path) as conn:
                 if conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] > 0:
                     raise sqlite3.OperationalError("database is locked")
-        return real_connect(path, write=write)
+        return real_connect(path, write=write, **kwargs)
 
     monkeypatch.setattr(usage, "_connection", fail_cancel_only)
     monkeypatch.setattr(
@@ -853,10 +853,10 @@ def test_high057_transient_begin_failure_forces_cost_unknown_in_and_cross_proces
     )
     real_connection = usage._connection
 
-    def fail_begin_locked(path, *, write=False):
+    def fail_begin_locked(path, *, write=False, **kwargs):
         if write:
             raise sqlite3.OperationalError("database is locked")
-        return real_connection(path, write=write)
+        return real_connection(path, write=write, **kwargs)
 
     monkeypatch.setattr(usage, "_connection", fail_begin_locked)
     result = http.post("https://openrouter.ai/api/v1/chat/completions", {}, retries=1)
@@ -944,4 +944,255 @@ def test_high214_connect_closes_connection_on_base_exception(tmp_path, monkeypat
     assert len(opened) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         opened[0].execute("SELECT 1")
+
+
+# ---------------------------------------------------------------------------
+# Greptile review regressions (P1 + P2)
+# ---------------------------------------------------------------------------
+
+
+def test_greptile_p1_stderr_unknown_cost_marker_forces_unknown_when_fs_unwritable(
+    tmp_path, monkeypatch
+):
+    """Even when both SQLite and .unknown sentinel creation fail (e.g. ENOSPC/EROFS),
+    the stderr marker propagates to watchlist._run_topic() and forces cost_unknown=1."""
+    import subprocess as sp
+
+    db_path = tmp_path / "research.db"
+    monkeypatch.setattr(store, "_db_override", db_path)
+    store.init_db()
+    topic = store.add_topic("Unwritable FS Topic")
+
+    # Verify usage.begin() emits UNKNOWN_COST_MARKER on stderr even if .unknown open fails.
+    journal = tmp_path / "usage.db"
+    usage.create_journal(journal)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal))
+    real_open = os.open
+
+    def fail_sentinel_open(path, *args, **kwargs):
+        if str(path).endswith(".unknown"):
+            raise OSError("No space left on device")
+        return real_open(path, *args, **kwargs)
+
+    fake_stderr = io.StringIO()
+    monkeypatch.setattr(usage.os, "open", fail_sentinel_open)
+    monkeypatch.setattr(
+        usage,
+        "_connection",
+        lambda *a, **kw: (_ for _ in ()).throw(sqlite3.OperationalError("database or disk is full")),
+    )
+    with patch.object(sys, "stderr", fake_stderr):
+        assert usage.begin("openrouter") is None
+    assert usage.UNKNOWN_COST_MARKER in fake_stderr.getvalue()
+    assert not Path(f"{journal}.unknown").exists()
+
+    # Verify watchlist._run_topic() forces cost_unknown=1 from child stderr even when
+    # the journal DB is intact & empty and no .unknown file exists.
+    monkeypatch.undo()
+    monkeypatch.setattr(store, "_db_override", db_path)
+
+    fake_report = json.dumps({
+        "topic": topic["name"],
+        "range_from": "2026-01-01",
+        "range_to": "2026-04-01",
+        "generated_at": "2026-04-01T00:00:00Z",
+        "provider_runtime": {
+            "reasoning_provider": "local",
+            "planner_model": "local",
+            "rerank_model": "local",
+        },
+        "query_plan": {
+            "intent": "test",
+            "freshness_mode": "recent",
+            "cluster_mode": "standard",
+            "raw_topic": topic["name"],
+        },
+    })
+
+    def fake_run(*args, **kwargs):
+        return sp.CompletedProcess(
+            args[0], 0, stdout=fake_report, stderr=f"warn\n{usage.UNKNOWN_COST_MARKER}\n"
+        )
+
+    monkeypatch.setattr(watchlist.subprocess, "run", fake_run)
+    result = watchlist._run_topic(topic)
+    assert result["cost_unknown"] == 1
+    assert store.get_daily_unknown_cost_runs() == 1
+
+
+def test_greptile_p1_journal_wait_bounded_by_deadline_monotonic(tmp_path, monkeypatch):
+    """Holding _WRITE_LOCK must not stall usage.begin()/http.request() past deadline_monotonic."""
+    journal = tmp_path / "usage-deadline.db"
+    usage.create_journal(journal)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal))
+
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_lock():
+        with usage._WRITE_LOCK:
+            locked.set()
+            release.wait(timeout=5.0)
+
+    holder = threading.Thread(target=hold_lock, daemon=True)
+    holder.start()
+    assert locked.wait(timeout=2.0)
+    try:
+        started = time.monotonic()
+        fake_stderr = io.StringIO()
+        with patch.object(sys, "stderr", fake_stderr):
+            attempt = usage.begin("openrouter", deadline_monotonic=started + 0.08)
+        elapsed = time.monotonic() - started
+        assert attempt is None
+        assert elapsed < 0.5
+        assert usage.UNKNOWN_COST_MARKER in fake_stderr.getvalue()
+    finally:
+        release.set()
+        holder.join(timeout=2.0)
+
+    assert usage.read_journal(journal)["cost_unknown"] == 1
+
+    # Already-expired deadline fails fast without touching SQLite at all.
+    journal2 = tmp_path / "usage-expired.db"
+    usage.create_journal(journal2)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal2))
+    started = time.monotonic()
+    with patch.object(sys, "stderr", io.StringIO()):
+        assert usage.begin("openrouter", deadline_monotonic=started - 1.0) is None
+    assert time.monotonic() - started < 0.2
+    assert usage.read_journal(journal2)["cost_unknown"] == 1
+
+
+def test_greptile_p2_project_pass_prefix_placeholder_falls_back_to_global_file(
+    monkeypatch, tmp_path
+):
+    _isolate_env(monkeypatch, tmp_path)
+    global_env = tmp_path / "global.env"
+    global_env.write_text("LAST30DAYS_PASS_PREFIX=custom/global/\n", encoding="utf-8")
+    global_env.chmod(0o600)
+    project_dir = tmp_path / ".claude"
+    project_dir.mkdir()
+    project_env = project_dir / "last30days.env"
+    project_env.write_text("LAST30DAYS_PASS_PREFIX=${user_config.pass_prefix}\n", encoding="utf-8")
+    project_env.chmod(0o600)
+
+    monkeypatch.setattr(env, "CONFIG_FILE", global_env)
+    monkeypatch.setattr(env, "_find_project_env", lambda: project_env)
+
+    seen_prefixes: list[str] = []
+
+    def fake_load_pass(_keys, prefix):
+        seen_prefixes.append(prefix)
+        return {"XAI_API_KEY": "xai-saved"}
+
+    monkeypatch.setattr(env, "_load_pass", fake_load_pass)
+    cfg = env.get_config(env.ConfigLoadPolicy(allow_project_config=True))
+
+    assert seen_prefixes == ["custom/global/"]
+    assert cfg["XAI_API_KEY"] == "xai-saved"
+
+
+def test_greptile_p2_request_retries_zero_does_not_retry_dns_failures(monkeypatch):
+    import socket
+
+    calls = 0
+
+    def fail_dns(req, timeout):
+        nonlocal calls
+        calls += 1
+        raise urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+
+    monkeypatch.setattr(http, "_open_request", fail_dns)
+    with patch("lib.http.time.sleep") as mock_sleep:
+        with pytest.raises(http.HTTPError):
+            http.request("GET", "https://dns-fail.example/probe", retries=0)
+
+    assert calls == 1
+    mock_sleep.assert_not_called()
+
+
+def test_greptile_p2_webhooks_succeed_on_non_utf8_2xx_response_body(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(store, "_db_override", tmp_path / "research.db")
+    store.init_db()
+
+    class Response(io.BytesIO):
+        status = 200
+
+    # Latin-1 / invalid UTF-8 bytes in a 200 response body must not fail delivery.
+    monkeypatch.setattr(http, "_open_request", lambda req, timeout: Response(b"ok \xff\xfe"))
+
+    for channel in (
+        "https://hooks.slack.com/services/T000/B000/DUMMY",
+        "https://webhook.example.com/notify",
+    ):
+        store.set_setting("delivery_channel", channel)
+        watchlist._deliver_findings("AI agents", {"new": 1, "updated": 0})
+        assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("tiny_neg", ["-1e-400", "-1e-500", "-1e-1000", "-0.0000000000000000000001"])
+def test_greptile_p2_parse_budget_rejects_tiny_negative_underflow(tmp_path, monkeypatch, tiny_neg):
+    with pytest.raises(ValueError):
+        store.parse_budget(tiny_neg)
+
+    monkeypatch.setattr(store, "_db_override", tmp_path / "research.db")
+    store.init_db()
+    store.set_setting("daily_budget", "5.00")
+    with pytest.raises(SystemExit):
+        watchlist.cmd_config(SimpleNamespace(key="budget", value=tiny_neg))
+    assert store.get_setting("daily_budget") == "5.00"
+
+
+def test_greptile_p2_store_findings_has_no_redundant_select_or_conflict_count_query(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "research.db"
+    monkeypatch.setattr(store, "_db_override", db_path)
+    store.init_db()
+    topic = store.add_topic("No Redundant Select")
+    run1 = store.record_run(topic["id"], source_mode="v3")
+    run2 = store.record_run(topic["id"], source_mode="v3")
+
+    executed_sql: list[str] = []
+    real_connect = store._connect
+
+    class TracingConn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            executed_sql.append(sql.strip())
+            return self._conn.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(store, "_connect", lambda *a, **k: TracingConn(real_connect(*a, **k)))
+
+    counts1 = store.store_findings(
+        run1,
+        topic["id"],
+        [
+            {"source": "reddit", "source_url": "https://example.test/1", "source_title": "One", "engagement_score": 10},
+            {"source": "reddit", "source_url": "https://example.test/1", "source_title": "One dup", "engagement_score": 20},
+            {"source": "x", "source_url": "https://example.test/2", "source_title": "Two", "engagement_score": 5},
+        ],
+    )
+    assert counts1 == {"new": 2, "updated": 0}
+    assert not any("FROM findings" in sql and sql.upper().startswith("SELECT") for sql in executed_sql)
+
+    executed_sql.clear()
+    counts2 = store.store_findings(
+        run2,
+        topic["id"],
+        [
+            {"source": "reddit", "source_url": "https://example.test/1", "source_title": "One", "engagement_score": 15},
+            {"source": "x", "source_url": "https://example.test/3", "source_title": "Three", "engagement_score": 7},
+        ],
+    )
+    assert counts2 == {"new": 1, "updated": 1}
+    assert not any("FROM findings" in sql and sql.upper().startswith("SELECT") for sql in executed_sql)
+
 

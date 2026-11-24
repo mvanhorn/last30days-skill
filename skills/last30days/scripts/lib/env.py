@@ -959,9 +959,17 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         env_pass_prefix = os.environ.get("LAST30DAYS_PASS_PREFIX")
         if is_unsubstituted_template(env_pass_prefix):
             env_pass_prefix = None
-        file_pass_prefix = merged_env.get("LAST30DAYS_PASS_PREFIX")
-        if is_unsubstituted_template(file_pass_prefix):
-            file_pass_prefix = None
+        file_pass_prefix = next(
+            (
+                value
+                for value in (
+                    project_env.get("LAST30DAYS_PASS_PREFIX"),
+                    file_env.get("LAST30DAYS_PASS_PREFIX"),
+                )
+                if value and not is_unsubstituted_template(value)
+            ),
+            None,
+        )
         pass_prefix = env_pass_prefix or file_pass_prefix or DEFAULT_PASS_PATH_PREFIX
         pass_missing = [
             k

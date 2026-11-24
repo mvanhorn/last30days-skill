@@ -40,18 +40,8 @@ def test_concurrent_observations_keep_maximum_and_each_run_history(database, mon
     start_barrier = threading.Barrier(2, timeout=5)
     high_locked = threading.Event()
     worker = threading.local()
-    observed = {}
+    lock_order = []
     real_connect = store._connect
-
-    class GatedCursor:
-        def __init__(self, cursor, score):
-            self.cursor = cursor
-            self.score = score
-
-        def fetchall(self):
-            rows = self.cursor.fetchall()
-            observed[self.score] = [row["engagement_score"] for row in rows]
-            return rows
 
     class GatedConnection:
         def __init__(self, connection):
@@ -63,13 +53,11 @@ def test_concurrent_observations_keep_maximum_and_each_run_history(database, mon
                 if worker.score == 50:
                     assert high_locked.wait(timeout=5), "The high observation did not acquire write lock"
                 cursor = self.connection.execute(sql, parameters)
+                lock_order.append(worker.score)
                 if worker.score == 100:
                     high_locked.set()
                 return cursor
-            cursor = self.connection.execute(sql, parameters)
-            if sql.startswith("SELECT id, source_url, engagement_score FROM findings WHERE source_url IN"):
-                return GatedCursor(cursor, worker.score)
-            return cursor
+            return self.connection.execute(sql, parameters)
 
         def __getattr__(self, name):
             return getattr(self.connection, name)
@@ -84,7 +72,7 @@ def test_concurrent_observations_keep_maximum_and_each_run_history(database, mon
         futures = {score: executor.submit(observe, score) for score in (100, 50)}
         results = {score: future.result(timeout=10) for score, future in futures.items()}
 
-    assert observed == {100: [10.0] if existing else [], 50: [100.0]}
+    assert lock_order == [100, 50]
     assert results == {
         100: {"new": 0 if existing else 1, "updated": 1 if existing else 0},
         50: {"new": 0, "updated": 1},

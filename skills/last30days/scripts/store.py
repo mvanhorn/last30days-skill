@@ -18,6 +18,7 @@ import sqlite3
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -620,58 +621,42 @@ def store_findings(
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        # Single batch SELECT under the write lock to classify existing vs new URLs.
-        urls = [url for url, _ in with_urls]
-        placeholders = ",".join("?" for _ in urls)
-        rows = conn.execute(
-            f"SELECT id, source_url, engagement_score FROM findings WHERE source_url IN ({placeholders})",
-            urls,
-        ).fetchall()
-        existing_by_url = {row["source_url"]: row for row in rows}
-
-        upsert_rows: List[tuple] = []
+        new_count = 0
+        updated_count = 0
+        rows_by_url: Dict[str, sqlite3.Row] = {}
         for url, f in with_urls:
             new_engagement = f.get("engagement_score") or 0
-            upsert_rows.append((
-                run_id,
-                topic_id,
-                f.get("source", "unknown"),
-                url,
-                f.get("source_title") or f.get("title", ""),
-                f.get("author", ""),
-                f.get("content") or f.get("text", ""),
-                f.get("summary", ""),
-                new_engagement,
-                f.get("relevance_score", 0),
-            ))
-
-        conn.executemany(
-            """INSERT INTO findings
-               (run_id, topic_id, source, source_url, source_title,
-                author, content, summary, engagement_score, relevance_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(source_url) DO UPDATE SET
-                   last_seen = datetime('now'),
-                   sighting_count = sighting_count + 1,
-                   engagement_score = max(
-                       coalesce(engagement_score, 0), excluded.engagement_score),
-                   run_id = excluded.run_id""",
-            upsert_rows,
-        )
-
-        updated_count = len(existing_by_url)
-        new_candidate_urls = [url for url in urls if url not in existing_by_url]
-        new_count = len(new_candidate_urls)
-        if new_candidate_urls:
-            cand_placeholders = ",".join("?" for _ in new_candidate_urls)
-            conflicted = conn.execute(
-                f"SELECT COUNT(*) FROM findings "
-                f"WHERE source_url IN ({cand_placeholders}) AND sighting_count > 1",
-                new_candidate_urls,
-            ).fetchone()[0]
-            new_count -= conflicted
-            updated_count += conflicted
-        _record_sightings(conn, run_id, topic_id, with_urls)
+            row = conn.execute(
+                """INSERT INTO findings
+                   (run_id, topic_id, source, source_url, source_title,
+                    author, content, summary, engagement_score, relevance_score)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_url) DO UPDATE SET
+                       last_seen = datetime('now'),
+                       sighting_count = max(coalesce(sighting_count, 1), 1) + 1,
+                       engagement_score = max(
+                           coalesce(engagement_score, 0), excluded.engagement_score),
+                       run_id = excluded.run_id
+                   RETURNING id, source_url, sighting_count""",
+                (
+                    run_id,
+                    topic_id,
+                    f.get("source", "unknown"),
+                    url,
+                    f.get("source_title") or f.get("title", ""),
+                    f.get("author", ""),
+                    f.get("content") or f.get("text", ""),
+                    f.get("summary", ""),
+                    new_engagement,
+                    f.get("relevance_score", 0),
+                ),
+            ).fetchone()
+            rows_by_url[url] = row
+            if row["sighting_count"] == 1:
+                new_count += 1
+            else:
+                updated_count += 1
+        _record_sightings(conn, run_id, topic_id, with_urls, rows_by_url)
         conn.execute(
             "UPDATE research_runs SET findings_new = ?, findings_updated = ? WHERE id = ?",
             (new_count, updated_count, run_id),
@@ -1230,8 +1215,23 @@ def parse_budget(raw: object) -> float:
         text = raw.strip()
         if not text:
             raise ValueError("Invalid daily_budget value: empty")
-        value = float(text)
+        try:
+            dec = Decimal(text)
+        except InvalidOperation as exc:
+            raise ValueError(f"Invalid daily_budget value: {raw!r}") from exc
+        if not dec.is_finite() or dec < 0:
+            raise ValueError(
+                f"Invalid daily_budget value: {raw!r} (must be a finite number >= 0)"
+            )
+        try:
+            value = float(dec)
+        except OverflowError as exc:
+            raise ValueError(f"Invalid daily_budget value: {raw!r} (overflow)") from exc
     elif isinstance(raw, (int, float)):
+        if raw < 0:
+            raise ValueError(
+                f"Invalid daily_budget value: {raw!r} (must be a finite number >= 0)"
+            )
         try:
             value = float(raw)
         except OverflowError as exc:
