@@ -120,6 +120,9 @@ def _is_safe_owner_dir(path: Path) -> bool:
                 return False
         for anc in _ancestor_chain(path):
             _check_trusted_ancestor(anc, is_immediate_parent=False, uid=uid)
+        canonical = path.resolve(strict=True)
+        for anc in _ancestor_chain(canonical):
+            _check_trusted_ancestor(anc, is_immediate_parent=False, uid=uid)
     except OSError:
         return False
     return True
@@ -143,8 +146,50 @@ def _default_profile_dir() -> str:
 DEFAULT_PROFILE_DIR = _default_profile_dir()
 
 
-def _ensure_private_profile_dir(profile_dir: str) -> None:
-    """Create and verify a non-symlink, owner-only (0o700) profile directory in a trusted path."""
+def _harden_owned_dir_0700(path: Path, uid: int) -> tuple[int, int]:
+    """Verify non-symlink ownership and enforce mode 0700 on ``path``, returning ``(st_dev, st_ino)``."""
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(f"Refusing symlink directory: {path}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Path is not a directory: {path}")
+    if os.name == "nt":
+        return (st.st_dev, st.st_ino)
+    if st.st_uid != uid:
+        raise PermissionError(f"Directory is not owned by uid {uid}: {path}")
+    if hasattr(os, "O_DIRECTORY") and hasattr(os, "fchmod"):
+        open_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(path), open_flags)
+        try:
+            fst = os.fstat(fd)
+            if not stat.S_ISDIR(fst.st_mode):
+                raise OSError(f"Path is not a directory: {path}")
+            if fst.st_uid != uid:
+                raise PermissionError(f"Directory is not owned by uid {uid}: {path}")
+            if stat.S_IMODE(fst.st_mode) != 0o700:
+                os.fchmod(fd, 0o700)
+                fst = os.fstat(fd)
+                if stat.S_IMODE(fst.st_mode) != 0o700:
+                    raise PermissionError(
+                        f"Could not enforce 0700 permissions on directory: {path}"
+                    )
+            return (fst.st_dev, fst.st_ino)
+        finally:
+            os.close(fd)
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        os.chmod(str(path), 0o700)
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise OSError(f"Directory changed unexpectedly: {path}")
+        if st.st_uid != uid:
+            raise PermissionError(f"Directory is not owned by uid {uid}: {path}")
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            raise PermissionError(f"Could not enforce 0700 permissions on directory: {path}")
+    return (st.st_dev, st.st_ino)
+
+
+def _ensure_private_profile_dir(profile_dir: str) -> str:
+    """Create and verify a non-symlink, owner-only (0o700) profile dir; return canonical path."""
     if not profile_dir or not profile_dir.strip():
         raise OSError("Profile directory path must not be empty")
 
@@ -159,60 +204,51 @@ def _ensure_private_profile_dir(profile_dir: str) -> None:
         raise OSError(f"Refusing root as profile directory: {profile_dir}")
 
     # Validate existing ancestors from root downward and create missing per-user
-    # intermediate directories with mode 0700 only beneath trusted parents.
+    # intermediate directories with explicit 0700 mode only beneath trusted parents.
     for idx, anc in enumerate(ancestors):
         is_immediate = idx == len(ancestors) - 1
         try:
             _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
         except FileNotFoundError:
             os.makedirs(str(anc), mode=0o700, exist_ok=True)
+            _harden_owned_dir_0700(anc, uid)
             _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
 
     try:
-        st = os.lstat(target)
+        os.lstat(target)
     except FileNotFoundError:
         os.makedirs(str(target), mode=0o700, exist_ok=True)
-        st = os.lstat(target)
 
-    if stat.S_ISLNK(st.st_mode):
-        raise OSError(f"Refusing symlink profile directory: {profile_dir}")
-    if not stat.S_ISDIR(st.st_mode):
-        raise OSError(f"Profile path is not a directory: {profile_dir}")
+    verified_id = _harden_owned_dir_0700(target, uid)
 
+    # Resolve the full canonical path (expanding any root-owned system symlinks
+    # like macOS /var -> /private/var), validate every resolved ancestor from /
+    # downward, and confirm canonical still refers to the exact verified inode.
+    canonical = target.resolve(strict=True)
+    canonical_ancestors = _ancestor_chain(canonical)
+    if not canonical_ancestors:
+        raise OSError(f"Refusing root as profile directory: {profile_dir}")
+    for idx, anc in enumerate(canonical_ancestors):
+        _check_trusted_ancestor(
+            anc, is_immediate_parent=(idx == len(canonical_ancestors) - 1), uid=uid
+        )
+
+    cst = os.lstat(canonical)
+    if stat.S_ISLNK(cst.st_mode) or not stat.S_ISDIR(cst.st_mode):
+        raise OSError(f"Resolved profile path is not a directory: {canonical}")
     if os.name != "nt":
-        if st.st_uid != uid:
-            raise PermissionError(f"Profile directory is not owned by uid {uid}: {profile_dir}")
-        if hasattr(os, "O_DIRECTORY") and hasattr(os, "fchmod"):
-            open_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(str(target), open_flags)
-            try:
-                fst = os.fstat(fd)
-                if not stat.S_ISDIR(fst.st_mode):
-                    raise OSError(f"Profile path is not a directory: {profile_dir}")
-                if fst.st_uid != uid:
-                    raise PermissionError(
-                        f"Profile directory is not owned by uid {uid}: {profile_dir}"
-                    )
-                if stat.S_IMODE(fst.st_mode) != 0o700:
-                    os.fchmod(fd, 0o700)
-                    fst = os.fstat(fd)
-                    if stat.S_IMODE(fst.st_mode) != 0o700:
-                        raise PermissionError(
-                            f"Could not enforce 0700 permissions on profile directory: {profile_dir}"
-                        )
-            finally:
-                os.close(fd)
-        elif stat.S_IMODE(st.st_mode) != 0o700:
-            os.chmod(str(target), 0o700)
-            st = os.lstat(target)
-            if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
-                raise OSError(f"Profile directory changed unexpectedly: {profile_dir}")
-            if st.st_uid != uid:
-                raise PermissionError(f"Profile directory is not owned by uid {uid}: {profile_dir}")
-            if stat.S_IMODE(st.st_mode) != 0o700:
-                raise PermissionError(
-                    f"Could not enforce 0700 permissions on profile directory: {profile_dir}"
-                )
+        if cst.st_uid != uid:
+            raise PermissionError(
+                f"Resolved profile directory is not owned by uid {uid}: {canonical}"
+            )
+        if stat.S_IMODE(cst.st_mode) != 0o700:
+            raise PermissionError(
+                f"Resolved profile directory does not have mode 0700: {canonical}"
+            )
+        if (cst.st_dev, cst.st_ino) != verified_id:
+            raise OSError(f"Profile directory changed during verification: {canonical}")
+
+    return str(canonical)
 
 
 def build_recipe(
@@ -373,7 +409,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not recipe["applies"] or not recipe["command"]:
             return 0
         try:
-            _ensure_private_profile_dir(recipe["profile_dir"])
+            verified_profile_dir = _ensure_private_profile_dir(recipe["profile_dir"])
         except OSError as exc:
             print(
                 f"[box-chrome login] unsafe or unusable profile directory: "
@@ -383,6 +419,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         launch_env = os.environ.copy()
         launch_env.update(recipe["env"])
+        launch_env["CHROME_USER_DATA_DIR"] = verified_profile_dir
         try:
             subprocess.Popen(recipe["command"], env=launch_env)
         except OSError as exc:

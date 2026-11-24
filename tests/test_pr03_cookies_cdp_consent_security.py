@@ -915,6 +915,134 @@ class TestHigh083BoxChromeLoginProfileDir:
         ).read_text(encoding="utf-8")
         assert "/tmp/last30days-x-chrome" not in setup_doc
         assert 'box_chrome_login.py" --exec' in setup_doc
+        assert "--profile-dir" in setup_doc
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX canonical path checks")
+    def test_exec_passes_verified_canonical_profile_dir_to_chrome(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        popen = mock.MagicMock()
+        with (
+            mock.patch("lib.env.x_extras_enabled", return_value=True),
+            mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+            mock.patch.object(bcl.env, "get_config", return_value={}),
+            mock.patch("subprocess.Popen", popen),
+        ):
+            assert bcl.main(["--exec", "--profile-dir", "rel-profile"]) == 0
+        expected = str((tmp_path / "rel-profile").resolve(strict=True))
+        assert popen.call_args.kwargs["env"]["CHROME_USER_DATA_DIR"] == expected
+        assert stat.S_IMODE(os.lstat(expected).st_mode) == 0o700
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX fallback cache checks")
+    @pytest.mark.parametrize("bad_mode", [0o777, 0o775])
+    def test_exec_rejects_writable_fallback_home_cache_dir(self, tmp_path, monkeypatch, bad_mode):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(mode=0o700)
+        os.chmod(fake_home, 0o700)
+        cache_dir = fake_home / ".cache"
+        cache_dir.mkdir()
+        os.chmod(cache_dir, bad_mode)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(fake_home))
+        try:
+            with (
+                mock.patch("lib.env.x_extras_enabled", return_value=True),
+                mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+                mock.patch.object(bcl.env, "get_config", return_value={}),
+                mock.patch(
+                    "subprocess.Popen",
+                    side_effect=AssertionError("must not spawn with writable ~/.cache"),
+                ),
+            ):
+                assert bcl.main(["--exec"]) == 1
+        finally:
+            os.chmod(cache_dir, 0o700)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink fallback checks")
+    def test_exec_rejects_symlink_fallback_home_cache_dir(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir(mode=0o700)
+        os.chmod(fake_home, 0o700)
+        real_cache = tmp_path / "real-cache"
+        real_cache.mkdir(mode=0o700)
+        os.chmod(real_cache, 0o700)
+        (fake_home / ".cache").symlink_to(real_cache)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(fake_home))
+        with (
+            mock.patch("lib.env.x_extras_enabled", return_value=True),
+            mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+            mock.patch.object(bcl.env, "get_config", return_value={}),
+            mock.patch(
+                "subprocess.Popen",
+                side_effect=AssertionError("must not spawn when ~/.cache is a symlink"),
+            ),
+        ):
+            assert bcl.main(["--exec"]) == 1
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX resolved ancestor checks")
+    def test_exec_verifies_resolved_ancestor_chain_behind_root_symlink(self, tmp_path):
+        # Simulate a root-owned ancestor symlink (like macOS /var -> /private/var)
+        # pointing to a 0o700 target whose own parent in the resolved path is 0o777.
+        unsafe_parent = tmp_path / "unsafe-resolved-parent"
+        unsafe_parent.mkdir()
+        os.chmod(unsafe_parent, 0o777)
+        safe_target = unsafe_parent / "safe-target"
+        safe_target.mkdir(mode=0o700)
+        os.chmod(safe_target, 0o700)
+        parent_in_target = safe_target / "owned-parent"
+        parent_in_target.mkdir(mode=0o700)
+        os.chmod(parent_in_target, 0o700)
+        profile_in_target = parent_in_target / "x-chrome"
+        profile_in_target.mkdir(mode=0o700)
+        os.chmod(profile_in_target, 0o700)
+
+        root_link = tmp_path / "sys-link"
+        root_link.symlink_to(safe_target)
+        via_link = root_link / "owned-parent" / "x-chrome"
+
+        real_lstat = os.lstat
+
+        def root_owned_symlink_lstat(path, *args, **kwargs):
+            st = real_lstat(path, *args, **kwargs)
+            if Path(path) == root_link:
+                fake = mock.MagicMock()
+                fake.st_mode = st.st_mode
+                fake.st_uid = 0
+                fake.st_dev = st.st_dev
+                fake.st_ino = st.st_ino
+                return fake
+            return st
+
+        try:
+            with (
+                mock.patch("os.lstat", side_effect=root_owned_symlink_lstat),
+                mock.patch("lib.env.x_extras_enabled", return_value=True),
+                mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+                mock.patch.object(bcl.env, "get_config", return_value={}),
+                mock.patch(
+                    "subprocess.Popen",
+                    side_effect=AssertionError("must reject unsafe resolved ancestor chain"),
+                ),
+            ):
+                assert bcl.main(["--exec", "--profile-dir", str(via_link)]) == 1
+        finally:
+            os.chmod(unsafe_parent, 0o700)
+
+        # Once the resolved ancestor is safe (0o700), --exec succeeds and passes the canonical path.
+        popen = mock.MagicMock()
+        with (
+            mock.patch("os.lstat", side_effect=root_owned_symlink_lstat),
+            mock.patch("lib.env.x_extras_enabled", return_value=True),
+            mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+            mock.patch.object(bcl.env, "get_config", return_value={}),
+            mock.patch("subprocess.Popen", popen),
+        ):
+            assert bcl.main(["--exec", "--profile-dir", str(via_link)]) == 0
+        assert popen.call_args.kwargs["env"]["CHROME_USER_DATA_DIR"] == str(
+            profile_in_target.resolve(strict=True)
+        )
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode/uid checks")
     def test_exec_creates_0700_dir_and_tightens_loose_owner_dir(self, tmp_path):
