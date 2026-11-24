@@ -516,28 +516,19 @@ def _load_keychain(keys: list[str], aliases: dict[str, list[dict[str, str]]] | N
     return env
 
 
-def _normalize_pass_prefix(prefix: str | None) -> str:
-    """Normalize LAST30DAYS_PASS_PREFIX to match setup-pass.sh (trailing '/')."""
-    trimmed = (prefix or "").strip()
-    if not trimmed:
-        return DEFAULT_PASS_PATH_PREFIX
-    stripped = trimmed.rstrip("/")
-    return f"{stripped}/" if stripped else ""
-
-
 def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     """Load credentials from a pass(1) store (no-op if `pass` is absent).
 
     The Linux/Unix analog of the macOS Keychain source. Each env-var name is
-    looked up at pass path ``f"{normalized_prefix}{key}"`` — mirroring
-    Keychain's ``last30days-<key>`` service-name convention — so any user
-    stores keys under that namespace without editing code (prefix overridable
-    via ``LAST30DAYS_PASS_PREFIX``, normalized to end with ``/`` to match
-    ``setup-pass.sh``). The secret is decrypted in a subprocess and read from
-    stdout's first line (pass keeps the secret there; any metadata follows) —
-    never written to disk, never logged. Honors ``PASSWORD_STORE_DIR``.
-    Missing entries and failures are silent: pass is a lowest-priority, additive
-    source like Keychain, so an explicit .env or process-env value still wins.
+    looked up at pass path ``f"{prefix}{key}"`` — mirroring Keychain's
+    ``last30days-<key>`` service-name convention — so any user stores keys under
+    that namespace without editing code (prefix overridable via
+    ``LAST30DAYS_PASS_PREFIX``, used verbatim to match ``setup-pass.sh``). The
+    secret is decrypted in a subprocess and read from stdout's first line (pass
+    keeps the secret there; any metadata follows) — never written to disk, never
+    logged. Honors ``PASSWORD_STORE_DIR``. Missing entries and failures are
+    silent: pass is a lowest-priority, additive source like Keychain, so an
+    explicit .env or process-env value still wins.
     """
     import shutil
     pass_bin = shutil.which("pass")
@@ -545,34 +536,23 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
         return {}
 
     import subprocess
-    raw_prefix = (prefix or "").strip()
-    normalized_prefix = _normalize_pass_prefix(raw_prefix)
-    prefixes = [normalized_prefix]
-    if raw_prefix and raw_prefix != normalized_prefix:
-        prefixes.append(raw_prefix)
     env: dict[str, str] = {}
-    timed_out = False
     for key in keys:
-        for candidate_prefix in prefixes:
-            try:
-                result = subprocess.run(
-                    [pass_bin, "show", "--", f"{candidate_prefix}{key}"],
-                    capture_output=True, text=True, timeout=5,
-                    encoding="utf-8", errors="replace",
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                # A timeout (GPG/pinentry hanging) or exec failure isn't a per-key
-                # condition — it means the store is unusable right now. Stop instead
-                # of paying the timeout once per key; otherwise a locked store would
-                # stall every config load by 5s x len(keys). A genuinely missing key
-                # returns fast with a non-zero exit and is handled below.
-                timed_out = True
-                break
-            if result.returncode == 0 and result.stdout.strip():
-                env.update({key: result.stdout.strip().splitlines()[0]})
-                break
-        if timed_out:
+        try:
+            result = subprocess.run(
+                [pass_bin, "show", "--", f"{prefix}{key}"],
+                capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="replace",
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            # A timeout (GPG/pinentry hanging) or exec failure isn't a per-key
+            # condition — it means the store is unusable right now. Stop instead
+            # of paying the timeout once per key; otherwise a locked store would
+            # stall every config load by 5s x len(keys). A genuinely missing key
+            # returns fast with a non-zero exit and is handled below.
             break
+        if result.returncode == 0 and result.stdout.strip():
+            env.update({key: result.stdout.strip().splitlines()[0]})
     return env
 
 
@@ -719,7 +699,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
             os.environ.get("LAST30DAYS_PASS_PREFIX")
             or merged_env.get("LAST30DAYS_PASS_PREFIX")
             or DEFAULT_PASS_PATH_PREFIX
-        ).strip() or DEFAULT_PASS_PATH_PREFIX
+        )
         pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
         pass_env = _load_pass(pass_missing, pass_prefix)
         merged_env = {**pass_env, **merged_env}

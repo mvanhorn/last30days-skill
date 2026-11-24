@@ -1149,8 +1149,26 @@ _AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNOR
 _GITHUB_TOKEN_RE = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b"
 )
+_SECRET_FIELD_NAMES = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "authorization",
+        "password",
+        "cookie",
+    }
+)
+_SAFE_ERROR_SUMMARY_KEYS = ("error", "error_description", "message", "detail")
 _SECRET_FIELD_RE = re.compile(
-    r"""(["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}&;]+)""",
+    r"""(["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}&;]+)""",
+    re.IGNORECASE,
+)
+_UNCLOSED_SECRET_QUOTE_RE = re.compile(
+    r"""["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*\\?$|'(?:\\.|[^'\\])*\\?$)""",
     re.IGNORECASE,
 )
 _URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
@@ -1276,7 +1294,7 @@ def _is_valid_verification_uri(uri: Any) -> bool:
         return False
     if (parts.hostname or "").lower() != "github.com":
         return False
-    if parts.query or parts.fragment:
+    if parts.query or parts.fragment or "?" in uri or "#" in uri:
         return False
     path = parts.path
     if path != "/login/device" and not path.startswith("/login/device/"):
@@ -1478,6 +1496,24 @@ _PROFILE_ERROR_BODY_LIMIT = 200
 _PROFILE_ERROR_READ_LIMIT = 65536
 
 
+def _redact_json_value(value: Any, *, secrets: Tuple[str, ...] = ()) -> Any:
+    """Recursively redact sensitive keys and scrub string values in parsed JSON."""
+    if isinstance(value, dict):
+        return {
+            k: (
+                "[REDACTED]"
+                if isinstance(k, str) and k.strip().lower() in _SECRET_FIELD_NAMES
+                else _redact_json_value(v, secrets=secrets)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_json_value(item, secrets=secrets) for item in value]
+    if isinstance(value, str):
+        return _scrub_error_text(value, secrets=secrets)
+    return value
+
+
 def _http_error_detail(
     exc: HTTPError,
     *,
@@ -1486,8 +1522,9 @@ def _http_error_detail(
 ) -> str:
     """Build a diagnosable HTTPError string including a scrubbed, truncated body.
 
-    Secrets are redacted before truncation so tokens straddling ``body_limit``
-    cannot leak partial prefixes to logs or stdout JSON.
+    JSON dict bodies are parsed, recursively redacted, and reduced to safe
+    summary fields before serialization. Non-JSON bodies with unclosed secret
+    quotes are omitted rather than risking partial credential leaks.
     """
     base = _scrub_error_text(
         f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": "),
@@ -1507,7 +1544,22 @@ def _http_error_detail(
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
         return base
-    text = _scrub_error_text(text, secrets=secrets)
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        redacted = _redact_json_value(parsed, secrets=secrets)
+        summary = {
+            key: redacted[key]
+            for key in _SAFE_ERROR_SUMMARY_KEYS
+            if key in redacted
+        }
+        text = json.dumps(summary or redacted, ensure_ascii=False)
+    else:
+        if _UNCLOSED_SECRET_QUOTE_RE.search(text):
+            return base
+        text = _scrub_error_text(text, secrets=secrets)
     if len(text) > body_limit:
         text = text[:body_limit] + "…"
     return f"{base} body={text!r}"

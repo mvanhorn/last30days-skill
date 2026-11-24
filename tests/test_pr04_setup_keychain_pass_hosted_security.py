@@ -387,8 +387,10 @@ def test_verification_uri_validator_accepts_legitimate_github_uris(uri):
         "https://github.com:8443/login/device",
         "https://github.com/evil",
         "https://github.com/login/device?user_code=ABCD-1234",
+        "https://github.com/login/device?",
         "https://github.com/login/device?return_to=https://evil.example",
         "https://github.com/login/device#frag",
+        "https://github.com/login/device#",
         "https://github.com/login/device-evil",
         "https://github.com/login/device/../../evil",
         "https://github.com/login/device/%2e%2e/evil",
@@ -579,6 +581,64 @@ def test_setup_wizard_scrub_handles_at_password_and_whitespace_secret():
         "https://alice:p@ss@word@api.scrapecreators.com/profile", secrets=("   ",)
     ) == "https://api.scrapecreators.com/profile"
     assert setup_wizard._scrub_error_text("plain message with spaces", secrets=("   ",)) == "plain message with spaces"
+
+
+def test_http_error_detail_redacts_escaped_quotes_in_json_and_omits_unclosed_secret_bodies(caplog):
+    # 1. Valid JSON /profile 500 with escaped quote inside access_token: neither half leaks.
+    escaped_json_body = json.dumps(
+        {"error": "bad", "access_token": 'gho_part1"part2_secret_tail'}
+    ).encode("utf-8")
+
+    def fake_500_json(_req, timeout=15):
+        raise urllib.error.HTTPError(
+            "https://api.scrapecreators.com/v1/github/device/profile",
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(escaped_json_body),
+        )
+
+    with caplog.at_level("WARNING", logger=setup_wizard.logger.name), \
+         mock.patch("lib.setup_wizard.time.sleep"), \
+         mock.patch("lib.setup_wizard.urlopen", side_effect=fake_500_json):
+        res_json = setup_wizard.fetch_api_key("gho_unrelated_caller_tok")
+
+    combined_json = json.dumps(res_json) + "\n" + caplog.text
+    assert res_json["ok"] is False
+    assert res_json["http_status"] == 500
+    assert "part1" not in combined_json
+    assert "part2_secret_tail" not in combined_json
+    assert "bad" in res_json["detail"]
+
+    # 2. Non-JSON body with escaped quote inside a secret field: regex scrubs across escaped quote.
+    non_json_escaped = 'upstream failed: access_token="raw_part1\\"raw_part2_secret_tail" status=500'
+    scrubbed = setup_wizard._scrub_error_text(non_json_escaped)
+    assert "raw_part1" not in scrubbed
+    assert "raw_part2_secret_tail" not in scrubbed
+
+    # 3. Malformed / truncated non-JSON body with unclosed quote on a secret field: body omitted.
+    caplog.clear()
+    unclosed_body = b'error: access_token="unclosed_part1\\"unclosed_part2_secret_tail'
+
+    def fake_500_unclosed(_req, timeout=15):
+        raise urllib.error.HTTPError(
+            "https://api.scrapecreators.com/v1/github/device/profile",
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(unclosed_body),
+        )
+
+    with caplog.at_level("WARNING", logger=setup_wizard.logger.name), \
+         mock.patch("lib.setup_wizard.time.sleep"), \
+         mock.patch("lib.setup_wizard.urlopen", side_effect=fake_500_unclosed):
+        res_unclosed = setup_wizard.fetch_api_key("gho_unrelated_caller_tok")
+
+    combined_unclosed = json.dumps(res_unclosed) + "\n" + caplog.text
+    assert res_unclosed["ok"] is False
+    assert "unclosed_part1" not in combined_unclosed
+    assert "unclosed_part2_secret_tail" not in combined_unclosed
+    assert "body=" not in res_unclosed["detail"]
 
 
 def test_fetch_api_key_scrubs_access_token_and_secrets_from_http_error_bodies(caplog):
@@ -966,11 +1026,11 @@ def test_setup_pass_rejects_unlisted_or_traversal_keys(mock_pass_env, bad_key):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell script")
-def test_setup_pass_uses_end_of_options_and_normalizes_prefix(mock_pass_env):
+def test_setup_pass_uses_end_of_options_and_preserves_prefix(mock_pass_env):
     store, calls_file, base_env = mock_pass_env
-    env_vars = {**base_env, "LAST30DAYS_PASS_PREFIX": "secrets/l30"}
+    env_vars = {**base_env, "LAST30DAYS_PASS_PREFIX": "secrets/l30/"}
 
-    # Insert (normalizes prefix to secrets/l30/)
+    # Insert
     ins = subprocess.run(
         ["bash", str(SETUP_PASS_SH), "OPENAI_API_KEY"],
         input="sk-dummy-1\n",
@@ -1034,63 +1094,8 @@ def test_setup_pass_uses_end_of_options_and_normalizes_prefix(mock_pass_env):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell script")
-def test_setup_pass_and_env_loader_agree_on_prefix_without_trailing_slash(mock_pass_env, monkeypatch):
-    """LAST30DAYS_PASS_PREFIX without trailing slash resolves identically in setup-pass.sh and lib/env.py."""
-    store, _calls_file, base_env = mock_pass_env
-    pass_bin = Path(base_env["PATH"].split(os.pathsep)[0]) / "pass"
-    pass_bin.write_text(
-        f"#!{sys.executable}\n"
-        "import os, pathlib, sys\n"
-        "args = sys.argv[1:]\n"
-        "target = pathlib.Path(os.environ['PASSWORD_STORE_DIR']) / (args[-1] + '.gpg')\n"
-        "if args and args[0] == 'insert':\n"
-        "    target.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    target.write_text(sys.stdin.read(), encoding='utf-8')\n"
-        "    sys.exit(0)\n"
-        "if args and args[0] == 'show':\n"
-        "    if target.exists():\n"
-        "        sys.stdout.write(target.read_text(encoding='utf-8'))\n"
-        "        sys.exit(0)\n"
-        "    sys.exit(1)\n"
-        "sys.exit(3)\n",
-        encoding="utf-8",
-    )
-    pass_bin.chmod(0o755)
-
-    prefix_no_slash = "secrets/l30"
-    ins = subprocess.run(
-        ["bash", str(SETUP_PASS_SH), "OPENAI_API_KEY"],
-        input="sk-roundtrip-prefix\n",
-        text=True,
-        capture_output=True,
-        timeout=10,
-        env={**base_env, "LAST30DAYS_PASS_PREFIX": prefix_no_slash},
-    )
-    assert ins.returncode == 0, ins.stderr
-    assert (store / "secrets" / "l30" / "OPENAI_API_KEY.gpg").is_file()
-
-    monkeypatch.setenv("PATH", base_env["PATH"])
-    monkeypatch.setenv("PASSWORD_STORE_DIR", base_env["PASSWORD_STORE_DIR"])
-    monkeypatch.setenv("LAST30DAYS_PASS_PREFIX", prefix_no_slash)
-    with mock.patch("shutil.which", return_value=str(pass_bin)):
-        loaded = env._load_pass(["OPENAI_API_KEY"], prefix_no_slash)
-        assert loaded == {"OPENAI_API_KEY": "sk-roundtrip-prefix"}
-        cfg = env.get_config()
-        assert cfg["OPENAI_API_KEY"] == "sk-roundtrip-prefix"
-
-    # Legacy unnormalized prefix (e.g. `work-OPENAI_API_KEY` with `LAST30DAYS_PASS_PREFIX=work-`)
-    # still resolves via fallback when `work-/OPENAI_API_KEY` does not exist.
-    (store / "work-OPENAI_API_KEY.gpg").write_text("sk-legacy-work-key\n", encoding="utf-8")
-    monkeypatch.setenv("LAST30DAYS_PASS_PREFIX", "work-")
-    with mock.patch("shutil.which", return_value=str(pass_bin)):
-        assert env._load_pass(["OPENAI_API_KEY"], "work-") == {"OPENAI_API_KEY": "sk-legacy-work-key"}
-        cfg_legacy = env.get_config()
-        assert cfg_legacy["OPENAI_API_KEY"] == "sk-legacy-work-key"
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script")
-def test_setup_pass_legacy_prefix_list_delete_and_replace_migration(mock_pass_env, monkeypatch):
-    """When LAST30DAYS_PASS_PREFIX lacks '/', --list, --delete, and --replace manage legacy entries cleanly."""
+def test_setup_pass_and_env_loader_preserve_exact_prefix_and_isolate_profiles(mock_pass_env, monkeypatch):
+    """setup-pass.sh and lib/env.py agree verbatim on every valid prefix, keeping `work-` and `work-/` isolated."""
     store, _calls_file, base_env = mock_pass_env
     pass_bin = Path(base_env["PATH"].split(os.pathsep)[0]) / "pass"
     pass_bin.write_text(
@@ -1117,66 +1122,56 @@ def test_setup_pass_legacy_prefix_list_delete_and_replace_migration(mock_pass_en
     )
     pass_bin.chmod(0o755)
 
-    work_env = {**base_env, "LAST30DAYS_PASS_PREFIX": "work-"}
-    legacy_file = store / "work-OPENAI_API_KEY.gpg"
-    normalized_file = store / "work-" / "OPENAI_API_KEY.gpg"
-    legacy_file.write_text("sk-legacy-old\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", base_env["PATH"])
+    monkeypatch.setenv("PASSWORD_STORE_DIR", base_env["PASSWORD_STORE_DIR"])
 
-    # 1. --list detects a legacy-only entry.
-    lst = subprocess.run(
-        ["bash", str(SETUP_PASS_SH), "--list"],
-        text=True,
-        capture_output=True,
-        timeout=10,
-        env=work_env,
-    )
-    assert lst.returncode == 0, lst.stderr
-    assert "OPENAI_API_KEY" in lst.stdout
+    # 1. Exact agreement between setup-pass.sh and env._load_pass / env.get_config across valid prefixes.
+    for prefix, secret in (
+        ("last30days/", "sk-default-prefix"),
+        ("secrets/l30/", "sk-nested-prefix"),
+        ("work-", "sk-profile-a"),
+        ("work-/", "sk-profile-b"),
+    ):
+        ins = subprocess.run(
+            ["bash", str(SETUP_PASS_SH), "OPENAI_API_KEY"],
+            input=f"{secret}\n",
+            text=True,
+            capture_output=True,
+            timeout=10,
+            env={**base_env, "LAST30DAYS_PASS_PREFIX": prefix},
+        )
+        assert ins.returncode == 0, ins.stderr
+        assert (store / f"{prefix}OPENAI_API_KEY.gpg").read_text(encoding="utf-8") == f"{secret}\n"
 
-    # 2. Without --replace, a legacy entry is treated as existing and skipped safely.
-    skip = subprocess.run(
-        ["bash", str(SETUP_PASS_SH), "OPENAI_API_KEY"],
-        input="sk-should-not-write\n",
-        text=True,
-        capture_output=True,
-        timeout=10,
-        env=work_env,
-    )
-    assert skip.returncode == 0, skip.stderr
-    assert "skipping" in skip.stdout
-    assert legacy_file.read_text(encoding="utf-8") == "sk-legacy-old\n"
-    assert not normalized_file.exists()
+        monkeypatch.setenv("LAST30DAYS_PASS_PREFIX", prefix)
+        with mock.patch("shutil.which", return_value=str(pass_bin)):
+            assert env._load_pass(["OPENAI_API_KEY"], prefix) == {"OPENAI_API_KEY": secret}
+            assert env.get_config()["OPENAI_API_KEY"] == secret
 
-    # 3. Interactive --replace saves the normalized entry AND removes the stale legacy entry.
+    # 2. Replacing and deleting in profile `work-` must NEVER touch profile `work-/`.
     rep = subprocess.run(
         ["bash", str(SETUP_PASS_SH), "--replace", "OPENAI_API_KEY"],
-        input="sk-migrated-new\n",
+        input="sk-profile-a-updated\n",
         text=True,
         capture_output=True,
         timeout=10,
-        env=work_env,
+        env={**base_env, "LAST30DAYS_PASS_PREFIX": "work-"},
     )
     assert rep.returncode == 0, rep.stderr
-    assert "replaced=1" in rep.stdout
-    assert normalized_file.read_text(encoding="utf-8") == "sk-migrated-new\n"
-    assert not legacy_file.exists()
+    assert (store / "work-OPENAI_API_KEY.gpg").read_text(encoding="utf-8") == "sk-profile-a-updated\n"
+    assert (store / "work-" / "OPENAI_API_KEY.gpg").read_text(encoding="utf-8") == "sk-profile-b\n"
 
-    # 4. When BOTH legacy and normalized entries exist, --delete removes BOTH so env._load_pass sees nothing.
-    legacy_file.write_text("sk-legacy-stale\n", encoding="utf-8")
-    assert legacy_file.exists() and normalized_file.exists()
     rm = subprocess.run(
         ["bash", str(SETUP_PASS_SH), "--delete", "OPENAI_API_KEY"],
         text=True,
         capture_output=True,
         timeout=10,
-        env=work_env,
+        env={**base_env, "LAST30DAYS_PASS_PREFIX": "work-"},
     )
     assert rm.returncode == 0, rm.stderr
-    assert "deleted: OPENAI_API_KEY" in rm.stdout
-    assert not legacy_file.exists()
-    assert not normalized_file.exists()
+    assert not (store / "work-OPENAI_API_KEY.gpg").exists()
+    assert (store / "work-" / "OPENAI_API_KEY.gpg").read_text(encoding="utf-8") == "sk-profile-b\n"
 
-    monkeypatch.setenv("PATH", base_env["PATH"])
-    monkeypatch.setenv("PASSWORD_STORE_DIR", base_env["PASSWORD_STORE_DIR"])
     with mock.patch("shutil.which", return_value=str(pass_bin)):
         assert env._load_pass(["OPENAI_API_KEY"], "work-") == {}
+        assert env._load_pass(["OPENAI_API_KEY"], "work-/") == {"OPENAI_API_KEY": "sk-profile-b"}

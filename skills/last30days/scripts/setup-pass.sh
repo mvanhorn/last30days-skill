@@ -73,18 +73,12 @@ matches_regex() {
 }
 
 # Validate PREFIX: relative segments only (no leading '/', '-', or '.'; no '..'
-# or hidden segments; no control chars or whitespace), normalized with trailing '/'.
+# or hidden segments; no control chars or whitespace), used verbatim to match lib/env.py.
 # Regexes live in variables because macOS Bash 3.2 rejects inline (...) in `=~`.
 prefix_re='^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*/?$'
 if [[ "$PREFIX" == *$'\n'* || "$PREFIX" == *$'\r'* ]] || ! matches_regex "$PREFIX" "$prefix_re"; then
   echo "invalid LAST30DAYS_PASS_PREFIX: must be a relative path prefix like 'last30days/'" >&2
   exit 2
-fi
-RAW_PREFIX="$PREFIX"
-PREFIX="${PREFIX%/}/"
-LEGACY_PREFIX=""
-if [[ "$RAW_PREFIX" != "$PREFIX" ]]; then
-  LEGACY_PREFIX="$RAW_PREFIX"
 fi
 
 key_re='^[A-Z0-9_]+$'
@@ -121,8 +115,7 @@ case "$ACTION" in
   list)
     echo "Stored ${PREFIX}* pass entries:"
     for key in "${ALL_KEYS[@]}"; do
-      if pass show -- "${PREFIX}${key}" >/dev/null 2>&1 || \
-         { [[ -n "$LEGACY_PREFIX" ]] && pass show -- "${LEGACY_PREFIX}${key}" >/dev/null 2>&1; }; then
+      if pass show -- "${PREFIX}${key}" >/dev/null 2>&1; then
         echo "  $key"
       fi
     done
@@ -133,16 +126,7 @@ case "$ACTION" in
       echo "--delete needs at least one KEY name" >&2; exit 2
     fi
     for key in "${TARGETS[@]}"; do
-      removed=0
       if pass rm -f -- "${PREFIX}${key}" >/dev/null 2>&1; then
-        removed=1
-      fi
-      if [[ -n "$LEGACY_PREFIX" ]]; then
-        if pass rm -f -- "${LEGACY_PREFIX}${key}" >/dev/null 2>&1; then
-          removed=1
-        fi
-      fi
-      if [[ "$removed" -eq 1 ]]; then
         echo "deleted: $key"
       else
         echo "not found: $key"
@@ -160,12 +144,7 @@ added=0; skipped=0; replaced=0
 for key in "${TARGETS[@]}"; do
   # Existence must not depend on GPG decryption or a successful pinentry prompt.
   entry="${STORE_DIR}/${PREFIX}${key}.gpg"
-  legacy_entry=""
-  if [[ -n "$LEGACY_PREFIX" ]]; then
-    legacy_entry="${STORE_DIR}/${LEGACY_PREFIX}${key}.gpg"
-  fi
-  if [[ -e "${entry}" || -L "${entry}" ]] || \
-     { [[ -n "${legacy_entry}" ]] && [[ -e "${legacy_entry}" || -L "${legacy_entry}" ]]; }; then
+  if [[ -e "${entry}" || -L "${entry}" ]]; then
     existing=1
   else
     existing=0
@@ -188,9 +167,7 @@ for key in "${TARGETS[@]}"; do
     continue
   fi
   # pass treats piped input as overwrite consent, even without --force.
-  if [[ "${REPLACE}" -eq 0 ]] && \
-     { [[ -e "${entry}" || -L "${entry}" ]] || \
-       { [[ -n "${legacy_entry}" ]] && [[ -e "${legacy_entry}" || -L "${legacy_entry}" ]]; }; }; then
+  if [[ "${REPLACE}" -eq 0 && (-e "${entry}" || -L "${entry}") ]]; then
     printf "  %-28s (set while prompting, skipping — use --replace to overwrite)\n" "${key}"
     skipped=$((skipped + 1))
     continue
@@ -205,11 +182,6 @@ for key in "${TARGETS[@]}"; do
     echo "  failed: $key (pass insert error)" >&2
     skipped=$((skipped + 1))
     continue
-  fi
-  if [[ -n "${legacy_entry}" && (-e "${legacy_entry}" || -L "${legacy_entry}") ]]; then
-    if ! pass rm -f -- "${LEGACY_PREFIX}${key}" >/dev/null 2>&1; then
-      echo "  warning: failed to remove legacy entry ${LEGACY_PREFIX}${key}" >&2
-    fi
   fi
   if [[ "$existing" -eq 1 ]]; then
     replaced=$((replaced + 1))
