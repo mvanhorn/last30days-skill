@@ -6,6 +6,7 @@ import dataclasses
 import math
 import re
 from collections.abc import Iterable
+from datetime import date, datetime, timezone
 
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -118,7 +119,63 @@ def _primary_score(local_relevance: float, freshness: int, source_quality: float
     return (local_relevance * 100.0) + freshness + (source_quality * 10.0)
 
 
-def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem) -> schema.SourceItem:
+def _parse_iso_day(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if len(text) == 10:
+            return date.fromisoformat(text).isoformat()
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return (dt.astimezone(timezone.utc) if dt.tzinfo else dt).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _matched_date_in_window(
+    date_str: str,
+    range_from: str | None,
+    range_to: str | None,
+) -> bool:
+    text = str(date_str or "").strip()
+    if not text:
+        return False
+    if not range_from and not range_to:
+        return True
+    iso = _parse_iso_day(text)
+    if not iso:
+        return False
+    start = _parse_iso_day(range_from) if range_from else None
+    end = _parse_iso_day(range_to) if range_to else None
+    if start and iso < start:
+        return False
+    if end and iso > end:
+        return False
+    return True
+
+
+def _sanitize_reddit_matched_comment(
+    item: schema.SourceItem,
+    range_from: str | None,
+    range_to: str | None,
+) -> None:
+    if item.source != "reddit" or not isinstance(item.metadata, dict):
+        return
+    if not range_from and not range_to:
+        return
+    matched_date = str(item.metadata.get("matched_comment_date") or "").strip()
+    if matched_date and not _matched_date_in_window(matched_date, range_from, range_to):
+        item.metadata.pop("matched_comment_date", None)
+        item.metadata.pop("matched_comment_url", None)
+
+
+def merge_source_items(
+    existing: schema.SourceItem,
+    incoming: schema.SourceItem,
+    *,
+    range_from: str | None = None,
+    range_to: str | None = None,
+) -> schema.SourceItem:
     """Fold ``incoming``'s enrichment and counts into ``existing`` (same thread).
 
     Keeps the richer value per field: an enrichment list the existing copy
@@ -139,7 +196,9 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
 
     reddit = existing.source == "reddit" and incoming.source == "reddit"
     if reddit:
-        _merge_reddit_fields(existing, incoming)
+        _merge_reddit_fields(
+            existing, incoming, range_from=range_from, range_to=range_to,
+        )
     in_meta = incoming.metadata or {}
     for meta_key in ("enriched_via", "reddit_subreddit"):
         val = in_meta.get(meta_key)
@@ -213,7 +272,13 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
     return existing
 
 
-def _merge_reddit_fields(existing: schema.SourceItem, incoming: schema.SourceItem) -> None:
+def _merge_reddit_fields(
+    existing: schema.SourceItem,
+    incoming: schema.SourceItem,
+    *,
+    range_from: str | None = None,
+    range_to: str | None = None,
+) -> None:
     """The Reddit fields whose winner depends on where each copy got them."""
     mine_source = existing.metadata.get("engagement_source")
     theirs_source = incoming.metadata.get("engagement_source")
@@ -251,10 +316,18 @@ def _merge_reddit_fields(existing: schema.SourceItem, incoming: schema.SourceIte
     theirs_date = str(in_meta.get("matched_comment_date") or "").strip()
     mine_url = str(existing.metadata.get("matched_comment_url") or "").strip()
     theirs_url = str(in_meta.get("matched_comment_url") or "").strip()
-    if theirs_date and (
+    if mine_date and not _matched_date_in_window(mine_date, range_from, range_to):
+        existing.metadata.pop("matched_comment_date", None)
+        existing.metadata.pop("matched_comment_url", None)
+        mine_date = ""
+        mine_url = ""
+    theirs_in_window = _matched_date_in_window(theirs_date, range_from, range_to)
+    mine_cmp = _parse_iso_day(mine_date) or mine_date
+    theirs_cmp = _parse_iso_day(theirs_date) or theirs_date
+    if theirs_in_window and (
         not mine_date
-        or theirs_date > mine_date
-        or (theirs_date == mine_date and not mine_url and theirs_url)
+        or theirs_cmp > mine_cmp
+        or (theirs_cmp == mine_cmp and not mine_url and theirs_url)
     ):
         existing.metadata["matched_comment_date"] = theirs_date
         if theirs_url:
@@ -648,6 +721,7 @@ def weighted_rrf(
             incoming_spoken = bool((item.metadata or {}).get("spoken_caption")) and bool((item.snippet or "").strip())
             if key not in candidates:
                 attached = _clone_source_item(item)
+                _sanitize_reddit_matched_comment(attached, range_from, range_to)
                 candidate_metadata: dict = {
                     "provenance": [
                         {
@@ -710,17 +784,24 @@ def weighted_rrf(
             existing_item = seen_source_items[key].get(item_key)
             if existing_item is None:
                 attached = _clone_source_item(item)
+                _sanitize_reddit_matched_comment(attached, range_from, range_to)
                 seen_source_items[key][item_key] = attached
                 candidate.source_items.append(attached)
             elif promoted:
                 new_primary = _clone_source_item(item)
-                merge_source_items(new_primary, existing_item)
+                merge_source_items(
+                    new_primary, existing_item,
+                    range_from=range_from, range_to=range_to,
+                )
                 idx = candidate.source_items.index(existing_item)
                 candidate.source_items[idx] = new_primary
                 seen_source_items[key][item_key] = new_primary
                 attached = new_primary
             else:
-                merge_source_items(existing_item, _clone_source_item(item))
+                merge_source_items(
+                    existing_item, _clone_source_item(item),
+                    range_from=range_from, range_to=range_to,
+                )
                 attached = existing_item
             candidate.engagement = _candidate_engagement_from_items(candidate.source_items)
             candidate.metadata.setdefault("provenance", []).append(

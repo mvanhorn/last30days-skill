@@ -3,10 +3,46 @@
 from __future__ import annotations
 
 import math
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
 from . import dates, schema, x_envelope
+
+
+def _parse_iso_day(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if len(text) == 10:
+            return date.fromisoformat(text).isoformat()
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return (dt.astimezone(timezone.utc) if dt.tzinfo else dt).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _matched_date_in_window(
+    date_str: str,
+    from_date: str | None,
+    to_date: str | None,
+) -> bool:
+    text = str(date_str or "").strip()
+    if not text:
+        return False
+    if not from_date and not to_date:
+        return True
+    iso = _parse_iso_day(text)
+    if not iso:
+        return False
+    start = _parse_iso_day(from_date) if from_date else None
+    end = _parse_iso_day(to_date) if to_date else None
+    if start and iso < start:
+        return False
+    if end and iso > end:
+        return False
+    return True
 
 
 def filter_by_date_range(
@@ -373,13 +409,18 @@ def _normalize_reddit(
                 if item.get(key)
             },
             # The comment a logged-in comment search matched: its date keeps
-            # an older thread in the window, and render labels it.
+            # an older thread in the window, and render labels it. Never attach
+            # a reply outside the requested [from_date, to_date] window (e.g.,
+            # post-cutoff replies in an --as-of run).
             **(
                 {
-                    "matched_comment_date": item["matched_comment"]["date"],
+                    "matched_comment_date": str(item["matched_comment"]["date"]).strip(),
                     "matched_comment_url": item["matched_comment"].get("url") or "",
                 }
-                if isinstance(item.get("matched_comment"), dict) and item["matched_comment"].get("date")
+                if isinstance(item.get("matched_comment"), dict)
+                and _matched_date_in_window(
+                    str(item["matched_comment"].get("date") or ""), from_date, to_date,
+                )
                 else {}
             ),
         },

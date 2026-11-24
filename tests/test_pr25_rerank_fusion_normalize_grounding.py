@@ -875,6 +875,128 @@ class TestHigh105FusionMultiItemIntegrity:
             "https://www.reddit.com/r/python/comments/abc123/old_thread/c_24/"
         )
 
+    def test_as_of_window_blocks_post_cutoff_matched_comment_on_merge_and_normalize(self):
+        thread_url = "https://www.reddit.com/r/python/comments/asof99/release/"
+        url_in_window = "https://www.reddit.com/r/python/comments/asof99/release/c_feb20/"
+        url_post_cutoff = "https://www.reddit.com/r/python/comments/asof99/release/c_mar10/"
+        plan = _plan("python", ["reddit"])
+
+        def _make_copy(item_id: str, rel: float, m_date: str, m_url: str) -> schema.SourceItem:
+            return schema.SourceItem(
+                item_id=item_id,
+                source="reddit",
+                title="Python release notes",
+                body="Python release notes",
+                url=thread_url,
+                published_at="2026-02-10",
+                date_confidence="high",
+                local_relevance=rel,
+                freshness=80,
+                source_quality=0.6,
+                engagement={"score": 150, "num_comments": 25},
+                metadata={
+                    "matched_comment_date": m_date,
+                    "matched_comment_url": m_url,
+                },
+            )
+
+        # Case 1a: Promoted higher-scoring copy carries post-cutoff reply (2026-03-10);
+        # fused candidate MUST keep the in-window reply (2026-02-20) and its URL.
+        copy_in = _make_copy("R-in", 0.4, "2026-02-20", url_in_window)
+        copy_post_high = _make_copy("R-post-hi", 0.95, "2026-03-10", url_post_cutoff)
+        [cand_promoted] = fusion.weighted_rrf(
+            {("primary", "reddit"): [copy_in], ("secondary", "reddit"): [copy_post_high]},
+            plan,
+            pool_limit=10,
+            range_from="2026-02-01",
+            range_to="2026-03-01",
+        )
+        assert cand_promoted.source_items[0].item_id == "R-post-hi"
+        assert cand_promoted.source_items[0].metadata["matched_comment_date"] == "2026-02-20"
+        assert cand_promoted.source_items[0].metadata["matched_comment_url"] == url_in_window
+
+        # Case 1b: Non-promoted lower-scoring copy carries post-cutoff reply;
+        # fused candidate MUST keep the in-window reply and its URL.
+        copy_in_high = _make_copy("R-in-hi", 0.95, "2026-02-20", url_in_window)
+        copy_post_low = _make_copy("R-post-lo", 0.4, "2026-03-10", url_post_cutoff)
+        [cand_non_promoted] = fusion.weighted_rrf(
+            {("primary", "reddit"): [copy_in_high], ("secondary", "reddit"): [copy_post_low]},
+            plan,
+            pool_limit=10,
+            range_from="2026-02-01",
+            range_to="2026-03-01",
+        )
+        assert cand_non_promoted.source_items[0].metadata["matched_comment_date"] == "2026-02-20"
+        assert cand_non_promoted.source_items[0].metadata["matched_comment_url"] == url_in_window
+
+        # Case 2: Reverse order — post-cutoff arrives first, in-window arrives second ->
+        # in-window pair replaces the out-of-window pair.
+        [cand_reverse] = fusion.weighted_rrf(
+            {
+                ("primary", "reddit"): [_make_copy("R-post-first", 0.9, "2026-03-10", url_post_cutoff)],
+                ("secondary", "reddit"): [_make_copy("R-in-second", 0.5, "2026-02-20", url_in_window)],
+            },
+            plan,
+            pool_limit=10,
+            range_from="2026-02-01",
+            range_to="2026-03-01",
+        )
+        assert cand_reverse.source_items[0].metadata["matched_comment_date"] == "2026-02-20"
+        assert cand_reverse.source_items[0].metadata["matched_comment_url"] == url_in_window
+
+        # Case 2b: Single copy carrying ONLY a post-cutoff reply has both fields stripped.
+        [cand_only_post] = fusion.weighted_rrf(
+            {("primary", "reddit"): [_make_copy("R-only-post", 0.8, "2026-03-10", url_post_cutoff)]},
+            plan,
+            pool_limit=10,
+            range_from="2026-02-01",
+            range_to="2026-03-01",
+        )
+        assert "matched_comment_date" not in cand_only_post.source_items[0].metadata
+        assert "matched_comment_url" not in cand_only_post.source_items[0].metadata
+
+        # Case 3: _normalize_reddit drops post-cutoff and pre-window matched_comment metadata
+        # while keeping in-window matched_comment metadata.
+        raw_items = [
+            {
+                "id": "R-norm-in",
+                "title": "In-window thread with in-window reply",
+                "url": thread_url,
+                "subreddit": "python",
+                "date": "2026-02-10",
+                "matched_comment": {"date": "2026-02-20", "url": url_in_window},
+            },
+            {
+                "id": "R-norm-post",
+                "title": "In-window thread with post-cutoff reply",
+                "url": "https://www.reddit.com/r/python/comments/asof98/release/",
+                "subreddit": "python",
+                "date": "2026-02-10",
+                "matched_comment": {"date": "2026-03-10", "url": url_post_cutoff},
+            },
+            {
+                "id": "R-norm-pre",
+                "title": "In-window thread with pre-window reply",
+                "url": "https://www.reddit.com/r/python/comments/asof97/release/",
+                "subreddit": "python",
+                "date": "2026-02-10",
+                "matched_comment": {
+                    "date": "2026-01-15",
+                    "url": "https://www.reddit.com/r/python/comments/asof97/release/c_jan15/",
+                },
+            },
+        ]
+        normalized = normalize.normalize_source_items(
+            "reddit", raw_items, "2026-02-01", "2026-03-01",
+        )
+        by_id = {si.item_id: si for si in normalized}
+        assert by_id["R-norm-in"].metadata["matched_comment_date"] == "2026-02-20"
+        assert by_id["R-norm-in"].metadata["matched_comment_url"] == url_in_window
+        assert "matched_comment_date" not in by_id["R-norm-post"].metadata
+        assert "matched_comment_url" not in by_id["R-norm-post"].metadata
+        assert "matched_comment_date" not in by_id["R-norm-pre"].metadata
+        assert "matched_comment_url" not in by_id["R-norm-pre"].metadata
+
 
 # ---------------------------------------------------------------------------
 # HIGH-106: Recompute engagement_score, longer enrichment strings, no input mutation
