@@ -331,6 +331,24 @@ def test_hosted_debug_log_scrubs_embedded_url_credentials_in_upstream_errors(mon
     assert "https://upstream.example.test/internal" in err
 
 
+def test_url_userinfo_scrubber_preserves_at_in_query_or_fragment_without_path(monkeypatch, capsys):
+    cases = [
+        ("https://example.com?email=a@b.com", "https://example.com?email=a@b.com"),
+        ("https://example.com#a@b", "https://example.com#a@b"),
+        ("https://user:p@ss@example.com/path", "https://example.com/path"),
+        ("https://user:p@ss@example.com?email=a@b.com", "https://example.com?email=a@b.com"),
+        ("https://user:p@ss@example.com#a@b", "https://example.com#a@b"),
+    ]
+    monkeypatch.setenv("LAST30DAYS_DEBUG", "1")
+    for raw_url, expected in cases:
+        assert hosted._scrub_error_text(raw_url) == expected
+        assert setup_wizard._scrub_error_text(raw_url) == expected
+        http.log(raw_url)
+        logged = capsys.readouterr().err
+        assert expected in logged
+        assert "user:p@ss" not in logged
+
+
 # ---------------------------------------------------------------------------
 # HIGH-065: setup_wizard.py verification_uri validation
 # ---------------------------------------------------------------------------
@@ -1059,3 +1077,12 @@ def test_setup_pass_and_env_loader_agree_on_prefix_without_trailing_slash(mock_p
         assert loaded == {"OPENAI_API_KEY": "sk-roundtrip-prefix"}
         cfg = env.get_config()
         assert cfg["OPENAI_API_KEY"] == "sk-roundtrip-prefix"
+
+    # Legacy unnormalized prefix (e.g. `work-OPENAI_API_KEY` with `LAST30DAYS_PASS_PREFIX=work-`)
+    # still resolves via fallback when `work-/OPENAI_API_KEY` does not exist.
+    (store / "work-OPENAI_API_KEY.gpg").write_text("sk-legacy-work-key\n", encoding="utf-8")
+    monkeypatch.setenv("LAST30DAYS_PASS_PREFIX", "work-")
+    with mock.patch("shutil.which", return_value=str(pass_bin)):
+        assert env._load_pass(["OPENAI_API_KEY"], "work-") == {"OPENAI_API_KEY": "sk-legacy-work-key"}
+        cfg_legacy = env.get_config()
+        assert cfg_legacy["OPENAI_API_KEY"] == "sk-legacy-work-key"

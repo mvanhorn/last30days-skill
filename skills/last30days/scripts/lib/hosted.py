@@ -57,7 +57,7 @@ NARRATE_PREFIX = "[narrate] step="
 TERMINAL_STATUSES = {"complete", "error"}
 
 
-_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/]+@", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
 
 
 def _err(msg: str) -> None:

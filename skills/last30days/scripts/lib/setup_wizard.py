@@ -1153,7 +1153,7 @@ _SECRET_FIELD_RE = re.compile(
     r"""(["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}&;]+)""",
     re.IGNORECASE,
 )
-_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/]+@", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
 _MAX_DEVICE_RESPONSE_BYTES = 64 * 1024
 
 

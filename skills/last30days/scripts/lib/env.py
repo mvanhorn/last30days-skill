@@ -545,24 +545,34 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
         return {}
 
     import subprocess
-    normalized_prefix = _normalize_pass_prefix(prefix)
+    raw_prefix = (prefix or "").strip()
+    normalized_prefix = _normalize_pass_prefix(raw_prefix)
+    prefixes = [normalized_prefix]
+    if raw_prefix and raw_prefix != normalized_prefix:
+        prefixes.append(raw_prefix)
     env: dict[str, str] = {}
+    timed_out = False
     for key in keys:
-        try:
-            result = subprocess.run(
-                [pass_bin, "show", "--", f"{normalized_prefix}{key}"],
-                capture_output=True, text=True, timeout=5,
-                encoding="utf-8", errors="replace",
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            # A timeout (GPG/pinentry hanging) or exec failure isn't a per-key
-            # condition — it means the store is unusable right now. Stop instead
-            # of paying the timeout once per key; otherwise a locked store would
-            # stall every config load by 5s x len(keys). A genuinely missing key
-            # returns fast with a non-zero exit and is handled below.
+        for candidate_prefix in prefixes:
+            try:
+                result = subprocess.run(
+                    [pass_bin, "show", "--", f"{candidate_prefix}{key}"],
+                    capture_output=True, text=True, timeout=5,
+                    encoding="utf-8", errors="replace",
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                # A timeout (GPG/pinentry hanging) or exec failure isn't a per-key
+                # condition — it means the store is unusable right now. Stop instead
+                # of paying the timeout once per key; otherwise a locked store would
+                # stall every config load by 5s x len(keys). A genuinely missing key
+                # returns fast with a non-zero exit and is handled below.
+                timed_out = True
+                break
+            if result.returncode == 0 and result.stdout.strip():
+                env.update({key: result.stdout.strip().splitlines()[0]})
+                break
+        if timed_out:
             break
-        if result.returncode == 0 and result.stdout.strip():
-            env.update({key: result.stdout.strip().splitlines()[0]})
     return env
 
 
@@ -705,11 +715,11 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # (not import time, so a .env-set LAST30DAYS_PASS_PREFIX is honored), and
         # probe ONLY keys still unset after the higher-priority sources — an empty
         # list short-circuits with no gpg/pinentry calls at all.
-        pass_prefix = _normalize_pass_prefix(
+        pass_prefix = (
             os.environ.get("LAST30DAYS_PASS_PREFIX")
             or merged_env.get("LAST30DAYS_PASS_PREFIX")
             or DEFAULT_PASS_PATH_PREFIX
-        )
+        ).strip() or DEFAULT_PASS_PATH_PREFIX
         pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
         pass_env = _load_pass(pass_missing, pass_prefix)
         merged_env = {**pass_env, **merged_env}

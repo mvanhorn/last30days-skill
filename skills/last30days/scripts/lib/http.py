@@ -28,7 +28,7 @@ MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_ERROR_BODY_BYTES = 64 * 1024
 
 
-_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/]+@", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
 
 
 def log(msg: str):
