@@ -182,6 +182,11 @@ SOURCE_CAPABILITIES = {
     "jobs": {"jobs", "company_signal", "link"},
     "corpus": {"reference", "analysis"},
 }
+KNOWN_SOURCES: frozenset[str] = frozenset(SOURCE_CAPABILITIES) | {
+    "threads",
+    "pinterest",
+    "linkedin_profile",
+}
 
 
 def _is_identity_anchor(anchor: object) -> bool:
@@ -666,11 +671,14 @@ def _sanitize_plan(
         source for source in available_sources
         if (not requested or source in requested)
     ]
+    recognized_sources = KNOWN_SOURCES | available
     raw_weights = raw.get("source_weights")
     raw_positive: list[float] = []
     explicit_weights: dict[str, float] = {}
     if isinstance(raw_weights, dict):
         for source, weight in raw_weights.items():
+            if source not in recognized_sources:
+                continue
             if isinstance(weight, bool):
                 continue
             try:

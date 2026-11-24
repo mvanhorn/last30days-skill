@@ -916,6 +916,22 @@ class TestHigh022PostPlanWeightNormalization:
             plan_disabled_unavailable.source_weights
         )
 
+        # Unrecognized source names / typos (e.g. "youtub": 0.5 alongside "reddit": 0.5)
+        # must NOT be counted as normalized planned sources; X keeps default 1.0
+        # so Reddit keeps its 1:2 demotion.
+        typo_raw = {
+            **base_raw,
+            "source_weights": {"reddit": 0.5, "youtub": 0.5},
+        }
+        plan_with_typo = planner._sanitize_plan(
+            typo_raw, "Acme Corp", ["reddit", "x"], None, "default",
+            honor_plan_sources=True,
+        )
+        assert plan_with_typo.source_weights["reddit"] == pytest.approx(1.0 / 3)
+        assert plan_with_typo.source_weights["x"] == pytest.approx(2.0 / 3)
+        assert "youtub" not in plan_with_typo.source_weights
+        assert pipeline.KNOWN_SEARCH_SOURCES <= planner.KNOWN_SOURCES
+
 
 # ---------------------------------------------------------------------------
 # HIGH-023: YouTube SSH host routing without local yt-dlp binary
