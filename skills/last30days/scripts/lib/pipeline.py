@@ -678,6 +678,12 @@ MOCK_AVAILABLE_SOURCES = [
     "devto",
 ]
 
+# Full set of searchable source names accepted by --search /
+# LAST30DAYS_DEFAULT_SEARCH. Superset of MOCK_AVAILABLE_SOURCES so live-only
+# sources without mock fixtures (e.g. StockTwits) are accepted on the CLI
+# without altering mock-mode source availability.
+KNOWN_SEARCH_SOURCES: frozenset[str] = frozenset(MOCK_AVAILABLE_SOURCES) | {"stocktwits"}
+
 
 def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
     if not sources:
@@ -2550,15 +2556,72 @@ def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
     return max(4, min(16, stream_count or 1))
 
 
+def is_blank_save_dir(save_dir: Path | str | None) -> bool:
+    """True when ``save_dir`` is a non-empty whitespace-only path string."""
+    if save_dir is None:
+        return False
+    text = str(save_dir)
+    return text != "" and not text.strip()
+
+
+def is_scoped_save_dir(save_dir: Path | str | None) -> bool:
+    """True when ``save_dir`` points to a directory other than DEFAULT_MEMORY_DIR.
+
+    Preserves non-empty paths verbatim (never strips leading/trailing spaces).
+    Whitespace-only inputs and resolution failures fail closed as scoped (True)
+    so they never select the shared default library or global briefing archive.
+    """
+    if save_dir is None or str(save_dir) == "":
+        return False
+    if is_blank_save_dir(save_dir):
+        return True
+    try:
+        return (
+            Path(save_dir).expanduser().resolve()
+            != Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve()
+        )
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return True
+
+
+def scoped_store_db_path(save_dir: Path | str | None) -> Path | None:
+    """Return the scoped research.db path, or None to use the shared default store.
+
+    Preserves non-empty paths verbatim and preserves an existing legacy
+    ``DEFAULT_MEMORY_DIR/research.db`` created by earlier builds rather than
+    abandoning its saved findings and discovery queue.
+    """
+    if save_dir is None or str(save_dir) == "":
+        return None
+    if is_blank_save_dir(save_dir):
+        raise ValueError("--save-dir / LAST30DAYS_MEMORY_DIR cannot be whitespace-only.")
+    try:
+        resolved = Path(save_dir).expanduser().resolve()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return Path(save_dir).expanduser() / "research.db"
+    candidate = resolved / "research.db"
+    if is_scoped_save_dir(resolved):
+        return candidate
+    if candidate.is_file():
+        return candidate
+    return None
+
+
 def library_context_index_path(
     config: dict[str, Any], save_dir: Path | str | None,
 ) -> Path | None:
     setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
-    if setting in {"0", "false", "no", "off"} or save_dir == "":
+    if (
+        setting in {"0", "false", "no", "off"}
+        or save_dir == ""
+        or is_blank_save_dir(save_dir)
+        or (save_dir is None and is_blank_save_dir(config.get("LAST30DAYS_MEMORY_DIR")))
+    ):
         return None
     if path := config.get("_LAST30DAYS_LIBRARY_DB"):
         return Path(path).expanduser()
-    if save_dir is not None:
+    if is_scoped_save_dir(save_dir):
+        assert save_dir is not None
         return Path(save_dir).expanduser().resolve() / ".last30days-library.db"
     return library_index.DEFAULT_LIBRARY_DB
 
@@ -2581,6 +2644,7 @@ def _load_library_context(
     if db_path is None:
         return [], None
 
+    scoped = is_scoped_save_dir(save_dir)
     memory_dir = (
         save_dir
         if save_dir is not None
@@ -2588,7 +2652,7 @@ def _load_library_context(
     )
     briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or (
         Path(memory_dir).expanduser() / "briefings"
-        if save_dir is not None
+        if scoped
         else library.DEFAULT_BRIEFS_DIR
     )
     store_db = config.get("_LAST30DAYS_STORE_DB")
@@ -2596,9 +2660,8 @@ def _load_library_context(
         # Scoped runs read only a store inside the save dir (usually absent);
         # the shared store would leak other scopes' sightings into this one.
         store_db = (
-            Path(memory_dir).expanduser().resolve() / "research.db"
-            if save_dir is not None
-            else library_index.DEFAULT_STORE_DB
+            scoped_store_db_path(save_dir)
+            or library_index.DEFAULT_STORE_DB
         )
     queries = [topic, x_handle or "", github_user or "", *(github_repos or [])]
     queries = list(dict.fromkeys(value.strip() for value in queries if value and value.strip()))

@@ -673,6 +673,8 @@ def resolve_memory_dir(save_dir: str | None = None) -> str:
         )
     if value is None:
         value = str(Path.home() / "Documents" / "Last30Days")
+    if value and not value.strip():
+        raise ValueError("--save-dir / LAST30DAYS_MEMORY_DIR cannot be whitespace-only.")
     return str(Path(value).expanduser().absolute()) if value else ""
 
 

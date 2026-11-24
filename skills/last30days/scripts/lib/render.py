@@ -3468,6 +3468,46 @@ def _polymarket_names_topic(item: schema.SourceItem, topic: str) -> bool:
     )
 
 
+def _polymarket_footer_entry(
+    item: schema.SourceItem,
+) -> tuple[str, str, str, str] | None:
+    """Extract ``(name, pct, question, label)`` for a priced footer market, or None."""
+    headline = _polymarket_headline(item)
+    if headline:
+        question, price, label = headline
+        pct = _format_polymarket_pct(price)
+        if pct is None:
+            return None
+        name = _polymarket_phrase(question)
+        if not name:
+            return None
+        return (f"{name}: {label}" if label else name, pct, question, label)
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    raw_outcomes = metadata.get("outcome_prices")
+    outcome_prices = raw_outcomes if isinstance(raw_outcomes, (list, tuple)) else []
+    lead_match = next(
+        (
+            (entry[0], pct)
+            for entry in outcome_prices
+            if isinstance(entry, (list, tuple))
+            and len(entry) == 2
+            and (pct := _format_polymarket_pct(entry[1])) is not None
+        ),
+        None,
+    )
+    if lead_match is None:
+        return None
+    lead_name, pct = lead_match
+    lead_name_str = "" if lead_name is None else str(lead_name)
+
+    question = str(metadata.get("question") or item.title or "").strip()
+    name, is_descriptor = _polymarket_market_name(question, lead_name_str)
+    if not name:
+        return None
+    label = "" if is_descriptor else lead_name_str.strip()
+    return (name, pct, question, label)
+
+
 def _polymarket_top_markets(
     items: list[schema.SourceItem], limit: int = 3, topic: str = "",
 ) -> list[str]:
@@ -3479,70 +3519,51 @@ def _polymarket_top_markets(
     listed. An item saved by an older build carries no chosen market and is
     named the older way: ['UK visit 5.5%', 'blocked from entering 36%'].
     """
+    if limit <= 0:
+        return []
     items = [item for item in items if isinstance(item.metadata, dict)]
     if topic:
         items = [item for item in items if _polymarket_names_topic(item, topic)]
     sorted_items = polymarket.by_selection(items)
 
+    # Extract priced entries BEFORE claiming a series slot so an unpriced or
+    # impossible_set market in a recurring count series never blocks the next
+    # priced market in that same series.
     # One market per series first, a substantive question before a recurring
     # count bracket ("# tweets this week"); a count series is never repeated,
     # and another rung of a substantive ladder only fills a slot left over.
-    firsts: list[schema.SourceItem] = []
-    repeats: list[schema.SourceItem] = []
+    firsts: list[tuple[schema.SourceItem, tuple[str, str, str, str]]] = []
+    repeats: list[tuple[schema.SourceItem, tuple[str, str, str, str]]] = []
     seen_series: set[str] = set()
     for item in sorted_items:
+        entry = _polymarket_footer_entry(item)
+        if entry is None:
+            continue
         metadata = item.metadata if isinstance(item.metadata, dict) else {}
         texts = (item.title or "", str(metadata.get("question") or ""))
         counted = polymarket.is_count_series(*texts)
         series = polymarket.series_key(*texts)
         if series and series in seen_series:
             if not counted:
-                repeats.append(item)
+                repeats.append((item, entry))
             continue
         seen_series.add(series)
-        firsts.append(item)
-    firsts.sort(key=lambda it: polymarket.is_count_series(
-        it.title or "",
-        str((it.metadata if isinstance(it.metadata, dict) else {}).get("question") or ""),
+        firsts.append((item, entry))
+    firsts.sort(key=lambda pair: polymarket.is_count_series(
+        pair[0].title or "",
+        str((pair[0].metadata if isinstance(pair[0].metadata, dict) else {}).get("question") or ""),
     ))
-    sorted_items = firsts + repeats
 
     # (name, pct, question, label when the name is not the bare descriptor)
     markets: list[tuple[str, str, str, str]] = []
-    for item in sorted_items[:limit]:
-        headline = _polymarket_headline(item)
-        if headline:
-            question, price, label = headline
-            pct = _format_polymarket_pct(price)
-            if pct is None:
-                continue
-            name = _polymarket_phrase(question)
-            if name:
-                markets.append((f"{name}: {label}" if label else name, pct, question, label))
+    seen_markets: set[tuple[str, str]] = set()
+    for _item, (name, pct, question, label) in firsts + repeats:
+        if len(markets) >= limit:
+            break
+        key = (_polymarket_name_key(question), _polymarket_name_key(name))
+        if key in seen_markets:
             continue
-        metadata = item.metadata if isinstance(item.metadata, dict) else {}
-        raw_outcomes = metadata.get("outcome_prices")
-        outcome_prices = raw_outcomes if isinstance(raw_outcomes, (list, tuple)) else []
-        lead_match = next(
-            (
-                (entry[0], pct)
-                for entry in outcome_prices
-                if isinstance(entry, (list, tuple))
-                and len(entry) == 2
-                and (pct := _format_polymarket_pct(entry[1])) is not None
-            ),
-            None,
-        )
-        if lead_match is None:
-            continue
-        lead_name, pct = lead_match
-        lead_name_str = "" if lead_name is None else str(lead_name)
-
-        question = str(metadata.get("question") or item.title or "").strip()
-        name, is_descriptor = _polymarket_market_name(question, lead_name_str)
-        if not name:
-            continue
-        label = "" if is_descriptor else lead_name_str.strip()
+        seen_markets.add(key)
         markets.append((name, pct, question, label))
 
     # Different questions can shorten to one name (a deadline ladder:
@@ -5758,23 +5779,63 @@ def _polymarket_matched_part(
         return None
     if not math.isfinite(scaled_price):
         return None
+    def _norm_id(value: object) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
     label = " ".join(str(matched.get("label") or "").split())
+    norm_label = label.casefold()
+    matched_market_id = _norm_id(matched.get("market_id"))
+    matched_outcome_id = _norm_id(matched.get("outcome_id"))
+
+    def _ids_present(entry: dict) -> bool:
+        return bool(matched_market_id and _norm_id(entry.get("market_id")))
+
+    def _ids_match(entry: dict) -> bool:
+        if not _ids_present(entry):
+            return False
+        if _norm_id(entry.get("market_id")) != matched_market_id:
+            return False
+        entry_outcome_id = _norm_id(entry.get("outcome_id"))
+        if matched_outcome_id and entry_outcome_id:
+            return entry_outcome_id == matched_outcome_id
+        return True
+
     same = next(
-        (
-            entry for entry in entries
-            if (label and " ".join(str(entry.get("label") or "").split()) == label)
-            or entry.get("price") == price
-        ),
+        (entry for entry in entries if isinstance(entry, dict) and _ids_match(entry)),
         None,
     )
+    if same is None and norm_label:
+        same = next(
+            (
+                entry for entry in entries
+                if isinstance(entry, dict)
+                and not _ids_present(entry)
+                and " ".join(str(entry.get("label") or "").split()).casefold() == norm_label
+            ),
+            None,
+        )
+    if same is None:
+        same = next(
+            (
+                entry for entry in entries
+                if isinstance(entry, dict)
+                and not _ids_present(entry)
+                and not " ".join(str(entry.get("label") or "").split())
+                and _is_finite_number(entry.get("price"))
+                and float(entry.get("price")) == float(price)
+            ),
+            None,
+        )
     relation = str(matched.get("relation") or "").strip()
     related = bool(label and matched.get("related_name") and relation)
     rank, size = matched.get("rank"), matched.get("race_size")
     contender = (
         bool(matched.get("contender"))
         and isinstance(rank, int)
+        and not isinstance(rank, bool)
         and _is_finite_number(rank)
         and isinstance(size, int)
+        and not isinstance(size, bool)
         and _is_finite_number(size)
     )
     if same is not None and not (related or contender):
@@ -5811,7 +5872,9 @@ def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
         # own book.
         own = metadata.get("matched_market")
         if not isinstance(own, dict) or not (
-            isinstance(own.get("rank"), int) and _is_finite_number(own.get("rank"))
+            isinstance(own.get("rank"), int)
+            and not isinstance(own.get("rank"), bool)
+            and _is_finite_number(own.get("rank"))
         ):
             return ""
         matched = _polymarket_matched_part(item, [])
@@ -5819,15 +5882,14 @@ def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
         if not matched or not subject:
             return ""
         return f"📊 Polymarket · {subject}: {matched[0]}"
-    entries = odds["parts"][:3]
+    shown_entries = [entry for entry in odds["parts"][:3] if isinstance(entry, dict)]
+    entries = shown_entries
     parts: list[str] = []
-    matched = _polymarket_matched_part(
-        item, [entry for entry in odds["parts"] if isinstance(entry, dict)],
-    )
+    matched = _polymarket_matched_part(item, shown_entries)
     if matched:
         text, repeated = matched
         parts.append(text)
-        entries = [entry for entry in odds["parts"] if entry is not repeated][:2]
+        entries = [entry for entry in shown_entries if entry is not repeated][:2]
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
@@ -6028,6 +6090,22 @@ def _comment_entities(report) -> tuple[list[str] | None, str]:
     return compared, rerank._primary_entity(raw)
 
 
+def _comparison_entity_mentioned(text: str, name: str) -> bool:
+    """Positive grounding for a comparison entity, with a whole-word fallback
+    when ``_entity_grounding_verdict`` returns None (e.g. <=3-char names like
+    ``Go``, ``AWS``, ``AMD``, or ``X``)."""
+    from . import rerank
+
+    verdict = rerank._entity_grounding_verdict(text, name)
+    if verdict is not None:
+        return verdict
+    cleaned = " ".join(str(name or "").split()).lower()
+    if not cleaned:
+        return False
+    normalized_text = " ".join(str(text or "").split()).lower()
+    return bool(re.search(rf"(?<!\w){re.escape(cleaned)}(?!\w)", normalized_text))
+
+
 def _comment_entity_tags(
     item: schema.SourceItem,
     comment: dict,
@@ -6047,7 +6125,7 @@ def _comment_entity_tags(
     from . import rerank
 
     if compared:
-        tags = [name for name in compared if rerank._entity_grounded(text, name)]
+        tags = [name for name in compared if _comparison_entity_mentioned(text, name)]
         return tags or None
     if not entity or rerank._entity_grounded(text, entity):
         return []
@@ -6237,16 +6315,17 @@ def _render_top_comments(
                 raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
                 if not _is_community_comment(item, tc, raw):
                     continue
+                body = _quote_text(raw, _QUOTE_TEXT_LIMIT)
+                if not _quotable(body):
+                    continue
                 if comment_source == "reddit":
                     tags = _comment_entity_tags(
-                        item, tc, raw, compared_entities, comment_entity
+                        item, tc, body, compared_entities, comment_entity
                     )
                     if tags is None:
                         continue
                     entity_tags[id(tc)] = tags
-                body = _quote_text(raw, _QUOTE_TEXT_LIMIT)
-                if _quotable(body):
-                    community.append((tc, body))
+                community.append((tc, body))
             # A pending comment (a fresh archive snapshot, its score withheld)
             # has no vote count to clear the vote floors with; it is quoted
             # without one, after every scored line.
