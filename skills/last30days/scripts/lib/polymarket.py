@@ -747,6 +747,19 @@ _BOOK_FIELDS = ("bestBid", "bestAsk", "spread")
 _MAX_EXCLUSIVE_YES_TOTAL = 1.10
 
 
+def _optional_float(val: Any) -> Optional[float]:
+    """Parse a finite non-bool float, returning None when absent or malformed."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, str) and not val.strip():
+        return None
+    try:
+        parsed = float(val)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _quoted_price(market: Dict[str, Any], midpoint: float) -> Optional[float]:
     """The price Polymarket would display for a market's first (Yes) outcome.
 
@@ -758,18 +771,16 @@ def _quoted_price(market: Dict[str, Any], midpoint: float) -> Optional[float]:
     """
     if market.get("closed") or all(market.get(field) is None for field in _BOOK_FIELDS):
         return midpoint
-    bid = _safe_float(market.get("bestBid"))
-    ask = _safe_float(market.get("bestAsk"))
-    spread = (
-        _safe_float(market.get("spread"))
-        if market.get("spread") is not None
-        else ask - bid
-    )
-    # Float noise: an ask of 0.13 over a bid of 0.03 is a 0.10 spread.
-    if bid > 0 and ask > 0 and round(spread, 6) <= _MAX_MIDPOINT_SPREAD:
-        return midpoint
-    last = _safe_float(market.get("lastTradePrice"))
-    if 0 < last < 1:
+    bid = _optional_float(market.get("bestBid"))
+    ask = _optional_float(market.get("bestAsk"))
+    raw_spread = _optional_float(market.get("spread"))
+    if bid is not None and ask is not None and bid > 0 and ask >= bid:
+        spread = raw_spread if (raw_spread is not None and raw_spread >= 0) else ask - bid
+        # Float noise: an ask of 0.13 over a bid of 0.03 is a 0.10 spread.
+        if round(spread, 6) <= _MAX_MIDPOINT_SPREAD:
+            return midpoint
+    last = _optional_float(market.get("lastTradePrice"))
+    if last is not None and 0 < last < 1:
         return last
     return None
 
@@ -1628,12 +1639,16 @@ def parse_polymarket_response(
         outcome_questions: List[Optional[str]] = [None] * len(outcome_prices)
         # The market each outcome is priced in.
         outcome_markets: List[Dict[str, Any]] = [shown_market] * len(outcome_prices)
-        # Whether the sub-markets are Yes/No is read from the served outcomes,
-        # so an unpriced top market still leads to its priced siblings.
-        top_labels = _parse_outcome_prices(shown_market, book_aware=False)
+        # Whether the sub-markets are Yes/No is read from the raw outcome
+        # labels, so a malformed or unpriced top market still leads to its
+        # priced siblings.
+        raw_top_outcomes = [
+            str(name).strip().lower()
+            for name in _json_list(shown_market.get("outcomes"))
+            if name is not None and str(name).strip()
+        ]
         top_outcomes_are_binary = (
-            len(top_labels) == 2
-            and {n.lower() for n, _ in top_labels} == {"yes", "no"}
+            len(raw_top_outcomes) == 2 and set(raw_top_outcomes) == {"yes", "no"}
         )
         impossible_set = False
         sibling_names: Optional[List[str]] = None
@@ -1644,7 +1659,7 @@ def parse_polymarket_response(
                 if not q:
                     continue
                 pairs = _parse_outcome_prices(m)
-                yes_price = next((p for name, p in pairs if name.lower() == "yes"), None)
+                yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
                 if yes_price is not None and (
                     include_all_outcomes
                     or yes_price >= RACE_PRICE_FLOOR
@@ -1748,6 +1763,31 @@ def parse_polymarket_response(
         relevance = min(1.0, match_strength * (0.75 + 0.25 * market_quality))
 
         # After the ordering above, which reads the subject names.
+        # When verification pulls in sub-floor markets on an active event,
+        # also keep the labels a display-filtered parse (>= RACE_PRICE_FLOOR)
+        # would have saved so a sub-floor sibling sharing groupItemTitle
+        # cannot invalidate an already-saved label.
+        display_outcome_prices: Optional[List[tuple]] = None
+        if (
+            include_all_outcomes
+            and not include_closed
+            and outcome_questions
+            and outcome_questions[0] is not None
+        ):
+            display_rows = [
+                (pair, question, market)
+                for pair, question, market in zip(
+                    outcome_prices, outcome_questions, outcome_markets
+                )
+                if pair[1] >= RACE_PRICE_FLOOR
+            ]
+            if display_rows and len(display_rows) < len(outcome_prices):
+                display_outcome_prices = _own_outcome_labels(
+                    [pair for pair, _q, _m in display_rows],
+                    [question for _pair, question, _m in display_rows],
+                    [market for _pair, _q, market in display_rows],
+                    sibling_names,
+                )
         outcome_prices = _own_outcome_labels(
             outcome_prices, outcome_questions, outcome_markets, sibling_names,
         )
@@ -1805,6 +1845,8 @@ def parse_polymarket_response(
             "relevance": round(relevance, 2),
             "why_relevant": f"Prediction market: {title[:60]}",
         }
+        if display_outcome_prices is not None:
+            item["display_outcome_prices"] = display_outcome_prices
         if entity is not None:
             item["selection_score"] = score
             item["selection_tier"] = tier
@@ -1842,6 +1884,100 @@ def parse_polymarket_response(
 
     cap = response.get("_cap", len(items))
     return items[:cap]
+
+
+def _normalize_snapshot_key(key: str) -> str:
+    if "\x1f" in key:
+        name, occurrence = key.rsplit("\x1f", 1)
+        return f"{name.strip().casefold()}\x1f{occurrence.strip()}"
+    return key.strip().casefold()
+
+
+def resolve_snapshot_value(
+    values: Dict[str, Any],
+    datum_key: str,
+    *,
+    blocked_repeats: frozenset[str] = frozenset(),
+    allow_occurrence_zero: bool = True,
+) -> Any:
+    """Resolve ``datum_key`` against a snapshot ``values`` map.
+
+    Shared by both ``refetch_datum`` (direct fetch) and ``freshness._lookup_cached_datum``
+    (cached hit) so direct and cached verification always produce identical results.
+    """
+    if not values:
+        return None
+    if datum_key == "end_date" or not allow_occurrence_zero:
+        if datum_key in values:
+            return values[datum_key]
+        target = datum_key.strip().casefold()
+        for raw_key, raw_value in values.items():
+            if str(raw_key).strip().casefold() == target:
+                return raw_value
+        return None
+
+    has_suffix = "\x1f" in datum_key
+    if has_suffix:
+        outcome_name, raw_occurrence = datum_key.rsplit("\x1f", 1)
+        raw_occ_stripped = raw_occurrence.strip()
+        if not (raw_occ_stripped.isascii() and raw_occ_stripped.isdigit()):
+            return None
+        try:
+            occurrence = int(raw_occ_stripped)
+        except ValueError:
+            return None
+        base = outcome_name.strip().casefold()
+        if base in blocked_repeats:
+            return None
+        target = f"{base}\x1f{occurrence}"
+    else:
+        base = datum_key.strip().casefold()
+        occurrence = 0
+        target = base
+
+    if datum_key in values:
+        return values[datum_key]
+
+    normalized_values: Dict[str, Any] = {}
+    for raw_key, raw_value in values.items():
+        normalized_values.setdefault(_normalize_snapshot_key(str(raw_key)), raw_value)
+
+    if target in normalized_values:
+        return normalized_values[target]
+    if not has_suffix and base not in blocked_repeats:
+        occ0_key = f"{base}\x1f0"
+        if occ0_key in normalized_values:
+            return normalized_values[occ0_key]
+    elif has_suffix and occurrence == 0 and base in normalized_values:
+        return normalized_values[base]
+    return None
+
+
+def _record_outcome_values(
+    values: Dict[str, Any],
+    pairs: List[tuple],
+    *,
+    overwrite: bool,
+) -> None:
+    totals: Dict[str, int] = {}
+    for name, _price in pairs:
+        normalized = str(name).strip().casefold()
+        totals[normalized] = totals.get(normalized, 0) + 1
+    existing_norm = {_normalize_snapshot_key(k) for k in values}
+    counts: Dict[str, int] = {}
+    for name, price in pairs:
+        clean_name = str(name).strip()
+        normalized = clean_name.casefold()
+        occurrence = counts.get(normalized, 0)
+        counts[normalized] = occurrence + 1
+        key = f"{clean_name}\x1f{occurrence}" if totals[normalized] > 1 else clean_name
+        norm_key = _normalize_snapshot_key(key)
+        if overwrite:
+            values[key] = price
+            existing_norm.add(norm_key)
+        elif norm_key not in existing_norm:
+            values[key] = price
+            existing_norm.add(norm_key)
 
 
 class DatumNotFound(KeyError):
@@ -1951,18 +2087,12 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     refreshed = parsed[0]
     values: dict[str, Any] = {}
     outcome_pairs = refreshed.get("outcome_prices") or []
-    outcome_totals: dict[str, int] = {}
-    for name, _price in outcome_pairs:
-        normalized = str(name).strip().casefold()
-        outcome_totals[normalized] = outcome_totals.get(normalized, 0) + 1
-    outcome_counts: dict[str, int] = {}
-    for name, price in outcome_pairs:
-        clean_name = str(name).strip()
-        normalized = clean_name.casefold()
-        occurrence = outcome_counts.get(normalized, 0)
-        outcome_counts[normalized] = occurrence + 1
-        key = f"{clean_name}\x1f{occurrence}" if outcome_totals[normalized] > 1 else clean_name
-        values[key] = price
+    _record_outcome_values(values, outcome_pairs, overwrite=True)
+    # Preserve display-filtered (>= RACE_PRICE_FLOOR) labels saved before
+    # verification pulled in sub-floor siblings that share a groupItemTitle.
+    display_pairs = refreshed.get("display_outcome_prices") or []
+    if display_pairs:
+        _record_outcome_values(values, display_pairs, overwrite=False)
     # Reports saved by older builds hold each market under its old cut name.
     # The same snapshot answers later claims on this event, so it carries
     # those names too, numbered the way the old names repeated.
@@ -1974,16 +2104,7 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         )
         for (name, price), question in zip(outcome_pairs, questions)
     ]
-    legacy_totals: dict[str, int] = {}
-    for name, _price in legacy_pairs:
-        legacy_totals[name.casefold()] = legacy_totals.get(name.casefold(), 0) + 1
-    legacy_counts: dict[str, int] = {}
-    for name, price in legacy_pairs:
-        normalized = name.casefold()
-        occurrence = legacy_counts.get(normalized, 0)
-        legacy_counts[normalized] = occurrence + 1
-        key = f"{name}\x1f{occurrence}" if legacy_totals[normalized] > 1 else name
-        values.setdefault(key, price)
+    _record_outcome_values(values, legacy_pairs, overwrite=False)
     # A repeated name is told apart by its rank among the priced markets. When
     # the book check drops one market carrying that name, the ranks shift and a
     # saved occurrence could read a sibling's price, so repeated names of a
@@ -2005,34 +2126,16 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
-    if datum_key == "end_date":
-        value = values.get("end_date")
-    else:
-        occurrence: Optional[int]
-        if "\x1f" in datum_key:
-            outcome_name, raw_occurrence = datum_key.rsplit("\x1f", 1)
-            raw_occ_stripped = raw_occurrence.strip()
-            occurrence = int(raw_occ_stripped) if raw_occ_stripped.isdigit() else None
-        else:
-            outcome_name, occurrence = datum_key, 0
-        wanted = outcome_name.strip().casefold()
-        if occurrence is None:
-            value = None
-        else:
-            matches = [
-                price for name, price in outcome_pairs if str(name).strip().casefold() == wanted
-            ]
-            if occurrence >= len(matches):
-                # An old cut name; the nth repeat of it is the nth market it was
-                # cut from.
-                matches = [
-                    price for name, price in legacy_pairs if name.casefold() == wanted
-                ]
-            value = matches[occurrence] if occurrence < len(matches) else None
-            if "\x1f" in datum_key and wanted in dropped_names:
-                value = None
+    blocked_repeats = frozenset(dropped_names)
+    value = resolve_snapshot_value(
+        values,
+        datum_key,
+        blocked_repeats=blocked_repeats,
+        allow_occurrence_zero=(datum_key != "end_date"),
+    )
     snapshot = {
         "values": values,
+        "blocked_repeats": sorted(blocked_repeats),
         "url": str(getattr(item, "url", "")),
         "timestamp": event.get("updatedAt"),
     }

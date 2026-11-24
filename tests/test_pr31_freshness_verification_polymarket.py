@@ -794,3 +794,353 @@ def test_high196_three_outcome_market_with_skipped_middle_does_not_overwrite_thi
         ("A", 0.60),
         ("C", 0.20),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Greptile #1612 review fixes (6 regression tests)
+# ---------------------------------------------------------------------------
+
+
+def test_greptile1_collapsed_duplicate_matches_identically_on_direct_and_cached_lookup(
+    monkeypatch,
+):
+    """When two saved `Yes` rows collapse to one live `Yes` row (without a book drop),
+    direct fetch and cached lookup must agree on both `Yes\\x1f0` and `Yes\\x1f1`."""
+    event = {
+        "id": "701",
+        "slug": "collapse-yes",
+        "title": "Collapsed Yes rows",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {
+                "active": True,
+                "closed": False,
+                "question": "Collapsed Yes rows",
+                "liquidity": "5000",
+                "outcomes": '["Alpha", "Yes"]',
+                "outcomePrices": '["0.35", "0.65"]',
+            }
+        ],
+    }
+    calls: list[int] = []
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event)
+    item = SimpleNamespace(metadata={"event_id": "701"}, url="", item_id="pm-701")
+
+    # Direct fetch: Yes\x1f0 resolves to 0.65; Yes\x1f1 raises DatumNotFound.
+    assert polymarket.refetch_datum(item, "Yes\x1f0")["value"] == 0.65
+    with pytest.raises(polymarket.DatumNotFound):
+        polymarket.refetch_datum(item, "Yes\x1f1")
+
+    # Cached lookup after another claim ("Alpha") fetches the event first:
+    # must match direct fetch identically using only 1 HTTP call.
+    calls.clear()
+    saved = _item(
+        "polymarket",
+        title="Collapsed Yes rows",
+        url="https://polymarket.com/event/collapse-yes",
+        metadata={
+            "event_id": "701",
+            "outcome_prices": [["Alpha", 0.35], ["Yes", 0.65], ["Yes", 0.20]],
+        },
+    )
+    verdicts = freshness.verify_report(
+        _report(saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == ["current", "current", "unsupported"]
+
+    # Reverse order (Yes\x1f0 fetched directly first, Alpha + Yes\x1f1 cached): same verdicts.
+    calls.clear()
+    saved_first = _item(
+        "polymarket",
+        title="Collapsed Yes rows",
+        url="https://polymarket.com/event/collapse-yes",
+        metadata={
+            "event_id": "701",
+            "outcome_prices": [["Yes", 0.65], ["Yes", 0.20], ["Alpha", 0.35]],
+        },
+    )
+    verdicts_first = freshness.verify_report(
+        _report(saved_first),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts_first] == ["current", "unsupported", "current"]
+
+
+def test_greptile1_book_dropped_repeat_still_blocked_on_cached_lookup(monkeypatch):
+    """When a sibling repeat was dropped by the book check, cached lookup must
+    also block `Bitcoin\\x1f0` and `Bitcoin\\x1f1` just like direct fetch."""
+    question = "Will Bitcoin reach $150k in November?"
+    event = {
+        "id": "702",
+        "slug": "bitcoin-november",
+        "title": "Bitcoin in November",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {
+                "active": True,
+                "closed": False,
+                "question": "Will Ethereum reach $10k in November?",
+                "groupItemTitle": "ETH",
+                "liquidity": "500",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.25", "0.75"]',
+                "bestBid": 0.24,
+                "bestAsk": 0.26,
+                "spread": 0.02,
+            },
+            {
+                "active": True,
+                "closed": False,
+                "question": question,
+                "groupItemTitle": "A",
+                "liquidity": "500",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.60", "0.40"]',
+                "bestBid": 0.01,
+                "bestAsk": 0.90,
+                "spread": 0.89,
+            },
+            {
+                "active": True,
+                "closed": False,
+                "question": question,
+                "groupItemTitle": "B",
+                "liquidity": "500",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.30", "0.70"]',
+                "bestBid": 0.29,
+                "bestAsk": 0.31,
+                "spread": 0.02,
+            },
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+    legacy = polymarket._legacy_shorten_question(question).strip()
+    saved = _item(
+        "polymarket",
+        title="Bitcoin in November",
+        url="https://polymarket.com/event/bitcoin-november",
+        metadata={
+            "event_id": "702",
+            # "ETH" fetches and populates cache first; both legacy repeats must still fail closed.
+            "outcome_prices": [["ETH", 0.25], [legacy, 0.60], [legacy, 0.30]],
+        },
+    )
+    verdicts = freshness.verify_report(
+        _report(saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert [v.verdict for v in verdicts] == ["current", "unsupported", "unsupported"]
+
+
+def test_greptile2_extra_subfloor_outcome_does_not_invalidate_saved_group_title(monkeypatch):
+    """Two child markets sharing groupItemTitle='OpenAI' with different subjects:
+    the report saved the 0.60 market under 'OpenAI' (excluding the 0.002 market).
+    Refetch pulls in the 0.002 market, which switches full labels to subjects,
+    but must still resolve saved 'OpenAI' -> 0.60 AND the sub-floor market -> 0.002."""
+    event = {
+        "id": "703",
+        "slug": "ai-launches",
+        "title": "AI launches in Q4?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            _binary_submarket("Will GPT-5 win the benchmark?", "OpenAI", 0.60),
+            _binary_submarket("Will Sora 2 win the benchmark?", "OpenAI", 0.002),
+            _binary_submarket("Will Claude 5 win the benchmark?", "Anthropic", 0.40),
+        ],
+    }
+    # Confirm a normal display parse saves the 0.60 market under "OpenAI".
+    [display_item] = polymarket.parse_polymarket_response({"events": [event]})
+    assert ("OpenAI", 0.60) in display_item["outcome_prices"]
+
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+    item = SimpleNamespace(metadata={"event_id": "703"}, url="", item_id="pm-703")
+
+    assert polymarket.refetch_datum(item, "OpenAI")["value"] == 0.60
+    assert polymarket.refetch_datum(item, "GPT-5")["value"] == 0.60
+    assert polymarket.refetch_datum(item, "Sora 2")["value"] == 0.002
+    assert polymarket.refetch_datum(item, "Anthropic")["value"] == 0.40
+
+    # End-to-end verify_report on the display-saved report confirms current (not unsupported),
+    # and detects movement when the live price changes.
+    saved = _item(
+        "polymarket",
+        title=display_item["title"],
+        url="https://polymarket.com/event/ai-launches",
+        metadata={
+            "event_id": "703",
+            "outcome_prices": [list(pair) for pair in display_item["outcome_prices"]],
+        },
+    )
+    verdicts = freshness.verify_report(
+        _report(saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert [v.verdict for v in verdicts] == ["current", "current"]
+
+    moved_event = {
+        **event,
+        "markets": [
+            _binary_submarket("Will GPT-5 win the benchmark?", "OpenAI", 0.55),
+            _binary_submarket("Will Sora 2 win the benchmark?", "OpenAI", 0.002),
+            _binary_submarket("Will Claude 5 win the benchmark?", "Anthropic", 0.40),
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: moved_event)
+    moved_verdicts = freshness.verify_report(
+        _report(saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert [v.verdict for v in moved_verdicts] == ["stale", "current"]
+    assert moved_verdicts[0].current_value == 0.55
+
+
+def test_greptile3_bad_price_on_top_binary_market_does_not_hide_valid_siblings():
+    """If the highest-volume Yes/No market has a bad price (e.g., bool True),
+    top_outcomes_are_binary must still read raw outcomes so valid siblings survive."""
+    bad_top = {
+        "active": True,
+        "closed": False,
+        "question": "Will BadTop win the race?",
+        "groupItemTitle": "BadTop",
+        "liquidity": "500",
+        "volume": "999999",
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": [True, "0.40"],
+        "endDate": "2026-12-31T00:00:00Z",
+    }
+    valid_a = _binary_submarket("Will Alice win the race?", "Alice", 0.55)
+    valid_b = _binary_submarket("Will Bob win the race?", "Bob", 0.35)
+    event = {
+        "id": "704",
+        "slug": "bad-top-sibling",
+        "title": "Who wins the race?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [bad_top, valid_a, valid_b],
+    }
+
+    [parsed] = polymarket.parse_polymarket_response({"events": [event]})
+    assert parsed["outcome_prices"] == [("Alice", 0.55), ("Bob", 0.35)]
+
+
+@pytest.mark.parametrize("bad_spread", ["NaN", "inf", "-inf", True, "bad", -0.05])
+def test_greptile4_malformed_spread_does_not_return_midpoint_on_wide_book(bad_spread):
+    """A malformed spread (e.g., 'NaN') must be treated as missing (using ask - bid),
+    never coerced to 0.0 to accept a wide 0.01/0.99 book's midpoint."""
+    wide_with_trade = {
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.50", "0.50"]',
+        "bestBid": 0.01,
+        "bestAsk": 0.99,
+        "spread": bad_spread,
+        "lastTradePrice": 0.02,
+    }
+    assert polymarket._quoted_price(wide_with_trade, 0.50) == 0.02
+    assert polymarket._parse_outcome_prices(wide_with_trade) == [("Yes", 0.02), ("No", 0.98)]
+
+    wide_no_trade = {
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.50", "0.50"]',
+        "bestBid": 0.01,
+        "bestAsk": 0.99,
+        "spread": bad_spread,
+    }
+    assert polymarket._quoted_price(wide_no_trade, 0.50) is None
+    assert polymarket._parse_outcome_prices(wide_no_trade) == []
+
+    # Tight bid/ask with bad spread still computes ask - bid = 0.08 <= 0.10 -> midpoint.
+    tight_bad_spread = {
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.50", "0.50"]',
+        "bestBid": 0.46,
+        "bestAsk": 0.54,
+        "spread": bad_spread,
+        "lastTradePrice": 0.70,
+    }
+    assert polymarket._quoted_price(tight_bad_spread, 0.50) == 0.50
+
+
+def test_greptile5_has_been_outranks_became_while_became_outranks_was():
+    """'became closed last year; has been open since May' must not contradict 'is open'."""
+    original = _item(
+        "reddit",
+        item_id="R1",
+        url="https://reddit.com/r/dev/orig",
+        title="Widget API is open",
+        published_at="2026-11-01T10:00:00Z",
+    )
+    recovered = _item(
+        "grounding",
+        item_id="W1",
+        url="https://status.example.com/recovery",
+        title="Widget API became closed last year. Widget API has been open since May.",
+        published_at="2026-11-10T10:00:00Z",
+    )
+    report = _report(original)
+    report.items_by_source["grounding"] = [recovered]
+    assert freshness.verify_report(report)[0].verdict == "unsupported"
+
+    # Reverse: 'became open ... has been closed' contradicts 'is open'.
+    relapsed = _item(
+        "grounding",
+        item_id="W2",
+        url="https://status.example.com/relapse",
+        title="Widget API became open last year. Widget API has been closed since May.",
+        published_at="2026-11-10T10:00:00Z",
+    )
+    report2 = _report(original)
+    report2.items_by_source["grounding"] = [relapsed]
+    v2 = freshness.verify_report(report2)[0]
+    assert v2.verdict == "contradicted"
+    assert v2.evidence_url == relapsed.url
+
+
+@pytest.mark.parametrize("unicode_digit", ["²", "٠", "①"])
+def test_greptile6_non_ascii_digit_suffix_raises_datum_not_found_with_snapshot(
+    monkeypatch, unicode_digit,
+):
+    """Non-ASCII unicode digits like '²' or '٠' pass str.isdigit() but must raise
+    DatumNotFound with the fetched snapshot intact instead of ValueError."""
+    event = {
+        "id": "706",
+        "slug": "unicode-occ",
+        "title": "Unicode suffix check",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {
+                "active": True,
+                "closed": False,
+                "question": "Unicode suffix check",
+                "liquidity": "1000",
+                "outcomes": '["OpenAI", "Anthropic"]',
+                "outcomePrices": '["0.60", "0.40"]',
+            }
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+    item = SimpleNamespace(metadata={"event_id": "706"}, url="", item_id="pm-706")
+
+    with pytest.raises(polymarket.DatumNotFound) as exc_info:
+        polymarket.refetch_datum(item, f"OpenAI\x1f{unicode_digit}")
+    assert exc_info.value.snapshot is not None
+    assert exc_info.value.snapshot["values"]["OpenAI"] == 0.60
+    assert exc_info.value.snapshot["values"]["Anthropic"] == 0.40
+

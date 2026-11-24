@@ -35,6 +35,7 @@ class RefetchedDatum:
     url: str
     timestamp: str | None = None
     values: dict[str, Any] | None = None
+    blocked_repeats: frozenset[str] = frozenset()
 
 
 Refetcher = Callable[[schema.SourceItem | None, str], RefetchedDatum | dict[str, Any] | Any]
@@ -45,7 +46,7 @@ _STATUS_PATTERN = re.compile(
     r"(?P<status>open|closed|active|inactive|available|unavailable|"
     r"approved|rejected|launched|discontinued|online|offline)\b"
 )
-_STATUS_COPULA_PRIORITY = {"was": 0, "has been": 1, "became": 2, "is": 3, "remains": 3}
+_STATUS_COPULA_PRIORITY = {"was": 0, "became": 1, "has been": 2, "is": 3, "remains": 3}
 _DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _OPPOSITE_STATUS = {
     "open": "closed",
@@ -266,6 +267,12 @@ def _default_refetchers() -> dict[str, Refetcher]:
     }
 
 
+def _coerce_blocked_repeats(raw: Any) -> frozenset[str]:
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(str(name).strip().casefold() for name in raw if name and str(name).strip())
+
+
 def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url: str) -> RefetchedDatum:
     if isinstance(value, RefetchedDatum):
         return value
@@ -275,6 +282,7 @@ def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url
             url=str(value.get("url") or fallback_url),
             timestamp=value.get("timestamp"),
             values=value.get("values") if isinstance(value.get("values"), dict) else None,
+            blocked_repeats=_coerce_blocked_repeats(value.get("blocked_repeats")),
         )
     return RefetchedDatum(value=value, url=fallback_url)
 
@@ -434,44 +442,25 @@ def _lookup_cached_datum(
 ) -> RefetchedDatum | None:
     """Resolve ``claim.datum_key`` from a cached snapshot using refetch_datum semantics."""
     cached_key, cached_datum = cached
-    target = _normalize_datum_key(claim.datum_key)
-    if cached_key is not None and _normalize_datum_key(cached_key) == target:
-        return cached_datum if cached_datum.value is not None else None
     values = cached_datum.values
-    if not values:
-        return None
-    if claim.datum_key in values:
-        value = values[claim.datum_key]
-        if value is None:
-            return None
-        return RefetchedDatum(
-            value=value,
-            url=cached_datum.url,
-            timestamp=cached_datum.timestamp,
-            values=values,
+    if values:
+        value = polymarket.resolve_snapshot_value(
+            values,
+            claim.datum_key,
+            blocked_repeats=cached_datum.blocked_repeats,
+            allow_occurrence_zero=(claim.datum_kind == "polymarket_probability"),
         )
-    normalized_values: dict[str, Any] = {}
-    for raw_key, raw_value in values.items():
-        normalized_values.setdefault(_normalize_datum_key(str(raw_key)), raw_value)
-    if target in normalized_values:
-        value = normalized_values[target]
-        if value is None:
-            return None
-        return RefetchedDatum(
-            value=value,
-            url=cached_datum.url,
-            timestamp=cached_datum.timestamp,
-            values=values,
-        )
-    if claim.datum_kind == "polymarket_probability" and "\x1f" not in claim.datum_key:
-        occ0_key = f"{target}\x1f0"
-        if occ0_key in normalized_values and normalized_values[occ0_key] is not None:
+        if value is not None:
             return RefetchedDatum(
-                value=normalized_values[occ0_key],
+                value=value,
                 url=cached_datum.url,
                 timestamp=cached_datum.timestamp,
                 values=values,
+                blocked_repeats=cached_datum.blocked_repeats,
             )
+        return None
+    if cached_key is not None and _normalize_datum_key(cached_key) == _normalize_datum_key(claim.datum_key):
+        return cached_datum if cached_datum.value is not None else None
     return None
 
 
@@ -720,6 +709,7 @@ def verify_report(
                         url=str(snapshot.get("url") or claim.source_url),
                         timestamp=snapshot.get("timestamp"),
                         values=dict(snapshot.get("values") or {}),
+                        blocked_repeats=_coerce_blocked_repeats(snapshot.get("blocked_repeats")),
                     ),
                 )
             verdicts.append(_unsupported(claim, checked, detail))
