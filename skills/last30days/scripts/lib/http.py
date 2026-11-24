@@ -1914,7 +1914,10 @@ def request(
                         else time.monotonic() + min(request_timeout, usage._JOURNAL_TIMEOUT_SECONDS)
                     )
                     with usage.with_deadline(finish_deadline):
-                        usage.finish(charge, parsed_usage)
+                        try:
+                            usage.finish(charge, parsed_usage)
+                        except (ValueError, TypeError):
+                            pass
             if (cancel is not None and cancel.is_set()) or (
                 deadline_monotonic is not None
                 and time.monotonic() >= deadline_monotonic

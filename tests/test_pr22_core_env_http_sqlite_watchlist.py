@@ -1398,4 +1398,31 @@ def test_greptile_p1_finish_gets_fresh_window_after_slow_response_without_hard_d
     assert totals["completion_tokens"] == 8
 
 
+@pytest.mark.parametrize("weird_status", [["in_progress"], {"state": "ok"}])
+def test_greptile_p1_unhashable_usage_status_returns_response_and_keeps_unknown(
+    tmp_path, monkeypatch, weird_status
+):
+    """An OpenRouter-compatible response with an unhashable status field must still
+    return the valid payload while leaving the charge marked cost_unknown=1."""
+    journal = tmp_path / "usage-weird-status.db"
+    usage.create_journal(journal)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal))
+
+    class Response(io.BytesIO):
+        status = 200
+
+    payload = {
+        "choices": [{"message": {"content": "paid answer"}}],
+        "status": weird_status,
+        "usage": {"cost": 0.15, "prompt_tokens": 5, "completion_tokens": 3},
+    }
+    encoded = json.dumps(payload).encode("utf-8")
+    monkeypatch.setattr(http, "_open_request", lambda req, timeout: Response(encoded))
+
+    result = http.post("https://openrouter.ai/api/v1/chat/completions", {}, retries=1)
+    assert result["choices"][0]["message"]["content"] == "paid answer"
+    assert usage.read_journal(journal)["cost_unknown"] == 1
+
+
+
 
