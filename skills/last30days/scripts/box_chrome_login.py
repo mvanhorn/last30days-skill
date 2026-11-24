@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -43,7 +45,6 @@ from lib import chrome_cdp, env  # noqa: E402
 
 # The last30days extras NUX port — single source of truth is chrome_cdp.
 EXTRAS_CDP_PORT = chrome_cdp._BOX_CHROME_PORT
-DEFAULT_PROFILE_DIR = "/tmp/last30days-x-chrome"
 LOGIN_URL = "https://x.com/login"
 BOX_CHROME_BIN = "box-chrome"
 # Printed on an official-only host instead of the MacBook note. Names no
@@ -54,10 +55,77 @@ OFFICIAL_HOST_NOTE = (
 )
 
 
+def _is_safe_owner_dir(path: Path) -> bool:
+    """True when ``path`` is an existing non-symlink directory owned by the current user with no group/other access."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        return False
+    if os.name != "nt":
+        if st.st_uid != os.getuid():
+            return False
+        if stat.S_IMODE(st.st_mode) & 0o077:
+            return False
+    return True
+
+
+def _default_profile_dir() -> str:
+    """Return an owner-only per-user runtime/cache profile path (never a fixed /tmp path)."""
+    xdg_runtime = (os.environ.get("XDG_RUNTIME_DIR") or "").strip()
+    if xdg_runtime and os.path.isabs(xdg_runtime):
+        runtime_path = Path(xdg_runtime)
+        if _is_safe_owner_dir(runtime_path):
+            return str(runtime_path / "last30days-x-chrome")
+    xdg_cache = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    if xdg_cache and os.path.isabs(xdg_cache):
+        cache_root = Path(xdg_cache)
+    else:
+        cache_root = Path.home() / ".cache"
+    return str(cache_root / "last30days" / "x-chrome")
+
+
+DEFAULT_PROFILE_DIR = _default_profile_dir()
+
+
+def _ensure_private_profile_dir(profile_dir: str) -> None:
+    """Create and verify a non-symlink, owner-only (0o700) Chrome profile directory."""
+    if not profile_dir or not profile_dir.strip():
+        raise OSError("Profile directory path must not be empty")
+
+    try:
+        st = os.lstat(profile_dir)
+    except FileNotFoundError:
+        os.makedirs(profile_dir, mode=0o700, exist_ok=True)
+        st = os.lstat(profile_dir)
+
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(f"Refusing symlink profile directory: {profile_dir}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Profile path is not a directory: {profile_dir}")
+
+    if os.name != "nt":
+        uid = os.getuid()
+        if st.st_uid != uid:
+            raise PermissionError(f"Profile directory is not owned by uid {uid}: {profile_dir}")
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            os.chmod(profile_dir, 0o700)
+            st = os.lstat(profile_dir)
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+                raise OSError(f"Profile directory changed unexpectedly: {profile_dir}")
+            if st.st_uid != uid:
+                raise PermissionError(f"Profile directory is not owned by uid {uid}: {profile_dir}")
+            if stat.S_IMODE(st.st_mode) != 0o700:
+                raise PermissionError(
+                    f"Could not enforce 0700 permissions on profile directory: {profile_dir}"
+                )
+
+
 def build_recipe(
     config: Dict[str, Any],
     *,
-    profile_dir: str = DEFAULT_PROFILE_DIR,
+    profile_dir: Optional[str] = None,
     url: str = LOGIN_URL,
 ) -> Dict[str, Any]:
     """Return the gated launch recipe. Never spawns, never reads cookies.
@@ -66,6 +134,7 @@ def build_recipe(
     ``profile_dir``, ``url``, ``env`` (launch env overrides or None),
     ``command`` (argv or None), ``note`` (human guidance).
     """
+    profile_dir = _default_profile_dir() if profile_dir is None else profile_dir
     # Official-only host (LAST30DAYS_HOST=grok-bot): the same no-launch
     # recipe as a MacBook, checked BEFORE the extras signals so a Linux or
     # Mac mini Grok Bot computer never gets a launch command. The note is
@@ -156,11 +225,11 @@ def render_recipe(recipe: Dict[str, Any]) -> str:
         lines.append(recipe["note"])
         return "\n".join(lines)
 
-    env_prefix = " ".join(f"{k}={v}" for k, v in recipe["env"].items())
-    cmd = " ".join(recipe["command"])
+    env_prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in recipe["env"].items())
+    cmd = " ".join(shlex.quote(str(part)) for part in recipe["command"])
     lines.append("[box-chrome login] Extras host. Launch the throwaway login Chrome:")
     lines.append("")
-    lines.append(f"  mkdir -p {recipe['profile_dir']}")
+    lines.append(f"  mkdir -m 700 -p {shlex.quote(recipe['profile_dir'])}")
     lines.append(f"  {env_prefix} {cmd}")
     lines.append("")
     lines.append(recipe["note"])
@@ -191,9 +260,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not recipe["applies"] or not recipe["command"]:
             return 0
         try:
-            os.makedirs(recipe["profile_dir"], exist_ok=True)
-        except OSError:
-            pass
+            _ensure_private_profile_dir(recipe["profile_dir"])
+        except OSError as exc:
+            print(
+                f"[box-chrome login] unsafe or unusable profile directory: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
         launch_env = os.environ.copy()
         launch_env.update(recipe["env"])
         try:

@@ -206,21 +206,19 @@ def test_chromium_cookie_host_family_and_requested_names(tmp_path, domain):
     host = domain.lstrip(".")
     db = tmp_path / "Cookies"
     _create_chrome_cookies_db(str(db), [
-        (host, "auth_token", "dummy-auth", b""),
+        ("." + host, "auth_token", "dummy-auth", b""),
         ("." + host, "ct0", "dummy-ct0", b""),
         ("sub." + host, "sub_cookie", "dummy-sub", b""),
         ("not" + host, "near_cookie", "dummy-near", b""),
         (host + ".example", "suffix_cookie", "dummy-suffix", b""),
-        (host, "unrequested", "dummy-other", b""),
+        ("." + host, "unrequested", "dummy-other", b""),
     ])
     with mock.patch("lib.chrome_cookies._get_chromium_encryption_key") as key:
         result = _extract_chromium_cookies_macos(
             db, "Chrome Safe Storage", domain,
             ["auth_token", "ct0", "sub_cookie", "near_cookie", "suffix_cookie"],
         )
-    assert result == {
-        "auth_token": "dummy-auth", "ct0": "dummy-ct0", "sub_cookie": "dummy-sub",
-    }
+    assert result == {"auth_token": "dummy-auth", "ct0": "dummy-ct0"}
     key.assert_not_called()
 
 
@@ -408,13 +406,15 @@ class TestKeychainDenied:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl not installed")
-class TestOpensslNotFound:
-    def test_openssl_missing(self):
-        encrypted = _encrypt_value_v10("test", KNOWN_AES_KEY)
-        with mock.patch("lib.chrome_cookies.subprocess.run", side_effect=FileNotFoundError):
-            result = _decrypt_v10_value(encrypted, KNOWN_AES_KEY, db_version=20)
-            assert result is None
+class TestInProcessDecryption:
+    def test_decrypts_without_openssl_subprocess(self):
+        with mock.patch("lib.chrome_cookies.subprocess.run", side_effect=AssertionError("no subprocess")):
+            result = _decrypt_v10_value(V10_AUTH_TOKEN, V10_AES_KEY, db_version=20)
+            assert result == "my_auth_token_123"
+
+    def test_decryptor_failure_returns_none(self):
+        with mock.patch("lib.chrome_cookies._decrypt_aes128_cbc", return_value=None):
+            assert _decrypt_v10_value(V10_AUTH_TOKEN, V10_AES_KEY, db_version=20) is None
 
 # ---------------------------------------------------------------------------
 # Unencrypted cookie values → returned as-is

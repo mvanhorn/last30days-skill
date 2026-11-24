@@ -15,13 +15,15 @@ import os
 import platform
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .cookie_paths import path_is_dir, path_is_file
 from .sqlite_snapshot import copy_snapshot
 
 logger = logging.getLogger(__name__)
+_SQLITE_TEMP_SIDECARS = ("", "-wal", "-shm", "-journal")
 
 
 class CookieDatabaseReadError(RuntimeError):
@@ -253,49 +255,163 @@ def _fallback_find_profile(
     return None
 
 
+def _unlink_sqlite_temp_files(path: Optional[str]) -> None:
+    """Remove a temporary SQLite copy and any WAL/SHM/journal sidecars."""
+    if not path:
+        return
+    for suffix in _SQLITE_TEMP_SIDECARS:
+        try:
+            Path(path + suffix).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _select_scoped_firefox_cookies(
+    rows: List[tuple[Any, ...]],
+    wanted: str,
+    preferred_host: str,
+    cookie_names: List[str],
+    now_unix: int,
+) -> Optional[Dict[str, str]]:
+    """Select cookie values from a single non-expired Firefox scope without mixing."""
+    allowed_hosts = (wanted, f".{wanted}")
+    scopes: Dict[tuple[str, str, str], Dict[str, List[tuple[int, int, int, str]]]] = {}
+    for name, value, host, path, expiry, is_secure, is_httponly, origin_attrs in rows:
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            expiry_val = int(expiry) if expiry is not None else 0
+        except (TypeError, ValueError):
+            continue
+        if expiry_val != 0 and expiry_val <= now_unix:
+            continue
+        host_norm = str(host or "").strip().lower()
+        if host_norm not in allowed_hosts:
+            continue
+        path_norm = path if isinstance(path, str) and path else "/"
+        partition_norm = str(origin_attrs or "").strip()
+        secure_flag = 1 if is_secure else 0
+        httponly_flag = 1 if is_httponly else 0
+        scope_key = (host_norm, path_norm, partition_norm)
+        scopes.setdefault(scope_key, {}).setdefault(str(name), []).append(
+            (secure_flag, httponly_flag, expiry_val, value)
+        )
+
+    if not scopes:
+        return None
+
+    requested = list(dict.fromkeys(cookie_names))
+    resolved_scopes: List[tuple[tuple[Any, ...], Dict[str, str]]] = []
+    for scope_key, by_name in scopes.items():
+        host_norm, path_norm, partition_norm = scope_key
+        jar: Dict[str, str] = {}
+        all_secure = True
+        all_httponly = True
+        for name, candidates in by_name.items():
+            candidates.sort(
+                key=lambda item: (
+                    item[0] == 0,
+                    item[1] == 0,
+                    0 if item[2] == 0 else -item[2],
+                )
+            )
+            best = candidates[0]
+            jar[name] = best[3]
+            if best[0] == 0:
+                all_secure = False
+            if best[1] == 0:
+                all_httponly = False
+        if not jar:
+            continue
+        complete = all(name in jar for name in requested)
+        rank = (
+            not complete,
+            partition_norm != "",
+            path_norm != "/",
+            not all_secure,
+            not all_httponly,
+            host_norm != preferred_host,
+            path_norm,
+            host_norm,
+            partition_norm,
+        )
+        resolved_scopes.append((rank, jar))
+
+    if not resolved_scopes:
+        return None
+    resolved_scopes.sort(key=lambda item: item[0])
+    return resolved_scopes[0][1]
+
+
 def _query_cookies_db(
     db_path: Path, domain: str, cookie_names: List[str], *, windows_wsl: bool = False,
 ) -> Optional[Dict[str, str]]:
-    """Snapshot the cookies database to a temp file and query it.
+    """Snapshot the cookies database to a private temp dir and query it.
 
     The snapshot includes committed WAL updates while Firefox is running.
-    Returns {name: value} dict or None if no matching cookies found.
+    Returns {name: value} dict from a single non-expired scope, or None if no
+    matching cookies are found.
     """
     if not path_is_file(db_path):
         return None
+    wanted = domain.strip().lstrip(".").lower()
+    if not wanted or not cookie_names:
+        return None
+    preferred_host = domain.strip().lower()
+    if preferred_host not in (wanted, f".{wanted}"):
+        preferred_host = f".{wanted}"
 
-    tmp_fd = None
-    tmp_path = None
     try:
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
-        # Snapshot content only; preserve mkstemp's 0600 permissions.
-        if windows_wsl:
-            copy_snapshot(db_path, tmp_path, wsl_wal_fallback=True)
-        else:
-            copy_snapshot(db_path, tmp_path)
-        _lock_temp_cookie_copy(tmp_path)
+        with tempfile.TemporaryDirectory(prefix="last30days-cookies-") as tmp_dir:
+            if os.name != "nt":
+                os.chmod(tmp_dir, 0o700)
+            tmp_path = str(Path(tmp_dir) / "cookies.sqlite")
+            # Pre-create with 0600 on POSIX and close the fd immediately so
+            # Windows never holds an open descriptor when SQLite writes or
+            # cleanup unlinks the temp database and its WAL/SHM sidecars.
+            tmp_fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(tmp_fd)
+            conn: Optional[sqlite3.Connection] = None
+            try:
+                if windows_wsl:
+                    copy_snapshot(db_path, tmp_path, wsl_wal_fallback=True)
+                else:
+                    copy_snapshot(db_path, tmp_path)
+                _lock_temp_cookie_copy(tmp_path)
 
-        conn = sqlite3.connect(tmp_path)
-        try:
-            # Build parameterized query — SQLite doesn't support array params,
-            # so we build the IN clause with individual placeholders.
-            placeholders = ",".join("?" for _ in cookie_names)
-            host = domain.lstrip(".")
-            query = (
-                f"SELECT name, value FROM moz_cookies "
-                f"WHERE (host = ? OR host LIKE ?) AND name IN ({placeholders})"
-            )
-            # Match host-only cookies, domain cookies, and subdomains.
-            params = [host, f"%.{host}"] + list(cookie_names)
+                conn = sqlite3.connect(tmp_path)
+                col_rows = conn.execute("PRAGMA table_info(moz_cookies)").fetchall()
+                col_map = {str(row[1]).lower(): str(row[1]) for row in col_rows}
+                if not {"name", "value", "host"}.issubset(col_map):
+                    return None
 
-            cursor = conn.execute(query, params)
-            rows = cursor.fetchall()
-        finally:
-            conn.close()
+                path_expr = col_map["path"] if "path" in col_map else "'/'"
+                expiry_expr = col_map["expiry"] if "expiry" in col_map else "0"
+                secure_expr = col_map["issecure"] if "issecure" in col_map else "1"
+                httponly_expr = col_map["ishttponly"] if "ishttponly" in col_map else "1"
+                partition_expr = (
+                    col_map["originattributes"] if "originattributes" in col_map else "''"
+                )
+
+                placeholders = ",".join("?" for _ in cookie_names)
+                query = (
+                    f"SELECT name, value, host, {path_expr}, {expiry_expr}, "
+                    f"{secure_expr}, {httponly_expr}, {partition_expr} "
+                    f"FROM moz_cookies "
+                    f"WHERE LOWER(host) IN (?, ?) AND name IN ({placeholders})"
+                )
+                params = [wanted, f".{wanted}"] + list(cookie_names)
+                rows = conn.execute(query, params).fetchall()
+            finally:
+                if conn is not None:
+                    conn.close()
+                _unlink_sqlite_temp_files(tmp_path)
 
         if not rows:
             return None
-        return {name: value for name, value in rows}
+        return _select_scoped_firefox_cookies(
+            rows, wanted, preferred_host, cookie_names, int(time.time())
+        )
 
     except (sqlite3.Error, OSError) as exc:
         if isinstance(exc, PermissionError):
@@ -309,18 +425,6 @@ def _query_cookies_db(
         if windows_wsl:
             raise CookieDatabaseReadError("Could not read Windows Firefox cookies") from exc
         return None
-    finally:
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-        if tmp_fd is not None:
-            try:
-                import os
-                os.close(tmp_fd)
-            except OSError:
-                pass
 
 
 def _try_firefox_dir(
