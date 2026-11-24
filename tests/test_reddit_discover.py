@@ -911,6 +911,48 @@ class TestSearxngConfigHandoff:
         if backfill == "rate-limited":
             assert artifact["_source_outcome"]["detail"] == "HTTP 429: paid backfill throttled"
 
+    @pytest.mark.parametrize("backfill", ["empty", "rate-limited", "result"])
+    def test_return_margin_alone_keeps_completed_failures_after_backfill(self, backfill):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        marks = []
+        thread = "https://www.reddit.com/r/LocalLLaMA/comments/paid123/"
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 200.0}
+
+        def web_floor_finishes_inside_margin(*args, **kwargs):
+            # It starts with 4s left, so its own cutoff (133.4) is never reached;
+            # it ends 1.8s before the 135 lane deadline: inside the 2s return margin.
+            clock[0] = 133.2
+            return []
+
+        def sc_search(*args, **kwargs):
+            if backfill == "rate-limited":
+                http._record_failure(http.HTTPError("HTTP 429: paid backfill throttled", 429))
+            return {"items": [_hit(thread)] if backfill == "result" else []}
+
+        def run_inline(_wait_until, _stage, _default, call, /, *args, **kwargs):
+            return call(*args, **kwargs)
+
+        real_mark = reddit_keyless._mark
+
+        def record_mark(path, state):
+            marks.append((path, state))
+            return real_mark(path, state)
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]),              mock.patch.object(reddit_keyless, "_within", side_effect=run_inline),              mock.patch.object(reddit_keyless, "_web_floor", side_effect=web_floor_finishes_inside_margin),              mock.patch.object(reddit_keyless, "_mark", side_effect=record_mark),              mock.patch.object(reddit_keyless.reddit_search, "_blocked_reason", "offline 403"):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(cfg, sc_search=sc_search)
+
+        # Every asked path finished and failed. Only the return margin was crossed.
+        assert clock[0] == 133.2 and not seen_urls
+        assert ("web", health.TIMEOUT) not in marks
+        assert [item["url"] for item in items] == ([thread] if backfill == "result" else [])
+        outcome = artifact.get("_source_outcome")
+        if backfill == "result":
+            assert outcome is None
+        else:
+            assert outcome["state"] == health.UNREACHABLE and "search blocked" in outcome["detail"]
+
     @pytest.mark.parametrize("sc_primary", [False, True], ids=["public-primary", "sc-primary"])
     def test_pipeline_keeps_site_hit_without_late_searxng_on_either_primary_path(self, sc_primary):
         from lib import reddit_keyless

@@ -7348,9 +7348,15 @@ def _retrieve_stream_impl(
                 state = reddit.classify_run_failure(str(exc))
                 raise SourceRunError(f"Reddit public search failed: {exc}", state) from exc
             sys.stderr.write(", using ScrapeCreators backup\n")
-        free_timed_out = (
+        # An actual web cutoff outranks completed failures; running inside the
+        # return margin does not (every path may have finished and failed).
+        free_cut_off = (
             not public_results and public_failure is None
-            and (lane_paths.get("web") == health.TIMEOUT or reddit_keyless._out_of_time(lane_deadline))
+            and lane_paths.get("web") == health.TIMEOUT
+        )
+        free_timed_out = free_cut_off or (
+            not public_results and public_failure is None
+            and reddit_keyless._out_of_time(lane_deadline)
         )
         if free_timed_out and not has_sc_key:
             return [], _reddit_timeout_artifact()
@@ -7433,10 +7439,12 @@ def _retrieve_stream_impl(
                 + "".join(f"; {failed}" for failed in failed_paths),
             )
         merged = _merge_reddit_items(public_results, sc_items)
-        if not merged and free_timed_out:
+        if not merged and free_cut_off:
             return [], _reddit_timeout_artifact()
         if not merged and free_failed:
             return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
+        if not merged and free_timed_out:
+            return [], _reddit_timeout_artifact()
         if public_failure is not None:
             state = reddit.classify_run_failure(str(public_failure))
             return merged, _outcome_artifact(
