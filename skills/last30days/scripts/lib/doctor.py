@@ -1686,7 +1686,14 @@ def _is_excluded(source: str, excluded: set[str]) -> bool:
 
 
 def _excluded_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    token = env.excluded_source_token(source, config) or source
+    tokens = env.excluded_source_tokens(source, config) or [source]
+    token_list = ", ".join(tokens)
+    if len(tokens) == 1:
+        fix_tokens = tokens[0]
+    elif len(tokens) == 2:
+        fix_tokens = f"{tokens[0]} and {tokens[1]}"
+    else:
+        fix_tokens = f"{', '.join(tokens[:-1])}, and {tokens[-1]}"
     descriptor = backends.DESCRIPTORS.get(source)
     extra: Dict[str, Any] = {}
     if descriptor is not None:
@@ -1700,8 +1707,8 @@ def _excluded_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
         )
     return _record(
         status="excluded",
-        note=f"excluded via EXCLUDE_SOURCES ({token})",
-        fix=f"remove {token} from EXCLUDE_SOURCES to re-enable",
+        note=f"excluded via EXCLUDE_SOURCES ({token_list})",
+        fix=f"remove {fix_tokens} from EXCLUDE_SOURCES to re-enable",
         **extra,
     )
 

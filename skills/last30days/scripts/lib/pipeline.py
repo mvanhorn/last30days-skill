@@ -760,7 +760,7 @@ def available_sources(
         # avoid evaluating it twice in one diagnose() call.
         if x_pending is None:
             x_pending = env.x_pending_browser_auth(config, local_only=local_only)
-        if x_pending:
+        if x_pending and health.probe_dependency("node").status == health.OK:
             available.append("x")
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
@@ -840,8 +840,13 @@ def available_sources(
     # consent pattern as Perplexity/LinkedIn). Off by default -- unlike arXiv and
     # Techmeme, which are zero-auth, it can spawn a one-time headless-Chrome WAF
     # cookie harvest on a brand topic, so activating it is the user's choice.
-    if which("trustpilot-pp-cli") and (
-        "trustpilot" in include_sources or (requested_sources and "trustpilot" in requested_sources)
+    if (
+        which("trustpilot-pp-cli")
+        and trustpilot._harvest_allowed(config)
+        and (
+            "trustpilot" in include_sources
+            or (requested_sources and "trustpilot" in requested_sources)
+        )
     ):
         available.append("trustpilot")
     # Amazon: opt-in additive source, dual-gated. The Bright Data CLI must be
@@ -2439,7 +2444,10 @@ def diagnose(
     x_status = env.get_x_source_status(config, probe=probe_x)
     # Compute once and reuse for both the diag flag and available_sources below.
     # safe=True (doctor/--diagnose/--preflight) must stay network-free.
-    x_pending = env.x_pending_browser_auth(config, local_only=not probe_x)
+    x_pending = (
+        env.x_pending_browser_auth(config, local_only=not probe_x)
+        and health.probe_dependency("node").status == health.OK
+    )
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"

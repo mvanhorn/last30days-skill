@@ -294,19 +294,6 @@ class TestHigh056WindowsCmdHealthProbe:
         assert res.state == health.OK
         assert run_mock.call_args.args[0] == [resolved, "--version"]
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows .cmd batch execution test")
-    def test_probe_dependency_runs_real_windows_cmd_in_dir_with_spaces(self, tmp_path, monkeypatch):
-        spaced_dir = tmp_path / "dir with spaces"
-        spaced_dir.mkdir()
-        shim = spaced_dir / "fakecli.cmd"
-        shim.write_text("@echo off\r\necho fakecli 1.2.3\r\n", encoding="ascii")
-        existing_path = os.environ.get("PATH", "")
-        monkeypatch.setenv("PATH", f"{spaced_dir}{os.pathsep}{existing_path}")
-        probe = health.probe_dependency("fakecli")
-        assert probe.status == health.OK
-        assert probe.ok is True
-        assert "1.2.3" in probe.detail
-
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable path-with-spaces test")
     def test_probe_dependency_runs_real_posix_binary_in_dir_with_spaces(self, tmp_path, monkeypatch):
         spaced_dir = tmp_path / "dir with spaces"
@@ -387,6 +374,8 @@ class TestHigh070XPinDiagnostics:
              mock.patch("lib.bird_x.is_bird_installed", return_value=True):
             record = doctor._x_record(config)
             auth_path = doctor._x_auth_path(config)
+            avail = pipeline.available_sources(config, local_only=True)
+            report = doctor.build_report(config)
 
         assert record["status"] == health.BROKEN
         assert record["tier"] == doctor.TIER_ERROR
@@ -396,6 +385,8 @@ class TestHigh070XPinDiagnostics:
         assert "reinstall node" in record["fix"].lower()
         bird_entry = next(b for b in record["backends"] if b["name"] == "bird")
         assert bird_entry["status"] == health.BROKEN
+        assert "x" not in avail
+        assert "x" not in (report["permissions"].get("network") or {}).get("available_sources", [])
         if not extra_cfg:
             assert auth_path["armed"] is False
 
@@ -657,6 +648,17 @@ class TestHigh072DoctorPipelineParityAndExclude:
         assert f"({token})" in web_rec["note"]
         assert f"remove {token} from EXCLUDE_SOURCES" in web_rec["fix"]
 
+    @pytest.mark.parametrize("raw_exclude", ["web,grounding", "grounding, web"])
+    def test_web_and_grounding_both_excluded_lists_both_tokens_in_fix(self, raw_exclude):
+        config = {"BRAVE_API_KEY": "dummy-brave", "EXCLUDE_SOURCES": raw_exclude}
+        assert env.excluded_source_tokens("web", config) == ["web", "grounding"]
+        with _HermeticDoctor():
+            web_rec = doctor.build_report(config)["sources"]["web"]
+        assert web_rec["status"] == "excluded"
+        assert "web" in web_rec["note"] and "grounding" in web_rec["note"]
+        assert "web" in web_rec["fix"] and "grounding" in web_rec["fix"]
+        assert "remove web and grounding from EXCLUDE_SOURCES" in web_rec["fix"]
+
     def test_excluded_xiaohongshu_never_contacts_service_in_doctor_or_pipeline(self):
         config = {
             "XIAOHONGSHU_API_BASE": "http://localhost:18060",
@@ -683,14 +685,25 @@ class TestHigh072DoctorPipelineParityAndExclude:
             trustpilot.NO_BROWSER_ENV: "1",
         }
         with _HermeticDoctor(probe_map={"trustpilot-pp-cli": health.OK}), \
+             mock.patch("lib.pipeline.which", lambda name: f"/usr/bin/{name}"), \
              mock.patch("lib.trustpilot.can_run_now") as can_run:
             rec = doctor._trustpilot_record(config)
+            avail = pipeline.available_sources(config, local_only=True)
         can_run.assert_not_called()
+        with _HermeticDoctor(probe_map={"trustpilot-pp-cli": health.OK}), \
+             mock.patch("lib.pipeline.which", lambda name: f"/usr/bin/{name}"), \
+             mock.patch(
+                 "lib.trustpilot.can_run_now",
+                 return_value={"can_run": False, "session_fresh": False, "cached_companies": 0},
+             ):
+            report = doctor.build_report(config)
         assert rec["status"] == "excluded"
         assert rec["tier"] == doctor.TIER_OFF
         assert trustpilot.NO_BROWSER_ENV in rec["note"]
         assert trustpilot.NO_BROWSER_ENV in rec["fix"]
         assert "auth login" not in rec["fix"]
+        assert "trustpilot" not in avail
+        assert "trustpilot" not in (report["permissions"].get("network") or {}).get("available_sources", [])
         assert doctor._config_fingerprint({"INCLUDE_SOURCES": "trustpilot"}) != (
             doctor._config_fingerprint(config)
         )

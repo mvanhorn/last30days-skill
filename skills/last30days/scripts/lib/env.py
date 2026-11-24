@@ -2426,16 +2426,23 @@ def exclude_sources(config: dict[str, Any]) -> set[str]:
     return expanded
 
 
-def excluded_source_token(source: str, config: dict[str, Any]) -> str | None:
-    """Return the configured EXCLUDE_SOURCES token matching ``source``, or None."""
+def excluded_source_tokens(source: str, config: dict[str, Any]) -> list[str]:
+    """Return all configured EXCLUDE_SOURCES tokens matching ``source``."""
     raw = _parse_exclude_sources(config)
     key = (source or '').strip().lower()
+    tokens: list[str] = []
     if key in raw:
-        return key
+        tokens.append(key)
     for alias in _EXCLUDE_SOURCE_ALIASES.get(key, ()):
-        if alias in raw:
-            return alias
-    return None
+        if alias in raw and alias not in tokens:
+            tokens.append(alias)
+    return tokens
+
+
+def excluded_source_token(source: str, config: dict[str, Any]) -> str | None:
+    """Return the configured EXCLUDE_SOURCES token matching ``source``, or None."""
+    tokens = excluded_source_tokens(source, config)
+    return tokens[0] if tokens else None
 
 
 def include_sources(config: dict[str, Any]) -> set[str]:
