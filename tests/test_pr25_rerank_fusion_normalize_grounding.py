@@ -1396,7 +1396,8 @@ class TestHigh107GroundingRedditCommentsAndDates:
             },
         )
 
-        # Case 1: Both items fused into the same candidate -> native Reddit's 2 comments win, total capped at 2.
+        # Case 1: Both items fused into the same candidate -> merged comments sort by votes
+        # (80, 70, 45, 35), so the top 2 highest-voted win and total is capped at 2.
         fused_cand = schema.Candidate(
             candidate_id=thread_url,
             item_id="R1",
@@ -1430,9 +1431,9 @@ class TestHigh107GroundingRedditCommentsAndDates:
         fused_lines = render._render_top_comments(report_fused, limit=10)
         quote_lines_fused = [ln for ln in fused_lines if ln.startswith("- ")]
         assert len(quote_lines_fused) == 2
-        assert any("native_one" in ln for ln in quote_lines_fused)
-        assert any("native_two" in ln for ln in quote_lines_fused)
-        assert not any("web_one" in ln or "web_two" in ln for ln in quote_lines_fused)
+        assert "native_one" in quote_lines_fused[0]
+        assert "web_one" in quote_lines_fused[1]
+        assert not any("native_two" in ln or "web_two" in ln for ln in quote_lines_fused)
 
         # Case 2: Two separate candidates referencing the same Reddit thread -> still capped at 2 quotes total.
         cand_a = schema.Candidate(
@@ -1486,6 +1487,190 @@ class TestHigh107GroundingRedditCommentsAndDates:
         split_lines = render._render_top_comments(report_split, limit=10)
         quote_lines_split = [ln for ln in split_lines if ln.startswith("- ")]
         assert len(quote_lines_split) == 2
+
+    def test_merged_reddit_group_sorts_by_votes_and_places_pending_last(self):
+        # Case 1: Native Reddit copy has a 2-upvote reply (below the 5-upvote item floor for a
+        # 200-score thread), while the web copy has a 20-upvote reply. Merged comments must sort
+        # by descending score so the 20-upvote reply sits at index 0 and clears the item floor!
+        thread_url = "https://www.reddit.com/r/python/comments/sort123/hermes_agent/"
+        native_low = schema.SourceItem(
+            item_id="R-low",
+            source="reddit",
+            title="Hermes Agent benchmark thread",
+            body="Hermes Agent benchmark thread",
+            url=thread_url,
+            container="python",
+            published_at="2026-10-20",
+            date_confidence="high",
+            engagement={"score": 200, "num_comments": 50},
+            metadata={
+                "top_comments": [
+                    {
+                        "id": "low1",
+                        "score": 2,
+                        "author": "low_voter",
+                        "excerpt": "Low-vote native reply on Hermes Agent benchmarks.",
+                        "depth": 0,
+                    },
+                ]
+            },
+        )
+        web_high = schema.SourceItem(
+            item_id="W-high",
+            source="grounding",
+            title="Hermes Agent benchmark thread",
+            body="Hermes Agent benchmark thread",
+            url=thread_url,
+            published_at="2026-10-20",
+            date_confidence="high",
+            metadata={
+                "enriched_via": "arctic",
+                "reddit_thread_score": 200,
+                "reddit_subreddit": "python",
+                "top_comments": [
+                    {
+                        "id": "high1",
+                        "score": 20,
+                        "author": "high_voter",
+                        "excerpt": "High-vote web reply proving Hermes Agent speed.",
+                        "depth": 0,
+                    },
+                ],
+            },
+        )
+        cand_votes = schema.Candidate(
+            candidate_id=thread_url,
+            item_id="R-low",
+            source="reddit",
+            title="Hermes Agent benchmark thread",
+            url=thread_url,
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.9,
+            freshness=80,
+            engagement=60,
+            source_quality=0.6,
+            rrf_score=0.03,
+            sources=["reddit", "grounding"],
+            source_items=[native_low, web_high],
+            final_score=70.0,
+        )
+        report_votes = schema.Report(
+            topic="Hermes Agent",
+            range_from="2026-10-01",
+            range_to="2026-10-31",
+            generated_at="2026-10-31T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("local", "m", "m"),
+            query_plan=_plan("Hermes Agent", ["reddit", "grounding"]),
+            clusters=[],
+            ranked_candidates=[cand_votes],
+            items_by_source={"reddit": [native_low], "grounding": [web_high]},
+            errors_by_source={},
+        )
+        lines_votes = render._render_top_comments(report_votes, limit=10)
+        quote_lines_votes = [ln for ln in lines_votes if ln.startswith("- ")]
+        assert len(quote_lines_votes) == 2
+        assert "high_voter" in quote_lines_votes[0]
+        assert "20 upvotes" in quote_lines_votes[0]
+        assert "low_voter" in quote_lines_votes[1]
+        assert "2 upvotes" in quote_lines_votes[1]
+
+        # Case 2: Native Reddit copy has two score_pending replies while web copy has a scored
+        # 15-upvote reply -> scored reply must lead ahead of pending replies (never crowded out).
+        pending_url = "https://www.reddit.com/r/python/comments/pend456/hermes_agent/"
+        native_pending = schema.SourceItem(
+            item_id="R-pend",
+            source="reddit",
+            title="Hermes Agent launch discussion",
+            body="Hermes Agent launch discussion",
+            url=pending_url,
+            container="python",
+            published_at="2026-10-20",
+            date_confidence="high",
+            engagement={"score": None, "num_comments": 10},
+            metadata={
+                "engagement_source": reddit_refs.ARCTIC_PENDING,
+                "top_comments": [
+                    {
+                        "id": "p1",
+                        "score": None,
+                        "score_pending": True,
+                        "author": "pending_one",
+                        "excerpt": "First pending comment about Hermes Agent launch.",
+                        "depth": 0,
+                    },
+                    {
+                        "id": "p2",
+                        "score": None,
+                        "score_pending": True,
+                        "author": "pending_two",
+                        "excerpt": "Second pending comment about Hermes Agent launch.",
+                        "depth": 0,
+                    },
+                ],
+            },
+        )
+        web_scored = schema.SourceItem(
+            item_id="W-scored",
+            source="grounding",
+            title="Hermes Agent launch discussion",
+            body="Hermes Agent launch discussion",
+            url=pending_url,
+            published_at="2026-10-20",
+            date_confidence="high",
+            metadata={
+                "enriched_via": "arctic",
+                "reddit_thread_score": 150,
+                "reddit_subreddit": "python",
+                "top_comments": [
+                    {
+                        "id": "s1",
+                        "score": 15,
+                        "author": "scored_user",
+                        "excerpt": "Scored 15-upvote comment on Hermes Agent launch.",
+                        "depth": 0,
+                    },
+                ],
+            },
+        )
+        cand_pending = schema.Candidate(
+            candidate_id=pending_url,
+            item_id="R-pend",
+            source="reddit",
+            title="Hermes Agent launch discussion",
+            url=pending_url,
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.9,
+            freshness=80,
+            engagement=50,
+            source_quality=0.6,
+            rrf_score=0.03,
+            sources=["reddit", "grounding"],
+            source_items=[native_pending, web_scored],
+            final_score=70.0,
+        )
+        report_pending = schema.Report(
+            topic="Hermes Agent",
+            range_from="2026-10-01",
+            range_to="2026-10-31",
+            generated_at="2026-10-31T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("local", "m", "m"),
+            query_plan=_plan("Hermes Agent", ["reddit", "grounding"]),
+            clusters=[],
+            ranked_candidates=[cand_pending],
+            items_by_source={"reddit": [native_pending], "grounding": [web_scored]},
+            errors_by_source={},
+        )
+        lines_pending = render._render_top_comments(report_pending, limit=10)
+        quote_lines_pending = [ln for ln in lines_pending if ln.startswith("- ")]
+        assert len(quote_lines_pending) == 2
+        assert "scored_user" in quote_lines_pending[0]
+        assert "15 upvotes" in quote_lines_pending[0]
+        assert "pending_one" in quote_lines_pending[1]
+        assert not any("pending_two" in ln for ln in quote_lines_pending)
 
 
 # ---------------------------------------------------------------------------

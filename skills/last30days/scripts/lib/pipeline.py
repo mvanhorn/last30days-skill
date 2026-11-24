@@ -206,8 +206,19 @@ def _research_deadline(config: dict[str, Any], seconds: float) -> float:
 
 
 def _finalization_deadline(config: dict[str, Any], run_started: float) -> float:
-    deadline = run_started + FINALIZATION_WORK_CUTOFF_SECONDS
-    deadline = min(deadline, config.get("_finalization_deadline", deadline))
+    if config.get("_deep_research"):
+        if "_finalization_deadline" in config:
+            deadline = config["_finalization_deadline"]
+        else:
+            deadline = (
+                run_started
+                + perplexity.deep_timeout_seconds(config)
+                + DEEP_RESEARCH_RECEIPT_SECONDS
+                + FINALIZATION_WORK_CUTOFF_SECONDS
+            )
+    else:
+        deadline = run_started + FINALIZATION_WORK_CUTOFF_SECONDS
+        deadline = min(deadline, config.get("_finalization_deadline", deadline))
     inherited = config.get("_research_deadline")
     if inherited is not None:
         deadline = min(deadline, inherited - DISCOVERY_FINALIZATION_RESERVE_SECONDS)
