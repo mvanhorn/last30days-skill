@@ -63,15 +63,27 @@ def _normalize_url(url: str) -> str:
     return urlunparse((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", query, ""))
 
 
-def candidate_key(item: schema.SourceItem) -> str:
+def candidate_key(
+    item: schema.SourceItem,
+    *,
+    polymarket_eids_by_url: dict[str, set[str]] | None = None,
+) -> str:
     if item.url:
+        if item.source == "polymarket" and polymarket_eids_by_url:
+            poly_key = polymarket_url_key(item, polymarket_eids_by_url)
+            if poly_key is not None:
+                return poly_key
         # Every URL form of one Reddit thread (old., redd.it, a comment
         # permalink) is one candidate, keyed by the thread id.
         return reddit_refs.thread_key(item.url) or _normalize_url(item.url)
     return f"{item.source}:{item.item_id}"
 
 
-def source_item_key(item: schema.SourceItem) -> tuple[str, str]:
+def source_item_key(
+    item: schema.SourceItem,
+    *,
+    polymarket_eids_by_url: dict[str, set[str]] | None = None,
+) -> tuple[str, str]:
     """Identity of one source item, for same-source de-duplication.
 
     Usually the normalized URL (see :func:`candidate_key`). A Hacker News
@@ -84,7 +96,7 @@ def source_item_key(item: schema.SourceItem) -> tuple[str, str]:
         hn_url = item.metadata.get("hn_url")
         if hn_url:
             return (item.source, _normalize_url(str(hn_url)))
-    return (item.source, candidate_key(item))
+    return (item.source, candidate_key(item, polymarket_eids_by_url=polymarket_eids_by_url))
 
 
 # Enrichment that one copy of a thread may carry and another may lack. When
@@ -222,6 +234,49 @@ def _polymarket_event_ids_conflict(
     return bool(id_a and id_b and id_a != id_b)
 
 
+def polymarket_event_ids_by_url(
+    items: Iterable[schema.SourceItem],
+) -> dict[str, set[str]]:
+    """Map each normalized Polymarket URL to all distinct non-empty event IDs seen."""
+    by_url: dict[str, set[str]] = {}
+    for item in items:
+        if item.source != "polymarket":
+            continue
+        url = (item.url or "").strip()
+        if not url:
+            continue
+        eid = _polymarket_event_id(item)
+        if eid:
+            by_url.setdefault(_normalize_url(url), set()).add(eid)
+    return by_url
+
+
+def polymarket_url_key(
+    item: schema.SourceItem,
+    eids_by_url: dict[str, set[str]] | None = None,
+) -> str | None:
+    """Collision-safe URL key for a Polymarket item, or None if not Polymarket/URL-less.
+
+    When multiple distinct ``event_id`` values share one reused slug URL:
+    - items with a known ``event_id`` key under ``"{norm_url}\\x1fevent={eid}"``
+    - ID-less items key under ``"{norm_url}\\x1fidless"`` so they never merge
+      with or bridge conflicting events.
+    When zero or one ``event_id`` exists at ``norm_url``, every copy shares
+    ``norm_url`` so ID-less copies merge cleanly and inherit the sole ``event_id``.
+    """
+    if item.source != "polymarket":
+        return None
+    url = (item.url or "").strip()
+    if not url:
+        return None
+    norm = _normalize_url(url)
+    eids = (eids_by_url or {}).get(norm)
+    if eids and len(eids) > 1:
+        eid = _polymarket_event_id(item)
+        return f"{norm}\x1fevent={eid}" if eid else f"{norm}\x1fidless"
+    return norm
+
+
 def _merge_polymarket_match_bundle(
     existing: schema.SourceItem,
     incoming: schema.SourceItem,
@@ -291,6 +346,10 @@ def merge_source_items(
         )
     polymarket_match_preserved = _merge_polymarket_match_bundle(existing, incoming)
     in_meta = incoming.metadata or {}
+    if existing.source == "polymarket" and incoming.source == "polymarket":
+        incoming_eid = _polymarket_event_id(incoming)
+        if incoming_eid and not _polymarket_event_id(existing):
+            existing.metadata["event_id"] = incoming_eid
     for meta_key in ("enriched_via", "reddit_subreddit"):
         val = in_meta.get(meta_key)
         if val and not existing.metadata.get(meta_key):
@@ -457,20 +516,17 @@ def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.Sourc
     is :func:`source_item_key` (the normalized URL, or the HN discussion URL),
     not the id. The first occurrence stays in place and absorbs later copies
     via :func:`merge_source_items`. Reused Polymarket slug URLs carrying
-    distinct known ``event_id`` values are kept separate.
+    distinct known ``event_id`` values (and ID-less copies at those URLs) are
+    kept separate so conflicting events never merge or bridge.
     """
-    first_by_key: dict[tuple[str, str], list[schema.SourceItem]] = {}
+    poly_eids = polymarket_event_ids_by_url(items)
+    first_by_key: dict[tuple[str, str], schema.SourceItem] = {}
     kept: list[schema.SourceItem] = []
     for item in items:
-        key = source_item_key(item)
-        bucket = first_by_key.get(key)
-        existing = (
-            next((candidate for candidate in bucket if not _polymarket_event_ids_conflict(candidate, item)), None)
-            if bucket is not None
-            else None
-        )
+        key = source_item_key(item, polymarket_eids_by_url=poly_eids)
+        existing = first_by_key.get(key)
         if existing is None:
-            first_by_key.setdefault(key, []).append(item)
+            first_by_key[key] = item
             kept.append(item)
         else:
             merge_source_items(existing, item)
@@ -820,6 +876,16 @@ def weighted_rrf(
     # per-stream ids collide across subqueries, and
     # a repeat copy may carry enrichment the first one lacks.
     seen_source_items: dict[str, dict[tuple[str, str], schema.SourceItem]] = {}
+    poly_eids = polymarket_event_ids_by_url(
+        item
+        for items in streams.values()
+        for item in items
+        if item.source == "polymarket"
+        and entity_extract.matches_person_identity(
+            item, plan.person_identity_anchors, primary_handle,
+            person_run=getattr(plan, "person_run", False),
+        )
+    )
 
     for (label, source), items in streams.items():
         subquery = subqueries[label]
@@ -832,7 +898,7 @@ def weighted_rrf(
                 person_run=getattr(plan, "person_run", False),
             ):
                 continue
-            key = candidate_key(item)
+            key = candidate_key(item, polymarket_eids_by_url=poly_eids)
             score = weight / (RRF_K + rank)
             item_local_relevance = item.local_relevance if item.local_relevance is not None else float(item.metadata.get("local_relevance", item.relevance_hint))
             item_freshness = item.freshness if item.freshness is not None else int(item.metadata.get("freshness", 0))
@@ -876,7 +942,9 @@ def weighted_rrf(
                 )
                 primary_scores[key] = incoming_primary_score
                 candidate_spoken[key] = incoming_spoken
-                seen_source_items[key] = {source_item_key(attached): attached}
+                seen_source_items[key] = {
+                    source_item_key(attached, polymarket_eids_by_url=poly_eids): attached,
+                }
                 continue
 
             candidate = candidates[key]
@@ -900,7 +968,7 @@ def weighted_rrf(
             if item.source not in candidate.sources:
                 candidate.sources.append(item.source)
             promoted = incoming_primary_score > primary_scores[key]
-            item_key = source_item_key(item)
+            item_key = source_item_key(item, polymarket_eids_by_url=poly_eids)
             existing_item = seen_source_items[key].get(item_key)
             if existing_item is None:
                 attached = _clone_source_item(item)
@@ -941,11 +1009,21 @@ def weighted_rrf(
                 if candidate.source_items and candidate.source_items[0] is not attached:
                     candidate.source_items.remove(attached)
                     candidate.source_items.insert(0, attached)
+            elif (
+                attached.source == "polymarket"
+                and candidate.source == "polymarket"
+                and (attached.metadata or {}).get("matched_market")
+            ):
+                candidate.title = attached.title
             if incoming_spoken and not candidate_spoken[key]:
                 candidate.snippet = item.snippet
                 candidate_spoken[key] = True
             elif incoming_spoken == candidate_spoken[key]:
-                if promoted:
+                if promoted or (
+                    attached.source == "polymarket"
+                    and candidate.source == "polymarket"
+                    and (attached.metadata or {}).get("matched_market")
+                ):
                     candidate.snippet = attached.snippet
                 elif len((candidate.snippet or "").split()) < len((item.snippet or "").split()):
                     candidate.snippet = item.snippet

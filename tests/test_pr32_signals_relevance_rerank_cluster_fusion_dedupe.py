@@ -1079,13 +1079,119 @@ class TestHigh109DedupeUrlNormalization:
         assert "matched_market" not in collapsed[0].metadata
         assert collapsed[1].metadata["event_id"] == "100"
 
-        # When one copy omits event_id, same URL still merges cleanly with the matched bundle.
+        # When one copy omits event_id (and no conflicting event_id exists at that URL),
+        # same URL still merges cleanly and stamps event_id onto the survivor.
         no_id_fresh = fusion._clone_source_item(fresh_new_event)
         no_id_fresh.metadata.pop("event_id", None)
         [merged_missing_id] = dedupe.dedupe_items([no_id_fresh, saved_old_event])
         assert merged_missing_id.metadata["event_id"] == "100"
         assert merged_missing_id.metadata["matched_market"]["label"] == "Cut"
         assert merged_missing_id.metadata["headline"] == "Cut 80%"
+
+        # Even when both copies are unmatched, [ID-less, event_id="100"] propagates event_id="100".
+        unmatched_100 = fusion._clone_source_item(saved_old_event)
+        unmatched_100.metadata.pop("matched_market", None)
+        [merged_unmatched] = dedupe.dedupe_items([no_id_fresh, unmatched_100])
+        assert merged_unmatched.metadata["event_id"] == "100"
+
+    def test_polymarket_reused_slug_weighted_rrf_and_idless_bridge_isolation(self):
+        reused_url = "https://polymarket.com/event/fed-rate-decision"
+        idless = _source_item(
+            "pm-idless",
+            "polymarket",
+            title="Fed rate decision",
+            body="Fed rate decision summary",
+            snippet="Unattributed copy snippet",
+            url=reused_url,
+            engagement={"volume": 100_000, "liquidity": 30_000},
+            metadata={"headline": "Unknown 50%"},
+            local_relevance=0.7,
+            freshness=80,
+            source_quality=0.5,
+        )
+        ev_100 = _source_item(
+            "pm-100",
+            "polymarket",
+            title="Fed May 2026 rate decision",
+            body="May 2026 event body",
+            snippet="May 2026 short snippet",
+            url=f"https://www.polymarket.com/event/fed-rate-decision/?utm_source=a",
+            engagement={"volume": 900_000, "liquidity": 300_000},
+            metadata={
+                "event_id": "100",
+                "headline": "Cut 80%",
+                "odds": {"kind": "outcomes", "subject": "Fed May", "entries": [{"label": "Cut", "price": 0.80}]},
+                "matched_market": {"label": "Cut", "price": 0.80},
+                "selection_score": 80.0,
+                "selection_tier": 2,
+            },
+            local_relevance=0.9,
+            freshness=90,
+            source_quality=0.5,
+        )
+        ev_200 = _source_item(
+            "pm-200",
+            "polymarket",
+            title="Fed December 2026 rate decision",
+            body="December 2026 event body",
+            snippet="December 2026 much longer snippet that must not overwrite May 2026 card",
+            url=f"{reused_url}/",
+            engagement={"volume": 400_000, "liquidity": 120_000},
+            metadata={
+                "event_id": "200",
+                "headline": "Hold 65%",
+                "odds": {"kind": "outcomes", "subject": "Fed Dec", "entries": [{"label": "Hold", "price": 0.65}]},
+            },
+            local_relevance=0.6,
+            freshness=85,
+            source_quality=0.5,
+        )
+
+        # [ID-less, event_id="100", event_id="200"]: ID-less never bridges "100" and "200"
+        # in dedupe_items, collapse_duplicate_urls, or weighted_rrf.
+        deduped = dedupe.dedupe_items([idless, ev_100, ev_200])
+        assert [i.item_id for i in deduped] == ["pm-idless", "pm-100", "pm-200"]
+        assert deduped[0].metadata.get("event_id") is None
+        assert deduped[1].metadata["event_id"] == "100"
+        assert deduped[1].metadata["headline"] == "Cut 80%"
+        assert deduped[2].metadata["event_id"] == "200"
+        assert deduped[2].metadata["headline"] == "Hold 65%"
+
+        collapsed = fusion.collapse_duplicate_urls([
+            fusion._clone_source_item(idless),
+            fusion._clone_source_item(ev_100),
+            fusion._clone_source_item(ev_200),
+        ])
+        assert [i.item_id for i in collapsed] == ["pm-idless", "pm-100", "pm-200"]
+        assert collapsed[1].metadata["headline"] == "Cut 80%"
+        assert collapsed[2].metadata["headline"] == "Hold 65%"
+
+        # weighted_rrf keeps both distinct events ("100" and "200") plus the isolated ID-less copy
+        # as separate candidates, never overwriting "100"'s snippet with "200"'s longer snippet.
+        plan = _plan("fed rate decision", ["polymarket"])
+        streams = {
+            ("primary", "polymarket"): [idless, ev_100],
+            ("secondary", "polymarket"): [ev_200],
+        }
+        cands = fusion.weighted_rrf(streams, plan, pool_limit=10)
+        by_item = {c.item_id: c for c in cands}
+        assert set(by_item) == {"pm-idless", "pm-100", "pm-200"}
+        assert by_item["pm-100"].snippet == "May 2026 short snippet"
+        assert by_item["pm-100"].source_items[0].metadata["headline"] == "Cut 80%"
+        assert by_item["pm-200"].snippet == "December 2026 much longer snippet that must not overwrite May 2026 card"
+        assert by_item["pm-200"].source_items[0].metadata["headline"] == "Hold 65%"
+
+        # Also verify two unmatched copies with identical titles at a conflicted reused slug
+        # stay separate through Pass 2 fuzzy text dedupe.
+        unmatched_a = _source_item(
+            "pm-ua", "polymarket", title="Fed Rate Decision", body="Same title text",
+            url=reused_url, metadata={"event_id": "100"},
+        )
+        unmatched_b = _source_item(
+            "pm-ub", "polymarket", title="Fed Rate Decision", body="Same title text",
+            url=reused_url, metadata={"event_id": "200"},
+        )
+        assert [i.item_id for i in dedupe.dedupe_items([unmatched_a, unmatched_b])] == ["pm-ua", "pm-ub"]
 
     def test_same_url_with_divergent_enrichment_text_merges_evidence_without_mutating_inputs(self):
         bare_yt = _source_item(
