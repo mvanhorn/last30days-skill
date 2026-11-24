@@ -731,6 +731,68 @@ def test_high211_scan_library_pins_finished_dir_fd_across_mid_scan_symlink_swap(
     )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink+parent traversal")
+def test_high211_symlink_parent_dotdot_preserves_canonical_source_path(tmp_path: Path):
+    vault = tmp_path / "vault"
+    nested = vault / "nested"
+    real_dir = vault / "real_dir"
+    finished = real_dir / "finished"
+    nested.mkdir(parents=True)
+    finished.mkdir(parents=True)
+
+    real_file = real_dir / "brief-2026-07-11.md"
+    real_file.write_text(
+        "# Canonical Path Topic\n\nUNIQUE_SYMLINK_DOTDOT_TOKEN\n",
+        encoding="utf-8",
+    )
+    finished_file = finished / "finished-2026-07-12.md"
+    finished_file.write_text(
+        "# Finished Canonical Topic\n\nUNIQUE_FINISHED_DOTDOT_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    link_dir = tmp_path / "link_dir"
+    link_dir.symlink_to(nested)
+    via_link = link_dir / ".." / "real_dir"
+
+    entries, notes = library.scan_library(via_link, tmp_path / "no-briefs")
+    assert notes == []
+    by_topic = {entry.topic: entry.source_path for entry in entries}
+    assert by_topic["Canonical Path Topic"] == real_file.resolve()
+    assert by_topic["Finished Canonical Topic"] == finished_file.resolve()
+
+    db_path = tmp_path / "library.db"
+    library_index.sync_library(via_link, tmp_path / "no-briefs", db_path=db_path)
+    matches = library_index.search(
+        "UNIQUE_SYMLINK_DOTDOT_TOKEN",
+        db_path=db_path,
+        store_db_path=tmp_path / "none.db",
+    )
+    assert len(matches) == 1
+    assert matches[0].source_path == str(real_file.resolve())
+    assert Path(matches[0].source_path).is_file()
+
+    finished_matches = library_index.search(
+        "UNIQUE_FINISHED_DOTDOT_TOKEN",
+        db_path=db_path,
+        store_db_path=tmp_path / "none.db",
+    )
+    assert len(finished_matches) == 1
+    assert finished_matches[0].source_path == str(finished_file.resolve())
+
+    # Direct index_entry through link_dir/../real_dir/brief.md must also record
+    # the canonical target path rather than lexically collapsing link_dir/.. .
+    db_entry = tmp_path / "entry.db"
+    assert library_index.index_entry(via_link / "brief-2026-07-11.md", db_path=db_entry) is True
+    entry_matches = library_index.search(
+        "UNIQUE_SYMLINK_DOTDOT_TOKEN",
+        db_path=db_entry,
+        store_db_path=tmp_path / "none.db",
+    )
+    assert len(entry_matches) == 1
+    assert entry_matches[0].source_path == str(real_file.resolve())
+
+
 # ---------------------------------------------------------------------------
 # HIGH-212: Store FTS5 sanitization, injection defense, and dismissed filter
 # ---------------------------------------------------------------------------

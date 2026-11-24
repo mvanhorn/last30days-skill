@@ -478,8 +478,14 @@ def is_unbounded_private_brief(
 def _strip_private_corpus_blocks(markdown: str) -> str:
     """Strip explicit private corpus blocks without splicing an earlier public marker onto the next section."""
     def _replace(match: re.Match[str]) -> str:
-        before = markdown[:match.start()].rstrip(" \t\r\n")
-        if before.endswith((PUBLIC_DRILL_MARKER, PUBLIC_CLUSTERS_MARKER, PUBLIC_FRESHNESS_MARKER)):
+        marker_end = match.start()
+        while marker_end > 0 and markdown[marker_end - 1] in " \t\r\n":
+            marker_end -= 1
+        if markdown.endswith(
+            (PUBLIC_DRILL_MARKER, PUBLIC_CLUSTERS_MARKER, PUBLIC_FRESHNESS_MARKER),
+            0,
+            marker_end,
+        ):
             return "\n\n"
         return ""
 
@@ -678,6 +684,13 @@ def is_generated_brief_name(name: str) -> bool:
     return _GENERATED_BRIEF_NAME.fullmatch(name) is not None
 
 
+def _canonical_dir_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
 def scan_library(
     memory_dir: Path | str = DEFAULT_MEMORY_DIR,
     briefs_dir: Path | str = DEFAULT_BRIEFS_DIR,
@@ -690,8 +703,8 @@ def scan_library(
     """
     entries: dict[str, LibraryEntry] = {}
     notes: list[str] = []
-    memory_path = Path(memory_dir).expanduser()
-    briefs_path = Path(briefs_dir).expanduser()
+    memory_path = _canonical_dir_path(Path(memory_dir).expanduser())
+    briefs_path = _canonical_dir_path(Path(briefs_dir).expanduser())
 
     if _SUPPORTS_DIR_FD:
         try:

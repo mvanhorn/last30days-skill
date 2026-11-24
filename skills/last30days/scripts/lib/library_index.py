@@ -141,8 +141,14 @@ def index_entry(
             "library search requires a Python SQLite build with FTS5 support"
         )
     raw_source = Path(path).expanduser()
+    if raw_source.is_symlink() or (_IS_JUNCTION is not None and _IS_JUNCTION(raw_source)):
+        return False
     try:
-        entry = library.parse_markdown_file(raw_source, source_format=source_format)
+        canonical_source = raw_source.parent.resolve() / raw_source.name
+    except (OSError, RuntimeError):
+        return False
+    try:
+        entry = library.parse_markdown_file(canonical_source, source_format=source_format)
     except (OSError, UnicodeError, ValueError):
         return False
     if library.is_unbounded_private_brief(entry.content, source_format=entry.source_format):
@@ -338,7 +344,14 @@ def _upsert_entry(
         headline = library._markdown_headline(private_free_content) or library._brief_prose_headline(private_free_content) or entry.topic
         summary = library._markdown_summary(private_free_content) or library._brief_prose_summary(private_free_content) or headline
     content_hash = fingerprint or _fingerprint(indexed_content)
-    source_path = os.path.abspath(entry.source_path)
+    if (
+        entry.source_mtime_ns is not None
+        and entry.source_path.is_absolute()
+        and ".." not in entry.source_path.parts
+    ):
+        source_path = str(entry.source_path)
+    else:
+        source_path = str(entry.source_path.resolve())
     replaced = conn.execute(
         "SELECT entry_id FROM library_documents WHERE source_path = ? AND entry_id != ?",
         (source_path, entry.entry_id),
