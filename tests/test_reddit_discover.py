@@ -1105,6 +1105,171 @@ class TestSearxngConfigHandoff:
         assert not items
         assert artifact["_source_outcome"]["state"] == health.TIMEOUT
 
+    @pytest.mark.parametrize("failure, note", [
+        (http.HTTPError("HTTP 403: refused", 403), "SearXNG fallback refused (HTTP 403)"),
+        (http.HTTPError("HTTP 429: slow down", 429), "SearXNG fallback rate-limited (HTTP 429)"),
+    ])
+    def test_sc_first_public_dispatch_keeps_the_searxng_note(self, failure, note):
+        def refuse(*args, **kwargs):
+            http._record_failure(failure)
+            raise failure
+
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+               "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, sc_search=lambda *a, **k: {}, html_fetch=lambda *a, **k: "", searxng_get=refuse,
+        )
+
+        assert not items
+        assert note in artifact.get("_source_outcome_detail", "")
+        assert "_source_outcome_detail_state" not in artifact
+        assert artifact.get("_source_outcome", {}).get("state") not in (health.UNREACHABLE, health.RATE_LIMITED)
+
+    def test_sc_first_searxng_note_leaves_captured_http_priority_alone(self):
+        def run(searxng_get):
+            reddit_discover.reset_run_state()
+            web_search_keyless.reset_rung_health()
+
+            def sc_search(*args, **kwargs):
+                http._record_failure(http.HTTPError("HTTP 429: paid primary throttled", 429))
+                return {}
+
+            cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+                   "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+            return self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=sc_search, html_fetch=lambda *a, **k: "", searxng_get=searxng_get,
+            )[1]
+
+        def refuse(*args, **kwargs):
+            failure = http.HTTPError("HTTP 403: refused", 403)
+            http._record_failure(failure)
+            raise failure
+
+        baseline = run(lambda *a, **k: {"results": []})
+        noted = run(refuse)
+
+        assert noted.get("_source_outcome") == baseline.get("_source_outcome")
+        assert "SearXNG" not in baseline.get("_source_outcome_detail", "")
+        assert "SearXNG fallback refused (HTTP 403)" in noted["_source_outcome_detail"]
+
+    def test_public_first_early_timeout_keeps_the_observed_searxng_note(self):
+        clock = [100.0]
+
+        def refuse(*args, **kwargs):
+            failure = http.HTTPError("HTTP 403: refused", 403)
+            http._record_failure(failure)
+            clock[0] = 158.0  # Past the web stage's own cutoff and inside the lane's 2s return margin.
+            raise failure
+
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": 170.0}
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+            items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+                cfg, html_fetch=lambda *a, **k: "", searxng_get=refuse,
+            )
+
+        assert not items
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+        assert "SearXNG fallback refused (HTTP 403)" in artifact["_source_outcome_detail"]
+        assert "_source_outcome_detail_state" not in artifact
+
+    def test_public_first_early_failure_keeps_the_observed_searxng_note(self):
+        def refuse(*args, **kwargs):
+            failure = http.HTTPError("HTTP 403: refused", 403)
+            http._record_failure(failure)
+            raise failure
+
+        def blocked_html(*args, **kwargs):
+            http._record_failure(http.HTTPError("HTTP 403: HTML rung blocked", 403))
+            return None
+
+        from lib import reddit_keyless
+
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        with mock.patch.object(reddit_keyless.reddit_search, "_blocked_reason", "offline 403"):
+            items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+                cfg, html_fetch=blocked_html, searxng_get=refuse,
+            )
+
+        assert not items
+        assert artifact["_source_outcome"]["state"] == health.UNREACHABLE
+        assert "SearXNG fallback refused (HTTP 403)" in artifact["_source_outcome_detail"]
+
+    def test_public_first_backfill_timeout_keeps_its_detail_and_gains_the_searxng_note(self):
+        note = "paid backfill stopped at its deadline before completing"
+
+        def refuse(*args, **kwargs):
+            failure = http.HTTPError("HTTP 429: slow down", 429)
+            http._record_failure(failure)
+            raise failure
+
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, sc_search=lambda *a, **k: {"items": [], "incomplete": True, "incomplete_note": note},
+            html_fetch=lambda *a, **k: "", searxng_get=refuse,
+        )
+
+        assert not items
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+        assert artifact["_source_outcome"]["detail"] == note
+        assert artifact["_source_outcome_detail"] == "SearXNG fallback rate-limited (HTTP 429)"
+
+    def test_cutoff_before_searxng_runs_fabricates_no_note(self):
+        clock = [100.0]
+
+        def html_past_cutoff(*args, **kwargs):
+            clock[0] = 158.0
+            return ""
+
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": 170.0}
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
+                cfg, html_fetch=html_past_cutoff,
+            )
+
+        assert not items and seen_urls == []
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+        assert "SearXNG" not in str(artifact)
+
+    def test_observed_searxng_failure_survives_a_later_clean_query(self):
+        from lib import reddit_keyless
+
+        outcomes = iter([http.HTTPError("HTTP 429: slow down", 429), {"results": []}])
+
+        def searxng_get(*args, **kwargs):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                http._record_failure(outcome)
+                raise outcome
+            return outcome
+
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", side_effect=searxng_get) as sx, \
+             reddit_keyless.lane_paths(), reddit_keyless.lane_notes() as notes:
+            reddit_keyless._web_floor(
+                "IQ3 quantization", "quick", ["LocalLLaMA"], None, "2026-05-01", "2026-05-31", None,
+                {"LAST30DAYS_SEARXNG_URL": "https://searx.example"},
+            )
+
+        assert sx.call_count == 2
+        assert notes == ["SearXNG fallback rate-limited (HTTP 429)"]
+
+    def test_searxng_failure_is_kept_apart_from_the_latest_rung_and_deduplicated(self):
+        floor = reddit_discover.WebFloor()
+        for state in ["blocked", "throttled", "blocked", "empty"]:
+            floor.record_query("q", {"brave": "empty", "searxng": state}, [], searxng=state)
+
+        # The rung map still holds the latest state. The failures are kept, in order, once each.
+        assert floor.rungs == {"brave": "empty", "searxng": "empty"}
+        assert floor.searxng_failures == ["blocked", "throttled"]
+        assert floor.snapshot().searxng_failures == ["blocked", "throttled"]
+
+    def test_only_known_failure_states_are_kept(self):
+        floor = reddit_discover.WebFloor()
+        for state in ["ok", "empty", "skipped", "https://searx.example/secret", None]:
+            floor.record_query("q", {}, [], searxng=state)
+
+        assert floor.searxng_failures == []
+
     def test_searxng_clean_miss_adds_no_note(self):
         cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
         items, artifact, _ = self._run_pipeline_reddit_with_searxng(

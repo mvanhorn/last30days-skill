@@ -849,13 +849,17 @@ def is_challenge_page(rung: str, text: str) -> bool:
 
 
 def _searxng_failure_state(exc: http.HTTPError) -> str:
-    """The rung state for a failed SearXNG request (a refusal, a throttle, a timeout or other)."""
-    if isinstance(exc, http.DeadlineExceeded):
-        return health.TIMEOUT
+    """The rung state for a failed SearXNG request (a refusal, a throttle, a timeout or other).
+
+    A refusal status wins. Any other error the transport normalized to a timeout counts as one,
+    including the shared deadline. Only the shared deadline ends a run, which is decided elsewhere.
+    """
     if exc.status_code == 403:
         return BLOCKED
     if exc.status_code == 429:
         return THROTTLED
+    if exc.outcome_state == health.TIMEOUT:
+        return health.TIMEOUT
     return ERROR
 
 

@@ -385,9 +385,10 @@ _SEARXNG_NOTES = {
 
 
 def _note_searxng_rung(floor: "reddit_discover.WebFloor") -> None:
-    note = _SEARXNG_NOTES.get(floor.rungs.get("searxng", ""))
-    if note:
-        _note(f"SearXNG fallback {note}")
+    for state in floor.searxng_failures:
+        note = _SEARXNG_NOTES.get(state)
+        if note:
+            _note(f"SearXNG fallback {note}")
 
 
 _RUNG_STATES = {

@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from lib import http, web_search_keyless
+from lib import health, http, web_search_keyless
 
 _DDG_HTML = """
 <div class="result">
@@ -130,6 +130,28 @@ class TestKeylessSearch:
         # The HTML rungs keep their own states and the rung map stays HTML-only.
         assert "searxng" not in artifact["keyless_rungs"]
         assert all(artifact["keyless_rungs"][rung] == "empty" for rung in web_search_keyless.RUNGS)
+
+    def test_ordinary_http_timeout_is_a_searxng_timeout_but_not_a_run_cutoff(self):
+        failure = http.HTTPError("request timed out", outcome_state=health.TIMEOUT)
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""),              mock.patch.object(web_search_keyless.http, "get", side_effect=failure):
+            items, artifact = web_search_keyless.keyless_search(
+                "site:reddit.com topic", ("2026-02-25", "2026-03-27"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+            )
+        assert items == [] and artifact["keyless_searxng"] == "timeout"
+        # Only the shared deadline ends the run, so this stays an ordinary unavailable result.
+        assert artifact["reason"] == "keyless-search-unavailable"
+        assert "_source_outcome" not in artifact
+
+    @pytest.mark.parametrize("status, state", [(403, "blocked"), (429, "throttled")])
+    def test_refusal_statuses_win_over_a_timeout_outcome(self, status, state):
+        failure = http.HTTPError(f"HTTP {status}", status, outcome_state=health.TIMEOUT)
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""),              mock.patch.object(web_search_keyless.http, "get", side_effect=failure):
+            _, artifact = web_search_keyless.keyless_search(
+                "topic", ("2026-02-25", "2026-03-27"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+            )
+        assert artifact["keyless_searxng"] == state
 
     def test_searxng_clean_miss_is_reported_as_empty(self):
         with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \

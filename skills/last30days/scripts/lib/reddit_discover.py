@@ -45,6 +45,13 @@ _TITLE_SUFFIX = re.compile(r"(?:\s*:\s*r/[A-Za-z0-9_]+)?(?:\s+-\s+Reddit)?\s*$",
 SearchFn = Callable[..., tuple[list[dict], dict]]
 
 
+# The only SearXNG states that become a note. Anything else is ignored.
+_SEARXNG_FAILURE_STATES = (
+    web_search_keyless.BLOCKED, web_search_keyless.THROTTLED,
+    web_search_keyless.ERROR, health.TIMEOUT,
+)
+
+
 @dataclass
 class WebFloor:
     """What :func:`web_refs` found: refs, the queries behind them, and the
@@ -54,6 +61,9 @@ class WebFloor:
     queries: list[str] = field(default_factory=list)
     rungs: dict[str, str] = field(default_factory=dict)
     timed_out: bool = False
+    # Failures the optional SearXNG fallback showed on any query, in order, once each. The
+    # rung map keeps only its latest state, so a later clean query would otherwise hide them.
+    searxng_failures: list[str] = field(default_factory=list)
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False,
     )
@@ -65,11 +75,14 @@ class WebFloor:
         refs: Optional[Iterable[ThreadRef]] = None,
         *,
         timed_out: bool = False,
+        searxng: Optional[str] = None,
     ) -> None:
         """Atomically record a completed web query, its rung states, and refs."""
         with self._lock:
             self.queries.append(query)
             self.timed_out = self.timed_out or timed_out
+            if searxng in _SEARXNG_FAILURE_STATES and searxng not in self.searxng_failures:
+                self.searxng_failures.append(searxng)
             for rung, state in (rungs or {}).items():
                 # A rung skipped on a later query keeps the state that took it out.
                 if state != web_search_keyless.SKIPPED or rung not in self.rungs:
@@ -104,6 +117,7 @@ class WebFloor:
                 queries=list(self.queries),
                 rungs=dict(self.rungs),
                 timed_out=self.timed_out,
+                searxng_failures=list(self.searxng_failures),
             )
 
 
@@ -347,7 +361,10 @@ def web_refs(
         query_rungs = dict(artifact.get("keyless_rungs") or {})
         if artifact.get("keyless_searxng"):
             query_rungs["searxng"] = artifact["keyless_searxng"]
-        floor.record_query(query, query_rungs, by_id.values(), timed_out=timed_out)
+        floor.record_query(
+            query, query_rungs, by_id.values(), timed_out=timed_out,
+            searxng=artifact.get("keyless_searxng"),
+        )
     snap = floor.snapshot()
     if snap.queries:
         rungs = ", ".join(f"{rung} {state}" for rung, state in snap.rungs.items()) or "no rung"

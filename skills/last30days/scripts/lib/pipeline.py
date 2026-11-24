@@ -7760,8 +7760,10 @@ def _retrieve_stream_impl(
                 if research_deadline is not None else None
             )
             public_failure: Exception | None = None
+            fallback_notes: list[str] = []
             try:
                 with reddit_keyless.lane_deadline(public_deadline), \
+                        reddit_keyless.lane_notes() as fallback_notes, \
                         reddit_keyless.lane_paths() as lane_paths:
                     public_results = reddit_public.search_reddit_public(
                         reddit_query, from_date, to_date, depth=depth,
@@ -7774,12 +7776,12 @@ def _retrieve_stream_impl(
                             if isinstance(primary_failure, TimeoutError)
                             else reddit.classify_run_failure(str(primary_failure))
                         )
-                        return public_results, _outcome_artifact(
+                        return public_results, _with_reddit_lane_notes(_outcome_artifact(
                             state,
                             f"Reddit primary failed; public fallback returned "
                             f"{len(public_results)} items: {primary_failure}",
-                        )
-                    return public_results, {}
+                        ), fallback_notes)
+                    return public_results, _with_reddit_lane_notes({}, fallback_notes)
                 sys.stderr.write(
                     "[Reddit] Public fallback returned no items after "
                     "ScrapeCreators primary miss\n"
@@ -7802,8 +7804,8 @@ def _retrieve_stream_impl(
                     state,
                 )
             if lane_paths.get("web") == health.TIMEOUT or reddit_keyless._out_of_time(public_deadline):
-                return [], _reddit_timeout_artifact()
-            return [], {}
+                return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), fallback_notes)
+            return [], _with_reddit_lane_notes({}, fallback_notes)
 
         # Default: public Reddit first (free). ScrapeCreators backfills when the
         # free path returns fewer than the thinness floor (env.reddit_sc_min_items:
@@ -7873,7 +7875,7 @@ def _retrieve_stream_impl(
             and reddit_keyless._out_of_time(lane_deadline)
         )
         if free_timed_out and not has_sc_key:
-            return [], _reddit_timeout_artifact()
+            return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), lane_notes)
         free_failed = (
             not public_results and public_failure is None
             and reddit_health.every_path_failed(lane_paths)
@@ -7881,7 +7883,9 @@ def _retrieve_stream_impl(
         if free_failed and not has_sc_key:
             # Every path Reddit was asked through refused or failed: a
             # transport failure, never a topic nobody posted about.
-            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
+            return [], _with_reddit_lane_notes(
+                _outcome_artifact(*reddit_health.failure_outcome(lane_paths)), lane_notes,
+            )
         # The floor counts the free threads that are on topic for this stream,
         # the ones its relevance prune will keep. Enough of them, or no key to
         # backfill with -> done. max(min_items, 1) keeps the default
@@ -7972,14 +7976,16 @@ def _retrieve_stream_impl(
             # Both stages ran out of time: the paid backfill's own note is the specific
             # one, unless a captured HTTP failure is left to the stream resolver.
             if backfill_timeout is not None and not http.has_captured_failures():
-                return [], backfill_timeout
-            return [], _reddit_timeout_artifact()
+                return [], _with_reddit_lane_notes(backfill_timeout, lane_notes)
+            return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), lane_notes)
         if not merged and free_failed:
-            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
+            return [], _with_reddit_lane_notes(
+                _outcome_artifact(*reddit_health.failure_outcome(lane_paths)), lane_notes,
+            )
         if not merged and backfill_timeout is not None:
-            return [], backfill_timeout
+            return [], _with_reddit_lane_notes(backfill_timeout, lane_notes)
         if not merged and free_timed_out:
-            return [], _reddit_timeout_artifact()
+            return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), lane_notes)
         if public_failure is not None:
             state = (
                 health.TIMEOUT
