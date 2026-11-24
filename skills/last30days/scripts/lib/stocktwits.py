@@ -54,7 +54,8 @@ _FINANCE_HINTS = re.compile(
     r"\$[A-Za-z]{1,5}(?:\.[A-Z])?)\b",
     re.IGNORECASE,
 )
-_CASHTAG = re.compile(r"\$([A-Za-z]{1,5}(?:\.[A-Z])?)\b")
+_CASHTAG = re.compile(r"\$([A-Za-z]{1,5}(?:\.[A-Za-z])?)\b")
+_EXPLICIT_TICKER = re.compile(r"[A-Z]{1,5}(?:\.[A-Z])?")
 
 # A small built-in crypto map so we don't burn a symbol-search call on the
 # obvious ones. StockTwits uses the `.X` suffix for crypto symbols.
@@ -96,7 +97,9 @@ def detect_symbols(topic: str, *, resolve: bool = True, max_symbols: int = 2) ->
 
     Order of resolution:
       1. Explicit cashtags in the topic ($NOW, $BTC.X) — trusted as-is.
-      2. Crypto name aliases (bitcoin -> BTC.X).
+      2. Crypto name aliases (bitcoin -> BTC.X), gated behind `is_financial_topic`
+         so ambiguous short aliases (eth, sol, ada, doge, ripple) never fire on
+         non-financial topics like "ADA compliance" or "ETH Zurich".
       3. StockTwits symbol-search API for a company/product name, but ONLY if the
          topic also tripped the finance gate (so "Apple pie" never resolves AAPL).
 
@@ -109,21 +112,25 @@ def detect_symbols(topic: str, *, resolve: bool = True, max_symbols: int = 2) ->
         if sym not in found:
             found.append(sym)
 
-    lowered = topic.lower()
-    for alias, sym in _CRYPTO_ALIASES.items():
-        if re.search(rf"\b{re.escape(alias)}\b", lowered) and sym not in found:
-            found.append(sym)
+    financial = is_financial_topic(topic)
+    if financial:
+        lowered = topic.lower()
+        for alias, sym in _CRYPTO_ALIASES.items():
+            if re.search(rf"(?<!\$)\b{re.escape(alias)}\b", lowered) and sym not in found:
+                found.append(sym)
 
     if found:
         return found[:max_symbols]
 
     # No explicit symbol. Only hit the network if the topic looks financial.
-    if not resolve or not is_financial_topic(topic):
+    if not resolve or not financial:
         return []
 
     # Strip finance noise words so the search query is just the entity name.
     name = re.sub(
-        r"\b(stock|stocks|shares?|price|ticker|earnings|forecast|crypto|"
+        r"\b(stock|stocks|shares?|price(?:\s+target)?|ticker|cashtag|equit(?:y|ies)|"
+        r"earnings|pre-?market|after\s?hours|dividend|valuation|forecast|"
+        r"crypto|altcoin|defi|market\s+cap|bullish|bearish|"
         r"token|coin|news|today|now)\b",
         "", topic, flags=re.IGNORECASE,
     ).strip()
@@ -152,6 +159,17 @@ def detect_symbols(topic: str, *, resolve: bool = True, max_symbols: int = 2) ->
 _DEPTH = {"quick": 30, "default": 60, "deep": 120}
 
 
+def _is_explicit_symbol(value: str) -> bool:
+    """Whether `value` is an explicit cashtag ($AAPL, $btc.x) or an unambiguous
+    all-uppercase ticker (AAPL, BRK.B, BTC.X), not a lowercase word, crypto
+    alias (BTC, XRP, ETH), or generic finance keyword (DEFI, STOCK)."""
+    if value.startswith("$"):
+        return bool(_CASHTAG.fullmatch(value))
+    if not _EXPLICIT_TICKER.fullmatch(value):
+        return False
+    return value.lower() not in _CRYPTO_ALIASES and not _FINANCE_HINTS.fullmatch(value)
+
+
 def search_stocktwits(
     topic_or_symbol: str,
     from_date: str | None = None,
@@ -164,9 +182,10 @@ def search_stocktwits(
     Accepts either a raw topic (resolved via detect_symbols) or an explicit
     symbol. Returns {"messages": [...], "symbols": [...], "watchlist": int}.
     """
+    cleaned = topic_or_symbol.strip()
     symbols = (
-        [topic_or_symbol.lstrip("$").upper()]
-        if _CASHTAG.fullmatch("$" + topic_or_symbol.lstrip("$"))
+        [cleaned.lstrip("$").upper()]
+        if _is_explicit_symbol(cleaned)
         else detect_symbols(topic_or_symbol)
     )
     if not symbols:

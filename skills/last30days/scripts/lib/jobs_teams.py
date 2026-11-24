@@ -29,6 +29,7 @@ LEAD_MAX_TITLES = 3       # a lead's team phrase is in at most this many titles
 
 _SPLIT = re.compile(r"\s*(?:,|\s[-–|/]\s|\(|\)|:)\s*")
 _WORD = re.compile(r"[a-z][a-z&]+")
+_DANGLING_AMP = re.compile(r"(?<=\w)&+(?=\s|$)|(?:^|(?<=\s))&+(?=\w)")
 _NOISE = re.compile(
     r"(?:\b(?:shift|part[- ]time|full[- ]time|seasonal|temp(?:orary)?|intern(?:ship)?s?|"
     r"co-op|apprentice|new grad|graduate|contract|remote|hybrid|on-?site|speaking|"
@@ -54,8 +55,9 @@ def _team_names(title: str, company: str, place_words: set[str]) -> list[str]:
     names = []
     for segment in _segments(title)[1:]:
         if company:
-            segment = re.sub(rf"\b{re.escape(company)}\b", "", segment, flags=re.I)
-        name = " ".join(segment.split()).strip(" -,.").lower()
+            segment = re.sub(rf"\b{re.escape(company)}\b", " ", segment, flags=re.I)
+            segment = _DANGLING_AMP.sub(" ", segment)
+        name = " ".join(segment.split()).strip(" -,.&").lower()
         words = _WORD.findall(name)
         if len(name) < 3 or not words or _NOISE.search(name):
             continue
@@ -130,7 +132,8 @@ def named_teams(
     for name, rows in members.items():
         if not TEAM_MIN_ROLES <= len(rows) <= size_cap:
             continue
-        rarest = min(word_titles[word] for word in _WORD.findall(name))
+        words = _WORD.findall(name)
+        rarest = max(1, min((word_titles[word] for word in words), default=1))
         own = min(1.0, len(rows) / rarest)
         dated = [_posted(row) for row in rows if _posted(row)]
         new = sum(day >= window_start for day in dated) if dated else None

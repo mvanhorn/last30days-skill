@@ -788,6 +788,8 @@ def _fetch_window(
         try:
             response = _call(_company_ads_url(), params, token, budget)
         except (_Fatal, _StopFetching) as exc:
+            if not rows:
+                raise
             # Whatever the reason, the creatives already fetched were paid for
             # and are valid: a rate limit or expired credential says "stop
             # calling", not "the pages that already returned 200 were wrong".
@@ -962,9 +964,12 @@ def search_meta_ads(
             page, country, from_date, to_date, cfg["pages"], token, budget
         )
         items, still_running = _classify(rows, page, from_date, to_date)
-        transcribed, transcript_interruption = _add_transcripts(
-            items, cfg["transcripts"], token, budget
-        )
+        if interruption:
+            transcribed, transcript_interruption = 0, ""
+        else:
+            transcribed, transcript_interruption = _add_transcripts(
+                items, cfg["transcripts"], token, budget
+            )
         interruption = interruption or transcript_interruption
     except (_Fatal, _StopFetching) as exc:
         # Nothing was salvageable: either a credential/account failure, or the
