@@ -10,8 +10,10 @@ day the requisition was posted to that site.
 from __future__ import annotations
 
 from typing import Any, Callable
+from urllib.parse import quote
 
 from .. import http, jobs
+from . import detect
 from .detect import PROVIDER_ORACLE
 
 PAGE_SIZE = 200
@@ -20,8 +22,9 @@ _DETAIL_PATH = "/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails"
 
 
 def listing_url(entry: dict[str, Any], offset: int = 0) -> str:
+    site = quote(str(entry["site_number"]), safe="")
     finder = (
-        f"findReqs;siteNumber={entry['site_number']},limit={PAGE_SIZE},"
+        f"findReqs;siteNumber={site},limit={PAGE_SIZE},"
         f"offset={offset},sortBy=POSTING_DATES_DESC"
     )
     return (
@@ -31,9 +34,11 @@ def listing_url(entry: dict[str, Any], offset: int = 0) -> str:
 
 
 def detail_url(entry: dict[str, Any], ident: str) -> str:
+    encoded_ident = quote(str(ident), safe="")
+    site = quote(str(entry["site_number"]), safe="")
     return (
         f"https://{entry['board']}{_DETAIL_PATH}?expand=all&onlyData=true"
-        f'&finder=ById;Id="{ident}",siteNumber={entry["site_number"]}'
+        f'&finder=ById;Id="{encoded_ident}",siteNumber={site}'
     )
 
 
@@ -45,6 +50,7 @@ def parse_listing(payload: Any, entry: dict[str, Any]) -> tuple[list[dict[str, A
     if not isinstance(rows, list):
         raise jobs.BoardShapeError("no requisitionList")
     board, site = entry["board"], entry["site_number"]
+    encoded_site = quote(str(site), safe="")
     items: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict) or not row.get("Id") or not row.get("Title"):
@@ -62,7 +68,7 @@ def parse_listing(payload: Any, entry: dict[str, Any]) -> tuple[list[dict[str, A
             slug=board,
             ident=ident,
             title=str(row["Title"]).strip(),
-            url=f"https://{board}/hcmUI/CandidateExperience/en/sites/{site}/job/{ident}",
+            url=f"https://{board}/hcmUI/CandidateExperience/en/sites/{encoded_site}/job/{quote(ident, safe='')}",
             description=summary,
             description_blocks=summary,
             date=posted,
@@ -85,11 +91,17 @@ def read_board(
 
     def page(offset: int) -> Callable[[float], Any]:
         url = listing_url(entry, offset)
-        return lambda http_deadline: http.get(
-            url, headers={"Accept": "application/json"},
-            timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
-            public_only=True,
-        )
+
+        def fetch(http_deadline: float) -> Any:
+            if not detect.is_safe_public_url(url):
+                raise http.HTTPError("Refused non-public URL")
+            return http.get(
+                url, headers={"Accept": "application/json"},
+                timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+                public_only=True, redirect_guard=detect.same_site_redirect_guard(url),
+            )
+
+        return fetch
 
     return jobs._read_newest_first(
         page, lambda payload: parse_listing(payload, entry), page_size=PAGE_SIZE,
@@ -102,10 +114,13 @@ def fetch_details(items: list[dict[str, Any]], *, deadline: float) -> tuple[int,
     """Fill the full text of the given roles, one call each."""
 
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        url = str(item.get("detail_url") or "")
+        if not detect.is_safe_public_url(url):
+            return lambda _http_deadline: None
         return lambda http_deadline: http.get(
-            str(item["detail_url"]), headers={"Accept": "application/json"},
+            url, headers={"Accept": "application/json"},
             timeout=jobs.API_TIMEOUT_SECONDS, retries=1, deadline_monotonic=http_deadline,
-            public_only=True,
+            public_only=True, redirect_guard=detect.same_site_redirect_guard(url),
         )
 
     def text_of(payload: Any) -> tuple[str, str] | None:

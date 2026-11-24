@@ -17,11 +17,13 @@ import threading
 from typing import Any
 from urllib.parse import urlparse
 
-from .. import http, public_host
+from .. import http
+from . import detect
 
 RESPECT_ROBOTS_VAR = "LAST30DAYS_JOBS_RESPECT_ROBOTS"
 TIMEOUT_SECONDS = 5
 MAX_ROBOTS_CHARS = 512 * 1024
+MAX_ROBOTS_BYTES = 1024 * 1024
 MAX_LINES = 10_000
 MAX_LINE_LENGTH = 4096
 MAX_RULES = 2_000
@@ -128,12 +130,17 @@ def _matches(pattern: str, path: str) -> bool:
 def rules_for(host: str, *, deadline_monotonic: float | None = None) -> Rules:
     """The robots.txt rules of ``host``, fetched once per run. A file that is
     missing or does not answer has no rules."""
-    with _lock:
-        if host in _cache:
-            return _cache[host]
-    robots_url = f"https://{host}/robots.txt"
-    if not public_host.is_public_address_syntax(robots_url):
+    clean_host = (host or "").strip().rstrip(".").lower()
+    robots_url = f"https://{clean_host}/robots.txt"
+    if (
+        not clean_host
+        or not detect.is_safe_public_url(robots_url)
+        or detect.page_host(robots_url) != clean_host
+    ):
         return Rules("")
+    with _lock:
+        if clean_host in _cache:
+            return _cache[clean_host]
     bounds: dict[str, Any] = {}
     if deadline_monotonic is not None:
         bounds["deadline_monotonic"] = deadline_monotonic
@@ -141,13 +148,15 @@ def rules_for(host: str, *, deadline_monotonic: float | None = None) -> Rules:
         with http.capture_failures():
             text = http.get_text(
                 robots_url, accept="text/plain", timeout=TIMEOUT_SECONDS,
-                retries=1, retry_dns=False, public_only=True, **bounds,
+                retries=1, retry_dns=False, public_only=True,
+                redirect_guard=detect.same_site_redirect_guard(robots_url),
+                max_bytes=MAX_ROBOTS_BYTES, **bounds,
             )
     except UnicodeDecodeError:
         text = None
     found = Rules(text or "")
     with _lock:
-        _cache[host] = found
+        _cache[clean_host] = found
     return found
 
 
@@ -156,13 +165,14 @@ def disallowed(url: str, *, deadline_monotonic: float | None = None) -> bool:
     disallows ``url``. Always False with the setting off: no request is made."""
     if not respect_robots():
         return False
-    parsed = urlparse(url)
-    if not parsed.hostname:
+    host = detect.page_host(url)
+    if not host:
         return False
+    parsed = urlparse(url)
     path = parsed.path or "/"
     if parsed.query:
         path += "?" + parsed.query
-    return not rules_for(parsed.hostname, deadline_monotonic=deadline_monotonic).allows(path)
+    return not rules_for(host, deadline_monotonic=deadline_monotonic).allows(path)
 
 
 def clear_cache() -> None:

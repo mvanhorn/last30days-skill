@@ -13,41 +13,120 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Callable
+from urllib.parse import quote, urljoin, urlparse
 
 from .. import http, jobs
+from . import detect
 from .detect import KULA_HOST, PROVIDER_KULA
 
-_PUSH = re.compile(r"self\.__next_f\.push\((\[.*?\])\)</script>", re.S)
-_JOBS_KEY = re.compile(r'"jobs":\[')
-_APP_NAME = re.compile(r'<meta[^>]+name="application-name"[^>]+content="([^"]+)"', re.I)
+_PUSH_MARKER = "self.__next_f.push("
+_JOBS_KEY = '"jobs":['
+_JSON_ARRAY_ELEM_STARTS = frozenset('0123456789-"[{tfn]')
+_MAX_DECODE_FAILURES = 16
+_ANCHOR_TAG_RE = re.compile(r"<a\b([^<>]*)>", re.I)
 
 
 def listing_url(entry: dict[str, Any]) -> str:
-    return f"https://{KULA_HOST}/{entry['slug']}"
+    slug = quote(str(entry["slug"]).strip("/"), safe="")
+    return f"https://{KULA_HOST}/{slug}"
+
+
+def _extract_script_bodies(html: str) -> list[str]:
+    lowered = html.lower()
+    if "<script" not in lowered or "</script" not in lowered:
+        return []
+    bodies: list[str] = []
+    cursor = 0
+    for match in detect._SCRIPT_OPEN_RE.finditer(html):
+        if match.start() < cursor:
+            continue
+        close_idx = lowered.find("</script", match.end())
+        if close_idx < 0:
+            break
+        bodies.append(html[match.end():close_idx])
+        cursor = close_idx + 8
+    return bodies
+
+
+def _extract_push_chunks(text: str) -> list[str]:
+    """Iteratively extract ``self.__next_f.push([...])`` string payloads in linear time."""
+    parts: list[str] = []
+    decoder = json.JSONDecoder()
+    pos = 0
+    limit = len(text)
+    failures = 0
+    while pos < limit:
+        idx = text.find(_PUSH_MARKER, pos)
+        if idx < 0:
+            break
+        start = idx + len(_PUSH_MARKER)
+        while start < limit and text[start].isspace():
+            start += 1
+        if start >= limit or text[start] != "[":
+            pos = start
+            continue
+        peek = start + 1
+        while peek < limit and text[peek].isspace():
+            peek += 1
+        if peek >= limit or text[peek] not in _JSON_ARRAY_ELEM_STARTS:
+            pos = peek
+            continue
+        try:
+            data, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError as exc:
+            failures += 1
+            if "Unterminated" in exc.msg or exc.pos >= limit - 1 or failures >= _MAX_DECODE_FAILURES:
+                break
+            pos = max(start + 1, exc.pos)
+            continue
+        if isinstance(data, list) and len(data) > 1 and isinstance(data[1], str):
+            parts.append(data[1])
+        pos = end
+    return parts
 
 
 def _payload(html: str) -> str:
     """The page's RSC payload: the text of its push chunks, in order."""
-    parts: list[str] = []
-    for chunk in _PUSH.findall(html):
-        try:
-            data = json.loads(chunk)
-        except ValueError:
-            continue
-        if isinstance(data, list) and len(data) > 1 and isinstance(data[1], str):
-            parts.append(data[1])
-    return "".join(parts)
+    bounded = html[:detect.MAX_HTML_CHARS]
+    if _PUSH_MARKER not in bounded:
+        return ""
+    scripts = _extract_script_bodies(bounded)
+    if scripts:
+        parts: list[str] = []
+        for script in scripts:
+            if _PUSH_MARKER in script:
+                parts.extend(_extract_push_chunks(script))
+        return "".join(parts)
+    return "".join(_extract_push_chunks(bounded))
 
 
 def _role_list(payload: str) -> list[dict[str, Any]] | None:
     decoder = json.JSONDecoder()
-    for match in _JOBS_KEY.finditer(payload):
+    pos = 0
+    limit = len(payload)
+    failures = 0
+    while pos < limit:
+        idx = payload.find(_JOBS_KEY, pos)
+        if idx < 0:
+            break
+        start = idx + len(_JOBS_KEY) - 1
+        peek = start + 1
+        while peek < limit and payload[peek].isspace():
+            peek += 1
+        if peek >= limit or payload[peek] not in _JSON_ARRAY_ELEM_STARTS:
+            pos = peek
+            continue
         try:
-            rows, _end = decoder.raw_decode(payload, match.end() - 1)
-        except ValueError:
+            rows, _end = decoder.raw_decode(payload, start)
+        except json.JSONDecodeError as exc:
+            failures += 1
+            if "Unterminated" in exc.msg or exc.pos >= limit - 1 or failures >= _MAX_DECODE_FAILURES:
+                break
+            pos = max(start + 1, exc.pos)
             continue
         if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
             return rows
+        pos = start + 1
     return None
 
 
@@ -55,17 +134,38 @@ def _slugify(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
 
 
+def _role_paths(html: str, slug: str) -> dict[str, str]:
+    prefix = f"/{slug}/"
+    if not slug or prefix not in html:
+        return {}
+    path_re = re.compile(rf"^/{re.escape(slug)}/(\d+)-[^\s\"'<>]*$")
+    paths: dict[str, str] = {}
+    for match in _ANCHOR_TAG_RE.finditer(html):
+        raw_attrs = match.group(1)
+        if prefix not in raw_attrs:
+            continue
+        href = detect.parse_html_attrs(raw_attrs).get("href", "").strip()
+        if not href or "\\" in href or href.startswith("//"):
+            continue
+        matched = path_re.match(href)
+        if matched:
+            paths[matched.group(1)] = href
+    return paths
+
+
 def parse_listing(html: Any, entry: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
-    rows = _role_list(_payload(html)) if isinstance(html, str) else None
+    if not isinstance(html, str):
+        raise jobs.BoardShapeError("no jobs list in the page payload")
+    bounded = html[:detect.MAX_HTML_CHARS]
+    rows = _role_list(_payload(bounded))
     if rows is None:
         raise jobs.BoardShapeError("no jobs list in the page payload")
-    slug = entry["slug"]
-    # The address of each role's page, as the page links it.
-    paths = {
-        ident: path for path, ident in re.findall(rf'href="(/{re.escape(slug)}/(\d+)-[^"]*)"', html)
-    }
-    named = _APP_NAME.search(html)
-    company = named.group(1).strip() if named else ""
+    slug = str(entry["slug"]).strip("/")
+    paths = _role_paths(bounded, slug)
+    app_names = detect.extract_meta_contents(bounded, "name", "application-name")
+    company = app_names[0] if app_names else ""
+    encoded_slug = quote(slug, safe="")
+    base = f"https://{KULA_HOST}/"
     items: list[dict[str, Any]] = []
     for row in rows:
         title = " ".join(str(row.get("title") or "").split())
@@ -82,13 +182,21 @@ def parse_listing(html: Any, entry: dict[str, Any]) -> tuple[list[dict[str, Any]
         ]
         places = [place for place in places if place]
         posted = jobs._date_part(row.get("launch_at"))
-        path = paths.get(ident) or f"/{slug}/{ident}-{_slugify(title)}"
+        fallback_path = f"/{encoded_slug}/{quote(ident, safe='')}-{_slugify(title)}"
+        candidate = urljoin(base, paths.get(ident) or fallback_path)
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme.lower() != "https"
+            or detect.page_host(candidate) != KULA_HOST
+            or parsed.port is not None
+        ):
+            candidate = f"https://{KULA_HOST}{fallback_path}"
         item = jobs._ats_item(
             provider=PROVIDER_KULA,
             slug=slug,
             ident=ident,
             title=title,
-            url=f"https://{KULA_HOST}{path}",
+            url=candidate,
             description="",
             date=posted,
             posted_date_true=bool(posted),
@@ -112,10 +220,15 @@ def read_board(
     the run says the board could not be read and goes on; a failed request
     raises its ``HTTPError``, so a timeout is noted as a slow board.
     """
+    url = listing_url(entry)
+    if not detect.is_safe_public_url(url):
+        raise http.HTTPError("Refused non-public URL")
     with http.tee_failures() as failures:
         html = http.get_text(
-            listing_url(entry), accept="text/html,*/*", timeout=jobs.API_TIMEOUT_SECONDS,
+            url, accept="text/html,*/*", timeout=jobs.API_TIMEOUT_SECONDS,
             retries=2, deadline_monotonic=deadline, public_only=True,
+            redirect_guard=detect.same_site_redirect_guard(url),
+            max_bytes=detect.MAX_HTML_BYTES,
         )
     if html is None and failures:
         # A timeout or HTTP error is reported as one, not as a bad page.
@@ -127,7 +240,7 @@ def read_board(
 def _posted_date(html: Any) -> str | None:
     if not isinstance(html, str):
         return None
-    for block in jobs._JSONLD_RE.findall(html):
+    for block in jobs.extract_jsonld_blocks(html):
         for obj in jobs._walk_jsonld(block):
             if isinstance(obj, dict) and jobs._is_job_posting(obj):
                 return jobs._date_part(obj.get("datePosted"))
@@ -139,9 +252,14 @@ def fetch_details(items: list[dict[str, Any]], *, deadline: float) -> tuple[int,
     date when the listing gave none."""
 
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        url = str(item.get("url") or "")
+        if not detect.is_safe_public_url(url) or detect.page_host(url) != KULA_HOST:
+            return lambda _http_deadline: None
+
         def fetch(http_deadline: float) -> Any:
             html = jobs.role_page_text(
-                str(item["url"]), timeout=jobs.API_TIMEOUT_SECONDS, deadline_monotonic=http_deadline,
+                url, timeout=jobs.API_TIMEOUT_SECONDS, deadline_monotonic=http_deadline,
+                redirect_guard=detect.same_site_redirect_guard(url),
             )
             posted = None if item.get("date") else _posted_date(html)
             if posted:

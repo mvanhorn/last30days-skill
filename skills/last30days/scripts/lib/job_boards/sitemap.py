@@ -19,12 +19,13 @@ from __future__ import annotations
 import re
 import socket  # noqa: F401  kept: tests patch name resolution through this module
 import time
+import xml.etree.ElementTree as ET
 from html import unescape
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from .. import http, jobs, jobs_digest, public_host
-from . import robots
+from .. import http, jobs, jobs_digest
+from . import detect, robots
 
 PROVIDER_SITEMAP = "sitemap"
 # Sitemap files asked for in all, across indexes, for one site.
@@ -34,17 +35,16 @@ TITLE_PAGE_LIMIT = jobs_digest.DIGEST_MAX_ROLES
 # Role pages asked first; the rest only when one of these gave a title.
 TITLE_FIRST_WAVE = 8
 TIMEOUT_SECONDS = 8
-_LOC = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.S | re.I)
-_URL_BLOCK = re.compile(r"<url>(.*?)</url>", re.S | re.I)
-_LASTMOD = re.compile(r"<lastmod>\s*(.*?)\s*</lastmod>", re.S | re.I)
+MAX_SITEMAP_BYTES = 10 * 1024 * 1024
+MAX_SITEMAP_CHARS = 10 * 1024 * 1024
+MAX_PAGE_BYTES = detect.MAX_HTML_BYTES
+MAX_PAGE_CHARS = detect.MAX_HTML_CHARS
+_XML_UNSAFE_DECL = re.compile(r"<!(?:DOCTYPE|ENTITY)\b", re.I)
 # A role's own page: a jobs segment followed by the role's id or slug.
 _JOB_PATH = re.compile(
     r"/(?:jobs?|job-detail|positions?|vacanc(?:y|ies)|openings?|requisitions?)/([^?#]+?)/?$", re.I,
 )
 _JOBS_WORD = re.compile(r"job|career|position|vacanc|opening", re.I)
-_OG_TITLE = re.compile(r'<meta[^>]+property=["\']?og:title["\']?[^>]+content=["\']([^"\']+)', re.I)
-_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
-_JSONLD_TITLE = re.compile(r'"@type"\s*:\s*"JobPosting".*?"title"\s*:\s*"([^"]+)"', re.S)
 _LOCALE = re.compile(r"^/[a-z]{2}(?:[-_][A-Za-z]{2})?/")
 _ID_PART = re.compile(r"^(?:[A-Za-z]{0,4}[-_]?\d[\w-]*|\d+)$")
 
@@ -59,19 +59,20 @@ _BLOCK_TITLE = re.compile(
 
 
 def _public_url(url: str, host: str) -> bool:
-    """Whether ``url`` is an http(s) address on the site of ``host`` whose host
-    is a name, not an address on a private, loopback or reserved network.
+    """Whether ``url`` is a standard-port http(s) address on the site of ``host``
+    whose host is a public domain name, not an address on a private, loopback,
+    multicast, NAT64 or reserved network.
 
     A sitemap is remote content: a role URL it lists is fetched only when it
     stays on the company's own site, so a sitemap cannot point the lane at a
     service on the user's network.
     """
-    return public_host.public_url(url, host, resolves=_resolves_public)
+    return detect.public_site_url(url, host, resolves=_resolves_public)
 
 
-# The shared resolver, kept under this module's name so the check above
+# The bounded-TTL resolver, kept under this module's name so the check above
 # looks it up here at call time.
-_resolves_public = public_host.resolves_public
+_resolves_public = detect.resolves_public
 
 
 def _fetch(url: str, deadline: float) -> str | None:
@@ -82,26 +83,74 @@ def _fetch(url: str, deadline: float) -> str | None:
         return _on_site(url, lambda landed: jobs.role_page_text(
             url, timeout=TIMEOUT_SECONDS,
             deadline_monotonic=time.monotonic() + min(remaining, TIMEOUT_SECONDS), landed=landed,
-            redirect_guard=_guard(url),
+            redirect_guard=_guard(url), max_bytes=MAX_SITEMAP_BYTES,
         ))
 
 
 def _guard(url: str) -> Callable[[str], bool]:
     """The redirect check for a fetch of ``url``: it may be redirected only to
     an address on the same site that is not on a private network."""
-    return public_host.redirect_guard(url, resolves=_resolves_public)
+    return detect.same_site_redirect_guard(url, resolves=_resolves_public)
 
 
 def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
     """``fetch``'s text, or None when the request was redirected off the
     site ``url`` is on or to a private address: such a page never enters the
     report."""
+    host = detect.page_host(url)
+    if not host or not detect.is_safe_public_url(url):
+        return None
     landed: list = []
     text = fetch(landed)
-    host = jobs._host(url)
     if text is not None and landed and not _public_url(str(landed[-1]), host):
         return None
     return text
+
+
+def _local_tag(tag: Any) -> str:
+    return tag.rsplit("}", 1)[-1].lower() if isinstance(tag, str) else ""
+
+
+def _parse_sitemap_xml(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Parse a sitemap index or urlset with ElementTree after rejecting DTD/ENTITY."""
+    if not text or len(text) > MAX_SITEMAP_CHARS or _XML_UNSAFE_DECL.search(text):
+        return "", []
+    cleaned = text.lstrip("\ufeff \t\r\n")
+    if not cleaned:
+        return "", []
+    try:
+        root = ET.fromstring(cleaned)
+    except ET.ParseError:
+        return "", []
+    kind = _local_tag(root.tag)
+    if kind == "sitemapindex":
+        children: list[tuple[str, str]] = []
+        for elem in root:
+            if _local_tag(elem.tag) != "sitemap":
+                continue
+            for sub in elem:
+                if _local_tag(sub.tag) == "loc":
+                    loc = (sub.text or "").strip()
+                    if loc:
+                        children.append((loc, ""))
+                    break
+        return "index", children
+    if kind == "urlset":
+        entries: list[tuple[str, str]] = []
+        for elem in root:
+            if _local_tag(elem.tag) != "url":
+                continue
+            loc = lastmod = ""
+            for sub in elem:
+                sub_tag = _local_tag(sub.tag)
+                if sub_tag == "loc" and not loc:
+                    loc = (sub.text or "").strip()
+                elif sub_tag == "lastmod" and not lastmod:
+                    lastmod = (sub.text or "").strip()
+            if loc:
+                entries.append((loc, lastmod))
+        return "urlset", entries
+    return "", []
 
 
 def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str, str]], bool]:
@@ -117,9 +166,13 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
     sitemap is read; on another host (the company's main site) only those
     whose address names jobs or careers, so a marketing sitemap is not.
     """
-    for host in hosts:
+    for raw_host in hosts:
         if jobs._clock()() >= deadline:
             break
+        host = (raw_host or "").strip().rstrip(".").lower()
+        robots_url = f"https://{host}/robots.txt"
+        if not host or not detect.is_safe_public_url(robots_url) or detect.page_host(robots_url) != host:
+            continue
         rules = robots.rules_for(
             host, deadline_monotonic=time.monotonic() + max(0.0, deadline - jobs._clock()()),
         )
@@ -142,8 +195,9 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                 # (``sitemap-2.xml``); elsewhere only one that names jobs.
                 missed = missed or bool(jobs_host) or bool(_JOBS_WORD.search(urlparse(url).path))
                 continue
-            if "<sitemapindex" in text[:2000]:
-                children = [unescape(loc) for loc in _LOC.findall(text)]
+            xml_kind, entries = _parse_sitemap_xml(text)
+            if xml_kind == "index":
+                children = [loc for loc, _lastmod in entries]
                 # A jobs sitemap first, then English ones, then the rest.
                 children.sort(key=lambda child: (
                     not _JOBS_WORD.search(urlparse(child).path), "/en" not in child,
@@ -156,15 +210,10 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                         kept.setdefault(_LOCALE.sub("/", urlparse(child).path, count=1), child)
                 queue = list(kept.values()) + queue
                 continue
-            for block in _URL_BLOCK.findall(text):
-                loc = _LOC.search(block)
-                if not loc:
-                    continue
-                page = unescape(loc.group(1)).strip()
+            for page, lastmod in entries:
                 key = _role_key(page)
                 if _public_url(page, host) and _JOB_PATH.search(urlparse(page).path) and key not in found:
-                    lastmod = _LASTMOD.search(block)
-                    found[key] = (page, lastmod.group(1).strip() if lastmod else "")
+                    found[key] = (page, lastmod)
         if found:
             unread = bool(queue) and (
                 bool(jobs_host) or any(_JOBS_WORD.search(urlparse(url).path) for url in queue)
@@ -195,18 +244,38 @@ def title_from_url(url: str) -> str:
     return ""
 
 
+def _clean_page_title(raw: str, site_name: str, *, unescape_entities: bool = False) -> str:
+    text = unescape(raw) if unescape_entities else raw
+    title = " ".join(text.split())
+    parts = re.split(r"\s+[-|–]\s+", title)
+    if len(parts) > 1 and re.search(r"career|job|" + re.escape(site_name or "~"), parts[-1], re.I):
+        title = " - ".join(parts[:-1])
+    if title and not _BLOCK_TITLE.search(title):
+        return title
+    return ""
+
+
 def title_from_page(html: str, site_name: str = "") -> str:
     """A role page's own title: its JobPosting, ``og:title`` or ``<title>``,
     with a trailing site name (`` - Walmart Careers``) cut off."""
-    for pattern in (_JSONLD_TITLE, _OG_TITLE, _TITLE):
-        match = pattern.search(html or "")
-        if match:
-            title = " ".join(unescape(match.group(1)).split())
-            parts = re.split(r"\s+[-|–]\s+", title)
-            if len(parts) > 1 and re.search(r"career|job|" + re.escape(site_name or "~"), parts[-1], re.I):
-                title = " - ".join(parts[:-1])
-            if title and not _BLOCK_TITLE.search(title):
-                return title
+    if not html:
+        return ""
+    bounded = html[:MAX_PAGE_CHARS]
+    for block in detect.extract_jsonld_blocks(bounded):
+        for obj in jobs._walk_jsonld(block):
+            if isinstance(obj, dict) and jobs._is_job_posting(obj):
+                raw = obj.get("title") or obj.get("name")
+                if isinstance(raw, str) and raw.strip():
+                    cleaned = _clean_page_title(raw, site_name, unescape_entities=True)
+                    if cleaned:
+                        return cleaned
+    for candidate in (
+        *detect.extract_meta_contents(bounded, "property", "og:title"),
+        *detect.extract_title_texts(bounded),
+    ):
+        cleaned = _clean_page_title(candidate, site_name)
+        if cleaned:
+            return cleaned
     return ""
 
 
@@ -262,19 +331,26 @@ def _titles_from_pages(urls: list[str], company: str, deadline: float) -> list[t
     def call(url: str) -> Callable[[float], Any]:
         return lambda http_deadline: _on_site(url, lambda landed: jobs.role_page_text(
             url, timeout=TIMEOUT_SECONDS, deadline_monotonic=http_deadline, landed=landed,
-            redirect_guard=_guard(url),
+            redirect_guard=_guard(url), max_bytes=MAX_PAGE_BYTES,
         ))
 
     # The first wave tells whether the role pages can be read at all: a site
     # that walls them answers every one of those with a block, and the rest
     # are not asked.
     wave = TITLE_FIRST_WAVE
+    titled: list[tuple[str, str]] = []
     with http.capture_failures():
-        pages = jobs._workday_run([call(url) for url in urls[:wave]], deadline, jobs._clock())
-        if any(isinstance(page, str) and title_from_page(page, company) for page in pages):
-            pages += jobs._workday_run([call(url) for url in urls[wave:]], deadline, jobs._clock())
-    return [
-        (url, title_from_page(page, company))
-        for url, page in zip(urls, pages)
-        if isinstance(page, str) and title_from_page(page, company)
-    ]
+        first_pages = jobs._workday_run([call(url) for url in urls[:wave]], deadline, jobs._clock())
+        for url, page in zip(urls[:wave], first_pages):
+            if isinstance(page, str):
+                title = title_from_page(page, company)
+                if title:
+                    titled.append((url, title))
+        if titled and len(urls) > wave:
+            rest_pages = jobs._workday_run([call(url) for url in urls[wave:]], deadline, jobs._clock())
+            for url, page in zip(urls[wave:], rest_pages):
+                if isinstance(page, str):
+                    title = title_from_page(page, company)
+                    if title:
+                        titled.append((url, title))
+    return titled
