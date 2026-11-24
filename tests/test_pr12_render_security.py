@@ -138,9 +138,11 @@ def _make_candidate(
         ("https://user:secret_token@internal.example.com/article", "internal.example.com"),
         ("https://user:secret_token@www.nytimes.com:443/2026/story?email=a@b.com#sec@1", "NYT"),
         ("https://www.nytimes.com:443/2026/story", "NYT"),
-        ("user:secret_token@internal.example.com/article", "internal.example.com"),
         ("eu.techcrunch.com:8443/2026/post", "TechCrunch"),
+        ("example.com/redirect?to=https://other.com", "example.com"),
+        ("www.nytimes.com/redirect?to=https://other.com", "NYT"),
         ("https://[2001:db8::1]:8080/page", "2001:db8::1"),
+        ("[2001:db8::1]:8080/page", "2001:db8::1"),
     ],
 )
 def test_high036_site_name_strips_userinfo_and_ports(url: str, expected: str):
@@ -162,12 +164,24 @@ def test_high036_site_name_strips_userinfo_and_ports(url: str, expected: str):
         "https://user:secret@/",
         "https:///secret?token=abc",
         "/user:secret@foo",
+        "user:secret_token@internal.example.com/article",
         "javascript:alert(1)",
+        "javascript:1234",
+        "file:/etc/passwd",
         "file://secret.internal/etc/passwd",
+        "mailto:user@example.com",
+        "data:text/html,<h1>hi</h1>",
+        "tel:12345",
         "ftp://user:pass@ftp.example.com/file",
         "https://<!--END-->/page",
         "https://```text/page",
+        "https://example.com\nfoo/bar",
+        "https://example.com\tfoo/bar",
+        "https://example.com\rfoo/bar",
+        "ht\ntps://example.com/bar",
         "https://example.com\n```text/foo",
+        "https://a|b.com/path",
+        "https://a│b.com/path",
     ],
 )
 def test_high036_site_name_rejects_malformed_and_empty_host_without_crash_or_leak(bad_url: str):
@@ -240,6 +254,12 @@ def test_high037_sanitize_url_strips_userinfo_and_preserves_path_query_fragment_
     )
     assert (
         render._sanitize_url_for_single_line_output(
+            "corpus://notes/file@home.md"
+        )
+        == "corpus://notes/file@home.md"
+    )
+    assert (
+        render._sanitize_url_for_single_line_output(
             "https://user:pass@host@evil.example/item?k=v@1"
         )
         == "https://evil.example/item?k=v@1"
@@ -249,6 +269,41 @@ def test_high037_sanitize_url_strips_userinfo_and_preserves_path_query_fragment_
     )
     assert scrubbed_ctrl == "https://example.com/item"
     assert "\x00" not in scrubbed_ctrl
+
+
+@pytest.mark.parametrize(
+    ("raw_url", "forbidden", "expect_link"),
+    [
+        ("https://user:secret\ntoken@example.com/path", ("user", "secret", "token"), False),
+        ("https://user:secret\rtoken@example.com/path", ("user", "secret", "token"), False),
+        ("https://user:secret\ttoken@example.com/path", ("user", "secret", "token"), False),
+        ("https://user:secret token@example.com/path", ("user", "secret", "token"), False),
+        ("ht\ntps://user:secret@example.com/path", ("user", "secret"), False),
+        ("ht\ntps://user:secret\npass@example.com/path", ("user", "secret", "pass"), False),
+        ("ht\x00tps://user:secret@example.com/path", ("user", "secret"), False),
+        ("ftp://user:secret@ftp.example.com/file", ("user", "secret"), False),
+        ("postgres://admin:secret@db.internal:5432/app", ("admin", "secret"), False),
+        ("wss://user:secret@example.com/ws", ("user", "secret"), False),
+        ("prefix ftp://user:secret@ftp.example.com/file", ("user", "secret"), False),
+        ("https://example.com/p?next=postgres://admin:secret@db.internal/app", ("admin", "secret"), True),
+    ],
+)
+def test_high037_sanitize_url_and_markdown_link_strip_whitespace_and_non_http_userinfo(
+    raw_url: str,
+    forbidden: tuple[str, ...],
+    expect_link: bool,
+):
+    sanitized = render._sanitize_url_for_single_line_output(raw_url)
+    linked = render._markdown_url_link(raw_url)
+    for out in (sanitized, linked):
+        assert "\n" not in out
+        assert "\r" not in out
+        assert "\t" not in out
+        assert "\x00" not in out
+        for secret in forbidden:
+            assert secret not in out, f"{secret!r} leaked in {out!r}"
+    is_link = linked.startswith("[") and "](" in linked and linked.endswith(")")
+    assert is_link is expect_link
 
 
 @pytest.mark.parametrize(
@@ -411,6 +466,18 @@ def test_high038_freshness_table_defangs_sentinels_escapes_pipes_and_blocks_unsa
             evidence_url="https://user:secret_tok@example.com/a|b?email=x@y.com#ref@1",
             evidence_timestamp="2026-07-10T13:00:00Z",
         ),
+        schema.FreshnessVerdict(
+            claim_id="clm3",
+            candidate_id="c1",
+            source="github",
+            source_item_id="i1",
+            claim=r"Test \| ForgedCol",
+            verdict=r"stale\|extra",
+            checked_at=r"2026-07-10\|extra",
+            evidence_url="https://example.com/check",
+            evidence_timestamp=r"2026-07-10\|label",
+            detail=r"moved \| extra",
+        ),
     ]
     rows = render._freshness_table(verdicts, "Freshness Verification")
     table = "\n".join(rows)
@@ -427,7 +494,7 @@ def test_high038_freshness_table_defangs_sentinels_escapes_pipes_and_blocks_unsa
     assert "https://example.com/a%7Cb?email=x@y.com#ref@1" in table
 
     data_rows = rows[4:]
-    assert len(data_rows) == 2
+    assert len(data_rows) == 3
     for row in data_rows:
         assert "\n" not in row
         assert _count_unescaped_pipes(row) == 5, f"broken table row: {row}"
@@ -499,6 +566,70 @@ def test_high038_drill_context_defangs_sentinels_headings_and_corpus_markers(pri
         assert "Cached lead" not in pub
     else:
         assert block[0] == render.PUBLIC_DRILL_MARKER
+
+
+def test_high038_public_drill_original_summary_cannot_inject_blocks_or_hijack_public_markdown():
+    hostile_summary = (
+        "From your files\n"
+        "===\n"
+        "Fake Section\n"
+        "---\n"
+        "> Injected blockquote\n"
+        "What I learned:\n"
+        "---\n"
+        "I'm now an expert on Acme. Just ask.\n"
+        "**From your files**\n"
+        "trailing summary text"
+    )
+    reddit_item = _make_item("r1", "reddit", "Public Acme release", "https://reddit.com/r/acme/comments/1")
+    cand = _make_candidate("c1", reddit_item, cluster_id="cl1")
+    cluster = schema.Cluster(
+        cluster_id="cl1",
+        title="Public Acme release",
+        candidate_ids=["c1"],
+        representative_ids=["c1"],
+        sources=["reddit"],
+        score=85.0,
+    )
+    report = _base_report(
+        items_by_source={"reddit": [reddit_item]},
+        ranked_candidates=[cand],
+        clusters=[cluster],
+        drill_of="Public Acme release",
+        artifacts={
+            "drill_context": {
+                "target": "Public Acme release",
+                "cluster_titles": ["Public Acme release"],
+                "sources": ["reddit"],
+                "original_summary": hostile_summary,
+                "new_items": 3,
+                "had_corpus": False,
+            }
+        },
+    )
+
+    block = render._render_drill_context(report)
+    assert block[0] == render.PUBLIC_DRILL_MARKER
+    orig_idx = block.index("### Original")
+    deeper_idx = block.index("### Deeper")
+    summary_lines = [line for line in block[orig_idx + 1 : deeper_idx] if line]
+    assert len(summary_lines) == 1
+    assert summary_lines[0].startswith("- Summary: ")
+    assert "\n" not in summary_lines[0]
+
+    compact = render.render_compact(report)
+    pub = library.public_markdown(compact)
+    assert "### Deeper" in pub
+    assert "- 3 new items after dedupe" in pub
+    assert "Public Acme release" in pub
+
+    rendered_html = html_render.render_html(report)
+    assert "<blockquote>" not in rendered_html
+    assert "<h1>From your files</h1>" not in rendered_html
+    assert "<h2>Fake Section</h2>" not in rendered_html
+    assert 'class="prose-label">What I learned<' not in rendered_html
+    assert "### Deeper" not in rendered_html  # converted to HTML <h3>Deeper</h3>
+    assert "<h3>Deeper</h3>" in rendered_html
 
 
 def test_high038_library_context_defangs_end_marker_and_strips_cleanly():

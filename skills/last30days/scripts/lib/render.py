@@ -19,7 +19,6 @@ from . import (
     fusion,
     health,
     hiring_signals,
-    http,
     jobs_digest,
     library_index,
     meta_ads,
@@ -306,12 +305,7 @@ def _render_drill_context(report: schema.Report) -> list[str]:
     sources = context.get("sources") or []
     source_text = ", ".join(_safe_title(_source_label(str(source))) for source in sources) or "none"
     raw_original = str(context.get("original_summary") or "No cached summary was available.")
-    original_lines = [
-        _escape_atx_heading_prefix(line)
-        for line in _defang_engine_sentinels(
-            _NON_NEWLINE_CONTROL_CHARS.sub(" ", raw_original)
-        ).splitlines()
-    ] or ["No cached summary was available."]
+    original_summary = _safe_title(raw_original) or "No cached summary was available."
     target = _safe_title(str(context.get("target") or report.drill_of))
     lines = [
         "## Drill Follow-up",
@@ -321,7 +315,7 @@ def _render_drill_context(report: schema.Report) -> list[str]:
         "",
         "### Original",
         "",
-        *original_lines,
+        f"- Summary: {original_summary}",
         "",
         "### Deeper",
         "",
@@ -719,6 +713,11 @@ def _render_freshness_verdicts(report: schema.Report) -> list[str]:
     return lines
 
 
+def _escape_table_cell(value: str) -> str:
+    """Flatten, defang, and escape backslashes and pipes for a Markdown table cell."""
+    return _safe_title(value).replace("\\", "\\\\").replace("|", "\\|")
+
+
 def _freshness_table(verdicts: list[schema.FreshnessVerdict], heading: str) -> list[str]:
     lines = [
         f"## {heading}",
@@ -727,19 +726,17 @@ def _freshness_table(verdicts: list[schema.FreshnessVerdict], heading: str) -> l
         "| --- | --- | --- | --- |",
     ]
     for verdict in verdicts:
-        claim = _safe_title(verdict.claim).replace("|", "\\|")
+        claim = _escape_table_cell(verdict.claim)
         if verdict.detail:
             # The verifier's detail carries the formatted movement for stale
             # rows and the reason a claim could not be re-checked otherwise.
-            detail = _safe_title(verdict.detail).replace("|", "\\|")
+            detail = _escape_table_cell(verdict.detail)
             claim += f" ({detail})"
         raw_label = str(
             verdict.evidence_timestamp or verdict.source_timestamp or "source"
         )
         evidence_label = (
-            _safe_title(raw_label)
-            .replace("\\", "\\\\")
-            .replace("|", "\\|")
+            _escape_table_cell(raw_label)
             .replace("[", "\\[")
             .replace("]", "\\]")
         )
@@ -754,8 +751,8 @@ def _freshness_table(verdicts: list[schema.FreshnessVerdict], heading: str) -> l
                 evidence = evidence_label
         else:
             evidence = evidence_label
-        checked_at = _safe_title(str(verdict.checked_at or "")).replace("|", "\\|")
-        state = _safe_title(str(verdict.verdict or "")).replace("|", "\\|")
+        checked_at = _escape_table_cell(str(verdict.checked_at or ""))
+        state = _escape_table_cell(str(verdict.verdict or ""))
         lines.append(
             f"| **{state}** | {claim} | {evidence} | {checked_at} |"
         )
@@ -1802,6 +1799,17 @@ def render_comparison_multi_context(
 _SAFE_MARKDOWN_LINK_SCHEMES = ("http", "https")
 _MARKDOWN_LINK_UNSAFE_CHARS = ("(", ")", "[", "]", "\\", "<", ">", "`")
 _MARKDOWN_PLAIN_TEXT_ESCAPES = re.compile(r"([\\`*_{}\[\]()#+\-.!|~:])")
+# Strip authority userinfo for any leading scheme URL even when scheme/userinfo
+# contains control or whitespace chars, and for any embedded scheme:// URL
+# without crossing whitespace or path/query/fragment delimiters.
+_LEADING_URL_USERINFO_RE = re.compile(
+    r"^([\s\x00-\x1f\x7f-\x9f]*(?!corpus://)[A-Za-z][A-Za-z0-9+.\t\r\n-]{0,40}:[\t\r\n]*/[\t\r\n]*/)[^/?#]+@",
+    re.IGNORECASE,
+)
+_EMBEDDED_URL_USERINFO_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])((?!corpus://)[A-Za-z][A-Za-z0-9+.-]{0,31}://)[^\s/?#]+@",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_url_for_single_line_output(url: str) -> str:
@@ -1815,13 +1823,15 @@ def _sanitize_url_for_single_line_output(url: str) -> str:
     fallback below, so this closes the injection at the root rather than only
     for links.
     """
-    scrubbed = http._URL_USERINFO_RE.sub(r"\1", url)
+    scrubbed = _LEADING_URL_USERINFO_RE.sub(r"\1", url)
+    scrubbed = _EMBEDDED_URL_USERINFO_RE.sub(r"\1", scrubbed)
     collapsed = "".join(
         " "
         if ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
         else ch
         for ch in scrubbed
     )
+    collapsed = _EMBEDDED_URL_USERINFO_RE.sub(r"\1", collapsed)
     return _defang_engine_sentinels(collapsed)
 
 
@@ -3570,6 +3580,11 @@ _SITE_NAMES: dict[str, str] = {
 }
 
 
+_EXPLICIT_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://")
+_SCHEMELESS_HOST_PORT_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z0-9-]+:[0-9]{1,5}$")
+_SITE_HOST_FORBIDDEN_CHARS = frozenset("<>`~|│\\\"[]")
+
+
 def _site_name_for_url(url: str) -> str:
     """Return a clean publication name for a URL, or a bare domain fallback.
 
@@ -3582,15 +3597,26 @@ def _site_name_for_url(url: str) -> str:
     u = url.strip()
     if not u:
         return ""
-    u = http._URL_USERINFO_RE.sub(r"\1", u)
-    has_scheme = "://" in u
+    # Reject raw control chars before urlparse, which silently strips \t/\r/\n.
+    if any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in u):
+        return ""
+    scheme_match = _EXPLICIT_SCHEME_RE.match(u)
+    if scheme_match:
+        if scheme_match.group(1).lower() not in _SAFE_MARKDOWN_LINK_SCHEMES:
+            return ""
+        to_parse = u
+    else:
+        first_seg = re.split(r"[/?#]", u, maxsplit=1)[0]
+        if not first_seg or "@" in first_seg:
+            return ""
+        if ":" in first_seg and not first_seg.startswith("["):
+            if not _SCHEMELESS_HOST_PORT_RE.match(first_seg):
+                return ""
+        to_parse = f"http://{u}"
     try:
-        # urlparse needs a scheme to resolve the netloc; prepend http:// if missing.
-        parsed = urlparse(u if has_scheme else f"http://{u}")
+        parsed = urlparse(to_parse)
         _ = parsed.port
     except ValueError:
-        return ""
-    if has_scheme and parsed.scheme.lower() not in _SAFE_MARKDOWN_LINK_SCHEMES:
         return ""
     host = (parsed.hostname or "").lower().removeprefix("www.")
     if (
@@ -3599,7 +3625,7 @@ def _site_name_for_url(url: str) -> str:
             ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
             for ch in host
         )
-        or any(ch in host for ch in "<>`~│\\\"")
+        or any(ch in _SITE_HOST_FORBIDDEN_CHARS for ch in host)
     ):
         return ""
     host = _safe_title(host)
