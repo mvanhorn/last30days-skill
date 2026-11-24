@@ -2178,6 +2178,9 @@ def _run_cached_freshness(
     publish_exit = _validate_publish_html(args)
     if publish_exit is not None:
         return publish_exit
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     synthesis_md = _resolve_synthesis_md(args)
     cached = _load_followup_report(args, config)
     if cached is None:
@@ -2186,9 +2189,6 @@ def _run_cached_freshness(
     comp_emit_exit = _validate_comparison_emit(args, is_comparison=bool(entity_reports))
     if comp_emit_exit is not None:
         return comp_emit_exit
-    save_dir_exit = _validate_save_dir(args.save_dir)
-    if save_dir_exit is not None:
-        return save_dir_exit
     _verify_report_set(report, entity_reports, allow_network=not args.mock)
     if _update_cached_freshness(cached):
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
@@ -2597,6 +2597,9 @@ def _run_queue_list(args: argparse.Namespace, config: dict[str, object]) -> int:
     """List uncovered surfaced topics from the persistent discovery queue."""
     import store
 
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     db_path = _scoped_store_db(args)
     if not Path(db_path or store.DB_PATH).exists():
         print("Discovery queue is empty - no discovery run has recorded topics yet.")
@@ -2654,6 +2657,9 @@ def _run_queue_cover(
             'queue cover "<topic name>".\n'
         )
         return 2
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     db_path = _scoped_store_db(args)
     if not Path(db_path or store.DB_PATH).exists():
         sys.stderr.write(
@@ -4903,9 +4909,6 @@ def _main(
     if args.save_dir is None:
         env_val = os.environ.get("LAST30DAYS_MEMORY_DIR")
         args.save_dir = env_val if env_val is not None else config.get("LAST30DAYS_MEMORY_DIR")
-    save_dir_exit = _validate_save_dir(args.save_dir)
-    if save_dir_exit is not None:
-        return save_dir_exit
 
     # Surface SSH-routing config as an env var so library modules (e.g.
     # youtube_yt) can read it without taking a config dependency. This
@@ -4921,6 +4924,9 @@ def _main(
         os.environ["YT_PROXY"] = config["YT_PROXY"]
 
     if args.preflight:
+        save_dir_exit = _validate_save_dir(args.save_dir)
+        if save_dir_exit is not None:
+            return save_dir_exit
         requested_sources = resolve_requested_sources(args.search, config)
         preflight_config = pipeline.with_plan_source_omissions(config, external_plan)
         diag = pipeline.diagnose(preflight_config, requested_sources, safe=True)
@@ -5062,6 +5068,15 @@ def _main(
             return 1
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
+
+    # Reject whitespace-only save dirs for commands that consume save_dir
+    # (discover, drill, cached freshness, hosted/local research), while letting
+    # diagnostic/setup commands (doctor, --diagnose, setup) run and report the
+    # misconfiguration.
+    if not args.diagnose:
+        save_dir_exit = _validate_save_dir(args.save_dir)
+        if save_dir_exit is not None:
+            return save_dir_exit
 
     # Bare --discover (no domain) is global trending, so the dispatch keys on
     # "flag present" (is not None), never on the domain string's truthiness.

@@ -598,6 +598,62 @@ class TestHigh012DefaultMemoryDirNormalization:
         assert contexts == []
         assert err is None
 
+        # 7. Research run with LAST30DAYS_MEMORY_DIR="   " exits 2 before pipeline.run.
+        monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "   ")
+        monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+        monkeypatch.setattr(cli.env, "hosted_backend_configured", lambda: False)
+        monkeypatch.setattr(
+            cli.pipeline,
+            "run",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("pipeline.run must not run")),
+        )
+        monkeypatch.setattr(sys, "argv", ["last30days.py", "OpenAI", "--mock"])
+        assert cli.main() == 2
+        assert "whitespace-only" in capsys.readouterr().err
+
+    def test_diagnostics_still_run_when_memory_dir_is_whitespace_only(
+        self, monkeypatch, capsys
+    ):
+        from lib import doctor as doctor_mod
+
+        monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", "   ")
+        monkeypatch.setattr(cli.env, "get_config", lambda **_k: {"LAST30DAYS_MEMORY_DIR": "   "})
+        monkeypatch.setattr(cli.env, "hosted_backend_configured", lambda: False)
+
+        # 1. --diagnose succeeds with exit 0 and emits JSON.
+        monkeypatch.setattr(
+            cli.pipeline,
+            "diagnose",
+            lambda *a, **k: {"available_sources": ["reddit"]},
+        )
+        monkeypatch.setattr(sys, "argv", ["last30days.py", "--diagnose"])
+        assert cli.main() == 0
+        diag_out = json.loads(capsys.readouterr().out)
+        assert diag_out["available_sources"] == ["reddit"]
+
+        # 2. doctor --postmortem --json succeeds with exit 0 and reaches doctor.run.
+        doctor_calls: list[dict] = []
+
+        def fake_doctor_run(config, *, emit_json, cached, postmortem, probe):
+            doctor_calls.append(
+                {
+                    "memory_dir": config.get("LAST30DAYS_MEMORY_DIR"),
+                    "emit_json": emit_json,
+                    "postmortem": postmortem,
+                }
+            )
+            print(json.dumps({"ok": True, "memory_dir": config.get("LAST30DAYS_MEMORY_DIR")}))
+            return 0
+
+        monkeypatch.setattr(doctor_mod, "run", fake_doctor_run)
+        monkeypatch.setattr(
+            sys, "argv", ["last30days.py", "doctor", "--postmortem", "--json"]
+        )
+        assert cli.main() == 0
+        doc_out = json.loads(capsys.readouterr().out)
+        assert doc_out == {"ok": True, "memory_dir": "   "}
+        assert doctor_calls == [{"memory_dir": "   ", "emit_json": True, "postmortem": True}]
+
     def test_trailing_space_save_dir_preserved_verbatim(
         self, tmp_path: Path, monkeypatch
     ):
