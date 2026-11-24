@@ -695,7 +695,9 @@ class TestSearxngConfigHandoff:
         assert [r.post_id for r in first.refs] == ["1sx9abc"]
         assert [r.post_id for r in second.refs] == ["1sx9abc"]
 
-    def _run_pipeline_reddit_with_searxng(self, cfg, *, sc_search=None, html_fetch=None, site_hits=()):
+    def _run_pipeline_reddit_with_searxng(
+        self, cfg, *, sc_search=None, html_fetch=None, site_hits=(), searxng_get=None,
+    ):
         from lib import pipeline, reddit, reddit_keyless, schema
 
         seen_urls = []
@@ -735,7 +737,7 @@ class TestSearxngConfigHandoff:
              mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
                                return_value={"top_comments": [], "comment_insights": [], "num_comments": None}), \
              mock.patch.object(web_search_keyless.http, "get_text", side_effect=html_fetch or self._throttled_html), \
-             mock.patch.object(web_search_keyless.http, "get", side_effect=fake_get), \
+             mock.patch.object(web_search_keyless.http, "get", side_effect=searxng_get or fake_get), \
              mock.patch.object(env, "resolve_searxng_url", side_effect=AssertionError("already loaded config should be threaded")):
             items, artifact = pipeline._retrieve_stream(
                 topic="IQ3 quantization",
@@ -775,9 +777,9 @@ class TestSearxngConfigHandoff:
 
     @pytest.mark.parametrize("finished_at, http_status, expected_state", [
         (200.0, None, health.TIMEOUT),
-        (179.0, None, health.TIMEOUT),
+        (198.0, None, health.TIMEOUT),
         (170.0, None, None),
-        (179.0, 429, health.RATE_LIMITED),
+        (198.0, 429, health.RATE_LIMITED),
     ], ids=["run-budget-spent", "public-budget-too-short", "in-budget-miss", "primary-rate-limit"])
     def test_sc_primary_empty_fallback_reports_its_outcome(self, finished_at, http_status, expected_state):
         clock = [100.0]
@@ -830,9 +832,9 @@ class TestSearxngConfigHandoff:
         from lib import reddit_keyless
 
         clock = [100.0]
-        # public-first without a key ends at 200 - 15 = 185 (web cutoff 177); the SC-first
-        # public fallback keeps the flat 20s margin (ends 180, cutoff 172).
-        exhausted_at = {"public-first-backfill": 128.0, "public-first": 178.0}.get(mode, 173.0)
+        # Public-first without a key and the SC-first fallback both start with 100s left, so
+        # each ends at 200 - 15 = 185 (web cutoff 177).
+        exhausted_at = 128.0 if mode == "public-first-backfill" else 178.0
         # The public-first lane with a paid key ends at 170 - 10.5 - 24.5 = 135 (cutoff 127).
         budget = 170.0 if mode == "public-first-backfill" else 200.0
         cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": budget}
@@ -1069,6 +1071,164 @@ class TestSearxngConfigHandoff:
         assert not items and not seen_urls
         outcome = artifact["_source_outcome"]
         assert outcome["state"] == health.TIMEOUT and outcome["detail"] == note
+
+    @pytest.mark.parametrize("failure, note", [
+        (http.HTTPError("HTTP 403: refused", 403), "SearXNG fallback refused (HTTP 403)"),
+        (http.HTTPError("HTTP 429: slow down", 429), "SearXNG fallback rate-limited (HTTP 429)"),
+    ])
+    def test_searxng_failure_is_noted_without_becoming_a_reddit_failure(self, failure, note):
+        def refuse(*args, **kwargs):
+            http._record_failure(failure)
+            raise failure
+
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, html_fetch=lambda *args, **kwargs: "", searxng_get=refuse,
+        )
+
+        assert not items
+        assert note in artifact.get("_source_outcome_detail", "")
+        assert artifact.get("_source_outcome", {}).get("state") not in (health.UNREACHABLE, health.RATE_LIMITED)
+        assert "searx.example" not in str(artifact)
+
+    def test_searxng_deadline_is_a_real_timeout_not_a_reddit_failure(self):
+        def run_out(*args, **kwargs):
+            failure = http.DeadlineExceeded()
+            http._record_failure(failure)
+            raise failure
+
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, html_fetch=lambda *args, **kwargs: "", searxng_get=run_out,
+        )
+
+        assert not items
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+
+    def test_searxng_clean_miss_adds_no_note(self):
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, html_fetch=lambda *args, **kwargs: "", searxng_get=lambda *a, **k: {"results": []},
+        )
+
+        assert not items and "SearXNG" not in artifact.get("_source_outcome_detail", "")
+
+    @pytest.mark.parametrize("site", ["open", "read"])
+    def test_transient_config_read_error_is_retried_not_cached_as_missing(self, site, tmp_path, monkeypatch):
+        import errno
+        import os
+
+        env.CONFIG_FILE.write_text("LAST30DAYS_SEARXNG_URL=https://global.example\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LAST30DAYS_SEARXNG_URL", raising=False)
+        real_open, real_fdopen, tripped = os.open, os.fdopen, []
+
+        def flaky_open(path, *args, **kwargs):
+            if site == "open" and not tripped and os.fspath(path) == os.fspath(env.CONFIG_FILE):
+                tripped.append(1)
+                raise PermissionError(errno.EACCES, "file is in use")
+            return real_open(path, *args, **kwargs)
+
+        def flaky_fdopen(fd, *args, **kwargs):
+            if site == "read" and not tripped:
+                tripped.append(1)
+                raise OSError(errno.EIO, "input/output error")
+            return real_fdopen(fd, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", flaky_open)
+        monkeypatch.setattr(os, "fdopen", flaky_fdopen)
+        generation = reddit_discover._RUN_GENERATION
+
+        assert reddit_discover._standalone_searxng_url(generation) is None
+        assert reddit_discover._standalone_searxng_url(generation) == "https://global.example"
+        assert tripped == [1]
+
+    @pytest.mark.parametrize("how", ["absent", "unsafe"])
+    def test_absent_or_unsafe_config_file_stays_a_cached_miss(self, how, tmp_path, monkeypatch):
+        import errno
+        import os
+
+        env.CONFIG_FILE.write_text("LAST30DAYS_SEARXNG_URL=https://global.example\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LAST30DAYS_SEARXNG_URL", raising=False)
+        real_open, opens = os.open, []
+
+        def refuse_open(path, *args, **kwargs):
+            if os.fspath(path) == os.fspath(env.CONFIG_FILE):
+                opens.append(1)
+                raise OSError(errno.ELOOP, "symlink refused") if how == "unsafe" else FileNotFoundError(path)
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", refuse_open)
+        generation = reddit_discover._RUN_GENERATION
+
+        assert reddit_discover._standalone_searxng_url(generation) == ""
+        assert reddit_discover._standalone_searxng_url(generation) == ""
+        assert opens == [1]
+
+    def test_sc_first_public_fallback_gets_a_proportionate_margin_at_handoff(self):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        lanes = []
+        site_hit = {
+            "title": "IQ3 quantization discussion",
+            "url": "https://www.reddit.com/r/LocalLLaMA/comments/site123/",
+            "date": "2026-05-20",
+            "engagement": {"score": 25, "num_comments": 3},
+            "relevance": 0.9,
+            "metadata": {"post_id": "site123"},
+        }
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+               "_research_deadline": 200.0}
+        real_lane = reddit_keyless.lane_deadline
+
+        def record_lane(deadline):
+            lanes.append(deadline)
+            return real_lane(deadline)
+
+        def sc_search(*args, **kwargs):
+            clock[0] = 185.0  # The paid primary came back empty with 15s left.
+            return {}
+
+        def run_inline(_wait_until, _stage, _default, call, /, *args, **kwargs):
+            return call(*args, **kwargs)
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(reddit_keyless, "_within", side_effect=run_inline), \
+             mock.patch.object(reddit_keyless, "lane_deadline", side_effect=record_lane):
+            items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=sc_search, html_fetch=lambda *a, **k: "", site_hits=[site_hit],
+            )
+
+        # With 15s left the margin is min(20, 15 * 0.15) = 2.25s, so the fallback ends at 197.75 and never past 200.
+        assert lanes == [pytest.approx(197.75)]
+        assert [i["metadata"]["post_id"] for i in items] == ["site123"]
+
+    def test_sc_first_public_fallback_gets_no_extra_allowance_when_time_is_spent(self):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        lanes = []
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+               "_research_deadline": 200.0}
+        real_lane = reddit_keyless.lane_deadline
+
+        def record_lane(deadline):
+            lanes.append(deadline)
+            return real_lane(deadline)
+
+        def sc_search(*args, **kwargs):
+            clock[0] = 201.0  # Already past the run deadline when the primary returns.
+            return {}
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(reddit_keyless, "lane_deadline", side_effect=record_lane):
+            items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=sc_search, html_fetch=lambda *a, **k: "",
+            )
+
+        assert lanes == [200.0] and not items
 
     @pytest.mark.parametrize("sc_primary", [False, True], ids=["public-primary", "sc-primary"])
     def test_pipeline_keeps_site_hit_without_late_searxng_on_either_primary_path(self, sc_primary):

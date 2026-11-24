@@ -335,6 +335,7 @@ def _web_floor(
             )
         )
         _record_web_rungs(floor)
+        _note_searxng_rung(floor)
         if wait_expired or floor.timed_out:
             _mark("web", health.TIMEOUT)
         if not floor.refs:
@@ -370,6 +371,23 @@ def _web_floor(
     for post in bar.kept:
         post["topic_bar"] = True
     return bar.kept
+
+
+# What the optional SearXNG fallback answered when it failed. This is a note on the
+# fallback itself. Its refusals say nothing about reddit.com, so they never become
+# a Reddit path state or touch the shared rung health.
+_SEARXNG_NOTES = {
+    web_search_keyless.BLOCKED: "refused (HTTP 403)",
+    web_search_keyless.THROTTLED: "rate-limited (HTTP 429)",
+    health.TIMEOUT: "timed out",
+    web_search_keyless.ERROR: "failed",
+}
+
+
+def _note_searxng_rung(floor: "reddit_discover.WebFloor") -> None:
+    note = _SEARXNG_NOTES.get(floor.rungs.get("searxng", ""))
+    if note:
+        _note(f"SearXNG fallback {note}")
 
 
 _RUNG_STATES = {

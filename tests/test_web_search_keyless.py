@@ -74,6 +74,83 @@ class TestKeylessSearch:
         assert items[0]["url"] == "https://searxng.example/a"
         assert artifact["keyless_backend"] == "searxng"
 
+    @staticmethod
+    def _thread_only(item):
+        return "reddit.com/r/" in item["url"]
+
+    def test_searxng_filter_runs_before_the_result_cap(self):
+        junk = [{"url": f"https://example.com/{i}", "title": "x", "content": "x"} for i in range(30)]
+        threads = [
+            {"url": f"https://www.reddit.com/r/LocalLLaMA/comments/t{i}/", "title": "t", "content": "t"}
+            for i in range(3)
+        ]
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", return_value={"results": junk + threads}):
+            items, artifact = web_search_keyless.keyless_search(
+                "site:reddit.com topic", ("2026-02-25", "2026-03-27"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+                count=2, accept_result=self._thread_only,
+            )
+        # The first 30 links are not threads, yet the threads that follow are kept, in order, up to the cap.
+        assert [item["url"] for item in items] == [t["url"] for t in threads[:2]]
+        assert artifact["keyless_backend"] == "searxng"
+
+    def test_searxng_scan_stays_bounded_when_nothing_is_accepted(self):
+        junk = [{"url": f"https://example.com/{i}", "title": "x", "content": "x"} for i in range(400)]
+        late = {"url": "https://www.reddit.com/r/LocalLLaMA/comments/late/", "title": "t", "content": "t"}
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", return_value={"results": junk + [late]}):
+            items, _ = web_search_keyless.keyless_search(
+                "site:reddit.com topic", ("2026-02-25", "2026-03-27"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+                count=5, accept_result=self._thread_only,
+            )
+        assert items == []
+
+    @pytest.mark.parametrize("failure, state", [
+        (http.HTTPError("HTTP 403: refused", 403), "blocked"),
+        (http.HTTPError("HTTP 429: slow down", 429), "throttled"),
+        (http.HTTPError("HTTP 500: broken", 500), "error"),
+        (http.DeadlineExceeded(), "timeout"),
+    ])
+    def test_searxng_failure_is_reported_on_its_own_rung(self, failure, state):
+        def fail(*args, **kwargs):
+            http._record_failure(failure)
+            raise failure
+
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", side_effect=fail):
+            items, artifact = web_search_keyless.keyless_search(
+                "site:reddit.com topic", ("2026-02-25", "2026-03-27"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+                accept_result=self._thread_only,
+            )
+        assert items == []
+        assert artifact["keyless_searxng"] == state
+        # The HTML rungs keep their own states and the rung map stays HTML-only.
+        assert "searxng" not in artifact["keyless_rungs"]
+        assert all(artifact["keyless_rungs"][rung] == "empty" for rung in web_search_keyless.RUNGS)
+
+    def test_searxng_clean_miss_is_reported_as_empty(self):
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get", return_value={"results": []}):
+            items, artifact = web_search_keyless.keyless_search(
+                "site:reddit.com topic", ("2026-02-25", "2026-03-27"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+            )
+        assert items == [] and artifact["keyless_searxng"] == "empty"
+        assert "searxng" not in artifact["keyless_rungs"]
+
+    def test_searxng_rung_never_enters_the_shared_rung_health(self):
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=""), \
+             mock.patch.object(web_search_keyless.http, "get",
+                               side_effect=http.HTTPError("HTTP 403: refused", 403)):
+            web_search_keyless.keyless_search(
+                "topic", ("2026-02-25", "2026-03-27"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+            )
+        assert "searxng" not in web_search_keyless.rung_health()
+
     def test_skips_non_http_results(self):
         html = '<a class="result__a" href="//duckduckgo.com/l/?uddg=javascript%3Avoid(0)">bad</a>'
         with mock.patch.object(web_search_keyless.http, "get_text", return_value=html):

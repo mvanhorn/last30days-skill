@@ -344,7 +344,10 @@ def web_refs(
             ref.title = _clean_title(str(item.get("title") or ""))
             ref.date = item.get("date") or None
             by_id[ref.post_id] = ref
-        floor.record_query(query, artifact.get("keyless_rungs"), by_id.values(), timed_out=timed_out)
+        query_rungs = dict(artifact.get("keyless_rungs") or {})
+        if artifact.get("keyless_searxng"):
+            query_rungs["searxng"] = artifact["keyless_searxng"]
+        floor.record_query(query, query_rungs, by_id.values(), timed_out=timed_out)
     snap = floor.snapshot()
     if snap.queries:
         rungs = ", ".join(f"{rung} {state}" for rung, state in snap.rungs.items()) or "no rung"

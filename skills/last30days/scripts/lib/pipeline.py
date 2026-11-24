@@ -7701,12 +7701,7 @@ def _retrieve_stream_impl(
         reddit_query = raw_topic or subquery.search_query
         dedicated_subreddits = config.get("_dedicated_subreddits") or None
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
-        # Leave time to hand back the public lane's partial results.
         research_deadline = config.get("_research_deadline")
-        public_deadline = (
-            research_deadline - REDDIT_LANE_RETURN_MARGIN_SECONDS
-            if research_deadline is not None else None
-        )
         if env.reddit_scrapecreators_primary(config):
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             if config.get("_reddit_envelope") is not None:
@@ -7754,6 +7749,16 @@ def _retrieve_stream_impl(
                     f"[Reddit] ScrapeCreators primary failed "
                     f"({type(exc).__name__}: {exc}), using public fallback\n"
                 )
+            # Leave time to hand back the public lane's partial results. The paid primary has
+            # spent part of the budget, so size the margin from what is left now (as the
+            # public-first lane does) rather than a flat 20s that can swallow a short budget.
+            public_deadline = (
+                research_deadline - min(
+                    REDDIT_LANE_RETURN_MARGIN_SECONDS,
+                    max(0.0, research_deadline - time.monotonic()) * 0.15,
+                )
+                if research_deadline is not None else None
+            )
             public_failure: Exception | None = None
             try:
                 with reddit_keyless.lane_deadline(public_deadline), \
