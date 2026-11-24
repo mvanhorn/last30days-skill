@@ -11,6 +11,14 @@ from pathlib import Path
 _WINDOWS_SHARING_VIOLATION = 32
 _IS_JUNCTION = getattr(os.path, "isjunction", None)
 _GETEUID = getattr(os, "geteuid", None)
+_OS_OPEN = os.open
+_OS_FSTAT = os.fstat
+_OS_CLOSE = os.close
+_OS_GETCWD = os.getcwd
+_O_RDONLY = os.O_RDONLY
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 
 
 def _group_writable_by_other_user(st: os.stat_result, euid: int) -> bool:
@@ -26,30 +34,74 @@ def _group_writable_by_other_user(st: os.stat_result, euid: int) -> bool:
     except (ImportError, KeyError):
         return True
     other_members = set(gr.gr_mem) - {pw.pw_name, "root"}
-    if st.st_gid == 0 and not other_members:
+    if other_members:
+        return True
+    if hasattr(pwd, "getpwall"):
+        try:
+            for entry in pwd.getpwall():
+                if entry.pw_uid not in (euid, 0) and entry.pw_gid == st.st_gid:
+                    return True
+        except OSError:
+            return True
+    if st.st_gid == 0:
         return False
-    if st.st_gid == pw.pw_gid and gr.gr_name == pw.pw_name and not other_members:
+    if st.st_gid == pw.pw_gid and gr.gr_name == pw.pw_name:
         return False
     return True
 
 
-def _verify_private_directory_chain(parent: Path) -> None:
+def _fstat_directory_nofollow(directory: Path) -> os.stat_result:
+    """Open ``directory`` without following symlinks and return its ``fstat`` result."""
+    try:
+        fd = _OS_OPEN(directory, _O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise OSError(errno.ELOOP, f"Refusing to follow symlink directory: {directory}") from exc
+        raise
+    try:
+        st = _OS_FSTAT(fd)
+    finally:
+        _OS_CLOSE(fd)
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Expected a directory for private file: {directory}")
+    return st
+
+
+def _reject_non_root_parent_symlinks(parent: Path) -> None:
+    """Reject any non-root symlink component along ``parent`` before resolving it."""
+    abs_parent = parent if parent.is_absolute() else Path(_OS_GETCWD()) / parent
+    parts = abs_parent.parts
+    if not parts:
+        return
+    current = Path(parts[0])
+    for part in parts[1:]:
+        if part in ("", "."):
+            continue
+        current = current / part
+        if part == "..":
+            continue
+        st = current.lstat()
+        if stat.S_ISLNK(st.st_mode) and st.st_uid != 0:
+            raise OSError(
+                errno.ELOOP,
+                f"Refusing to follow non-root symlink in private directory path: {current}",
+            )
+
+
+def _verify_private_directory_chain(parent: Path, *, allow_root_owner: bool = False) -> None:
     """Verify the parent directory and its ancestors cannot be modified by other users."""
     if _GETEUID is None:
         return
     euid = _GETEUID()
-    parent_st = parent.lstat()
-    if not stat.S_ISDIR(parent_st.st_mode):
-        raise OSError(f"Expected a directory for private file: {parent}")
-    if parent_st.st_uid not in (euid, 0):
+    parent_st = _fstat_directory_nofollow(parent)
+    allowed_parent_uids = (euid, 0) if allow_root_owner else (euid,)
+    if parent_st.st_uid not in allowed_parent_uids:
         raise OSError(f"Refusing to use private directory owned by another user: {parent}")
     if (parent_st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(parent_st, euid):
         raise OSError(f"Refusing to use private directory writable by other users: {parent}")
 
     for ancestor in parent.parents:
-        anc_st = ancestor.lstat()
-        if not stat.S_ISDIR(anc_st.st_mode):
-            raise OSError(f"Expected a directory ancestor for private file: {ancestor}")
+        anc_st = _fstat_directory_nofollow(ancestor)
         if anc_st.st_uid not in (euid, 0):
             raise OSError(f"Refusing to use directory under untrusted owner: {ancestor}")
         writable_by_others = bool(anc_st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(
@@ -75,14 +127,15 @@ def _reject_symlink_or_nonregular(path: Path) -> None:
         raise OSError(f"Expected a regular private file: {path}")
 
 
-def _resolve_parent_only(path: Path) -> Path:
+def _resolve_parent_only(path: Path, *, allow_root_owner: bool = False) -> Path:
     """Resolve and validate only the parent directory so a leaf symlink is never dereferenced."""
     path = Path(path)
     if path.name in ("", ".", ".."):
         raise OSError(f"Expected a regular private file path: {path}")
     _reject_symlink_or_nonregular(path)
+    _reject_non_root_parent_symlinks(path.parent)
     resolved_parent = path.parent.resolve()
-    _verify_private_directory_chain(resolved_parent)
+    _verify_private_directory_chain(resolved_parent, allow_root_owner=allow_root_owner)
     resolved = resolved_parent / path.name
     _reject_symlink_or_nonregular(resolved)
     return resolved
@@ -90,9 +143,10 @@ def _resolve_parent_only(path: Path) -> Path:
 
 def replace_private_text(path: Path, content: str) -> None:
     """Publish UTF-8 text atomically from an owner-only temporary file."""
-    _reject_symlink_or_nonregular(path)
     if os.name == "posix":
-        _verify_private_directory_chain(path.parent.resolve())
+        path = _resolve_parent_only(path)
+    else:
+        _reject_symlink_or_nonregular(path)
     staged = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False,
     )
@@ -128,7 +182,7 @@ def prepare_private_sqlite_files(path: Path, *, create: bool = False) -> Path:
                 _reject_symlink_or_nonregular(Path(f"{path}{suffix}"))
         return path
 
-    path = _resolve_parent_only(path)
+    path = _resolve_parent_only(path, allow_root_owner=not create)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     nonblock = getattr(os, "O_NONBLOCK", 0)
     cloexec = getattr(os, "O_CLOEXEC", 0)

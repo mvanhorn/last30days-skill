@@ -987,3 +987,90 @@ def test_high054_replace_private_text_rejects_symlink_and_preserves_target(tmp_p
 
     assert victim.read_text(encoding="utf-8") == "KEEP=1\n"
     assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permissions and symlinks")
+def test_high054_replace_private_text_uses_resolved_parent_and_rejects_untrusted_dirs(tmp_path: Path):
+    # Symlinked parent directory owned by non-root user -> rejected without writing.
+    real_dir = tmp_path / "real"
+    real_dir.mkdir(mode=0o700)
+    symlink_dir = tmp_path / "sym-parent"
+    symlink_dir.symlink_to(real_dir, target_is_directory=True)
+    with pytest.raises(OSError, match="symlink"):
+        private_files.replace_private_text(symlink_dir / "settings.env", "A=1\n")
+    assert not (real_dir / "settings.env").exists()
+
+    # World-writable parent -> rejected.
+    world_dir = tmp_path / "world"
+    world_dir.mkdir()
+    world_dir.chmod(0o777)
+    try:
+        with pytest.raises(OSError, match="writable by other users"):
+            private_files.replace_private_text(world_dir / "settings.env", "A=1\n")
+    finally:
+        world_dir.chmod(0o700)
+
+    # Path with `..` resolves to the canonical verified parent for BOTH staging and os.replace.
+    sub = real_dir / "sub"
+    sub.mkdir(mode=0o700)
+    unnormalized = sub / ".." / "settings.env"
+    seen_destinations: list[Path] = []
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        seen_destinations.append(Path(dst))
+        return real_replace(src, dst)
+
+    with patch.object(private_files.os, "replace", side_effect=spy_replace):
+        private_files.replace_private_text(unnormalized, "OK=1\n")
+
+    expected = real_dir.resolve() / "settings.env"
+    assert seen_destinations == [expected]
+    assert expected.read_text(encoding="utf-8") == "OK=1\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory and group checks")
+def test_high053_shared_primary_gid_and_store_connect_blocked_before_sqlite_open(tmp_path: Path):
+    import pwd
+    import store
+    from types import SimpleNamespace
+
+    # 1. Shared primary GID (even when gr_mem is empty) must be rejected on group-writable dir.
+    shared_dir = tmp_path / "shared-gid"
+    shared_dir.mkdir(mode=0o700)
+    shared_dir.chmod(0o770)
+    db_shared = shared_dir / "research.db"
+    db_shared.write_bytes(b"")
+    euid = os.geteuid()
+    real_pw = pwd.getpwuid(euid)
+    fake_users = [
+        real_pw,
+        SimpleNamespace(pw_name="otheruser", pw_uid=euid + 1000, pw_gid=shared_dir.lstat().st_gid),
+    ]
+    try:
+        with patch.object(pwd, "getpwall", return_value=fake_users), \
+             patch.object(store.sqlite3, "connect", side_effect=AssertionError("sqlite3.connect must not run")):
+            with pytest.raises(OSError, match="writable by other users"):
+                store._connect(db_shared)
+    finally:
+        shared_dir.chmod(0o700)
+
+    # 2. World-writable scoped store dir fails before sqlite3.connect.
+    world_dir = tmp_path / "world-store"
+    world_dir.mkdir()
+    world_dir.chmod(0o777)
+    try:
+        with patch.object(store.sqlite3, "connect", side_effect=AssertionError("sqlite3.connect must not run")):
+            with pytest.raises(OSError, match="writable by other users"):
+                store._connect(world_dir / "research.db")
+    finally:
+        world_dir.chmod(0o700)
+
+    # 3. Non-root symlinked parent dir fails before sqlite3.connect.
+    owned_dir = tmp_path / "owned-store"
+    owned_dir.mkdir(mode=0o700)
+    sym_parent = tmp_path / "sym-store"
+    sym_parent.symlink_to(owned_dir, target_is_directory=True)
+    with patch.object(store.sqlite3, "connect", side_effect=AssertionError("sqlite3.connect must not run")):
+        with pytest.raises(OSError, match="symlink"):
+            store._connect(sym_parent / "research.db")
