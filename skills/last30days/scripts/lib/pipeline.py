@@ -5823,6 +5823,18 @@ def _with_reddit_lane_notes(artifact: dict[str, Any], notes: list[str]) -> dict[
     return artifact
 
 
+def _reddit_sc_incomplete_notes(result: Any) -> list[str]:
+    """Extract deadline-incompleteness notes from a ScrapeCreators Reddit result."""
+    if not isinstance(result, dict):
+        return []
+    notes: list[str] = []
+    if result.get("incomplete"):
+        notes.append(str(result.get("incomplete_note") or "Reddit search incomplete (deadline reached)"))
+    if result.get("comments_incomplete"):
+        notes.append(str(result.get("comments_note") or "Reddit comments incomplete (deadline reached)"))
+    return notes
+
+
 def _outcome_artifact(
     state: schema.RunOutcomeState,
     detail: str,
@@ -7707,7 +7719,10 @@ def _retrieve_stream_impl(
                     )
                 items = reddit.parse_reddit_response(result)
                 if items:
-                    return items, {}
+                    sc_notes = _reddit_sc_incomplete_notes(result)
+                    return items, (
+                        {"_source_outcome_detail": "; ".join(sc_notes)} if sc_notes else {}
+                    )
                 sys.stderr.write(
                     "[Reddit] ScrapeCreators primary returned no items, "
                     "using public fallback\n"
@@ -7910,6 +7925,7 @@ def _retrieve_stream_impl(
                 + "".join(f"; {failed}" for failed in failed_paths),
             )
         merged = _merge_reddit_items(public_results, sc_items)
+        sc_notes = _reddit_sc_incomplete_notes(result)
         if not merged and free_failed:
             return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
         if public_failure is not None:
@@ -7918,11 +7934,13 @@ def _retrieve_stream_impl(
                 if isinstance(public_failure, TimeoutError)
                 else reddit.classify_run_failure(str(public_failure))
             )
-            return merged, _outcome_artifact(
-                state,
+            detail = (
                 f"Reddit public search failed; backup returned {len(sc_items)} items: "
-                f"{public_failure}",
+                f"{public_failure}"
             )
+            if sc_notes:
+                detail = f"{detail}; {'; '.join(sc_notes)}"
+            return merged, _outcome_artifact(state, detail)
         trigger = (
             f"below the {min_items}-item floor" if min_items > 0 else "free path empty"
         )
@@ -7930,6 +7948,8 @@ def _retrieve_stream_impl(
             f"ScrapeCreators backfill ran ({len(public_results)} free items, "
             f"{trigger}); added {len(merged) - len(public_results)} items"
         )
+        if sc_notes:
+            backfill_detail = f"{backfill_detail}; {'; '.join(sc_notes)}"
         if backfill_failures:
             summary = _summarize_lane_failures(backfill_failures, "reddit")
             backfill_detail = f"{backfill_detail}; ScrapeCreators backfill lost {summary}"
@@ -8109,7 +8129,7 @@ def _retrieve_stream_impl(
                 if _research_stopped(config) or time.monotonic() >= chain_deadline:
                     print("[X] chain budget exhausted; skipping judge retry", file=sys.stderr)
                 else:
-                    retry_items, retry_err, _ = _attempt_x_backend_memo(
+                    retry_items, retry_err, retry_state = _attempt_x_backend_memo(
                         used_backend, retry_query, from_date, to_date, depth, config,
                         deadline=chain_deadline,
                     )
@@ -8134,6 +8154,34 @@ def _retrieve_stream_impl(
                                 file=sys.stderr,
                             )
                             items = retry_items
+                            if retry_err:
+                                eff_retry_state = retry_state or health.ERROR
+                                if (
+                                    eff_retry_state == schema.AUTH_FAILED
+                                    and (artifact.get("_source_outcome") or {}).get("state") != schema.AUTH_FAILED
+                                ):
+                                    repair = "; re-login needed" if used_backend in ("grok", "bird") else ""
+                                    artifact.update(_outcome_artifact(
+                                        schema.AUTH_FAILED,
+                                        f"X retry via {used_backend} returned {len(retry_items)} items "
+                                        f"but also errored: {retry_err}{repair}",
+                                    ))
+                                else:
+                                    retry_note = f"X retry via {used_backend} returned partial results ({retry_err})"
+                                    existing_detail = artifact.get("_source_outcome_detail")
+                                    artifact["_source_outcome_detail"] = (
+                                        f"{existing_detail}; {retry_note}"
+                                        if existing_detail else retry_note
+                                    )
+                                    existing_state = artifact.get("_source_outcome_detail_state")
+                                    if (
+                                        existing_state is None
+                                        or _FAILURE_SPECIFICITY.get(eff_retry_state, 9)
+                                        < _FAILURE_SPECIFICITY.get(existing_state, 9)
+                                    ):
+                                        artifact["_source_outcome_detail_state"] = eff_retry_state
+                                    if eff_retry_state == health.RATE_LIMITED:
+                                        artifact["_x_backup_not_rate_limited"] = False
 
             # Prune off-topic items before the pool. Eight on-topic → ok with 8.
             # Zero on-topic after retry → no-results, not ok with 40 junk.

@@ -102,7 +102,23 @@ _sc_spend_limit: contextvars.ContextVar[Optional[_SCSpendLimit]] = (
     contextvars.ContextVar("reddit_sc_spend_limit", default=None)
 )
 
+# Shared mutable [bool] flag owned by search_and_enrich_memo and inherited by
+# pool workers via http.submit_with_context. Flipped to True right before any
+# paid ScrapeCreators HTTP request so mid-spend timeouts are cached and never
+# paid for twice, while pre-spend cancellations stay uncached.
+_sc_paid_started: contextvars.ContextVar[Optional[list[bool]]] = (
+    contextvars.ContextVar("reddit_sc_paid_started", default=None)
+)
+
 _SC_STOPPED_MSG = "ScrapeCreators Reddit backfill cancelled or timed out"
+_SC_COMMENTS_INCOMPLETE_NOTE = "Reddit comments incomplete (deadline reached)"
+_SC_SEARCH_INCOMPLETE_NOTE = "Reddit subreddit drill-down incomplete (deadline reached)"
+
+
+def _mark_sc_paid_started() -> None:
+    flag = _sc_paid_started.get()
+    if flag is not None:
+        flag[0] = True
 
 
 @contextlib.contextmanager
@@ -195,6 +211,14 @@ def _collect_bounded(
     results = []
     try:
         while pending:
+            # Rescue already-finished futures before checking deadline so paid
+            # posts that arrived right at the cutoff are never discarded.
+            finished = {f for f in pending if f.done() and not f.cancelled()}
+            if finished:
+                pending -= finished
+                for future in finished:
+                    results.append((futures[future], future.result(timeout=0)))
+                continue
             if _sc_spend_stopped(eff_deadline, cancel):
                 raise TimeoutError(_SC_STOPPED_MSG)
             timeout = 0.1
@@ -476,6 +500,7 @@ def _global_search(
         List of post dicts
     """
     eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
+    _mark_sc_paid_started()
     extra: Dict[str, Any] = {}
     if eff_deadline is not None:
         extra["deadline_monotonic"] = eff_deadline
@@ -529,6 +554,7 @@ def _subreddit_search(
         List of post dicts
     """
     eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
+    _mark_sc_paid_started()
     extra: Dict[str, Any] = {}
     if eff_deadline is not None:
         extra["deadline_monotonic"] = eff_deadline
@@ -581,6 +607,7 @@ def fetch_post_comments(
         List of comment dicts with score, author, body, etc.
     """
     eff_deadline, eff_cancel = _check_sc_spend(deadline_monotonic, cancel)
+    _mark_sc_paid_started()
     try:
         data = http.get(
             f"{_sc_base()}/post/comments",
@@ -776,27 +803,34 @@ def search_reddit(
         discovered_subs = discover_subreddits(all_raw_posts, topic=topic, max_subs=subreddit_budget)
         _log(f"Discovered subreddits: {discovered_subs}")
 
+        search_incomplete = False
         subreddit_limit = subreddit_budget
         if subreddit_limit > 0 and discovered_subs:
-            _check_sc_spend()
-            executor = ThreadPoolExecutor(max_workers=subreddit_limit)
-            completed_cleanly = False
             try:
-                futures = {}
-                for sub in discovered_subs[:subreddit_limit]:
-                    _check_sc_spend()
-                    _log(f"Subreddit search: r/{sub} for '{core}'")
-                    futures[http.submit_with_context(
-                        executor, _subreddit_search, sub, core, token, "relevance", timeframe,
-                    )] = sub
-                for sub, sub_posts in _collect_bounded(executor, futures):
-                    _log(f"  -> {len(sub_posts)} results from r/{sub}")
-                    for j, post in enumerate(sub_posts):
-                        item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
-                        all_items.append(item)
-                completed_cleanly = True
-            finally:
-                executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
+                _check_sc_spend()
+                executor = ThreadPoolExecutor(max_workers=subreddit_limit)
+                completed_cleanly = False
+                try:
+                    futures = {}
+                    for sub in discovered_subs[:subreddit_limit]:
+                        _check_sc_spend()
+                        _log(f"Subreddit search: r/{sub} for '{core}'")
+                        futures[http.submit_with_context(
+                            executor, _subreddit_search, sub, core, token, "relevance", timeframe,
+                        )] = sub
+                    for sub, sub_posts in _collect_bounded(executor, futures):
+                        _log(f"  -> {len(sub_posts)} results from r/{sub}")
+                        for j, post in enumerate(sub_posts):
+                            item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
+                            all_items.append(item)
+                    completed_cleanly = True
+                finally:
+                    executor.shutdown(wait=completed_cleanly, cancel_futures=not completed_cleanly)
+            except TimeoutError:
+                if not all_items:
+                    raise
+                search_incomplete = True
+                _log("Subreddit drill-down stopped at deadline; keeping already-fetched posts")
 
         # === Phase 4: Deduplicate ===
         all_items = _dedupe_posts(all_items)
@@ -840,7 +874,11 @@ def search_reddit(
             item["id"] = f"R{i+1}"
 
         _log(f"Final: {len(all_items)} Reddit posts")
-        return {"items": all_items}
+        out: Dict[str, Any] = {"items": all_items}
+        if search_incomplete:
+            out["incomplete"] = True
+            out["incomplete_note"] = _SC_SEARCH_INCOMPLETE_NOTE
+        return out
 
 
 def enrich_with_comments(
@@ -851,6 +889,7 @@ def enrich_with_comments(
     *,
     deadline_monotonic: float | None = None,
     cancel: threading.Event | None = None,
+    _incomplete_out: Optional[List[bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Enrich top items with comment data from ScrapeCreators.
 
@@ -878,7 +917,10 @@ def enrich_with_comments(
     with spend_ctx:
         outer_deadline, outer_cancels = _effective_spend_limit()
         if _sc_spend_stopped():
-            raise TimeoutError(_SC_STOPPED_MSG)
+            if _incomplete_out is not None:
+                _incomplete_out.append(True)
+            _log("Comment enrichment skipped: deadline reached or cancelled")
+            return items
 
         # Select the top threads by total engagement (upvotes + comment count),
         # not by list position. This ensures high-comment threads like [FRESH ALBUM]
@@ -904,44 +946,46 @@ def enrich_with_comments(
 
         executor = ThreadPoolExecutor(max_workers=min(4, len(top_items)))
         abandoned = False
+        not_done: set = set()
         try:
             with ExitStack() as cleanup:
                 cleanup.callback(local_cancel.set)
-                futures = {
-                    http.submit_with_context(
-                        executor, fetch, item,
-                    ): item
-                    for item in top_items
-                    if item.get("url")
-                }
+                futures = {}
+                for item in top_items:
+                    if not item.get("url"):
+                        continue
+                    if local_cancel.is_set() or _sc_spend_stopped(deadline, local_cancel):
+                        abandoned = True
+                        break
+                    futures[http.submit_with_context(executor, fetch, item)] = item
 
                 done = set()
                 not_done = set(futures)
-                if outer_deadline is None and not outer_cancels:
-                    remaining = max(0, budget_seconds - (time.monotonic() - start))
-                    done, not_done = futures_wait(futures, timeout=remaining)
-                else:
-                    while not_done:
-                        if _sc_spend_stopped():
-                            abandoned = True
-                            break
-                        rem = deadline - time.monotonic()
-                        if rem <= 0:
-                            if outer_deadline is not None and time.monotonic() >= outer_deadline:
+                if not abandoned:
+                    if outer_deadline is None and not outer_cancels:
+                        remaining = max(0, budget_seconds - (time.monotonic() - start))
+                        done, not_done = futures_wait(futures, timeout=remaining)
+                    else:
+                        while not_done:
+                            if _sc_spend_stopped():
                                 abandoned = True
-                            break
-                        completed, not_done = futures_wait(
-                            not_done, timeout=min(0.1, rem), return_when=FIRST_COMPLETED,
-                        )
-                        done.update(completed)
+                                break
+                            rem = deadline - time.monotonic()
+                            if rem <= 0:
+                                if outer_deadline is not None and time.monotonic() >= outer_deadline:
+                                    abandoned = True
+                                break
+                            completed, not_done = futures_wait(
+                                not_done, timeout=min(0.1, rem), return_when=FIRST_COMPLETED,
+                            )
+                            done.update(completed)
 
                 if not_done or abandoned:
                     local_cancel.set()
                     for future in not_done:
                         future.cancel()
-
-                if abandoned:
-                    raise TimeoutError(_SC_STOPPED_MSG)
+                    if _incomplete_out is not None:
+                        _incomplete_out.append(True)
 
                 enriched_count = 0
                 for future in done:
@@ -996,7 +1040,7 @@ def enrich_with_comments(
                     item["comment_insights"] = insights[:10]
                     enriched_count += 1
 
-                if not_done:
+                if not_done or abandoned:
                     _log(f"Enrichment budget hit ({budget_seconds}s): {enriched_count}/{len(futures)} posts enriched, {len(not_done)} skipped")
                 else:
                     elapsed = time.monotonic() - start
@@ -1044,9 +1088,41 @@ def search_and_enrich(
         items = result.get("items", [])
 
         if items and token:
-            _check_sc_spend()
-            items = enrich_with_comments(items, token, depth)
-            result["items"] = items
+            eff_deadline, cancels = _effective_spend_limit()
+            comment_deadline: float | None = None
+            skip_comments = _sc_spend_stopped()
+            if not skip_comments and eff_deadline is not None:
+                # Reserve a return margin so already-paid posts make it back
+                # before the outer backfill wait gives up on the worker.
+                rem = eff_deadline - time.monotonic()
+                reserve = min(2.0, max(0.0, rem * 0.2))
+                comment_deadline = eff_deadline - reserve
+                if comment_deadline <= time.monotonic():
+                    skip_comments = True
+            if skip_comments:
+                result["comments_incomplete"] = True
+                result["comments_note"] = _SC_COMMENTS_INCOMPLETE_NOTE
+            else:
+                incomplete_flag: list[bool] = []
+                try:
+                    if eff_deadline is not None or cancels:
+                        items = enrich_with_comments(
+                            items,
+                            token,
+                            depth,
+                            deadline_monotonic=comment_deadline,
+                            _incomplete_out=incomplete_flag,
+                        )
+                    else:
+                        items = enrich_with_comments(items, token, depth)
+                    result["items"] = items
+                    if incomplete_flag:
+                        result["comments_incomplete"] = True
+                        result["comments_note"] = _SC_COMMENTS_INCOMPLETE_NOTE
+                except TimeoutError:
+                    result["items"] = items
+                    result["comments_incomplete"] = True
+                    result["comments_note"] = _SC_COMMENTS_INCOMPLETE_NOTE
 
         return result
 
@@ -1127,7 +1203,9 @@ def search_and_enrich_memo(
                     _check_sc_spend()
             # Loop: read the owner's cached outcome, or re-elect if it was
             # interrupted before caching one (e.g. KeyboardInterrupt or cancel).
-        cancelled_or_timed_out = False
+        paid_flag = [False]
+        paid_token = _sc_paid_started.set(paid_flag)
+        cancelled_before_spend = False
         try:
             with http.tee_failures() as recorded:
                 try:
@@ -1137,17 +1215,19 @@ def search_and_enrich_memo(
                     )
                     outcome = (True, result)
                 except TimeoutError as exc:
-                    cancelled_or_timed_out = True
+                    if not paid_flag[0]:
+                        cancelled_before_spend = True
                     outcome = (False, exc)
                 except Exception as exc:
-                    if _sc_spend_stopped():
-                        cancelled_or_timed_out = True
+                    if _sc_spend_stopped() and not paid_flag[0]:
+                        cancelled_before_spend = True
                     outcome = (False, exc)
             entry = (*outcome, list(recorded))
-            if not cancelled_or_timed_out:
+            if not cancelled_before_spend:
                 with _SC_MEMO_LOCK:
                     _SC_MEMO[key] = entry
         finally:
+            _sc_paid_started.reset(paid_token)
             with _SC_MEMO_LOCK:
                 _SC_INFLIGHT.pop(key, None)
             gate.set()

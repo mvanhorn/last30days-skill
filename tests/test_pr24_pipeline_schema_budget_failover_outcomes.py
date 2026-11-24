@@ -1220,8 +1220,16 @@ class TestGreptileP1CancelledBackfillStopsSpend:
         assert not any(
             url.endswith("/reddit/search") or "/post/comments" in url for url in endpoints
         )
-        # Cancelled run must NOT be cached in _SC_MEMO.
-        assert reddit._SC_MEMO == {}
+        # Paid request already started before cancel -> cached in _SC_MEMO so a
+        # retry with a fresh deadline never buys the same search twice.
+        assert len(reddit._SC_MEMO) == 1
+        with pytest.raises(TimeoutError):
+            reddit.search_and_enrich_memo(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="default", token="dummy-sc-key", subreddits=["sqlite"],
+                deadline_monotonic=time.monotonic() + 120.0,
+            )
+        assert len(endpoints) == 1
 
     def test_wait_deadline_expiry_during_subreddit_search_stops_subsequent_paid_calls(self, monkeypatch):
         reddit.reset_scrapecreators_memo()
@@ -1271,7 +1279,8 @@ class TestGreptileP1CancelledBackfillStopsSpend:
         assert not any(
             url.endswith("/reddit/search") or "/post/comments" in url for url in endpoints
         )
-        assert reddit._SC_MEMO == {}
+        # Paid request already started before deadline -> cached in _SC_MEMO.
+        assert len(reddit._SC_MEMO) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1449,3 +1458,346 @@ class TestGreptileP2SkipJudgeRetryOnRevokedBackend:
         # Primary grok AUTH_FAILED outcome must still be preserved.
         assert artifact["_source_outcome"]["state"] == schema.AUTH_FAILED
         assert "re-login needed for primary backend" in artifact["_source_outcome"]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Greptile Round 2 P1 #1: Keep paid SC Reddit posts when comments / Phase 3 hit deadline
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileRound2P1PreservePaidPostsOnCommentDeadline:
+    def test_deadline_before_comments_keeps_paid_posts_and_surfaces_note(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        now = [1000.0]
+        monkeypatch.setattr(reddit.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+
+        paid_post = {
+            "id": "p100",
+            "title": "SQLite WAL write-ahead logging guide",
+            "permalink": "/r/sqlite/comments/p100/wal_guide/",
+            "subreddit": "sqlite",
+            "created_utc": 1793836800,
+            "ups": 80,
+            "num_comments": 15,
+        }
+
+        def fake_search_reddit(*_args, **_kwargs):
+            # Search finishes right at the deadline -> no room left for comments.
+            now[0] = 1050.0
+            return {
+                "items": [{
+                    "id": "R1",
+                    "reddit_id": "p100",
+                    "title": paid_post["title"],
+                    "url": "https://www.reddit.com/r/sqlite/comments/p100/wal_guide/",
+                    "subreddit": "sqlite",
+                    "date": "2026-11-05",
+                    "engagement": {"score": 80, "num_comments": 15},
+                    "relevance": 0.9,
+                }]
+            }
+
+        comment_calls: list[str] = []
+        monkeypatch.setattr(reddit, "search_reddit", fake_search_reddit)
+        monkeypatch.setattr(
+            reddit, "fetch_post_comments",
+            lambda url, *_a, **_k: comment_calls.append(url) or [],
+        )
+
+        # Direct search_and_enrich keeps the paid post and skips comment calls.
+        res = reddit.search_and_enrich(
+            "SQLite WAL", "2026-10-10", "2026-11-10",
+            depth="quick", token="dummy-sc-key", deadline_monotonic=1050.0,
+        )
+        assert len(res["items"]) == 1
+        assert res["items"][0]["reddit_id"] == "p100"
+        assert res.get("comments_incomplete") is True
+        assert "comments incomplete" in res.get("comments_note", "").lower()
+        assert comment_calls == []
+
+        # Pipeline backfill path surfaces comments_note in _source_outcome_detail.
+        now[0] = 1000.0
+        reddit.reset_scrapecreators_memo()
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=[]):
+            items, artifact = pipeline._retrieve_stream_impl(
+                topic="SQLite WAL",
+                subquery=schema.SubQuery(
+                    label="primary", search_query="SQLite WAL", ranking_query="SQLite WAL", sources=["reddit"],
+                ),
+                source="reddit",
+                config={
+                    "SCRAPECREATORS_API_KEY": "dummy-sc-key",
+                    "_research_deadline": 1055.0,  # wait_deadline = 1050.0 -> hits deadline right after search
+                },
+                depth="quick",
+                date_range=("2026-10-10", "2026-11-10"),
+                runtime=_runtime(),
+                mock=False,
+            )
+
+        assert len(items) == 1
+        assert "_source_outcome" not in artifact
+        assert "Reddit comments incomplete" in artifact.get("_source_outcome_detail", "")
+
+    def test_deadline_mid_comments_keeps_completed_comments_and_stops_further_calls(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        release = threading.Event()
+        fetched: list[str] = []
+
+        def fake_fetch_comments(url, token, **kwargs):
+            fetched.append(url)
+            if "fast" in url:
+                return [{"body": "Fast comment with useful detail on WAL", "ups": 25, "author": "alice"}]
+            # Slow comment waits until cancelled/abandoned.
+            release.wait(timeout=5.0)
+            return [{"body": "Too late comment", "ups": 1, "author": "bob"}]
+
+        posts = [
+            {
+                "id": "R1",
+                "reddit_id": "fast",
+                "title": "SQLite WAL fast thread",
+                "url": "https://www.reddit.com/r/sqlite/comments/fast/wal/",
+                "subreddit": "sqlite",
+                "date": "2026-11-05",
+                "engagement": {"score": 100, "num_comments": 20},
+                "relevance": 0.9,
+            },
+            {
+                "id": "R2",
+                "reddit_id": "slow",
+                "title": "SQLite WAL slow thread",
+                "url": "https://www.reddit.com/r/sqlite/comments/slow/wal/",
+                "subreddit": "sqlite",
+                "date": "2026-11-05",
+                "engagement": {"score": 90, "num_comments": 15},
+                "relevance": 0.9,
+            },
+        ]
+
+        monkeypatch.setattr(reddit, "search_reddit", lambda *_a, **_k: {"items": posts})
+        monkeypatch.setattr(reddit, "fetch_post_comments", fake_fetch_comments)
+
+        try:
+            res = reddit.search_and_enrich(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                deadline_monotonic=time.monotonic() + 0.35,
+            )
+        finally:
+            release.set()
+
+        # Both paid posts survive, fast post keeps its completed comment, and flag is set.
+        assert len(res["items"]) == 2
+        assert res["items"][0].get("top_comments")
+        assert res["items"][0]["top_comments"][0]["author"] == "alice"
+        assert not res["items"][1].get("top_comments")
+        assert res.get("comments_incomplete") is True
+
+    def test_phase3_deadline_keeps_phase2_paid_posts(self, monkeypatch):
+        now = [1000.0]
+        monkeypatch.setattr(reddit.time, "monotonic", lambda: now[0])
+
+        def fake_global(*_args, **_kwargs):
+            # Phase 2 gathers a paid post and uses up the budget before Phase 3.
+            now[0] = 1050.0
+            return [{
+                "id": "g1",
+                "title": "SQLite WAL performance guide",
+                "permalink": "/r/sqlite/comments/g1/wal/",
+                "subreddit": "sqlite",
+                "created_utc": 1793836800,
+                "ups": 70,
+                "num_comments": 14,
+            }]
+
+        sub_mock = mock.Mock(side_effect=AssertionError("Phase 3 must not fire past deadline"))
+        monkeypatch.setattr(reddit, "_global_search", fake_global)
+        monkeypatch.setattr(reddit, "_subreddit_search", sub_mock)
+
+        res = reddit.search_reddit(
+            "SQLite WAL", "2026-10-10", "2026-11-10",
+            depth="quick", token="dummy-sc-key", deadline_monotonic=1050.0,
+        )
+        assert len(res["items"]) == 1
+        assert res["items"][0]["reddit_id"] == "g1"
+        assert res.get("incomplete") is True
+        sub_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Greptile Round 2 P1 #2: Memo caches mid-spend timeouts, skips pre-spend ones
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileRound2P1MemoNoDoubleSpend:
+    def test_timeout_after_paid_request_caches_and_prevents_second_paid_call(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        http_calls: list[str] = []
+
+        def fake_http_get(url, **kwargs):
+            http_calls.append(url)
+            raise http.DeadlineExceeded()
+
+        monkeypatch.setattr(reddit.http, "get", fake_http_get)
+
+        with pytest.raises(TimeoutError):
+            reddit.search_and_enrich_memo(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                deadline_monotonic=time.monotonic() + 10.0,
+            )
+
+        first_call_count = len(http_calls)
+        assert first_call_count >= 1
+        assert len(reddit._SC_MEMO) == 1
+
+        # Second call with a fresh generous deadline replays cached TimeoutError with ZERO new HTTP calls!
+        with pytest.raises(TimeoutError):
+            reddit.search_and_enrich_memo(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                deadline_monotonic=time.monotonic() + 120.0,
+            )
+        assert len(http_calls) == first_call_count
+
+    def test_pre_spend_timeout_does_not_cache_so_fresh_deadline_can_run(self, monkeypatch):
+        reddit.reset_scrapecreators_memo()
+        http_calls: list[str] = []
+
+        def fake_http_get(url, **kwargs):
+            http_calls.append(url)
+            if url.endswith("/reddit/search"):
+                return {
+                    "posts": [{
+                        "id": "fresh1",
+                        "title": "SQLite WAL write-ahead logging",
+                        "permalink": "/r/sqlite/comments/fresh1/wal/",
+                        "subreddit": "sqlite",
+                        "created_utc": 1793836800,
+                        "ups": 60,
+                        "num_comments": 5,
+                    }]
+                }
+            return {"posts": [], "comments": []}
+
+        monkeypatch.setattr(reddit.http, "get", fake_http_get)
+
+        # Already-expired deadline stops BEFORE any paid HTTP request starts.
+        with pytest.raises(TimeoutError):
+            reddit.search_and_enrich_memo(
+                "SQLite WAL", "2026-10-10", "2026-11-10",
+                depth="quick", token="dummy-sc-key",
+                deadline_monotonic=time.monotonic() - 1.0,
+            )
+        assert http_calls == []
+        assert reddit._SC_MEMO == {}
+
+        # A subsequent call with a fresh deadline succeeds cleanly!
+        result = reddit.search_and_enrich_memo(
+            "SQLite WAL", "2026-10-10", "2026-11-10",
+            depth="quick", token="dummy-sc-key",
+            deadline_monotonic=time.monotonic() + 60.0,
+        )
+        assert len(result["items"]) == 1
+        assert result["items"][0]["reddit_id"] == "fresh1"
+        assert len(http_calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Greptile Round 2 P2 #3: x_judge retry preserves error/timeout details when adopted
+# ---------------------------------------------------------------------------
+
+
+class TestGreptileRound2P2JudgeRetryPreservesErrorDetail:
+    def test_adopted_retry_preserves_timeout_error_detail_and_state(self, monkeypatch):
+        monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda _cfg: ["xquik"])
+        monkeypatch.setattr(pipeline.fetch_memo, "fetch_once", lambda _k, fn, **_kw: fn())
+
+        calls: list[str] = []
+
+        def fake_attempt(backend, q, *_a, **_k):
+            calls.append(q)
+            if len(calls) == 1:
+                return [
+                    _x_post("1", "Unrelated movie trailer announcement"),
+                    _x_post("2", "Unrelated soccer match highlights"),
+                    _x_post("3", "Unrelated cooking recipe tips"),
+                    _x_post("4", "SQLite write-ahead logging note"),
+                ], "", None
+            # Retry improves on-topic ratio BUT also reports a timeout (partial search).
+            return [
+                _x_post("10", "SQLite write-ahead logging concurrency benchmark"),
+                _x_post("11", "SQLite write-ahead logging checkpoint latency"),
+            ], "request timed out after 30s", health.TIMEOUT
+
+        monkeypatch.setattr(pipeline, "_attempt_x_backend", fake_attempt)
+
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="SQLite write-ahead logging",
+            subquery=schema.SubQuery(
+                label="primary",
+                search_query="SQLite write-ahead logging",
+                ranking_query="SQLite write-ahead logging",
+                sources=["x"],
+            ),
+            source="x",
+            config={"XQUIK_API_KEY": "dummy"},
+            depth="default",
+            date_range=("2026-10-10", "2026-11-10"),
+            runtime=_runtime("xquik"),
+            mock=False,
+            raw_topic="SQLite write-ahead logging",
+        )
+
+        assert len(calls) == 2
+        assert [it["id"] for it in items] == ["10", "11"]
+        assert "X retry via xquik returned partial results (request timed out after 30s)" in artifact["_source_outcome_detail"]
+        assert artifact["_source_outcome_detail_state"] == health.TIMEOUT
+
+    def test_adopted_retry_auth_failed_preserves_outcome_and_existing_receipts(self, monkeypatch):
+        monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda _cfg: ["grok"])
+        monkeypatch.setattr(pipeline.fetch_memo, "fetch_once", lambda _k, fn, **_kw: fn())
+
+        calls: list[str] = []
+
+        def fake_attempt(backend, q, from_date, to_date, depth, config, warnings=None, deadline=None):
+            calls.append(q)
+            if len(calls) == 1:
+                if warnings is not None:
+                    warnings.append("X: grok narrowed window")
+                return [
+                    _x_post("1", "Unrelated movie trailer announcement"),
+                    _x_post("2", "Unrelated soccer match highlights"),
+                    _x_post("3", "Unrelated cooking recipe tips"),
+                    _x_post("4", "SQLite write-ahead logging note"),
+                ], "", None
+            return [
+                _x_post("10", "SQLite write-ahead logging concurrency benchmark"),
+                _x_post("11", "SQLite write-ahead logging checkpoint latency"),
+            ], "grok session expired", health.AUTH_FAILED
+
+        monkeypatch.setattr(pipeline, "_attempt_x_backend", fake_attempt)
+
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="SQLite write-ahead logging",
+            subquery=schema.SubQuery(
+                label="primary",
+                search_query="SQLite write-ahead logging",
+                ranking_query="SQLite write-ahead logging",
+                sources=["x"],
+            ),
+            source="x",
+            config={},
+            depth="default",
+            date_range=("2026-10-10", "2026-11-10"),
+            runtime=_runtime("grok"),
+            mock=False,
+            raw_topic="SQLite write-ahead logging",
+        )
+
+        assert [it["id"] for it in items] == ["10", "11"]
+        assert artifact["x_receipts"] == ["X: grok narrowed window"]
+        assert artifact["_source_outcome"]["state"] == schema.AUTH_FAILED
+        assert "re-login needed" in artifact["_source_outcome"]["detail"]
