@@ -696,6 +696,10 @@ _expected_no_host: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_expected_no_host",
     default=None,
 )
+_on_dispatch_hook: ContextVar[Optional[Callable[[], None]]] = ContextVar(
+    "last30days_http_on_dispatch",
+    default=None,
+)
 
 _FIXTURE_FORMAT = "last30days-http-fixture/v1"
 _FIXTURE_SECRET_KEYS = frozenset(
@@ -1202,11 +1206,12 @@ class HTTPError(Exception):
 class DeadlineExceeded(HTTPError):
     """The caller's shared wall deadline expired across request retries."""
 
-    def __init__(self):
+    def __init__(self, *, dispatched: bool = False):
         super().__init__(
             "Request deadline exceeded",
             outcome_state=health.TIMEOUT,
         )
+        self.dispatched = dispatched
 
 
 class ResponseTooLarge(HTTPError):
@@ -1408,6 +1413,26 @@ def expected_no_host():
         _expected_no_host.reset(token)
 
 
+@contextmanager
+def observe_dispatch(callback: Callable[[], None]):
+    """Invoke ``callback`` once an underlying transport attempt is dispatched.
+
+    Nested hooks chain so inner observers do not hide outer ones.
+    """
+    parent = _on_dispatch_hook.get()
+    if parent is None:
+        combined = callback
+    else:
+        def combined() -> None:
+            parent()
+            callback()
+    token = _on_dispatch_hook.set(combined)
+    try:
+        yield
+    finally:
+        _on_dispatch_hook.reset(token)
+
+
 def _is_no_host(error: BaseException) -> bool:
     """A name that did not resolve or a refused connection, bare or wrapped
     in a ``URLError``."""
@@ -1536,6 +1561,7 @@ def request(
     max_bytes: Optional[int] = None,
     decode_errors: str = "strict",
     ip_validator: Optional[Callable[[Union[ipaddress.IPv4Address, ipaddress.IPv6Address]], bool]] = None,
+    on_dispatch: Callable[[], None] | None = None,
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
@@ -1705,6 +1731,18 @@ def request(
     dns_attempts = 0
     attempt = 0
     response_headers: Optional[ResponseHeaders] = None
+    dispatch_hook = _on_dispatch_hook.get()
+    request_dispatched = False
+
+    def _notify_dispatch() -> None:
+        nonlocal request_dispatched
+        if request_dispatched:
+            return
+        request_dispatched = True
+        if on_dispatch is not None:
+            on_dispatch()
+        if dispatch_hook is not None:
+            dispatch_hook()
 
     def raise_recorded(error: HTTPError) -> None:
         if fixture_request is not None:
@@ -1712,7 +1750,7 @@ def request(
         _raise(error)
 
     def deadline_error() -> HTTPError:
-        return DeadlineExceeded()
+        return DeadlineExceeded(dispatched=request_dispatched)
 
     def sleep_before_retry(delay: float) -> bool:
         """Sleep only when the full delay fits inside the caller's deadline."""
@@ -1735,8 +1773,12 @@ def request(
 
     def open_and_read(
         request_timeout: float,
+        *,
+        dispatch_notified: bool = False,
     ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
         nonlocal response_headers
+        if not dispatch_notified:
+            _notify_dispatch()
         try:
             transport = (
                 _open_request(req, request_timeout, bypass_proxy=True)
@@ -1790,6 +1832,8 @@ def request(
                     owned_kwargs["with_headers"] = True
                 if max_bytes is not None:
                     owned_kwargs["max_bytes"] = max_bytes
+                if on_dispatch is not None or dispatch_hook is not None:
+                    owned_kwargs["on_start"] = _notify_dispatch
                 owned = bounded_get.get(
                     req, timeout=request_timeout,
                     deadline_monotonic=deadline_monotonic, cancel=cancel,
@@ -1805,7 +1849,9 @@ def request(
                     usage.cancel(charge)
                 raise
             except bounded_get.GetTimeout as exc:
-                if not exc.started:
+                if exc.started:
+                    _notify_dispatch()
+                else:
                     cancel_deadline = (
                         deadline_monotonic
                         if deadline_monotonic is not None
@@ -1815,7 +1861,12 @@ def request(
                         usage.cancel(charge)
                 raise deadline_error() from exc
             except bounded_get.ResponseTooLarge as exc:
+                _notify_dispatch()
                 raise ResponseTooLarge(str(exc)) from exc
+            except Exception:
+                _notify_dispatch()
+                raise
+            _notify_dispatch()
             if routed is not None:
                 status, body, error, owned_headers = owned
                 if error is None:
@@ -1836,19 +1887,38 @@ def request(
             return status, decoded, error
         if deadline_monotonic is None and cancel is None:
             return open_and_read(request_timeout)
+        if cancel is not None and cancel.is_set():
+            raise deadline_error()
         wait_deadline = deadline_monotonic or (time.monotonic() + request_timeout)
         remaining = wait_deadline - time.monotonic()
         if remaining <= 0:
             raise deadline_error()
         future: Future = Future()
+        dispatch_lock = threading.Lock()
+        abandoned = False
 
         def worker() -> None:
             try:
-                if cancel is not None and cancel.is_set():
-                    raise deadline_error()
-                future.set_result(open_and_read(request_timeout))
+                with dispatch_lock:
+                    if (
+                        abandoned
+                        or (cancel is not None and cancel.is_set())
+                        or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)
+                    ):
+                        raise deadline_error()
+                    _notify_dispatch()
+                future.set_result(open_and_read(request_timeout, dispatch_notified=True))
             except BaseException as exc:
                 future.set_exception(exc)
+
+        def abandon_and_raise(cause: BaseException | None = None) -> None:
+            nonlocal abandoned
+            with dispatch_lock:
+                abandoned = True
+                err = deadline_error()
+            if cause is not None:
+                raise err from cause
+            raise err
 
         threading.Thread(target=worker, daemon=True).start()
         if cancel is None:
@@ -1857,13 +1927,13 @@ def request(
             except TimeoutError as exc:
                 if future.done():
                     return future.result()
-                raise deadline_error() from exc
+                abandon_and_raise(exc)
         while True:
             if cancel.is_set():
-                raise deadline_error()
+                abandon_and_raise()
             remaining = wait_deadline - time.monotonic()
             if remaining <= 0:
-                raise deadline_error()
+                abandon_and_raise()
             try:
                 return future.result(timeout=min(remaining, 0.1))
             except TimeoutError:
@@ -1939,6 +2009,8 @@ def request(
                 return value, response_headers
             return value
         except (DeadlineExceeded, ResponseTooLarge) as exc:
+            if isinstance(exc, DeadlineExceeded) and request_dispatched and not exc.dispatched:
+                exc.dispatched = True
             raise_recorded(exc)
         except urllib.error.HTTPError as e:
             safe_reason = _scrub_error_text(str(e.reason)) or ""

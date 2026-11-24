@@ -1024,7 +1024,13 @@ def _parse_post(raw_post: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-def fetch_top_posts(cluster_url_id: str, posts_per: int = POSTS_PER_CLUSTER) -> List[Dict[str, Any]]:
+def fetch_top_posts(
+    cluster_url_id: str,
+    posts_per: int = POSTS_PER_CLUSTER,
+    *,
+    deadline: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
+) -> List[Dict[str, Any]]:
     """Fetch top-ranked X posts attached to a cluster.
 
     Returns an empty list on any failure (timeout, missing cluster, JSON
@@ -1032,12 +1038,20 @@ def fetch_top_posts(cluster_url_id: str, posts_per: int = POSTS_PER_CLUSTER) -> 
     """
     if posts_per <= 0:
         return []
+    if cancel is not None and cancel.is_set():
+        return []
+    timeout: float = POSTS_TIMEOUT
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return []
+        timeout = min(timeout, remaining)
     cleaned_id = str(cluster_url_id or "").strip()
     if not _is_valid_cluster_id(cleaned_id):
         _log(f"skipping posts fetch for invalid cluster_url_id: {cluster_url_id!r}")
         return []
     cmd = _build_posts_args(cleaned_id, posts_per)
-    response = _run_cli(cmd, timeout=POSTS_TIMEOUT)
+    response = _run_cli(cmd, timeout=timeout, deadline=deadline, cancel=cancel)
     raw = response.get("results") or []
     out: List[Dict[str, Any]] = []
     for entry in raw:
@@ -1079,7 +1093,14 @@ def enrich_with_top_posts(
     return items
 
 
-def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_CLUSTER) -> list:
+def enrich_source_items(
+    items: list,
+    top_k: int = 3,
+    posts_per: int = POSTS_PER_CLUSTER,
+    *,
+    deadline: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
+) -> list:
     """Attach top X posts to the first ``top_k`` SourceItems that survived dedupe.
 
     Reads ``metadata['clusterUrlId']`` and writes ``metadata['posts']`` in
@@ -1094,6 +1115,10 @@ def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_
     enriched = 0
     for item in items:
         if enriched >= top_k:
+            break
+        if cancel is not None and cancel.is_set():
+            break
+        if deadline is not None and time.monotonic() >= deadline:
             break
         if getattr(item, "source", None) != "digg":
             continue
@@ -1110,7 +1135,12 @@ def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_
         cluster_url_id = metadata.get("clusterUrlId") or item.item_id
         if not cluster_url_id:
             continue
-        posts = fetch_top_posts(str(cluster_url_id), posts_per=posts_per)
+        if deadline is not None or cancel is not None:
+            posts = fetch_top_posts(
+                str(cluster_url_id), posts_per=posts_per, deadline=deadline, cancel=cancel,
+            )
+        else:
+            posts = fetch_top_posts(str(cluster_url_id), posts_per=posts_per)
         if posts:
             metadata["posts"] = posts
             enriched += 1
