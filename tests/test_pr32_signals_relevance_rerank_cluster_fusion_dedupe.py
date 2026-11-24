@@ -17,7 +17,7 @@ import math
 
 import pytest
 
-from lib import cluster, dedupe, fusion, reddit_refs, relevance, rerank, schema, signals
+from lib import cluster, dedupe, fusion, pipeline, reddit_refs, relevance, rerank, schema, signals
 
 
 def _source_item(
@@ -1192,6 +1192,285 @@ class TestHigh109DedupeUrlNormalization:
             url=reused_url, metadata={"event_id": "200"},
         )
         assert [i.item_id for i in dedupe.dedupe_items([unmatched_a, unmatched_b])] == ["pm-ua", "pm-ub"]
+
+    def test_merge_drill_report_preserves_distinct_polymarket_events_sharing_url(self):
+        reused_url = "https://polymarket.com/event/fed-rate-decision"
+        ev_100 = _source_item(
+            "100",
+            "polymarket",
+            title="Federal Reserve Interest Rate Decision Meeting 2025",
+            body="Federal Reserve interest rate decision odds for upcoming meeting",
+            snippet="Federal Reserve interest rate cut odds at 80% for 2025 meeting",
+            url=reused_url,
+            metadata={
+                "event_id": "100",
+                "headline": "Cut 80%",
+                "odds": {"kind": "binary", "entries": [["Yes", 0.80]]},
+                "end_date": "2025-12-31",
+            },
+            local_relevance=0.9,
+            freshness=90,
+            source_quality=0.8,
+        )
+        ev_200 = _source_item(
+            "200",
+            "polymarket",
+            title="Federal Reserve Interest Rate Decision Meeting 2026",
+            body="Federal Reserve interest rate decision odds for upcoming meeting",
+            snippet="Federal Reserve interest rate cut odds at 65% for 2026 meeting",
+            url=reused_url,
+            metadata={
+                "event_id": "200",
+                "headline": "Hold 65%",
+                "odds": {"kind": "binary", "entries": [["Yes", 0.65]]},
+                "end_date": "2026-12-31",
+            },
+            local_relevance=0.88,
+            freshness=90,
+            source_quality=0.8,
+        )
+        # Confirm titles+snippets are similar enough to trip raw text dedupe (>= 0.7).
+        assert dedupe.hybrid_similarity(
+            f"{ev_100.title} {ev_100.snippet}",
+            f"{ev_200.title} {ev_200.snippet}",
+        ) >= 0.7
+
+        plan = _plan("fed rate decision", ["polymarket"])
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="local", planner_model="mock", rerank_model="mock",
+        )
+
+        def _make_report(
+            cands: list[schema.Candidate],
+            items: list[schema.SourceItem],
+            clusters: list[schema.Cluster],
+        ) -> schema.Report:
+            return schema.Report(
+                topic="fed rate decision",
+                range_from="2026-10-01",
+                range_to="2026-10-22",
+                generated_at="2026-10-22T12:00:00+00:00",
+                provider_runtime=runtime,
+                query_plan=plan,
+                clusters=clusters,
+                ranked_candidates=cands,
+                items_by_source={"polymarket": items},
+                errors_by_source={},
+                source_status={
+                    "polymarket": schema.SourceOutcome(
+                        source="polymarket", state="ok", items_returned=len(items),
+                    )
+                },
+            )
+
+        # Case 1: Both distinct events reach drill_report via weighted_rrf with the same URL.
+        base_cands = fusion.weighted_rrf({("primary", "polymarket"): [ev_100]}, plan, pool_limit=10)
+        base_cands[0].final_score = 80.0
+        base_cluster = schema.Cluster(
+            cluster_id="cluster-1",
+            title=base_cands[0].title,
+            candidate_ids=[base_cands[0].candidate_id],
+            representative_ids=[base_cands[0].candidate_id],
+            sources=["polymarket"],
+            score=80.0,
+        )
+        base_report = _make_report(base_cands, [ev_100], [base_cluster])
+
+        drill_cands = fusion.weighted_rrf(
+            {("primary", "polymarket"): [ev_100, ev_200]}, plan, pool_limit=10,
+        )
+        for idx, cand in enumerate(drill_cands):
+            cand.final_score = 90.0 - idx
+        drill_cluster = schema.Cluster(
+            cluster_id="cluster-1",
+            title=drill_cands[0].title,
+            candidate_ids=[c.candidate_id for c in drill_cands],
+            representative_ids=[c.candidate_id for c in drill_cands],
+            sources=["polymarket"],
+            score=90.0,
+        )
+        drill_report = _make_report(drill_cands, [ev_100, ev_200], [drill_cluster])
+
+        merged = pipeline.merge_drill_report(
+            base_report, drill_report, [base_report.clusters[0]], target="cluster 1",
+        )
+        ranked_eids = [c.source_items[0].metadata["event_id"] for c in merged.ranked_candidates]
+        assert ranked_eids == ["100", "200"]
+        assert len({c.candidate_id for c in merged.ranked_candidates}) == 2
+        assert set(merged.clusters[0].candidate_ids) == {c.candidate_id for c in merged.ranked_candidates}
+        by_eid = {c.source_items[0].metadata["event_id"]: c for c in merged.ranked_candidates}
+        assert by_eid["100"].snippet == "Federal Reserve interest rate cut odds at 80% for 2025 meeting"
+        assert by_eid["100"].source_items[0].metadata["headline"] == "Cut 80%"
+        assert by_eid["200"].snippet == "Federal Reserve interest rate cut odds at 65% for 2026 meeting"
+        assert by_eid["200"].source_items[0].metadata["headline"] == "Hold 65%"
+        item_eids = [i.metadata["event_id"] for i in merged.items_by_source["polymarket"]]
+        assert item_eids == ["100", "200"]
+
+        # Case 2: Base cached report only saw event "100" (bare URL candidate_id) and drill
+        # only saw event "200" (same bare URL candidate_id). Both survive with unique IDs
+        # and base "100" keeps its original candidate_id.
+        drill_only_200 = fusion.weighted_rrf({("primary", "polymarket"): [ev_200]}, plan, pool_limit=10)
+        drill_only_200[0].final_score = 92.0
+        assert drill_only_200[0].candidate_id == base_cands[0].candidate_id == reused_url
+        drill_only_200_report = _make_report(
+            drill_only_200,
+            [ev_200],
+            [
+                schema.Cluster(
+                    cluster_id="cluster-1",
+                    title=drill_only_200[0].title,
+                    candidate_ids=[drill_only_200[0].candidate_id],
+                    representative_ids=[drill_only_200[0].candidate_id],
+                    sources=["polymarket"],
+                    score=92.0,
+                )
+            ],
+        )
+        merged_cross = pipeline.merge_drill_report(
+            base_report, drill_only_200_report, [base_report.clusters[0]], target="cluster 1",
+        )
+        cross_eids = {c.source_items[0].metadata["event_id"]: c for c in merged_cross.ranked_candidates}
+        assert set(cross_eids) == {"100", "200"}
+        assert cross_eids["100"].candidate_id == reused_url
+        assert cross_eids["200"].candidate_id != reused_url
+        assert set(merged_cross.clusters[0].candidate_ids) == {
+            c.candidate_id for c in merged_cross.ranked_candidates
+        }
+        assert {i.metadata["event_id"] for i in merged_cross.items_by_source["polymarket"]} == {
+            "100", "200",
+        }
+
+        # Case 3: Untouched cluster holds event "100" at reused_url; drilling another cluster
+        # returns event "200" at reused_url and must NOT overwrite event "100" in cluster-2.
+        reddit_item = _source_item("r1", "reddit", title="Macro thread", body="Rate cut debate")
+        reddit_cand = fusion.weighted_rrf(
+            {("primary", "reddit"): [reddit_item]},
+            _plan("fed rate decision", ["reddit", "polymarket"]),
+            pool_limit=10,
+        )[0]
+        reddit_cand.final_score = 85.0
+        reddit_cand.cluster_id = "cluster-1"
+        untouched_100 = fusion.weighted_rrf({("primary", "polymarket"): [ev_100]}, plan, pool_limit=10)[0]
+        untouched_100.final_score = 75.0
+        untouched_100.cluster_id = "cluster-2"
+        two_cluster_base = schema.Report(
+            topic="fed rate decision",
+            range_from="2026-10-01",
+            range_to="2026-10-22",
+            generated_at="2026-10-22T12:00:00+00:00",
+            provider_runtime=runtime,
+            query_plan=plan,
+            clusters=[
+                schema.Cluster(
+                    cluster_id="cluster-1",
+                    title=reddit_cand.title,
+                    candidate_ids=[reddit_cand.candidate_id],
+                    representative_ids=[reddit_cand.candidate_id],
+                    sources=["reddit"],
+                    score=85.0,
+                ),
+                schema.Cluster(
+                    cluster_id="cluster-2",
+                    title=untouched_100.title,
+                    candidate_ids=[untouched_100.candidate_id],
+                    representative_ids=[untouched_100.candidate_id],
+                    sources=["polymarket"],
+                    score=75.0,
+                ),
+            ],
+            ranked_candidates=[reddit_cand, untouched_100],
+            items_by_source={"reddit": [reddit_item], "polymarket": [ev_100]},
+            errors_by_source={},
+            source_status={
+                "reddit": schema.SourceOutcome(source="reddit", state="ok", items_returned=1),
+                "polymarket": schema.SourceOutcome(source="polymarket", state="ok", items_returned=1),
+            },
+        )
+        merged_untouched = pipeline.merge_drill_report(
+            two_cluster_base,
+            drill_only_200_report,
+            [two_cluster_base.clusters[0]],
+            target="cluster 1",
+        )
+        poly_cands = [c for c in merged_untouched.ranked_candidates if c.source == "polymarket"]
+        poly_by_eid = {c.source_items[0].metadata["event_id"]: c for c in poly_cands}
+        assert set(poly_by_eid) == {"100", "200"}
+        assert poly_by_eid["100"].cluster_id == "cluster-2"
+        assert poly_by_eid["100"].candidate_id == untouched_100.candidate_id
+        assert poly_by_eid["200"].cluster_id == "cluster-1"
+        assert poly_by_eid["200"].candidate_id != poly_by_eid["100"].candidate_id
+
+    @pytest.mark.parametrize("filter_kind", ["keywords", "topic"])
+    def test_polymarket_stream_filter_drops_rejected_event_sharing_slug_url(
+        self, monkeypatch, filter_kind,
+    ):
+        reused_url = "https://polymarket.com/event/warriors-championship"
+        topic = "Warriors" if filter_kind == "keywords" else "Hermes vs OpenClaw"
+        kept_title = (
+            "Warriors win NBA finals?" if filter_kind == "keywords" else "Hermes launch by December?"
+        )
+        rejected_title = "Glasgow Warriors rugby championship"
+        markets = [
+            {
+                "id": "100",
+                "event_id": "100",
+                "title": kept_title,
+                "url": reused_url,
+                "date": "2026-10-01",
+                "volume1mo": 100000,
+                "relevance": 1.0,
+            },
+            {
+                "id": "200",
+                "event_id": "200",
+                "title": rejected_title,
+                "url": reused_url,
+                "date": "2026-10-01",
+                "volume1mo": 100000,
+                "relevance": 1.0,
+            },
+        ]
+        monkeypatch.setattr(pipeline, "_retrieve_stream", lambda **_kwargs: (markets, {}))
+        fused_event_ids: list[str] = []
+        real_weighted_rrf = pipeline.weighted_rrf
+
+        def observe_fusion(streams, *args, **kwargs):
+            fused_event_ids.extend(
+                str((item.metadata or {}).get("event_id") or "")
+                for items in streams.values()
+                for item in items
+            )
+            return real_weighted_rrf(streams, *args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "weighted_rrf", observe_fusion)
+        config = {"_polymarket_keywords": ["nba", "gsw"]} if filter_kind == "keywords" else {}
+        report = pipeline.run(
+            topic=topic,
+            config=config,
+            depth="default",
+            requested_sources=["polymarket"],
+            web_backend="none",
+            as_of_date="2026-10-22",
+            external_plan={
+                "intent": "research",
+                "freshness_mode": "balanced_recent",
+                "cluster_mode": "topic",
+                "subqueries": [
+                    {
+                        "label": label,
+                        "search_query": "Warriors Hermes",
+                        "ranking_query": "Warriors Hermes",
+                        "sources": ["polymarket"],
+                    }
+                    for label in ("primary", "secondary")
+                ],
+            },
+        )
+
+        assert set(fused_event_ids) == {"100"}
+        assert [i.metadata["event_id"] for i in report.items_by_source["polymarket"]] == ["100"]
+        assert [c.title for c in report.ranked_candidates] == [kept_title]
+        assert report.source_status["polymarket"].items_returned == 1
 
     def test_same_url_with_divergent_enrichment_text_merges_evidence_without_mutating_inputs(self):
         bare_yt = _source_item(

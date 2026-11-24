@@ -3921,13 +3921,28 @@ def run(
             from_date=from_date, to_date=to_date,
         )
         bundle.artifacts["person_profile"] = person_ctx.to_dict()
+    retained_poly = items_by_source.get("polymarket", [])
+    poly_eids = fusion.polymarket_event_ids_by_url(
+        (
+            *retained_poly,
+            *(
+                item
+                for key, stream in bundle.items_by_source_and_query.items()
+                if key[1] == "polymarket"
+                for item in stream
+            ),
+        )
+    )
     retained_markets = {
-        source_item_key(item) for item in items_by_source.get("polymarket", [])
+        source_item_key(item, polymarket_eids_by_url=poly_eids)
+        for item in retained_poly
     }
     for key, stream in bundle.items_by_source_and_query.items():
         if key[1] == "polymarket":
             bundle.items_by_source_and_query[key] = [
-                item for item in stream if source_item_key(item) in retained_markets
+                item
+                for item in stream
+                if source_item_key(item, polymarket_eids_by_url=poly_eids) in retained_markets
             ]
     source_status = _finalize_source_status(bundle.source_status, items_by_source)
 
@@ -4106,22 +4121,83 @@ def run(
     )
 
 
+def _candidate_polymarket_items(candidate: schema.Candidate) -> list[schema.SourceItem]:
+    items = [
+        item for item in (candidate.source_items or ())
+        if item.source == "polymarket"
+    ]
+    if items:
+        return items
+    if candidate.source == "polymarket":
+        return [
+            schema.SourceItem(
+                item_id=candidate.item_id,
+                source="polymarket",
+                title=candidate.title,
+                body="",
+                url=candidate.url,
+                snippet=candidate.snippet,
+                metadata=dict(candidate.metadata or {}),
+            )
+        ]
+    return []
+
+
+def _candidate_polymarket_event_id(candidate: schema.Candidate) -> str:
+    for item in _candidate_polymarket_items(candidate):
+        eid = fusion._polymarket_event_id(item)
+        if eid:
+            return eid
+    if candidate.source == "polymarket":
+        return str((candidate.metadata or {}).get("event_id") or "").strip()
+    return ""
+
+
+def _polymarket_candidates_conflict(
+    a: schema.Candidate,
+    b: schema.Candidate,
+) -> bool:
+    id_a = _candidate_polymarket_event_id(a)
+    id_b = _candidate_polymarket_event_id(b)
+    return bool(id_a and id_b and id_a != id_b)
+
+
 def _candidate_is_duplicate(
     candidate: schema.Candidate,
     kept: list[schema.Candidate],
+    *,
+    conflicted_poly_urls: set[str] | None = None,
 ) -> bool:
-    if any(existing.candidate_id == candidate.candidate_id for existing in kept):
-        return True
-    if candidate.url and any(existing.url == candidate.url for existing in kept):
-        return True
-    candidate_text = " ".join((candidate.title, candidate.snippet)).strip()
-    return bool(candidate_text) and any(
-        dedupe.hybrid_similarity(
-            candidate_text,
-            " ".join((existing.title, existing.snippet)).strip(),
-        ) >= 0.7
-        for existing in kept
-    )
+    cand_eid = _candidate_polymarket_event_id(candidate)
+    cand_is_poly = bool(_candidate_polymarket_items(candidate))
+    cand_norm_url = fusion._normalize_url(candidate.url) if candidate.url else ""
+    cand_text = " ".join((candidate.title, candidate.snippet)).strip()
+    for existing in kept:
+        existing_eid = _candidate_polymarket_event_id(existing)
+        if cand_eid and existing_eid:
+            if cand_eid == existing_eid:
+                return True
+            continue
+        if cand_is_poly and _candidate_polymarket_items(existing):
+            existing_norm_url = fusion._normalize_url(existing.url) if existing.url else ""
+            if (
+                conflicted_poly_urls
+                and cand_norm_url
+                and cand_norm_url == existing_norm_url
+                and cand_norm_url in conflicted_poly_urls
+            ):
+                if not cand_eid and not existing_eid:
+                    return True
+                continue
+        if existing.candidate_id == candidate.candidate_id:
+            return True
+        if candidate.url and existing.url == candidate.url:
+            return True
+        if cand_text:
+            existing_text = " ".join((existing.title, existing.snippet)).strip()
+            if existing_text and dedupe.hybrid_similarity(cand_text, existing_text) >= 0.7:
+                return True
+    return False
 
 
 def merge_drill_report(
@@ -4157,25 +4233,86 @@ def merge_drill_report(
         if original_summary:
             break
 
+    all_poly_eids = fusion.polymarket_event_ids_by_url(
+        item
+        for cand in (*merged.ranked_candidates, *drill_report.ranked_candidates)
+        for item in _candidate_polymarket_items(cand)
+    )
+    conflicted_poly_urls = {
+        url for url, eids in all_poly_eids.items() if len(eids) > 1
+    }
     unrelated_candidate_indexes = {
         candidate.candidate_id: index
         for index, candidate in enumerate(unrelated_candidates)
     }
+    unrelated_poly_event_indexes: dict[str, int] = {}
+    for index, candidate in enumerate(unrelated_candidates):
+        eid = _candidate_polymarket_event_id(candidate)
+        if eid and eid not in unrelated_poly_event_indexes:
+            unrelated_poly_event_indexes[eid] = index
+    selected_base_candidates = [
+        copy.deepcopy(candidate)
+        for candidate in merged.ranked_candidates
+        if candidate.candidate_id in selected_candidate_ids
+    ]
+    selected_base_by_id = {
+        candidate.candidate_id: candidate for candidate in selected_base_candidates
+    }
+    used_candidate_ids = {candidate.candidate_id for candidate in unrelated_candidates}
+
+    def _disambiguate_poly_candidate_id(candidate: schema.Candidate, cand_eid: str) -> None:
+        poly_items = _candidate_polymarket_items(candidate)
+        disambiguated = (
+            fusion.polymarket_url_key(poly_items[0], all_poly_eids)
+            if poly_items
+            else None
+        )
+        if disambiguated and disambiguated not in used_candidate_ids:
+            candidate.candidate_id = disambiguated
+        elif cand_eid:
+            candidate.candidate_id = f"{candidate.candidate_id}\x1fevent={cand_eid}"
+
     focused_candidates: list[schema.Candidate] = []
-    for candidate in [
-        *copy.deepcopy(drill_report.ranked_candidates),
-        *[
-            copy.deepcopy(candidate)
-            for candidate in merged.ranked_candidates
-            if candidate.candidate_id in selected_candidate_ids
-        ],
+    for from_drill, candidate in [
+        *((True, copy.deepcopy(c)) for c in drill_report.ranked_candidates),
+        *((False, c) for c in selected_base_candidates),
     ]:
-        unrelated_index = unrelated_candidate_indexes.get(candidate.candidate_id)
+        cand_eid = _candidate_polymarket_event_id(candidate)
+        cand_norm_url = fusion._normalize_url(candidate.url) if candidate.url else ""
+        unrelated_index = unrelated_poly_event_indexes.get(cand_eid) if cand_eid else None
+        if unrelated_index is None:
+            by_id = unrelated_candidate_indexes.get(candidate.candidate_id)
+            if by_id is not None:
+                unrelated_cand = unrelated_candidates[by_id]
+                unrelated_eid = _candidate_polymarket_event_id(unrelated_cand)
+                if not _polymarket_candidates_conflict(candidate, unrelated_cand) and not (
+                    cand_norm_url in conflicted_poly_urls
+                    and bool(cand_eid) != bool(unrelated_eid)
+                ):
+                    unrelated_index = by_id
         if unrelated_index is not None:
-            candidate.cluster_id = unrelated_candidates[unrelated_index].cluster_id
+            existing_unrelated = unrelated_candidates[unrelated_index]
+            candidate.candidate_id = existing_unrelated.candidate_id
+            candidate.cluster_id = existing_unrelated.cluster_id
             unrelated_candidates[unrelated_index] = candidate
             continue
-        if not _candidate_is_duplicate(candidate, focused_candidates):
+        if not _candidate_is_duplicate(
+            candidate,
+            focused_candidates,
+            conflicted_poly_urls=conflicted_poly_urls,
+        ):
+            base_collision = selected_base_by_id.get(candidate.candidate_id) if from_drill else None
+            if base_collision is not None and (
+                _polymarket_candidates_conflict(candidate, base_collision)
+                or (
+                    cand_norm_url in conflicted_poly_urls
+                    and bool(cand_eid) != bool(_candidate_polymarket_event_id(base_collision))
+                )
+            ):
+                _disambiguate_poly_candidate_id(candidate, cand_eid)
+            if candidate.candidate_id in used_candidate_ids:
+                _disambiguate_poly_candidate_id(candidate, cand_eid)
+            used_candidate_ids.add(candidate.candidate_id)
             focused_candidates.append(candidate)
 
     primary_cluster = matched_clusters[0]
@@ -4219,10 +4356,15 @@ def merge_drill_report(
         new_items = drill_report.items_by_source.get(source, [])
         # Collapse exact URL matches first, preferring the drill's copy (it
         # carries fresh transcripts/comments); fuzzy dedupe alone keeps both
-        # when enrichment changed the text substantially.
-        new_urls = {item.url for item in new_items if item.url}
-        kept_old = [item for item in old_items if not (item.url and item.url in new_urls)]
-        combined = dedupe.dedupe_items([*copy.deepcopy(new_items), *kept_old])
+        # when enrichment changed the text substantially. For Polymarket,
+        # delegate to dedupe_items so distinct event_ids sharing a reused slug
+        # stay separate while same-event matched bundles merge coherently.
+        if source == "polymarket":
+            combined = dedupe.dedupe_items([*copy.deepcopy(new_items), *old_items])
+        else:
+            new_urls = {item.url for item in new_items if item.url}
+            kept_old = [item for item in old_items if not (item.url and item.url in new_urls)]
+            combined = dedupe.dedupe_items([*copy.deepcopy(new_items), *kept_old])
         old_unique = dedupe.dedupe_items(old_items)
         new_item_count += max(0, len(combined) - len(old_unique))
         merged_items[source] = combined
