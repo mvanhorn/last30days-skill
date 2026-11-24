@@ -76,15 +76,20 @@ def fetch_once(
     *,
     timeout: float,
     cacheable: Callable[[T], bool] = _always,
+    cancel: threading.Event | None = None,
 ) -> T:
     """Return ``fetch()``, running it at most once per ``key`` while it stays clean.
 
     ``key`` must include every input that changes the request. ``timeout``
     bounds how long a caller waits on another caller's in-flight fetch; past
-    it, :class:`MemoWaitTimeout` is raised. Every caller gets its own copy.
+    it, :class:`MemoWaitTimeout` is raised. When ``cancel`` is set, waiting
+    callers unblock promptly with :class:`MemoWaitTimeout`. Every caller gets
+    its own copy.
     """
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
+        if cancel is not None and cancel.is_set():
+            raise MemoWaitTimeout("fetch cancelled")
         with _LOCK:
             hit = key in _CACHE
             if hit:
@@ -99,10 +104,17 @@ def fetch_once(
             return copy.deepcopy(cached)
         if owner:
             break
-        if not slot.event.wait(max(0.0, deadline - time.monotonic())):
-            raise MemoWaitTimeout(
-                f"waited {timeout:g}s for an identical in-flight fetch"
-            )
+        while not slot.event.is_set():
+            if cancel is not None and cancel.is_set():
+                raise MemoWaitTimeout("fetch cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MemoWaitTimeout(
+                    f"waited {timeout:g}s for an identical in-flight fetch"
+                )
+            wait_step = min(0.1, remaining) if cancel is not None else remaining
+            if slot.event.wait(wait_step):
+                break
         if slot.outcome is not None:
             return _deliver_shared(slot.outcome)
         # The owner was interrupted before publishing (e.g. KeyboardInterrupt):

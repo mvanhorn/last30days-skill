@@ -224,12 +224,21 @@ def _person_run(config, web_items, *, github_user=None, github_items=()):
     def retrieve(*_args, source=None, **_kwargs):
         return (list(web_items), {}) if source == 'grounding' else ([], {})
 
+    plan = PERSON_PLAN
+    if github_user:
+        plan = {
+            **PERSON_PLAN,
+            'subqueries': [
+                {**sq, 'sources': [*sq['sources'], 'github']}
+                for sq in PERSON_PLAN['subqueries']
+            ],
+        }
     with patch.object(pipeline, '_retrieve_stream', side_effect=retrieve), \
             patch.object(pipeline, '_retry_thin_sources'), \
             patch.object(pipeline.github, 'search_github_person', return_value=list(github_items)):
         return pipeline.run(topic=PERSON, config=config, depth='quick',
             requested_sources=['grounding', 'github'], web_backend='brave',
-            external_plan=PERSON_PLAN, github_user=github_user)
+            external_plan=plan, github_user=github_user)
 
 
 def _urls(report, source):

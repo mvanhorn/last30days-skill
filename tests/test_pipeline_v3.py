@@ -962,10 +962,11 @@ class TestPinnedGithubPersonAuthority(unittest.TestCase):
 
         report = pipeline.run(
             topic="octocat",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            config={},
             depth="default",
             requested_sources=["github"],
-            mock=True,
+            mock=False,
+            web_backend="none",
             external_plan=plan,
             github_user="octocat",
         )
@@ -1003,10 +1004,11 @@ class TestPinnedGithubPersonAuthority(unittest.TestCase):
 
         report = pipeline.run(
             topic="octocat",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            config={},
             depth="default",
             requested_sources=["github"],
-            mock=True,
+            mock=False,
+            web_backend="none",
             external_plan=plan,
             github_user="octocat",
         )
@@ -1071,10 +1073,11 @@ class TestPinnedGithubProjectSurvivesDateWindow(unittest.TestCase):
         ), patch("lib.pipeline._retrieve_stream", return_value=([], {})):
             return pipeline.run(
                 topic="Ghostty terminal",
-                config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                config={},
                 depth="default",
                 requested_sources=["github"],
-                mock=True,
+                mock=False,
+                web_backend="none",
                 external_plan=self._PLAN,
                 github_repos=["ghostty-org/ghostty"],
             )
