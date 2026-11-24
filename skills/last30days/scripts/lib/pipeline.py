@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import copy
 from collections.abc import Callable, Iterable, Iterator, Mapping
+import heapq
 import math
 import queue
 import re
@@ -238,6 +239,15 @@ def _wait_for_research(futures, config: dict[str, Any]):
     return done, pending
 
 
+def _run_transient_retry(
+    retry_config: dict[str, Any],
+    fn: Callable[..., Any],
+    kwargs: dict[str, Any],
+) -> Any:
+    _check_research(retry_config)
+    return fn(**kwargs)
+
+
 def _delayed_retry(
     retry_at: float,
     retry_config: dict[str, Any],
@@ -253,8 +263,7 @@ def _delayed_retry(
             time.sleep(wait_seconds)
         else:
             cancel.wait(wait_seconds)
-    _check_research(retry_config)
-    return fn(**kwargs)
+    return _run_transient_retry(retry_config, fn, kwargs)
 
 
 def _completed_streams(
@@ -305,18 +314,66 @@ class _DaemonExecutor:
     created as daemon threads and never register in
     ``concurrent.futures.thread._threads_queues``. Abandoned stragglers
     therefore cannot block Python interpreter shutdown.
+
+    Supports :meth:`submit_delayed` for retries whose backoff consumes zero
+    worker slots while waiting and whose ready work runs ahead of queued
+    regular submissions.
     """
 
     def __init__(self, max_workers: int) -> None:
         self._max_workers = max(1, int(max_workers))
         self._cond = threading.Condition(threading.Lock())
+        self._priority_pending: deque[
+            tuple[Future, Callable[..., Any], tuple[Any, ...], dict[str, Any]]
+        ] = deque()
         self._pending: deque[
             tuple[Future, Callable[..., Any], tuple[Any, ...], dict[str, Any]]
         ] = deque()
+        self._delayed: list[
+            tuple[float, int, Future, Callable[..., Any], tuple[Any, ...], dict[str, Any]]
+        ] = []
         self._threads: set[threading.Thread] = set()
         self._idle_workers = 0
         self._shutdown = False
         self._next_worker_id = 0
+        self._next_seq = 0
+
+    def _spawn_worker_locked(self) -> None:
+        worker_id = self._next_worker_id
+        self._next_worker_id += 1
+        worker = threading.Thread(
+            target=self._worker_loop,
+            name=f"last30days-daemon-{worker_id}",
+            daemon=True,
+        )
+        self._threads.add(worker)
+        worker.start()
+
+    def _ensure_workers_locked(self, *, active_self: bool = False) -> None:
+        ready_count = len(self._priority_pending) + len(self._pending)
+        if active_self:
+            ready_count = max(0, ready_count - 1)
+        needed = ready_count - self._idle_workers
+        if needed <= 0 and self._delayed and self._idle_workers == 0 and not active_self:
+            needed = 1
+        while needed > 0 and len(self._threads) < self._max_workers:
+            self._spawn_worker_locked()
+            needed -= 1
+
+    def _promote_delayed_locked(self) -> int:
+        promoted = 0
+        now = time.monotonic()
+        while self._delayed:
+            ready_at, _seq, future, fn, args, kwargs = self._delayed[0]
+            if future.cancelled():
+                heapq.heappop(self._delayed)
+                continue
+            if ready_at > now:
+                break
+            heapq.heappop(self._delayed)
+            self._priority_pending.append((future, fn, args, kwargs))
+            promoted += 1
+        return promoted
 
     def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
         with self._cond:
@@ -324,35 +381,56 @@ class _DaemonExecutor:
                 raise RuntimeError("cannot schedule new futures after shutdown")
             future: Future = Future()
             self._pending.append((future, fn, args, kwargs))
-            if (
-                len(self._pending) > self._idle_workers
-                and len(self._threads) < self._max_workers
-            ):
-                worker_id = self._next_worker_id
-                self._next_worker_id += 1
-                worker = threading.Thread(
-                    target=self._worker_loop,
-                    name=f"last30days-daemon-{worker_id}",
-                    daemon=True,
-                )
-                self._threads.add(worker)
-                worker.start()
+            self._ensure_workers_locked()
             self._cond.notify()
+            return future
+
+    def submit_delayed(
+        self, ready_at: float, fn: Callable[..., Any], /, *args: Any, **kwargs: Any,
+    ) -> Future:
+        with self._cond:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            future: Future = Future()
+            if ready_at <= time.monotonic():
+                self._priority_pending.append((future, fn, args, kwargs))
+                self._ensure_workers_locked()
+                self._cond.notify()
+            else:
+                seq = self._next_seq
+                self._next_seq += 1
+                heapq.heappush(self._delayed, (ready_at, seq, future, fn, args, kwargs))
+                self._ensure_workers_locked()
+                self._cond.notify_all()
             return future
 
     def _worker_loop(self) -> None:
         try:
             while True:
                 with self._cond:
-                    while not self._pending and not self._shutdown:
+                    while True:
+                        promoted = self._promote_delayed_locked()
+                        if promoted:
+                            self._ensure_workers_locked(active_self=True)
+                            if len(self._priority_pending) + len(self._pending) > 1:
+                                self._cond.notify_all()
+                        if self._priority_pending:
+                            item = self._priority_pending.popleft()
+                            break
+                        if self._pending:
+                            item = self._pending.popleft()
+                            break
+                        if self._shutdown and not self._delayed:
+                            return
+                        wait_timeout = (
+                            max(0.0, self._delayed[0][0] - time.monotonic())
+                            if self._delayed else None
+                        )
                         self._idle_workers += 1
                         try:
-                            self._cond.wait()
+                            self._cond.wait(timeout=wait_timeout)
                         finally:
                             self._idle_workers -= 1
-                    if not self._pending:
-                        return
-                    item = self._pending.popleft()
                 future, fn, args, kwargs = item
                 if not future.set_running_or_notify_cancel():
                     item = future = fn = args = kwargs = None
@@ -373,6 +451,12 @@ class _DaemonExecutor:
         with self._cond:
             self._shutdown = True
             if cancel_futures:
+                while self._delayed:
+                    _ready_at, _seq, future, _fn, _args, _kwargs = heapq.heappop(self._delayed)
+                    future.cancel()
+                while self._priority_pending:
+                    future, _fn, _args, _kwargs = self._priority_pending.popleft()
+                    future.cancel()
                 while self._pending:
                     future, _fn, _args, _kwargs = self._pending.popleft()
                     future.cancel()
@@ -3128,14 +3212,6 @@ def run(
         if source in available and source != "corpus"
     )
     max_workers = _inner_max_workers(stream_count, internal_subrun=internal_subrun)
-    # Reserve retry capacity within max_workers so busy primary workers cannot
-    # block transient 5xx retries and combined concurrency never exceeds max_workers.
-    if max_workers >= 2:
-        retry_workers = 1 if max_workers <= 4 else min(4, max_workers // 4)
-        primary_workers = max_workers - retry_workers
-    else:
-        retry_workers = 0
-        primary_workers = 1
     # One holder, shared by every copy of the config made below: the jobs
     # lane's time budget for this topic (see ``_jobs_lane_budget``).
     # It goes into a copy, so the caller's config is left as it was.
@@ -3152,8 +3228,7 @@ def run(
     batches = [(futures, stream_config, STREAM_FUTURE_TIMEOUT_SECONDS, False)]
     background_futures = {}
     with contextlib.ExitStack() as stack:
-        executor = stack.enter_context(_abandoning_executor(max_workers=primary_workers))
-        retry_executor: Any = None
+        executor = stack.enter_context(_abandoning_executor(max_workers=max_workers))
         for subquery in plan.subqueries:
             for source in subquery.sources:
                 if source not in available:
@@ -3326,14 +3401,6 @@ def run(
                         bundle.record_failure(source, state, str(exc), attempted=attempted)
                         continue
                     retry_at = now + _TRANSIENT_RETRY_DELAY_SECONDS
-                    if retry_workers > 0:
-                        if retry_executor is None:
-                            retry_executor = stack.enter_context(
-                                _abandoning_executor(max_workers=retry_workers)
-                            )
-                        target_executor = retry_executor
-                    else:
-                        target_executor = executor
                     retry_kwargs = dict(
                         topic=topic, subquery=subquery, source=source,
                         config=stream_config, depth=depth, date_range=(from_date, to_date),
@@ -3351,13 +3418,22 @@ def run(
                         run_started=run_started,
                         freshness_mode=plan.freshness_mode,
                     )
-                    retry_future = target_executor.submit(
-                        _delayed_retry,
-                        retry_at,
-                        stream_config,
-                        _retrieve_stream,
-                        retry_kwargs,
-                    )
+                    if hasattr(executor, "submit_delayed"):
+                        retry_future = executor.submit_delayed(
+                            retry_at,
+                            _run_transient_retry,
+                            stream_config,
+                            _retrieve_stream,
+                            retry_kwargs,
+                        )
+                    else:
+                        retry_future = executor.submit(
+                            _delayed_retry,
+                            retry_at,
+                            stream_config,
+                            _retrieve_stream,
+                            retry_kwargs,
+                        )
                     retry_origins[retry_future] = exc
                     futures[retry_future] = (subquery, source)
                     continue

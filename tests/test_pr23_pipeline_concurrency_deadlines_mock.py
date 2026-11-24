@@ -516,7 +516,7 @@ def test_high016_rate_limit_signals_incrementally_before_slow_sibling_finishes(m
         sq2_observed_before_reddit.set()
         return [], {}
 
-    monkeypatch.setattr(pipeline, "_inner_max_workers", lambda *a, **k: 3)
+    monkeypatch.setattr(pipeline, "_inner_max_workers", lambda *a, **k: 2)
     monkeypatch.setattr(pipeline, "_retrieve_stream", fake_retrieve)
     monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
     report = pipeline.run(
@@ -533,12 +533,9 @@ def test_high016_rate_limit_signals_incrementally_before_slow_sibling_finishes(m
     assert report.source_status["x"].state == health.RATE_LIMITED
 
 
-def test_high016_busy_primary_pool_does_not_block_transient_5xx_retry(monkeypatch):
-    monkeypatch.setattr(pipeline, "STREAM_FUTURE_TIMEOUT_SECONDS", 1.5)
-    monkeypatch.setattr(pipeline, "_TRANSIENT_RETRY_DELAY_SECONDS", 0.05)
-
-    # internal_subrun=True caps max_workers at 4 (3 primary + 1 reserved retry)
-    # across 5 streams: 1 fast 503 + 4 slow streams so primary saturates at 3.
+def test_high016_two_source_subrun_uses_full_max_workers_concurrently(monkeypatch):
+    """A 2-source comparison sub-run (max_workers=2) must run both primary searches
+    concurrently without reserving an idle retry slot."""
     plan = {
         "intent": "general",
         "freshness_mode": "balanced_recent",
@@ -546,83 +543,166 @@ def test_high016_busy_primary_pool_does_not_block_transient_5xx_retry(monkeypatc
         "subqueries": [
             {
                 "label": "primary",
-                "search_query": "saturated pool probe",
-                "ranking_query": "saturated pool probe",
-                "sources": ["x", "reddit", "hackernews", "bluesky", "arxiv"],
+                "search_query": "two source comparison",
+                "ranking_query": "two source comparison",
+                "sources": ["reddit", "x"],
             },
         ],
-        "source_weights": {
-            "x": 1.0, "reddit": 1.0, "hackernews": 1.0, "bluesky": 1.0, "arxiv": 1.0,
-        },
+        "source_weights": {"reddit": 1.0, "x": 1.0},
     }
-    release_slow = threading.Event()
-    retry_succeeded = threading.Event()
-    slow_still_blocked_when_retried: list[bool] = []
+    both_started = threading.Barrier(2, timeout=2.0)
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
+
+    def fake_retrieve(**kwargs):
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        try:
+            both_started.wait()
+            return [], {}
+        finally:
+            with lock:
+                state["active"] -= 1
+
+    monkeypatch.setattr(pipeline, "_retrieve_stream", fake_retrieve)
+    monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
+    report = pipeline.run(
+        topic="two source comparison",
+        config={},
+        depth="quick",
+        requested_sources=["reddit", "x"],
+        mock=True,
+        external_plan=plan,
+        web_backend="none",
+        internal_subrun=True,
+    )
+    assert report is not None
+    assert state["peak"] == 2
+
+
+def test_high016_ready_retry_preempts_queued_primary_under_strict_max_workers_cap(monkeypatch):
+    """Backoff consumes zero worker slots, active work never exceeds max_workers,
+    and once ready a retry runs ahead of queued primary searches."""
+    monkeypatch.setattr(pipeline, "STREAM_FUTURE_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(pipeline, "_TRANSIENT_RETRY_DELAY_SECONDS", 0.05)
+    monkeypatch.setattr(pipeline, "_inner_max_workers", lambda *a, **k: 2)
+
+    plan = {
+        "intent": "general",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "story",
+        "subqueries": [
+            {
+                "label": "primary",
+                "search_query": "priority retry probe",
+                "ranking_query": "priority retry probe",
+                "sources": ["x", "reddit", "hackernews", "bluesky"],
+            },
+        ],
+        "source_weights": {"x": 1.0, "reddit": 1.0, "hackernews": 1.0, "bluesky": 1.0},
+    }
+    hn_entered = threading.Event()
+    release_reddit = threading.Event()
+    release_hn = threading.Event()
+    order: list[str] = []
     attempts: dict[str, int] = {"x": 0}
-    concurrency_lock = threading.Lock()
-    concurrency = {"active": 0, "peak": 0}
+    lock = threading.Lock()
+    state = {"active": 0, "peak": 0}
     today = dates.get_date_range(5)[0]
 
     def fake_retrieve(**kwargs):
         source = kwargs["source"]
-        with concurrency_lock:
-            concurrency["active"] += 1
-            concurrency["peak"] = max(concurrency["peak"], concurrency["active"])
+        with lock:
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
         try:
-            if source != "x":
-                # Keep all primary workers busy until the retry finishes.
-                release_slow.wait(timeout=5.0)
+            if source == "x":
+                with lock:
+                    attempts["x"] += 1
+                    attempt = attempts["x"]
+                if attempt == 1:
+                    raise http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
+                with lock:
+                    order.append("x-retry")
+                release_hn.set()
+                return (
+                    [
+                        {
+                            "id": "X-RETRY",
+                            "text": "Priority retry probe recovered ahead of queued primary",
+                            "url": "https://x.com/alice/status/99",
+                            "author_handle": "alice",
+                            "date": today,
+                            "engagement": {"likes": 42},
+                            "relevance": 0.9,
+                        }
+                    ],
+                    {},
+                )
+            if source == "reddit":
+                # Wait until hackernews took x's freed slot (proving backoff holds 0 slots)
+                # and until x's retry_at (0.05s) has elapsed, then free this worker.
+                assert hn_entered.wait(timeout=2.0)
+                time.sleep(0.1)
+                release_reddit.set()
                 return [], {}
-            with concurrency_lock:
-                attempts["x"] += 1
-                attempt = attempts["x"]
-            if attempt == 1:
-                raise http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
-            slow_still_blocked_when_retried.append(not release_slow.is_set())
-            retry_succeeded.set()
-            release_slow.set()
-            return (
-                [
-                    {
-                        "id": "X-RETRY",
-                        "text": "Saturated pool probe recovered via reserved retry slot",
-                        "url": "https://x.com/alice/status/99",
-                        "author_handle": "alice",
-                        "date": today,
-                        "engagement": {"likes": 42},
-                        "relevance": 0.9,
-                    }
-                ],
-                {},
-            )
+            if source == "hackernews":
+                hn_entered.set()
+                release_hn.wait(timeout=2.0)
+                return [], {}
+            with lock:
+                order.append(source)
+            return [], {}
         finally:
-            with concurrency_lock:
-                concurrency["active"] -= 1
+            with lock:
+                state["active"] -= 1
 
     monkeypatch.setattr(pipeline, "_retrieve_stream", fake_retrieve)
     monkeypatch.setattr(pipeline, "_retry_thin_sources", mock.Mock())
     try:
         report = pipeline.run(
-            topic="saturated pool probe",
+            topic="priority retry probe",
             config={},
             depth="default",
-            requested_sources=["x", "reddit", "hackernews", "bluesky", "arxiv"],
+            requested_sources=["x", "reddit", "hackernews", "bluesky"],
             mock=True,
             external_plan=plan,
             web_backend="none",
             internal_subrun=True,
         )
     finally:
-        release_slow.set()
+        release_hn.set()
 
     assert attempts["x"] == 2
-    assert retry_succeeded.is_set()
-    assert slow_still_blocked_when_retried == [True]
-    assert concurrency["peak"] <= 4, (
-        f"combined primary + retry concurrency exceeded sub-run max_workers=4 (peak={concurrency['peak']})"
+    assert state["peak"] == 2
+    assert order == ["x-retry", "bluesky"], (
+        f"ready retry must run ahead of queued primary search: {order}"
     )
     assert len(report.items_by_source.get("x", [])) == 1
     assert report.source_status["x"].state == health.OK
+
+
+def test_high016_multiple_delayed_retries_run_in_parallel_and_cancel_cleanly_on_shutdown():
+    """Slow first retry must not block a second ready retry when another worker
+    is free, and shutdown(wait=False, cancel_futures=True) must cancel pending
+    delayed retries immediately."""
+    both_retries = threading.Barrier(2, timeout=2.0)
+    with pipeline._abandoning_executor(max_workers=2) as pool:
+        ready_at = time.monotonic() + 0.05
+        f1 = pool.submit_delayed(ready_at, lambda: (both_retries.wait(), "r1")[1])
+        f2 = pool.submit_delayed(ready_at, lambda: (both_retries.wait(), "r2")[1])
+        assert f1.result(timeout=2.0) == "r1"
+        assert f2.result(timeout=2.0) == "r2"
+
+    ran_late: list[int] = []
+    t0 = time.monotonic()
+    with pipeline._abandoning_executor(max_workers=2) as pool:
+        f_far = pool.submit_delayed(time.monotonic() + 30.0, ran_late.append, 1)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.0, f"shutdown blocked on pending delayed retry ({elapsed:.2f}s)"
+    assert f_far.cancelled()
+    assert ran_late == []
 
 
 # ---------------------------------------------------------------------------
