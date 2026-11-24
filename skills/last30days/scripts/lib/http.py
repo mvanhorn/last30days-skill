@@ -588,10 +588,16 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
                     req.full_url, 403, "redirect refused: disallowed IP address", headers, fp,
                 )
         guard = getattr(req, _REDIRECT_GUARD_ATTR, None)
-        if guard is not None and not guard(newurl):
-            raise urllib.error.HTTPError(
-                req.full_url, 403, "redirect refused: off the site or to a private address", headers, fp,
-            )
+        if guard is not None:
+            req_scheme = (req.type or urlparse(req.full_url).scheme).lower()
+            if req_scheme == "https" and urlparse(newurl).scheme.lower() != "https":
+                raise urllib.error.HTTPError(
+                    req.full_url, 403, "redirect refused: HTTPS downgrade", headers, fp,
+                )
+            if not guard(newurl):
+                raise urllib.error.HTTPError(
+                    req.full_url, 403, "redirect refused: off the site or to a private address", headers, fp,
+                )
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is None:
             return None

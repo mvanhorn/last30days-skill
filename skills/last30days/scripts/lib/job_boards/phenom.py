@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Callable
+from urllib.parse import quote, urlparse
 
 from .. import http, jobs
+from . import detect
 from .detect import PROVIDER_PHENOM
 
 PAGE_SIZE = 500
@@ -51,18 +53,41 @@ def search_body(entry: dict[str, Any], offset: int) -> dict[str, Any]:
     }
 
 
+def _safe_base_url(entry: dict[str, Any]) -> str:
+    board = str(entry["board"]).strip().rstrip(".").lower()
+    raw = str(entry.get("base_url") or "").strip()
+    if raw and detect.is_safe_public_url(raw):
+        parsed = urlparse(raw)
+        if (
+            parsed.scheme.lower() == "https"
+            and parsed.port in (None, 443)
+            and detect.page_host(raw) == board
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            path = parsed.path or "/"
+            if not path.startswith("/"):
+                path = "/" + path
+            if not path.endswith("/"):
+                path += "/"
+            return f"https://{board}{path}"
+    return f"https://{board}/"
+
+
 def parse_listing(payload: Any, entry: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
     search = payload.get("refineSearch") if isinstance(payload, dict) else None
     data = search.get("data") if isinstance(search, dict) else None
     rows = data.get("jobs") if isinstance(data, dict) else None
     if not isinstance(rows, list):
         raise jobs.BoardShapeError("no refineSearch jobs")
-    base = str(entry.get("base_url") or f"https://{entry['board']}/")
+    base = _safe_base_url(entry)
     items: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict) or not row.get("title") or not row.get("jobId"):
             continue
-        ident = str(row["jobId"])
+        ident = str(row["jobId"]).strip()
+        if not ident:
+            continue
         posted = jobs._date_part(row.get("postedDate"))
         places = [str(place).strip() for place in row.get("multi_location") or [] if place]
         teaser = str(row.get("descriptionTeaser") or "").strip()
@@ -71,7 +96,7 @@ def parse_listing(payload: Any, entry: dict[str, Any]) -> tuple[list[dict[str, A
             slug=entry["board"],
             ident=ident,
             title=str(row["title"]).strip(),
-            url=f"{base}job/{ident}",
+            url=f"{base}job/{quote(ident, safe='')}",
             description=teaser,
             description_blocks=teaser,
             date=posted,
@@ -94,11 +119,18 @@ def read_board(
 
     def page(offset: int) -> Callable[[float], Any]:
         body = search_body(entry, offset)
-        return lambda http_deadline: http.post(
-            widgets_url(entry), body, headers={"Accept": "application/json"},
-            timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
-            public_only=True,
-        )
+        url = widgets_url(entry)
+
+        def fetch(http_deadline: float) -> Any:
+            if not detect.is_safe_public_url(url):
+                raise http.HTTPError("Refused non-public URL")
+            return http.post(
+                url, body, headers={"Accept": "application/json"},
+                timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+                public_only=True, redirect_guard=detect.same_site_redirect_guard(url),
+            )
+
+        return fetch
 
     return jobs._read_newest_first(
         page, lambda payload: parse_listing(payload, entry), page_size=PAGE_SIZE,
@@ -109,15 +141,16 @@ def read_board(
 
 def page_object(html: str) -> dict[str, Any] | None:
     """The ``phApp.ddo`` object a Phenom page embeds, or None."""
-    match = _DDO.search(html or "")
+    bounded = (html or "")[:detect.MAX_HTML_CHARS]
+    match = _DDO.search(bounded)
     if not match:
         return None
-    start = html.find("{", match.end())
+    start = bounded.find("{", match.end())
     if start < 0:
         return None
     try:
-        found, _end = json.JSONDecoder().raw_decode(html[start:])
-    except ValueError:
+        found, _end = json.JSONDecoder().raw_decode(bounded, start)
+    except (ValueError, RecursionError):
         return None
     return found if isinstance(found, dict) else None
 
@@ -126,8 +159,12 @@ def fetch_details(items: list[dict[str, Any]], *, deadline: float) -> tuple[int,
     """Fill the full text of the given roles from their own pages."""
 
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        url = str(item.get("url") or "")
+        if not detect.is_safe_public_url(url):
+            return lambda _http_deadline: None
         return lambda http_deadline: jobs.role_page_text(
-            str(item["url"]), timeout=jobs.API_TIMEOUT_SECONDS, deadline_monotonic=http_deadline,
+            url, timeout=jobs.API_TIMEOUT_SECONDS, deadline_monotonic=http_deadline,
+            redirect_guard=detect.same_site_redirect_guard(url),
         )
 
     def text_of(payload: Any) -> tuple[str, str] | None:

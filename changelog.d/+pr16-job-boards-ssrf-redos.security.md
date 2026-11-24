@@ -1,0 +1,1 @@
+Hardened job-board URL/host/port validation, redirect and bounded-TTL DNS SSRF guards across `jobs.py` and `job_boards/*`, URL escaping for remote job IDs/paths, and linear-time HTML/XML/JSON-LD/RSC parsing to eliminate ReDoS.
