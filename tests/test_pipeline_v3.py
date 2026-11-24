@@ -3623,7 +3623,7 @@ class DiggQuoteEnrichmentByCliShapeTests(unittest.TestCase):
 
         calls: list[list[str]] = []
 
-        def cli(cmd, *, timeout, env=None, on_pid=None):
+        def cli(cmd, *, timeout, env=None, on_pid=None, deadline_monotonic=None, cancel=None):
             calls.append(list(cmd))
             return subproc.SubprocResult(returncode=0, stdout='{"results": []}', stderr="")
 

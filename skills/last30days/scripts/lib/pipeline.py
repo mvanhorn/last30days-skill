@@ -4549,8 +4549,9 @@ def _finalize_items_by_source(
     finalization_deadline: float | None = None,
 ) -> dict[str, list[schema.SourceItem]]:
     config = config or {}
+    run_started = time.monotonic() - elapsed
     if finalization_deadline is None:
-        finalization_deadline = _finalization_deadline(config, time.monotonic() - elapsed)
+        finalization_deadline = _finalization_deadline(config, run_started)
     cancel = config.get("_enrich_cancel")
     finalized = {}
     for source, items in items_by_source_raw.items():
@@ -4635,8 +4636,10 @@ def _finalize_items_by_source(
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
-            else:
-                digg.enrich_source_items(items, top_k=3)
+            elif time.monotonic() < finalization_deadline:
+                digg.enrich_source_items(
+                    items, top_k=3, deadline=finalization_deadline, cancel=cancel,
+                )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         if source == "reddit" and items and not mock:
             # The lane enriched its own top picks before this ranking; give
@@ -4644,17 +4647,17 @@ def _finalize_items_by_source(
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
-            else:
+            elif time.monotonic() < finalization_deadline:
                 reddit_keyless.enrich_source_items(
-                    items, depth=depth, deadline=(config or {}).get("_research_deadline"),
+                    items, depth=depth, deadline=finalization_deadline,
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         if source == "devto" and items and not mock:
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
-            else:
-                devto.enrich_source_items(items)
+            elif time.monotonic() < finalization_deadline:
+                devto.enrich_source_items(items, deadline=finalization_deadline)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         if source == "amazon" and items and not mock:
             # Attach-if-missing: review enrichment now runs at search time in
@@ -4665,13 +4668,14 @@ def _finalize_items_by_source(
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
-            else:
+            elif time.monotonic() < finalization_deadline:
                 amazon.enrich_source_items(
                     items,
                     depth=depth,
                     config=config,
                     keyword=str((config or {}).get("_amazon_query") or "").strip() or topic,
-                    elapsed=elapsed,
+                    elapsed=max(0.0, time.monotonic() - run_started),
+                    deadline=finalization_deadline,
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         finalized[source] = items
@@ -5743,19 +5747,30 @@ def _run_reddit_backfill(config: dict[str, Any], call) -> Any:
     wait ends so a slow backfill cannot turn the free threads into a timeout.
     Raises ``TimeoutError`` when it does not finish in time."""
     research_deadline = config.get("_research_deadline")
-    if research_deadline is None:
+    cancel = config.get("_enrich_cancel")
+    if research_deadline is None and cancel is None:
         return call()
-    remaining = research_deadline - REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS - time.monotonic()
-    if remaining < REDDIT_SC_BACKFILL_MIN_SECONDS:
-        raise TimeoutError("no time left in the run's budget for the ScrapeCreators backfill")
+    if _research_stopped(config):
+        raise TimeoutError("ScrapeCreators backfill timed out: research cancelled or timed out")
+    if research_deadline is not None:
+        remaining = research_deadline - REDDIT_SC_BACKFILL_RETURN_MARGIN_SECONDS - time.monotonic()
+        if remaining < REDDIT_SC_BACKFILL_MIN_SECONDS:
+            raise TimeoutError(
+                "ScrapeCreators backfill timed out: no time left in the run's budget"
+            )
+        wait_deadline = time.monotonic() + remaining
+        timeout_detail = f"ScrapeCreators backfill timed out: did not finish in {remaining:.0f}s"
+    else:
+        wait_deadline = time.monotonic() + STREAM_FUTURE_TIMEOUT_SECONDS
+        timeout_detail = "ScrapeCreators backfill timed out: research cancelled or timed out"
     with _abandoning_executor(max_workers=1) as executor:
         future = http.submit_with_context(executor, call)
-        try:
-            return future.result(timeout=remaining)
-        except TimeoutError:
-            raise TimeoutError(
-                f"ScrapeCreators backfill did not finish in {remaining:.0f}s"
-            ) from None
+        wait_config = {**config, "_research_deadline": wait_deadline}
+        done, _pending = _wait_for_research([future], wait_config)
+        if future in done or (future.done() and not future.cancelled()):
+            return future.result(timeout=0)
+        future.cancel()
+        raise TimeoutError(timeout_detail)
 
 
 def _reddit_served_artifact(
@@ -6338,7 +6353,7 @@ def _run_supplemental_searches(
         # every lane below (same shape as the grok lanes): a slow key bounds
         # the whole supplemental phase, not each call.
         xapi_token = config.get("X_BEARER_TOKEN") or ""
-        xapi_deadline = _research_deadline(config, x_api.LANE_BUDGET_SECONDS)
+        xapi_deadline = supplemental_deadline
 
         def _xapi_lane_receipt(lane_warnings: list[str]) -> None:
             # A deadline stop is incomplete coverage, reported in
@@ -6393,7 +6408,10 @@ def _run_supplemental_searches(
     def _guard_lane(lane):
         def guarded(*args, **kwargs):
             if _research_stopped(config) or time.monotonic() >= supplemental_deadline:
-                bundle.record_failure(x_slug, health.TIMEOUT, "X supplemental research cancelled or timed out", attempted=True)
+                if primary == "xapi":
+                    _xapi_lane_receipt([x_api.DEADLINE_DETAIL])
+                else:
+                    bundle.record_failure(x_slug, health.TIMEOUT, "X supplemental research cancelled or timed out", attempted=True)
                 return [], False
             return lane(*args, **kwargs)
         return guarded
@@ -6464,12 +6482,14 @@ def _run_supplemental_searches(
             except Exception as exc:
                 print(f"[Pipeline] Phase 2 FROM-lane (explicit) failed: {exc}", file=sys.stderr)
                 state, attempted = _classify_source_failure(exc)
+                if state == schema.AUTH_FAILED:
+                    any_revoked = True
                 bundle.record_failure(
                     x_slug, state, f"Phase 2 FROM-lane (explicit): {exc}", attempted=attempted,
                 )
 
         # FROM lane: extracted handles WITH AND topic (from:handle Rome)
-        if extracted_promotable:
+        if extracted_promotable and not any_revoked:
             try:
                 extracted_items, extracted_revoked = _from_lane(extracted_promotable, FROM_LANE_COUNT_PER, and_topic=True)
                 from_items.extend(extracted_items)
@@ -6483,32 +6503,35 @@ def _run_supplemental_searches(
             except Exception as exc:
                 print(f"[Pipeline] Phase 2 FROM-lane (extracted) failed: {exc}", file=sys.stderr)
                 state, attempted = _classify_source_failure(exc)
+                if state == schema.AUTH_FAILED:
+                    any_revoked = True
                 bundle.record_failure(
                     x_slug, state, f"Phase 2 FROM-lane (extracted): {exc}", attempted=attempted,
                 )
-                if not bundle.items_by_source.get(x_slug):
-                    bundle.errors_by_source[x_slug] = f"Phase 2 FROM-lane: {exc}"
 
-        try:
-            about_items, about_revoked = _about_lane(all_promotable, MENTION_LANE_COUNT_PER)
-            if about_revoked:
-                any_revoked = True
+        if not any_revoked:
+            try:
+                about_items, about_revoked = _about_lane(all_promotable, MENTION_LANE_COUNT_PER)
+                if about_revoked:
+                    any_revoked = True
+                    bundle.record_failure(
+                        x_slug, schema.AUTH_FAILED,
+                        f"Phase 2 ABOUT-lane: {primary} authentication failed (session expired, revoked, or key unpaid)",
+                        attempted=True,
+                    )
+            except Exception as exc:
+                print(f"[Pipeline] Phase 2 ABOUT-lane search failed: {exc}", file=sys.stderr)
+                state, attempted = _classify_source_failure(exc)
+                if state == schema.AUTH_FAILED:
+                    any_revoked = True
                 bundle.record_failure(
-                    x_slug, schema.AUTH_FAILED,
-                    f"Phase 2 ABOUT-lane: {primary} authentication failed (session expired, revoked, or key unpaid)",
-                    attempted=True,
+                    x_slug,
+                    state,
+                    f"Phase 2 ABOUT-lane: {exc}",
+                    attempted=attempted,
                 )
-        except Exception as exc:
-            print(f"[Pipeline] Phase 2 ABOUT-lane search failed: {exc}", file=sys.stderr)
-            state, attempted = _classify_source_failure(exc)
-            bundle.record_failure(
-                x_slug,
-                state,
-                f"Phase 2 ABOUT-lane: {exc}",
-                attempted=attempted,
-            )
         name_items: list = []
-        if _name_lane is not None:
+        if _name_lane is not None and not any_revoked:
             try:
                 name_items, name_revoked = _name_lane(all_promotable, MENTION_LANE_COUNT_PER)
                 if name_revoked:
@@ -6521,6 +6544,8 @@ def _run_supplemental_searches(
             except Exception as exc:
                 print(f"[Pipeline] Phase 2 NAME-lane search failed: {exc}", file=sys.stderr)
                 state, attempted = _classify_source_failure(exc)
+                if state == schema.AUTH_FAILED:
+                    any_revoked = True
                 bundle.record_failure(
                     x_slug, state, f"Phase 2 NAME-lane: {exc}", attempted=attempted,
                 )
@@ -6531,7 +6556,7 @@ def _run_supplemental_searches(
         # report carrying only one side of an entity topic is incomplete, and
         # without this it looks indistinguishable from genuinely thin
         # discussion.
-        if _name_lane is not None:
+        if _name_lane is not None and not any_revoked:
             empty = [
                 label for label, items in
                 (("by", from_items), ("mention", about_items), ("name", name_items))
@@ -6574,7 +6599,7 @@ def _run_supplemental_searches(
 
     # Search related handles with lower weight (0.3)
     # Related handles are explicit (--x-related), so FROM without AND topic.
-    if related_handles:
+    if related_handles and not any_revoked:
         try:
             raw_items, rel_revoked = _from_lane(related_handles, RELATED_HANDLE_COUNT_PER, and_topic=False)
             if rel_revoked:
@@ -6587,6 +6612,8 @@ def _run_supplemental_searches(
         except Exception as exc:
             print(f"[Pipeline] Phase 2 related handle search failed: {exc}", file=sys.stderr)
             state, attempted = _classify_source_failure(exc)
+            if state == schema.AUTH_FAILED:
+                any_revoked = True
             bundle.record_failure(
                 x_slug,
                 state,
@@ -6916,8 +6943,24 @@ def _attempt_x_backend(backend, query, from_date, to_date, depth, config, warnin
         if cause and cause.lower() not in detail.lower():
             detail = f"{cause}: {detail}"
         return [], detail, exc.outcome_state
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, TimeoutError):
+            state = health.TIMEOUT
+        elif backend == "bird":
+            state = bird_x.classify_run_failure(detail)
+        else:
+            state = _classify_source_failure(exc)[0]
+        return [], detail, state
     detail = str(error or "")
-    return items, detail, http.classify_failure(message=detail) if detail else None
+    if not detail:
+        return items, "", None
+    state = (
+        bird_x.classify_run_failure(detail)
+        if backend == "bird"
+        else _classify_source_failure(SourceRunError(detail))[0]
+    )
+    return items, detail, state
 
 
 def _reddit_post_key(item: dict) -> str:
@@ -7659,7 +7702,11 @@ def _retrieve_stream_impl(
                 )
                 if public_results:
                     if primary_failure is not None:
-                        state = reddit.classify_run_failure(str(primary_failure))
+                        state = (
+                            health.TIMEOUT
+                            if isinstance(primary_failure, TimeoutError)
+                            else reddit.classify_run_failure(str(primary_failure))
+                        )
                         return public_results, _outcome_artifact(
                             state,
                             f"Reddit primary failed; public fallback returned "
@@ -7678,7 +7725,11 @@ def _retrieve_stream_impl(
                 )
             failure = public_failure or primary_failure
             if failure is not None:
-                state = reddit.classify_run_failure(str(failure))
+                state = (
+                    health.TIMEOUT
+                    if isinstance(failure, TimeoutError)
+                    else reddit.classify_run_failure(str(failure))
+                )
                 raise SourceRunError(
                     f"Reddit primary and fallback produced no results after failure: {failure}",
                     state,
@@ -7694,12 +7745,19 @@ def _retrieve_stream_impl(
         public_failure: Exception | None = None
         # The lane returns what it has before the stream wait gives up on
         # it; a lane still running then is reported as a timeout with nothing.
+        # Scale return margin and SC reserve proportionally to remaining budget
+        # so tight budgets (<= 65s) still give the free lane a real turn.
         research_deadline = config.get("_research_deadline")
-        lane_deadline = (
-            research_deadline - REDDIT_LANE_RETURN_MARGIN_SECONDS
-            - (REDDIT_SC_BACKFILL_RESERVE_SECONDS if has_sc_key else 0.0)
-            if research_deadline is not None else None
-        )
+        if research_deadline is not None:
+            rem = max(0.0, research_deadline - time.monotonic())
+            margin = min(REDDIT_LANE_RETURN_MARGIN_SECONDS, rem * 0.15)
+            reserve = (
+                min(REDDIT_SC_BACKFILL_RESERVE_SECONDS, rem * 0.35)
+                if has_sc_key else 0.0
+            )
+            lane_deadline: float | None = research_deadline - margin - reserve
+        else:
+            lane_deadline = None
         lane_notes: list[str] = []
         lane_paths: dict[str, str] = {}
         # The consented logged-in session, when its gate passes (read once per
@@ -7727,7 +7785,11 @@ def _retrieve_stream_impl(
             )
             if not has_sc_key:
                 sys.stderr.write("\n")
-                state = reddit.classify_run_failure(str(exc))
+                state = (
+                    health.TIMEOUT
+                    if isinstance(exc, TimeoutError)
+                    else reddit.classify_run_failure(str(exc))
+                )
                 raise SourceRunError(f"Reddit public search failed: {exc}", state) from exc
             sys.stderr.write(", using ScrapeCreators backup\n")
         free_timed_out = (
@@ -7796,7 +7858,11 @@ def _retrieve_stream_impl(
                 f"[Reddit] ScrapeCreators backup also failed "
                 f"({type(exc).__name__}: {exc})\n"
             )
-            state = reddit.classify_run_failure(str(exc))
+            state = (
+                health.TIMEOUT
+                if isinstance(exc, TimeoutError)
+                else reddit.classify_run_failure(str(exc))
+            )
             if public_results:
                 # The free path delivered: Reddit is working. The failed
                 # backfill is a detail note, never the source's outcome.
@@ -7823,7 +7889,11 @@ def _retrieve_stream_impl(
         if not merged and free_failed:
             return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
         if public_failure is not None:
-            state = reddit.classify_run_failure(str(public_failure))
+            state = (
+                health.TIMEOUT
+                if isinstance(public_failure, TimeoutError)
+                else reddit.classify_run_failure(str(public_failure))
+            )
             return merged, _outcome_artifact(
                 state,
                 f"Reddit public search failed; backup returned {len(sc_items)} items: "
@@ -7880,6 +7950,7 @@ def _retrieve_stream_impl(
         items = []
         used_backend = None
         x_warnings: list[str] = []
+        artifact: dict[str, Any] = {}
         chain_deadline = _research_deadline(config, X_CHAIN_DEADLINE_SECONDS)
         for i, backend in enumerate(chain):
             if _research_stopped(config) or time.monotonic() >= chain_deadline:
@@ -7902,15 +7973,17 @@ def _retrieve_stream_impl(
                         f"[X] primary backend(s) returned nothing; used fallback '{backend}'{spend}",
                         file=sys.stderr,
                     )
-                # Check for auth errors before proceeding to judge-retry
-                if last_error:
-                    # Preserve a prior auth failure even when the backup served
-                    # items. Session backends alone need re-login guidance.
-                    prior_state = last_state
+                # Record failover/error artifact metadata and break so x_receipts
+                # and x_judge retry/pruning always run before returning.
+                if chain_errors:
+                    prior_error, prior_state = min(
+                        chain_errors,
+                        key=lambda entry: _FAILURE_SPECIFICITY.get(entry[1], 9),
+                    )
                     backup_rate_limited = err_state == health.RATE_LIMITED or any(
                         failure.outcome_state == health.RATE_LIMITED for failure in backend_failures
                     )
-                    detail = f"X served via {backend} after {last_error}"
+                    detail = f"X served via {backend} after {prior_error}"
                     if err:
                         detail += f"; {backend}: {err}"
                     if backup_rate_limited and err_state != health.RATE_LIMITED:
@@ -7918,7 +7991,7 @@ def _retrieve_stream_impl(
                     if prior_state == schema.AUTH_FAILED:
                         repair = (
                             "; re-login needed for primary backend"
-                            if last_error.startswith(("grok:", "bird:")) else ""
+                            if prior_error.startswith(("grok:", "bird:")) else ""
                         )
                         artifact = _outcome_artifact(
                             schema.AUTH_FAILED,
@@ -7927,48 +8000,40 @@ def _retrieve_stream_impl(
                         if backup_rate_limited:
                             artifact["_source_outcome_detail"] = f"{backend} also rate-limited"
                             artifact["_source_outcome_detail_state"] = health.RATE_LIMITED
-                        return items, artifact
-                    # Prior error was non-auth. Check if *current* backend also
-                    # reported an error (e.g., grok returned items + revocation).
-                    if err:
-                        current_state = err_state
-                        if current_state == schema.AUTH_FAILED:
-                            repair = "; re-login needed" if backend in ("grok", "bird") else ""
-                            return items, _outcome_artifact(
-                                schema.AUTH_FAILED,
-                                f"X served {len(items)} items via {backend} but also errored: {err}{repair}",
-                            )
-                    return items, {
-                        "_source_outcome_detail": detail,
-                        "_source_outcome_detail_state": health.RATE_LIMITED if backup_rate_limited else prior_state,
-                        "_x_backup_not_rate_limited": not backup_rate_limited,
-                    }
-                if err:
+                    elif err and err_state == schema.AUTH_FAILED:
+                        repair = "; re-login needed" if backend in ("grok", "bird") else ""
+                        artifact = _outcome_artifact(
+                            schema.AUTH_FAILED,
+                            f"X served {len(items)} items via {backend} but also errored: {err}{repair}",
+                        )
+                    else:
+                        artifact = {
+                            "_source_outcome_detail": detail,
+                            "_source_outcome_detail_state": health.RATE_LIMITED if backup_rate_limited else prior_state,
+                            "_x_backup_not_rate_limited": not backup_rate_limited,
+                        }
+                elif err:
                     # Mixed result: backend returned items BUT also hit an error
                     # (e.g., grok got some posts then auth was revoked mid-fanout).
                     # Surface the error so the user gets re-login guidance.
-                    state = err_state
-                    return items, _outcome_artifact(
-                        state,
+                    artifact = _outcome_artifact(
+                        err_state or health.ERROR,
                         f"X returned {len(items)} items but also errored: {err}",
                     )
-                # No auth issues and no prior errors - proceed to judge-retry
                 used_backend = backend
                 break
             if err:
                 last_error = f"{backend}: {err}"
-                last_state = err_state
+                last_state = err_state or health.ERROR
                 chain_errors.append((last_error, last_state))
                 print(f"[X] backend '{backend}' failed ({err}); trying next", file=sys.stderr)
 
         if not items and last_error:
-            # A credit-exhaustion failure earlier in the chain is the most
-            # specific outcome (top up, not re-authenticate); a later
-            # backend's generic failure must not mask it.
-            for candidate, candidate_state in chain_errors:
-                if candidate_state == health.PAYMENT_REQUIRED:
-                    last_error, last_state = candidate, candidate_state
-                    break
+            if chain_errors:
+                last_error, last_state = min(
+                    chain_errors,
+                    key=lambda entry: _FAILURE_SPECIFICITY.get(entry[1], 9),
+                )
             state = (
                 health.TIMEOUT
                 if _research_stopped(config) or time.monotonic() >= chain_deadline
@@ -7980,7 +8045,6 @@ def _retrieve_stream_impl(
 
         # Retrieve-judge-retry: judge corpus and retry if off-topic flood.
         # Skip retry on quick/mock (same as Phase 2).
-        artifact = {}
         if x_warnings:
             # e.g. xapi's "window truncated to 7 days": a receipt that reaches
             # report.warnings (see the grounding artifacts walk in
@@ -8062,16 +8126,6 @@ def _retrieve_stream_impl(
                         f"X: pruned {pruned} off-topic items; {len(items)} on-topic remain"
                     )
 
-        if last_error and items:
-            state = (
-                bird_x.classify_run_failure(last_error)
-                if last_error.startswith("bird:")
-                else http.classify_failure(message=last_error)
-            )
-            return items, _outcome_artifact(
-                state,
-                f"X fallback '{used_backend}' returned {len(items)} items after {last_error}",
-            )
         return items, artifact
     if source == "youtube":
         # Use raw_topic so expand_youtube_queries() generates diverse variants
