@@ -2273,27 +2273,36 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         and m.get("question")
         and (not has_active or (m.get("active", True) and not m.get("closed", False)))
     ]
-    refreshed_market_ids = refreshed.get("outcome_market_ids") or []
+    # Build market_values directly from eligible binary child markets regardless
+    # of how parse_polymarket_response formatted them: if a two-market event
+    # drops to a single active market, the parser displays Yes/No without
+    # outcome_market_ids, yet the remaining active market (and any closed
+    # sibling carrying its resolution price) must remain verifiable by ID.
+    all_dict_markets = [m for m in markets if isinstance(m, dict)]
+    all_mid_counts: dict[str, int] = {}
+    for m in all_dict_markets:
+        clean_mid = _market_id(m)
+        if clean_mid:
+            all_mid_counts[clean_mid] = all_mid_counts.get(clean_mid, 0) + 1
+    eligible_market_ids = {id(m) for m in live_event_markets}
     market_values: dict[str, Any] = {}
-    if refreshed_market_ids and len(refreshed_market_ids) == len(outcome_pairs):
-        all_mid_counts: dict[str, int] = {}
-        for m in active_question_markets:
-            clean_mid = _market_id(m)
-            if clean_mid:
-                all_mid_counts[clean_mid] = all_mid_counts.get(clean_mid, 0) + 1
-        refreshed_mid_counts: dict[str, int] = {}
-        for raw_mid in refreshed_market_ids:
-            clean_mid = str(raw_mid or "").strip()
-            if clean_mid:
-                refreshed_mid_counts[clean_mid] = refreshed_mid_counts.get(clean_mid, 0) + 1
-        for (_name, price), raw_mid in zip(outcome_pairs, refreshed_market_ids):
-            clean_mid = str(raw_mid or "").strip()
-            if (
-                clean_mid
-                and refreshed_mid_counts.get(clean_mid) == 1
-                and all_mid_counts.get(clean_mid, 1) == 1
-            ):
-                market_values[clean_mid] = price
+    for m in all_dict_markets:
+        if id(m) not in eligible_market_ids and not m.get("closed", False):
+            continue
+        raw_outcomes = [
+            str(name).strip().lower()
+            for name in _json_list(m.get("outcomes"))
+            if name is not None and str(name).strip()
+        ]
+        if len(raw_outcomes) != 2 or set(raw_outcomes) != {"yes", "no"}:
+            continue
+        clean_mid = _market_id(m)
+        if not clean_mid or all_mid_counts.get(clean_mid) != 1:
+            continue
+        pairs = _parse_outcome_prices(m)
+        yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
+        if yes_price is not None:
+            market_values[clean_mid] = yes_price
 
     ambiguous_current: set[str] = set()
     ambiguous_legacy: set[str] = set()

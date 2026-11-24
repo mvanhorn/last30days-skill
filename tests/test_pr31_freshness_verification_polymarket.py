@@ -1497,6 +1497,90 @@ def test_greptile_r6_and_r7_market_id_matching_and_legacy_cross_market_ambiguity
     assert [v.verdict for v in old_verdicts] == ["current", "unsupported"]
 
 
+def test_greptile_r8_last_remaining_active_market_still_verifies_by_market_id(monkeypatch):
+    """Greptile R8 P1 (4682122363):
+    When a two-market event loses one active market (closing/resolving or removed),
+    parse_polymarket_response displays the lone remaining active market as raw Yes/No
+    without outcome_market_ids. refetch_datum must still build market_values directly
+    from eligible markets so both direct fetch and cached verification verify the
+    remaining active market (and any closed sibling's resolution price) by market ID."""
+    from lib import normalize
+
+    initial_event = {
+        "id": "715",
+        "slug": "two-to-one",
+        "title": "Two-market race?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            {**_binary_submarket("Will Alice win?", "Alice", 0.60), "id": "m-alice"},
+            {**_binary_submarket("Will Bob win?", "Bob", 0.35), "id": "m-bob"},
+        ],
+    }
+    [parsed] = polymarket.parse_polymarket_response({"events": [initial_event]})
+    assert parsed["outcome_prices"] == [("Alice", 0.60), ("Bob", 0.35)]
+    assert parsed["outcome_market_ids"] == ["m-alice", "m-bob"]
+    [saved_item] = normalize.normalize_source_items(
+        "polymarket", [parsed], "2026-10-25", "2026-11-24",
+    )
+
+    # Scenario A: Bob closes (resolves to 0.0) while Alice stays active at 0.70.
+    one_closed_event = {
+        **initial_event,
+        "markets": [
+            {**_binary_submarket("Will Alice win?", "Alice", 0.70), "id": "m-alice"},
+            {**_binary_submarket("Will Bob win?", "Bob", 0.0, closed=True), "id": "m-bob"},
+        ],
+    }
+    # Confirm display parse now emits Yes/No without outcome_market_ids.
+    [refreshed_display] = polymarket.parse_polymarket_response(
+        {"events": [one_closed_event]}, include_all_outcomes=True, include_closed=False,
+    )
+    assert "outcome_market_ids" not in refreshed_display
+    assert refreshed_display["outcome_prices"] == [("Yes", 0.70), ("No", 0.30)]
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        polymarket.http, "request", lambda *_a, **_k: calls.append(1) or one_closed_event,
+    )
+    assert polymarket.refetch_datum(saved_item, "Alice")["value"] == 0.70
+    assert polymarket.refetch_datum(saved_item, "Bob")["value"] == 0.0
+
+    calls.clear()
+    verdicts = freshness.verify_report(
+        _report(saved_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == ["stale", "stale", "current"]
+    assert verdicts[0].current_value == 0.70
+    assert verdicts[1].current_value == 0.0
+
+    # Scenario B: Bob is removed completely, leaving only Alice active at 0.70.
+    # Alice verifies to 0.70 (stale), Bob fails closed to unsupported.
+    only_alice_event = {
+        **initial_event,
+        "markets": [
+            {**_binary_submarket("Will Alice win?", "Alice", 0.70), "id": "m-alice"},
+        ],
+    }
+    calls.clear()
+    monkeypatch.setattr(
+        polymarket.http, "request", lambda *_a, **_k: calls.append(1) or only_alice_event,
+    )
+    verdicts_only_alice = freshness.verify_report(
+        _report(saved_item),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts_only_alice] == ["stale", "unsupported", "current"]
+    assert verdicts_only_alice[0].current_value == 0.70
+
+
+
 
 
 
