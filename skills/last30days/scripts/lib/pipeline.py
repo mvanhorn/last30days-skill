@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import copy
+import functools
 from collections.abc import Callable, Iterable, Iterator, Mapping
 import heapq
 import math
+import os
 import queue
 import re
 import sqlite3
@@ -20,6 +23,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
 from typing import Any
+
+_ORIGINAL_WHICH = which
 
 from . import (
     amazon,
@@ -414,11 +419,12 @@ class _DaemonExecutor:
         return promoted
 
     def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
+        ctx = contextvars.copy_context()
         with self._cond:
             if self._shutdown:
                 raise RuntimeError("cannot schedule new futures after shutdown")
             future: Future = Future()
-            self._pending.append((future, fn, args, kwargs))
+            self._pending.append((future, ctx.run, (fn, *args), kwargs))
             self._ensure_workers_locked()
             self._cond.notify()
             return future
@@ -426,18 +432,19 @@ class _DaemonExecutor:
     def submit_delayed(
         self, ready_at: float, fn: Callable[..., Any], /, *args: Any, **kwargs: Any,
     ) -> Future:
+        ctx = contextvars.copy_context()
         with self._cond:
             if self._shutdown:
                 raise RuntimeError("cannot schedule new futures after shutdown")
             future: Future = Future()
             if ready_at <= time.monotonic():
-                self._priority_pending.append((future, fn, args, kwargs))
+                self._priority_pending.append((future, ctx.run, (fn, *args), kwargs))
                 self._ensure_workers_locked()
                 self._cond.notify()
             else:
                 seq = self._next_seq
                 self._next_seq += 1
-                heapq.heappush(self._delayed, (ready_at, seq, future, fn, args, kwargs))
+                heapq.heappush(self._delayed, (ready_at, seq, future, ctx.run, (fn, *args), kwargs))
                 self._ensure_workers_locked()
                 self._cond.notify_all()
             return future
@@ -715,6 +722,35 @@ class NoRequestedSourceAvailable(RuntimeError):
     """None of the sources the user asked for with --search is configured."""
 
 
+_ORIGINAL_IS_YTDLP_INSTALLED = youtube_yt.is_ytdlp_installed
+
+
+def _resolve_ytdlp(config: Mapping[str, Any] | None = None) -> tuple[bool, str | None]:
+    """Return ``(has_ytdlp, validated_ssh_host)``, validating the SSH alias once."""
+    raw_ssh = (config or {}).get("LAST30DAYS_YOUTUBE_SSH_HOST")
+    with youtube_yt.ssh_host_scope(raw_ssh):
+        ssh_host = youtube_yt._ytdlp_ssh_host()
+    if ssh_host:
+        return True, ssh_host
+    if which is not _ORIGINAL_WHICH:
+        return bool(which("yt-dlp")), None
+    # Clear any rejected config alias so is_ytdlp_installed() does not re-warn;
+    # if an invalid alias lives in os.environ, bypass _ytdlp_ssh_host unless
+    # is_ytdlp_installed was monkeypatched by a test.
+    with youtube_yt.ssh_host_scope(None):
+        if (
+            "LAST30DAYS_YOUTUBE_SSH_HOST" in os.environ
+            and youtube_yt.is_ytdlp_installed is _ORIGINAL_IS_YTDLP_INSTALLED
+        ):
+            return youtube_yt.shutil.which("yt-dlp") is not None, None
+        return youtube_yt.is_ytdlp_installed(), None
+
+
+def _has_ytdlp(config: Mapping[str, Any] | None = None) -> bool:
+    """Return True when yt-dlp is available locally or via SSH routing."""
+    return _resolve_ytdlp(config)[0]
+
+
 def available_sources(
     config: dict[str, Any],
     requested_sources: list[str] | None = None,
@@ -745,31 +781,33 @@ def available_sources(
         config.get("_CORPUS_DIRS"), config.get("LAST30DAYS_CORPUS_DIRS")
     ):
         available.append("corpus")
-    if env.is_tiktok_available(config):
-        available.append("tiktok")
-    if env.is_instagram_available(config):
-        available.append("instagram")
-    if env.get_x_source(config, local_only=local_only):
-        available.append("x")
-    elif x_envelope or (
-        not suppress_x_host_lane and env.x_host_lane_declared(config)
-    ):
-        # Host-fetched X lane: the model passes connector results through
-        # --x-posts, so X is served without an engine backend.
-        available.append("x")
-    else:
-        # Safe inspection (--diagnose/--preflight) skips browser-cookie
-        # extraction, so get_x_source is None even though a real run would
-        # authenticate X via FROM_BROWSER. Report it as available so consumers
-        # of available_sources (SKILL.md ACTIVE_SOURCES_LIST) don't under-report.
-        # diagnose() precomputes the predicate and passes it via x_pending to
-        # avoid evaluating it twice in one diagnose() call.
-        if x_pending is None:
-            x_pending = env.x_pending_browser_auth(config, local_only=local_only)
-        if x_pending and health.probe_dependency("node").status == health.OK:
+    has_ytdlp, validated_ssh = _resolve_ytdlp(config)
+    with youtube_yt.ssh_host_scope(validated_ssh):
+        if env.is_tiktok_available(config):
+            available.append("tiktok")
+        if env.is_instagram_available(config):
+            available.append("instagram")
+        if env.get_x_source(config, local_only=local_only):
             available.append("x")
-    if which("yt-dlp") or env.is_youtube_sc_available(config):
-        available.append("youtube")
+        elif x_envelope or (
+            not suppress_x_host_lane and env.x_host_lane_declared(config)
+        ):
+            # Host-fetched X lane: the model passes connector results through
+            # --x-posts, so X is served without an engine backend.
+            available.append("x")
+        else:
+            # Safe inspection (--diagnose/--preflight) skips browser-cookie
+            # extraction, so get_x_source is None even though a real run would
+            # authenticate X via FROM_BROWSER. Report it as available so consumers
+            # of available_sources (SKILL.md ACTIVE_SOURCES_LIST) don't under-report.
+            # diagnose() precomputes the predicate and passes it via x_pending to
+            # avoid evaluating it twice in one diagnose() call.
+            if x_pending is None:
+                x_pending = env.x_pending_browser_auth(config, local_only=local_only)
+            if x_pending and health.probe_dependency("node").status == health.OK:
+                available.append("x")
+        if has_ytdlp or env.is_youtube_sc_available(config):
+            available.append("youtube")
     available.extend(["hackernews", "polymarket"])
     # StockTwits is gated to ticker/crypto topics only (flag set in run()).
     if config.get("_financial_topic"):
@@ -1592,13 +1630,15 @@ def enrich_nominations(
             except Exception as exc:  # noqa: BLE001 - containment is the contract
                 results_queue.put((nomination, None, exc))
 
-    for nomination in nominations:
-        threading.Thread(
-            target=_worker,
-            args=(nomination,),
-            name=f"discover-enrich-{nomination.name[:32]}",
-            daemon=True,
-        ).start()
+    with fetch_memo.run_scope():
+        for nomination in nominations:
+            ctx = contextvars.copy_context()
+            threading.Thread(
+                target=ctx.run,
+                args=(_worker, nomination),
+                name=f"discover-enrich-{nomination.name[:32]}",
+                daemon=True,
+            ).start()
 
     def _record_result(
         nomination: Nomination,
@@ -1786,18 +1826,19 @@ def _discovery_sweep(
         notes=["discover-mode", "listing-sweep"],
     )
 
-    bundle = nominate_candidates(
-        plan,
-        from_date=from_date,
-        to_date=to_date,
-        depth=depth,
-        mock=mock,
-        config=config,
-        lookback_days=lookback_days,
-        # Global trending has no keyword to gate against - the river feeds' own
-        # hot ranking is the signal and the confidence floor culls the junk.
-        keyword_gate=not global_mode,
-    )
+    with fetch_memo.run_scope():
+        bundle = nominate_candidates(
+            plan,
+            from_date=from_date,
+            to_date=to_date,
+            depth=depth,
+            mock=mock,
+            config=config,
+            lookback_days=lookback_days,
+            # Global trending has no keyword to gate against - the river feeds' own
+            # hot ranking is the signal and the confidence floor culls the junk.
+            keyword_gate=not global_mode,
+        )
 
     source_status: dict[str, schema.SourceOutcome] = {}
     for source in DISCOVERY_SOURCES:
@@ -2711,6 +2752,18 @@ def _load_library_context(
     return contexts, None
 
 
+def _scoped_fetch_memo(fn: Callable[..., schema.Report]) -> Callable[..., schema.Report]:
+    """Isolate top-level ``pipeline.run`` calls in their own ``fetch_memo.run_scope()``."""
+    @functools.wraps(fn)
+    def _wrapped(*args: Any, **kwargs: Any) -> schema.Report:
+        if kwargs.get("internal_subrun"):
+            return fn(*args, **kwargs)
+        with fetch_memo.run_scope():
+            return fn(*args, **kwargs)
+    return _wrapped
+
+
+@_scoped_fetch_memo
 def run(
     *,
     topic: str,
@@ -3050,7 +3103,7 @@ def run(
         if "corpus" not in plan.subqueries[0].sources:
             plan.subqueries[0].sources.append("corpus")
         if "corpus" not in plan.source_weights:
-            plan.source_weights["corpus"] = 1.0
+            plan.source_weights["corpus"] = _mean_source_weight(plan.source_weights)
             plan.source_weights = planner._normalize_weights(plan.source_weights)
 
     # Add the paid-only Perplexity lane after all normal-source safety nets.
@@ -3868,18 +3921,11 @@ def run(
         x_floor_handles = resolved_handles - _creator_only_handles(
             creator_first_party, real_x_handles
         )
-        for key, stream in list(bundle.items_by_source_and_query.items()):
-            if key[1] != "x" or not stream:
-                continue
-            pruned = signals.prune_low_relevance(
-                stream,
-                first_party_handles=x_floor_handles,
-                first_party_by_source=creator_first_party,
-            )
-            _log_prune_drop("x", len(stream), len(pruned), scope="per-query stream")
-            bundle.items_by_source_and_query[key] = pruned
-        if bundle.items_by_source.get("x"):
-            x_stream = bundle.items_by_source["x"]
+        # Prune once on the merged X stream, then sync each per-query X stream
+        # to the exact surviving items so an all-fail rescue on one weak
+        # subquery cannot diverge fusion inputs from report/source_status.
+        x_stream = bundle.items_by_source.get("x")
+        if x_stream:
             pruned = signals.prune_low_relevance(
                 x_stream,
                 first_party_handles=x_floor_handles,
@@ -3887,6 +3933,22 @@ def run(
             )
             _log_prune_drop("x", len(x_stream), len(pruned), scope="merged stream")
             bundle.items_by_source["x"] = pruned
+            all_x_ids = {id(item) for item in x_stream}
+            kept_x_ids = {id(item) for item in pruned}
+            kept_x_keys = {source_item_key(item) for item in pruned}
+            for key, stream in list(bundle.items_by_source_and_query.items()):
+                if key[1] != "x" or not stream:
+                    continue
+                filtered = [
+                    item for item in stream
+                    if (
+                        id(item) in kept_x_ids
+                        if id(item) in all_x_ids
+                        else source_item_key(item) in kept_x_keys
+                    )
+                ]
+                _log_prune_drop("x", len(stream), len(filtered), scope="per-query stream")
+                bundle.items_by_source_and_query[key] = filtered
 
     # Finalize after the deferred floor so the report's per-source view and the
     # source_status counts describe the same post-floor evidence set fusion sees.
@@ -4662,7 +4724,8 @@ def _finalize_items_by_source(
                     config.get("SCRAPECREATORS_API_KEY")
                     if config and env.is_youtube_sc_available(config) else None
                 )
-                with youtube_yt.sc_spend_until(
+                with youtube_yt.ssh_host_scope(config.get("LAST30DAYS_YOUTUBE_SSH_HOST")), \
+                     youtube_yt.sc_spend_until(
                     lambda: _research_stopped(config),
                     cancel=cancel,
                     deadline=finalization_deadline,
@@ -5403,6 +5466,17 @@ def _apply_hiring_signal_gate(
     return summary
 
 
+def _mean_source_weight(weights: Mapping[str, float]) -> float:
+    """Return the mean positive weight in ``weights``, or 1.0 when empty.
+
+    Post-plan source injectors add sources onto an already-normalized map whose
+    values sum to 1.0; inserting at the mean prevents a raw 1.0 entry from
+    halving every planned source on renormalization.
+    """
+    positive = [w for w in weights.values() if w > 0]
+    return (sum(positive) / len(positive)) if positive else 1.0
+
+
 def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
     """Give an activated dev.to source the primary subquery.
 
@@ -5417,7 +5491,7 @@ def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
     if not any("devto" in subquery.sources for subquery in plan.subqueries):
         plan.subqueries[0].sources.append("devto")
     if "devto" not in plan.source_weights:
-        plan.source_weights["devto"] = 1.0
+        plan.source_weights["devto"] = _mean_source_weight(plan.source_weights)
         plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
@@ -5505,8 +5579,9 @@ def _ensure_unplanned_lanes_in_host_plan(
     if not missing:
         return
     plan.subqueries[0].sources.extend(missing)
+    default_weight = _mean_source_weight(plan.source_weights)
     for source in missing:
-        plan.source_weights.setdefault(source, 1.0)
+        plan.source_weights.setdefault(source, default_weight)
     plan.source_weights = planner._normalize_weights(plan.source_weights)
     log.source_log(
         "Planner",
@@ -5537,7 +5612,7 @@ def _ensure_company_jobs_in_host_plan(
     if any("jobs" in subquery.sources for subquery in plan.subqueries):
         return
     plan.subqueries[0].sources.append("jobs")
-    plan.source_weights.setdefault("jobs", 1.0)
+    plan.source_weights.setdefault("jobs", _mean_source_weight(plan.source_weights))
     plan.source_weights = planner._normalize_weights(plan.source_weights)
     log.source_log(
         "Planner",
@@ -5631,7 +5706,8 @@ def _ensure_jobs_in_plan(
     if not (explicit or _company_topic_likely(topic)):
         return
     if "jobs" not in plan.source_weights:
-        plan.source_weights["jobs"] = 1.0
+        plan.source_weights["jobs"] = _mean_source_weight(plan.source_weights)
+        plan.source_weights = planner._normalize_weights(plan.source_weights)
     for subquery in plan.subqueries:
         if "jobs" not in subquery.sources:
             subquery.sources.append("jobs")
@@ -5663,17 +5739,23 @@ def _ensure_perplexity_in_plan(
         ]
         if sources:
             retained.append(replace(subquery, sources=sources))
+    perplexity_weight = (
+        sum(sq.weight for sq in retained) / len(retained)
+        if retained else 1.0
+    )
     retained.append(
         schema.SubQuery(
             label="deep-research" if force else "perplexity-whole-topic",
             search_query=topic,
             ranking_query=f"What current source-grounded evidence matters for {topic}?",
             sources=["perplexity"],
-            weight=1.0,
+            weight=perplexity_weight,
         ),
     )
     plan.subqueries = planner._normalize_subquery_weights(retained)
-    plan.source_weights.setdefault("perplexity", 1.0)
+    plan.source_weights.setdefault(
+        "perplexity", _mean_source_weight(plan.source_weights),
+    )
     plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
@@ -7494,6 +7576,9 @@ def _attempt_x_backend_memo(
     return items, err, err_state
 
 
+_SSH_HOST_UNSET: Any = object()
+
+
 def _fetch_youtube_stream(
     yt_query: str,
     from_date: str,
@@ -7503,12 +7588,19 @@ def _fetch_youtube_stream(
     *,
     has_ytdlp: bool,
     freshness_mode: str | None = None,
+    ssh_host: Any = _SSH_HOST_UNSET,
 ) -> tuple[list[dict], dict]:
     """Search, backfill, transcribe, and comment-enrich one YouTube query."""
     # An abandoned lane keeps running after the report is saved; once the
     # run is over, every ScrapeCreators call in it is wasted credit (#1315).
     deadline = config.get("_research_deadline")
-    with youtube_yt.sc_spend_until(
+    scoped_ssh = (
+        config.get("LAST30DAYS_YOUTUBE_SSH_HOST")
+        if ssh_host is _SSH_HOST_UNSET
+        else ssh_host
+    )
+    with youtube_yt.ssh_host_scope(scoped_ssh), \
+         youtube_yt.sc_spend_until(
         lambda: _research_stopped(config),
         cancel=config.get("_enrich_cancel"),
         deadline=deadline,
@@ -8327,30 +8419,33 @@ def _retrieve_stream_impl(
         # Use raw_topic so expand_youtube_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         yt_query = raw_topic or subquery.search_query
-        has_ytdlp = bool(which("yt-dlp"))
-        # One memo unit covers yt-dlp search, the ScrapeCreators fallback and
-        # merge, transcripts, and comments, so subquery streams and the
-        # thin-source retry share one fetch (hosts without yt-dlp included).
-        return fetch_memo.fetch_once(
-            (
-                "youtube", yt_query, from_date, to_date, depth, freshness_mode, has_ytdlp,
-                env.is_youtube_sc_available(config),
-                env.youtube_sc_min_items(config),
-                env.is_youtube_comments_available(config),
-                _comparison_entity_count(config),
-            ),
-            lambda: _fetch_youtube_stream(
-                yt_query, from_date, to_date, depth, config, has_ytdlp=has_ytdlp,
-                freshness_mode=freshness_mode,
-            ),
-            timeout=_memo_wait_seconds(config),
-            cacheable=_clean_stream_result,
-            cancel=config.get("_enrich_cancel"),
-        )
+        has_ytdlp, ssh_host = _resolve_ytdlp(config)
+        with youtube_yt.ssh_host_scope(ssh_host):
+            # One memo unit covers yt-dlp search, the ScrapeCreators fallback and
+            # merge, transcripts, and comments, so subquery streams and the
+            # thin-source retry share one fetch (hosts without yt-dlp included).
+            return fetch_memo.fetch_once(
+                (
+                    "youtube", yt_query, from_date, to_date, depth, freshness_mode, has_ytdlp,
+                    ssh_host,
+                    env.is_youtube_sc_available(config),
+                    env.is_youtube_comments_available(config),
+                    env.youtube_sc_min_items(config),
+                    _comparison_entity_count(config),
+                ),
+                lambda: _fetch_youtube_stream(
+                    yt_query, from_date, to_date, depth, config, has_ytdlp=has_ytdlp,
+                    freshness_mode=freshness_mode, ssh_host=ssh_host,
+                ),
+                timeout=_memo_wait_seconds(config),
+                cacheable=_clean_stream_result,
+                cancel=config.get("_enrich_cancel"),
+            )
     if source == "tiktok":
         # Use raw_topic so expand_tiktok_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         tiktok_query = raw_topic or subquery.search_query
+        has_ytdlp, ssh_host = _resolve_ytdlp(config)
 
         def _fetch_tiktok() -> tuple[list[dict], dict]:
             # Leave time to publish collected videos before the outer stream wait expires.
@@ -8428,23 +8523,26 @@ def _retrieve_stream_impl(
                     result["error"] = tiktok.BUDGET_ERROR
             return items, _result_outcome_artifact(source, result)
 
-        return fetch_memo.fetch_once(
-            (
-                "tiktok", tiktok_query, from_date, to_date, depth,
-                bool(env.get_tiktok_token(config)),
-                tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
-                env.is_tiktok_comments_available(config),
-                env.is_tiktok_public_comments_on(config),
-            ),
-            _fetch_tiktok,
-            timeout=_memo_wait_seconds(config),
-            cacheable=_clean_stream_result,
-            cancel=config.get("_enrich_cancel"),
-        )
+        with youtube_yt.ssh_host_scope(ssh_host):
+            return fetch_memo.fetch_once(
+                (
+                    "tiktok", tiktok_query, from_date, to_date, depth,
+                    bool(env.get_tiktok_token(config)),
+                    has_ytdlp, ssh_host,
+                    tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
+                    env.is_tiktok_comments_available(config),
+                    env.is_tiktok_public_comments_on(config),
+                ),
+                _fetch_tiktok,
+                timeout=_memo_wait_seconds(config),
+                cacheable=_clean_stream_result,
+                cancel=config.get("_enrich_cancel"),
+            )
     if source == "instagram":
         # Use raw_topic so expand_instagram_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         ig_query = raw_topic or subquery.search_query
+        has_ytdlp, ssh_host = _resolve_ytdlp(config)
         ig_deadline = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
         # Leave time to publish collected reels before the outer stream wait expires.
         remaining = max(0, ig_deadline - time.monotonic())
@@ -8480,18 +8578,20 @@ def _retrieve_stream_impl(
                 )
             return items, _result_outcome_artifact(source, result)
 
-        return fetch_memo.fetch_once(
-            (
-                "instagram", ig_query, from_date, to_date, depth,
-                bool(env.get_instagram_token(config)),
-                tuple(ig_creators or ()),
-                env.is_instagram_comments_available(config),
-            ),
-            _fetch_instagram,
-            timeout=_memo_wait_seconds(config),
-            cacheable=_clean_stream_result,
-            cancel=ig_cancel,
-        )
+        with youtube_yt.ssh_host_scope(ssh_host):
+            return fetch_memo.fetch_once(
+                (
+                    "instagram", ig_query, from_date, to_date, depth,
+                    bool(env.get_instagram_token(config)),
+                    has_ytdlp, ssh_host,
+                    tuple(ig_creators or ()),
+                    env.is_instagram_comments_available(config),
+                ),
+                _fetch_instagram,
+                timeout=_memo_wait_seconds(config),
+                cacheable=_clean_stream_result,
+                cancel=ig_cancel,
+            )
     if source == "linkedin":
         token = config.get("SCRAPECREATORS_API_KEY", "")
         result = linkedin.search_linkedin(

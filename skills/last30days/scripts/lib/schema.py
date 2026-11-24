@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
+import re
 from typing import Any, Literal
 
 from . import health
@@ -467,8 +468,23 @@ class RetrievalBundle:
         if not detail:
             return
         existing = self.detail_by_source.get(source)
-        if existing and detail not in existing:
-            detail = f"{existing}; {detail}"
+        if existing:
+            existing_clauses = [clause.strip() for clause in existing.split(";") if clause.strip()]
+            incoming_clauses = [clause.strip() for clause in detail.split(";") if clause.strip()]
+            if set(incoming_clauses).issubset(existing_clauses):
+                detail = existing
+            elif set(existing_clauses).issubset(incoming_clauses):
+                detail = "; ".join(dict.fromkeys(incoming_clauses))
+            else:
+                # Order merged clauses longest-first (Python's stable sort
+                # preserves arrival order on ties) so concurrent subqueries
+                # produce a deterministic leading detail regardless of finish order.
+                detail = "; ".join(
+                    sorted(
+                        dict.fromkeys(existing_clauses + incoming_clauses),
+                        key=lambda clause: -len(clause),
+                    )
+                )
         self.detail_by_source[source] = detail
         if state:
             prev_lane_state = self.lane_state_by_source.get(source)
@@ -840,6 +856,11 @@ def partition_freshness_verdicts(
     return public, private
 
 
+def _artifact_matches_source(key: str, source: str) -> bool:
+    """Match artifact keys by exact name or delimiter-bounded token segment."""
+    return re.search(rf"(?:^|[_\-]){re.escape(source)}(?:$|[_\-])", key.lower()) is not None
+
+
 def without_sources(report: Report, excluded_sources: set[str]) -> Report:
     """Return a deep-copied report with private source evidence removed.
 
@@ -874,28 +895,89 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
         for source, weight in clean.query_plan.source_weights.items()
         if source.lower() not in excluded
     }
+    rebuilt_subqueries: list[SubQuery] = []
     for subquery in clean.query_plan.subqueries:
-        subquery.sources[:] = [
+        remaining_sources = [
             source for source in subquery.sources if source.lower() not in excluded
         ]
+        if remaining_sources:
+            rebuilt_subqueries.append(
+                SubQuery(
+                    label=subquery.label,
+                    search_query=subquery.search_query,
+                    ranking_query=subquery.ranking_query,
+                    sources=remaining_sources,
+                    weight=subquery.weight,
+                )
+            )
+    clean.query_plan.subqueries = rebuilt_subqueries
 
     kept_candidates: list[Candidate] = []
     removed_candidate_ids: set[str] = set()
+    rehomed_candidate_ids: set[str] = set()
     for candidate in clean.ranked_candidates:
-        if candidate.source.lower() in excluded:
-            removed_candidate_ids.add(candidate.candidate_id)
-            continue
-        candidate.source_items = [
+        had_source_items = bool(candidate.source_items)
+        removed_items = [
+            item for item in candidate.source_items if item.source.lower() in excluded
+        ]
+        surviving_items = [
             item for item in candidate.source_items if item.source.lower() not in excluded
         ]
-        candidate.sources = [
+        if (had_source_items and not surviving_items) or (
+            not had_source_items and candidate.source.lower() in excluded
+        ):
+            removed_candidate_ids.add(candidate.candidate_id)
+            continue
+
+        candidate.source_items = surviving_items
+        if candidate.source.lower() in excluded:
+            primary = surviving_items[0]
+            candidate.item_id = primary.item_id
+            candidate.source = primary.source
+            candidate.title = primary.title
+            candidate.url = primary.url
+            candidate.snippet = primary.snippet or primary.body
+            candidate.explanation = None
+            candidate.fun_explanation = None
+            rehomed_candidate_ids.add(candidate.candidate_id)
+        elif removed_items and surviving_items and candidate.snippet:
+            removed_texts = {
+                text
+                for item in removed_items
+                for text in (item.snippet, item.body)
+                if text
+            }
+            if candidate.snippet in removed_texts:
+                primary = candidate_primary_item(candidate)
+                candidate.snippet = (primary.snippet or primary.body) if primary else ""
+
+        filtered_sources = [
             source for source in candidate.sources if source.lower() not in excluded
         ]
+        if not filtered_sources and surviving_items:
+            filtered_sources = list(dict.fromkeys(item.source for item in surviving_items))
+        elif (
+            (surviving_items or candidate.sources)
+            and candidate.source
+            and candidate.source.lower() not in {s.lower() for s in filtered_sources}
+        ):
+            filtered_sources = [candidate.source, *filtered_sources]
+        candidate.sources = filtered_sources
         candidate.native_ranks = {
             key: rank
             for key, rank in candidate.native_ranks.items()
             if key.rsplit(":", 1)[-1].lower() not in excluded
         }
+        provenance = candidate.metadata.get("provenance")
+        if isinstance(provenance, list):
+            candidate.metadata["provenance"] = [
+                entry
+                for entry in provenance
+                if not (
+                    isinstance(entry, dict)
+                    and str(entry.get("source") or "").lower() in excluded
+                )
+            ]
         kept_candidates.append(candidate)
     clean.ranked_candidates = kept_candidates
     candidate_by_id = {
@@ -903,6 +985,7 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
     }
 
     kept_clusters: list[Cluster] = []
+    title_invalidated_ids = removed_candidate_ids | rehomed_candidate_ids
     for cluster in clean.clusters:
         original_ids = list(cluster.candidate_ids)
         cluster.candidate_ids = [
@@ -921,7 +1004,7 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
             for source in candidate_sources(candidate_by_id[candidate_id])
             if source.lower() not in excluded
         })
-        if private_drill or any(candidate_id in removed_candidate_ids for candidate_id in original_ids):
+        if private_drill or any(candidate_id in title_invalidated_ids for candidate_id in original_ids):
             cluster.title = candidate_by_id[cluster.representative_ids[0]].title
         kept_clusters.append(cluster)
     clean.clusters = kept_clusters
@@ -931,7 +1014,7 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
         if verdict.candidate_id in candidate_by_id
     ]
     for key in list(clean.artifacts):
-        if any(source in key.lower() for source in excluded):
+        if any(_artifact_matches_source(key, source) for source in excluded):
             del clean.artifacts[key]
     if private_drill:
         clean.drill_of = None

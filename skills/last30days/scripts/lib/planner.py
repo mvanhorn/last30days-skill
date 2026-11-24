@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import unicodedata
 from collections import Counter
@@ -180,6 +181,11 @@ SOURCE_CAPABILITIES = {
     "perplexity": {"web", "reference", "analysis"},
     "jobs": {"jobs", "company_signal", "link"},
     "corpus": {"reference", "analysis"},
+}
+KNOWN_SOURCES: frozenset[str] = frozenset(SOURCE_CAPABILITIES) | {
+    "threads",
+    "pinterest",
+    "linkedin_profile",
 }
 
 
@@ -636,6 +642,67 @@ Rules:
 """.strip()
 
 
+def _sanitize_source_weights(
+    raw_weights: object,
+    *,
+    available: set[str],
+    requested: set[str],
+    eligible_sources: list[str],
+    topic: str,
+    intent_hint: str,
+    depth: str,
+) -> dict[str, float]:
+    recognized_sources = KNOWN_SOURCES | available
+    recognized_raw_positive: list[float] = []
+    explicit_weights: dict[str, float] = {}
+    if isinstance(raw_weights, dict):
+        for source, weight in raw_weights.items():
+            # Skip unknown/typo source keys so they neither join the plan nor
+            # trigger normalized-weight detection; real disabled sources still
+            # count in recognized_raw_positive.
+            if source not in recognized_sources or isinstance(weight, bool):
+                continue
+            try:
+                numeric = float(weight)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(numeric):
+                continue
+            if numeric > 0:
+                recognized_raw_positive.append(numeric)
+            if source in available and (not requested or source in requested):
+                explicit_weights[source] = numeric
+    source_weights = dict(explicit_weights)
+    if not source_weights:
+        source_weights = _default_source_weights(_infer_intent(topic), eligible_sources)
+    # Preserve the base weight of 1.0 for raw unnormalized boost maps (e.g.
+    # {"reddit": 3.0} keeps Reddit's 3:1 boost over an unweighted source), and
+    # use the mean of the filtered eligible weights whenever either the filtered
+    # weights or the recognized raw plan weights already sum to ~1.0 so omitted
+    # or backfilled sources sit at the planned mean even when a real planned
+    # source is disabled.
+    basis_weights = explicit_weights if explicit_weights else source_weights
+    positive_basis = [weight for weight in basis_weights.values() if weight > 0]
+    normalized_filtered = (
+        len(positive_basis) >= 2 and abs(sum(positive_basis) - 1.0) <= 0.05
+    )
+    normalized_recognized_raw = (
+        bool(explicit_weights)
+        and len(recognized_raw_positive) >= 2
+        and abs(sum(recognized_raw_positive) - 1.0) <= 0.05
+    )
+    if positive_basis and (normalized_filtered or normalized_recognized_raw):
+        default_weight = sum(positive_basis) / len(positive_basis)
+    else:
+        default_weight = 1.0
+    for source in eligible_sources:
+        source_weights.setdefault(source, default_weight)
+    if intent_hint in DEFAULT_INTENT_CAPABILITIES and depth != "quick":
+        for source in _default_sources_for_intent(intent_hint, eligible_sources):
+            source_weights.setdefault(source, default_weight)
+    return _normalize_weights(source_weights)
+
+
 def _sanitize_plan(
     raw: dict,
     topic: str,
@@ -665,25 +732,15 @@ def _sanitize_plan(
         source for source in available_sources
         if (not requested or source in requested)
     ]
-    source_weights = {
-        source: float(weight)
-        for source, weight in (raw.get("source_weights") or {}).items()
-        if source in available
-    }
-    if requested:
-        source_weights = {source: weight for source, weight in source_weights.items() if source in requested}
-    if not source_weights:
-        source_weights = _default_source_weights(_infer_intent(topic), eligible_sources)
-    # Ensure all eligible sources are available for subqueries. The LLM may
-    # assign high weights to its preferred sources, but omitted sources still
-    # participate with base weight so retrieval can overfetch and let fusion
-    # decide quality.
-    for source in eligible_sources:
-        source_weights.setdefault(source, 1.0)
-    if intent_hint in DEFAULT_INTENT_CAPABILITIES and depth != "quick":
-        for source in _default_sources_for_intent(intent_hint, eligible_sources):
-            source_weights.setdefault(source, 1.0)
-    source_weights = _normalize_weights(source_weights)
+    source_weights = _sanitize_source_weights(
+        raw.get("source_weights"),
+        available=available,
+        requested=requested,
+        eligible_sources=eligible_sources,
+        topic=topic,
+        intent_hint=intent_hint,
+        depth=depth,
+    )
 
     subqueries: list[schema.SubQuery] = []
     for index, subquery in enumerate((raw.get("subqueries") or [])[:_max_subqueries(intent_hint, topic)], start=1):
