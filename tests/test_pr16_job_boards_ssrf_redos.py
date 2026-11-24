@@ -1355,3 +1355,51 @@ def test_high174_kula_recovers_from_huge_integer_value_error():
     assert total == 1 and len(items) == 1
     assert items[0]["title"] == "Staff Engineer"
     assert items[0]["url"] == "https://careers.kula.ai/acme/42-staff-engineer"
+
+
+def test_high173_sitemap_guard_skips_live_dns_by_default_and_honors_custom_resolver(monkeypatch):
+    def fail_dns(*_args, **_kwargs):
+        raise AssertionError("sitemap._guard must not invoke live DNS by default")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_dns)
+    detect.resolves_public.cache_clear()
+    try:
+        assert sitemap._resolves_public is detect.resolves_public
+        guard = sitemap._guard("https://acme.com/sitemap.xml")
+        assert guard("https://careers.acme.com/sitemap-jobs.xml") is True
+        assert guard("https://evil.example/sitemap-jobs.xml") is False
+        assert guard("http://careers.acme.com/sitemap-jobs.xml") is False
+
+        monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: False)
+        custom_guard = sitemap._guard("https://acme.com/sitemap.xml")
+        assert custom_guard("https://careers.acme.com/sitemap-jobs.xml") is False
+    finally:
+        detect.resolves_public.cache_clear()
+
+
+def test_high174_sitemap_skips_malformed_loc_urls_before_urlparse(monkeypatch):
+    monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: True)
+    index_xml = (
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<sitemap><loc>https://[broken/</loc></sitemap>"
+        "<sitemap><loc>https://jobs.acme.com/en/jobs-sitemap.xml</loc></sitemap>"
+        "</sitemapindex>"
+    )
+    jobs_xml = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://[also-broken/</loc></url>"
+        "<url><loc>https://jobs.acme.com/jobs/12345-staff-engineer</loc></url>"
+        "</urlset>"
+    )
+    fake_rules = robots.Rules("Sitemap: https://jobs.acme.com/sitemap-index.xml\n")
+    bodies = {
+        "https://jobs.acme.com/sitemap-index.xml": index_xml,
+        "https://jobs.acme.com/en/jobs-sitemap.xml": jobs_xml,
+    }
+    with patch.object(robots, "rules_for", return_value=fake_rules):
+        with patch.object(jobs.http, "get_text", side_effect=lambda u, **_kw: bodies.get(u)):
+            host, urls, missed = sitemap.job_urls(["jobs.acme.com"], deadline=time.monotonic() + 5)
+
+    assert host == "jobs.acme.com"
+    assert urls == [("https://jobs.acme.com/jobs/12345-staff-engineer", "")]
+    assert missed is False

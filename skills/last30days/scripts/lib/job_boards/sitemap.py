@@ -90,7 +90,8 @@ def _fetch(url: str, deadline: float) -> str | None:
 def _guard(url: str) -> Callable[[str], bool]:
     """The redirect check for a fetch of ``url``: it may be redirected only to
     an address on the same site that is not on a private network."""
-    return detect.same_site_redirect_guard(url, resolves=_resolves_public)
+    custom_resolver = None if _resolves_public is detect.resolves_public else _resolves_public
+    return detect.same_site_redirect_guard(url, resolves=custom_resolver)
 
 
 def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
@@ -105,8 +106,11 @@ def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
     text = fetch(landed)
     if text is not None and landed:
         final = str(landed[-1])
+        if not detect.is_safe_public_url(final):
+            return None
         saw_https = require_https or any(
-            urlparse(str(hop)).scheme.lower() == "https" for hop in landed[:-1]
+            detect.is_safe_public_url(str(hop)) and urlparse(str(hop)).scheme.lower() == "https"
+            for hop in landed[:-1]
         )
         if (saw_https and urlparse(final).scheme.lower() != "https") or not _public_url(final, host):
             return None
@@ -214,11 +218,13 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                 missed = missed or _is_jobs_sitemap_url(url, jobs_host)
                 continue
             if xml_kind == "sitemapindex":
-                children = [loc for loc, _lastmod in entries]
-                # A jobs sitemap first, then English ones, then the rest.
-                children.sort(key=lambda child: (
-                    not _JOBS_WORD.search(urlparse(child).path), "/en" not in child,
-                ))
+                # Screen malformed URLs before urlparse() and sort jobs sitemaps first.
+                children = sorted(
+                    (loc for loc, _lastmod in entries if detect.is_safe_public_url(loc)),
+                    key=lambda child: (
+                        not _JOBS_WORD.search(urlparse(child).path), "/en" not in child,
+                    ),
+                )
                 # One file per path across languages: /fr/jobs/sitemap.xml
                 # lists the roles /en/jobs/sitemap.xml does.
                 kept: dict[str, str] = {}
@@ -228,8 +234,10 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                 queue = list(kept.values()) + queue
                 continue
             for page, lastmod in entries:
+                if not _public_url(page, host):
+                    continue
                 key = _role_key(page)
-                if _public_url(page, host) and _JOB_PATH.search(urlparse(page).path) and key not in found:
+                if _JOB_PATH.search(urlparse(page).path) and key not in found:
                     found[key] = (page, lastmod)
         if found:
             unread = bool(queue) and any(_is_jobs_sitemap_url(url, jobs_host) for url in queue)
