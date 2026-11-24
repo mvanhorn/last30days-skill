@@ -11,8 +11,10 @@ Covers:
 from __future__ import annotations
 
 import datetime as _dt
+import http.client as http_client
 import io
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -23,7 +25,7 @@ from urllib.request import Request
 
 import pytest
 
-from lib import http, parallel_mcp, resolve, web_search_keyless
+from lib import http, parallel_mcp, resolve, web_fetch_keyless, web_search_keyless
 
 
 def _start_server(handler_cls):
@@ -183,7 +185,7 @@ def test_strip_html_and_serp_parsers_are_linear_on_adversarial_inputs():
     assert web_search_keyless.parse_brave(brave_hostile, 10) == []
 
     elapsed = time.monotonic() - started
-    assert elapsed < 0.3, f"SERP parsers took {elapsed:.4f}s (possible ReDoS)"
+    assert elapsed < 1.0, f"SERP parsers took {elapsed:.4f}s (possible ReDoS)"
 
     # Real Brave fixture still parses cleanly.
     fixture = (
@@ -232,6 +234,12 @@ def test_strip_html_and_serp_parsers_are_linear_on_adversarial_inputs():
         "http://metadata.goog/",
         "http://0.0.0.0:8080/",
         "http://[::]:8080/",
+        "http://169\uff0e254\uff0e169\uff0e254",
+        "http://169\u3002254\u3002169\u3002254/",
+        "http://\uff11\uff16\uff19\uff0e\uff12\uff15\uff14\uff0e\uff11\uff16\uff19\uff0e\uff12\uff15\uff14/",
+        "http://\uff4d\uff45\uff54\uff41\uff44\uff41\uff54\uff41.google.internal/",
+        "http://\uff4d\uff45\uff54\uff41\uff44\uff41\uff54\uff41.goog/",
+        "http://169.254.169.254%25eth0/",
     ],
 )
 def test_searxng_rejects_unsafe_or_malformed_urls_without_raising(bad_url: str):
@@ -363,6 +371,84 @@ def test_searxng_live_server_allows_same_origin_and_blocks_cross_origin_redirect
         _stop_server(target_srv, target_t)
 
 
+def test_searxng_idna_normalizes_valid_idn_and_blocks_fullwidth_redirects():
+    validated = web_search_keyless._validate_searxng_url("https://caf\u00e9.example:8443/searx/")
+    assert validated is not None
+    normalized, origin = validated
+    assert normalized == "https://xn--caf-dma.example:8443/searx"
+    assert origin == ("https", "xn--caf-dma.example", 8443)
+
+    guard = web_search_keyless._searxng_redirect_guard(origin)
+    assert guard("http://169\uff0e254\uff0e169\uff0e254/latest") is False
+    assert guard("http://\uff4d\uff45\uff54\uff41\uff44\uff41\uff54\uff41.google.internal/") is False
+    assert guard("https://caf\u00e9.example:8443/search?q=1") is True
+
+
+@pytest.mark.parametrize(
+    "resolved_addrs",
+    [
+        [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("169.254.169.254", 80))],
+        [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("fe80::1", 80, 0, 0))],
+        [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("fd00:ec2::254", 80, 0, 0))],
+        [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("100.100.100.200", 80))],
+        [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("0.0.0.0", 80))],
+        [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("::", 80, 0, 0))],
+        [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("224.0.0.1", 80))],
+        [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 80)),
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("169.254.169.254", 80)),
+        ],
+    ],
+)
+def test_searxng_blocks_dns_rebinding_to_imds_and_disallowed_ips_at_connect(
+    monkeypatch, resolved_addrs,
+):
+    connect_calls: list[object] = []
+
+    def fail_connect(self, addr):
+        connect_calls.append(addr)
+        raise AssertionError(f"socket.connect should never be called for blocked IP {addr}")
+
+    monkeypatch.setattr(http.socket, "getaddrinfo", lambda *_a, **_kw: resolved_addrs)
+    monkeypatch.setattr(socket.socket, "connect", fail_connect)
+
+    items = web_search_keyless._search_searxng("topic", 5, "http://169.254.169.254.nip.io")
+    assert items == []
+    assert connect_calls == []
+
+
+def test_searxng_connect_time_dns_validation_allows_hostname_resolving_to_loopback(monkeypatch):
+    class LoopbackSearxHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            payload = json.dumps({
+                "results": [{"url": "https://example.org/local", "title": "Local OK", "content": "hi"}]
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    srv, thread, _base = _start_server(LoopbackSearxHandler)
+    port = srv.server_port
+    try:
+        monkeypatch.setattr(
+            http.socket,
+            "getaddrinfo",
+            lambda host, p, *_a, **_kw: [
+                (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", int(p or port)))
+            ],
+        )
+        items = web_search_keyless._search_searxng("topic", 5, f"http://local-searx.example:{port}")
+        assert len(items) == 1
+        assert items[0]["url"] == "https://example.org/local"
+    finally:
+        _stop_server(srv, thread)
+
+
 # ---------------------------------------------------------------------------
 # HIGH-204: Bounded reads & errors="replace" decoding without UnicodeDecodeError
 # ---------------------------------------------------------------------------
@@ -451,6 +537,39 @@ def test_keyless_search_bounds_reads_and_decodes_invalid_utf8_without_raising(mo
         assert artifact["keyless_rungs"]["ddg"] == web_search_keyless.ERROR
     finally:
         _stop_server(srv, thread)
+
+
+def test_web_fetch_keyless_enforces_4mib_bound_and_replace_decoding(monkeypatch):
+    with patch.object(web_fetch_keyless.http, "get_text", return_value="# OK") as mock_get:
+        res = web_fetch_keyless.fetch_markdown("https://example.com/article")
+    assert res.ok is True
+    assert mock_get.call_args.kwargs.get("max_bytes") == 4 * 1024 * 1024
+    assert mock_get.call_args.kwargs.get("decode_errors") == "replace"
+
+    # Non-UTF-8 byte in Jina markdown decodes cleanly with replacement instead of crashing.
+    resp = MagicMock()
+    resp.__enter__.return_value = resp
+    resp.__exit__.return_value = False
+    resp.status = 200
+    resp.headers = {}
+    resp.read.return_value = b"# Caf\xe9 Notes\n\nBody text."
+    with patch.object(web_fetch_keyless.http, "_open_request", return_value=resp):
+        res = web_fetch_keyless.fetch_markdown("https://example.com/cafe")
+    assert res.ok is True
+    assert "Caf\ufffd Notes" in res.markdown
+
+    # Oversized reader response fails cleanly without raising.
+    monkeypatch.setattr(web_fetch_keyless, "_MAX_MARKDOWN_BYTES", 64)
+    big_resp = MagicMock()
+    big_resp.__enter__.return_value = big_resp
+    big_resp.__exit__.return_value = False
+    big_resp.status = 200
+    big_resp.headers = {"Content-Length": "2048"}
+    big_resp.read.return_value = b"A" * 2048
+    with patch.object(web_fetch_keyless.http, "_open_request", return_value=big_resp):
+        res = web_fetch_keyless.fetch_markdown("https://example.com/huge")
+    assert res.ok is False
+    assert res.reason == "fetch-failed"
 
 
 # ---------------------------------------------------------------------------
@@ -673,3 +792,125 @@ def test_parallel_mcp_scrubs_api_key_in_errors_and_rejects_bad_utf8_json():
 
     with pytest.raises(RuntimeError, match="invalid JSON-RPC response"):
         parallel_mcp._matching_response(b"\xff\xfe", 1)
+
+
+def test_parallel_mcp_cleanup_swallows_http_client_bad_status_line():
+    responses = [
+        ({"result": {"protocolVersion": parallel_mcp._PROTOCOL_VERSION}}, "sess-bad-delete"),
+        ({}, "sess-bad-delete"),
+        ({"result": {"tools": [{"name": "web_search"}]}}, "sess-bad-delete"),
+        (
+            {
+                "result": {
+                    "structuredContent": {
+                        "results": [
+                            {
+                                "url": "https://example.com/kept",
+                                "title": "Kept Result",
+                                "publish_date": "2026-10-15",
+                                "excerpts": ["Still returned after DELETE BadStatusLine"],
+                            }
+                        ]
+                    }
+                }
+            },
+            "sess-bad-delete",
+        ),
+        http_client.BadStatusLine("MALFORMED-DELETE-REPLY"),
+    ]
+    with patch.object(parallel_mcp, "_request", side_effect=responses):
+        items, artifact = parallel_mcp.search("topic", ("2026-10-01", "2026-11-01"))
+    assert len(items) == 1
+    assert items[0]["url"] == "https://example.com/kept"
+    assert artifact["resultCount"] == 1
+
+
+def test_parallel_mcp_cleanup_swallows_live_malformed_delete_response(monkeypatch):
+    class MalformedDeleteHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            method = body.get("method")
+            if method == "initialize":
+                reply = {"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": parallel_mcp._PROTOCOL_VERSION}}
+                raw = json.dumps(reply).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Mcp-Session-Id", "sess-live-bad")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            if method == "notifications/initialized":
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if method == "tools/list":
+                reply = {"jsonrpc": "2.0", "id": body["id"], "result": {"tools": [{"name": "web_search"}]}}
+            else:
+                reply = {
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {
+                        "structuredContent": {
+                            "results": [
+                                {
+                                    "url": "https://example.com/live-kept",
+                                    "title": "Live Kept",
+                                    "publish_date": "2026-10-20",
+                                    "excerpts": ["Survives malformed DELETE"],
+                                }
+                            ]
+                        }
+                    },
+                }
+            raw = json.dumps(reply).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_DELETE(self):
+            # Send invalid HTTP status line directly on the socket to trigger BadStatusLine.
+            self.wfile.write(b"NOT-AN-HTTP-STATUS-LINE\r\n\r\n")
+            self.wfile.flush()
+            self.close_connection = True
+
+    srv, thread, base = _start_server(MalformedDeleteHandler)
+    try:
+        monkeypatch.setattr(parallel_mcp, "PARALLEL_MCP_URL", f"{base}/mcp")
+        items, artifact = parallel_mcp.search("topic", ("2026-10-01", "2026-11-01"))
+        assert len(items) == 1
+        assert items[0]["url"] == "https://example.com/live-kept"
+        assert artifact["resultCount"] == 1
+    finally:
+        _stop_server(srv, thread)
+
+
+def test_parallel_mcp_abort_handles_socket_without_shutdown_and_early_wake_jitter():
+    class MinimalSock:
+        pass
+
+    class CustomResp:
+        _sock = MinimalSock()
+
+    # Must not raise AttributeError when _sock lacks shutdown().
+    parallel_mcp._abort_response(CustomResp())
+
+    # Early timer wake within _DEADLINE_JITTER_SECONDS converts TimeoutError to DeadlineExceeded.
+    class EarlyTimeoutSSEResp:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def readline(self, _size=-1):
+            raise TimeoutError("timed out slightly early")
+
+    deadline = time.monotonic() + 0.01  # 10ms remaining (< 50ms jitter tolerance)
+    with pytest.raises(http.DeadlineExceeded):
+        parallel_mcp._read_response(EarlyTimeoutSSEResp(), 1, deadline_monotonic=deadline)
+

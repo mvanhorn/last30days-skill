@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client as http_client
 import json
 import socket
 import threading
@@ -25,6 +26,7 @@ _MAX_SESSION_REQUESTS = 9
 _DEFAULT_SEARCH_TIMEOUT = 60.0
 _CLEANUP_TIMEOUT = 3.0
 _READ_CHUNK_BYTES = 65_536
+_DEADLINE_JITTER_SECONDS = 0.05
 
 # Threads the shared search deadline/cancel/timeout budget into _request without
 # adding extra kwargs to search()'s _request calls (preserving 3-arg test mocks).
@@ -72,12 +74,28 @@ def _set_response_timeout(response: Any, remaining: float | None) -> None:
             pass
 
 
+def _is_deadline_timeout(
+    deadline_monotonic: float | None,
+    cancel: threading.Event | None,
+    *,
+    clamped_to_deadline: bool = True,
+) -> bool:
+    if cancel is not None and cancel.is_set():
+        return True
+    if deadline_monotonic is None:
+        return False
+    now = time.monotonic()
+    if now >= deadline_monotonic:
+        return True
+    return clamped_to_deadline and now >= (deadline_monotonic - _DEADLINE_JITTER_SECONDS)
+
+
 def _abort_response(response: Any) -> None:
     """Unblock a worker thread waiting in recv() without taking BufferedReader's lock."""
     if response is None:
         return
     sock = _response_socket(response)
-    if sock is not None:
+    if sock is not None and hasattr(sock, "shutdown"):
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -118,7 +136,7 @@ def _read_response(
                 try:
                     chunk = response.read1(to_read)
                 except TimeoutError as exc:
-                    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                    if _is_deadline_timeout(deadline_monotonic, cancel):
                         raise http.DeadlineExceeded() from exc
                     raise
                 if not chunk:
@@ -132,7 +150,7 @@ def _read_response(
             try:
                 payload = response.read(_MAX_RESPONSE_BYTES + 1)
             except TimeoutError as exc:
-                if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                if _is_deadline_timeout(deadline_monotonic, cancel):
                     raise http.DeadlineExceeded() from exc
                 raise
             if len(payload) > _MAX_RESPONSE_BYTES:
@@ -188,7 +206,7 @@ def _read_response(
                 try:
                     chunk = response.read1(to_read)
                 except TimeoutError as exc:
-                    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                    if _is_deadline_timeout(deadline_monotonic, cancel):
                         raise http.DeadlineExceeded() from exc
                     raise
                 if not chunk:
@@ -208,7 +226,7 @@ def _read_response(
                 try:
                     raw_line = response.readline(_MAX_RESPONSE_BYTES - total + 1)
                 except TimeoutError as exc:
-                    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                    if _is_deadline_timeout(deadline_monotonic, cancel):
                         raise http.DeadlineExceeded() from exc
                     raise
                 total += len(raw_line)
@@ -241,9 +259,9 @@ def _request(
             timeout = budget[2]
     http._check_http_scheme(PARALLEL_MCP_URL)
     remaining = _remaining_seconds(deadline_monotonic, cancel)
-    effective_timeout = float(http.DEFAULT_TIMEOUT if timeout is None else timeout)
-    if remaining is not None:
-        effective_timeout = min(effective_timeout, remaining)
+    base_timeout = float(http.DEFAULT_TIMEOUT if timeout is None else timeout)
+    clamped_to_deadline = remaining is not None and remaining <= base_timeout
+    effective_timeout = min(base_timeout, remaining) if remaining is not None else base_timeout
 
     headers = {
         "Accept": "application/json, text/event-stream",
@@ -292,14 +310,17 @@ def _request(
                     with lock:
                         active_box[0] = None
         except TimeoutError as exc:
-            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            if _is_deadline_timeout(
+                deadline_monotonic, cancel, clamped_to_deadline=clamped_to_deadline,
+            ):
                 raise http.DeadlineExceeded() from exc
             raise
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", None)
             if (
-                deadline_monotonic is not None
-                and time.monotonic() >= deadline_monotonic
+                _is_deadline_timeout(
+                    deadline_monotonic, cancel, clamped_to_deadline=clamped_to_deadline,
+                )
                 and (isinstance(reason, TimeoutError) or "timed out" in str(reason).lower())
             ):
                 raise http.DeadlineExceeded() from exc
@@ -481,9 +502,9 @@ def search(
                         _request(None, api_key, session_id)
                     except urllib.error.HTTPError as error:
                         error.close()
-                    except (OSError, RuntimeError, ValueError, http.HTTPError):
-                        # Cleanup is best-effort: unsupported DELETEs or a network
-                        # failure must not hide search results or the original error.
+                    except (OSError, RuntimeError, ValueError, http.HTTPError, http_client.HTTPException):
+                        # Cleanup is best-effort: unsupported DELETEs, malformed responses,
+                        # or a network failure must not hide search results or the original error.
                         pass
                     finally:
                         _REQUEST_BUDGET.reset(cleanup_token)

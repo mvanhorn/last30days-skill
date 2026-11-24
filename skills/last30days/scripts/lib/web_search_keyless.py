@@ -252,8 +252,32 @@ def _is_blocked_searxng_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) 
     return False
 
 
+def _is_allowed_searxng_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return not _is_blocked_searxng_ip(addr)
+
+
+def _normalize_searxng_host(host: str) -> str:
+    """Normalize a SearXNG hostname via IDNA to canonical ASCII, or '' if invalid."""
+    raw = (host or "").strip()
+    if not raw or "%" in raw:
+        return ""
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return ""
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    if ":" in raw:
+        return raw.lower().rstrip(".") if raw.isascii() else ""
+    try:
+        normalized = raw.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return ""
+    if not normalized or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in normalized):
+        return ""
+    return normalized
+
+
 def _is_blocked_searxng_host(host: str) -> bool:
-    normalized = (host or "").strip().lower().rstrip(".")
+    normalized = _normalize_searxng_host(host)
     if not normalized:
         return True
     if (
@@ -285,15 +309,19 @@ def _validate_searxng_url(instance_url: str) -> Optional[tuple[str, tuple[str, s
         return None
     if parts.username is not None or parts.password is not None:
         return None
+    if "%" in parts.netloc:
+        return None
     if parts.query or parts.fragment:
         return None
-    host = (parts.hostname or "").strip().lower().rstrip(".")
+    host = _normalize_searxng_host(parts.hostname or "")
     if not host or _is_blocked_searxng_host(host):
         return None
     effective_port = port if port is not None else (443 if scheme == "https" else 80)
     origin = (scheme, host, effective_port)
     base_path = parts.path.rstrip("/")
-    normalized = urlunsplit((scheme, parts.netloc, base_path, "", ""))
+    netloc_host = f"[{host}]" if ":" in host else host
+    netloc = f"{netloc_host}:{port}" if port is not None else netloc_host
+    normalized = urlunsplit((scheme, netloc, base_path, "", ""))
     return normalized, origin
 
 
@@ -342,7 +370,9 @@ def _searxng_redirect_guard(origin: tuple[str, str, int]):
             return False
         if parts.username is not None or parts.password is not None:
             return False
-        host = (parts.hostname or "").strip().lower().rstrip(".")
+        if "%" in parts.netloc:
+            return False
+        host = _normalize_searxng_host(parts.hostname or "")
         if not host or _is_blocked_searxng_host(host):
             return False
         effective_port = port if port is not None else (443 if scheme == "https" else 80)
@@ -791,6 +821,7 @@ def _search_searxng(
             retries=2,
             deadline_monotonic=deadline_monotonic,
             redirect_guard=_searxng_redirect_guard(origin),
+            ip_validator=_is_allowed_searxng_ip,
             max_bytes=_MAX_SEARXNG_BYTES,
             decode_errors="replace",
         )
