@@ -884,6 +884,38 @@ class TestHigh022PostPlanWeightNormalization:
             )
             assert plan_bad_eligible.source_weights == pytest.approx(baseline.source_weights)
 
+        # Normalized plan where one planned source is disabled/unavailable
+        # (reddit=0.5, x=0.3, youtube=0.2 -> raw sum 1.0, filtered sum 0.8):
+        # unweighted digg must receive the filtered mean 0.4 (0.4 / 1.2 = 1/3),
+        # not 1.0.
+        normalized_with_disabled = {
+            **base_raw,
+            "source_weights": {"reddit": 0.5, "x": 0.3, "youtube": 0.2},
+        }
+        plan_disabled_unavailable = planner._sanitize_plan(
+            normalized_with_disabled,
+            "Acme Corp",
+            ["reddit", "x", "digg"],
+            None,
+            "default",
+            honor_plan_sources=True,
+        )
+        assert plan_disabled_unavailable.source_weights["reddit"] == pytest.approx(0.5 / 1.2)
+        assert plan_disabled_unavailable.source_weights["x"] == pytest.approx(0.3 / 1.2)
+        assert plan_disabled_unavailable.source_weights["digg"] == pytest.approx(0.4 / 1.2)
+
+        plan_disabled_excluded = planner._sanitize_plan(
+            normalized_with_disabled,
+            "Acme Corp",
+            ["reddit", "x", "digg", "youtube"],
+            ["reddit", "x", "digg"],
+            "default",
+            honor_plan_sources=True,
+        )
+        assert plan_disabled_excluded.source_weights == pytest.approx(
+            plan_disabled_unavailable.source_weights
+        )
+
 
 # ---------------------------------------------------------------------------
 # HIGH-023: YouTube SSH host routing without local yt-dlp binary

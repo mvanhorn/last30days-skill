@@ -667,31 +667,42 @@ def _sanitize_plan(
         if (not requested or source in requested)
     ]
     raw_weights = raw.get("source_weights")
+    raw_positive: list[float] = []
     explicit_weights: dict[str, float] = {}
     if isinstance(raw_weights, dict):
         for source, weight in raw_weights.items():
-            if source not in available or (requested and source not in requested):
-                continue
             if isinstance(weight, bool):
                 continue
             try:
                 numeric = float(weight)
             except (TypeError, ValueError, OverflowError):
                 continue
-            if math.isfinite(numeric):
+            if not math.isfinite(numeric):
+                continue
+            if numeric > 0:
+                raw_positive.append(numeric)
+            if source in available and (not requested or source in requested):
                 explicit_weights[source] = numeric
     source_weights = dict(explicit_weights)
     if not source_weights:
         source_weights = _default_source_weights(_infer_intent(topic), eligible_sources)
     # Ensure all eligible sources are available for subqueries. Preserve the
     # base weight of 1.0 for raw unnormalized boost maps (e.g. {"reddit": 3.0}
-    # keeps Reddit's 3:1 boost over an unweighted source), and use the mean
-    # weight only when the filtered eligible plan weights already sum to ~1.0
-    # so omitted or backfilled sources do not outweigh normalized planned
-    # sources and ignored/excluded sources never skew the default.
+    # keeps Reddit's 3:1 boost over an unweighted source), and use the mean of
+    # the filtered eligible weights whenever either the filtered weights or the
+    # raw plan weights already sum to ~1.0 so omitted/backfilled sources sit at
+    # the planned mean even when a planned source is unavailable or disabled.
     basis_weights = explicit_weights if explicit_weights else source_weights
     positive_basis = [weight for weight in basis_weights.values() if weight > 0]
-    if len(positive_basis) >= 2 and abs(sum(positive_basis) - 1.0) <= 0.05:
+    normalized_filtered = (
+        len(positive_basis) >= 2 and abs(sum(positive_basis) - 1.0) <= 0.05
+    )
+    normalized_raw = (
+        bool(explicit_weights)
+        and len(raw_positive) >= 2
+        and abs(sum(raw_positive) - 1.0) <= 0.05
+    )
+    if positive_basis and (normalized_filtered or normalized_raw):
         default_weight = sum(positive_basis) / len(positive_basis)
     else:
         default_weight = 1.0
