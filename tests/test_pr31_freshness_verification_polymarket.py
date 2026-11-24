@@ -1406,6 +1406,56 @@ def test_greptile_r5_unused_group_title_on_non_subject_question_does_not_block_s
     assert verdicts[1].current_value == 0.35
 
 
+def test_greptile_r6_non_subject_group_titles_still_count_for_title_uniqueness(monkeypatch):
+    """Greptile R6 P1 (4681850135):
+    title_counts in _sibling_outcome_labels must count groupItemTitle across ALL
+    sibling markets (matching origin/main) so 'Will Alice win?' (groupItemTitle='Bob')
+    and 'Will Bob win?' (groupItemTitle='Winner') keep 'Alice' and 'Bob' when two
+    'Does ...' siblings share 'Bob' and 'Winner'. Rechecking saved 'Bob' must read
+    Bob's 0.35 odds, not Alice's 0.60."""
+    event = {
+        "id": "714",
+        "slug": "alice-bob-does",
+        "title": "Tournament outcomes?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            _binary_submarket("Will Alice win?", "Bob", 0.60),
+            _binary_submarket("Will Bob win?", "Winner", 0.35),
+            _binary_submarket("Does X qualify?", "Bob", 0.20),
+            _binary_submarket("Does Y qualify?", "Winner", 0.15),
+        ],
+    }
+    [parsed] = polymarket.parse_polymarket_response({"events": [event]}, include_all_outcomes=True)
+    assert dict(parsed["outcome_prices"]) == {
+        "Alice": 0.60,
+        "Bob": 0.35,
+        "Does X qualify": 0.20,
+        "Does Y qualify": 0.15,
+    }
+
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+    item = SimpleNamespace(metadata={"event_id": "714"}, url="", item_id="pm-714")
+    assert polymarket.refetch_datum(item, "Bob")["value"] == 0.35
+    assert polymarket.refetch_datum(item, "Alice")["value"] == 0.60
+
+    saved = _item(
+        "polymarket",
+        title="Tournament outcomes?",
+        url="https://polymarket.com/event/alice-bob-does",
+        metadata={"event_id": "714", "outcome_prices": [["Alice", 0.60], ["Bob", 0.35]]},
+    )
+    verdicts = freshness.verify_report(
+        _report(saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert [v.verdict for v in verdicts] == ["current", "current"]
+    assert verdicts[1].current_value == 0.35
+
+
+
 
 
 def test_greptile3_bad_price_on_top_binary_market_does_not_hide_valid_siblings():

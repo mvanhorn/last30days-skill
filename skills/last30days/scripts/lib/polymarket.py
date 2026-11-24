@@ -903,8 +903,8 @@ def _sibling_outcome_labels(sibling_markets: List[Dict[str, Any]]) -> Dict[int, 
         " ".join(str(market.get("groupItemTitle") or "").split()) for market in sibling_markets
     ]
     title_counts: Dict[str, int] = {}
-    for title, is_subject in zip(group_titles, subjects):
-        if is_subject and title:
+    for title in group_titles:
+        if title:
             title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
     labels = [
         title
