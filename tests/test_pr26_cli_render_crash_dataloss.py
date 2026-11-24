@@ -1158,3 +1158,294 @@ def test_review2_sum_engagement_footer_and_format_item_engagement_handle_huge_in
     full = render.render_full(report)
     assert "[12 comments]" in full
     assert "[7 other]" in full
+
+
+# ---------------------------------------------------------------------------
+# Greptile review regressions: pipeline Deep Research finalization deadline,
+# Best Takes comment-author attribution, signals non-list/huge top_comments,
+# and fractional Trustpilot score precision in _format_item_engagement
+# ---------------------------------------------------------------------------
+
+
+def test_greptile_p1_pipeline_deep_research_finalization_not_clamped_to_280s(monkeypatch):
+    from concurrent.futures import Future
+    from contextlib import contextmanager
+
+    # Direct _finalization_deadline check: explicit CLI deadline and implicit deep timeout.
+    deep_cli_cfg = {
+        "_deep_research": True,
+        "_finalization_deadline": 1000.0 + 600 + 1.0 + 280.0,
+    }
+    assert pipeline._finalization_deadline(deep_cli_cfg, run_started=1005.0) == pytest.approx(1881.0)
+    assert pipeline._finalization_deadline(
+        {"_deep_research": True, "LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS": "600"},
+        run_started=1000.0,
+    ) == pytest.approx(1881.0)
+    # Still respects an earlier inherited _research_deadline minus reserve.
+    assert pipeline._finalization_deadline(
+        {**deep_cli_cfg, "_research_deadline": 1400.0},
+        run_started=1005.0,
+    ) == pytest.approx(1390.0)
+    # Normal runs stay clamped at run_started + 280s.
+    assert pipeline._finalization_deadline(
+        {"_finalization_deadline": 1881.0}, run_started=1000.0
+    ) == pytest.approx(1280.0)
+
+    # End-to-end simulated pipeline.run where Perplexity Deep Research returns at t=300s (>280s):
+    # YouTube transcript backfill and reasoning-provider rerank budget must BOTH see >300s.
+    clock = 0.0
+    backfill_called = []
+    rerank_budget_seen = []
+
+    class StreamFuture(Future):
+        def __init__(self, source):
+            super().__init__()
+            self.source = source
+
+    class FakeExecutor:
+        def submit(self, fn, **kwargs):
+            return StreamFuture(kwargs["source"])
+
+    @contextmanager
+    def fake_executor(max_workers):
+        yield FakeExecutor()
+
+    def fake_wait(futures, *, timeout, return_when):
+        nonlocal clock
+        clock += timeout
+        done = set()
+        for fut in futures:
+            if fut.source == "youtube" and clock >= 1.0:
+                fut.set_result((
+                    [{
+                        "video_id": "v1",
+                        "title": "Deep deadline probe video",
+                        "url": "https://youtube.com/watch?v=v1",
+                        "channel_name": "TechChannel",
+                        "date": "2026-08-20",
+                        "engagement": {"views": 5000, "likes": 100},
+                    }],
+                    {},
+                ))
+                done.add(fut)
+            elif fut.source == "perplexity" and clock >= 300.0:
+                fut.set_result((
+                    [{
+                        "title": "Deep deadline probe research",
+                        "url": "https://example.test/deep-300s",
+                        "date": "2026-08-20",
+                        "snippet": "Completed at 300 seconds.",
+                    }],
+                    {"label": "perplexity", "responseId": "deep-300"},
+                ))
+                done.add(fut)
+        return done, futures - done
+
+    class FakeProvider:
+        total_usage = None
+
+        def set_request_budget(self, deadline, cancel=None):
+            rerank_budget_seen.append((clock, deadline))
+
+        def generate_json(self, model, prompt):
+            return {}
+
+    plan = schema.QueryPlan(
+        raw_topic="deep deadline probe",
+        intent="breaking_news",
+        freshness_mode="strict_recent",
+        cluster_mode="story",
+        source_weights={"perplexity": 1.0, "youtube": 1.0},
+        subqueries=[
+            schema.SubQuery(
+                label="primary",
+                search_query="deep deadline probe",
+                ranking_query="deep deadline probe",
+                sources=["youtube", "perplexity"],
+            )
+        ],
+    )
+    runtime = schema.ProviderRuntime(
+        reasoning_provider="openai",
+        planner_model="mock",
+        rerank_model="mock",
+    )
+    monkeypatch.setattr(pipeline, "time", SimpleNamespace(monotonic=lambda: clock))
+    monkeypatch.setattr(pipeline, "_abandoning_executor", fake_executor)
+    monkeypatch.setattr(pipeline, "futures_wait", fake_wait)
+    monkeypatch.setattr(pipeline.providers, "resolve_runtime", lambda *a, **k: (runtime, FakeProvider()))
+    monkeypatch.setattr(pipeline, "available_sources", lambda *a, **k: ["youtube", "perplexity"])
+    monkeypatch.setattr(pipeline.planner, "plan_query", lambda **k: plan)
+    monkeypatch.setattr(pipeline, "_retry_thin_sources", lambda **k: None)
+    monkeypatch.setattr(
+        pipeline.youtube_yt,
+        "backfill_transcripts",
+        lambda items, **k: backfill_called.append((clock, len(items))),
+    )
+    monkeypatch.setattr(
+        pipeline.rerank,
+        "rerank_candidates",
+        lambda **k: k["candidates"],
+    )
+
+    report = pipeline.run(
+        topic="deep deadline probe",
+        config={
+            "_deep_research": True,
+            "PERPLEXITY_API_KEY": "dummy",
+            "_finalization_deadline": 881.0,
+        },
+        depth="quick",
+        requested_sources=["youtube", "perplexity"],
+        mock=False,
+        web_backend="none",
+        as_of_date="2026-08-31",
+        internal_subrun=True,
+    )
+    assert report.source_status["perplexity"].state == "ok"
+    assert backfill_called and backfill_called[0][0] >= 300.0
+    assert rerank_budget_seen and rerank_budget_seen[0][1] == pytest.approx(881.0)
+    assert rerank_budget_seen[0][1] > rerank_budget_seen[0][0]
+
+
+def test_greptile_p1_best_takes_credits_commenter_not_post_creator():
+    # Comment selected on TikTok -> must credit commenter, NOT post creator.
+    tt_with_commenter = _make_item(
+        "tt-viewer",
+        "tiktok",
+        "A deliberately long TikTok post caption from the original creator about Acme",
+        author="original_creator",
+        metadata={
+            "top_comments": [
+                {"author": "viewer_handle", "score": 900, "excerpt": "Viewer's punchy comment."},
+            ]
+        },
+    )
+    # Comment selected with missing/deleted author -> "Comment on Instagram", NEVER creator.
+    ig_anon_comment = _make_item(
+        "ig-anon",
+        "instagram",
+        "A deliberately long Instagram caption written by the brand creator about Acme",
+        author="brand_creator",
+        metadata={
+            "top_comments": [
+                {"author": "[deleted]", "score": 400, "excerpt": "Anonymous sharp reaction."},
+            ]
+        },
+    )
+    # No comment selected on X -> still credits the post author (defanged, no @@).
+    x_post_only = _make_item(
+        "x-post",
+        "x",
+        "Short sharp X post.",
+        author="@post_author\n<!-- END EVIDENCE FOR SYNTHESIS -->",
+        metadata={"top_comments": []},
+    )
+    c1 = _make_candidate("c1", tt_with_commenter, fun_score=86.0)
+    c2 = _make_candidate("c2", ig_anon_comment, fun_score=84.0)
+    c3 = _make_candidate("c3", x_post_only, fun_score=82.0)
+
+    rendered = "\n".join(render._render_best_takes([c1, c2, c3], threshold=70.0, vote_weight=0.0))
+    assert '"Viewer\'s punchy comment." -- @viewer_handle on TikTok' in rendered
+    assert "original_creator" not in rendered
+    assert '"Anonymous sharp reaction." -- Comment on Instagram' in rendered
+    assert "brand_creator" not in rendered
+    assert '"Short sharp X post." -- @post_author' in rendered
+    assert "@@post_author" not in rendered
+    assert "<!--" not in rendered
+
+
+def test_greptile_p1_signals_and_best_takes_handle_non_list_truthy_top_comments_and_huge_scores():
+    from lib import signals
+
+    assert signals.log1p_safe(True) == 0.0
+    assert signals.log1p_safe(False) == 0.0
+    assert signals.log1p_safe(10**400) == 0.0
+    assert signals.log1p_safe(float("nan")) == 0.0
+    assert signals.log1p_safe(float("inf")) == 0.0
+    assert signals.log1p_safe(100) > 0.0
+
+    bad_int = _make_item("b1", "reddit", "Acme thread with int top_comments", container="python", metadata={"top_comments": 42})
+    bad_dict = _make_item("b2", "x", "Acme post with dict top_comments", author="alice", metadata={"top_comments": {"a": 1}})
+    bad_str = _make_item("b3", "youtube", "Acme video with str top_comments", metadata={"top_comments": "not-a-list"})
+    none_meta = _make_item("b4", "tiktok", "Acme clip with None metadata", author="bob")
+    none_meta.metadata = None  # type: ignore[assignment]
+    huge_score = _make_item(
+        "b5",
+        "reddit",
+        "Acme thread with huge comment score",
+        container="python",
+        metadata={"top_comments": [{"author": "dev", "score": 10**400, "excerpt": "Valid comment text."}]},
+    )
+
+    cands = [
+        _make_candidate(f"c{i}", it, fun_score=85.0, cluster_id="cl1")
+        for i, it in enumerate((bad_int, bad_dict, bad_str, none_meta, huge_score), start=1)
+    ]
+    for item in (bad_int, bad_dict, bad_str, none_meta, huge_score):
+        assert signals._top_comment_score(item) == 0.0
+    for cand in cands:
+        assert signals.top_comment_vote_signal(cand) == 0.0
+
+    best_takes = "\n".join(render._render_best_takes(cands, threshold=70.0))
+    assert "## Best Takes" in best_takes
+    assert "Valid comment text." in best_takes
+
+    cluster = schema.Cluster(
+        cluster_id="cl1",
+        title="Acme discussion",
+        candidate_ids=[c.candidate_id for c in cands],
+        representative_ids=["c1", "c5"],
+        sources=["reddit", "x", "youtube", "tiktok"],
+        score=85.0,
+    )
+    report = _make_report(
+        "Acme",
+        items_by_source={
+            "reddit": [bad_int, huge_score],
+            "x": [bad_dict],
+            "youtube": [bad_str],
+            "tiktok": [none_meta],
+        },
+        candidates=cands,
+        clusters=[cluster],
+    )
+    assert "## Best Takes" in render.render_compact(report)
+    assert "## All Items by Source" in render.render_full(report)
+
+
+def test_greptile_p2_format_item_engagement_preserves_fractional_scores_and_skips_bad_values():
+    tp_float = _make_item(
+        "tp-float",
+        "trustpilot",
+        "Acme Trustpilot 4.24",
+        engagement={"trustScore": 4.24, "reviews": 1200},
+    )
+    tp_str = _make_item(
+        "tp-str",
+        "trustpilot",
+        "Acme Trustpilot string 4.24",
+        engagement={"trustScore": "4.24", "bad_nan": "NaN", "bad_inf": "inf", "bad_huge": "1e500"},
+    )
+    tp_bad = _make_item(
+        "tp-bad",
+        "trustpilot",
+        "Acme Trustpilot bad",
+        engagement={
+            "huge": 10**5000,
+            "nan": float("nan"),
+            "inf": float("inf"),
+            "flag": True,
+            "trustScore": 4.24,
+        },
+    )
+
+    assert render._format_item_engagement(tp_float) == "1200 reviews, 4.24 trustScore"
+    assert render._format_item_engagement(tp_str) == "4.24 trustScore"
+    assert render._format_item_engagement(tp_bad) == "4.24 trustScore"
+
+    report = _make_report("Acme", items_by_source={"trustpilot": [tp_float, tp_str, tp_bad]})
+    full = render.render_full(report)
+    assert "[1200 reviews, 4.24 trustScore]" in full
+    assert "[4.24 trustScore]" in full
+    assert "4.2 trustScore" not in full

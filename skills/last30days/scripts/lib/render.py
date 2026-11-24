@@ -2275,10 +2275,21 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
         if isinstance(val, (int, float)):
             if not _is_finite_number(val):
                 return ""
-            return _format_number(val)
-        numeric = _coerce_numeric(val)
-        if numeric is not None:
-            return _format_number(numeric) if numeric != 0 else ""
+            return str(val)
+        if isinstance(val, str):
+            numeric = _coerce_numeric(val)
+            if numeric is not None:
+                return _safe_title(val) if numeric != 0 else ""
+            stripped = val.strip()
+            if stripped:
+                try:
+                    float(stripped)
+                    return ""
+                except ValueError:
+                    pass
+                except OverflowError:
+                    return ""
+            return _safe_title(val)
         try:
             return _safe_title(str(val))
         except ValueError:
@@ -5319,9 +5330,14 @@ def _render_best_takes(
     for candidate, effective in gems[:limit]:
         text = (candidate.title or "").strip()
         selected_comment_item = None
+        selected_comment = None
         hackernews_take = None
         for item in candidate.source_items:
-            raw_comments = (item.metadata or {}).get("top_comments")
+            raw_comments = (
+                item.metadata.get("top_comments")
+                if isinstance(item.metadata, dict)
+                else None
+            )
             top_comments = (
                 raw_comments[:3] if isinstance(raw_comments, (list, tuple)) else []
             )
@@ -5343,12 +5359,13 @@ def _render_best_takes(
                 if item.source == "hackernews" and (
                     hackernews_take is None or len(body) < len(hackernews_take[0])
                 ):
-                    hackernews_take = (body, item)
+                    hackernews_take = (body, item, comment)
                 elif hackernews_take is None and len(body) < len(text):
                     text = body
                     selected_comment_item = item
+                    selected_comment = comment
         if hackernews_take is not None:
-            text, selected_comment_item = hackernews_take
+            text, selected_comment_item, selected_comment = hackernews_take
         attribution_item = (
             selected_comment_item
             or (candidate.source_items[0] if candidate.source_items else None)
@@ -5359,12 +5376,25 @@ def _render_best_takes(
             else candidate.source
         )
         source_label = _safe_title(_source_label(attribution_source))
-        author = _safe_title(str(attribution_item.author or "")) if attribution_item else ""
-        if author and attribution_source in ("x", "tiktok", "instagram", "threads"):
-            bare = author.lstrip("@").strip()
-            attribution = f"@{bare} on {source_label}" if bare else f"{source_label}"
+        if attribution_source in ("x", "tiktok", "instagram", "threads"):
+            if selected_comment is not None:
+                comment_author = (
+                    selected_comment.get("author")
+                    if isinstance(selected_comment, dict)
+                    else ""
+                )
+                who = _comment_attribution(attribution_source, comment_author)
+                attribution = f"{who} on {source_label}"
+            else:
+                author = (
+                    _safe_title(str(attribution_item.author or ""))
+                    if attribution_item
+                    else ""
+                )
+                bare = author.lstrip("@").strip()
+                attribution = f"@{bare} on {source_label}" if bare else source_label
         else:
-            attribution = f"{source_label}"
+            attribution = source_label
         if attribution_source == "reddit":
             container = (
                 re.sub(
@@ -5868,9 +5898,11 @@ def _clean_spoken(text: str) -> str:
 def _content_quotes(item: schema.SourceItem, topic: str) -> list[str]:
     """Lines said in a video, best first: YouTube's transcript highlights, or
     highlights drawn from a reel's or TikTok's spoken caption."""
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
     if item.source == "youtube":
-        lines = list(item.metadata.get("transcript_highlights") or [])
-    elif not item.metadata.get("spoken_caption"):
+        raw_hl = metadata.get("transcript_highlights")
+        lines = list(raw_hl) if isinstance(raw_hl, (list, tuple)) else []
+    elif not metadata.get("spoken_caption"):
         # The snippet is the written description when no transcript came back.
         return []
     else:
@@ -5880,7 +5912,7 @@ def _content_quotes(item: schema.SourceItem, topic: str) -> list[str]:
         lines = youtube_yt.extract_transcript_highlights(
             spoken, topic, max_words=_SHORTFORM_HIGHLIGHT_MAX_WORDS
         )
-    return [_clean_spoken(line) for line in lines if str(line or "").strip()]
+    return [_clean_spoken(line) for line in lines if isinstance(line, str) and line.strip()]
 
 
 def _quote_pool_has_vote(source: str, score) -> bool:
@@ -6077,7 +6109,13 @@ def _render_top_comments(
             # reaction to quote, so the next comment takes its position.
             community: list[tuple[dict, str]] = []
             entity_tags: dict[int, list[str]] = {}
-            for tc in item.metadata.get("top_comments") or []:
+            metadata = item.metadata if isinstance(item.metadata, dict) else {}
+            raw_top_comments = metadata.get("top_comments")
+            for tc in (
+                raw_top_comments
+                if isinstance(raw_top_comments, (list, tuple))
+                else ()
+            ):
                 if not isinstance(tc, dict):
                     continue
                 raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
@@ -6100,8 +6138,7 @@ def _render_top_comments(
             if scored and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
                 top_score = scored[0][0].get("score")
                 if not (
-                    isinstance(top_score, (int, float))
-                    and not isinstance(top_score, bool)
+                    _is_finite_number(top_score)
                     and top_score >= _quote_pool_item_floor(item)
                 ):
                     # Too few voted for the item's best comment: skip the item.
