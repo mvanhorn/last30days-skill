@@ -1472,6 +1472,298 @@ class TestHigh109DedupeUrlNormalization:
         assert [c.title for c in report.ranked_candidates] == [kept_title]
         assert report.source_status["polymarket"].items_returned == 1
 
+    def test_merge_drill_report_assigns_unique_id_to_web_candidate_at_conflicted_polymarket_url(self):
+        reused_url = "https://polymarket.com/event/fed-rate-decision"
+        ev_100 = _source_item(
+            "100",
+            "polymarket",
+            title="Fed May 2026 rate decision",
+            body="May 2026 meeting odds",
+            snippet="Cut 80%",
+            url=reused_url,
+            metadata={"event_id": "100", "headline": "Cut 80%"},
+            local_relevance=0.9,
+            freshness=90,
+            source_quality=0.8,
+        )
+        ev_200 = _source_item(
+            "200",
+            "polymarket",
+            title="Fed December 2026 rate decision",
+            body="December 2026 meeting odds",
+            snippet="Hold 65%",
+            url=reused_url,
+            metadata={"event_id": "200", "headline": "Hold 65%"},
+            local_relevance=0.88,
+            freshness=90,
+            source_quality=0.8,
+        )
+        web_item = _source_item(
+            "web-1",
+            "web",
+            title="Polymarket Fed rate decision overview",
+            body="Web commentary linking to the Polymarket Fed rate slug",
+            snippet="Overview of Polymarket odds for upcoming Fed meetings",
+            url=reused_url,
+            local_relevance=0.85,
+            freshness=85,
+            source_quality=0.7,
+        )
+        reddit_item = _source_item("r1", "reddit", title="Macro debate", body="Rate cut thread")
+
+        plan_all = _plan("fed rate decision", ["reddit", "polymarket", "web"])
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="local", planner_model="mock", rerank_model="mock",
+        )
+
+        # Base report has cluster-1 (reddit) and untouched cluster-2 holding Polymarket event "100"
+        # under bare candidate_id == reused_url.
+        reddit_cand = fusion.weighted_rrf({("primary", "reddit"): [reddit_item]}, plan_all, pool_limit=10)[0]
+        reddit_cand.final_score = 85.0
+        reddit_cand.cluster_id = "cluster-1"
+        untouched_100 = fusion.weighted_rrf(
+            {("primary", "polymarket"): [ev_100]}, plan_all, pool_limit=10,
+        )[0]
+        untouched_100.final_score = 75.0
+        untouched_100.cluster_id = "cluster-2"
+        assert untouched_100.candidate_id == reused_url
+
+        base_report = schema.Report(
+            topic="fed rate decision",
+            range_from="2026-10-01",
+            range_to="2026-10-22",
+            generated_at="2026-10-22T12:00:00+00:00",
+            provider_runtime=runtime,
+            query_plan=plan_all,
+            clusters=[
+                schema.Cluster(
+                    cluster_id="cluster-1",
+                    title=reddit_cand.title,
+                    candidate_ids=[reddit_cand.candidate_id],
+                    representative_ids=[reddit_cand.candidate_id],
+                    sources=["reddit"],
+                    score=85.0,
+                ),
+                schema.Cluster(
+                    cluster_id="cluster-2",
+                    title=untouched_100.title,
+                    candidate_ids=[untouched_100.candidate_id],
+                    representative_ids=[untouched_100.candidate_id],
+                    sources=["polymarket"],
+                    score=75.0,
+                ),
+            ],
+            ranked_candidates=[reddit_cand, untouched_100],
+            items_by_source={"reddit": [reddit_item], "polymarket": [ev_100]},
+            errors_by_source={},
+            source_status={
+                "reddit": schema.SourceOutcome(source="reddit", state="ok", items_returned=1),
+                "polymarket": schema.SourceOutcome(source="polymarket", state="ok", items_returned=1),
+            },
+        )
+
+        # Drill finds both Polymarket events ("100", "200") AND a web result at reused_url.
+        # weighted_rrf assigns the web candidate candidate_id == reused_url (colliding with cluster-2).
+        drill_cands = fusion.weighted_rrf(
+            {
+                ("primary", "polymarket"): [ev_100, ev_200],
+                ("primary", "web"): [web_item],
+            },
+            plan_all,
+            pool_limit=10,
+        )
+        for idx, cand in enumerate(drill_cands):
+            cand.final_score = 90.0 - idx
+        web_drill_cand = next(c for c in drill_cands if c.source == "web")
+        assert web_drill_cand.candidate_id == reused_url
+
+        drill_report = schema.Report(
+            topic="fed rate decision",
+            range_from="2026-10-01",
+            range_to="2026-10-22",
+            generated_at="2026-10-22T12:05:00+00:00",
+            provider_runtime=runtime,
+            query_plan=plan_all,
+            clusters=[
+                schema.Cluster(
+                    cluster_id="cluster-1",
+                    title=drill_cands[0].title,
+                    candidate_ids=[c.candidate_id for c in drill_cands],
+                    representative_ids=[c.candidate_id for c in drill_cands[:3]],
+                    sources=["polymarket", "web"],
+                    score=90.0,
+                )
+            ],
+            ranked_candidates=drill_cands,
+            items_by_source={"polymarket": [ev_100, ev_200], "web": [web_item]},
+            errors_by_source={},
+            source_status={
+                "polymarket": schema.SourceOutcome(source="polymarket", state="ok", items_returned=2),
+                "web": schema.SourceOutcome(source="web", state="ok", items_returned=1),
+            },
+        )
+
+        merged = pipeline.merge_drill_report(
+            base_report, drill_report, [base_report.clusters[0]], target="cluster 1",
+        )
+        all_ids = [c.candidate_id for c in merged.ranked_candidates]
+        assert len(all_ids) == len(set(all_ids)), f"duplicate candidate_ids: {all_ids}"
+
+        by_id = {c.candidate_id: c for c in merged.ranked_candidates}
+        cluster_1 = next(cl for cl in merged.clusters if cl.cluster_id == "cluster-1")
+        cluster_2 = next(cl for cl in merged.clusters if cl.cluster_id == "cluster-2")
+
+        # Untouched cluster-2 still resolves to Polymarket event "100".
+        assert cluster_2.candidate_ids == [reused_url]
+        assert by_id[reused_url].source == "polymarket"
+        assert by_id[reused_url].source_items[0].metadata["event_id"] == "100"
+
+        # Drilled cluster-1 contains the web result (with its own distinct ID) AND event "200".
+        c1_members = [by_id[cid] for cid in cluster_1.candidate_ids]
+        web_members = [c for c in c1_members if c.source == "web"]
+        poly_c1 = [c for c in c1_members if c.source == "polymarket"]
+        assert len(web_members) == 1
+        assert web_members[0].candidate_id != reused_url
+        assert web_members[0].title == web_item.title
+        assert [c.source_items[0].metadata["event_id"] for c in poly_c1] == ["200"]
+
+    def test_polymarket_fresh_matched_copy_keeps_empty_snippet_over_stale_price_move(self):
+        url = "https://polymarket.com/event/fed-rate-decision"
+        fresh_matched = _source_item(
+            "100",
+            "polymarket",
+            title="Fed May 2026 rate decision",
+            body="Fed May 2026 rate decision\nWill the Fed cut in May 2026?",
+            snippet="",
+            url=url,
+            engagement={"volume": 950_000, "liquidity": 310_000},
+            metadata={
+                "event_id": "100",
+                "question": "Will the Fed cut in May 2026?",
+                "end_date": "2026-05-07",
+                "odds": {"kind": "outcomes", "subject": "Fed May", "entries": [{"label": "Cut", "price": 0.72}]},
+                "headline": "Cut 72%",
+                "matched_market": {"label": "Cut", "question": "Will the Fed cut in May 2026?", "price": 0.72},
+                "selection_score": 85.0,
+                "selection_tier": 2,
+            },
+            local_relevance=0.9,
+            freshness=95,
+            source_quality=0.8,
+        )
+        saved_matched = _source_item(
+            "100",
+            "polymarket",
+            title="Fed May 2026 rate decision",
+            body="Fed May 2026 rate decision\nWill the Fed cut in May 2026?\nup 15% today",
+            snippet="up 15% today",
+            url=url,
+            engagement={"volume": 800_000, "liquidity": 250_000},
+            metadata={
+                "event_id": "100",
+                "question": "Will the Fed cut in May 2026?",
+                "end_date": "2026-05-07",
+                "odds": {"kind": "outcomes", "subject": "Fed May", "entries": [{"label": "Cut", "price": 0.57}]},
+                "headline": "Cut 57%",
+                "price_movement": "up 15% today",
+                "matched_market": {"label": "Cut", "question": "Will the Fed cut in May 2026?", "price": 0.57},
+                "selection_score": 80.0,
+                "selection_tier": 2,
+            },
+            local_relevance=0.9,
+            freshness=90,
+            source_quality=0.8,
+        )
+
+        # Direct merge_source_items keeps fresh empty snippet, fresh body, and fresh odds.
+        merged_direct = fusion.merge_source_items(
+            fusion._clone_source_item(fresh_matched), saved_matched,
+        )
+        assert merged_direct.snippet == ""
+        assert merged_direct.body == fresh_matched.body
+        assert merged_direct.metadata["headline"] == "Cut 72%"
+        assert merged_direct.metadata["odds"]["entries"][0]["price"] == 0.72
+        assert "price_movement" not in merged_direct.metadata
+
+        # dedupe_items (fresh first, saved second) keeps fresh empty snippet and fresh odds.
+        [deduped] = dedupe.dedupe_items([fresh_matched, saved_matched])
+        assert deduped.snippet == ""
+        assert deduped.body == fresh_matched.body
+        assert deduped.metadata["headline"] == "Cut 72%"
+
+        # merge_drill_report keeps fresh empty snippet in items_by_source["polymarket"].
+        plan = _plan("fed rate decision", ["polymarket"])
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="local", planner_model="mock", rerank_model="mock",
+        )
+        base_cand = fusion.weighted_rrf({("primary", "polymarket"): [saved_matched]}, plan, pool_limit=10)[0]
+        base_cand.final_score = 80.0
+        drill_cand = fusion.weighted_rrf({("primary", "polymarket"): [fresh_matched]}, plan, pool_limit=10)[0]
+        drill_cand.final_score = 90.0
+
+        def _pm_report(cand: schema.Candidate, item: schema.SourceItem) -> schema.Report:
+            return schema.Report(
+                topic="fed rate decision",
+                range_from="2026-10-01",
+                range_to="2026-10-22",
+                generated_at="2026-10-22T12:00:00+00:00",
+                provider_runtime=runtime,
+                query_plan=plan,
+                clusters=[
+                    schema.Cluster(
+                        cluster_id="cluster-1",
+                        title=cand.title,
+                        candidate_ids=[cand.candidate_id],
+                        representative_ids=[cand.candidate_id],
+                        sources=["polymarket"],
+                        score=cand.final_score,
+                    )
+                ],
+                ranked_candidates=[cand],
+                items_by_source={"polymarket": [item]},
+                errors_by_source={},
+                source_status={
+                    "polymarket": schema.SourceOutcome(source="polymarket", state="ok", items_returned=1),
+                },
+            )
+
+        merged_report = pipeline.merge_drill_report(
+            _pm_report(base_cand, saved_matched),
+            _pm_report(drill_cand, fresh_matched),
+            [schema.Cluster(
+                cluster_id="cluster-1",
+                title=base_cand.title,
+                candidate_ids=[base_cand.candidate_id],
+                representative_ids=[base_cand.candidate_id],
+                sources=["polymarket"],
+                score=80.0,
+            )],
+            target="cluster 1",
+        )
+        assert len(merged_report.items_by_source["polymarket"]) == 1
+        pm_item = merged_report.items_by_source["polymarket"][0]
+        assert pm_item.snippet == ""
+        assert pm_item.body == fresh_matched.body
+        assert pm_item.metadata["headline"] == "Cut 72%"
+        assert merged_report.ranked_candidates[0].snippet == ""
+
+        # Reverse direction: unmatched fresh copy adopting a matched copy with empty snippet
+        # also keeps snippet == "" without falling back to the unmatched copy's longer snippet.
+        unmatched_with_stale_snippet = _source_item(
+            "100",
+            "polymarket",
+            title="Fed May 2026 rate decision",
+            body="Unmatched longer body with old move up 15% today",
+            snippet="up 15% today",
+            url=url,
+            metadata={"event_id": "100", "headline": "Cut 57%"},
+        )
+        [adopted] = dedupe.dedupe_items([unmatched_with_stale_snippet, fresh_matched])
+        assert adopted.snippet == ""
+        assert adopted.body == fresh_matched.body
+        assert adopted.metadata["headline"] == "Cut 72%"
+        assert adopted.metadata["matched_market"]["price"] == 0.72
+
     def test_same_url_with_divergent_enrichment_text_merges_evidence_without_mutating_inputs(self):
         bare_yt = _source_item(
             "yt1",

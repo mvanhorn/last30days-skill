@@ -4178,17 +4178,22 @@ def _candidate_is_duplicate(
             if cand_eid == existing_eid:
                 return True
             continue
-        if cand_is_poly and _candidate_polymarket_items(existing):
+        if (
+            conflicted_poly_urls
+            and cand_norm_url
+            and cand_norm_url in conflicted_poly_urls
+        ):
             existing_norm_url = fusion._normalize_url(existing.url) if existing.url else ""
-            if (
-                conflicted_poly_urls
-                and cand_norm_url
-                and cand_norm_url == existing_norm_url
-                and cand_norm_url in conflicted_poly_urls
-            ):
-                if not cand_eid and not existing_eid:
-                    return True
-                continue
+            if cand_norm_url == existing_norm_url:
+                if bool(cand_eid) != bool(existing_eid):
+                    continue
+                existing_is_poly = bool(_candidate_polymarket_items(existing))
+                if cand_is_poly != existing_is_poly:
+                    continue
+                if cand_is_poly and existing_is_poly:
+                    if not cand_eid and not existing_eid:
+                        return True
+                    continue
         if existing.candidate_id == candidate.candidate_id:
             return True
         if candidate.url and existing.url == candidate.url:
@@ -4260,17 +4265,32 @@ def merge_drill_report(
     }
     used_candidate_ids = {candidate.candidate_id for candidate in unrelated_candidates}
 
-    def _disambiguate_poly_candidate_id(candidate: schema.Candidate, cand_eid: str) -> None:
+    def _disambiguate_candidate_id(
+        candidate: schema.Candidate,
+        cand_eid: str,
+        reserved_ids: set[str],
+    ) -> None:
+        base_id = candidate.candidate_id
         poly_items = _candidate_polymarket_items(candidate)
-        disambiguated = (
-            fusion.polymarket_url_key(poly_items[0], all_poly_eids)
-            if poly_items
-            else None
-        )
-        if disambiguated and disambiguated not in used_candidate_ids:
-            candidate.candidate_id = disambiguated
-        elif cand_eid:
-            candidate.candidate_id = f"{candidate.candidate_id}\x1fevent={cand_eid}"
+        if poly_items:
+            disambiguated = fusion.polymarket_url_key(poly_items[0], all_poly_eids)
+            if disambiguated and disambiguated not in reserved_ids:
+                candidate.candidate_id = disambiguated
+                return
+        if cand_eid:
+            with_eid = f"{base_id}\x1fevent={cand_eid}"
+            if with_eid not in reserved_ids:
+                candidate.candidate_id = with_eid
+                return
+        source_tag = (candidate.source or "item").strip() or "item"
+        with_source = f"{base_id}\x1fsource={source_tag}"
+        if with_source not in reserved_ids:
+            candidate.candidate_id = with_source
+            return
+        suffix = 2
+        while f"{with_source}:{suffix}" in reserved_ids:
+            suffix += 1
+        candidate.candidate_id = f"{with_source}:{suffix}"
 
     focused_candidates: list[schema.Candidate] = []
     for from_drill, candidate in [
@@ -4301,6 +4321,11 @@ def merge_drill_report(
             focused_candidates,
             conflicted_poly_urls=conflicted_poly_urls,
         ):
+            reserved_ids = (
+                used_candidate_ids | set(selected_base_by_id)
+                if from_drill
+                else used_candidate_ids
+            )
             base_collision = selected_base_by_id.get(candidate.candidate_id) if from_drill else None
             if base_collision is not None and (
                 _polymarket_candidates_conflict(candidate, base_collision)
@@ -4309,9 +4334,9 @@ def merge_drill_report(
                     and bool(cand_eid) != bool(_candidate_polymarket_event_id(base_collision))
                 )
             ):
-                _disambiguate_poly_candidate_id(candidate, cand_eid)
+                _disambiguate_candidate_id(candidate, cand_eid, reserved_ids)
             if candidate.candidate_id in used_candidate_ids:
-                _disambiguate_poly_candidate_id(candidate, cand_eid)
+                _disambiguate_candidate_id(candidate, cand_eid, reserved_ids)
             used_candidate_ids.add(candidate.candidate_id)
             focused_candidates.append(candidate)
 

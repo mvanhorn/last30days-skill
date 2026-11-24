@@ -281,11 +281,12 @@ def _merge_polymarket_match_bundle(
     existing: schema.SourceItem,
     incoming: schema.SourceItem,
 ) -> bool:
-    """Keep Polymarket's matched-market display and ranking fields coherent.
+    """Keep Polymarket's display and ranking fields coherent across copies.
 
-    Returns True when one copy is matched and the other is unmatched, so the
-    caller leaves the matched copy's ``body`` and ``snippet`` intact rather
-    than replacing them with longer text from the unmatched copy.
+    Returns True for any non-conflicting Polymarket pair so the caller keeps
+    the winning copy's ``body`` and ``snippet`` (including an empty
+    ``price_movement`` snippet when a fresh fetch reported no move) paired
+    with its own odds, headline, and close date.
     """
     if existing.source != "polymarket" or incoming.source != "polymarket":
         return False
@@ -294,9 +295,7 @@ def _merge_polymarket_match_bundle(
     in_meta = incoming.metadata or {}
     mine_matched = bool(existing.metadata.get("matched_market"))
     theirs_matched = bool(in_meta.get("matched_market"))
-    if mine_matched == theirs_matched:
-        return False
-    if theirs_matched:
+    if not mine_matched and theirs_matched:
         for key in _POLYMARKET_MATCH_BUNDLE_KEYS:
             if key in in_meta and in_meta[key] is not None:
                 existing.metadata[key] = copy.deepcopy(in_meta[key])
@@ -1022,7 +1021,6 @@ def weighted_rrf(
                 if promoted or (
                     attached.source == "polymarket"
                     and candidate.source == "polymarket"
-                    and (attached.metadata or {}).get("matched_market")
                 ):
                     candidate.snippet = attached.snippet
                 elif len((candidate.snippet or "").split()) < len((item.snippet or "").split()):
