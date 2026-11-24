@@ -1126,6 +1126,25 @@ def test_greptile_current_name_occurrence_zero_beats_legacy_cut_repeats(monkeypa
     monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: dropped_legacy_event)
     assert polymarket.refetch_datum(item, "Apple\x1f0")["value"] == 0.70
 
+    # Also verify resolve_snapshot_value directly prioritizes current values over legacy_values
+    # even when legacy_values carries Apple\x1f0 / Apple\x1f1 alongside current Apple.
+    assert (
+        polymarket.resolve_snapshot_value(
+            {"Apple": 0.70},
+            "Apple\x1f0",
+            legacy_values={"Apple\x1f0": 0.20, "Apple\x1f1": 0.10},
+        )
+        == 0.70
+    )
+    assert (
+        polymarket.resolve_snapshot_value(
+            {"Apple": 0.70},
+            "Apple\x1f1",
+            legacy_values={"Apple\x1f0": 0.20, "Apple\x1f1": 0.10},
+        )
+        is None
+    )
+
 
 def test_greptile_r3_three_market_subject_group_title_cross_collision(monkeypatch):
     """Greptile R3 P1:
@@ -1245,6 +1264,86 @@ def test_greptile_r3_unsuffixed_legacy_shared_label_never_switches_on_price_swap
     )
     assert [v.verdict for v in new_verdicts] == ["stale"]
     assert new_verdicts[0].current_value == 0.002
+
+
+def test_greptile_r4_cross_market_group_title_vs_legacy_subject_returns_unsupported(monkeypatch):
+    """Greptile R4 P1:
+    - Market A: 'Will Alice win?', groupItemTitle='Bob', price 0.60
+    - Market B: 'Will Bob win?', groupItemTitle='', price 0.002
+    An older report could have saved Market A's 0.60 under 'Bob' (its groupItemTitle)
+    when Market B was below the display floor. Refetch must NOT fall back to Market B's
+    legacy 'Bob' (0.002) and mark Market A stale; it must return unsupported on both
+    direct fetch and cached lookup, while unambiguous legacy names ('Alice') and
+    legitimate legacy cut names still resolve cleanly."""
+    event = {
+        "id": "710",
+        "slug": "alice-bob-race",
+        "title": "Race winner?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            _binary_submarket("Will Alice win?", "Bob", 0.60),
+            _binary_submarket("Will Bob win?", "", 0.002),
+            _binary_submarket("Will Carol win?", "Carol Winner", 0.35),
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event)
+    item = SimpleNamespace(metadata={"event_id": "710"}, url="", item_id="pm-710")
+
+    # Direct fetch: 'Bob' is cross-market ambiguous -> DatumNotFound (NOT Market B's 0.002).
+    with pytest.raises(polymarket.DatumNotFound):
+        polymarket.refetch_datum(item, "Bob")
+    # Unambiguous legacy names ('Alice' -> 0.60, 'Carol' -> 0.35) and current labels still resolve.
+    assert polymarket.refetch_datum(item, "Alice")["value"] == 0.60
+    assert polymarket.refetch_datum(item, "Carol")["value"] == 0.35
+    assert polymarket.refetch_datum(item, "Will Alice win")["value"] == 0.60
+    assert polymarket.refetch_datum(item, "Will Bob win")["value"] == 0.002
+
+    # Cached verify_report (after 'Carol Winner' fetches first): 'Bob' must be unsupported,
+    # NOT stale (60% -> 0.2%), while 'Alice' (unambiguous legacy) resolves to current 0.60.
+    calls: list[int] = []
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: calls.append(1) or event)
+    old_saved = _item(
+        "polymarket",
+        title="Race winner?",
+        url="https://polymarket.com/event/alice-bob-race",
+        metadata={
+            "event_id": "710",
+            "outcome_prices": [["Carol Winner", 0.35], ["Bob", 0.60], ["Alice", 0.60]],
+        },
+    )
+    verdicts = freshness.verify_report(
+        _report(old_saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert len(calls) == 1
+    assert [v.verdict for v in verdicts] == ["current", "unsupported", "current"]
+
+    # Also verify old saved 'GPT-5' / 'OpenAI' on the 3-market cross-collision event
+    # return unsupported instead of reading the wrong market via legacy_values.
+    three_market_event = {
+        "id": "711",
+        "slug": "openai-3mkt",
+        "title": "OpenAI milestones?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            _binary_submarket("Will GPT-5 win?", "OpenAI", 0.60),
+            _binary_submarket("Will Sora win?", "OpenAI", 0.20),
+            _binary_submarket("Will OpenAI release hardware?", "GPT-5", 0.002),
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: three_market_event)
+    item_3 = SimpleNamespace(metadata={"event_id": "711"}, url="", item_id="pm-711")
+    with pytest.raises(polymarket.DatumNotFound):
+        polymarket.refetch_datum(item_3, "GPT-5")
+    with pytest.raises(polymarket.DatumNotFound):
+        polymarket.refetch_datum(item_3, "OpenAI")
+    assert polymarket.refetch_datum(item_3, "Sora")["value"] == 0.20
+
 
 
 def test_greptile3_bad_price_on_top_binary_market_does_not_hide_valid_siblings():

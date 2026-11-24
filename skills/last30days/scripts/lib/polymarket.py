@@ -2204,12 +2204,51 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         if group_title:
             dropped_current.add(group_title.casefold())
         dropped_legacy.add(_legacy_shorten_question(question).strip().casefold())
+    # If another child market claims a legacy cut name via its groupItemTitle,
+    # shortened subject, or current label, an older report could have saved
+    # that other market under that label. Drop such cross-market ambiguous
+    # labels from legacy_values so verification returns unsupported instead of
+    # switching markets.
+    active_question_markets = [
+        m
+        for m in markets
+        if isinstance(m, dict)
+        and m.get("question")
+        and (not has_active or (m.get("active", True) and not m.get("closed", False)))
+    ]
+    ambiguous_legacy: set[str] = set()
+    if len(active_question_markets) > 1:
+        legacy_owners: dict[str, set[int]] = {}
+        other_owners: dict[str, set[int]] = {}
+        for idx, market in enumerate(active_question_markets):
+            question = str(market["question"])
+            legacy_name = _legacy_shorten_question(question).strip().casefold()
+            if legacy_name:
+                legacy_owners.setdefault(legacy_name, set()).add(idx)
+            other_names = {
+                _shorten_question(question).strip().casefold(),
+                " ".join(str(market.get("groupItemTitle") or "").split()).casefold(),
+                (sibling_labels.get(id(market)) or "").strip().casefold(),
+            } - {""}
+            for name in other_names:
+                other_owners.setdefault(name, set()).add(idx)
+        ambiguous_legacy = {
+            name
+            for name, owners in legacy_owners.items()
+            if other_owners.get(name, set()) - owners
+        }
     for key in [k for k in values if "\x1f" in k]:
         if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_current:
             del values[key]
-    for key in [k for k in legacy_values if "\x1f" in k]:
-        if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_legacy:
+    for key in list(legacy_values):
+        base = (
+            key.rsplit("\x1f", 1)[0].strip().casefold()
+            if "\x1f" in key
+            else key.strip().casefold()
+        )
+        if base in ambiguous_legacy or ("\x1f" in key and base in dropped_legacy):
             del legacy_values[key]
+    dropped_legacy.update(ambiguous_legacy)
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
