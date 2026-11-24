@@ -584,3 +584,272 @@ func waitForFile(t *testing.T, path string) {
 	}
 	t.Fatalf("timed out waiting for readiness file %s", path)
 }
+
+// TestRunCancelKillsSameGroupHelperAfterLeaderExits guards against the race
+// where the leader exits early while a same-group helper still holds stdout or
+// stderr open and ctx cancels during draining: the leader must stay unreaped so
+// group signals kill the helper before cmd.Wait() reaps the leader.
+func TestRunCancelKillsSameGroupHelperAfterLeaderExits(t *testing.T) {
+	for _, ignoreTerm := range []bool{false, true} {
+		name := "term-accepting-helper"
+		trapLine := ""
+		if ignoreTerm {
+			name = "term-ignoring-helper"
+			trapLine = "trap '' TERM; "
+		}
+		t.Run(name, func(t *testing.T) {
+			rec := installLifecycleHooks(t)
+			leaderExited := make(chan struct{})
+			var exitedOnce sync.Once
+			origNoReap := waitChildNoReapFunc
+			waitChildNoReapFunc = func(pid int) error {
+				err := origNoReap(pid)
+				exitedOnce.Do(func() { close(leaderExited) })
+				return err
+			}
+
+			dir := t.TempDir()
+			helperPidFile := filepath.Join(dir, "helper.pid")
+			helperReady := filepath.Join(dir, "helper.ready")
+			stub := filepath.Join(dir, "leader-exits-early.sh")
+			script := `#!/bin/sh
+/bin/sh -c '` + trapLine + `printf "%s" "$$" > "$HELPER_PID"; printf "helper stdout\n"; printf "helper stderr\n" >&2; : > "$HELPER_READY"; while :; do sleep 1; done' &
+printf 'leader output\n'
+exit 0
+`
+			if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if raw, err := os.ReadFile(helperPidFile); err == nil {
+					if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+						_ = syscall.Kill(pid, syscall.SIGKILL)
+					}
+				}
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			triggerErr := make(chan error, 1)
+			go func() {
+				// Wait until BOTH the helper has installed its trap / written
+				// to both pipes AND waitChildNoReap has observed the leader's
+				// exit, guaranteeing ctx cancels during output draining.
+				deadline := time.NewTimer(3 * time.Second)
+				defer deadline.Stop()
+				select {
+				case <-leaderExited:
+				case <-deadline.C:
+					triggerErr <- errors.New("leader did not exit before deadline")
+					cancel()
+					return
+				}
+				tick := time.NewTicker(10 * time.Millisecond)
+				defer tick.Stop()
+				for {
+					select {
+					case <-tick.C:
+						if _, err := os.Stat(helperReady); err == nil {
+							triggerErr <- nil
+							cancel()
+							return
+						}
+					case <-deadline.C:
+						triggerErr <- errors.New("helper did not become ready")
+						cancel()
+						return
+					}
+				}
+			}()
+
+			started := time.Now()
+			res, err := Run(ctx, RunOptions{
+				PythonPath: stub,
+				CacheDir:   stageCache(t),
+				Timeout:    10 * time.Second,
+				ExtraEnv: []string{
+					"HELPER_PID=" + helperPidFile,
+					"HELPER_READY=" + helperReady,
+				},
+			})
+			if terr := <-triggerErr; terr != nil {
+				t.Fatal(terr)
+			}
+			if time.Since(started) > 5*time.Second {
+				t.Fatalf("Run took %s; helper cleanup exceeded bounded grace", time.Since(started))
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run error = %v, want context.Canceled", err)
+			}
+			if rec.postReapSig.Load() {
+				t.Fatalf("delivered group signal after cmd.Wait() started: %v", rec.snapshot())
+			}
+			assertPidDead(t, helperPidFile, name)
+			if res == nil {
+				t.Fatal("Run result is nil")
+			}
+			if !strings.Contains(string(res.Stdout), "leader output") || !strings.Contains(string(res.Stdout), "helper stdout") {
+				t.Fatalf("stdout missing expected output: %q", res.Stdout)
+			}
+			if !strings.Contains(string(res.Stderr), "helper stderr") {
+				t.Fatalf("stderr missing helper output: %q", res.Stderr)
+			}
+		})
+	}
+}
+
+// TestWaitCommandPipeGraceKillsStraySameGroupHelperBeforeReap verifies that
+// when a leader exits normally while a same-group helper holds pipes open past
+// pipeGrace, the stray helper is killed strictly before cmd.Wait() reaps the
+// leader and exec.ErrWaitDelay is returned.
+func TestWaitCommandPipeGraceKillsStraySameGroupHelperBeforeReap(t *testing.T) {
+	rec := installLifecycleHooks(t)
+	dir := t.TempDir()
+	helperPidFile := filepath.Join(dir, "stray.pid")
+	helperReady := filepath.Join(dir, "stray.ready")
+	stub := filepath.Join(dir, "stray-helper.sh")
+	script := `#!/bin/sh
+/bin/sh -c 'trap "" TERM; printf "%s" "$$" > "$HELPER_PID"; printf "stray stdout\n"; : > "$HELPER_READY"; while :; do sleep 1; done' &
+exit 0
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(helperPidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	cmd := exec.Command(stub)
+	cmd.Env = append(os.Environ(), "HELPER_PID="+helperPidFile, "HELPER_READY="+helperReady)
+	setProcessGroup(cmd)
+	pipes, err := newOutputPipes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout = pipes.stdoutW
+	cmd.Stderr = pipes.stderrW
+	if err := cmd.Start(); err != nil {
+		pipes.closeAll()
+		t.Fatal(err)
+	}
+	stdout := newHeadBuffer(DefaultMaxStdoutBytes)
+	stderr := newTailBuffer(DefaultMaxStderrBytes)
+	pipes.startDraining(stdout, stderr)
+	waitForFile(t, helperReady)
+
+	err = waitCommandWithDrain(context.Background(), cmd, 100*time.Millisecond, 100*time.Millisecond, pipes.drainDone, pipes.closeReadPipes)
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("waitCommandWithDrain error = %v, want exec.ErrWaitDelay", err)
+	}
+	if rec.postReapSig.Load() {
+		t.Fatalf("delivered group signal after cmd.Wait() started: %v", rec.snapshot())
+	}
+	assertPidDead(t, helperPidFile, "stray TERM-ignoring helper")
+	if !strings.Contains(string(stdout.Bytes()), "stray stdout") {
+		t.Fatalf("stdout = %q, want stray stdout", stdout.Bytes())
+	}
+}
+
+// TestRunCleanExitDrainsShortLivedHelperWithoutSignaling checks that a normal
+// exit where a helper briefly flushes output before closing pipes captures all
+// bytes cleanly and reaps without sending any process-group signals.
+func TestRunCleanExitDrainsShortLivedHelperWithoutSignaling(t *testing.T) {
+	rec := installLifecycleHooks(t)
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "clean-helper.sh")
+	script := `#!/bin/sh
+/bin/sh -c 'sleep 0.05; printf "from-helper\n"' &
+printf 'from-leader\n'
+exit 0
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(context.Background(), RunOptions{
+		PythonPath: stub,
+		CacheDir:   stageCache(t),
+		Timeout:    5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", res.ExitCode)
+	}
+	out := string(res.Stdout)
+	if !strings.Contains(out, "from-leader\n") || !strings.Contains(out, "from-helper\n") {
+		t.Fatalf("stdout = %q, want both leader and helper output", out)
+	}
+	for _, ev := range rec.snapshot() {
+		if strings.HasPrefix(ev, "signal:") {
+			t.Fatalf("clean exit unexpectedly sent process-group signal %q: %v", ev, rec.snapshot())
+		}
+	}
+}
+
+// TestRunLeaderTrapsTermAndTermIgnoringHelperKilledBeforeReap verifies that
+// when ctx cancels while the leader is alive, the leader traps SIGTERM and
+// exits cleanly, and a same-group helper ignores SIGTERM while holding pipes
+// open, SIGKILL kills the helper strictly before cmd.Wait() reaps the leader.
+func TestRunLeaderTrapsTermAndTermIgnoringHelperKilledBeforeReap(t *testing.T) {
+	rec := installLifecycleHooks(t)
+	dir := t.TempDir()
+	helperPidFile := filepath.Join(dir, "helper.pid")
+	readyFile := filepath.Join(dir, "ready")
+	stub := filepath.Join(dir, "leader-trap-helper-ignore.sh")
+	script := `#!/bin/sh
+trap 'printf "leader-trapped\n" >&2; exit 0' TERM
+/bin/sh -c 'trap "" TERM; printf "%s" "$$" > "$HELPER_PID"; printf "helper-alive\n"; : > "$READY_FILE"; while :; do sleep 1; done' &
+while :; do sleep 1; done
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(helperPidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(readyFile); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	res, err := Run(ctx, RunOptions{
+		PythonPath: stub,
+		CacheDir:   stageCache(t),
+		Timeout:    10 * time.Second,
+		ExtraEnv: []string{
+			"HELPER_PID=" + helperPidFile,
+			"READY_FILE=" + readyFile,
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context.Canceled", err)
+	}
+	if rec.postReapSig.Load() {
+		t.Fatalf("delivered group signal after cmd.Wait() started: %v", rec.snapshot())
+	}
+	assertPidDead(t, helperPidFile, "TERM-ignoring same-group helper")
+	if res == nil || !strings.Contains(string(res.Stdout), "helper-alive") || !strings.Contains(string(res.Stderr), "leader-trapped") {
+		t.Fatalf("unexpected output: %+v", res)
+	}
+}

@@ -96,7 +96,6 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	args := append([]string{scriptPath}, opts.Args...)
 	cmd := exec.Command(pythonPath, args...)
 	cmd.Env = buildEnv(opts.CacheDir, opts.ExtraEnv)
-	cmd.WaitDelay = pipeGracePeriod
 	// Own process group so a timeout SIGTERM reaches same-group
 	// grandchildren (grok CLI). exec.CommandContext would SIGKILL only the
 	// direct python child while its SIGTERM-handler/atexit cleanup never
@@ -108,8 +107,6 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	maxStderr := resolveOutputLimit(opts.MaxStderrBytes, DefaultMaxStderrBytes)
 	stdout := newHeadBuffer(maxStdout)
 	stderr := newTailBuffer(maxStderr)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
 
 	if err := subCtx.Err(); err != nil {
 		return &RunResult{
@@ -117,7 +114,18 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			TimedOut: errors.Is(err, context.DeadlineExceeded),
 		}, fmt.Errorf("engine: subprocess not started: %w", err)
 	}
+	pipes, err := newOutputPipes()
+	if err != nil {
+		return &RunResult{
+			ExitCode: -1,
+			TimedOut: errors.Is(subCtx.Err(), context.DeadlineExceeded),
+		}, fmt.Errorf("engine: failed to create subprocess pipes: %w", err)
+	}
+	cmd.Stdout = pipes.stdoutW
+	cmd.Stderr = pipes.stderrW
+
 	if err := cmd.Start(); err != nil {
+		pipes.closeAll()
 		res := &RunResult{
 			Stdout:          stdout.Bytes(),
 			Stderr:          stderr.Bytes(),
@@ -128,8 +136,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		}
 		return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
 	}
+	pipes.startDraining(stdout, stderr)
 
-	err = waitCommand(subCtx, cmd, termGracePeriod)
+	err = waitCommandWithDrain(subCtx, cmd, termGracePeriod, pipeGracePeriod, pipes.drainDone, pipes.closeReadPipes)
 
 	ctxErr := subCtx.Err()
 	res := &RunResult{

@@ -1,6 +1,12 @@
 package engine
 
-import "errors"
+import (
+	"errors"
+	"io"
+	"os"
+	"sync"
+	"time"
+)
 
 // DefaultMaxStdoutBytes caps buffered engine stdout (16 MiB). Excess bytes are
 // drained so child pipes never stall, and Run reports ErrStdoutLimitExceeded.
@@ -164,3 +170,112 @@ func (b *tailBuffer) Bytes() []byte {
 
 func (b *tailBuffer) Truncated() bool { return b.truncated }
 func (b *tailBuffer) Total() int64    { return b.total }
+
+// outputPipes attaches explicit *os.File pipes to cmd.Stdout and cmd.Stderr so
+// output draining is decoupled from cmd.Wait() process reaping. That lets Unix
+// keep the child leader unreaped (pinning its PID/PGID) until both pipe
+// draining and any process-group cleanup signals have completed.
+type outputPipes struct {
+	stdoutR, stdoutW *os.File
+	stderrR, stderrW *os.File
+	drainDone        chan struct{}
+	closeReadOnce    sync.Once
+}
+
+func newOutputPipes() (*outputPipes, error) {
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		return nil, err
+	}
+	return &outputPipes{
+		stdoutR:   stdoutR,
+		stdoutW:   stdoutW,
+		stderrR:   stderrR,
+		stderrW:   stderrW,
+		drainDone: make(chan struct{}),
+	}, nil
+}
+
+func (p *outputPipes) closeAll() {
+	_ = p.stdoutW.Close()
+	_ = p.stderrW.Close()
+	p.closeReadPipes()
+}
+
+func (p *outputPipes) closeReadPipes() {
+	p.closeReadOnce.Do(func() {
+		_ = p.stdoutR.Close()
+		_ = p.stderrR.Close()
+	})
+}
+
+func (p *outputPipes) startDraining(stdoutDst, stderrDst io.Writer) {
+	// Close the parent's write ends immediately so EOF arrives as soon as the
+	// child process and any descendants close their inherited write ends.
+	_ = p.stdoutW.Close()
+	_ = p.stderrW.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(stdoutDst, p.stdoutR)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(stderrDst, p.stderrR)
+	}()
+	go func() {
+		wg.Wait()
+		p.closeReadPipes()
+		close(p.drainDone)
+	}()
+}
+
+var closedDrainCh = func() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
+func normalizeDrain(drainDone <-chan struct{}, closeReadPipes func()) (<-chan struct{}, func()) {
+	if drainDone == nil {
+		drainDone = closedDrainCh
+	}
+	if closeReadPipes == nil {
+		closeReadPipes = func() {}
+	}
+	return drainDone, closeReadPipes
+}
+
+// finishDrain waits up to waitDelay for pipe draining to reach EOF, closing
+// the parent read ends if waitDelay expires so detached out-of-group orphans
+// cannot hang Run indefinitely. Reports whether draining had to be cut short.
+func finishDrain(drainDone <-chan struct{}, closeReadPipes func(), waitDelay time.Duration) bool {
+	select {
+	case <-drainDone:
+		return false
+	default:
+	}
+	if waitDelay <= 0 {
+		closeReadPipes()
+		<-drainDone
+		return true
+	}
+	timer := time.NewTimer(waitDelay)
+	defer timer.Stop()
+	select {
+	case <-drainDone:
+		return false
+	case <-timer.C:
+		closeReadPipes()
+		<-drainDone
+		return true
+	}
+}
