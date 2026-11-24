@@ -21,44 +21,66 @@ from .detect import PROVIDER_TALENTBREW
 
 PAGE_SIZE = 100
 _TOTAL_RE = re.compile(r'data-total-results\s*=\s*["\']?(\d+)', re.I)
-_TOKEN_RE = re.compile(r"<(/?)(li|a|span)\b([^<>]*)>", re.I)
-_TOKEN_NO_SPAN_RE = re.compile(r"<(/?)(li|a)\b([^<>]*)>", re.I)
+_TOKEN_RE = re.compile(r"<(/?)(ul|ol|li|a|span)\b([^<>]*)>", re.I)
+_TOKEN_NO_SPAN_RE = re.compile(r"<(/?)(ul|ol|li|a)\b([^<>]*)>", re.I)
 
 
 def _extract_entries(html: str) -> tuple[list[dict[str, str]], int | None]:
-    """Single-pass linear tokenizer for TalentBrew results HTML, preserving nested <li>."""
+    """Single-pass linear tokenizer for TalentBrew results HTML, supporting
+    both nested ``<ul>``/``<ol>`` lists and omitted optional ``</li>`` end tags."""
+    if not html:
+        return [], None
     bounded = html[:detect.MAX_HTML_CHARS]
     total_match = _TOTAL_RE.search(bounded)
     total = int(total_match.group(1)) if total_match else None
     lowered = bounded.lower()
-    if "/job/" not in bounded or "<li" not in lowered or "</li" not in lowered:
+    if "/job/" not in bounded or "<li" not in lowered or "</a" not in lowered:
         return [], total
     token_re = _TOKEN_RE if "</span" in lowered else _TOKEN_NO_SPAN_RE
     entries: list[dict[str, str]] = []
-    li_depth = 0
-    current: dict[str, Any] | None = None
+    list_depth = 0
+    outer_list_depth: int | None = None
+    current: dict[str, str] | None = None
     link_depth = 0
     link_start = 0
     span_kind = ""
     span_depth = 0
     span_start = 0
+
+    def flush_current() -> None:
+        nonlocal current, outer_list_depth, link_depth, span_kind, span_depth
+        if current is not None:
+            if current["href"] and current["title"]:
+                entries.append(current)
+            current = None
+        outer_list_depth = None
+        link_depth = 0
+        span_kind = ""
+        span_depth = 0
+
     for match in token_re.finditer(bounded):
         closing = bool(match.group(1))
         tag = match.group(2).lower()
+        if tag in ("ul", "ol"):
+            if not closing:
+                list_depth += 1
+            else:
+                if current is not None and outer_list_depth is not None and list_depth <= outer_list_depth:
+                    flush_current()
+                if list_depth > 0:
+                    list_depth -= 1
+            continue
         if tag == "li":
             if not closing:
-                if li_depth == 0:
+                if current is None:
                     current = {"href": "", "title": "", "location": "", "date": ""}
-                li_depth += 1
-            elif li_depth > 0:
-                li_depth -= 1
-                if li_depth == 0 and current is not None:
-                    if current["href"]:
-                        entries.append(current)
-                    current = None
-                    link_depth = 0
-                    span_kind = ""
-                    span_depth = 0
+                    outer_list_depth = list_depth
+                elif outer_list_depth == list_depth:
+                    flush_current()
+                    current = {"href": "", "title": "", "location": "", "date": ""}
+                    outer_list_depth = list_depth
+            elif current is not None and outer_list_depth == list_depth:
+                flush_current()
             continue
         if current is None:
             continue
@@ -73,8 +95,7 @@ def _extract_entries(html: str) -> tuple[list[dict[str, str]], int | None]:
                         if (
                             href.startswith("/job/")
                             and not href.startswith("//")
-                            and "\\" not in href
-                            and not any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in href)
+                            and not detect._UNSAFE_URL_CHAR_RE.search(href)
                         ):
                             current["href"] = href
                             link_depth = 1
@@ -108,6 +129,7 @@ def _extract_entries(html: str) -> tuple[list[dict[str, str]], int | None]:
                 if span_depth == 0 and span_kind:
                     current[span_kind] = jobs._clean_html(bounded[span_start:match.start()])
                     span_kind = ""
+    flush_current()
     return entries, total
 
 
@@ -136,16 +158,18 @@ def parse_listing(payload: Any, entry: dict[str, Any]) -> tuple[list[dict[str, A
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in raw_entries:
+        title = row["title"]
+        if not title:
+            continue
         url = urljoin(base, row["href"])
+        if url in seen:
+            continue
         parsed = urlparse(url)
         if (
             parsed.scheme.lower() != "https"
             or detect.page_host(url) != board
             or parsed.port is not None
         ):
-            continue
-        title = row["title"]
-        if not title or url in seen:
             continue
         seen.add(url)
         location = row["location"]

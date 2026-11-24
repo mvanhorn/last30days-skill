@@ -396,15 +396,22 @@ def same_site_redirect_guard(
 ) -> Callable[[str], bool]:
     """Stateless redirect guard allowing only safe standard-port http(s)
     same-site URLs, forbidding ``https -> http`` downgrades from an
-    ``https://`` origin."""
+    ``https://`` origin.
+
+    When ``resolves`` is omitted, no live DNS lookup runs inside the guard so
+    transient DNS errors remain retryable; callers pair this guard with
+    ``http.*(..., public_only=True)`` which resolves and pins public IPs at
+    connect time.
+    """
     if not is_safe_public_url(url):
         return lambda _target: False
     origin_host = page_host(url)
     if not origin_host:
         return lambda _target: False
     require_https = urlparse(url).scheme.lower() == "https"
+    resolver = resolves if resolves is not None else (lambda _host: True)
     return lambda target: public_site_url(
-        target, origin_host, resolves=resolves, require_https=require_https,
+        target, origin_host, resolves=resolver, require_https=require_https,
     )
 
 

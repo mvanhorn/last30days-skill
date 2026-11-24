@@ -353,12 +353,16 @@ def _assert_guard_blocks_ssrf(guard, same_host: str, monkeypatch):
             "http://[64:ff9b::127.0.0.1]/",
             "http://224.0.0.1/",
             "https://evil.example/steal",
+            f"http://{same_host}/downgrade",
             f"https://{same_host}:8443/port-hop",
             f"https://user:pass@{same_host}/",
-            f"https://internal.{same_host}/admin",
+            "https://internal.local/admin",
             "file:///etc/passwd",
         ):
             assert guard(bad) is False, f"guard must block {bad}"
+        # Private-IP subdomains are blocked at connect time by public_only=True.
+        with pytest.raises(detect.public_host.NonPublicAddressError):
+            detect.public_host.resolve_public_addresses(f"internal.{same_host}", 443)
     finally:
         detect.resolves_public.cache_clear()
 
@@ -497,6 +501,39 @@ def test_high169_redirect_handler_blocks_302_to_metadata_with_shared_guard():
         with pytest.raises(urllib.error.HTTPError) as exc:
             handler.redirect_request(req, io.BytesIO(), 302, "Found", Message(), target)
         assert exc.value.code == 403
+
+
+def test_high169_same_site_redirect_guard_skips_live_dns_by_default_so_transient_dns_retries(monkeypatch):
+    def fail_dns(*_args, **_kwargs):
+        raise socket.gaierror(-3, "Temporary failure in name resolution")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail_dns)
+    detect.resolves_public.cache_clear()
+    try:
+        # Default guard (resolves=None) does not run live DNS, so transient DNS
+        # failures are NOT converted into non-retryable HTTP 403 errors; live
+        # DNS + IP pinning happens in http's public_only=True transport instead.
+        guard = detect.same_site_redirect_guard("https://careers.acme.com/robots.txt")
+        assert guard("https://careers.acme.com/next") is True
+        assert guard("https://evil.example/next") is False
+        assert guard("http://careers.acme.com/downgrade") is False
+
+        handler = http._StripAuthOnCrossOriginRedirect()
+        req = urllib.request.Request("https://careers.acme.com/robots.txt")
+        setattr(req, http._PUBLIC_ONLY_ATTR, True)
+        setattr(req, http._REDIRECT_GUARD_ATTR, guard)
+        followed = handler.redirect_request(
+            req, io.BytesIO(), 302, "Found", Message(), "https://careers.acme.com/next",
+        )
+        assert followed is not None and followed.full_url == "https://careers.acme.com/next"
+
+        # Explicit resolves=... is still honored when callers request it.
+        explicit_guard = detect.same_site_redirect_guard(
+            "https://careers.acme.com/robots.txt", resolves=detect.resolves_public,
+        )
+        assert explicit_guard("https://careers.acme.com/next") is False
+    finally:
+        detect.resolves_public.cache_clear()
 
 
 # ---------------------------------------------------------------------------
@@ -938,6 +975,18 @@ def test_high174_sitemap_talentbrew_kula_resist_redos_in_under_100ms():
             lambda: talentbrew.parse_listing({"results": "<li>" * 50_000}, {"board": "jobs.example.com"}),
         ),
         (
+            "talentbrew unclosed <li><a>",
+            lambda: talentbrew.parse_listing(
+                {"results": '<li><a href="/job/1">' * 50_000}, {"board": "jobs.example.com"},
+            ),
+        ),
+        (
+            "talentbrew unclosed <li><a> with trailing </a>",
+            lambda: talentbrew.parse_listing(
+                {"results": ('<li><a href="/job/1">' * 50_000) + "Role</a>"}, {"board": "jobs.example.com"},
+            ),
+        ),
+        (
             "talentbrew unclosed <a>",
             lambda: talentbrew.parse_listing({"results": '<a href="/job/1">' * 50_000}, {"board": "jobs.example.com"}),
         ),
@@ -1234,3 +1283,75 @@ def test_high174_kula_empty_jobs_array_returns_zero_without_error():
         html = f'<script>self.__next_f.push([1,"{payload_json}"])</script>'
         items, total = kula.parse_listing(html, {"slug": "acme"})
         assert items == [] and total == 0
+
+
+def test_high174_sitemap_child_priority_sorts_by_path_on_jobs_host(monkeypatch):
+    monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: True)
+    non_job_children = [f"https://jobs.sap.com/en/about-{i}.xml" for i in range(1, 7)]
+    jobs_child = "https://jobs.sap.com/en/jobs-sitemap.xml"
+    index_xml = (
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        + "".join(f"<sitemap><loc>{u}</loc></sitemap>" for u in [*non_job_children, jobs_child])
+        + "</sitemapindex>"
+    )
+    jobs_xml = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://jobs.sap.com/jobs/12345-principal-engineer</loc></url>"
+        "</urlset>"
+    )
+    empty_xml = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"/>'
+    fake_rules = robots.Rules("Sitemap: https://jobs.sap.com/sitemap-index.xml\n")
+    fetched: list[str] = []
+
+    def fake_get_text(url: str, **_kw):
+        fetched.append(url)
+        if url == "https://jobs.sap.com/sitemap-index.xml":
+            return index_xml
+        if url == jobs_child:
+            return jobs_xml
+        return empty_xml
+
+    with patch.object(robots, "rules_for", return_value=fake_rules):
+        with patch.object(jobs.http, "get_text", side_effect=fake_get_text):
+            host, urls, missed = sitemap.job_urls(["jobs.sap.com"], deadline=time.monotonic() + 5)
+
+    assert host == "jobs.sap.com"
+    assert len(urls) == 1 and urls[0][0] == "https://jobs.sap.com/jobs/12345-principal-engineer"
+    assert fetched[0] == "https://jobs.sap.com/sitemap-index.xml"
+    assert fetched[1] == jobs_child
+    assert len(fetched) == sitemap.SITEMAP_FILE_LIMIT
+    assert missed is True
+
+
+def test_high174_talentbrew_supports_omitted_li_end_tags_and_nested_lists():
+    omitted_end_html = (
+        '<section data-total-results="2"><ul>'
+        '<li><a href="/job/nyc/systems-engineer/1/10">Systems Engineer</a>'
+        '<span class="location">New York, NY</span><span class="date">11/10/2026</span>'
+        '<li><a href="/job/sf/security-engineer/1/20">Security Engineer</a>'
+        '<ul class="badges"><li>Remote<li>Full-time</ul>'
+        '<span class="location">San Francisco, CA</span><span class="date">11/12/2026</span>'
+        "</ul></section>"
+    )
+    items, total = talentbrew.parse_listing({"results": omitted_end_html}, {"board": "jobs.acme.com"})
+    assert total == 2 and len(items) == 2
+    assert items[0]["title"] == "Systems Engineer"
+    assert items[0]["location"] == "New York, NY"
+    assert items[0]["date"] == "2026-11-10"
+    assert items[1]["title"] == "Security Engineer"
+    assert items[1]["location"] == "San Francisco, CA"
+    assert items[1]["date"] == "2026-11-12"
+
+
+def test_high174_kula_recovers_from_huge_integer_value_error():
+    huge_int = "9" * 5000
+    html = (
+        f"<script>self.__next_f.push([{huge_int}]);"
+        'self.__next_f.push([1,"{\\"jobs\\":[' + huge_int + ']}"]);'
+        'self.__next_f.push([1,"{\\"jobs\\":[{\\"id\\":42,\\"title\\":\\"Staff Engineer\\",'
+        '\\"launch_at\\":\\"2026-11-14T00:00:00Z\\"}]}"]);</script>'
+    )
+    items, total = kula.parse_listing(html, {"slug": "acme"})
+    assert total == 1 and len(items) == 1
+    assert items[0]["title"] == "Staff Engineer"
+    assert items[0]["url"] == "https://careers.kula.ai/acme/42-staff-engineer"

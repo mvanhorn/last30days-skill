@@ -66,6 +66,12 @@ def _extract_push_chunks(text: str) -> list[str]:
                 break
             pos = max(start + 1, exc.pos)
             continue
+        except ValueError:
+            failures += 1
+            if failures >= _MAX_DECODE_FAILURES:
+                break
+            pos = start + 1
+            continue
         except RecursionError:
             break
         if isinstance(data, list) and len(data) > 1 and isinstance(data[1], str):
@@ -131,6 +137,12 @@ def _role_list(payload: str) -> list[dict[str, Any]] | None:
             if "Unterminated" in exc.msg or exc.pos >= limit - 1 or failures >= _MAX_DECODE_FAILURES:
                 break
             pos = max(start + 1, exc.pos)
+            continue
+        except ValueError:
+            failures += 1
+            if failures >= _MAX_DECODE_FAILURES:
+                break
+            pos = start + 1
             continue
         except RecursionError:
             break

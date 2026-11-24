@@ -217,7 +217,7 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                 children = [loc for loc, _lastmod in entries]
                 # A jobs sitemap first, then English ones, then the rest.
                 children.sort(key=lambda child: (
-                    not _JOBS_WORD.search(child), "/en" not in child,
+                    not _JOBS_WORD.search(urlparse(child).path), "/en" not in child,
                 ))
                 # One file per path across languages: /fr/jobs/sitemap.xml
                 # lists the roles /en/jobs/sitemap.xml does.
