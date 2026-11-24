@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -106,7 +107,7 @@ func TestPreflightAndResearchAgreeOnXAPIAutoOptInAndBlueskyHandle(t *testing.T) 
 	t.Setenv("LAST30DAYS_SKIP_KEYCHAIN", "1")
 	t.Setenv(BrowserCookiesEnvOverride, "")
 	t.Setenv("X_BEARER_TOKEN", "dummy-mcp-bearer-token")
-	t.Setenv("LAST30DAYS_X_BACKEND", "${user_config.last30days_x_backend}")
+	t.Setenv("LAST30DAYS_X_BACKEND", "")
 	t.Setenv("XAI_API_KEY", "")
 	t.Setenv("XQUIK_API_KEY", "")
 	t.Setenv("AUTH_TOKEN", "")
@@ -115,8 +116,8 @@ func TestPreflightAndResearchAgreeOnXAPIAutoOptInAndBlueskyHandle(t *testing.T) 
 	t.Setenv("BSKY_APP_PASSWORD", "abcd-efgh-ijkl-mnop")
 
 	extra := researchExtraEnv()
-	if !slices.Contains(extra, "LAST30DAYS_X_BACKEND=xapi") {
-		t.Fatalf("researchExtraEnv() = %#v, want LAST30DAYS_X_BACKEND=xapi", extra)
+	if !slices.Contains(extra, xAPIOptInEnv) {
+		t.Fatalf("researchExtraEnv() = %#v, want %s", extra, xAPIOptInEnv)
 	}
 
 	res, runErr := engine.Run(context.Background(), engine.RunOptions{
@@ -145,7 +146,56 @@ func TestPreflightAndResearchAgreeOnXAPIAutoOptInAndBlueskyHandle(t *testing.T) 
 	}
 	for _, item := range payload.ActionItems {
 		if strings.Contains(item, "LAST30DAYS_X_BACKEND") {
-			t.Errorf("unsubstituted placeholder leaked into preflight action_items: %q", item)
+			t.Errorf("unexpected LAST30DAYS_X_BACKEND action item: %q", item)
 		}
+	}
+}
+
+func TestXAPIAutoOptInDoesNotOverrideDotenvPin(t *testing.T) {
+	cacheDir, err := filepath.Abs("../../../skills/last30days/scripts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, "config")
+	if err := os.Mkdir(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Pin bird in .env without static bird cookies: xapi opt-in must NOT
+	// override the explicit .env pin to activate X via xapi.
+	if err := os.WriteFile(filepath.Join(configDir, ".env"), []byte("LAST30DAYS_X_BACKEND=bird\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("LAST30DAYS_CONFIG_DIR", configDir)
+	t.Setenv("LAST30DAYS_SKIP_KEYCHAIN", "1")
+	t.Setenv(BrowserCookiesEnvOverride, "")
+	t.Setenv("X_BEARER_TOKEN", "dummy-mcp-bearer-token")
+	t.Setenv("LAST30DAYS_X_BACKEND", "${user_config.last30days_x_backend}")
+	t.Setenv("XAI_API_KEY", "")
+	t.Setenv("XQUIK_API_KEY", "")
+	t.Setenv("AUTH_TOKEN", "")
+	t.Setenv("CT0", "")
+
+	res, runErr := engine.Run(context.Background(), engine.RunOptions{
+		CacheDir: cacheDir,
+		Args:     preflightRunArgs("json", ""),
+		ExtraEnv: researchExtraEnv(),
+	})
+	if runErr != nil {
+		t.Fatalf("preflight run failed: %v\nstderr:\n%s", runErr, string(res.Stderr))
+	}
+
+	var payload struct {
+		Network struct {
+			AvailableSources []string `json:"available_sources"`
+		} `json:"network"`
+	}
+	if err := json.Unmarshal(res.Stdout, &payload); err != nil {
+		t.Fatalf("parse preflight json: %v\nstdout:\n%s", err, string(res.Stdout))
+	}
+	if slices.Contains(payload.Network.AvailableSources, "x") {
+		t.Errorf("preflight available_sources = %#v; .env LAST30DAYS_X_BACKEND=bird pin was overridden by MCP xapi opt-in", payload.Network.AvailableSources)
 	}
 }

@@ -2364,10 +2364,9 @@ def _ytdlp_comments_result(
         if parent not in (None, "", "root"):
             continue
         raw_text = c.get("text")
-        if raw_text is None:
+        if not isinstance(raw_text, str):
             continue
-        text = raw_text if isinstance(raw_text, str) else str(raw_text)
-        text = text.strip()
+        text = raw_text.strip()
         if not text:
             continue
         comment = {

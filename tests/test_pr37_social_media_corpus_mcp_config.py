@@ -16,7 +16,9 @@ import hashlib
 import io
 import json
 import os
+import signal
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -139,6 +141,26 @@ class TestHigh179YoutubeRootComments:
                 assert youtube_yt._ytdlp_comments_result("abc123", max_comments=3) == ([], False)
             with mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=bad_comments_res):
                 assert youtube_yt._ytdlp_comments_result("abc123", max_comments=3) == ([], True)
+
+    def test_skips_non_string_text_values_instead_of_stringifying(self) -> None:
+        raw_comments = [
+            {"parent": "root", "author": "@bool", "text": False, "like_count": 50},
+            {"parent": "root", "author": "@list", "text": [], "like_count": 40},
+            {"parent": "root", "author": "@dict", "text": {}, "like_count": 30},
+            {"parent": "root", "author": "@none", "text": None, "like_count": 20},
+            {"parent": "root", "author": "@int", "text": 123, "like_count": 15},
+            {"parent": "root", "author": "@real", "text": "Actual viewer comment", "like_count": 10},
+        ]
+        payload = json.dumps({"id": "abc123", "comments": raw_comments})
+        res = SubprocResult(returncode=0, stdout=payload, stderr="")
+
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=res):
+            comments, ran_cleanly = youtube_yt._ytdlp_comments_result("abc123", max_comments=3)
+
+        assert ran_cleanly is True
+        assert [c["author"] for c in comments] == ["@real"]
+        assert comments[0]["text"] == "Actual viewer comment"
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +599,98 @@ time.sleep(30)
         assert any("UnicodeDecodeError" in note for note in result.notes)
         assert all(str(tmp_path) not in note for note in result.notes)
 
+    def test_pdftotext_timeout_does_not_deadlock_when_detached_descendant_holds_stdout(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        pid_file = tmp_path / "descendant.pid"
+        fake_bin = _write_fake_pdftotext(
+            tmp_path,
+            f"""
+import subprocess, sys, time
+# Detached descendant inherits stdout and survives proc.kill()/killpg(),
+# keeping the reader thread blocked inside BufferedReader.read().
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(30)"],
+    stdin=subprocess.DEVNULL,
+    stdout=sys.stdout,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+with open({str(pid_file)!r}, "w", encoding="utf-8") as fh:
+    fh.write(str(child.pid))
+time.sleep(30)
+""",
+        )
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        pdf = docs / "leaked-fd.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        (docs / "good.md").write_text("MCP servers survive leaked pipe fd", encoding="utf-8")
+
+        monkeypatch.setattr(corpus, "which", lambda _name: str(fake_bin))
+        monkeypatch.setattr(corpus, "PDF_TIMEOUT_SECONDS", 0.2)
+
+        descendant_pids: list[int] = []
+        try:
+            start = time.monotonic()
+            with pytest.raises(subprocess.TimeoutExpired):
+                corpus._extract_pdf_text(pdf, str(fake_bin))
+            elapsed = time.monotonic() - start
+            assert elapsed < 3.0, f"_extract_pdf_text hung for {elapsed:.2f}s"
+            if pid_file.exists():
+                descendant_pids.append(int(pid_file.read_text(encoding="utf-8").strip()))
+                pid_file.unlink()
+
+            start = time.monotonic()
+            result = corpus.search(
+                "MCP servers",
+                [docs],
+                from_date="2026-06-01",
+                to_date="2026-07-01",
+                all_time=True,
+                cache_dir=tmp_path / "cache",
+            )
+            elapsed = time.monotonic() - start
+            assert elapsed < 3.0, f"corpus.search hung for {elapsed:.2f}s"
+            assert [item.title for item in result.items] == ["good"]
+            assert any("TimeoutExpired" in note for note in result.notes)
+            if pid_file.exists():
+                descendant_pids.append(int(pid_file.read_text(encoding="utf-8").strip()))
+        finally:
+            for pid in descendant_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+    def test_pdftotext_cleans_up_child_when_reader_thread_start_fails(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fake_bin = _write_fake_pdftotext(tmp_path, "import time\ntime.sleep(30)\n")
+        pdf = tmp_path / "thread-fail.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        spawned: list[subprocess.Popen] = []
+        real_popen = subprocess.Popen
+
+        def tracking_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        monkeypatch.setattr(corpus.subprocess, "Popen", tracking_popen)
+        monkeypatch.setattr(
+            corpus.threading.Thread,
+            "start",
+            mock.Mock(side_effect=RuntimeError("can't start new thread")),
+        )
+
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            corpus._extract_pdf_text(pdf, str(fake_bin))
+
+        assert len(spawned) == 1
+        assert spawned[0].poll() is not None
+
 
 # ---------------------------------------------------------------------------
 # HIGH-221 & HIGH-222: MCP manifest Bluesky handle & X backend config
@@ -600,7 +714,7 @@ class TestHigh221And222McpManifestConfig:
             "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop",
         }) is True
 
-    def test_high222_manifest_exposes_x_backend_and_xapi_opt_in_selects_xapi(self) -> None:
+    def test_high222_manifest_exposes_x_backend_and_xapi_opt_in_selects_xapi(self, monkeypatch) -> None:
         manifest = json.loads((ROOT / "mcp" / "manifest.json").read_text(encoding="utf-8"))
         env_map = manifest["server"]["mcp_config"]["env"]
         user_config = manifest["user_config"]
@@ -610,10 +724,31 @@ class TestHigh221And222McpManifestConfig:
         assert user_config["last30days_x_backend"]["required"] is False
         assert "xapi" in user_config["x_bearer_token"]["description"]
         assert "LAST30DAYS_X_BACKEND" in user_config["x_bearer_token"]["description"]
+        for higher_priority in ("XAI_API_KEY", "XQUIK_API_KEY", "AUTH_TOKEN+CT0"):
+            assert higher_priority in user_config["last30days_x_backend"]["description"]
+            assert higher_priority in user_config["x_bearer_token"]["description"]
 
-        # Off grok-bot, bare X_BEARER_TOKEN is opt-in, while LAST30DAYS_X_BACKEND=xapi activates it.
+        # Off grok-bot without opt-in, bare X_BEARER_TOKEN stays inactive.
+        monkeypatch.delenv(env.X_API_OPT_IN_VAR, raising=False)
         assert env.x_backend_chain({"X_BEARER_TOKEN": "dummy-bearer"}, local_only=True) == []
         assert env.x_backend_chain(
             {"X_BEARER_TOKEN": "dummy-bearer", "LAST30DAYS_X_BACKEND": "xapi"},
             local_only=True,
         ) == ["xapi"]
+
+        # With MCP wrapper opt-in (LAST30DAYS_X_API_OPT_IN=1), xapi activates as
+        # a fallback without overriding explicit pins or higher-priority backends.
+        monkeypatch.setenv(env.X_API_OPT_IN_VAR, "1")
+        assert env.x_backend_chain({"X_BEARER_TOKEN": "dummy-bearer"}, local_only=True) == ["xapi"]
+        assert env.x_backend_chain(
+            {"X_BEARER_TOKEN": "dummy-bearer", "XAI_API_KEY": "dummy-xai"},
+            local_only=True,
+        ) == ["xai"]
+        assert env.x_backend_chain(
+            {"X_BEARER_TOKEN": "dummy-bearer", "XQUIK_API_KEY": "dummy-xquik"},
+            local_only=True,
+        ) == ["xquik"]
+        assert env.x_backend_chain(
+            {"X_BEARER_TOKEN": "dummy-bearer", "LAST30DAYS_X_BACKEND": "bird"},
+            local_only=True,
+        ) == []

@@ -412,9 +412,9 @@ func TestResearchExtraEnvXAPIAutoOptIn(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			got := researchExtraEnv()
-			hasXAPI := slices.Contains(got, "LAST30DAYS_X_BACKEND=xapi")
+			hasXAPI := slices.Contains(got, xAPIOptInEnv)
 			if hasXAPI != tc.wantXAPI {
-				t.Fatalf("researchExtraEnv() = %#v (has xapi=%t), want %t", got, hasXAPI, tc.wantXAPI)
+				t.Fatalf("researchExtraEnv() = %#v (has %s=%t), want %t", got, xAPIOptInEnv, hasXAPI, tc.wantXAPI)
 			}
 		})
 	}

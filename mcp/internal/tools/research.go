@@ -241,10 +241,15 @@ func withBrowserCookiePolicy(args []string) []string {
 	return args
 }
 
+// xAPIOptInEnv tells the engine that X_BEARER_TOKEN was explicitly configured
+// in the MCP host environment, enabling xapi as a fallback without overriding
+// LAST30DAYS_X_BACKEND pins or higher-priority X credentials in .env/Keychain.
+const xAPIOptInEnv = "LAST30DAYS_X_API_OPT_IN=1"
+
 func researchExtraEnv() []string {
 	extra := []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
 	if shouldAutoEnableXAPI() {
-		extra = append(extra, "LAST30DAYS_X_BACKEND=xapi")
+		extra = append(extra, xAPIOptInEnv)
 	}
 	return extra
 }

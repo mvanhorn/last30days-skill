@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -287,20 +288,57 @@ def _safe_mtime_ns(path: Path) -> int:
         return 0
 
 
+def _terminate_pdf_proc(
+    proc: subprocess.Popen[bytes],
+    *,
+    own_group: bool,
+    force: bool,
+) -> None:
+    if own_group:
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        try:
+            os.killpg(proc.pid, sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except OSError:
+        pass
+
+
 def _extract_pdf_text(path: Path, pdftotext: str) -> str:
     cmd = [pdftotext, "-enc", "UTF-8", "--", str(path), "-"]
     max_bytes = MAX_TEXT_CHARS * 4
     timeout = PDF_TIMEOUT_SECONDS
     deadline = time.monotonic() + timeout
+    own_group = hasattr(os, "setsid") and hasattr(os, "killpg")
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        start_new_session=own_group,
     )
     chunks: list[bytes] = []
     truncated = False
     read_error: list[BaseException] = []
+    reader_started = False
+    kill_wait_attempted = False
+
+    def _force_kill_and_reap() -> None:
+        nonlocal kill_wait_attempted
+        if kill_wait_attempted or proc.returncode is not None:
+            return
+        kill_wait_attempted = True
+        _terminate_pdf_proc(proc, own_group=own_group, force=True)
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            pass
 
     def _drain_stdout() -> None:
         nonlocal truncated
@@ -324,30 +362,24 @@ def _extract_pdf_text(path: Path, pdftotext: str) -> str:
                 pass
 
     reader = threading.Thread(target=_drain_stdout, daemon=True)
-    reader.start()
     try:
+        reader.start()
+        reader_started = True
+
         remaining = deadline - time.monotonic()
         reader.join(timeout=max(0.0, remaining))
         if reader.is_alive():
-            proc.kill()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                pass
-            reader.join(timeout=2.0)
+            _force_kill_and_reap()
+            reader.join(timeout=0.5)
             raise subprocess.TimeoutExpired(cmd, timeout)
 
         if truncated:
             if proc.poll() is None:
-                proc.terminate()
+                _terminate_pdf_proc(proc, own_group=own_group, force=False)
                 try:
                     proc.wait(timeout=1.0)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=2.0)
-                    except subprocess.TimeoutExpired:
-                        pass
+                    _force_kill_and_reap()
             if read_error:
                 raise read_error[0]
             return b"".join(chunks).decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
@@ -355,21 +387,13 @@ def _extract_pdf_text(path: Path, pdftotext: str) -> str:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             if proc.poll() is None:
-                proc.kill()
-                try:
-                    proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    pass
+                _force_kill_and_reap()
                 raise subprocess.TimeoutExpired(cmd, timeout)
         else:
             try:
                 proc.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                try:
-                    proc.wait(timeout=2.0)
-                except subprocess.TimeoutExpired:
-                    pass
+                _force_kill_and_reap()
                 raise
 
         if read_error:
@@ -378,16 +402,10 @@ def _extract_pdf_text(path: Path, pdftotext: str) -> str:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
         return b"".join(chunks).decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
     finally:
-        if proc.poll() is None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                pass
-        if proc.stdout is not None:
+        _force_kill_and_reap()
+        # Only close proc.stdout when the reader thread is not still blocked in
+        # BufferedReader.read(); otherwise close() deadlocks on its internal lock.
+        if proc.stdout is not None and (not reader_started or not reader.is_alive()):
             try:
                 proc.stdout.close()
             except OSError:
