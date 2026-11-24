@@ -294,6 +294,43 @@ class TestHigh139GrokWrapperParsing:
             }
             assert items[0]["relevance"] > 0.0
 
+    def test_duplicate_post_id_with_different_authors_does_not_merge(self):
+        alice_post = {
+            "id": IN_WINDOW_ID,
+            "author_handle": "alice",
+            "text": "alice original post",
+            "likes": 12,
+        }
+        bob_post = {
+            "id": IN_WINDOW_ID,
+            "author_handle": "bob",
+            "text": "bob much longer conflicting text that must never be credited to alice",
+            "likes": 9999,
+        }
+        items = grok_x.parse_x_response({"text": json.dumps([alice_post, bob_post])}, "alice", *WINDOW)
+        assert len(items) == 1
+        assert items[0]["author_handle"] == "alice"
+        assert items[0]["text"] == "alice original post"
+        assert items[0]["engagement"]["likes"] == 12
+
+    def test_as_int_handles_overflowing_counts_without_crashing_parse(self):
+        for raw in ("1e308K", "1e309", "9" * 400, "1" + "0" * 307 + "K"):
+            assert grok_x._as_int(raw) is None
+
+        post = {
+            "id": IN_WINDOW_ID,
+            "author_handle": "steipete",
+            "text": "post with overflowing engagement count",
+            "likes": "1e308K",
+            "reposts": "1e309",
+            "replies": 7,
+        }
+        items = grok_x.parse_x_response({"text": json.dumps([post])}, "steipete", *WINDOW)
+        assert len(items) == 1
+        assert items[0]["engagement"]["likes"] is None
+        assert items[0]["engagement"]["reposts"] is None
+        assert items[0]["engagement"]["replies"] == 7
+
     def test_top_level_json_array_of_cli_wrappers_unwraps_prose_and_collections(self):
         prose_stream = [
             {"type": "system", "message": "init"},

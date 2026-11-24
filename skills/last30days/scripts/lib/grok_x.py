@@ -37,6 +37,7 @@ fabricated post carries a plausible handle and a numeric id by construction.
 """
 
 import json
+import math
 import os
 import re
 import shutil
@@ -467,7 +468,7 @@ _FIELD_LINE = re.compile(
 # ("39K", "1.2M"). Parsing only the leading digits turns 1.2M into 1, which
 # does not merely lose precision -- it inverts ranking, placing a viral post
 # below one with 500 literal likes.
-_INT_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?)\s*([KMB])?", re.I)
+_INT_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?(?:e[+-]?\d+)?)\s*([KMB])?", re.I)
 _SUFFIX_MULTIPLIER = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 _STATUS_URL_RE = re.compile(
     r"(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/status/(\d+)",
@@ -487,7 +488,12 @@ def _as_int(value: str) -> Optional[int]:
         return None
     if suffix:
         parsed *= _SUFFIX_MULTIPLIER[suffix.lower()]
-    return int(parsed)
+    if not math.isfinite(parsed):
+        return None
+    try:
+        return int(parsed)
+    except (OverflowError, ValueError):
+        return None
 
 
 def _parse_date(value: str) -> Optional[str]:
@@ -751,6 +757,8 @@ def _parse_x_response_with_reason(
         parsed_date = _parse_date(str(fields.get("created_at", "")))
         existing = by_post_id.get(post_id)
         if existing is not None:
+            if existing["author_handle"].lower() != handle.lower():
+                continue
             if len(text) > len(existing["text"]):
                 existing["text"] = text
                 existing["relevance"] = _compute_relevance(topic, text) if topic else 0.7
