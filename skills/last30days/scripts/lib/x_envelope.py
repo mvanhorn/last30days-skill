@@ -346,6 +346,21 @@ _MAX_UNESCAPE_PASSES = 3
 _ENTITY_PREFIX_RE = re.compile(
     r"&(?=(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);?)"
 )
+# Valid Unicode code points are at most U+10FFFF (7 decimal / 6 hex digits).
+# Longer numeric charrefs cannot decode to a valid code point and can raise
+# ValueError under Python's int_max_str_digits limit inside html.unescape.
+_OVERSIZED_NUMERIC_ENTITY_RE = re.compile(
+    r"&(?=#(?:[0-9]{8,}|[xX][0-9A-Fa-f]{7,});?)"
+)
+
+
+def _safe_unescape(text: str) -> str:
+    """Decode HTML entities without raising on oversized numeric references."""
+    safe = _OVERSIZED_NUMERIC_ENTITY_RE.sub("& ", text)
+    try:
+        return html.unescape(safe)
+    except ValueError:
+        return safe
 
 
 def _clean_text(value: str) -> str:
@@ -369,14 +384,14 @@ def _clean_text(value: str) -> str:
         text = _CONTROL_TEXT_RE.sub("", text)
         if "&" not in text:
             break
-        unescaped = html.unescape(text)
+        unescaped = _safe_unescape(text)
         if unescaped == text:
             break
         text = unescaped
     else:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         text = _CONTROL_TEXT_RE.sub("", text)
-        if "&" in text and html.unescape(text) != text:
+        if "&" in text and _safe_unescape(text) != text:
             text = _ENTITY_PREFIX_RE.sub("& ", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _CONTROL_TEXT_RE.sub("", text)

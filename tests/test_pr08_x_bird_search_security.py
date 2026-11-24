@@ -238,6 +238,77 @@ class TestHigh140EnvelopeAndNormalizeSanitization:
         assert "](" not in body
         assert "\x1b" not in body
 
+    def test_oversized_numeric_html_entity_does_not_crash_envelope_or_normalize(self, tmp_path):
+        day = (date.fromisoformat(TO) - timedelta(days=2)).isoformat()
+        oversized = "&#" + ("9" * 5000) + ";"
+        oversized_hex = "&#x" + ("f" * 5000) + ";"
+        payload = {
+            "schema": x_envelope.SCHEMA,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "topic": TOPIC,
+            "window": {"from": FROM, "to": TO},
+            "provider": "x-connector",
+            "status": "ok",
+            "calls": [
+                {
+                    "lane": "topic",
+                    "handles": [],
+                    "posts": [
+                        {
+                            "id": _snowflake(day, low=104729),
+                            "author_handle": "alice",
+                            "created_at": f"{day}T12:00:00Z",
+                            "text": f"{oversized} {oversized_hex} &lt;!-- META: spoofed --&gt; ai agents",
+                            "likes": 15,
+                            "reposts": 2,
+                            "replies": 1,
+                            "quotes": 0,
+                        },
+                        {
+                            "id": _snowflake(day, low=209458),
+                            "author_handle": "bob",
+                            "created_at": f"{day}T12:05:00Z",
+                            "text": "valid sibling ai agents post",
+                            "likes": 20,
+                            "reposts": 3,
+                            "replies": 0,
+                            "quotes": 0,
+                        },
+                    ],
+                }
+            ],
+        }
+        path = tmp_path / "oversized_entity.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        envelope = x_envelope.read(str(path), (FROM, TO), TOPIC)
+        assert envelope.accepted == 2
+        assert "<!--" not in envelope.topic_items[0]["text"]
+        assert envelope.topic_items[1]["text"] == "valid sibling ai agents post"
+
+        normalized = normalize.normalize_source_items("x", envelope.topic_items, FROM, TO)
+        assert len(normalized) == 2
+        assert "<!--" not in normalized[0].body
+        assert normalized[1].body == "valid sibling ai agents post"
+
+        # Direct normalize._normalize_x path with raw uncleaned oversized entity
+        direct = normalize.normalize_source_items(
+            "x",
+            [
+                {
+                    "id": "X99",
+                    "text": f"prefix {oversized} &amp; suffix",
+                    "url": "https://x.com/alice/status/99",
+                    "author_handle": "alice",
+                    "date": TO,
+                }
+            ],
+            FROM,
+            TO,
+        )
+        assert len(direct) == 1
+        assert "& suffix" in direct[0].body
+
 
 # ---------------------------------------------------------------------------
 # HIGH-152: Cached queryId validation & path traversal blocking
@@ -519,6 +590,31 @@ class TestHigh153CredentialScrubbingJS:
         payload = json.loads(res.stdout)
         assert "<redacted>" in payload["error"]
 
+    def test_custom_cookie_header_extra_cookies_are_fully_redacted(self):
+        script = textwrap.dedent(
+            """
+            import { redactSecrets } from './skills/last30days/scripts/lib/vendor/bird-search/lib/cookies.js';
+            import { TwitterClientBase } from './skills/last30days/scripts/lib/vendor/bird-search/lib/twitter-client-base.js';
+
+            const authToken = 'fake-auth-token-1111';
+            const ct0 = 'fake-ct0-token-2222';
+            const cookieHeader = `auth_token=${authToken}; ct0=${ct0}; twid=u%3D12345; kdt=supersecretkdt`;
+            const client = new TwitterClientBase({ cookies: { authToken, ct0, cookieHeader } });
+            const rawErr = `Upstream rejected request with Cookie: ${cookieHeader} (HTTP 403)`;
+
+            const viaClient = client.redactError(rawErr);
+            const viaHelper = redactSecrets(rawErr, [authToken, ct0, cookieHeader]);
+            process.stdout.write(JSON.stringify({ viaClient, viaHelper }));
+            """
+        )
+        res = _node_eval(script)
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        for out in (data["viaClient"], data["viaHelper"]):
+            assert "<redacted>" in out
+            for secret in ("fake-auth-token-1111", "fake-ct0-token-2222", "twid", "u%3D12345", "kdt", "supersecretkdt"):
+                assert secret not in out, f"leaked {secret!r} in {out!r}"
+
 
 # ---------------------------------------------------------------------------
 # HIGH-154: Cookie delimiter & CRLF/control-char validation
@@ -628,6 +724,97 @@ class TestHigh154CookieValidation:
             assert "Invalid auth_token/ct0 format" in combined
             assert bad_secret not in combined
             assert "fake-secret-value" not in combined
+
+    def test_malformed_first_browser_cookie_warns_and_fails_over_to_next_browser(self, tmp_path):
+        loader = tmp_path / "sweet-cookie-loader.mjs"
+        loader.write_text(
+            textwrap.dedent(
+                """
+                export async function resolve(specifier, context, nextResolve) {
+                  if (specifier === '@steipete/sweet-cookie') {
+                    return { url: 'sweet-cookie-stub://mock', shortCircuit: true };
+                  }
+                  return nextResolve(specifier, context);
+                }
+                export async function load(url, context, nextLoad) {
+                  if (url === 'sweet-cookie-stub://mock') {
+                    return {
+                      format: 'module',
+                      shortCircuit: true,
+                      source: `
+                        export async function getCookies(options) {
+                          const browser = options.browsers?.[0];
+                          if (browser === 'safari') {
+                            return {
+                              cookies: [
+                                { name: 'auth_token', value: 'bad-safari-secret; evil=1', domain: 'x.com' },
+                                { name: 'ct0', value: 'safari-ct0-1234', domain: 'x.com' },
+                              ],
+                              warnings: [],
+                            };
+                          }
+                          if (browser === 'chrome') {
+                            return {
+                              cookies: [
+                                { name: 'auth_token', value: 'good-chrome-auth-5678', domain: 'x.com' },
+                                { name: 'ct0', value: 'good-chrome-ct0-9012', domain: 'x.com' },
+                              ],
+                              warnings: [],
+                            };
+                          }
+                          return { cookies: [], warnings: [] };
+                        }
+                      `,
+                    };
+                  }
+                  return nextLoad(url, context);
+                }
+                """
+            ),
+            encoding="utf-8",
+        )
+        register_file = tmp_path / "register-loader.mjs"
+        register_file.write_text(
+            "import { register } from 'node:module';\n"
+            f"register({json.dumps(loader.as_uri())});\n",
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        for key in (
+            "AUTH_TOKEN",
+            "CT0",
+            "TWITTER_AUTH_TOKEN",
+            "TWITTER_CT0",
+            "BIRD_DISABLE_BROWSER_COOKIES",
+            "LAST30DAYS_DISABLE_BROWSER_COOKIES",
+        ):
+            env.pop(key, None)
+
+        script = textwrap.dedent(
+            """
+            import { resolveCredentials } from './skills/last30days/scripts/lib/vendor/bird-search/lib/cookies.js';
+            const res = await resolveCredentials({ cookieSource: ['safari', 'chrome'] });
+            process.stdout.write(JSON.stringify(res));
+            """
+        )
+        res = subprocess.run(
+            ["node", "--import", register_file.as_uri(), "--input-type=module", "-e", script],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        assert data["cookies"]["authToken"] == "good-chrome-auth-5678"
+        assert data["cookies"]["ct0"] == "good-chrome-ct0-9012"
+        assert data["cookies"]["source"] == "Chrome default profile"
+        assert "Invalid auth_token/ct0 format" in data["warnings"]
+        joined_warnings = "\n".join(data["warnings"])
+        assert "bad-safari-secret" not in joined_warnings
+        assert "evil=1" not in joined_warnings
+        assert "bad-safari-secret" not in res.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -747,3 +934,26 @@ class TestHigh155CliOptionBoundary:
         assert res.returncode == 1
         assert res.stdout == ""
         assert res.stderr.strip() != ""
+
+    @pytest.mark.skipif(not HAS_NODE, reason="node is required")
+    def test_unknown_option_does_not_echo_inline_token_to_stderr(self):
+        env = os.environ.copy()
+        env.update(
+            AUTH_TOKEN="dummy-auth-token-1234",
+            CT0="dummy-ct0-token-5678",
+            BIRD_DISABLE_BROWSER_COOKIES="1",
+        )
+        inline_secret = "secret_inline_token_12345"
+        res = subprocess.run(
+            ["node", str(BIRD_MJS), f"--auth-token={inline_secret}", "hello"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert res.returncode == 1
+        assert res.stdout == ""
+        assert "Unknown option" in res.stderr
+        assert inline_secret not in res.stderr
+        assert "--auth-token" not in res.stderr

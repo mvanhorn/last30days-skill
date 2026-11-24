@@ -79,7 +79,7 @@ async function main() {
     } else if (arg === '--top') {
       product = 'Top';
     } else if (arg.startsWith('-')) {
-      writeStderr(`Unknown option: ${arg}\nUsage: node bird-search.mjs [--count N] [--json] [--top] -- <query>\n`);
+      writeStderr('Unknown option\nUsage: node bird-search.mjs [--count N] [--json] [--top] -- <query>\n');
       return 1;
     } else {
       positional.push(arg);

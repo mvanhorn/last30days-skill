@@ -37,11 +37,6 @@ export function redactSecrets(text, extraSecrets = []) {
         return '';
     }
     let out = String(text);
-    out = out.replace(
-        /(Headers\.\w+:\s*)(["'])[\s\S]*?\2(\s+is an invalid header value)/gi,
-        '$1"<redacted>"$3',
-    );
-    out = out.replace(/\b(auth_token|ct0)=[^;\s"']*/gi, '$1=<redacted>');
     const candidates = new Set();
     const addCandidate = (raw) => {
         if (typeof raw !== 'string') {
@@ -63,10 +58,17 @@ export function redactSecrets(text, extraSecrets = []) {
     for (const key of SECRET_ENV_KEYS) {
         addCandidate(process.env[key]);
     }
+    // Mask longest known secrets (e.g. a full custom cookieHeader with extra
+    // cookies) before individual auth_token=/ct0= substitutions alter the text.
     const ordered = [...candidates].sort((a, b) => b.length - a.length);
     for (const secret of ordered) {
         out = out.split(secret).join('<redacted>');
     }
+    out = out.replace(
+        /(Headers\.\w+:\s*)(["'])[\s\S]*?\2(\s+is an invalid header value)/gi,
+        '$1"<redacted>"$3',
+    );
+    out = out.replace(/\b(auth_token|ct0)=[^;\s"']*/gi, '$1=<redacted>');
     return out;
 }
 async function loadSweetCookie() {
@@ -159,8 +161,16 @@ async function readTwitterCookiesFromBrowser(options) {
         timeoutMs: options.cookieTimeoutMs,
     });
     warnings.push(...providerWarnings);
-    const authToken = normalizeCookieValue(pickCookieValue(cookies, 'auth_token'));
-    const ct0 = normalizeCookieValue(pickCookieValue(cookies, 'ct0'));
+    let authToken = null;
+    let ct0 = null;
+    try {
+        authToken = normalizeCookieValue(pickCookieValue(cookies, 'auth_token'));
+        ct0 = normalizeCookieValue(pickCookieValue(cookies, 'ct0'));
+    }
+    catch {
+        warnings.push(INVALID_COOKIE_ERROR);
+        return { cookies: out, warnings };
+    }
     if (authToken) {
         out.authToken = authToken;
     }
