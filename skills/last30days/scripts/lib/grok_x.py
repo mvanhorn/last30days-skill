@@ -44,11 +44,12 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import grok_audit, log, subproc, usage
+from . import auth_safety, grok_audit, health, http, log, subproc, usage
 from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
 # One copy of the snowflake, handle-grammar, and generated-sequence helpers
@@ -375,12 +376,8 @@ _INVOCATION_FAILURE_MARKERS = (
     "tool-boundary audit", "native grok binary",
 )
 
-# Why the most recent parse returned nothing. Lets _run_query distinguish a
-# clean empty window (common, and not worth a second LLM call) from a suspect
-# response (fabricated ids, a generated sequence, a self-reported
-# non-execution), which is the only case retrying can actually fix.
-_LAST_REJECTION = {"reason": ""}
-
+# Validation rejection reasons worth a second LLM call (fabricated ids,
+# generated sequence, or invalid date window), as opposed to a clean empty window.
 _RETRYABLE_REJECTIONS = (
     "failed provenance validation",
     "near-uniform sequence",
@@ -667,21 +664,20 @@ def _split_blocks(text: str) -> List[str]:
     return blocks
 
 
-def parse_x_response(
+def _parse_x_response_with_reason(
     response: Dict[str, Any],
     topic: str = "",
     from_date: str = "",
     to_date: str = "",
-) -> List[Dict[str, Any]]:
-    """Parse a grok response into normalized X item dicts.
-
-    Total: returns [] on error rather than raising.
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Parse a grok response and return ``(items, rejection_reason)`` without
+    shared mutable state so concurrent pipeline worker threads never race.
     """
     if not isinstance(response, dict):
-        return []
+        return [], ""
     if response.get("error"):
         _log(f"error: {response['error']}")
-        return []
+        return [], ""
 
     text = response.get("text") or ""
     raw = _fields_from_json_text(text)
@@ -704,9 +700,7 @@ def parse_x_response(
     kept, reason = _validate_items(raw, from_date, to_date) if from_date else (raw, "")
     if reason:
         _log(f"rejected response: {reason}")
-        _LAST_REJECTION["reason"] = reason
-        return []
-    _LAST_REJECTION["reason"] = ""
+        return [], reason
 
     items: List[Dict[str, Any]] = []
     seen_ids = set()
@@ -739,6 +733,22 @@ def parse_x_response(
             "why_relevant": "",
             "relevance": _compute_relevance(topic, text) if topic else 0.7,
         })
+    return items, ""
+
+
+def parse_x_response(
+    response: Dict[str, Any],
+    topic: str = "",
+    from_date: str = "",
+    to_date: str = "",
+) -> List[Dict[str, Any]]:
+    """Parse a grok response into normalized X item dicts.
+
+    Total: returns [] on error rather than raising.
+    """
+    items, _ = _parse_x_response_with_reason(
+        response, topic=topic, from_date=from_date, to_date=to_date,
+    )
     return items
 
 
@@ -895,6 +905,124 @@ def _check_cli_version(binary: str, workdir: str, timeout: float) -> Tuple[Optio
     return None, line
 
 
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*(?![A-Za-z0-9_-])")
+_API_KEY_RE = re.compile(r"\b(?:xai|sk)-[A-Za-z0-9_-]{8,}\b")
+_COOKIE_HEADER_RE = re.compile(r"(?i)(\b(?:set-)?cookie\s*:\s*)[^\r\n]+")
+_CRED_KEY_PATTERN = (
+    r"refresh_token|access_token|id_token|auth_token|ct0|token|"
+    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password|key"
+)
+_KV_CRED_KEY_PATTERN = (
+    r"refresh_token|access_token|id_token|auth_token|ct0|token|"
+    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password|key"
+)
+_JSON_CRED_RE = re.compile(
+    rf'((["\'])(?:{_CRED_KEY_PATTERN})\2\s*:\s*")((?:[^"\\\r\n]|\\.)*)(")',
+    re.IGNORECASE,
+)
+_PY_DICT_CRED_RE = re.compile(
+    rf"(([\"'])(?:{_CRED_KEY_PATTERN})\2\s*:\s*')((?:[^'\\\r\n]|\\.)*)(')",
+    re.IGNORECASE,
+)
+_KV_QUOTED_CRED_RE = re.compile(
+    rf"""(\b(?:{_KV_CRED_KEY_PATTERN})\s*[:=]\s*)(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')""",
+    re.IGNORECASE,
+)
+_KV_CRED_RE = re.compile(
+    rf"(\b(?:{_KV_CRED_KEY_PATTERN})\s*[:=]\s*)([^\s'\"\\,;]+)",
+    re.IGNORECASE,
+)
+_HTTP_401_RE = re.compile(r"\b(?:http(?:/[\d.]+)?|status)\s*[:=]?\s*401\b", re.IGNORECASE)
+_CONTROL_DEBUG_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_SECRET_STORE_KEY_NAMES = frozenset({
+    "key", "refresh_token", "access_token", "id_token", "auth_token", "ct0",
+    "token", "api_key", "xai_api_key", "x-api-key", "authorization",
+    "bearer", "jwt", "cookie", "secret", "password",
+})
+
+
+def _extract_store_secrets(obj: Any, out: List[str]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in _SECRET_STORE_KEY_NAMES and isinstance(v, str):
+                val = v.strip()
+                if len(val) >= 6:
+                    out.append(val)
+            else:
+                _extract_store_secrets(v, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _extract_store_secrets(item, out)
+
+
+def _collect_auth_secrets(store_path: Optional[Path] = None) -> List[str]:
+    """Collect active Grok credential values so debug logs always redact opaque tokens."""
+    secrets: List[str] = []
+    env_key = (os.environ.get("XAI_API_KEY") or "").strip()
+    if len(env_key) >= 6:
+        secrets.append(env_key)
+    for candidate in (store_path, token_store_path()):
+        if candidate is None:
+            continue
+        try:
+            if not candidate.is_file():
+                continue
+            data = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError, TypeError):
+            continue
+        _extract_store_secrets(data, secrets)
+        break
+    expanded: List[str] = []
+    seen: set[str] = set()
+    for secret in secrets:
+        for variant in (secret, urllib.parse.quote(secret, safe="")):
+            if len(variant) >= 6 and variant not in seen:
+                seen.add(variant)
+                expanded.append(variant)
+    return expanded
+
+
+def _scrub_cli_output(text: str, extra_secrets: Iterable[str] = ()) -> str:
+    """Redact credentials, cookies, JWTs, API keys, and control chars for debug logs."""
+    scrubbed = auth_safety.scrub_secrets(text or "", extra_secrets)
+    scrubbed = _COOKIE_HEADER_RE.sub(r"\1<redacted>", scrubbed)
+    scrubbed = _JWT_RE.sub("<redacted>", scrubbed)
+    scrubbed = _API_KEY_RE.sub("<redacted>", scrubbed)
+    scrubbed = _JSON_CRED_RE.sub(r"\1<redacted>\4", scrubbed)
+    scrubbed = _PY_DICT_CRED_RE.sub(r"\1<redacted>\4", scrubbed)
+    scrubbed = _KV_QUOTED_CRED_RE.sub(r"\1<redacted>", scrubbed)
+    scrubbed = _KV_CRED_RE.sub(r"\1<redacted>", scrubbed)
+    return _CONTROL_DEBUG_RE.sub("", scrubbed)
+
+
+def _classify_exit_error(returncode: int, combined_output: str) -> Dict[str, Any]:
+    """Map non-zero CLI exit to a fixed engine-authored error without echoing raw output."""
+    if is_auth_revoked_error(combined_output):
+        return {
+            "error": "grok CLI auth failed (session expired or revoked)",
+            "auth_revoked": True,
+        }
+    state = http.classify_failure(message=combined_output)
+    if state == health.PAYMENT_REQUIRED:
+        error_msg = f"grok CLI exited {returncode}: payment required"
+    elif state == health.RATE_LIMITED:
+        error_msg = f"grok CLI exited {returncode}: rate limit exceeded"
+    elif state == health.AUTH_FAILED:
+        if _HTTP_401_RE.search(combined_output or ""):
+            error_msg = f"grok CLI exited {returncode}: http 401"
+        else:
+            error_msg = f"grok CLI exited {returncode}: forbidden"
+    elif state == health.TIMEOUT:
+        error_msg = f"grok CLI exited {returncode}: timed out"
+    elif state == health.SCHEMA_DRIFT:
+        error_msg = f"grok CLI exited {returncode}: invalid JSON or unexpected response schema"
+    elif state == health.UNREACHABLE:
+        error_msg = f"grok CLI exited {returncode}: connection error"
+    else:
+        error_msg = f"grok CLI exited {returncode}"
+    return {"error": error_msg}
+
+
 def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
     """Run `grok` once. Never raises; every failure returns {'error': str}.
 
@@ -945,6 +1073,8 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
                     "no_retry": True,
                 }
             child_home = _stage_child_home(workdir)
+            store = token_store_path()
+            staged_store = Path(child_home) / store.parent.name / store.name
             agent_file = _write_agent_profile(workdir)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -959,6 +1089,11 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
                 cwd=workdir,
                 env=_subprocess_env(child_home),
             )
+            debug_secrets = (
+                _collect_auth_secrets(staged_store)
+                if result.returncode != 0 and log.is_debug()
+                else []
+            )
     except FileNotFoundError:
         return {"error": "grok CLI not found on PATH"}
     except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
@@ -969,12 +1104,12 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
         return {"error": f"grok CLI failed: {type(exc).__name__}: {exc}"}
 
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()[:300]
-        error_msg = f"grok CLI exited {result.returncode}: {detail}"
-        response: Dict[str, Any] = {"error": error_msg}
-        if is_auth_revoked_error(detail):
-            response["auth_revoked"] = True
-        return response
+        combined = f"{result.stderr or ''}\n{result.stdout or ''}"
+        if log.is_debug():
+            scrubbed = _scrub_cli_output(combined, extra_secrets=debug_secrets).strip()
+            if scrubbed:
+                _log(f"grok CLI exited {result.returncode} (debug output): {scrubbed[:500]}")
+        return _classify_exit_error(result.returncode, combined)
     return {"text": result.stdout or ""}
 
 
@@ -1032,7 +1167,7 @@ def _run_query(
             if response.get("no_retry"):
                 return [], last_error, False
             continue
-        items = parse_x_response(
+        items, reason = _parse_x_response_with_reason(
             response,
             topic=relevance_topic or query,
             from_date=from_date,
@@ -1040,7 +1175,6 @@ def _run_query(
         )
         if items:
             return items, "", False
-        reason = _LAST_REJECTION.get("reason", "")
         if not any(marker in reason for marker in _RETRYABLE_REJECTIONS):
             return [], "", False
         last_error = reason or "no verified in-window posts returned"

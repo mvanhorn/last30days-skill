@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import stat
@@ -65,6 +66,9 @@ MAX_ROWS_TOTAL = 1000
 MAX_TEXT_CHARS = 10_000
 MAX_AGE_SECONDS = 6 * 60 * 60
 MAX_ID_DIGITS = 20
+# Realistic upper bound for engagement counts so huge JSON integers cannot
+# overflow float conversion during downstream ranking (signals.log1p_safe).
+MAX_ENGAGEMENT_COUNT = 1_000_000_000_000
 
 LANES = ("topic", "from", "mention", "related")
 STATUSES = ("ok", "partial", "error")
@@ -115,6 +119,12 @@ CATEGORY_CREDITS = "credits"
 CATEGORY_NOT_CONNECTED = "not-connected"
 CATEGORY_UNAVAILABLE = "unavailable"
 CATEGORY_WINDOW_UNSUPPORTED = "window-unsupported"
+_ALLOWED_ERROR_CATEGORIES = frozenset({
+    CATEGORY_CREDITS,
+    CATEGORY_NOT_CONNECTED,
+    CATEGORY_UNAVAILABLE,
+    CATEGORY_WINDOW_UNSUPPORTED,
+})
 _CATEGORY_GENERATED = "generated"
 
 _REMEDY = (
@@ -333,13 +343,13 @@ def _parse_iso(value: str) -> datetime | None:
 
 
 def _category(raw: str) -> str:
-    """The short error class: first token, lowercased, [a-z0-9-] only."""
+    """Allowlisted error class from the first token, or '' if unrecognized."""
     cleaned = _CONTROL_ANY_RE.sub("", raw or "").strip().lower()
     if not cleaned:
         return ""
     token = cleaned.split()[0]
     token = re.sub(r"[^a-z0-9-]", "", token)
-    return token[:40]
+    return token if token in _ALLOWED_ERROR_CATEGORIES else ""
 
 
 _MAX_UNESCAPE_PASSES = 3
@@ -398,13 +408,22 @@ def _clean_text(value: str) -> str:
     return text.replace("](", "]\\(").replace("<!--", "<! --")
 
 
-def _int(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
+def _int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed < 0 or parsed > MAX_ENGAGEMENT_COUNT:
+        return None
+    return parsed
+
+
+def _reject_constant(token: str) -> Any:
+    raise ValueError(f"invalid JSON constant: {token}")
 
 
 def _post_id(value: Any) -> str:
@@ -511,7 +530,7 @@ def read(
     except UnicodeDecodeError:
         raise fail("is not valid UTF-8") from None
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, parse_constant=_reject_constant)
     except (RecursionError, MemoryError):
         raise fail("is too deeply nested or too large to parse") from None
     except ValueError:

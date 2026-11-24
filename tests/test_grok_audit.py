@@ -43,9 +43,26 @@ if behavior == "external":
     except Exception:
         pass
 
+def _auth_token():
+    # Match real CLI precedence: XAI_API_KEY wins over auth.json when set.
+    key = os.environ.get("XAI_API_KEY", "")
+    if key:
+        return key
+    auth_path = os.path.join(os.environ["HOME"], ".grok", "auth.json")
+    if os.path.isfile(auth_path):
+        data = json.load(open(auth_path))
+        for entry in data.values():
+            if isinstance(entry, dict) and entry.get("key"):
+                return entry["key"]
+    return ""
+
 def post(body):
+    headers = {{"content-type": "application/json"}}
+    token = _auth_token()
+    if token:
+        headers["authorization"] = "Bearer " + token
     req = urllib.request.Request(base + "/responses", data=json.dumps(body).encode(),
-                                 headers={{"content-type": "application/json"}})
+                                 headers=headers)
     events = urllib.request.urlopen(req, timeout=10).read().decode()
     for line in events.splitlines():
         if line.startswith("data: ") and '"response.completed"' in line:

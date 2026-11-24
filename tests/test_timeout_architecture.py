@@ -104,7 +104,7 @@ def test_fetch_x_backend_forwards_deadline(monkeypatch):
         pipeline.xai_x, "search_x",
         lambda *a, **k: (seen.update(xai=k.get("deadline_monotonic")), {"items": []})[1],
     )
-    monkeypatch.setattr(pipeline.xai_x, "parse_x_response", lambda r: [])
+    monkeypatch.setattr(pipeline.xai_x, "parse_x_response", lambda *a, **k: [])
     monkeypatch.setattr(
         pipeline.xquik, "search_xquik",
         lambda *a, **k: (seen.update(xquik=k.get("deadline")), {"items": []})[1],
