@@ -16,11 +16,18 @@ from . import http, dates, reddit_refs, snippet
 _SAFE_SLUG_SEG = re.compile(r"^[A-Za-z0-9_.~%-]{1,200}\Z")
 
 
+def _is_finite_int(value: int) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _coerce_int_or_none(value: Any) -> Optional[int]:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        return value if _is_finite_int(value) else None
     if isinstance(value, float):
         return int(value) if math.isfinite(value) else None
     if isinstance(value, str):
@@ -28,9 +35,10 @@ def _coerce_int_or_none(value: Any) -> Optional[int]:
         if not text:
             return None
         try:
-            return int(text)
+            parsed = int(text)
         except ValueError:
             return None
+        return parsed if _is_finite_int(parsed) else None
     return None
 
 
@@ -51,7 +59,10 @@ def _coerce_float(value: Any) -> Optional[float]:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        num = float(value)
+        try:
+            num = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
         return num if math.isfinite(num) else None
     if isinstance(value, str):
         text = value.strip()
@@ -59,7 +70,7 @@ def _coerce_float(value: Any) -> Optional[float]:
             return None
         try:
             num = float(text)
-        except ValueError:
+        except (ValueError, OverflowError):
             return None
         return num if math.isfinite(num) else None
     return None

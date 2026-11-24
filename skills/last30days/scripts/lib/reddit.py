@@ -45,11 +45,18 @@ def _extract_dict_list(data: Any, primary_key: str) -> List[Dict[str, Any]]:
     return _as_dict_list(raw)
 
 
+def _is_finite_int(value: int) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _coerce_int_or_none(value: Any) -> Optional[int]:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
+        return value if _is_finite_int(value) else None
     if isinstance(value, float):
         return int(value) if math.isfinite(value) else None
     if isinstance(value, str):
@@ -57,9 +64,10 @@ def _coerce_int_or_none(value: Any) -> Optional[int]:
         if not text:
             return None
         try:
-            return int(text)
+            parsed = int(text)
         except ValueError:
             return None
+        return parsed if _is_finite_int(parsed) else None
     return None
 
 
@@ -74,6 +82,27 @@ def _first_int(*values: Any, default: int = 0) -> int:
         if coerced is not None:
             return coerced
     return default
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            num = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return num if math.isfinite(num) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            num = float(text)
+        except (ValueError, OverflowError):
+            return None
+        return num if math.isfinite(num) else None
+    return None
 
 
 def _coerce_text(value: Any) -> str:
@@ -464,7 +493,11 @@ def _parse_date(value) -> Optional[str]:
 def _extract_subreddit_name(value: Any) -> str:
     """Extract subreddit name from string or API object dict."""
     if isinstance(value, dict):
-        return _coerce_text(value.get("name") or value.get("display_name")).strip()
+        for key in ("name", "display_name"):
+            text = _coerce_text(value.get(key)).strip()
+            if text:
+                return text
+        return ""
     return _coerce_text(value).strip()
 
 
@@ -481,9 +514,11 @@ def _extract_date(post: Dict[str, Any]) -> Optional[str]:
 
     Global search uses ``created_at`` (ISO); subreddit search uses ``created_utc`` (Unix).
     """
-    return _parse_date(
-        post.get("created_utc") or post.get("created_at") or post.get("created_at_iso")
-    )
+    for key in ("created_utc", "created_at", "created_at_iso"):
+        parsed = _parse_date(post.get(key))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _normalize_reddit_id(raw_id: str) -> str:
@@ -551,7 +586,7 @@ def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global"
         "engagement": {
             "score": _extract_score(post),
             "num_comments": _coerce_int(post.get("num_comments"), default=0),
-            "upvote_ratio": post.get("upvote_ratio"),
+            "upvote_ratio": _coerce_float(post.get("upvote_ratio")),
         },
         "relevance": relevance,
         "why_relevant": f"Reddit {source_label} search",

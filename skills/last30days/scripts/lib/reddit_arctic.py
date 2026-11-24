@@ -178,11 +178,18 @@ def _report_failures(error: BaseException) -> None:
         http._record_failure(failure)
 
 
+def _is_finite_int(value: int) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _coerce_int(value: Any, default: int = 0) -> int:
     if value is None or isinstance(value, bool):
         return default
     if isinstance(value, int):
-        return value
+        return value if _is_finite_int(value) else default
     if isinstance(value, float):
         return int(value) if math.isfinite(value) else default
     if isinstance(value, str):
@@ -190,9 +197,10 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         if not text:
             return default
         try:
-            return int(text)
+            parsed = int(text)
         except ValueError:
             return default
+        return parsed if _is_finite_int(parsed) else default
     return default
 
 
@@ -202,6 +210,8 @@ def _strict_int(value: Any) -> int:
     if isinstance(value, bool):
         raise TypeError("bool is not a valid integer")
     if isinstance(value, int):
+        if not _is_finite_int(value):
+            raise OverflowError("integer exceeds float range")
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -209,8 +219,43 @@ def _strict_int(value: Any) -> int:
         return int(value)
     if isinstance(value, str):
         text = value.strip()
-        return 0 if not text else int(text)
+        if not text:
+            return 0
+        parsed = int(text)
+        if not _is_finite_int(parsed):
+            raise OverflowError("integer exceeds float range")
+        return parsed
     raise TypeError(f"unsupported numeric type: {type(value).__name__}")
+
+
+def _coerce_timestamp(value: Any) -> Optional[float | int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            num = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(num):
+            return None
+        ts: float | int = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            ts = float(text)
+        except (ValueError, OverflowError):
+            return None
+        if not math.isfinite(ts):
+            return None
+    else:
+        return None
+    try:
+        datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (ValueError, TypeError, OSError, OverflowError):
+        return None
+    return ts
 
 
 def _coerce_text(value: Any) -> str:
@@ -455,10 +500,11 @@ def _parse_iso_date(value: Optional[str]) -> Optional[date]:
 
 def _epoch_to_date(value: Any) -> Optional[str]:
     """Epoch seconds -> YYYY-MM-DD (UTC), or None on garbage."""
-    if isinstance(value, bool):
+    ts = _coerce_timestamp(value)
+    if ts is None:
         return None
     try:
-        return datetime.fromtimestamp(int(value), tz=timezone.utc).date().isoformat()
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
         return None
 
@@ -483,6 +529,7 @@ def _normalize_listing_row(row: Dict[str, Any], query: str = "") -> Dict[str, An
         author = "[deleted]"
     raw_sub = row.get("subreddit")
     subreddit = raw_sub if isinstance(raw_sub, str) else ""
+    created_utc = _coerce_timestamp(row.get("created_utc"))
     url = f"https://www.reddit.com{permalink}" if permalink.startswith("/") else permalink
     return {
         "id": "",
@@ -491,10 +538,10 @@ def _normalize_listing_row(row: Dict[str, Any], query: str = "") -> Dict[str, An
         "score": score,
         "num_comments": num_comments,
         "subreddit": subreddit,
-        "created_utc": row.get("created_utc"),
+        "created_utc": created_utc,
         "author": author,
         "selftext": _coerce_text(row.get("selftext")),
-        "date": _epoch_to_date(row.get("created_utc")),
+        "date": _epoch_to_date(created_utc),
         "engagement": {"score": score, "num_comments": num_comments, "upvote_ratio": None},
         "relevance": round(token_overlap_relevance(query, title), 3) if query else 0.0,
         "why_relevant": "Reddit listing (arctic-shift)",
@@ -825,6 +872,7 @@ def _fetch_comment_tree_with_status(
         depth = _coerce_int(row.get("depth"), default=0)
         raw_permalink = row.get("permalink")
         permalink = raw_permalink if isinstance(raw_permalink, str) else ""
+        created_utc = _coerce_timestamp(row.get("created_utc"))
         entry: Dict[str, Any] = {
             "id": _coerce_text(row.get("id")).removeprefix("t1_"),
             "score": score,
@@ -832,8 +880,8 @@ def _fetch_comment_tree_with_status(
             "body": body[:300],
             "excerpt": cut_quote(body),
             "permalink": permalink,
-            "date": _epoch_to_date(row.get("created_utc")),
-            "created_utc": row.get("created_utc"),
+            "date": _epoch_to_date(created_utc),
+            "created_utc": created_utc,
             "url": f"https://reddit.com{permalink}" if permalink else "",
             "depth": depth,
         }

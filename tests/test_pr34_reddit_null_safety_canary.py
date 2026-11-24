@@ -306,6 +306,78 @@ class TestHigh118ArcticShiftNullSafety:
         assert post_comments[1]["depth"] == 0  # parent_id t3_
         assert post_comments[2]["depth"] == 1  # parent_id t1_
 
+    def test_huge_int_created_utc_and_score_do_not_overflow_downstream_hydrate(self):
+        post_row_huge_cnt = {
+            "id": "huge01",
+            "title": "Huge int Arctic post",
+            "permalink": "/r/python/comments/huge01/huge/",
+            "subreddit": "python",
+            "score": 10**400,
+            "num_comments": 10**400,
+            "created_utc": 10**400,
+            "author": "alice",
+        }
+        post_row_with_comments = {
+            "id": "huge02",
+            "title": "Huge int Arctic post with comments",
+            "permalink": "/r/python/comments/huge02/huge/",
+            "subreddit": "python",
+            "score": 10**400,
+            "num_comments": 5,
+            "created_utc": 10**400,
+            "author": "alice",
+        }
+        comment_tree = {
+            "data": [
+                {
+                    "kind": "t1",
+                    "data": {
+                        "id": "t1_chuge",
+                        "author": "bob",
+                        "body": "Comment with overflowing int fields.",
+                        "score": 10**400,
+                        "depth": 0,
+                        "permalink": "/r/python/comments/huge02/huge/chuge/",
+                        "created_utc": 10**400,
+                    },
+                },
+            ],
+        }
+        ref1 = canonical_thread("https://www.reddit.com/r/python/comments/huge01/huge/")
+        ref2 = canonical_thread("https://www.reddit.com/r/python/comments/huge02/huge/")
+        assert ref1 is not None and ref2 is not None
+        ref1.provenance.add("web")
+        ref2.provenance.add("web")
+
+        def fake_get(url, **_kwargs):
+            if reddit_arctic.COMMENTS_TREE_API in url:
+                return comment_tree
+            return {"data": [post_row_huge_cnt, post_row_with_comments]}
+
+        with mock.patch.object(reddit_arctic.http, "get", side_effect=fake_get):
+            scores = reddit_arctic.fetch_scores(["huge01"])
+            assert scores == {}  # 10**400 score rejected by _strict_int
+
+            hydration = reddit_hydrate.hydrate([ref1, ref2], topic="python", depth="quick", comments=True)
+
+        assert hydration.arctic_state == "ok"
+        by_id = {it["metadata"]["post_id"]: it for it in hydration.items}
+        assert set(by_id) == {"huge01", "huge02"}
+        assert by_id["huge01"]["score"] == 0
+        assert by_id["huge01"]["num_comments"] == 0
+        assert by_id["huge01"]["created_utc"] is None
+        assert by_id["huge01"]["date"] is None
+        assert reddit_hydrate._discussion(by_id["huge01"]) == 0.0
+
+        assert by_id["huge02"]["score"] == 0
+        assert by_id["huge02"]["num_comments"] == 5
+        assert by_id["huge02"]["created_utc"] is None
+        assert reddit_hydrate._discussion(by_id["huge02"]) == 5.0
+        assert len(by_id["huge02"]["top_comments"]) == 1
+        assert by_id["huge02"]["top_comments"][0]["score"] == 0
+        assert by_id["huge02"]["top_comments"][0]["created_utc"] is None
+        assert by_id["huge02"]["top_comments"][0]["date"] is None
+
 
 # ---------------------------------------------------------------------------
 # HIGH-120: ScrapeCreators null/non-list/non-dict payloads and score coercion
@@ -514,6 +586,48 @@ class TestHigh120ScrapeCreatorsNullSafety:
         assert reddit.parse_reddit_response(None) == []  # type: ignore[arg-type]
         assert reddit.parse_reddit_response({"items": [None, {"id": "R1"}]}) == [{"id": "R1"}]
 
+    @pytest.mark.parametrize("bad_ratio,expected", [
+        ("bad", None),
+        ([], None),
+        (10**400, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        (True, None),
+        (0.87, 0.87),
+        ("0.92", 0.92),
+    ])
+    def test_normalize_post_coerces_upvote_ratio_safely(self, bad_ratio, expected):
+        post = {
+            "id": "t3_ur1",
+            "title": "Python ratios",
+            "permalink": "/r/python/comments/ur1/ratios/",
+            "subreddit": "python",
+            "ups": 10,
+            "num_comments": 2,
+            "upvote_ratio": bad_ratio,
+        }
+        normalized = reddit._normalize_post(post, 1, "global", query="python")
+        assert normalized["engagement"]["upvote_ratio"] == expected
+
+    def test_extract_subreddit_name_and_date_fallback_past_corrupt_primary_fields(self):
+        assert reddit._extract_subreddit_name({"name": True, "display_name": "python"}) == "python"
+        assert reddit._extract_subreddit_name({"name": "   ", "display_name": "LocalLLM"}) == "LocalLLM"
+        assert reddit._extract_subreddit_name({"name": True, "display_name": False}) == ""
+
+        assert reddit._extract_date({
+            "created_utc": float("nan"),
+            "created_at": "2026-11-10T12:00:00Z",
+        }) == "2026-11-10"
+        assert reddit._extract_date({
+            "created_utc": True,
+            "created_at": "not-a-date",
+            "created_at_iso": "2026-11-09T00:00:00Z",
+        }) == "2026-11-09"
+        assert reddit._extract_date({
+            "created_utc": 10**20,
+            "created_at": "2026-11-08T00:00:00Z",
+        }) == "2026-11-08"
+
 
 # ---------------------------------------------------------------------------
 # HIGH-132: reddit_enrich parse_thread_data & get_top_comments null safety
@@ -648,6 +762,50 @@ class TestHigh132RedditEnrichNullSafety:
         assert stored[0]["date"] == "2024-05-03"
         assert stored[0]["is_uploader"] is True
         assert all(c["date"] is None for c in stored[1:])
+
+    def test_parse_thread_data_handles_huge_int_upvote_ratio_and_scores_without_overflow(self):
+        payload = [
+            {
+                "data": {
+                    "children": [
+                        {
+                            "kind": "t3",
+                            "data": {
+                                "score": 10**400,
+                                "num_comments": 10**400,
+                                "upvote_ratio": 10**400,
+                                "created_utc": 10**400,
+                                "title": "Overflow test",
+                                "selftext": "ok",
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                "data": {
+                    "children": [
+                        {
+                            "kind": "t1",
+                            "data": {
+                                "body": "Overflow comment",
+                                "score": 10**400,
+                                "author": "alice",
+                                "created_utc": 10**400,
+                            },
+                        },
+                    ],
+                },
+            },
+        ]
+        parsed = reddit_enrich.parse_thread_data(payload)
+        assert parsed["submission"]["score"] is None
+        assert parsed["submission"]["num_comments"] is None
+        assert parsed["submission"]["upvote_ratio"] is None
+        assert parsed["submission"]["created_utc"] is None
+        assert len(parsed["comments"]) == 1
+        assert parsed["comments"][0]["score"] == 0
+        assert parsed["comments"][0]["created_utc"] is None
 
     def test_get_top_comments_stored_and_insights_handle_direct_hostile_inputs(self):
         assert reddit_enrich.get_top_comments(None) == []  # type: ignore[arg-type]
