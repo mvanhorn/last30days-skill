@@ -2127,11 +2127,18 @@ class RateLimiter:
         with self._lock:
             return self._waiting
 
-    def acquire(self) -> None:
+    def acquire(
+        self,
+        *,
+        deadline_monotonic: Optional[float] = None,
+        cancel: Optional[threading.Event] = None,
+    ) -> None:
         """Consume one token, blocking only when the bucket is empty."""
         queued = False
         try:
             while True:
+                if cancel is not None and cancel.is_set():
+                    raise DeadlineExceeded()
                 with self._lock:
                     now = time.monotonic()
                     # Clamp elapsed to >= 0: a backward clock reading must never
@@ -2139,14 +2146,29 @@ class RateLimiter:
                     elapsed = max(0.0, now - self._last)
                     self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
                     self._last = now
+                    if deadline_monotonic is not None and now >= deadline_monotonic:
+                        raise DeadlineExceeded()
                     if self._tokens >= 1.0:
                         self._tokens -= 1.0
                         return
+                    wait = (1.0 - self._tokens) / self.rate
+                    if deadline_monotonic is not None:
+                        remaining = deadline_monotonic - now
+                        if remaining <= 0 or wait > remaining:
+                            raise DeadlineExceeded()
+                        sleep_for = min(wait, remaining)
+                    else:
+                        sleep_for = wait
                     if not queued:
                         self._waiting += 1
                         queued = True
-                    wait = (1.0 - self._tokens) / self.rate
-                (self._sleep or time.sleep)(wait)
+                if self._sleep is not None:
+                    self._sleep(min(sleep_for, 0.05) if cancel is not None else sleep_for)
+                elif cancel is not None:
+                    if cancel.wait(min(sleep_for, 0.05)):
+                        raise DeadlineExceeded()
+                else:
+                    time.sleep(sleep_for)
         finally:
             if queued:
                 with self._lock:

@@ -14,6 +14,7 @@ unreachable host it returns ``{}`` so the caller shows the thread without a poin
 count rather than failing the Reddit source.
 """
 
+import inspect
 import sys
 import threading
 import time
@@ -454,10 +455,27 @@ def fetch_listings(
     return unique
 
 
+def _acquire_keyless_limiter(deadline: float) -> None:
+    limiter = http.REDDIT_KEYLESS_LIMITER
+    if isinstance(limiter, http.RateLimiter):
+        limiter.acquire(deadline_monotonic=deadline)
+        return
+    try:
+        params = inspect.signature(limiter.acquire).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "deadline_monotonic" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ):
+        limiter.acquire(deadline_monotonic=deadline)
+    else:
+        limiter.acquire()
+
+
 def _archive_get(url: str, deadline: float) -> Any:
     """One serial archive request through the shared keyless Reddit limiter,
     retried once after a pause when the archive answers 422."""
-    http.REDDIT_KEYLESS_LIMITER.acquire()
+    _acquire_keyless_limiter(deadline)
     return _fetch_search(url, deadline, retry_422=True)
 
 
@@ -487,6 +505,11 @@ def fetch_posts_by_ids(
             break
         try:
             data = _archive_get(f"{API}?ids={','.join(batch)}", end)
+        except http.DeadlineExceeded:
+            _log(f"post lookup stopped at its deadline; {len(todo) - start} ids left")
+            if state == "ok":
+                state = "down"
+            break
         except Exception as exc:  # network error / non-200 — degrade, never raise
             if _is_slow_down(exc):
                 _log(f"post lookup throttled (422 twice); {len(todo) - start} ids left")

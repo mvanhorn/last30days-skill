@@ -1318,5 +1318,124 @@ def test_keyless_search_counts_searxng_attempt_when_html_rungs_skipped_and_searx
         web_search_keyless.reset_rung_health()
 
 
+def test_rate_limiter_acquire_respects_deadline_and_cancel():
+    # Drained slow limiter (10s to refill): fails fast before deadline instead of sleeping 10s.
+    limiter = http.RateLimiter(rate_per_sec=0.1, burst=1)
+    limiter.acquire()  # drain single token
+
+    t0 = time.monotonic()
+    with pytest.raises(http.DeadlineExceeded):
+        limiter.acquire(deadline_monotonic=t0 + 0.2)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.5
+    assert limiter.waiting == 0
+
+    # Expired deadline raises without consuming an available token.
+    fresh = http.RateLimiter(rate_per_sec=0.1, burst=1)
+    with pytest.raises(http.DeadlineExceeded):
+        fresh.acquire(deadline_monotonic=time.monotonic() - 0.01)
+    assert fresh._tokens >= 1.0
+    assert fresh.waiting == 0
+
+    # Cancel event wakes a waiting acquirer promptly and cleans up waiting count.
+    cancel = threading.Event()
+    slow = http.RateLimiter(rate_per_sec=0.1, burst=1)
+    slow.acquire()
+
+    def trigger_cancel():
+        time.sleep(0.05)
+        cancel.set()
+
+    canceller = threading.Thread(target=trigger_cancel, daemon=True)
+    canceller.start()
+    t1 = time.monotonic()
+    with pytest.raises(http.DeadlineExceeded):
+        slow.acquire(deadline_monotonic=t1 + 20.0, cancel=cancel)
+    elapsed_cancel = time.monotonic() - t1
+    canceller.join(1.0)
+    assert elapsed_cancel < 1.0
+    assert slow.waiting == 0
+
+
+def test_grounding_reddit_enrichment_stops_waiting_on_busy_limiter_before_deadline():
+    from lib import reddit_arctic, reddit_health
+
+    web_items = [
+        {
+            "url": "https://www.reddit.com/r/python/comments/abc123/test_post/",
+            "title": "Original Web Title",
+            "snippet": "Original web snippet",
+        },
+        {
+            "url": "https://example.com/non-reddit",
+            "title": "Example Article",
+            "snippet": "Non-reddit snippet",
+        },
+    ]
+
+    busy_limiter = http.RateLimiter(rate_per_sec=0.05, burst=1)  # 20s per token
+    busy_limiter.acquire()  # drain bucket so next token is 20s away
+
+    reddit_arctic.reset_memo()
+    with patch.object(http, "REDDIT_KEYLESS_LIMITER", busy_limiter), \
+         patch.object(reddit_health, "skip_reason", return_value=None), \
+         patch.object(web_search_keyless, "keyless_search", return_value=(list(web_items), {"keyless_backend": "ddg"})), \
+         patch.object(reddit_arctic.http, "get", side_effect=AssertionError("should not send HTTP after limiter deadline")):
+        t0 = time.monotonic()
+        # 3.5s outer deadline => 0.5s enrichment budget after 3.0s headroom, well under 20s token wait.
+        items, artifact = grounding.web_search(
+            "python",
+            ("2026-10-01", "2026-11-01"),
+            {"_research_deadline": t0 + 3.5},
+            backend="keyless",
+        )
+        elapsed = time.monotonic() - t0
+
+    assert elapsed < 1.0
+    assert items == web_items
+    assert artifact["keyless_backend"] == "ddg"
+    assert busy_limiter.waiting == 0
+
+    # Multi-batch fetch_posts_by_ids and fetch_comment_tree both fail fast on busy limiter.
+    many_ids = [f"p{i:03d}" for i in range(150)]
+    with patch.object(http, "REDDIT_KEYLESS_LIMITER", busy_limiter), \
+         patch.object(reddit_arctic.http, "get", side_effect=AssertionError("should not send HTTP")):
+        t1 = time.monotonic()
+        found, state = reddit_arctic.fetch_posts_by_ids(many_ids, deadline=t1 + 0.2)
+        elapsed_ids = time.monotonic() - t1
+        assert elapsed_ids < 0.5
+        assert found == {}
+        assert state == "down"
+
+        t2 = time.monotonic()
+        tree = reddit_arctic.fetch_comment_tree("abc123", deadline=t2 + 1.5)
+        elapsed_tree = time.monotonic() - t2
+        assert elapsed_tree < 0.5
+        assert tree is None
+    assert busy_limiter.waiting == 0
+
+
+def test_http_ip_validator_and_local_bridge_mutually_exclusive_and_trailing_dot_preserved():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        http.request(
+            "GET",
+            "http://127.0.0.1:8080/",
+            local_bridge_only=True,
+            ip_validator=lambda _ip: True,
+        )
+
+    seen_hosts: list[str] = []
+
+    def fake_getaddrinfo(host, port, family=0, socktype=0):
+        seen_hosts.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", port))]
+
+    with patch.object(http.socket, "getaddrinfo", side_effect=fake_getaddrinfo):
+        verified = http._resolve_validated_addresses("searx.example.", 443, lambda _ip: True)
+    assert seen_hosts == ["searx.example."]
+    assert len(verified) == 1
+
+
+
 
 
