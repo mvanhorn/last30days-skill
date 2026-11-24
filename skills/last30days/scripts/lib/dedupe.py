@@ -134,9 +134,11 @@ def _is_url_only_dedupe(item: schema.SourceItem) -> bool:
 def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list[schema.SourceItem]:
     """Remove exact-URL and near-duplicate items while keeping earlier, better-scored items.
 
-    Every source first deduplicates by normalized ``(source, url)`` (using
-    ``hn_url`` for Hacker News and canonical ``thread_key`` for Reddit),
-    including items with empty text.
+    Every source first collapses normalized ``(source, url)`` duplicates (using
+    ``hn_url`` for Hacker News and canonical ``thread_key`` for Reddit), merging
+    enrichment, engagement, and metadata from later copies into the first
+    occurrence before text similarity runs so a bare copy never discards a
+    saved copy's transcripts, comments, or ``matched_market``.
 
     Jobs are deduped by normalized URL only: distinct postings on the same
     careers board share heavy boilerplate (company intro, "TL;DR", benefits)
@@ -147,25 +149,38 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
     Polymarket events that carry a matched market are deduped by normalized
     event URL only for the same reason: "Pro Football: 2027 Champion" and
     "Pro Football: 2027 NFC Champion" share most of their text but are
-    different questions. Unmatched Polymarket items share the same URL set so
-    mixed matched/unmatched copies of one event never survive together.
+    different questions. Unmatched Polymarket items share the same URL pass so
+    mixed matched/unmatched copies of one event merge and never survive together.
     """
-    kept: list[schema.SourceItem] = []
-    kept_prepared: list[_PreparedText] = []
-    seen_urls: set[tuple[str, str]] = set()
+    # Pass 1: collapse exact normalized-URL duplicates in-order, merging
+    # enrichment/counts/metadata from later copies without mutating caller inputs.
+    url_index: dict[tuple[str, str], int] = {}
+    cloned_indices: set[int] = set()
+    collapsed: list[schema.SourceItem] = []
     for item in items:
         url_key = _url_dedupe_key(item)
-        if url_key is not None and url_key in seen_urls:
+        if url_key is None:
+            collapsed.append(item)
             continue
+        existing_idx = url_index.get(url_key)
+        if existing_idx is None:
+            url_index[url_key] = len(collapsed)
+            collapsed.append(item)
+            continue
+        if existing_idx not in cloned_indices:
+            collapsed[existing_idx] = fusion._clone_source_item(collapsed[existing_idx])
+            cloned_indices.add(existing_idx)
+        fusion.merge_source_items(collapsed[existing_idx], item)
+
+    # Pass 2: fuzzy near-duplicate removal on remaining distinct-URL items.
+    kept: list[schema.SourceItem] = []
+    kept_prepared: list[_PreparedText] = []
+    for item in collapsed:
         if _is_url_only_dedupe(item):
-            if url_key is not None:
-                seen_urls.add(url_key)
             kept.append(item)
             continue
         text = item_text(item)
         if not text:
-            if url_key is not None:
-                seen_urls.add(url_key)
             kept.append(item)
             continue
         prep = _PreparedText(text)
@@ -175,8 +190,6 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
                 is_duplicate = True
                 break
         if not is_duplicate:
-            if url_key is not None:
-                seen_urls.add(url_key)
             kept.append(item)
             kept_prepared.append(prep)
     return kept

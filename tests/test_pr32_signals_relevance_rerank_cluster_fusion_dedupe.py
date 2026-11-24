@@ -255,6 +255,49 @@ class TestHigh097EngagementMonotonicity:
         all_zero = _source_item("gz", "custom_src", engagement={"a": 0, "b": -3, "c": None})
         assert signals.engagement_raw(all_zero) is None
 
+    def test_github_person_velocity_card_keeps_monotonic_engagement_and_snapshot_stays_none(self):
+        vel_low = _source_item(
+            "gh-vel-1",
+            "github",
+            engagement={"merged_prs": 10, "total_prs": 0},
+            metadata={"labels": ["person-profile", "velocity"], "is_pr": False},
+        )
+        vel_mid = _source_item(
+            "gh-vel-2",
+            "github",
+            engagement={"merged_prs": 10, "total_prs": 12},
+            metadata={"labels": ["person-profile", "velocity"], "is_pr": False},
+        )
+        vel_high = _source_item(
+            "gh-vel-3",
+            "github",
+            engagement={"merged_prs": 25, "total_prs": 30},
+            metadata={"labels": ["person-profile", "velocity"], "is_pr": False},
+        )
+        vel_zero = _source_item(
+            "gh-vel-0",
+            "github",
+            engagement={"merged_prs": 0, "total_prs": 0},
+            metadata={"labels": ["person-profile", "velocity"], "is_pr": False},
+        )
+        repo_card = _source_item(
+            "gh-repo",
+            "github",
+            engagement={"stars": 50_000, "open_issues": 40},
+            metadata={"labels": ["person-profile", "own-repo"], "is_pr": False},
+        )
+
+        raw_low = signals.engagement_raw(vel_low)
+        raw_mid = signals.engagement_raw(vel_mid)
+        raw_high = signals.engagement_raw(vel_high)
+        assert raw_low == pytest.approx(0.70 * math.log1p(10))
+        assert raw_mid == pytest.approx(0.70 * math.log1p(10) + 0.30 * math.log1p(12))
+        assert raw_high > raw_mid > raw_low > 0
+        assert signals.engagement_score(vel_high) > signals.engagement_score(vel_mid) > signals.engagement_score(vel_low) > 0
+        assert signals.engagement_raw(vel_zero) is None
+        assert signals.engagement_score(vel_zero) is None
+        assert signals.engagement_score(repo_card) is None
+
 
 # ---------------------------------------------------------------------------
 # HIGH-098: Single-source TikTok/Instagram 1,000-view spam floor
@@ -339,17 +382,80 @@ class TestHigh098VideoSpamFloor:
         )
         assert [i.item_id for i in kept_tt] == ["tt-viral"]
 
+    def test_unreported_views_survive_floor_while_measured_zero_and_low_views_are_pruned(self):
+        from lib import instagram, shortform_oss, tiktok
+
+        # Instagram/TikTok/yt-dlp parsers preserve missing play counts as None, distinct from measured 0.
+        ig_missing = instagram._parse_items(
+            [{"id": "1", "code": "A1", "caption": "great reel", "like_count": 400, "comment_count": 20}],
+            "great reel",
+        )[0]
+        ig_zero = instagram._parse_items(
+            [{"id": "2", "code": "A2", "caption": "zero reel", "video_play_count": 0, "like_count": 1}],
+            "zero reel",
+        )[0]
+        assert ig_missing["engagement"]["views"] is None
+        assert ig_zero["engagement"]["views"] == 0
+
+        tt_missing = tiktok._parse_items(
+            [{"aweme_id": "1", "desc": "clip", "statistics": {"digg_count": 300}}],
+            "clip",
+        )[0]
+        tt_zero = tiktok._parse_items(
+            [{"aweme_id": "2", "desc": "clip", "statistics": {"play_count": 0, "digg_count": 1}}],
+            "clip",
+        )[0]
+        assert tt_missing["engagement"]["views"] is None
+        assert tt_zero["engagement"]["views"] == 0
+
+        oss_missing = shortform_oss._item_from_ytdlp(
+            "instagram",
+            {"id": "R1", "title": "reel", "like_count": 200, "webpage_url": "https://www.instagram.com/reel/R1/"},
+            "reel",
+        )
+        oss_zero = shortform_oss._item_from_ytdlp(
+            "instagram",
+            {"id": "R2", "title": "reel", "view_count": 0, "webpage_url": "https://www.instagram.com/reel/R2/"},
+            "reel",
+        )
+        assert oss_missing["engagement"]["views"] is None
+        assert oss_zero["engagement"]["views"] == 0
+
+        # A reel with unreported views (None or omitted) survives alongside a 50k-view reel,
+        # while a reel with measured 0 or 500 views is pruned.
+        unreported_none = _source_item(
+            "ig-none", "instagram", local_relevance=0.5, engagement={"views": None, "likes": 400, "comments": 20}
+        )
+        unreported_omitted = _source_item(
+            "ig-omitted", "instagram", local_relevance=0.5, engagement={"likes": 300, "comments": 15}
+        )
+        measured_zero = _source_item(
+            "ig-zero", "instagram", local_relevance=0.5, engagement={"views": 0, "likes": 5, "comments": 0}
+        )
+        measured_low = _source_item(
+            "ig-low", "instagram", local_relevance=0.5, engagement={"views": 500, "likes": 10, "comments": 1}
+        )
+        measured_high = _source_item(
+            "ig-high", "instagram", local_relevance=0.5, engagement={"views": 50_000, "likes": 1200, "comments": 30}
+        )
+        kept = signals.prune_low_relevance(
+            [unreported_none, unreported_omitted, measured_zero, measured_low, measured_high]
+        )
+        assert [i.item_id for i in kept] == ["ig-none", "ig-omitted", "ig-high"]
+
     def test_views_coercion_handles_strings_bools_none_and_non_finite(self):
         good_str = _source_item("s-ok", "tiktok", local_relevance=0.5, engagement={"views": "5000", "likes": 10})
         low_str = _source_item("s-low", "tiktok", local_relevance=0.5, engagement={"views": "500", "likes": 10})
+        zero_num = _source_item("z", "tiktok", local_relevance=0.5, engagement={"views": 0, "likes": 10})
         bad_str = _source_item("s-bad", "tiktok", local_relevance=0.5, engagement={"views": "not-a-num", "likes": 10})
         bool_val = _source_item("b", "tiktok", local_relevance=0.5, engagement={"views": True, "likes": 10})
         nan_val = _source_item("nan", "tiktok", local_relevance=0.5, engagement={"views": float("nan"), "likes": 10})
         inf_val = _source_item("inf", "tiktok", local_relevance=0.5, engagement={"views": float("inf"), "likes": 10})
         none_val = _source_item("none", "tiktok", local_relevance=0.5, engagement={"views": None, "likes": 10})
 
-        kept = signals.prune_low_relevance([good_str, low_str, bad_str, bool_val, nan_val, inf_val, none_val])
-        assert [i.item_id for i in kept] == ["s-ok"]
+        kept = signals.prune_low_relevance([good_str, low_str, zero_num, bad_str, bool_val, nan_val, inf_val, none_val])
+        # Only reported numeric counts below 1000 ("500" and 0) are pruned; unreported/unparseable never crash or vanish.
+        assert [i.item_id for i in kept] == ["s-ok", "s-bad", "b", "nan", "inf", "none"]
 
 
 # ---------------------------------------------------------------------------
@@ -622,18 +728,50 @@ class TestHigh104RedditScoreMerge:
         assert merged.metadata["engagement_source"] == reddit_refs.ARCTIC
         assert merged.engagement_score == signals.engagement_score(merged)
 
-    def test_arctic_pending_withholding_preserved_against_non_live_copies(self):
-        for non_live_src, non_live_score in [
-            (reddit_refs.ARCTIC, 1),
+    def test_arctic_pending_withholding_preserved_against_placeholders(self):
+        for placeholder_src, placeholder_score in [
             (reddit_refs.UNKNOWN, 0),
+            (reddit_refs.UNKNOWN, None),
+            (None, 0),
             (None, None),
             (reddit_refs.LIVE, None),
         ]:
             existing = self._reddit("R1", score=None, engagement_source=reddit_refs.ARCTIC_PENDING)
-            incoming = self._reddit("R2", score=non_live_score, engagement_source=non_live_src)
+            incoming = self._reddit("R2", score=placeholder_score, engagement_source=placeholder_src)
             merged = fusion.merge_source_items(existing, incoming)
             assert merged.engagement["score"] is None
             assert merged.metadata["engagement_source"] == reddit_refs.ARCTIC_PENDING
+
+    @pytest.mark.parametrize(
+        ("pair_a", "pair_b", "expected_score", "expected_source"),
+        [
+            ((0, reddit_refs.LIVE), (450, reddit_refs.ARCTIC), 0, reddit_refs.LIVE),
+            ((412, reddit_refs.LIVE), (900, reddit_refs.ARCTIC), 412, reddit_refs.LIVE),
+            ((0, reddit_refs.LIVE), (None, reddit_refs.ARCTIC_PENDING), 0, reddit_refs.LIVE),
+            ((450, reddit_refs.ARCTIC), (None, reddit_refs.ARCTIC_PENDING), 450, reddit_refs.ARCTIC),
+            ((None, reddit_refs.ARCTIC_PENDING), (0, reddit_refs.UNKNOWN), None, reddit_refs.ARCTIC_PENDING),
+            ((None, reddit_refs.ARCTIC_PENDING), (0, None), None, reddit_refs.ARCTIC_PENDING),
+            ((None, reddit_refs.ARCTIC_PENDING), (None, reddit_refs.LIVE), None, reddit_refs.ARCTIC_PENDING),
+            ((450, reddit_refs.ARCTIC), (None, reddit_refs.LIVE), 450, reddit_refs.ARCTIC),
+            ((450, reddit_refs.ARCTIC), (0, None), 450, reddit_refs.ARCTIC),
+            ((450, reddit_refs.ARCTIC), (999, reddit_refs.UNKNOWN), 450, reddit_refs.ARCTIC),
+        ],
+    )
+    def test_reddit_score_merge_is_order_independent_commutative(
+        self, pair_a, pair_b, expected_score, expected_source,
+    ):
+        a1 = self._reddit("R1", score=pair_a[0], engagement_source=pair_a[1])
+        b1 = self._reddit("R2", score=pair_b[0], engagement_source=pair_b[1])
+        ab = fusion.merge_source_items(a1, b1)
+
+        b2 = self._reddit("R2", score=pair_b[0], engagement_source=pair_b[1])
+        a2 = self._reddit("R1", score=pair_a[0], engagement_source=pair_a[1])
+        ba = fusion.merge_source_items(b2, a2)
+
+        assert ab.engagement["score"] == expected_score
+        assert ba.engagement["score"] == expected_score
+        assert ab.metadata.get("engagement_source") == expected_source
+        assert ba.metadata.get("engagement_source") == expected_source
 
     @pytest.mark.parametrize("live_source", [reddit_refs.LIVE, None])
     def test_numeric_live_score_upgrades_arctic_pending(self, live_source):
@@ -728,27 +866,52 @@ class TestHigh109DedupeUrlNormalization:
             url="https://polymarket.com/event/nfl-2027",
             metadata={},
         )
-        assert [i.item_id for i in dedupe.dedupe_items([matched, unmatched])] == ["pm-matched"]
-        assert [i.item_id for i in dedupe.dedupe_items([unmatched, matched])] == ["pm-unmatched"]
+        kept_first = dedupe.dedupe_items([matched, unmatched])
+        assert [i.item_id for i in kept_first] == ["pm-matched"]
+        assert kept_first[0].metadata["matched_market"]["label"] == "49ers"
 
-    def test_same_url_with_divergent_enrichment_text_dedupes_across_sources(self):
+        # When the unmatched copy arrives first, merging preserves matched_market on the survivor.
+        kept_second = dedupe.dedupe_items([unmatched, matched])
+        assert [i.item_id for i in kept_second] == ["pm-unmatched"]
+        assert kept_second[0].metadata["matched_market"]["label"] == "49ers"
+        # Caller input was not mutated in place.
+        assert "matched_market" not in unmatched.metadata
+
+    def test_same_url_with_divergent_enrichment_text_merges_evidence_without_mutating_inputs(self):
         bare_yt = _source_item(
             "yt1",
             "youtube",
             title="Short title",
             body="",
-            url="https://www.youtube.com/watch?v=AbC123&t=10",
+            snippet="",
+            url="https://m.youtube.com/watch?t=10&v=AbC123&utm_campaign=drill#chapter1",
+            engagement={"views": 1000},
+            metadata={},
         )
         enriched_yt = _source_item(
             "yt2",
             "youtube",
             title="Short title",
             body=" ".join(f"transcriptword{i}" for i in range(80)),
-            url="https://m.youtube.com/watch?t=10&v=AbC123&utm_campaign=share#chapter1",
+            snippet="Key quote from the saved transcript",
+            url="https://www.youtube.com/watch?v=AbC123&t=10",
+            engagement={"views": 5000, "likes": 200},
+            metadata={
+                "transcript_snippet": "Saved full transcript snippet",
+                "top_comments": [{"author": "alice", "score": 90, "excerpt": "great breakdown"}],
+            },
         )
         assert dedupe.hybrid_similarity(dedupe.item_text(bare_yt), dedupe.item_text(enriched_yt)) < 0.1
         kept = dedupe.dedupe_items([bare_yt, enriched_yt])
         assert [i.item_id for i in kept] == ["yt1"]
+        merged = kept[0]
+        assert merged.snippet == "Key quote from the saved transcript"
+        assert merged.metadata["transcript_snippet"] == "Saved full transcript snippet"
+        assert merged.metadata["top_comments"][0]["author"] == "alice"
+        assert merged.engagement["views"] == 5000
+        # Caller's bare_yt object stays untouched.
+        assert bare_yt.snippet == ""
+        assert "top_comments" not in bare_yt.metadata
 
     def test_reddit_thread_key_dedupes_different_url_forms_and_divergent_text(self):
         bare = _source_item(
@@ -812,10 +975,24 @@ class TestHigh109DedupeUrlNormalization:
         kept = dedupe.dedupe_items([r, g])
         assert [i.item_id for i in kept] == ["r1", "g1"]
 
-    def test_normalize_url_sorts_query_params_and_strips_nested_prefixes(self):
+    def test_normalize_url_sorts_query_param_names_and_preserves_repeated_value_order(self):
         u1 = fusion._normalize_url("HTTPS://old.www.Example.COM/path/?z=9&a=1&utm_term=foo#frag")
         u2 = fusion._normalize_url("https://m.example.com/path?a=1&z=9")
         assert u1 == u2 == "https://example.com/path?a=1&z=9"
+
+        # Repeated parameter names keep their original value order so distinct links do not collide.
+        first = fusion._normalize_url("https://example.com/item?z=1&id=42&id=99&utm_source=x")
+        second = fusion._normalize_url("https://example.com/item?id=99&z=1&id=42")
+        assert first == "https://example.com/item?id=42&id=99&z=1"
+        assert second == "https://example.com/item?id=99&id=42&z=1"
+        assert first != second
+
+        # Distinct repeated-param orderings stay separate in dedupe_items as well.
+        items = [
+            _source_item("q1", "jobs", title="Role A", body="desc", url="https://example.com/item?id=42&id=99"),
+            _source_item("q2", "jobs", title="Role B", body="desc", url="https://example.com/item?id=99&id=42"),
+        ]
+        assert [i.item_id for i in dedupe.dedupe_items(items)] == ["q1", "q2"]
 
 
 # ---------------------------------------------------------------------------

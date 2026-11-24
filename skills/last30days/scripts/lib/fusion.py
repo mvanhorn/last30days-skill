@@ -47,12 +47,16 @@ def _normalize_url(url: str) -> str:
             if netloc.startswith(prefix):
                 netloc = netloc[len(prefix):]
                 changed = True
-    # Strip tracking params and canonicalize parameter order.
+    # Strip tracking params and canonicalize parameter name order while
+    # preserving value order for repeated parameter names.
     params = parse_qs(parsed.query, keep_blank_values=True)
     clean_params = sorted(
-        (k, sorted(v) if len(v) > 1 else v)
-        for k, v in params.items()
-        if not k.lower().startswith("utm_")
+        (
+            (k, v)
+            for k, v in params.items()
+            if not k.lower().startswith("utm_")
+        ),
+        key=lambda kv: kv[0],
     )
     query = urlencode(clean_params, doseq=True)
     return urlunparse((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", query, ""))
@@ -213,10 +217,10 @@ def merge_source_items(
             existing, incoming, range_from=range_from, range_to=range_to,
         )
     in_meta = incoming.metadata or {}
-    for meta_key in ("enriched_via", "reddit_subreddit"):
+    for meta_key in ("enriched_via", "reddit_subreddit", "matched_market"):
         val = in_meta.get(meta_key)
         if val and not existing.metadata.get(meta_key):
-            existing.metadata[meta_key] = val
+            existing.metadata[meta_key] = dict(val) if isinstance(val, dict) else val
     theirs_rts = in_meta.get("reddit_thread_score")
     if (
         isinstance(theirs_rts, (int, float))
@@ -285,6 +289,36 @@ def merge_source_items(
     return existing
 
 
+def _reddit_score_key(score: object, source: str | None) -> tuple[int, float]:
+    """Order-independent rank for a Reddit copy's ``(score, engagement_source)``.
+
+    Higher wins regardless of merge order:
+      3 — measured live score (explicit ``LIVE`` with any finite number,
+          including measured ``0``; or unlabeled copy with a non-zero number)
+      2 — measured archive score (``ARCTIC`` with any finite number)
+      1 — explicitly withheld fresh archive score (``ARCTIC_PENDING``)
+      0 — unmeasured / ``UNKNOWN`` / placeholder ``0`` or ``None``
+    """
+    numeric = (
+        isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and math.isfinite(score)
+    )
+    if source == reddit_refs.ARCTIC_PENDING:
+        return (1, 0.0)
+    if source == reddit_refs.UNKNOWN:
+        return (0, 0.0)
+    if source == reddit_refs.ARCTIC:
+        return (2, float(score)) if numeric else (0, 0.0)
+    if source == reddit_refs.LIVE:
+        return (3, float(score)) if numeric else (0, 0.0)
+    if not source:
+        # Unlabeled copy: a non-zero number is treated as live (matching
+        # reddit_hydrate._effective_score_rank); placeholder 0 or None is unmeasured.
+        return (3, float(score)) if (numeric and score != 0) else (0, 0.0)
+    return (reddit_refs.score_rank(source), float(score)) if numeric else (0, 0.0)
+
+
 def _merge_reddit_fields(
     existing: schema.SourceItem,
     incoming: schema.SourceItem,
@@ -297,36 +331,7 @@ def _merge_reddit_fields(
     theirs_source = incoming.metadata.get("engagement_source")
     mine_score = existing.engagement.get("score")
     theirs_score = (incoming.engagement or {}).get("score")
-    mine_rank = reddit_refs.score_rank(mine_source)
-    theirs_rank = reddit_refs.score_rank(theirs_source)
-    mine_numeric = (
-        isinstance(mine_score, (int, float))
-        and not isinstance(mine_score, bool)
-        and math.isfinite(mine_score)
-    )
-    theirs_numeric = (
-        isinstance(theirs_score, (int, float))
-        and not isinstance(theirs_score, bool)
-        and math.isfinite(theirs_score)
-    )
-    live_rank = reddit_refs.score_rank(reddit_refs.LIVE)
-    if mine_numeric and theirs_numeric:
-        take = theirs_rank > mine_rank or (
-            theirs_rank == mine_rank and theirs_score > mine_score
-        )
-    elif not mine_numeric and theirs_numeric:
-        take = (
-            mine_source != reddit_refs.ARCTIC_PENDING
-            or theirs_rank >= live_rank
-        )
-    elif not mine_numeric and not theirs_numeric:
-        take = (
-            theirs_source == reddit_refs.ARCTIC_PENDING
-            and mine_source != reddit_refs.ARCTIC_PENDING
-        )
-    else:
-        take = False
-    if take:
+    if _reddit_score_key(theirs_score, theirs_source) > _reddit_score_key(mine_score, mine_source):
         existing.engagement["score"] = theirs_score
         if theirs_source:
             existing.metadata["engagement_source"] = theirs_source

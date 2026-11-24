@@ -227,11 +227,23 @@ def _weighted_engagement(item: schema.SourceItem, weights: list[tuple[str, float
 # whole signal, in the same 3:2 proportion they have beside a score.
 _DIGG_COUNT_WEIGHTS: list[tuple[str, float]] = [("postCount", 0.60), ("uniqueAuthors", 0.40)]
 
+# GitHub person-mode contribution velocity summaries report merged_prs and
+# total_prs rather than issue/PR reactions and comments.
+_GITHUB_VELOCITY_WEIGHTS: list[tuple[str, float]] = [("merged_prs", 0.70), ("total_prs", 0.30)]
+
 
 def _digg_engagement(item: schema.SourceItem) -> float | None:
     if log1p_safe(item.engagement.get("digg_score")) > 0:
         return _weighted_engagement(item, ENGAGEMENT_WEIGHTS["digg"])
     return _weighted_engagement(item, _DIGG_COUNT_WEIGHTS)
+
+
+def _github_engagement(item: schema.SourceItem) -> float | None:
+    labels = item.metadata.get("labels", []) if isinstance(item.metadata, dict) else []
+    eng = item.engagement or {}
+    if "velocity" in labels or "merged_prs" in eng or "total_prs" in eng:
+        return _weighted_engagement(item, _GITHUB_VELOCITY_WEIGHTS)
+    return _weighted_engagement(item, ENGAGEMENT_WEIGHTS["github"])
 
 
 def _reddit_engagement(item: schema.SourceItem) -> float | None:
@@ -303,6 +315,8 @@ def engagement_raw(item: schema.SourceItem) -> float | None:
         return _instagram_engagement(item)
     if item.source == "digg":
         return _digg_engagement(item)
+    if item.source == "github":
+        return _github_engagement(item)
     weights = ENGAGEMENT_WEIGHTS.get(item.source)
     if weights:
         return _weighted_engagement(item, weights)
@@ -477,29 +491,36 @@ _VIDEO_ENGAGEMENT_FLOOR_SOURCES = {"tiktok", "instagram"}
 _VIDEO_ENGAGEMENT_FLOOR_VIEWS = 1000
 
 
-def _numeric_views(item: schema.SourceItem) -> float:
-    if not item.engagement:
-        return 0.0
+def _reported_views(item: schema.SourceItem) -> float | None:
+    """Return finite numeric view count when reported, or None when absent/unreported."""
+    if not item.engagement or "views" not in item.engagement:
+        return None
     raw = item.engagement.get("views")
     if raw is None or isinstance(raw, bool):
-        return 0.0
+        return None
     try:
         numeric = float(raw)
     except (TypeError, ValueError, OverflowError):
-        return 0.0
-    return numeric if math.isfinite(numeric) else 0.0
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 
 def _passes_engagement_floor(item: schema.SourceItem) -> bool:
     """Check whether a TikTok/Instagram item meets the minimum view floor.
 
     Items from sources not in _VIDEO_ENGAGEMENT_FLOOR_SOURCES always pass.
+    Items with no reported view count (``views`` missing or ``None``) also pass
+    so reels/videos whose upstream omitted play counts are not silently dropped;
+    reported numeric counts (including measured ``0``) must clear the floor.
     Empty-batch protection is handled by ``prune_low_relevance``'s cascaded
     ``filtered or rel_filtered or items`` fallback rather than a per-source bypass.
     """
     if item.source not in _VIDEO_ENGAGEMENT_FLOOR_SOURCES:
         return True
-    return _numeric_views(item) >= _VIDEO_ENGAGEMENT_FLOOR_VIEWS
+    views = _reported_views(item)
+    if views is None:
+        return True
+    return views >= _VIDEO_ENGAGEMENT_FLOOR_VIEWS
 
 
 def prune_low_relevance(
