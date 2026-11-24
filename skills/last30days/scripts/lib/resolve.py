@@ -75,14 +75,58 @@ def _has_backend(config: dict) -> bool:
     return grounding.configured_backend(config) is not None
 
 
+# Prose URL / mention path-segment terminator: allows next path segment (/),
+# query/fragment (?/#), whitespace, end-of-string, prose delimiters, or a
+# trailing sentence period NOT followed by another URL path character. Rejects
+# dotted segments like "github.com/team.example/project" or "@alice.bsky.social".
+_PROSE_SEG_END = r"(?=[/?#\s)\]\"'\u2019\u201d`,;:!]|$|\.(?=$|[\s)\]\"'\u2019\u201d`,;:!?]))"
+
+_REDDIT_URL_SUBREDDIT_RE = re.compile(
+    r"^(?:https?://)?(?:[A-Za-z0-9-]+\.)*reddit\.com/r/([A-Za-z0-9_]{2,21})(?=[/?#]|$)",
+    re.IGNORECASE,
+)
+_TEXT_SUBREDDIT_RE = re.compile(
+    r"(?:(?i:(?<![A-Za-z0-9./-])(?:https?://)?(?:[a-z0-9-]+\.)*reddit\.com/r/)"
+    rf"|(?:^|(?<=[\s(\[\"'`\u2018\u201c,]))/?r/)([A-Za-z0-9_]{{2,21}}){_PROSE_SEG_END}"
+)
+_X_MENTION_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.+-])@([A-Za-z0-9_]{{1,15}}){_PROSE_SEG_END}"
+)
+_X_URL_HANDLE_RE = re.compile(
+    r"^(?:https?://)?(?:www\.|mobile\.)?(?:twitter|x)\.com/([A-Za-z0-9_]{1,15})(?:/|$|\?|#)",
+    re.IGNORECASE,
+)
+_GITHUB_URL_USER_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{1,39})(?:/|$|\?|#)",
+    re.IGNORECASE,
+)
+_GITHUB_TEXT_USER_RE = re.compile(
+    rf"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{{1,39}}){_PROSE_SEG_END}",
+    re.IGNORECASE,
+)
+_GITHUB_URL_REPO_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{1,39}/[A-Za-z0-9_.-]*[A-Za-z0-9_-])(?:/|$|\?|#)",
+    re.IGNORECASE,
+)
+_GITHUB_TEXT_REPO_RE = re.compile(
+    rf"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{{1,39}}/[A-Za-z0-9_.-]*[A-Za-z0-9_-]){_PROSE_SEG_END}",
+    re.IGNORECASE,
+)
+
+
 def _extract_subreddits(items: list[dict]) -> list[str]:
-    """Parse subreddit names from search result titles and snippets."""
-    pattern = re.compile(r"r/([A-Za-z0-9_]{2,21})")
+    """Parse subreddit names from search result titles, snippets, and Reddit URLs."""
     seen: set[str] = set()
     results: list[str] = []
     for item in items:
-        text = f"{item.get('title', '')} {item.get('snippet', '')} {item.get('url', '')}"
-        for match in pattern.findall(text):
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        url = str(item.get("url") or "").strip()
+        for match in _TEXT_SUBREDDIT_RE.findall(text):
+            lower = match.lower()
+            if lower not in seen:
+                seen.add(lower)
+                results.append(match)
+        for match in _REDDIT_URL_SUBREDDIT_RE.findall(url):
             lower = match.lower()
             if lower not in seen:
                 seen.add(lower)
@@ -92,16 +136,14 @@ def _extract_subreddits(items: list[dict]) -> list[str]:
 
 def _extract_x_handle(items: list[dict]) -> str:
     """Extract the most likely X/Twitter handle from search results."""
-    pattern = re.compile(r"@([A-Za-z0-9_]{1,15})")
-    url_pattern = re.compile(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]{1,15})(?:/|$|\?)")
     counts: dict[str, int] = {}
     for item in items:
-        text = f"{item.get('title', '')} {item.get('snippet', '')}"
-        url = item.get("url", "")
-        for match in pattern.findall(text):
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        url = str(item.get("url") or "").strip()
+        for match in _X_MENTION_RE.findall(text):
             lower = match.lower()
             counts[lower] = counts.get(lower, 0) + 1
-        for match in url_pattern.findall(url):
+        for match in _X_URL_HANDLE_RE.findall(url):
             lower = match.lower()
             # URL matches are stronger signals
             counts[lower] = counts.get(lower, 0) + 3
@@ -115,15 +157,14 @@ def _extract_x_handle(items: list[dict]) -> str:
 
 def _extract_github_user(items: list[dict]) -> str:
     """Extract GitHub username from search results."""
-    url_pattern = re.compile(r"github\.com/([A-Za-z0-9_-]{1,39})(?:/|$|\?)")
     counts: dict[str, int] = {}
     for item in items:
-        url = item.get("url", "")
-        text = f"{item.get('title', '')} {item.get('snippet', '')}"
-        for match in url_pattern.findall(url):
+        url = str(item.get("url") or "").strip()
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        for match in _GITHUB_URL_USER_RE.findall(url):
             lower = match.lower()
             counts[lower] = counts.get(lower, 0) + 3
-        for match in url_pattern.findall(text):
+        for match in _GITHUB_TEXT_USER_RE.findall(text):
             lower = match.lower()
             counts[lower] = counts.get(lower, 0) + 1
     # Filter out org/repo-like names and generic pages
@@ -394,15 +435,14 @@ def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
 
 def _extract_github_repos(items: list[dict]) -> list[str]:
     """Extract owner/repo strings from search results."""
-    repo_pattern = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
     skip_owners = {"topics", "explore", "settings", "orgs", "search", "features", "about", "pricing", "enterprise"}
     seen: set[str] = set()
     repos: list[str] = []
     for item in items:
-        url = item.get("url", "")
-        text = f"{item.get('title', '')} {item.get('snippet', '')}"
-        for source in [url, text]:
-            for match in repo_pattern.findall(source):
+        url = str(item.get("url") or "").strip()
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        for pattern, source in ((_GITHUB_URL_REPO_RE, url), (_GITHUB_TEXT_REPO_RE, text)):
+            for match in pattern.findall(source):
                 owner = match.split("/")[0].lower()
                 if owner in skip_owners:
                     continue

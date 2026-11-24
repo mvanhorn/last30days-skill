@@ -703,6 +703,8 @@ def _sanitize_plan(
                 )
                 continue
             sources = list(source_weights)
+        if not sources:
+            continue
         search_query = str(subquery.get("search_query") or "").strip()
         ranking_query = str(subquery.get("ranking_query") or "").strip()
         if not search_query or not ranking_query:
@@ -888,15 +890,37 @@ def _fallback_plan(
     note: str = "fallback-plan",
 ) -> schema.QueryPlan:
     intent = _infer_intent(topic)
+    available_set = set(available_sources)
+    if requested_sources:
+        eligible = list(dict.fromkeys(
+            s for s in requested_sources if s in available_set
+        ))
+        effective_requested: list[str] | None = eligible
+    else:
+        eligible = list(dict.fromkeys(available_sources))
+        effective_requested = None
+
     # Hebrew-language topics: elevate web search (grounding) to the front of
     # the source list since Reddit/HN/GitHub are English-dominant platforms.
     # Grounding covers Ynet, Walla, Mako, N12 etc. if a web search key is set.
-    if detect_language(topic) == 'he' and 'grounding' in available_sources:
-        ordered = ['grounding'] + [s for s in available_sources if s != 'grounding']
-        available_sources = ordered
-        if requested_sources:
-            requested_sources = ['grounding'] + [s for s in requested_sources if s != 'grounding']
-    allowed_sources = requested_sources or available_sources
+    # Only reorder when grounding is already eligible — never inject it into an
+    # explicit --search list that omitted grounding.
+    if detect_language(topic) == 'he' and 'grounding' in eligible:
+        eligible = ['grounding'] + [s for s in eligible if s != 'grounding']
+        if effective_requested is not None:
+            effective_requested = list(eligible)
+
+    allowed_sources = eligible
+    if not allowed_sources:
+        return schema.QueryPlan(
+            intent=intent,
+            freshness_mode=_default_freshness(intent),
+            cluster_mode=_default_cluster_mode(intent),
+            raw_topic=topic,
+            subqueries=[],
+            source_weights={},
+            notes=[note] + (_enablement_notes(topic) if intent == "how_to" and _is_enablement(topic) else []),
+        )
     source_weights = _default_source_weights(intent, allowed_sources)
     core = query.extract_core_subject(topic, max_words=6, strip_suffixes=True)
     base_search = _keyword_query(topic, core)
@@ -967,7 +991,7 @@ def _fallback_plan(
                 intent,
                 depth,
                 list(source_weights),
-                requested_sources=requested_sources,
+                requested_sources=effective_requested,
             )
         ),
         source_weights=_normalize_weights(source_weights),
@@ -1195,11 +1219,11 @@ def _keyword_query(topic: str, core: str) -> str:
     that exact phrase. See 2026-04-19 Hermes Agent Use Cases failure.
     """
     compounds = query.extract_compound_terms(topic)
-    # Only quote title-cased proper nouns (multi-word names). Hyphenated
+    # Only quote short (2-3 word) capitalized/brand proper nouns. Hyphenated
     # compounds go unquoted so platform tokenizers can split and match.
     title_cased = [
         term for term in compounds
-        if re.match(r"^(?:[A-Z][a-z]+\s+){1,}[A-Z][a-z]+$", term)
+        if query.COMPOUND_ENTITY_PHRASE_RE.fullmatch(term)
     ]
     selected = title_cased[:2]
     quoted = " ".join(f'"{term}"' for term in selected)
