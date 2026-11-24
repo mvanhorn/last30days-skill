@@ -72,9 +72,11 @@ _HTML_ATTR_RE = re.compile(
 )
 _START_TAG_RE = re.compile(r"<[a-zA-Z][a-zA-Z0-9:-]*(?:\s[^<>]*)?>")
 _SCRIPT_OPEN_RE = re.compile(r"<script\b([^<>]*)>", re.I)
+_SCRIPT_CLOSE_RE = re.compile(r"</script(?:\s[^<>]*)?>", re.I)
 _META_TAG_RE = re.compile(r"<meta\b([^<>]*)>", re.I)
 _LINK_TAG_RE = re.compile(r"<link\b([^<>]*)>", re.I)
 _TITLE_OPEN_RE = re.compile(r"<title\b[^<>]*>", re.I)
+_TITLE_CLOSE_RE = re.compile(r"</title(?:\s[^<>]*)?>", re.I)
 _ORACLE_SITE_NUMBER_VALUE_RE = re.compile(r"^CX_\d+$")
 _ORACLE_SITE_LINK = re.compile(
     rf"https?://({_ORACLE_HOST})(?::443)?/hcmUI/CandidateExperience/[A-Za-z-]+/sites/(CX_\d+)", re.I,
@@ -101,13 +103,33 @@ def parse_html_attrs(raw: str) -> dict[str, str]:
     return attrs
 
 
+def extract_script_bodies(html: str) -> list[str]:
+    """Extract ``<script>...</script>`` bodies in strictly linear time without
+    using offsets from a lowercased copy (which shift on chars like U+0130)."""
+    if not html:
+        return []
+    bounded = html[:MAX_HTML_CHARS]
+    if not _SCRIPT_CLOSE_RE.search(bounded):
+        return []
+    bodies: list[str] = []
+    cursor = 0
+    for match in _SCRIPT_OPEN_RE.finditer(bounded):
+        if match.start() < cursor:
+            continue
+        close = _SCRIPT_CLOSE_RE.search(bounded, match.end())
+        if close is None:
+            break
+        bodies.append(bounded[match.end():close.start()])
+        cursor = close.end()
+    return bodies
+
+
 def extract_jsonld_blocks(html: str) -> list[str]:
     """Extract ``<script type="application/ld+json">`` blocks in strictly linear time."""
     if not html:
         return []
     bounded = html[:MAX_HTML_CHARS]
-    lowered = bounded.lower()
-    if "ld+json" not in lowered or "</script" not in lowered:
+    if "ld+json" not in bounded.lower() or not _SCRIPT_CLOSE_RE.search(bounded):
         return []
     blocks: list[str] = []
     cursor = 0
@@ -120,11 +142,11 @@ def extract_jsonld_blocks(html: str) -> list[str]:
         script_type = parse_html_attrs(attrs_raw).get("type", "").split(";", 1)[0].strip().lower()
         if script_type != "application/ld+json":
             continue
-        close_idx = lowered.find("</script", match.end())
-        if close_idx < 0:
+        close = _SCRIPT_CLOSE_RE.search(bounded, match.end())
+        if close is None:
             break
-        blocks.append(bounded[match.end():close_idx])
-        cursor = close_idx + 8
+        blocks.append(bounded[match.end():close.start()])
+        cursor = close.end()
     return blocks
 
 
@@ -156,21 +178,20 @@ def extract_title_texts(html: str) -> list[str]:
     if not html:
         return []
     bounded = html[:MAX_HTML_CHARS]
-    lowered = bounded.lower()
-    if "<title" not in lowered or "</title" not in lowered:
+    if not _TITLE_CLOSE_RE.search(bounded):
         return []
     titles: list[str] = []
     cursor = 0
     for match in _TITLE_OPEN_RE.finditer(bounded):
         if match.start() < cursor:
             continue
-        close_idx = lowered.find("</title", match.end())
-        if close_idx < 0:
+        close = _TITLE_CLOSE_RE.search(bounded, match.end())
+        if close is None:
             break
-        raw = unescape(bounded[match.end():close_idx]).strip()
+        raw = unescape(bounded[match.end():close.start()]).strip()
         if raw:
             titles.append(raw)
-        cursor = close_idx + 7
+        cursor = close.end()
     return titles
 
 
@@ -360,12 +381,23 @@ def public_site_url(
 
 def public_redirect_guard(url: str) -> Callable[[str], bool]:
     """Redirect guard allowing any safe public URL while forbidding
-    ``https -> http`` protocol downgrades."""
+    ``https -> http`` protocol downgrades across single or multi-hop chains."""
     if not is_safe_public_url(url):
         return lambda _target: False
-    if urlparse(url).scheme.lower() != "https":
-        return is_safe_public_url
-    return lambda target: is_safe_public_url(target) and urlparse(target).scheme.lower() == "https"
+    require_https = urlparse(url).scheme.lower() == "https"
+
+    def _check(target: str) -> bool:
+        nonlocal require_https
+        if not is_safe_public_url(target):
+            return False
+        scheme = urlparse(target).scheme.lower()
+        if require_https and scheme != "https":
+            return False
+        if scheme == "https":
+            require_https = True
+        return True
+
+    return _check
 
 
 def same_site_redirect_guard(
@@ -374,16 +406,25 @@ def same_site_redirect_guard(
     resolves: Callable[[str], bool] | None = None,
 ) -> Callable[[str], bool]:
     """Redirect guard allowing only safe standard-port http(s) same-site URLs,
-    forbidding ``https -> http`` protocol downgrades."""
+    forbidding ``https -> http`` protocol downgrades across redirect chains."""
     if not is_safe_public_url(url):
         return lambda _target: False
     origin_host = page_host(url)
     if not origin_host:
         return lambda _target: False
     require_https = urlparse(url).scheme.lower() == "https"
-    return lambda target: public_site_url(
-        target, origin_host, resolves=resolves, require_https=require_https,
-    )
+
+    def _check(target: str) -> bool:
+        nonlocal require_https
+        if not public_site_url(
+            target, origin_host, resolves=resolves, require_https=require_https,
+        ):
+            return False
+        if urlparse(target).scheme.lower() == "https":
+            require_https = True
+        return True
+
+    return _check
 
 
 def detect_platform(html: str, page_url: str) -> tuple[str, dict[str, Any]] | None:

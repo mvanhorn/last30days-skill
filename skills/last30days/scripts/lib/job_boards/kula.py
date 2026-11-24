@@ -20,8 +20,8 @@ from . import detect
 from .detect import KULA_HOST, PROVIDER_KULA
 
 _PUSH_MARKER = "self.__next_f.push("
-_JOBS_KEY = '"jobs":['
-_JSON_ARRAY_ELEM_STARTS = frozenset('0123456789-"[{tfn]')
+_JOBS_KEY = '"jobs":'
+_JSON_ARRAY_ELEM_STARTS = frozenset('0123456789-"[{tfn')
 _MAX_DECODE_FAILURES = 16
 _ANCHOR_TAG_RE = re.compile(r"<a\b([^<>]*)>", re.I)
 
@@ -32,20 +32,7 @@ def listing_url(entry: dict[str, Any]) -> str:
 
 
 def _extract_script_bodies(html: str) -> list[str]:
-    lowered = html.lower()
-    if "<script" not in lowered or "</script" not in lowered:
-        return []
-    bodies: list[str] = []
-    cursor = 0
-    for match in detect._SCRIPT_OPEN_RE.finditer(html):
-        if match.start() < cursor:
-            continue
-        close_idx = lowered.find("</script", match.end())
-        if close_idx < 0:
-            break
-        bodies.append(html[match.end():close_idx])
-        cursor = close_idx + 8
-    return bodies
+    return detect.extract_script_bodies(html)
 
 
 def _extract_push_chunks(text: str) -> list[str]:
@@ -68,7 +55,7 @@ def _extract_push_chunks(text: str) -> list[str]:
         peek = start + 1
         while peek < limit and text[peek].isspace():
             peek += 1
-        if peek >= limit or text[peek] not in _JSON_ARRAY_ELEM_STARTS:
+        if peek >= limit or (text[peek] != "]" and text[peek] not in _JSON_ARRAY_ELEM_STARTS):
             pos = peek
             continue
         try:
@@ -125,11 +112,16 @@ def _role_list(payload: str) -> list[dict[str, Any]] | None:
         idx = payload.find(_JOBS_KEY, pos)
         if idx < 0:
             break
-        start = idx + len(_JOBS_KEY) - 1
+        start = idx + len(_JOBS_KEY)
+        while start < limit and payload[start].isspace():
+            start += 1
+        if start >= limit or payload[start] != "[":
+            pos = start
+            continue
         peek = start + 1
         while peek < limit and payload[peek].isspace():
             peek += 1
-        if peek >= limit or payload[peek] not in _JSON_ARRAY_ELEM_STARTS:
+        if peek >= limit or (payload[peek] != "]" and payload[peek] not in _JSON_ARRAY_ELEM_STARTS):
             pos = peek
             continue
         try:

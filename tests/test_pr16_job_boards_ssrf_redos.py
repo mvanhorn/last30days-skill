@@ -517,16 +517,23 @@ def test_high169_protocol_downgrade_blocked_while_upgrade_allowed(monkeypatch):
         assert https_guard("http://careers.acme.com/next") is False
 
         http_guard = detect.same_site_redirect_guard("http://careers.acme.com/robots.txt")
+        assert http_guard("http://careers.acme.com/step1") is True
+        assert http_guard("https://evil.com/phish") is False
+        assert http_guard("http://careers.acme.com/step2") is True
         assert http_guard("https://careers.acme.com/next") is True
-        assert http_guard("http://careers.acme.com/next") is True
+        assert http_guard("https://careers.acme.com/next2") is True
+        assert http_guard("http://careers.acme.com/downgrade") is False
 
         careers_https_guard = detect.public_redirect_guard("https://acme.com/careers")
         assert careers_https_guard("https://jobs.acme.com/openings") is True
         assert careers_https_guard("http://jobs.acme.com/openings") is False
 
         careers_http_guard = detect.public_redirect_guard("http://acme.com/careers")
+        assert careers_http_guard("http://jobs.acme.com/step1") is True
+        assert careers_http_guard("https://127.0.0.1/blocked") is False
+        assert careers_http_guard("http://jobs.acme.com/step2") is True
         assert careers_http_guard("https://jobs.acme.com/openings") is True
-        assert careers_http_guard("http://jobs.acme.com/openings") is True
+        assert careers_http_guard("http://jobs.acme.com/downgrade") is False
 
         # _careers_fetch attaches the non-downgrade guard to http.get_text.
         with patch.object(jobs.http, "get_text", return_value="<html></html>") as mock_get_text:
@@ -536,11 +543,18 @@ def test_high169_protocol_downgrade_blocked_while_upgrade_allowed(monkeypatch):
         assert attached_guard("https://jobs.acme.com/") is True
         assert attached_guard("http://jobs.acme.com/") is False
 
-        # sitemap._on_site also rejects https -> http landed downgrade.
+        # sitemap._guard latches HTTPS across multi-hop chains; _on_site rejects https -> http.
         monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: True)
+        sitemap_http_guard = sitemap._guard("http://jobs.acme.com/sitemap.xml")
+        assert sitemap_http_guard("https://jobs.acme.com/sitemap.xml") is True
+        assert sitemap_http_guard("http://jobs.acme.com/downgrade.xml") is False
         assert sitemap._on_site(
             "https://jobs.acme.com/en/jobs/1",
             lambda landed: (landed.append("http://jobs.acme.com/en/jobs/1"), "downgraded")[1],
+        ) is None
+        assert sitemap._on_site(
+            "http://jobs.acme.com/en/jobs/1",
+            lambda landed: (landed.extend(["https://jobs.acme.com/a", "http://jobs.acme.com/b"]), "downgraded")[1],
         ) is None
     finally:
         detect.resolves_public.cache_clear()
@@ -832,6 +846,8 @@ def test_high174_sitemap_talentbrew_kula_resist_redos_in_under_100ms():
         ("sitemap title jsonld", lambda: sitemap.title_from_page('"@type":"JobPosting"' * 50_000)),
         ("sitemap title meta", lambda: sitemap.title_from_page("<meta " * 60_000)),
         ("sitemap title <title>", lambda: sitemap.title_from_page("<title>" * 60_000)),
+        ("detect unclosed </script ", lambda: detect.extract_script_bodies("<script>" + ("</script " * 50_000))),
+        ("detect unclosed </title ", lambda: detect.extract_title_texts("<title>" + ("</title " * 50_000))),
         (
             "talentbrew unclosed <li>",
             lambda: talentbrew.parse_listing({"results": "<li>" * 50_000}, {"board": "jobs.example.com"}),
@@ -886,7 +902,7 @@ def test_high174_sitemap_xml_rejects_dtd_entity_and_supports_namespaces_cdata():
         '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
         "<urlset><url><loc>https://jobs.example.com/jobs/12345-eng</loc></url></urlset>"
     )
-    assert sitemap._parse_sitemap_xml(xxe) == ("", [])
+    assert sitemap._parse_sitemap_xml(xxe) == (None, [])
 
     cdata_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -977,3 +993,110 @@ def test_high174_response_byte_caps_passed_to_http_get_text(monkeypatch):
     assert mock_get_text.call_args.kwargs.get("max_bytes") == detect.MAX_HTML_BYTES
     assert mock_get_text.call_args.kwargs.get("public_only") is True
     assert callable(mock_get_text.call_args.kwargs.get("redirect_guard"))
+
+
+def test_high164_turkish_dotted_i_does_not_corrupt_html_extraction():
+    # U+0130 ("İ") expands to 2 codepoints ("i\u0307") under .lower(), shifting
+    # offsets if code slices original HTML with indices from html.lower().
+    prefix = "<p>İstanbul Office — İstanbul, Türkiye — İstanbul Engineering</p>"
+
+    jsonld_and_title = (
+        prefix
+        + '<title>Principal Systems Engineer - Acme Careers</title>'
+        + '<script type="application/ld+json">'
+        + '{"@type":"JobPosting","title":"Staff Security Engineer","description":"Build secure systems."}'
+        + "</script>"
+    )
+    assert detect.extract_title_texts(jsonld_and_title) == ["Principal Systems Engineer - Acme Careers"]
+    blocks = detect.extract_jsonld_blocks(jsonld_and_title)
+    assert len(blocks) == 1
+    assert blocks[0] == '{"@type":"JobPosting","title":"Staff Security Engineer","description":"Build secure systems."}'
+    found_jobs = jobs.extract_jsonld_jobs(jsonld_and_title, "https://acme.com/careers")
+    assert len(found_jobs) == 1 and found_jobs[0]["title"] == "Staff Security Engineer"
+    assert sitemap.title_from_page(prefix + "<title>Platform Architect - Acme Careers</title>", "Acme") == "Platform Architect"
+
+    kula_html = (
+        prefix
+        + '<head><meta name="application-name" content="Acme Co"></head>'
+        + '<a href="/acme/77-backend-engineer">Backend Engineer</a>'
+        + '<script>self.__next_f.push([1,"{\\"jobs\\":[{\\"id\\":77,\\"title\\":\\"Backend Engineer\\",'
+        + '\\"launch_at\\":\\"2026-11-12T00:00:00Z\\"}]}"]);</script>'
+    )
+    kula_items, kula_total = kula.parse_listing(kula_html, {"slug": "acme"})
+    assert kula_total == 1 and len(kula_items) == 1
+    assert kula_items[0]["title"] == "Backend Engineer"
+    assert kula_items[0]["url"] == "https://careers.kula.ai/acme/77-backend-engineer"
+
+    tb_html = (
+        prefix
+        + '<section data-total-results="1"><ul><li>'
+        + '<a href="/job/istanbul/security-engineer/1/55"><span>Security Engineer</span></a>'
+        + '<span class="location">İstanbul, Turkey</span>'
+        + '<span class="date">11/14/2026</span>'
+        + "</li></ul></section>"
+    )
+    tb_items, tb_total = talentbrew.parse_listing({"results": tb_html}, {"board": "jobs.acme.com"})
+    assert tb_total == 1 and len(tb_items) == 1
+    assert tb_items[0]["title"] == "Security Engineer"
+    assert tb_items[0]["location"] == "İstanbul, Turkey"
+    assert tb_items[0]["date"] == "2026-11-14"
+
+
+def test_high174_deep_nested_json_recursion_error_recovered():
+    deep_array = ("[" * 10_000) + ("]" * 10_000)
+    html = (
+        f'<script type="application/ld+json">{deep_array}</script>'
+        '<meta property="og:site_name" content="Acme Corp">'
+        "<title>Staff Engineer - Acme Careers</title>"
+    )
+    assert jobs._walk_jsonld(deep_array) == []
+    assert sitemap.title_from_page(html, "Acme") == "Staff Engineer"
+    assert jobs._stated_names(html) == ["Acme Corp"]
+    assert phenom.page_object(f"phApp.ddo = {{\"a\": {deep_array}}};") is None
+
+
+def test_high174_sitemap_missed_distinguishes_empty_urlset_from_rejected_or_malformed_xml(monkeypatch):
+    monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: True)
+    valid_jobs_xml = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://jobs.acme.com/jobs/12345-staff-engineer</loc></url>"
+        "</urlset>"
+    )
+    empty_urlset_xml = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"/>'
+    malformed_xml = "<urlset><url><loc>https://jobs.acme.com/jobs/99999-broken"
+    doctype_xml = (
+        '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+        + valid_jobs_xml
+    )
+
+    def run_with(first_body: str) -> tuple[str, list[tuple[str, str]], bool]:
+        fake_rules = robots.Rules(
+            "Sitemap: https://jobs.acme.com/sitemap-1.xml\n"
+            "Sitemap: https://jobs.acme.com/sitemap-2.xml\n"
+        )
+        bodies = {
+            "https://jobs.acme.com/sitemap-1.xml": first_body,
+            "https://jobs.acme.com/sitemap-2.xml": valid_jobs_xml,
+        }
+        with patch.object(robots, "rules_for", return_value=fake_rules):
+            with patch.object(jobs.http, "get_text", side_effect=lambda u, **_kw: bodies.get(u)):
+                return sitemap.job_urls(["jobs.acme.com"], deadline=time.monotonic() + 5)
+
+    host_empty, urls_empty, missed_empty = run_with(empty_urlset_xml)
+    assert host_empty == "jobs.acme.com" and len(urls_empty) == 1
+    assert missed_empty is False
+
+    host_bad, urls_bad, missed_bad = run_with(malformed_xml)
+    assert host_bad == "jobs.acme.com" and len(urls_bad) == 1
+    assert missed_bad is True
+
+    host_dtd, urls_dtd, missed_dtd = run_with(doctype_xml)
+    assert host_dtd == "jobs.acme.com" and len(urls_dtd) == 1
+    assert missed_dtd is True
+
+
+def test_high174_kula_empty_jobs_array_returns_zero_without_error():
+    for payload_json in ('{\\"jobs\\":[]}', '{\\"jobs\\": []}', '{\\"jobs\\": [ ]}'):
+        html = f'<script>self.__next_f.push([1,"{payload_json}"])</script>'
+        items, total = kula.parse_listing(html, {"slug": "acme"})
+        assert items == [] and total == 0

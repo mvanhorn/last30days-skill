@@ -150,7 +150,7 @@ def page_object(html: str) -> dict[str, Any] | None:
         return None
     try:
         found, _end = json.JSONDecoder().raw_decode(bounded, start)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return found if isinstance(found, dict) else None
 

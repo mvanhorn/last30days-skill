@@ -105,7 +105,10 @@ def _on_site(url: str, fetch: Callable[[list], str | None]) -> str | None:
     text = fetch(landed)
     if text is not None and landed:
         final = str(landed[-1])
-        if (require_https and urlparse(final).scheme.lower() != "https") or not _public_url(final, host):
+        saw_https = require_https or any(
+            urlparse(str(hop)).scheme.lower() == "https" for hop in landed[:-1]
+        )
+        if (saw_https and urlparse(final).scheme.lower() != "https") or not _public_url(final, host):
             return None
     return text
 
@@ -114,17 +117,21 @@ def _local_tag(tag: Any) -> str:
     return tag.rsplit("}", 1)[-1].lower() if isinstance(tag, str) else ""
 
 
-def _parse_sitemap_xml(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """Parse a sitemap index or urlset with ElementTree after rejecting DTD/ENTITY."""
+def _parse_sitemap_xml(text: str) -> tuple[str | None, list[tuple[str, str]]]:
+    """Parse a sitemap index or urlset with ElementTree after rejecting DTD/ENTITY.
+
+    Returns ``("sitemapindex", children)``, ``("urlset", entries)``, or
+    ``(None, [])`` when the document is rejected, malformed, or not a sitemap.
+    """
     if not text or len(text) > MAX_SITEMAP_CHARS or _XML_UNSAFE_DECL.search(text):
-        return "", []
+        return None, []
     cleaned = text.lstrip("\ufeff \t\r\n")
     if not cleaned:
-        return "", []
+        return None, []
     try:
         root = ET.fromstring(cleaned)
     except ET.ParseError:
-        return "", []
+        return None, []
     kind = _local_tag(root.tag)
     if kind == "sitemapindex":
         children: list[tuple[str, str]] = []
@@ -137,7 +144,7 @@ def _parse_sitemap_xml(text: str) -> tuple[str, list[tuple[str, str]]]:
                     if loc:
                         children.append((loc, ""))
                     break
-        return "index", children
+        return "sitemapindex", children
     if kind == "urlset":
         entries: list[tuple[str, str]] = []
         for elem in root:
@@ -153,7 +160,7 @@ def _parse_sitemap_xml(text: str) -> tuple[str, list[tuple[str, str]]]:
             if loc:
                 entries.append((loc, lastmod))
         return "urlset", entries
-    return "", []
+    return None, []
 
 
 def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str, str]], bool]:
@@ -199,7 +206,10 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                 missed = missed or bool(jobs_host) or bool(_JOBS_WORD.search(urlparse(url).path))
                 continue
             xml_kind, entries = _parse_sitemap_xml(text)
-            if xml_kind == "index":
+            if not xml_kind:
+                missed = missed or bool(jobs_host) or bool(_JOBS_WORD.search(urlparse(url).path))
+                continue
+            if xml_kind == "sitemapindex":
                 children = [loc for loc, _lastmod in entries]
                 # A jobs sitemap first, then English ones, then the rest.
                 children.sort(key=lambda child: (
@@ -265,7 +275,11 @@ def title_from_page(html: str, site_name: str = "") -> str:
         return ""
     bounded = html[:MAX_PAGE_CHARS]
     for block in detect.extract_jsonld_blocks(bounded):
-        for obj in jobs._walk_jsonld(block):
+        try:
+            nodes = jobs._walk_jsonld(block)
+        except RecursionError:
+            continue
+        for obj in nodes:
             if isinstance(obj, dict) and jobs._is_job_posting(obj):
                 raw = obj.get("title") or obj.get("name")
                 if isinstance(raw, str) and raw.strip():

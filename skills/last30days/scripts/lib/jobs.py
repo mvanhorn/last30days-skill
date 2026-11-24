@@ -1486,7 +1486,7 @@ def _stated_names(html: str) -> list[str]:
     for block in extract_jsonld_blocks(html or ""):
         try:
             walk(json.loads(block.strip()))
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             continue
     add(
         board_detect.extract_meta_contents(html or "", "property", "og:site_name"),
@@ -2949,7 +2949,7 @@ def jsonld_role_text(html: Any) -> tuple[str, str] | None:
 def _walk_jsonld(block: str) -> list[Any]:
     try:
         data = json.loads(block.strip())
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError):
         return []
     out: list[Any] = []
     stack = [data]
