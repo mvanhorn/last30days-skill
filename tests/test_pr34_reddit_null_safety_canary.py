@@ -566,6 +566,105 @@ class TestHigh120ScrapeCreatorsNullSafety:
         assert items == []
         assert not artifact.get("_source_outcome")
 
+    def test_pinned_scrapecreators_429_does_not_skip_subsequent_public_fallback_subqueries(self):
+        import threading
+
+        cfg = {
+            "SCRAPECREATORS_API_KEY": "dummy-key",
+            env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+        }
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="mock", planner_model="mock", rerank_model="mock",
+        )
+        sq1 = schema.SubQuery(
+            label="q1", search_query="python", ranking_query="python", sources=["reddit"],
+        )
+        sq2 = schema.SubQuery(
+            label="q2", search_query="rust", ranking_query="rust", sources=["reddit"],
+        )
+        pub_q1 = {
+            "url": "https://www.reddit.com/r/python/comments/pub01/t/",
+            "title": "python public fallback",
+            "engagement": {"score": 40, "num_comments": 5},
+        }
+        pub_q2 = {
+            "url": "https://www.reddit.com/r/rust/comments/pub02/t/",
+            "title": "rust public fallback",
+            "engagement": {"score": 35, "num_comments": 4},
+        }
+
+        def sc_http_429(*_args, **_kwargs):
+            http._raise(http.HTTPError("HTTP 429: Too Many Requests", status_code=429))
+
+        def fake_public(query, *_args, **_kwargs):
+            return [pub_q1] if "python" in query else [pub_q2]
+
+        rate_limited_sources: set[str] = set()
+        rate_limit_lock = threading.Lock()
+
+        with mock.patch("lib.http.get", side_effect=sc_http_429), \
+             mock.patch("lib.reddit_public.search_reddit_public", side_effect=fake_public) as pub_mock:
+            items1, artifact1 = pipeline._retrieve_stream(
+                topic="python",
+                subquery=sq1,
+                source="reddit",
+                config=cfg,
+                depth="quick",
+                date_range=("2026-10-16", "2026-11-15"),
+                runtime=runtime,
+                mock=False,
+                rate_limited_sources=rate_limited_sources,
+                rate_limit_lock=rate_limit_lock,
+            )
+            assert items1 == [pub_q1]
+            assert "reddit" not in rate_limited_sources
+            outcome1 = artifact1.get("_source_outcome") or {}
+            assert outcome1.get("state") == health.PARTIAL
+            assert "429" in (outcome1.get("detail") or "")
+            assert "Reddit primary failed" in (outcome1.get("detail") or "")
+
+            items2, artifact2 = pipeline._retrieve_stream(
+                topic="rust",
+                subquery=sq2,
+                source="reddit",
+                config=cfg,
+                depth="quick",
+                date_range=("2026-10-16", "2026-11-15"),
+                runtime=runtime,
+                mock=False,
+                rate_limited_sources=rate_limited_sources,
+                rate_limit_lock=rate_limit_lock,
+            )
+
+        assert items2 == [pub_q2]
+        assert pub_mock.call_count == 2
+        assert "reddit" not in rate_limited_sources
+        outcome2 = artifact2.get("_source_outcome") or {}
+        assert outcome2.get("state") == health.PARTIAL
+        assert "429" in (outcome2.get("detail") or "")
+
+        # When public fallback ALSO returns nothing, total failure still classifies
+        # as RATE_LIMITED and marks the source rate-limited.
+        reddit.reset_scrapecreators_memo()
+        empty_rate_limited: set[str] = set()
+        with mock.patch("lib.http.get", side_effect=sc_http_429), \
+             mock.patch("lib.reddit_public.search_reddit_public", return_value=[]):
+            with pytest.raises(pipeline.SourceRunError) as exc_info:
+                pipeline._retrieve_stream(
+                    topic="python",
+                    subquery=sq1,
+                    source="reddit",
+                    config=cfg,
+                    depth="quick",
+                    date_range=("2026-10-16", "2026-11-15"),
+                    runtime=runtime,
+                    mock=False,
+                    rate_limited_sources=empty_rate_limited,
+                    rate_limit_lock=rate_limit_lock,
+                )
+        assert exc_info.value.outcome_state == health.RATE_LIMITED
+        assert "reddit" in empty_rate_limited
+
     @pytest.mark.parametrize("payload", [
         None,
         [],

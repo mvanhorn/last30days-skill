@@ -7764,6 +7764,12 @@ def _retrieve_stream_impl(
                                 else reddit.classify_run_failure(str(primary_failure))
                             )
                         )
+                        if state == health.RATE_LIMITED:
+                            # ScrapeCreators 429 does not mean reddit.com's public
+                            # fallback is rate-limited; reporting RATE_LIMITED here
+                            # puts "reddit" in rate_limited_sources and skips later
+                            # subqueries before they can use the working fallback.
+                            state = health.PARTIAL
                         return public_results, _outcome_artifact(
                             state,
                             f"Reddit primary failed; public fallback returned "
