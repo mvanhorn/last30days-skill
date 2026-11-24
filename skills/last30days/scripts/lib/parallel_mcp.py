@@ -565,10 +565,11 @@ def search(
     cancel: threading.Event | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Discover and invoke hosted ``web_search`` after explicit dispatcher opt-in."""
+    default_deadline = time.monotonic() + _DEFAULT_SEARCH_TIMEOUT
     effective_deadline = (
-        deadline_monotonic
+        min(deadline_monotonic, default_deadline)
         if deadline_monotonic is not None
-        else (time.monotonic() + _DEFAULT_SEARCH_TIMEOUT)
+        else default_deadline
     )
     redactions = frozenset({api_key}) if isinstance(api_key, str) and len(api_key) >= 4 else frozenset()
     requests_issued = 0

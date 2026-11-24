@@ -25,7 +25,7 @@ from urllib.request import Request
 
 import pytest
 
-from lib import grounding, http, parallel_mcp, resolve, web_fetch_keyless, web_search_keyless
+from lib import grounding, health, http, parallel_mcp, pipeline, resolve, web_fetch_keyless, web_search_keyless
 
 
 def _start_server(handler_cls):
@@ -1104,5 +1104,116 @@ def test_parallel_mcp_scrubs_bearer_key_from_http_error_reason(monkeypatch):
                 err.close()
     finally:
         _stop_server(srv, thread)
+
+
+def test_parallel_mcp_run_deadline_only_shortens_never_extends_60s_cap():
+    observed_deadlines: list[float] = []
+
+    def capture_budget(message, _api_key, _session_id=None):
+        budget = parallel_mcp._REQUEST_BUDGET.get()
+        assert budget is not None and budget[0] is not None
+        observed_deadlines.append(budget[0])
+        if message is None:
+            return {}, None
+        method = message.get("method")
+        if method == "initialize":
+            return {"result": {"protocolVersion": parallel_mcp._PROTOCOL_VERSION}}, "sess-cap"
+        if method == "notifications/initialized":
+            return {}, "sess-cap"
+        if method == "tools/list":
+            return {"result": {"tools": [{"name": "web_search"}]}}, "sess-cap"
+        if method == "tools/call":
+            return {"result": {"structuredContent": {"results": []}}}, "sess-cap"
+        raise AssertionError(f"unexpected method {method}")
+
+    # Direct parallel_mcp.search() with 180s deadline must still cap at <= 60s.
+    now = time.monotonic()
+    with patch.object(parallel_mcp, "_request", side_effect=capture_budget):
+        parallel_mcp.search(
+            "topic", ("2026-10-01", "2026-11-01"), deadline_monotonic=now + 180.0,
+        )
+    assert observed_deadlines
+    assert observed_deadlines[0] <= time.monotonic() + parallel_mcp._DEFAULT_SEARCH_TIMEOUT + 1.0
+    assert observed_deadlines[0] < now + 100.0
+
+    # Via grounding.web_search() with 180s pipeline `_research_deadline`.
+    observed_deadlines.clear()
+    now = time.monotonic()
+    with patch.object(parallel_mcp, "_request", side_effect=capture_budget):
+        grounding.web_search(
+            "topic",
+            ("2026-10-01", "2026-11-01"),
+            {"_research_deadline": now + 180.0},
+            backend="parallel-mcp",
+        )
+    assert observed_deadlines
+    assert observed_deadlines[0] <= time.monotonic() + parallel_mcp._DEFAULT_SEARCH_TIMEOUT + 1.0
+    assert observed_deadlines[0] < now + 100.0
+
+    # Shorter caller deadline (e.g. 5s) IS respected and shortens the 60s cap.
+    observed_deadlines.clear()
+    now = time.monotonic()
+    short_deadline = now + 5.0
+    with patch.object(parallel_mcp, "_request", side_effect=capture_budget):
+        parallel_mcp.search(
+            "topic", ("2026-10-01", "2026-11-01"), deadline_monotonic=short_deadline,
+        )
+    assert observed_deadlines
+    assert abs(observed_deadlines[0] - short_deadline) < 0.01
+
+
+def test_keyless_search_reports_timeout_when_cancelled_or_expired_and_keeps_found_results():
+    # (a1) Pre-cancelled keyless_search with 0 results reports timeout, not unavailable.
+    cancel = threading.Event()
+    cancel.set()
+    with patch.object(web_search_keyless.http, "get_text") as mock_get:
+        items, artifact = web_search_keyless.keyless_search(
+            "topic", ("2026-10-01", "2026-11-01"), {}, cancel=cancel,
+        )
+    assert items == []
+    mock_get.assert_not_called()
+    assert artifact["reason"] == "keyless-search-timeout"
+    assert artifact["reason"] != "keyless-search-unavailable"
+    assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+    assert artifact["_source_outcome"]["attempted"] is False
+
+    # (a2) Via grounding.web_search() with expired `_research_deadline`: pipeline maps to TIMEOUT.
+    with patch.object(web_search_keyless.http, "get_text") as mock_get:
+        items, artifact = grounding.web_search(
+            "topic",
+            ("2026-10-01", "2026-11-01"),
+            {"_research_deadline": time.monotonic() - 1.0},
+            backend="keyless",
+        )
+    assert items == []
+    mock_get.assert_not_called()
+    assert artifact["reason"] == "keyless-search-timeout"
+    resolved = pipeline._resolve_stream_outcome("grounding", artifact, [])
+    assert resolved is not None
+    assert resolved["state"] == health.TIMEOUT
+
+    # (b) Cancellation after rung 1 already found results preserves rung 1's results.
+    cancel_after_rung1 = threading.Event()
+    ddg_html = (
+        '<a class="result__a" href="https://example.com/kept">Kept Title</a>'
+        '<a class="result__snippet" href="//x">Kept snippet</a>'
+    )
+
+    def ddg_then_cancel(url, *args, **kwargs):
+        cancel_after_rung1.set()
+        return ddg_html
+
+    with patch.object(web_search_keyless.http, "get_text", side_effect=ddg_then_cancel):
+        items, artifact = grounding.web_search(
+            "topic",
+            ("2026-10-01", "2026-11-01"),
+            {"_enrich_cancel": cancel_after_rung1},
+            backend="keyless",
+        )
+    assert len(items) == 1
+    assert items[0]["url"] == "https://example.com/kept"
+    assert "reason" not in artifact
+    assert "_source_outcome" not in artifact
+
 
 

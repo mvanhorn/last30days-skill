@@ -45,7 +45,7 @@ from html.parser import HTMLParser
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunsplit
 
-from . import http, log, public_host
+from . import health, http, log, public_host
 
 KEYLESS_BACKEND = "keyless"
 
@@ -429,26 +429,27 @@ def keyless_search(
             return True
         return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
 
-    for rung, search in ladder:
-        if stopped():
-            tried[rung] = SKIPPED
-            continue
-        if not RUNG_HEALTH.usable(rung):
-            tried[rung] = SKIPPED
-            continue
-        # A DuckDuckGo anomaly block (202 challenge page on a datacenter IP)
-        # falls through to Startpage, which still serves organic results there.
-        items, state = search(query, count, freshness, **bound)
-        tried[rung] = state
-        RUNG_HEALTH.record(rung, state)
-        used = rung
-        if items:
-            break
-    if not items:
-        searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
-        if searxng_url and not stopped():
-            items = _search_searxng(query, count, searxng_url, **bound)
-            used = "searxng"
+    with http.tee_failures() as run_failures:
+        for rung, search in ladder:
+            if stopped():
+                tried[rung] = SKIPPED
+                continue
+            if not RUNG_HEALTH.usable(rung):
+                tried[rung] = SKIPPED
+                continue
+            # A DuckDuckGo anomaly block (202 challenge page on a datacenter IP)
+            # falls through to Startpage, which still serves organic results there.
+            items, state = search(query, count, freshness, **bound)
+            tried[rung] = state
+            RUNG_HEALTH.record(rung, state)
+            used = rung
+            if items:
+                break
+        if not items:
+            searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
+            if searxng_url and not stopped():
+                items = _search_searxng(query, count, searxng_url, **bound)
+                used = "searxng"
     # These backends never return a publish date, so normalize's grounding
     # require_date would drop every result. Keep undated links only when the
     # window reaches today; a historical window can't vouch for them.
@@ -463,7 +464,18 @@ def keyless_search(
         "keyless_rungs": tried,
     }
     if not items:
-        artifact["reason"] = "keyless-search-unavailable"
+        budget_exhausted = stopped() or any(
+            isinstance(failure, http.DeadlineExceeded) for failure in run_failures
+        )
+        if budget_exhausted:
+            artifact["reason"] = "keyless-search-timeout"
+            artifact["_source_outcome"] = {
+                "state": health.TIMEOUT,
+                "detail": "Keyless web search cancelled or timed out",
+                "attempted": any(state != SKIPPED for state in tried.values()),
+            }
+        else:
+            artifact["reason"] = "keyless-search-unavailable"
     return items, artifact
 
 

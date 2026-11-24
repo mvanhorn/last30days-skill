@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -534,7 +535,11 @@ def _web_search_with(
         raise ValueError(f"Unsupported web backend: {backend!r}")
     else:
         return [], {}
-    if items and not _reddit_excluded(config):
+    budget_stopped = bool(
+        (effective_cancel is not None and effective_cancel.is_set())
+        or (effective_deadline is not None and time.monotonic() >= effective_deadline)
+    )
+    if items and not _reddit_excluded(config) and not budget_stopped:
         # Reddit enrichment is a best-effort secondary fetch on already-retrieved
         # web results. Isolate its HTTP failures in a throwaway capture sink so a
         # reddit.com fetch failure (e.g. a 403 on a datacenter IP) is not
