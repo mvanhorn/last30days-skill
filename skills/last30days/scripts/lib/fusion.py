@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
+import math
 import re
 from collections.abc import Iterable
+from datetime import date, datetime, timezone
 
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -78,28 +81,161 @@ _ENRICHMENT_KEYS = (
 )
 
 
-def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem) -> schema.SourceItem:
+def _clone_source_item(item: schema.SourceItem) -> schema.SourceItem:
+    """Shallow-copy a SourceItem and its mutable engagement/metadata containers."""
+    metadata = {
+        k: (
+            [dict(e) if isinstance(e, dict) else e for e in v]
+            if isinstance(v, list)
+            else dict(v)
+            if isinstance(v, dict)
+            else v
+        )
+        for k, v in (item.metadata or {}).items()
+    }
+    return dataclasses.replace(
+        item,
+        engagement=dict(item.engagement or {}),
+        metadata=metadata,
+    )
+
+
+def _item_engagement_score(item: schema.SourceItem) -> int | float | None:
+    if item.engagement_score is not None:
+        return item.engagement_score
+    return (item.metadata or {}).get("engagement_score")
+
+
+def _candidate_engagement_from_items(source_items: list[schema.SourceItem]) -> int | float | None:
+    scores = [
+        val
+        for si in source_items
+        if (val := _item_engagement_score(si)) is not None
+    ]
+    return max(scores) if scores else None
+
+
+def _primary_score(local_relevance: float, freshness: int, source_quality: float) -> float:
+    return (local_relevance * 100.0) + freshness + (source_quality * 10.0)
+
+
+def _parse_iso_day(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if len(text) == 10:
+            return date.fromisoformat(text).isoformat()
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return (dt.astimezone(timezone.utc) if dt.tzinfo else dt).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _matched_date_in_window(
+    date_str: str,
+    range_from: str | None,
+    range_to: str | None,
+) -> bool:
+    text = str(date_str or "").strip()
+    if not text:
+        return False
+    if not range_from and not range_to:
+        return True
+    iso = _parse_iso_day(text)
+    if not iso:
+        return False
+    start = _parse_iso_day(range_from) if range_from else None
+    end = _parse_iso_day(range_to) if range_to else None
+    if start and iso < start:
+        return False
+    if end and iso > end:
+        return False
+    return True
+
+
+def _sanitize_reddit_matched_comment(
+    item: schema.SourceItem,
+    range_from: str | None,
+    range_to: str | None,
+) -> None:
+    if item.source != "reddit" or not isinstance(item.metadata, dict):
+        return
+    if not range_from and not range_to:
+        return
+    matched_date = str(item.metadata.get("matched_comment_date") or "").strip()
+    if matched_date and not _matched_date_in_window(matched_date, range_from, range_to):
+        item.metadata.pop("matched_comment_date", None)
+        item.metadata.pop("matched_comment_url", None)
+
+
+def merge_source_items(
+    existing: schema.SourceItem,
+    incoming: schema.SourceItem,
+    *,
+    range_from: str | None = None,
+    range_to: str | None = None,
+) -> schema.SourceItem:
     """Fold ``incoming``'s enrichment and counts into ``existing`` (same thread).
 
     Keeps the richer value per field: an enrichment list the existing copy
-    lacks (or a longer one), the larger numeric engagement counters, and the
-    longer body/snippet. Reddit copies merge per field by provenance: the
-    score from the most trusted source wins (a live score beats an archive
-    snapshot, which beats a pending one) and comments are unioned by comment
-    id. Mutates and returns ``existing``.
+    lacks (or a longer one), a longer enrichment string, the larger numeric
+    engagement counters, and the longer body/snippet. Reddit copies merge per
+    field by provenance: the score from the most trusted source wins (a live
+    score beats an archive snapshot, which beats a pending one) and comments
+    are unioned by comment id. Recomputes ``existing.engagement_score`` when
+    engagement or top comments change. Mutates and returns ``existing``.
     """
+    if existing.engagement is None:
+        existing.engagement = {}
+    if existing.metadata is None:
+        existing.metadata = {}
+    eng_before = dict(existing.engagement)
+    eng_src_before = existing.metadata.get("engagement_source")
+    comments_before = existing.metadata.get("top_comments")
+
     reddit = existing.source == "reddit" and incoming.source == "reddit"
     if reddit:
-        _merge_reddit_fields(existing, incoming)
+        _merge_reddit_fields(
+            existing, incoming, range_from=range_from, range_to=range_to,
+        )
+    in_meta = incoming.metadata or {}
+    for meta_key in ("enriched_via", "reddit_subreddit"):
+        val = in_meta.get(meta_key)
+        if val and not existing.metadata.get(meta_key):
+            existing.metadata[meta_key] = val
+    theirs_rts = in_meta.get("reddit_thread_score")
+    if (
+        isinstance(theirs_rts, (int, float))
+        and not isinstance(theirs_rts, bool)
+        and math.isfinite(theirs_rts)
+    ):
+        mine_rts = existing.metadata.get("reddit_thread_score")
+        if (
+            not isinstance(mine_rts, (int, float))
+            or isinstance(mine_rts, bool)
+            or not math.isfinite(mine_rts)
+            or theirs_rts > mine_rts
+        ):
+            existing.metadata["reddit_thread_score"] = theirs_rts
     for key in _ENRICHMENT_KEYS:
         if reddit and key == "top_comments":
             continue
         theirs = incoming.metadata.get(key)
-        if not theirs:
+        if not theirs or (isinstance(theirs, str) and not theirs.strip()):
             continue
         mine = existing.metadata.get(key)
-        if not mine or (isinstance(theirs, list) and isinstance(mine, list) and len(theirs) > len(mine)):
-            existing.metadata[key] = theirs
+        mine_empty = not mine or (isinstance(mine, str) and not mine.strip())
+        if (
+            mine_empty
+            or (isinstance(theirs, list) and isinstance(mine, list) and len(theirs) > len(mine))
+            or (isinstance(theirs, str) and isinstance(mine, str) and len(theirs.strip()) > len(mine.strip()))
+        ):
+            existing.metadata[key] = (
+                [dict(e) if isinstance(e, dict) else e for e in theirs]
+                if isinstance(theirs, list)
+                else theirs
+            )
     for field_name, value in (incoming.engagement or {}).items():
         if reddit and field_name == "score":
             continue
@@ -110,6 +246,14 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
         current = existing.engagement.get(field_name)
         if not isinstance(current, (int, float)) or isinstance(current, bool) or value > current:
             existing.engagement[field_name] = value
+    if (
+        existing.engagement != eng_before
+        or existing.metadata.get("engagement_source") != eng_src_before
+        or existing.metadata.get("top_comments") != comments_before
+    ):
+        from . import signals
+
+        existing.engagement_score = signals.engagement_score(existing)
     if len(incoming.body or "") > len(existing.body or ""):
         existing.body = incoming.body
     # A reel or TikTok fetched twice can come back once with its spoken
@@ -128,7 +272,13 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
     return existing
 
 
-def _merge_reddit_fields(existing: schema.SourceItem, incoming: schema.SourceItem) -> None:
+def _merge_reddit_fields(
+    existing: schema.SourceItem,
+    incoming: schema.SourceItem,
+    *,
+    range_from: str | None = None,
+    range_to: str | None = None,
+) -> None:
     """The Reddit fields whose winner depends on where each copy got them."""
     mine_source = existing.metadata.get("engagement_source")
     theirs_source = incoming.metadata.get("engagement_source")
@@ -150,14 +300,40 @@ def _merge_reddit_fields(existing: schema.SourceItem, incoming: schema.SourceIte
             existing.metadata.pop("engagement_source", None)
     theirs_comments = incoming.metadata.get("top_comments") or []
     if theirs_comments:
-        existing.metadata["top_comments"] = reddit_refs.union_comments(
-            existing.metadata.get("top_comments") or [], theirs_comments,
-        )
+        existing.metadata["top_comments"] = [
+            dict(c) if isinstance(c, dict) else c
+            for c in reddit_refs.union_comments(
+                existing.metadata.get("top_comments") or [], theirs_comments,
+            )
+        ]
         sources = {
             existing.metadata.get("comments_source"), incoming.metadata.get("comments_source"),
         } - {None, ""}
         if sources:
             existing.metadata["comments_source"] = "+".join(sorted(sources))
+    in_meta = incoming.metadata if isinstance(incoming.metadata, dict) else {}
+    mine_date = str(existing.metadata.get("matched_comment_date") or "").strip()
+    theirs_date = str(in_meta.get("matched_comment_date") or "").strip()
+    mine_url = str(existing.metadata.get("matched_comment_url") or "").strip()
+    theirs_url = str(in_meta.get("matched_comment_url") or "").strip()
+    if mine_date and not _matched_date_in_window(mine_date, range_from, range_to):
+        existing.metadata.pop("matched_comment_date", None)
+        existing.metadata.pop("matched_comment_url", None)
+        mine_date = ""
+        mine_url = ""
+    theirs_in_window = _matched_date_in_window(theirs_date, range_from, range_to)
+    mine_cmp = _parse_iso_day(mine_date) or mine_date
+    theirs_cmp = _parse_iso_day(theirs_date) or theirs_date
+    if theirs_in_window and (
+        not mine_date
+        or theirs_cmp > mine_cmp
+        or (theirs_cmp == mine_cmp and not mine_url and theirs_url)
+    ):
+        existing.metadata["matched_comment_date"] = theirs_date
+        if theirs_url:
+            existing.metadata["matched_comment_url"] = theirs_url
+        else:
+            existing.metadata.pop("matched_comment_url", None)
 
 
 def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.SourceItem]:
@@ -517,6 +693,8 @@ def weighted_rrf(
     """
     subqueries = {subquery.label: subquery for subquery in plan.subqueries}
     candidates: dict[str, schema.Candidate] = {}
+    primary_scores: dict[str, float] = {}
+    candidate_spoken: dict[str, bool] = {}
     # Track source items already attached to each candidate, keyed by
     # source_item_key (source + normalized URL, or the HN discussion URL):
     # per-stream ids collide across subqueries, and
@@ -539,7 +717,11 @@ def weighted_rrf(
             item_local_relevance = item.local_relevance if item.local_relevance is not None else float(item.metadata.get("local_relevance", item.relevance_hint))
             item_freshness = item.freshness if item.freshness is not None else int(item.metadata.get("freshness", 0))
             item_source_quality = item.source_quality if item.source_quality is not None else float(item.metadata.get("source_quality", 0.6))
+            incoming_primary_score = _primary_score(item_local_relevance, item_freshness, item_source_quality)
+            incoming_spoken = bool((item.metadata or {}).get("spoken_caption")) and bool((item.snippet or "").strip())
             if key not in candidates:
+                attached = _clone_source_item(item)
+                _sanitize_reddit_matched_comment(attached, range_from, range_to)
                 candidate_metadata: dict = {
                     "provenance": [
                         {
@@ -565,46 +747,63 @@ def weighted_rrf(
                     native_ranks={f"{label}:{source}": rank},
                     local_relevance=item_local_relevance,
                     freshness=item_freshness,
-                    engagement=item.engagement_score if item.engagement_score is not None else item.metadata.get("engagement_score"),
+                    engagement=_item_engagement_score(attached),
                     source_quality=item_source_quality,
                     rrf_score=score,
                     sources=[item.source],
-                    source_items=[item],
+                    source_items=[attached],
                     metadata=candidate_metadata,
                 )
-                seen_source_items[key] = {source_item_key(item): item}
+                primary_scores[key] = incoming_primary_score
+                candidate_spoken[key] = incoming_spoken
+                seen_source_items[key] = {source_item_key(attached): attached}
                 continue
 
             candidate = candidates[key]
-            candidate.rrf_score += score
-            previous_primary_score = (candidate.local_relevance * 100.0) + candidate.freshness + (candidate.source_quality * 10.0)
-            incoming_primary_score = (item_local_relevance * 100.0) + item_freshness + (item_source_quality * 10.0)
+            rank_key = f"{label}:{source}"
+            if rank_key not in candidate.native_ranks:
+                candidate.rrf_score += score
+                candidate.native_ranks[rank_key] = rank
+            else:
+                candidate.native_ranks[rank_key] = min(candidate.native_ranks[rank_key], rank)
             candidate.local_relevance = max(
                 candidate.local_relevance,
                 item_local_relevance,
             )
             candidate.freshness = max(candidate.freshness, item_freshness)
-            item_eng = item.engagement_score if item.engagement_score is not None else item.metadata.get("engagement_score")
-            if candidate.engagement is None:
-                candidate.engagement = item_eng
-            elif item_eng is not None:
-                candidate.engagement = max(candidate.engagement, item_eng)
             candidate.source_quality = max(
                 candidate.source_quality,
                 item_source_quality,
             )
-            candidate.native_ranks[f"{label}:{source}"] = rank
             if label not in candidate.subquery_labels:
                 candidate.subquery_labels.append(label)
             if item.source not in candidate.sources:
                 candidate.sources.append(item.source)
+            promoted = incoming_primary_score > primary_scores[key]
             item_key = source_item_key(item)
             existing_item = seen_source_items[key].get(item_key)
             if existing_item is None:
-                seen_source_items[key][item_key] = item
-                candidate.source_items.append(item)
+                attached = _clone_source_item(item)
+                _sanitize_reddit_matched_comment(attached, range_from, range_to)
+                seen_source_items[key][item_key] = attached
+                candidate.source_items.append(attached)
+            elif promoted:
+                new_primary = _clone_source_item(item)
+                merge_source_items(
+                    new_primary, existing_item,
+                    range_from=range_from, range_to=range_to,
+                )
+                idx = candidate.source_items.index(existing_item)
+                candidate.source_items[idx] = new_primary
+                seen_source_items[key][item_key] = new_primary
+                attached = new_primary
             else:
-                merge_source_items(existing_item, item)
+                merge_source_items(
+                    existing_item, _clone_source_item(item),
+                    range_from=range_from, range_to=range_to,
+                )
+                attached = existing_item
+            candidate.engagement = _candidate_engagement_from_items(candidate.source_items)
             candidate.metadata.setdefault("provenance", []).append(
                 {
                     "source": source,
@@ -613,13 +812,23 @@ def weighted_rrf(
                     "item_id": item.item_id,
                 }
             )
-            if incoming_primary_score > previous_primary_score:
-                candidate.item_id = item.item_id
-                candidate.source = item.source
-                candidate.title = item.title
+            if promoted:
+                primary_scores[key] = incoming_primary_score
+                candidate.item_id = attached.item_id
+                candidate.source = attached.source
+                candidate.title = attached.title
+                candidate.url = attached.url
+                if candidate.source_items and candidate.source_items[0] is not attached:
+                    candidate.source_items.remove(attached)
+                    candidate.source_items.insert(0, attached)
+            if incoming_spoken and not candidate_spoken[key]:
                 candidate.snippet = item.snippet
-            if len(candidate.snippet.split()) < len(item.snippet.split()):
-                candidate.snippet = item.snippet
+                candidate_spoken[key] = True
+            elif incoming_spoken == candidate_spoken[key]:
+                if promoted:
+                    candidate.snippet = attached.snippet
+                elif len((candidate.snippet or "").split()) < len((item.snippet or "").split()):
+                    candidate.snippet = item.snippet
 
     for candidate in candidates.values():
         _pin_snippet_to_primary_submission(candidate)

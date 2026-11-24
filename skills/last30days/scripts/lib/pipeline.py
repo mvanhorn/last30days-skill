@@ -3940,13 +3940,7 @@ def run(
     # token even when the document body matched).
     ranked_candidates = sorted(
         [*ranked_public, *ranked_private],
-        key=lambda candidate: (
-            1 if schema.candidate_out_of_window(candidate) else 0,
-            -candidate.final_score,
-            -(candidate.engagement or -1),
-            min(candidate.native_ranks.values(), default=999),
-            candidate.title,
-        ),
+        key=rerank.candidate_sort_key,
     )
     _add_ranked_roles_to_jobs_digest(bundle, ranked_candidates, hiring_summary)
     _check_research(config)

@@ -2134,12 +2134,13 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                 else []
             )
             if top_comments:
-                vote_label = _vote_label_for(item.source)
+                comment_source = _comment_source(item)
+                vote_label = _vote_label_for(comment_source)
                 for tc in top_comments:
                     excerpt = str(
                         tc.get("excerpt") or tc.get("body") or tc.get("text") or ""
                     )
-                    attribution = _comment_attribution(item.source, tc.get("author"))
+                    attribution = _comment_attribution(comment_source, tc.get("author"))
                     vote_part = _format_vote_part(tc.get("score", ""), vote_label)
                     lines.append(
                         f"  Top comment {attribution}{vote_part}: "
@@ -3262,11 +3263,11 @@ def _render_candidate(
         lines.append(
             f"   - Evidence: {_format_untrusted_evidence(candidate.snippet, 360)}"
         )
+    comment_source = _comment_source(primary) if primary else None
     for tc in _top_comments_list(primary):
         excerpt = str(tc.get("excerpt") or tc.get("body") or tc.get("text") or "")
-        vote_label = _vote_label_for(primary.source) if primary else "upvotes"
-        source = primary.source if primary else None
-        attribution = _comment_attribution(source, tc.get("author"))
+        vote_label = _vote_label_for(comment_source) if comment_source else "upvotes"
+        attribution = _comment_attribution(comment_source, tc.get("author"))
         vote_part = _format_vote_part(tc.get("score", ""), vote_label)
         # HN comment lines carry their own link: the candidate URL above is
         # the article, not where the quote was said.
@@ -5184,14 +5185,15 @@ def _top_comments_list(
     """
     if not item:
         return []
-    raw_comments = (item.metadata or {}).get("top_comments")
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    raw_comments = metadata.get("top_comments")
     if not isinstance(raw_comments, (list, tuple)):
         return []
     comments = [c for c in raw_comments if isinstance(c, dict)]
     if not comments:
         return []
     if min_score is None:
-        min_score = _TOP_COMMENT_MIN_SCORE.get(item.source, 0)
+        min_score = _TOP_COMMENT_MIN_SCORE.get(_comment_source(item), 0)
     # A pending comment (a fresh archive snapshot, score withheld) is exempt
     # from the vote floor; it is listed after every scored comment and printed
     # with no vote count.
@@ -5547,20 +5549,42 @@ def _quote_text(text: str, limit: int, *, strip_reply_handles: bool = False) -> 
 
 
 def _quote_attribution(
-    item: schema.SourceItem, author: str | None, score, vote_label: str,
+    item: schema.SourceItem,
+    author: str | None,
+    score,
+    vote_label: str,
+    *,
+    source: str | None = None,
 ) -> str:
     """``🟠 u/author on r/sub · 1,315 upvotes``: the part of a quote line that
     follows the quoted text, in the shape the report prints it. The count is
     left out when the source measured none."""
-    dot = _comment_platform_dot(item.source)
+    effective_source = source or item.source
+    dot = _comment_platform_dot(effective_source)
     count = (
         f" · {_comment_count(score)} {vote_label}"
         if score is not None and score != ""
         else ""
     )
+    if effective_source == item.source:
+        community = _comment_community(item)
+    elif effective_source == "reddit":
+        meta = item.metadata if isinstance(item.metadata, dict) else {}
+        raw_sub = meta.get("reddit_subreddit") or ""
+        if not raw_sub:
+            ref = reddit_refs.canonical_thread(str(item.url or ""))
+            raw_sub = ref.subreddit if ref is not None else ""
+        subreddit = _safe_title(str(raw_sub)).removeprefix("r/").strip()
+        community = f" on r/{subreddit}" if subreddit else " on Reddit"
+    else:
+        community = (
+            ""
+            if effective_source in _SOURCES_WITHOUT_A_PLACE
+            else f" on {_safe_title(_source_label(effective_source))}"
+        )
     return (
-        f"{dot + ' ' if dot else ''}{_comment_attribution(item.source, author)}"
-        f"{_comment_community(item)}{count}"
+        f"{dot + ' ' if dot else ''}{_comment_attribution(effective_source, author)}"
+        f"{community}{count}"
     )
 
 
@@ -5869,12 +5893,36 @@ def _render_polymarket_markets(
     return ["## Polymarket Markets", "", *lines] if lines else []
 
 
-def _quote_pool_item_floor(item: schema.SourceItem) -> int:
-    """Votes an item's top community comment needs for the item to join the pool."""
-    if item.source != "reddit":
-        return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
+def _comment_source(item: schema.SourceItem) -> str:
+    meta = item.metadata if isinstance(item.metadata, dict) else {}
+    if item.source != "reddit" and (
+        meta.get("enriched_via") == "arctic"
+        or (
+            item.source in _SOURCES_WITHOUT_A_PLACE
+            and reddit_refs.canonical_thread(str(item.url or "")) is not None
+        )
+    ):
+        return "reddit"
+    return item.source
+
+
+def _reddit_thread_score(item: schema.SourceItem) -> float | None:
     engagement = item.engagement if isinstance(item.engagement, dict) else {}
     score = engagement.get("score")
+    if not _is_finite_number(score) and isinstance(item.metadata, dict):
+        score = item.metadata.get("reddit_thread_score")
+    if _is_finite_number(score):
+        return float(score)
+    return None
+
+
+def _quote_pool_item_floor(
+    item: schema.SourceItem, *, score_override: float | None = None,
+) -> int:
+    """Votes an item's top community comment needs for the item to join the pool."""
+    if _comment_source(item) != "reddit":
+        return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
+    score = score_override if score_override is not None else _reddit_thread_score(item)
     if not _is_finite_number(score):
         return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
     return min(
@@ -6100,28 +6148,96 @@ def _render_top_comments(
         (None, [cand]) for cand in eligible if cand.candidate_id not in cluster_number
     )
 
+    def _reddit_comment_sort_key(comment: dict) -> tuple[int, float]:
+        score = comment.get("score")
+        if not comment.get("score_pending") and _is_finite_number(score):
+            return (0, -float(score))
+        return (1, 0.0)
+
+    def _merge_reddit_group_comments(group: list[schema.SourceItem]) -> list[dict]:
+        merged: list[dict] = []
+        index_by_key: dict[str, int] = {}
+        for member in group:
+            meta = member.metadata if isinstance(member.metadata, dict) else {}
+            raw_comments = meta.get("top_comments")
+            if not isinstance(raw_comments, (list, tuple)):
+                continue
+            for tc in raw_comments:
+                if not isinstance(tc, dict):
+                    continue
+                ckey = reddit_refs.comment_key(tc)
+                existing_idx = index_by_key.get(ckey)
+                if existing_idx is None:
+                    index_by_key[ckey] = len(merged)
+                    merged.append(tc)
+                elif (
+                    _reddit_comment_sort_key(merged[existing_idx])[0] == 1
+                    and _reddit_comment_sort_key(tc)[0] == 0
+                ):
+                    merged[existing_idx] = tc
+        return sorted(merged, key=_reddit_comment_sort_key)
+
     def entries_for(cand: schema.Candidate) -> list[dict]:
         funny = (cand.fun_score or 0.0) >= _QUOTE_POOL_FUNNY_FLOOR
         rows: list[dict] = []
+
+        reddit_groups: dict[str, list[schema.SourceItem]] = {}
+        comment_order: list[tuple[str, object]] = []
         for item in cand.source_items:
+            comment_source = _comment_source(item)
+            ref = (
+                reddit_refs.canonical_thread(str(item.url or ""))
+                if comment_source == "reddit"
+                else None
+            )
+            if ref is not None:
+                if ref.post_id not in reddit_groups:
+                    reddit_groups[ref.post_id] = [item]
+                    comment_order.append(("reddit_group", ref.post_id))
+                else:
+                    reddit_groups[ref.post_id].append(item)
+            else:
+                comment_order.append(("item", (item, comment_source)))
+
+        for kind, entry_payload in comment_order:
+            if kind == "reddit_group":
+                post_id = entry_payload
+                group = reddit_groups[post_id]
+                display_item = next((it for it in group if it.source == "reddit"), group[0])
+                ordered_group = [display_item, *(it for it in group if it is not display_item)]
+                item = display_item
+                comment_source = "reddit"
+                top_comments = _merge_reddit_group_comments(ordered_group)
+                thread_score = _reddit_thread_score(display_item)
+                if thread_score is None:
+                    alt_scores = [
+                        s for it in ordered_group[1:] if (s := _reddit_thread_score(it)) is not None
+                    ]
+                    thread_score = max(alt_scores) if alt_scores else None
+            else:
+                item, comment_source = entry_payload
+                post_id = None
+                metadata = item.metadata if isinstance(item.metadata, dict) else {}
+                raw_top_comments = metadata.get("top_comments")
+                top_comments = (
+                    raw_top_comments
+                    if isinstance(raw_top_comments, (list, tuple))
+                    else ()
+                )
+                thread_score = None
+
             # The item's community comments, in its own order. A bot's, the
             # item author's own, or one with nothing quotable in it is not a
             # reaction to quote, so the next comment takes its position.
             community: list[tuple[dict, str]] = []
             entity_tags: dict[int, list[str]] = {}
-            metadata = item.metadata if isinstance(item.metadata, dict) else {}
-            raw_top_comments = metadata.get("top_comments")
-            for tc in (
-                raw_top_comments
-                if isinstance(raw_top_comments, (list, tuple))
-                else ()
-            ):
+            for tc in top_comments:
                 if not isinstance(tc, dict):
                     continue
                 raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
                 if not _is_community_comment(item, tc, raw):
                     continue
-                if item.source == "reddit":
+                if comment_source == "reddit":
                     tags = _comment_entity_tags(
                         item, tc, raw, compared_entities, comment_entity
                     )
@@ -6135,11 +6251,11 @@ def _render_top_comments(
             # has no vote count to clear the vote floors with; it is quoted
             # without one, after every scored line.
             scored = [(tc, body) for tc, body in community if not tc.get("score_pending")]
-            if scored and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
+            if scored and comment_source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
                 top_score = scored[0][0].get("score")
                 if not (
                     _is_finite_number(top_score)
-                    and top_score >= _quote_pool_item_floor(item)
+                    and top_score >= _quote_pool_item_floor(item, score_override=thread_score)
                 ):
                     # Too few voted for the item's best comment: skip the item.
                     community = [
@@ -6150,19 +6266,23 @@ def _render_top_comments(
             ):
                 score = tc.get("score")
                 pending = bool(tc.get("score_pending"))
-                if not pending and not _quote_pool_has_vote(item.source, score):
+                if not pending and not _quote_pool_has_vote(comment_source, score):
                     continue
                 rows.append({
                     "pending": pending,
                     "position": position, "cand": cand, "item": item, "funny": funny,
+                    "comment_source": comment_source,
+                    "reddit_post_id": post_id,
                     "author": tc.get("author"), "score": score,
-                    "vote_label": _vote_label_for(item.source), "body": body,
+                    "vote_label": _vote_label_for(comment_source), "body": body,
                     "entities": entity_tags.get(id(tc), []),
                     # A comment with no link of its own is cited by the item it
                     # sits on. The candidate's URL is another item's whenever
                     # the candidate fused several.
                     "url": _comment_link(item, tc, fallback=item.url or cand.url),
                 })
+
+        for item in cand.source_items:
             author_key = (item.author or "").strip().lstrip("@").lower()
             likes = _post_likes(item)
             text = (item.body or item.title or "").strip()
@@ -6255,11 +6375,17 @@ def _render_top_comments(
     # limit applied, in the order of who is covered first.
     kept: set[int] = set()
     seen: set[str] = set()
+    reddit_thread_counts: dict[str, int] = {}
     for row in priority:
         key = row["body"][:60].lower()
         if key in seen:
             continue
+        post_id = row.get("reddit_post_id")
+        if post_id and reddit_thread_counts.get(post_id, 0) >= _QUOTE_POOL_COMMENTS_PER_ITEM:
+            continue
         seen.add(key)
+        if post_id:
+            reddit_thread_counts[post_id] = reddit_thread_counts.get(post_id, 0) + 1
         if len(kept) < limit:
             kept.add(id(row))
     if len(seen) < 2:
@@ -6289,7 +6415,7 @@ def _render_top_comments(
         about = f" (about {', '.join(row['entities'])})" if row.get("entities") else ""
         lines.append(
             f'- "{row["body"]}" '
-            f"{_quote_attribution(item, row['author'], row['score'], row['vote_label'])}"
+            f"{_quote_attribution(item, row['author'], row['score'], row['vote_label'], source=row.get('comment_source'))}"
             f"{url_part}{origin} — {label}{about}{' — funny' if row['funny'] else ''}"
         )
     return lines
