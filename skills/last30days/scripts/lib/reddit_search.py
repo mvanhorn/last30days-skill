@@ -69,12 +69,64 @@ _NEXT_PAGE = re.compile(
 # the first such answer stops the remaining searches of the command instead of
 # spending a rate-limit token on each subreddit. The lane is dispatched with
 # the raw topic for every subquery, so one search also serves them all.
+class _StreamCollector:
+    """Thread-safe per-stream buffer so earlier pages survive a timeout."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._posts: List[Dict[str, Any]] = []
+        self._incomplete = False
+
+    def add(self, posts: List[Dict[str, Any]]) -> None:
+        if not posts:
+            return
+        with self._lock:
+            self._posts.extend(posts)
+
+    def mark_incomplete(self) -> None:
+        with self._lock:
+            self._incomplete = True
+
+    @property
+    def incomplete(self) -> bool:
+        with self._lock:
+            return self._incomplete
+
+    def snapshot(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return list(self._posts)
+
+
 @dataclass
 class _InflightSearch:
     """In-flight search coordination slot shared between owner and waiting callers."""
 
     done: threading.Event = field(default_factory=threading.Event)
     partial: Optional[List[Dict[str, Any]]] = None
+    live_posts: _StreamCollector = field(default_factory=_StreamCollector)
+
+    def add_live(self, posts: List[Dict[str, Any]]) -> None:
+        self.live_posts.add(posts)
+
+    def live_snapshot(self, limit: int) -> List[Dict[str, Any]]:
+        seen_urls: set = set()
+        seen_ids: set = set()
+        unique: List[Dict[str, Any]] = []
+        for post in self.live_posts.snapshot():
+            pid = (post.get("metadata") or {}).get("post_id")
+            url = post.get("url")
+            if (pid and pid in seen_ids) or (url and url in seen_urls):
+                continue
+            if pid:
+                seen_ids.add(pid)
+            if url:
+                seen_urls.add(url)
+            copied = copy.deepcopy(post)
+            copied["id"] = f"R{len(unique) + 1}"
+            unique.append(copied)
+            if len(unique) >= limit:
+                break
+        return unique
 
 
 _run_lock = threading.Lock()
@@ -255,34 +307,6 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
     return posts, _next_cursor(html_text)
 
 
-class _StreamCollector:
-    """Thread-safe per-stream buffer so earlier pages survive a timeout."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._posts: List[Dict[str, Any]] = []
-        self._incomplete = False
-
-    def add(self, posts: List[Dict[str, Any]]) -> None:
-        if not posts:
-            return
-        with self._lock:
-            self._posts.extend(posts)
-
-    def mark_incomplete(self) -> None:
-        with self._lock:
-            self._incomplete = True
-
-    @property
-    def incomplete(self) -> bool:
-        with self._lock:
-            return self._incomplete
-
-    def snapshot(self) -> List[Dict[str, Any]]:
-        with self._lock:
-            return list(self._posts)
-
-
 def _fetch_page(
     url: str, deadline: Optional[float] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -314,6 +338,7 @@ def _search_stream(
     subreddit: Optional[str] = None,
     deadline: Optional[float] = None,
     collector: Optional[_StreamCollector] = None,
+    inflight: Optional[_InflightSearch] = None,
 ) -> List[Dict[str, Any]]:
     """Page one search sequentially. Keeps earlier pages when a later one fails."""
     label = f"r/{subreddit}" if subreddit else "global"
@@ -346,6 +371,8 @@ def _search_stream(
         posts.extend(new)
         if collector is not None:
             collector.add(new)
+        if inflight is not None:
+            inflight.add_live(new)
         if not new or not next_cursor or next_cursor in used_cursors:
             break
         used_cursors.add(next_cursor)
@@ -392,6 +419,7 @@ def search(
             sub = (raw or "").strip().removeprefix("r/").strip("/")
             if sub and sub.lower() not in {s.lower() for s in subs}:
                 subs.append(sub)
+        limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
         key = (query, depth, time_filter, tuple(sub.lower() for sub in subs))
         owner = False
         slot: Optional[_InflightSearch] = None
@@ -418,6 +446,10 @@ def search(
             slot.done.wait(timeout=wait)
             if slot.partial:
                 partial_fallback = slot.partial
+            else:
+                live = slot.live_snapshot(limit)
+                if live:
+                    partial_fallback = live
             if deadline is not None and time.monotonic() >= deadline:
                 with _run_lock:
                     if key in _run_results:
@@ -430,7 +462,7 @@ def search(
             return copy.deepcopy(partial_fallback or [])
         try:
             unique, complete = _search_uncached_with_status(
-                query, depth, subs, time_filter, global_pages, deadline,
+                query, depth, subs, time_filter, global_pages, deadline, inflight=slot,
             )
             # Only cache complete non-empty runs or network-wide blocks;
             # partial runs from a timeout stay uncached so later callers with
@@ -461,6 +493,7 @@ def _search_uncached_with_status(
     time_filter: str,
     global_pages: int,
     deadline: Optional[float] = None,
+    inflight: Optional[_InflightSearch] = None,
 ) -> Tuple[Optional[List[Dict[str, Any]]], bool]:
     """One run of the search streams: ``(posts_or_none, complete)``."""
     global _failed_reason
@@ -484,7 +517,7 @@ def _search_uncached_with_status(
                 futures.append((
                     http.submit_with_context(
                         executor, _search_stream, query, time_filter, pages, sub,
-                        deadline=deadline, collector=collector,
+                        deadline=deadline, collector=collector, inflight=inflight,
                     ),
                     sub,
                     pages,
@@ -525,10 +558,9 @@ def _search_uncached_with_status(
         for post in results:
             if post["url"] not in seen:
                 seen.add(post["url"])
-                unique.append(post)
-        unique = unique[:limit]
-        for i, post in enumerate(unique):
-            post["id"] = f"R{i + 1}"
+                unique.append({**post, "id": f"R{len(unique) + 1}"})
+                if len(unique) >= limit:
+                    break
         _log(f"{len(unique)} posts (t={time_filter}, {len(subs)} targeted subs)")
         if not unique and _blocked_reason:
             _failed_reason = _blocked_reason

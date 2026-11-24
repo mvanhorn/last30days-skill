@@ -1187,6 +1187,96 @@ class TestGreptileFixes:
         assert waiter_res[0] is not owner_res[0]
         assert reddit_search._run_results == {}
 
+    def test_shared_deadline_waiter_receives_live_page_one_while_page_two_stalls(self):
+        page2_started = threading.Event()
+        release_page2 = threading.Event()
+
+        def fake_retry_get(url, **kwargs):
+            if "cursor=" not in url:
+                return _search_page_html("p1live", author="alice", cursor="cur_live"), None
+            page2_started.set()
+            release_page2.wait(timeout=5.0)
+            return _search_page_html("p2slow", author="bob"), None
+
+        shared_deadline = time.monotonic() + 0.2
+        try:
+            with mock.patch.object(
+                reddit_search.http, "reddit_keyless_get_text_retry_429", side_effect=fake_retry_get,
+            ):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    f_owner = pool.submit(
+                        reddit_search.search, "Ghostty", depth="quick", deadline=shared_deadline,
+                    )
+                    assert page2_started.wait(timeout=3.0)
+                    # Waiter joins after page 1 already completed and shares the exact
+                    # same deadline; waiter wakes up before owner finishes page 2 and
+                    # must still receive page 1 from slot.live_snapshot().
+                    f_waiter = pool.submit(
+                        reddit_search.search, "Ghostty", depth="quick", deadline=shared_deadline,
+                    )
+                    owner_res = f_owner.result(timeout=3.0)
+                    waiter_res = f_waiter.result(timeout=3.0)
+        finally:
+            release_page2.set()
+
+        assert [p["metadata"]["post_id"] for p in owner_res] == ["p1live"]
+        assert [p["metadata"]["post_id"] for p in waiter_res] == ["p1live"]
+        assert owner_res[0] is not waiter_res[0]
+        assert reddit_search._run_results == {}
+
+    def test_web_floor_passes_earlier_hydration_cutoff_to_session_and_archive(self):
+        ref = reddit_refs.canonical_thread("https://www.reddit.com/r/ghostty/comments/sess1/")
+        assert ref is not None
+        ref.provenance.add("web")
+        ref.title = "Ghostty session hydration cutoff"
+
+        seen_deadlines: dict[str, float | None] = {}
+
+        class FakeSession:
+            alive = True
+
+        def fake_session_hydrator(session, *, depth="default", deadline=None):
+            seen_deadlines["session_hydrator"] = deadline
+            return lambda _refs: {}
+
+        def fake_hydrate(refs, *, topic="", depth="default", from_date=None, to_date=None,
+                         session_hydrator=None, deadline=None, **_kwargs):
+            seen_deadlines["hydrate"] = deadline
+            return reddit_hydrate.Hydration(
+                items=[{
+                    "title": "Ghostty session hydration cutoff",
+                    "url": ref.url,
+                    "subreddit": "ghostty",
+                    "metadata": {"post_id": "sess1"},
+                }],
+                detail="web+session served 1",
+                arctic_state="ok",
+            )
+
+        outer_deadline = time.monotonic() + 10.0
+        with mock.patch.object(
+            reddit_keyless.reddit_discover, "web_refs",
+            return_value=reddit_discover.WebFloor(
+                refs=[ref], queries=["site:reddit.com Ghostty"], rungs={"brave": "ok"},
+            ),
+        ), mock.patch.object(
+            reddit_keyless.reddit_session, "current", return_value=FakeSession(),
+        ), mock.patch.object(
+            reddit_keyless.reddit_session, "hydrator", side_effect=fake_session_hydrator,
+        ), mock.patch.object(
+            reddit_keyless.reddit_hydrate, "hydrate", side_effect=fake_hydrate,
+        ):
+            kept = reddit_keyless._web_floor(
+                "Ghostty", "quick", None, None, "2026-10-01", "2026-10-31",
+                deadline=outer_deadline,
+            )
+
+        assert [p["metadata"]["post_id"] for p in kept] == ["sess1"]
+        assert seen_deadlines["session_hydrator"] is not None
+        assert seen_deadlines["hydrate"] is not None
+        assert seen_deadlines["session_hydrator"] == seen_deadlines["hydrate"]
+        assert seen_deadlines["session_hydrator"] < outer_deadline
+
     def test_fetch_scores_waiter_fetches_batch_two_when_owner_expires_after_batch_one(self):
         batch1_started = threading.Event()
         release_batch1 = threading.Event()

@@ -335,15 +335,19 @@ def _web_floor(
         if deadline is not None and deadline - time.monotonic() < _WEB_HYDRATION_MIN_SECONDS:
             _log("web floor hydration skipped: lane budget spent")
             return []
+        hydrate_kw = _hydrate_stage_deadline(deadline)
+        hydrate_deadline = hydrate_kw.get("deadline", deadline)
         session = reddit_session.current()
         extra: Dict[str, Any] = {}
         if session is not None and session.alive:
-            extra["session_hydrator"] = reddit_session.hydrator(session, depth=depth, deadline=deadline)
+            extra["session_hydrator"] = reddit_session.hydrator(
+                session, depth=depth, deadline=hydrate_deadline,
+            )
         hydrated = _within(
             deadline, "web floor hydration", None,
             reddit_hydrate.hydrate,
             floor.refs, topic=topic, depth=depth, from_date=from_date, to_date=to_date,
-            **extra, **_hydrate_stage_deadline(deadline),
+            **extra, **hydrate_kw,
         )
     except Exception as exc:  # the floor must never break the lane
         _log(f"web floor failed: {type(exc).__name__}: {exc}")
