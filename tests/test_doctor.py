@@ -283,7 +283,7 @@ class CookieBackedXReadiness(unittest.TestCase):
     though diagnose loads config in plan_only mode."""
 
     def test_x_ready_when_bird_installed_and_from_browser(self):
-        with _Hermetic(), mock.patch("lib.bird_x.is_bird_installed", return_value=True):
+        with _Hermetic(probe_map={"node": health.OK}), mock.patch("lib.bird_x.is_bird_installed", return_value=True):
             report = doctor.build_report({"FROM_BROWSER": "auto"})
         record = report["sources"]["x"]
         self.assertEqual("ok", record["tier"])
@@ -483,7 +483,7 @@ class SidecarOptInHint(unittest.TestCase):
                 self.assertNotIn("AGENTCOOKIE=on", self._record(**options)["fix"])
 
     def test_admitted_sidecar_predicts_browser_auth_without_opt_in_hint(self):
-        record = self._record({"AGENTCOOKIE": "on"})
+        record = self._record({"AGENTCOOKIE": "on"}, probe_map={"node": health.OK})
         self.assertEqual("ok", record["tier"])
         self.assertIn("not verified", record["note"])
         self.assertEqual("", record["fix"])

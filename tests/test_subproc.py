@@ -845,5 +845,30 @@ time.sleep(15)
         self.assertGreaterEqual(fake.kill_count, 2)
 
 
+class TestWindowsBatchProbe(unittest.TestCase):
+    @unittest.skipUnless(IS_WINDOWS, "Windows .cmd batch execution test")
+    def test_probe_dependency_runs_windows_cmd_in_dir_with_spaces(self):
+        import tempfile
+        from pathlib import Path
+        from lib import health
+
+        health.clear_dependency_probe_cache()
+        self.addCleanup(health.clear_dependency_probe_cache)
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced_dir = Path(tmp) / "dir with spaces"
+            spaced_dir.mkdir()
+            shim = spaced_dir / "fakecli.cmd"
+            shim.write_text("@echo off\r\necho fakecli 1.2.3\r\n", encoding="ascii")
+            existing_path = real_os.environ.get("PATH", "")
+            with patch.dict(
+                real_os.environ,
+                {"PATH": f"{spaced_dir}{real_os.pathsep}{existing_path}"},
+            ):
+                probe = health.probe_dependency("fakecli")
+        self.assertEqual(probe.status, health.OK)
+        self.assertTrue(probe.ok)
+        self.assertIn("1.2.3", probe.detail)
+
+
 if __name__ == "__main__":
     unittest.main()

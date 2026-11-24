@@ -697,11 +697,7 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
 
 
 def _excluded_sources(config: dict[str, Any]) -> set[str]:
-    return {
-        source.strip().lower()
-        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
-        if source.strip()
-    }
+    return env.exclude_sources(config)
 
 
 def with_plan_source_omissions(
@@ -769,8 +765,8 @@ def available_sources(
         # diagnose() precomputes the predicate and passes it via x_pending to
         # avoid evaluating it twice in one diagnose() call.
         if x_pending is None:
-            x_pending = env.x_pending_browser_auth(config)
-        if x_pending:
+            x_pending = env.x_pending_browser_auth(config, local_only=local_only)
+        if x_pending and health.probe_dependency("node").status == health.OK:
             available.append("x")
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
@@ -850,8 +846,13 @@ def available_sources(
     # consent pattern as Perplexity/LinkedIn). Off by default -- unlike arXiv and
     # Techmeme, which are zero-auth, it can spawn a one-time headless-Chrome WAF
     # cookie harvest on a brand topic, so activating it is the user's choice.
-    if which("trustpilot-pp-cli") and (
-        "trustpilot" in include_sources or (requested_sources and "trustpilot" in requested_sources)
+    if (
+        which("trustpilot-pp-cli")
+        and trustpilot._harvest_allowed(config)
+        and (
+            "trustpilot" in include_sources
+            or (requested_sources and "trustpilot" in requested_sources)
+        )
     ):
         available.append("trustpilot")
     # Amazon: opt-in additive source, dual-gated. The Bright Data CLI must be
@@ -875,10 +876,15 @@ def available_sources(
         or (requested_sources and "meta_ads" in requested_sources)
     ):
         available.append("meta_ads")
+    exclude = _excluded_sources(config)
     if (
-        "xiaohongshu" in include_sources
-        or (requested_sources and "xiaohongshu" in requested_sources)
-    ) and env.is_xiaohongshu_available(config):
+        "xiaohongshu" not in exclude
+        and (
+            "xiaohongshu" in include_sources
+            or (requested_sources and "xiaohongshu" in requested_sources)
+        )
+        and env.is_xiaohongshu_available(config)
+    ):
         available.append("xiaohongshu")
     # Threads: opt-in via INCLUDE_SOURCES (same pattern as perplexity/linkedin).
     # Was auto-on with the key; gated so the onboarding "Everything" tier is a
@@ -904,7 +910,6 @@ def available_sources(
             available.append("telegram")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.
-    exclude = _excluded_sources(config)
     if exclude:
         available = [s for s in available if s not in exclude]
     return available
@@ -2445,7 +2450,10 @@ def diagnose(
     x_status = env.get_x_source_status(config, probe=probe_x)
     # Compute once and reuse for both the diag flag and available_sources below.
     # safe=True (doctor/--diagnose/--preflight) must stay network-free.
-    x_pending = env.x_pending_browser_auth(config, local_only=not probe_x)
+    x_pending = (
+        env.x_pending_browser_auth(config, local_only=not probe_x)
+        and health.probe_dependency("node").status == health.OK
+    )
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"

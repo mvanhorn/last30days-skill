@@ -64,9 +64,8 @@ TIER_ERROR = "error"
 
 # Web search backend order. grounding.web_search's auto branch owns the
 # runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
-# there is no importable constant there, so this declaration is guarded by
-# the grounding-auto parity test rather than an import.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless")
+# parallel-mcp is opt-in only (--web-backend parallel-mcp) and never auto-selected.
+WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless", "parallel-mcp")
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -486,6 +485,23 @@ def _probe_web_keyless(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+def _probe_web_parallel_mcp(config: Dict[str, Any]) -> BackendFinding:
+    """Opt-in Parallel Search MCP: anonymous hosted endpoint, optional bearer auth."""
+    requires = "opt-in only (--web-backend parallel-mcp; PARALLEL_API_KEY optional)"
+    real_key = proxy.real_key(config.get("PARALLEL_API_KEY"))
+    detail = (
+        "hosted Parallel Search MCP (opt-in; PARALLEL_API_KEY present)"
+        if real_key
+        else "hosted Parallel Search MCP (opt-in; anonymous, no key required)"
+    )
+    return BackendFinding(
+        name="parallel-mcp",
+        status=health.OK,
+        detail=detail,
+        requires=requires,
+    )
+
+
 def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
     """Reddit's keyless floor: Brave web search finds threads, Arctic Shift
     ``/posts/ids`` hydrates them.
@@ -539,8 +555,18 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
     "keyless": _probe_web_keyless,
+    "parallel-mcp": _probe_web_parallel_mcp,
 }
 _WEB_KEYED = {"brave", "exa", "serper", "parallel"}
+_WEB_OPT_IN = {"parallel-mcp"}
+_WEB_REQUIRES: Dict[str, str] = {
+    "brave": "BRAVE_API_KEY",
+    "exa": "EXA_API_KEY",
+    "serper": "SERPER_API_KEY",
+    "parallel": "PARALLEL_API_KEY",
+    "keyless": "no key; suppressed on native-search hosts",
+    "parallel-mcp": "opt-in only (--web-backend parallel-mcp; PARALLEL_API_KEY optional)",
+}
 
 _SC_SPEC = BackendSpec(
     name="scrapecreators",
@@ -602,10 +628,10 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
         backends=tuple(
             BackendSpec(
                 name=name,
-                requires=(f"{name.upper()}_API_KEY" if name in _WEB_KEYED
-                          else "no key; suppressed on native-search hosts"),
+                requires=_WEB_REQUIRES[name],
                 probe=_WEB_PROBES[name],
                 paid=name in _WEB_KEYED,
+                opt_in=name in _WEB_OPT_IN,
             )
             for name in WEB_BACKEND_ORDER
         ),
@@ -657,16 +683,18 @@ def resolve(
     multiple binaries are simultaneously hung.
     """
     descriptor = get_descriptor(source)
-    specs, auto_names = _specs_for_policy(descriptor, config)
+    normalized_pin = pin.strip().lower() if isinstance(pin, str) and pin.strip() else None
+    specs, auto_names = _specs_for_policy(descriptor, config, pin=normalized_pin)
     findings = [_run_probe(spec, config) for spec in specs]
     if descriptor.mode == MODE_CONDITIONAL:
-        return _resolve_conditional(descriptor, config, findings)
-    return _resolve_alternative(descriptor, config, findings, pin, auto_names)
+        return _resolve_conditional(descriptor, config, findings, pin=normalized_pin)
+    return _resolve_alternative(descriptor, config, findings, normalized_pin, auto_names)
 
 
 def _specs_for_policy(
     descriptor: ChainDescriptor,
     config: Dict[str, Any],
+    pin: Optional[str] = None,
 ) -> Tuple[List[BackendSpec], set]:
     """The backends to probe for this host, and which of them auto-select.
 
@@ -688,9 +716,14 @@ def _specs_for_policy(
         return specs, auto_names
     by_name = {spec.name: spec for spec in specs}
     ordered = [by_name[name] for name in policy.auto_chain if name in by_name]
-    pin = env.x_backend_pin(config)
-    if pin in by_name and pin not in auto_names:
-        ordered.append(by_name[pin])
+    norm_pin = pin.strip().lower() if isinstance(pin, str) and pin.strip() else ""
+    effective_pin = (
+        norm_pin
+        if norm_pin and norm_pin not in ("auto", "none")
+        else env.x_backend_pin(config)
+    )
+    if effective_pin in by_name and effective_pin not in auto_names:
+        ordered.append(by_name[effective_pin])
     return ordered, auto_names
 
 
@@ -764,14 +797,17 @@ def _resolve_alternative(
     )
 
     pin_name: Optional[str] = None
-    if pin and pin not in ("auto", "none") and pin in by_name:
-        pin_name = pin
+    norm_pin = pin.strip().lower() if isinstance(pin, str) else ""
+    if norm_pin and norm_pin not in ("auto", "none") and norm_pin in by_name:
+        pin_name = norm_pin
     elif descriptor.pin_var:
         if descriptor.pin_var == env.YOUTUBE_BACKEND_PIN_VAR:
             # Same spelling rules as the runtime gate (strip, "ytdlp" alias).
             raw = env.youtube_backend_pin(config)
+        elif descriptor.pin_var == env.X_BACKEND_PIN_VAR:
+            raw = env.x_backend_pin(config)
         else:
-            raw = (config.get(descriptor.pin_var) or "").lower()
+            raw = (config.get(descriptor.pin_var) or "").strip().lower()
         if raw in by_name and (
             descriptor.pin_values is None or raw in descriptor.pin_values
         ):
@@ -823,6 +859,7 @@ def _resolve_conditional(
     descriptor: ChainDescriptor,
     config: Dict[str, Any],
     findings: List[BackendFinding],
+    pin: Optional[str] = None,
 ) -> BackendResolution:
     """Reddit: render the real per-query semantics, never a computed winner."""
     res = BackendResolution(
@@ -834,7 +871,11 @@ def _resolve_conditional(
         tier=TIER_OK,  # the public keyless composite is always reachable
     )
     has_key = bool(config.get("SCRAPECREATORS_API_KEY"))
-    raw_pin = (config.get(descriptor.pin_var) or "").lower() if descriptor.pin_var else ""
+    norm_pin = pin.strip().lower() if isinstance(pin, str) else ""
+    if norm_pin and norm_pin not in ("auto", "none"):
+        raw_pin = norm_pin
+    else:
+        raw_pin = (config.get(descriptor.pin_var) or "").strip().lower() if descriptor.pin_var else ""
     pinned_sc = has_key and raw_pin == "scrapecreators"
     floor = env.reddit_sc_min_items(config)
 

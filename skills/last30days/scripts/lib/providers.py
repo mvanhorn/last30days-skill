@@ -632,37 +632,109 @@ def extract_json(text: str) -> dict[str, Any]:
 
 
 def extract_gemini_text(payload: dict[str, Any]) -> str:
-    for candidate in payload.get("candidates", []):
-        content = candidate.get("content") or {}
-        for part in content.get("parts", []):
-            text = part.get("text")
-            if text:
-                return text
+    if not isinstance(payload, dict):
+        return ""
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content")
+            if not isinstance(content, dict):
+                continue
+            parts = content.get("parts")
+            if not isinstance(parts, list):
+                continue
+            texts = [
+                part["text"]
+                for part in parts
+                if isinstance(part, dict)
+                and part.get("thought") is not True
+                and isinstance(part.get("text"), str)
+                and part["text"]
+            ]
+            joined = "".join(texts)
+            if joined.strip():
+                return joined
     if payload:
         print(f"[Providers] extract_gemini_text: no text in payload keys: {list(payload.keys())}", file=sys.stderr)
     return ""
 
 
+_OPENAI_REASONING_PART_TYPES = frozenset({"reasoning", "reasoning_text", "summary_text", "thinking"})
+_OPENAI_TEXT_PART_TYPES = frozenset({"output_text", "text"})
+
+
+def _extract_openai_content_parts(content: list[Any]) -> str:
+    """Extract joined non-reasoning text from a list of OpenAI/OpenRouter content parts."""
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                fallback.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if (isinstance(part_type, str) and part_type in _OPENAI_REASONING_PART_TYPES) or part.get("thought") is True:
+            continue
+        text = part.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        if isinstance(part_type, str) and part_type in _OPENAI_TEXT_PART_TYPES:
+            preferred.append(text)
+        else:
+            fallback.append(text)
+    preferred_joined = "".join(preferred)
+    if preferred_joined.strip():
+        return preferred_joined
+    fallback_joined = "".join(fallback)
+    if fallback_joined.strip():
+        return fallback_joined
+    return ""
+
+
 def extract_openai_text(payload: dict[str, Any]) -> str:
-    if isinstance(payload.get("output_text"), str):
-        return payload["output_text"]
-    output = payload.get("output") or payload.get("choices") or []
-    for item in output:
+    if not isinstance(payload, dict):
+        return ""
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+    containers: list[Any] = []
+    for key in ("output", "choices"):
+        seq = payload.get(key)
+        if isinstance(seq, list):
+            containers.extend(seq)
+    for item in containers:
         if isinstance(item, str):
-            return item
-        if isinstance(item, dict):
-            if isinstance(item.get("text"), str):
-                return item["text"]
-            content = item.get("content") or []
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and isinstance(part.get("text"), str):
-                        return part["text"]
-                    if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str):
-                        return part["text"]
-            message = item.get("message") or {}
-            if isinstance(message, dict) and isinstance(message.get("content"), str):
-                return message["content"]
+            if item.strip():
+                return item
+            continue
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if (isinstance(item_type, str) and item_type in _OPENAI_REASONING_PART_TYPES) or item.get("thought") is True:
+            continue
+        item_text = item.get("text")
+        if isinstance(item_text, str) and item_text.strip():
+            return item_text
+        content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            extracted = _extract_openai_content_parts(content)
+            if extracted:
+                return extracted
+        message = item.get("message")
+        if isinstance(message, dict):
+            msg_content = message.get("content")
+            if isinstance(msg_content, str) and msg_content.strip():
+                return msg_content
+            if isinstance(msg_content, list):
+                extracted = _extract_openai_content_parts(msg_content)
+                if extracted:
+                    return extracted
     if payload:
         print(f"[Providers] extract_openai_text: no text in payload keys: {list(payload.keys())}", file=sys.stderr)
     return ""
