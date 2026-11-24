@@ -516,16 +516,26 @@ def _load_keychain(keys: list[str], aliases: dict[str, list[dict[str, str]]] | N
     return env
 
 
+def _normalize_pass_prefix(prefix: str | None) -> str:
+    """Normalize LAST30DAYS_PASS_PREFIX to match setup-pass.sh (trailing '/')."""
+    trimmed = (prefix or "").strip()
+    if not trimmed:
+        return DEFAULT_PASS_PATH_PREFIX
+    stripped = trimmed.rstrip("/")
+    return f"{stripped}/" if stripped else ""
+
+
 def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     """Load credentials from a pass(1) store (no-op if `pass` is absent).
 
     The Linux/Unix analog of the macOS Keychain source. Each env-var name is
-    looked up at pass path ``f"{prefix}{key}"`` — mirroring Keychain's
-    ``last30days-<key>`` service-name convention — so any user stores keys under
-    that namespace without editing code (prefix overridable via
-    ``LAST30DAYS_PASS_PREFIX``). The secret is decrypted in a subprocess and
-    read from stdout's first line (pass keeps the secret there; any metadata
-    follows) — never written to disk, never logged. Honors ``PASSWORD_STORE_DIR``.
+    looked up at pass path ``f"{normalized_prefix}{key}"`` — mirroring
+    Keychain's ``last30days-<key>`` service-name convention — so any user
+    stores keys under that namespace without editing code (prefix overridable
+    via ``LAST30DAYS_PASS_PREFIX``, normalized to end with ``/`` to match
+    ``setup-pass.sh``). The secret is decrypted in a subprocess and read from
+    stdout's first line (pass keeps the secret there; any metadata follows) —
+    never written to disk, never logged. Honors ``PASSWORD_STORE_DIR``.
     Missing entries and failures are silent: pass is a lowest-priority, additive
     source like Keychain, so an explicit .env or process-env value still wins.
     """
@@ -535,11 +545,12 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
         return {}
 
     import subprocess
+    normalized_prefix = _normalize_pass_prefix(prefix)
     env: dict[str, str] = {}
     for key in keys:
         try:
             result = subprocess.run(
-                [pass_bin, "show", f"{prefix}{key}"],
+                [pass_bin, "show", "--", f"{normalized_prefix}{key}"],
                 capture_output=True, text=True, timeout=5,
                 encoding="utf-8", errors="replace",
             )
@@ -694,7 +705,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # (not import time, so a .env-set LAST30DAYS_PASS_PREFIX is honored), and
         # probe ONLY keys still unset after the higher-priority sources — an empty
         # list short-circuits with no gpg/pinentry calls at all.
-        pass_prefix = (
+        pass_prefix = _normalize_pass_prefix(
             os.environ.get("LAST30DAYS_PASS_PREFIX")
             or merged_env.get("LAST30DAYS_PASS_PREFIX")
             or DEFAULT_PASS_PATH_PREFIX

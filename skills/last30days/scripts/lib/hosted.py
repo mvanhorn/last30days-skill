@@ -113,7 +113,7 @@ def _api_base() -> str:
         raise ValueError(
             "LAST30DAYS_API_BASE must not include embedded credentials (userinfo)."
         )
-    if parts.query or parts.fragment:
+    if parts.query or parts.fragment or "?" in raw or "#" in raw:
         raise ValueError(
             "LAST30DAYS_API_BASE must not include a query string or fragment."
         )

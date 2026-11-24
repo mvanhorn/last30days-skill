@@ -19,7 +19,7 @@ from unittest import mock
 
 import pytest
 
-from lib import hosted, http, setup_wizard
+from lib import env, hosted, http, setup_wizard
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"
@@ -197,7 +197,9 @@ def test_hosted_catches_putheader_value_error_without_echoing_secret(monkeypatch
         ("https://alice:p@ss@word@api.example.test/api/v1", "p@ss@word"),
         ("https://tokenonly@api.example.test/api/v1", "tokenonly"),
         ("https://api.example.test/api/v1?secret=qval", "qval"),
+        ("https://api.example.test/api/v1?", "api.example.test"),
         ("https://api.example.test/api/v1#fragsecret", "fragsecret"),
+        ("https://api.example.test/api/v1#", "api.example.test"),
         ("https://api.example.test/api/v1\r\nX-Injected: 1", "X-Injected"),
         ("https://api.example.test/api/v1 bad", "bad"),
         ("https://evil.example\\@good.example/api/v1", "evil.example"),
@@ -307,6 +309,26 @@ def test_hosted_submit_and_poll_refuse_cross_origin_redirects(monkeypatch, serve
         thread.join(timeout=5)
 
     assert attacker_requests == []
+
+
+def test_hosted_debug_log_scrubs_embedded_url_credentials_in_upstream_errors(monkeypatch, capsys, serve):
+    secret_url = "https://alice:topsecretpw@upstream.example.test/internal"
+    endpoint, _reqs = serve(status=500, payload={"error": f"upstream failed at {secret_url}"})
+    monkeypatch.setenv("LAST30DAYS_API_BASE", f"{endpoint}/api/v1")
+    monkeypatch.setenv("LAST30DAYS_API_KEY", "sk_live_debug_scrub_key_999")
+    monkeypatch.setenv("LAST30DAYS_DEBUG", "1")
+
+    with pytest.raises(http.HTTPError):
+        hosted.submit("topic", "quick")
+    with pytest.raises(http.HTTPError):
+        hosted.poll("sid-1")
+
+    err = capsys.readouterr().err
+    assert "[DEBUG]" in err
+    assert "topsecretpw" not in err
+    assert "alice:" not in err
+    assert "sk_live_debug_scrub_key_999" not in err
+    assert "https://upstream.example.test/internal" in err
 
 
 # ---------------------------------------------------------------------------
@@ -733,6 +755,58 @@ def test_setup_keychain_ignores_path_shadow_and_passes_hex_via_stdin(tmp_path):
     assert not records.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not Path("/usr/bin/security").is_file(),
+    reason="macOS /usr/bin/security only",
+)
+def test_macos_temporary_keychain_security_interactive_hex_roundtrip(tmp_path):
+    """Exercise real `/usr/bin/security -i` add-generic-password `-X <hex>` against an isolated temp keychain."""
+    kc_path = tmp_path / "last30days-test.keychain-db"
+    kc_pass = "tmp-keychain-pass-0001"
+    account = "last30days-ci-test"
+    service = "last30days-TEST_ROUNDTRIP"
+
+    def _run_security(*args, stdin_text: str | None = None):
+        return subprocess.run(
+            ["/usr/bin/security", *args],
+            input=stdin_text,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+
+    create = _run_security("create-keychain", "-p", kc_pass, str(kc_path))
+    assert create.returncode == 0, create.stderr
+    try:
+        unlock = _run_security("unlock-keychain", "-p", kc_pass, str(kc_path))
+        assert unlock.returncode == 0, unlock.stderr
+
+        escaped_kc = str(kc_path).replace("\\", "\\\\").replace('"', '\\"')
+        for secret in (
+            """sk-live-'single' "double" \\slash $var !bang""",
+            "café🔑-utf8-secret",
+        ):
+            hex_val = secret.encode("utf-8").hex()
+            cmd_line = (
+                f'add-generic-password -U -a "{account}" -s "{service}" '
+                f'-X {hex_val} "{escaped_kc}"\n'
+            )
+            add = _run_security("-i", stdin_text=cmd_line)
+            assert add.returncode == 0, add.stderr
+
+            read_back = _run_security(
+                "find-generic-password", "-a", account, "-s", service, "-w", str(kc_path)
+            )
+            assert read_back.returncode == 0, read_back.stderr
+            raw_out = read_back.stdout.rstrip("\r\n")
+            if raw_out == hex_val:
+                assert bytes.fromhex(raw_out).decode("utf-8") == secret
+            else:
+                assert raw_out == secret
+    finally:
+        _run_security("delete-keychain", str(kc_path))
+
+
 # ---------------------------------------------------------------------------
 # HIGH-085: setup-pass.sh prefix validation, key allowlist & `--` markers
 # ---------------------------------------------------------------------------
@@ -939,3 +1013,49 @@ def test_setup_pass_uses_end_of_options_and_normalizes_prefix(mock_pass_env):
     )
     assert eof_empty.returncode == 0, eof_empty.stderr
     assert "added=0 replaced=0 skipped=1" in eof_empty.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script")
+def test_setup_pass_and_env_loader_agree_on_prefix_without_trailing_slash(mock_pass_env, monkeypatch):
+    """LAST30DAYS_PASS_PREFIX without trailing slash resolves identically in setup-pass.sh and lib/env.py."""
+    store, _calls_file, base_env = mock_pass_env
+    pass_bin = Path(base_env["PATH"].split(os.pathsep)[0]) / "pass"
+    pass_bin.write_text(
+        f"#!{sys.executable}\n"
+        "import os, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "target = pathlib.Path(os.environ['PASSWORD_STORE_DIR']) / (args[-1] + '.gpg')\n"
+        "if args and args[0] == 'insert':\n"
+        "    target.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    target.write_text(sys.stdin.read(), encoding='utf-8')\n"
+        "    sys.exit(0)\n"
+        "if args and args[0] == 'show':\n"
+        "    if target.exists():\n"
+        "        sys.stdout.write(target.read_text(encoding='utf-8'))\n"
+        "        sys.exit(0)\n"
+        "    sys.exit(1)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    pass_bin.chmod(0o755)
+
+    prefix_no_slash = "secrets/l30"
+    ins = subprocess.run(
+        ["bash", str(SETUP_PASS_SH), "OPENAI_API_KEY"],
+        input="sk-roundtrip-prefix\n",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env={**base_env, "LAST30DAYS_PASS_PREFIX": prefix_no_slash},
+    )
+    assert ins.returncode == 0, ins.stderr
+    assert (store / "secrets" / "l30" / "OPENAI_API_KEY.gpg").is_file()
+
+    monkeypatch.setenv("PATH", base_env["PATH"])
+    monkeypatch.setenv("PASSWORD_STORE_DIR", base_env["PASSWORD_STORE_DIR"])
+    monkeypatch.setenv("LAST30DAYS_PASS_PREFIX", prefix_no_slash)
+    with mock.patch("shutil.which", return_value=str(pass_bin)):
+        loaded = env._load_pass(["OPENAI_API_KEY"], prefix_no_slash)
+        assert loaded == {"OPENAI_API_KEY": "sk-roundtrip-prefix"}
+        cfg = env.get_config()
+        assert cfg["OPENAI_API_KEY"] == "sk-roundtrip-prefix"
