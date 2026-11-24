@@ -9,11 +9,15 @@ import "syscall"
 // cmd.Wait() runs. Using kqueue instead of waitid also avoids Darwin's
 // waitid bug where WEXITED wakes on stopped processes (Go issue #19314).
 func waitChildNoReap(pid int) error {
+	syscall.ForkLock.RLock()
 	kq, err := syscall.Kqueue()
+	if err == nil {
+		syscall.CloseOnExec(kq)
+	}
+	syscall.ForkLock.RUnlock()
 	if err != nil {
 		return errWaitNoReapUnsupported
 	}
-	syscall.CloseOnExec(kq)
 	defer syscall.Close(kq)
 
 	var change [1]syscall.Kevent_t
@@ -53,7 +57,7 @@ func waitChildNoReap(pid int) error {
 			continue
 		}
 		if err != nil {
-			return err
+			return errWaitNoReapUnsupported
 		}
 		if n > 0 {
 			return nil

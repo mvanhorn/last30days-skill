@@ -480,6 +480,79 @@ func TestWaitCommandNeverSignalsAfterReap(t *testing.T) {
 			t.Fatalf("fallback unexpectedly sent SIGKILL after clean exit: %v", events)
 		}
 	})
+
+	t.Run("non-ENOSYS waitChildNoReap error falls back and honors timeout and grace", func(t *testing.T) {
+		for _, mode := range []string{"outer-select", "inner-select-grace"} {
+			t.Run(mode, func(t *testing.T) {
+				rec := installLifecycleHooks(t)
+				gate := make(chan struct{})
+				if mode == "outer-select" {
+					close(gate)
+				}
+				waitChildNoReapFunc = func(int) error {
+					<-gate
+					return syscall.EPERM
+				}
+
+				dir := t.TempDir()
+				ready := filepath.Join(dir, "ready")
+				stub := filepath.Join(dir, "eperm-ignore-term.sh")
+				script := "#!/bin/sh\ntrap '' TERM\n: > \"$READY_FILE\"\nwhile :; do sleep 1; done\n"
+				if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+					t.Fatal(err)
+				}
+
+				cmd := exec.Command(stub)
+				cmd.Env = append(os.Environ(), "READY_FILE="+ready)
+				setProcessGroup(cmd)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				waitForFile(t, ready)
+
+				const grace = 120 * time.Millisecond
+				var ctx context.Context
+				var cancel context.CancelFunc
+				if mode == "outer-select" {
+					ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+				} else {
+					ctx, cancel = context.WithCancel(context.Background())
+					cancel()
+					go func() {
+						time.Sleep(15 * time.Millisecond)
+						close(gate)
+					}()
+				}
+				defer cancel()
+
+				started := time.Now()
+				err := waitCommand(ctx, cmd, grace)
+				elapsed := time.Since(started)
+				if err == nil {
+					t.Fatal("expected error when TERM-ignoring child is killed after grace")
+				}
+				if elapsed < grace {
+					t.Fatalf("waitCommand returned in %s, shorter than grace %s (skipped grace)", elapsed, grace)
+				}
+				if elapsed > 3*time.Second {
+					t.Fatalf("waitCommand took %s; dropped cancellation/timeout on EPERM", elapsed)
+				}
+				events := rec.snapshot()
+				waitDoneIdx := slices.Index(events, "wait:done")
+				if waitDoneIdx < 0 {
+					t.Fatalf("missing wait:done event: %v", events)
+				}
+				for _, ev := range events[waitDoneIdx+1:] {
+					if strings.HasPrefix(ev, "signal:") {
+						t.Fatalf("EPERM fallback delivered post-reap signal %q: %v", ev, events)
+					}
+				}
+				if !slices.Contains(events, "signal:"+syscall.SIGTERM.String()) || !slices.Contains(events, "signal:"+syscall.SIGKILL.String()) {
+					t.Fatalf("expected SIGTERM then SIGKILL escalation, got %v", events)
+				}
+			})
+		}
+	})
 }
 
 func waitForFile(t *testing.T, path string) {

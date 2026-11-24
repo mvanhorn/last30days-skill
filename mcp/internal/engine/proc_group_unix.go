@@ -69,7 +69,9 @@ func waitCommand(ctx context.Context, cmd *exec.Cmd, grace time.Duration) error 
 
 	select {
 	case noReapErr := <-exitedCh:
-		if errors.Is(noReapErr, errWaitNoReapUnsupported) {
+		// Only noReapErr == nil guarantees the leader is an unreaped zombie;
+		// any error falls back so context timeout/cancel still kills the child.
+		if noReapErr != nil {
 			return waitCommandFallback(ctx, cmd, grace)
 		}
 		return waitCmdFunc(cmd)
@@ -84,7 +86,7 @@ func waitCommand(ctx context.Context, cmd *exec.Cmd, grace time.Duration) error 
 
 		select {
 		case noReapErr := <-exitedCh:
-			if errors.Is(noReapErr, errWaitNoReapUnsupported) {
+			if noReapErr != nil {
 				return waitCommandFallbackAfterTerm(cmd, grace)
 			}
 			// Leader exited during grace and remains an unreaped zombie;

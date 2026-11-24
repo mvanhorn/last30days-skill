@@ -7,7 +7,7 @@ import (
 	"unsafe"
 )
 
-const linuxPPID = 1 // P_PID from <sys/wait.h>
+const linuxWaitPID = 1 // P_PID from <sys/wait.h>
 
 // waitChildNoReap blocks until child pid exits without reaping it, keeping
 // the zombie pinned in the kernel process table so its PID/PGID cannot be
@@ -19,7 +19,7 @@ func waitChildNoReap(pid int) error {
 	for {
 		_, _, errno := syscall.Syscall6(
 			syscall.SYS_WAITID,
-			uintptr(linuxPPID),
+			uintptr(linuxWaitPID),
 			uintptr(pid),
 			uintptr(unsafe.Pointer(&siginfo[0])),
 			uintptr(syscall.WEXITED|syscall.WNOWAIT),
@@ -32,7 +32,8 @@ func waitChildNoReap(pid int) error {
 		if errno == syscall.EINTR {
 			continue
 		}
-		if errno == syscall.ENOSYS {
+		switch errno {
+		case syscall.ENOSYS, syscall.EPERM, syscall.EACCES, syscall.EINVAL:
 			return errWaitNoReapUnsupported
 		}
 		return errno

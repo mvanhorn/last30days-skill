@@ -151,7 +151,11 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 	if res.StdoutTruncated {
 		if err != nil {
-			return res, fmt.Errorf("%w (%d byte limit, received %d bytes; exit code %d)", ErrStdoutLimitExceeded, maxStdout, stdout.Total(), res.ExitCode)
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				return res, fmt.Errorf("%w (%d byte limit, received %d bytes; exit code %d)", ErrStdoutLimitExceeded, maxStdout, stdout.Total(), res.ExitCode)
+			}
+			return res, fmt.Errorf("%w (%d byte limit, received %d bytes; %v)", ErrStdoutLimitExceeded, maxStdout, stdout.Total(), err)
 		}
 		return res, fmt.Errorf("%w (%d byte limit, received %d bytes)", ErrStdoutLimitExceeded, maxStdout, stdout.Total())
 	}

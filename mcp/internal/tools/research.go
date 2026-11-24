@@ -320,10 +320,11 @@ func formatRunError(runErr error, res *engine.RunResult) string {
 		stderr := res.Stderr
 		truncated := res.StderrTruncated
 		if len(stderr) > maxErrorStderrBytes {
-			stderr = trimLeadingUTF8Continuation(stderr[len(stderr)-maxErrorStderrBytes:])
+			stderr = stderr[len(stderr)-maxErrorStderrBytes:]
 			truncated = true
 		}
 		if truncated {
+			stderr = trimLeadingUTF8Continuation(stderr)
 			fmt.Fprintf(&msg, "\nengine stderr (truncated, showing last %d bytes):\n", len(stderr))
 		} else {
 			msg.WriteString("\nengine stderr:\n")

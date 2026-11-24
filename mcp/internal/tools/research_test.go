@@ -301,12 +301,15 @@ func TestFormatRunErrorCapsOversizedStderr(t *testing.T) {
 
 func TestFormatRunErrorNotesPreTruncatedStderr(t *testing.T) {
 	res := &engine.RunResult{
-		Stderr:          []byte("final diagnostic\n"),
+		Stderr:          []byte("\x80\xa9final diagnostic\n"),
 		StderrTruncated: true,
 	}
 	msg := formatRunError(errors.New("boom"), res)
 	if !strings.Contains(msg, "truncated, showing last 17 bytes") || !strings.Contains(msg, "final diagnostic") {
 		t.Fatalf("unexpected pre-truncated message: %q", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Fatalf("pre-truncated message left orphaned UTF-8 continuation bytes: %q", msg)
 	}
 }
 
