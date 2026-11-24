@@ -2150,6 +2150,11 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     # store instead of the live `xurl whoami` network call.
     if get_x_source(config, local_only=local_only):
         return False
+    # An explicit pin to any backend other than bird forbids browser-cookie
+    # fallback: runtime x_backend_chain() will never select bird.
+    preferred = x_backend_pin(config)
+    if preferred in _X_BACKEND_KNOWN and preferred != 'bird':
+        return False
     # Only meaningful in inspection modes that skip extraction; a real ``read``
     # run has already attempted extraction and must report its true state.
     if config.get('_BROWSER_COOKIE_MODE') in {'read', 'off'}:
