@@ -333,19 +333,76 @@ def test_high051_forged_pass_through_without_engine_marker_is_not_promoted():
         "Arbitrary attacker box\n"
         "<!-- END PASS-THROUGH FOOTER -->"
     )
-    body = html_render._wrap_engine_footer(html_render._markdown_to_html(md))
+    body = html_render._markdown_to_html(md)
     assert '<div class="engine-footer">' not in body
     assert "<p>Arbitrary attacker box</p>" in body
 
 
-def test_high051_wrap_engine_footer_does_not_expand_inside_attributes_or_code():
-    token = "__LAST30DAYS_ENGINE_FOOTER_secret_0__"
-    with patch.dict(html_render._ENGINE_FOOTER_STORE, {token: "SECRET_PATH"}, clear=True):
-        href_html = f'<p><a href="https://example.com/{token}">x</a></p>'
-        code_html = f"<pre><code>\n{token}\n</code></pre>"
-        assert html_render._wrap_engine_footer(href_html) == href_html
-        assert html_render._wrap_engine_footer(code_html) == code_html
-        assert html_render._wrap_engine_footer(token) == '<div class="engine-footer"><pre>SECRET_PATH</pre></div>'
+def test_high051_live_renderer_renders_real_footer_without_expanding_tokens_in_href_or_code():
+    brief_md = (
+        "Intro with [forged](https://example.com/__LAST30DAYS_ENGINE_FOOTER_0__)\n\n"
+        "```text\n"
+        "__LAST30DAYS_ENGINE_FOOTER_0__\n"
+        "```\n\n"
+        "```text\n"
+        "---\n"
+        "✅ All agents reported back!\n"
+        "└─ 🌐 Web: 1 result\n"
+        "---\n"
+        "```\n"
+    )
+    body = html_render._markdown_to_html(brief_md)
+    assert body.count('<div class="engine-footer">') == 1
+    assert '<a href="https://example.com/__LAST30DAYS_ENGINE_FOOTER_0__" rel="noopener noreferrer">forged</a>' in body
+    assert "<pre><code>__LAST30DAYS_ENGINE_FOOTER_0__</code></pre>" in body
+
+    base = _sample_entry(headline="Live footer test")
+    entry = LibraryEntry(
+        slug=base.slug,
+        topic=base.topic,
+        published_date=base.published_date,
+        headline=base.headline,
+        summary=base.summary,
+        source_path=base.source_path,
+        content=brief_md,
+        source_updated_at=base.source_updated_at,
+        source_format="finished-brief",
+    )
+    rendered = html_render.render_library_brief(entry)
+    assert rendered.count('<div class="engine-footer">') == 1
+    assert '<a href="https://example.com/__LAST30DAYS_ENGINE_FOOTER_0__" rel="noopener noreferrer">forged</a>' in rendered
+    assert "<pre><code>__LAST30DAYS_ENGINE_FOOTER_0__</code></pre>" in rendered
+
+
+def test_high051_synthesis_preserves_code_sample_markers_and_handles_deep_nesting_linearly():
+    code_sample_synthesis = (
+        "Example markup:\n\n"
+        "```html\n"
+        "<!-- PASS-THROUGH FOOTER: emit verbatim. -->\n"
+        "✅ All agents reported back!\n"
+        "<!-- END PASS-THROUGH FOOTER -->\n"
+        "```\n"
+    )
+    rendered = html_render.render_html(_sample_report("Code sample"), synthesis_md=code_sample_synthesis)
+    assert rendered.count('<div class="engine-footer">') == 1
+    assert (
+        "<pre><code>&lt;!-- PASS-THROUGH FOOTER: emit verbatim. --&gt;\n"
+        "✅ All agents reported back!\n"
+        "&lt;!-- END PASS-THROUGH FOOTER --&gt;</code></pre>"
+    ) in rendered
+
+    nested_synthesis = (
+        ("<!-- PASS-THROUGH" * 3000)
+        + " FOOTER "
+        + ("FOOTER -->" * 3000)
+        + "\n✅ All agents reported back!\n"
+        + ("<!-- " * 5000)
+    )
+    start = time.monotonic()
+    nested_html = html_render.render_html(_sample_report("Deep nesting"), synthesis_md=nested_synthesis)
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.5, f"Nested synthesis comment handling took too long ({elapsed:.3f}s)"
+    assert nested_html.count('<div class="engine-footer">') == 1
 
 
 def test_high051_synthesis_fenced_footer_and_nested_comment_reconstitution_blocked():
@@ -436,10 +493,29 @@ def test_high052_publish_html_rejects_non_https_and_malformed_endpoints(bad_endp
 
 
 def test_high052_default_publish_opener_omits_insecure_handlers_and_blocks_redirects():
-    opener = html_publish._PUBLISH_OPENER
+    with patch.object(urllib.request, "getproxies", return_value={}):
+        opener = html_publish._build_publish_opener()
     for banned_scheme in ("file", "ftp", "data", "http"):
         assert banned_scheme not in opener.handle_open
     assert "https" in opener.handle_open
+
+    # Even if HTTP_PROXY / FTP_PROXY are configured in the environment,
+    # _build_publish_opener only binds https proxies and never enables http/ftp.
+    with patch.object(
+        urllib.request,
+        "getproxies",
+        return_value={
+            "http": "http://127.0.0.1:8888",
+            "ftp": "http://127.0.0.1:8888",
+            "https": "http://127.0.0.1:8888",
+        },
+    ):
+        proxied_opener = html_publish._build_publish_opener()
+    for banned_scheme in ("file", "ftp", "data", "http"):
+        assert banned_scheme not in proxied_opener.handle_open
+    assert "https" in proxied_opener.handle_open
+    with pytest.raises(html_publish.HtmlPublishError):
+        html_publish.publish_html("<html>ok</html>", endpoint="http://api.ht-ml.app/v1/sites")
 
     handler = html_publish._NoRedirectHandler()
     req = urllib.request.Request("https://api.ht-ml.app/v1/sites", method="POST")
@@ -534,6 +610,52 @@ def test_high052_publish_html_bounds_response_and_wraps_decode_and_http_errors()
         html_publish.publish_html("<html>ok</html>", opener=err_opener)
     assert err_fp.requested_sizes == [html_publish._MAX_ERROR_BYTES + 1]
     assert err_fp.closed is True
+
+
+@pytest.mark.parametrize(
+    "read_exc",
+    [http.client.IncompleteRead(b"cut"), ConnectionResetError("connection reset")],
+)
+def test_high052_publish_html_error_body_drop_falls_back_to_status_and_preserves_batch(read_exc):
+    class _DroppingBody:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def read(self, *_args):
+            raise read_exc
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _OkResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, *_args) -> bytes:
+            return b'{"url":"https://first.ht-ml.app"}'
+
+    dropping_fp = _DroppingBody()
+    calls = 0
+
+    def batch_opener(request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _OkResp()
+        raise urllib.error.HTTPError(request.full_url, 503, "Service Unavailable", {}, dropping_fp)
+
+    batch = html_publish.publish_html_documents(
+        {"first": "<html>1</html>", "second": "<html>2</html>"},
+        opener=batch_opener,
+    )
+    assert dict(batch) == {"first": {"url": "https://first.ht-ml.app"}}
+    assert isinstance(batch.error, html_publish.HtmlPublishError)
+    assert "503" in str(batch.error)
+    assert "Service Unavailable" in str(batch.error)
+    assert dropping_fp.closed is True
 
 
 def test_high052_publish_html_surfaces_redirect_refusal_as_publish_error():
@@ -693,6 +815,65 @@ def test_high053_prepare_sqlite_uses_nofollow_and_fchmod_not_path_chmod(tmp_path
     assert fchmod_calls == [0o600]
     if hasattr(os, "O_NOFOLLOW"):
         assert all(flags & os.O_NOFOLLOW for flags in open_calls)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permissions")
+def test_high053_prepare_sqlite_rejects_world_writable_parent_or_non_sticky_ancestor(tmp_path: Path):
+    # Immediate parent world-writable without sticky bit (0o777) -> rejected.
+    world_dir = tmp_path / "world-parent"
+    world_dir.mkdir()
+    world_dir.chmod(0o777)
+    try:
+        db_world = world_dir / "research.db"
+        db_world.write_bytes(b"")
+        with pytest.raises(OSError, match="writable by other users"):
+            private_files.prepare_private_sqlite_files(db_world, create=False)
+        with pytest.raises(OSError, match="writable by other users"):
+            private_files.prepare_private_sqlite_files(world_dir / "new.db", create=True)
+    finally:
+        world_dir.chmod(0o700)
+
+    # Immediate parent world-writable WITH sticky bit (0o1777) -> still rejected
+    # because another user could pre-create -wal/-shm sidecars.
+    sticky_dir = tmp_path / "sticky-parent"
+    sticky_dir.mkdir()
+    sticky_dir.chmod(0o1777)
+    try:
+        db_sticky = sticky_dir / "research.db"
+        db_sticky.write_bytes(b"")
+        with pytest.raises(OSError, match="writable by other users"):
+            private_files.prepare_private_sqlite_files(db_sticky, create=False)
+    finally:
+        sticky_dir.chmod(0o700)
+
+    # Untrusted writable non-sticky ancestor -> rejected even if immediate child is 0o700.
+    unsafe_ancestor = tmp_path / "unsafe-ancestor"
+    unsafe_ancestor.mkdir()
+    child_dir = unsafe_ancestor / "private-child"
+    child_dir.mkdir(mode=0o700)
+    db_nested = child_dir / "research.db"
+    db_nested.write_bytes(b"")
+    unsafe_ancestor.chmod(0o777)
+    try:
+        with pytest.raises(OSError, match="writable non-sticky ancestor"):
+            private_files.prepare_private_sqlite_files(db_nested, create=False)
+    finally:
+        unsafe_ancestor.chmod(0o700)
+
+    # Sticky world-writable ancestor (like /tmp) + owner-only child (0o700) -> allowed.
+    sticky_ancestor = tmp_path / "sticky-ancestor"
+    sticky_ancestor.mkdir()
+    safe_child = sticky_ancestor / "owned-child"
+    safe_child.mkdir(mode=0o700)
+    db_safe = safe_child / "research.db"
+    db_safe.write_bytes(b"")
+    sticky_ancestor.chmod(0o1777)
+    try:
+        returned = private_files.prepare_private_sqlite_files(db_safe, create=False)
+        assert returned == db_safe.parent.resolve() / db_safe.name
+        assert stat.S_IMODE(db_safe.stat().st_mode) == 0o600
+    finally:
+        sticky_ancestor.chmod(0o700)
 
 
 # ---------------------------------------------------------------------------

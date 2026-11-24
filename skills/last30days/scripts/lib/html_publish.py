@@ -46,9 +46,14 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _build_publish_opener() -> urllib.request.OpenerDirector:
     """Build an HTTPS-only OpenerDirector without file/ftp/data/http or redirect following."""
+    https_proxies = {
+        scheme: target
+        for scheme, target in urllib.request.getproxies().items()
+        if scheme.lower() == "https"
+    }
     opener = urllib.request.OpenerDirector()
     handlers: list[urllib.request.BaseHandler] = [
-        urllib.request.ProxyHandler(),
+        urllib.request.ProxyHandler(https_proxies),
         urllib.request.UnknownHandler(),
         urllib.request.HTTPDefaultErrorHandler(),
         _NoRedirectHandler(),
@@ -147,9 +152,12 @@ def publish_html(
                 raise HtmlPublishError(f"{exc.code}: {reason}") from exc
             detail = ""
             if exc.fp is not None:
-                detail = _read_bounded(exc, _MAX_ERROR_BYTES, truncate=True).decode(
-                    "utf-8", errors="replace"
-                )
+                try:
+                    detail = _read_bounded(exc, _MAX_ERROR_BYTES, truncate=True).decode(
+                        "utf-8", errors="replace"
+                    )
+                except (HtmlPublishError, http.client.HTTPException, OSError):
+                    detail = ""
             raise HtmlPublishError(
                 _error_message(exc.code, detail or str(exc.reason or ""))
             ) from exc

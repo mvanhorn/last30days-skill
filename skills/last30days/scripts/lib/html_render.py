@@ -32,10 +32,6 @@ PASS_THROUGH_FOOTER_PATTERN = re.compile(
 )
 _PASS_THROUGH_FOOTER_START = re.compile(r"^<!-- PASS-THROUGH FOOTER[^\n]*-->[ \t]*$")
 _PASS_THROUGH_FOOTER_END = re.compile(r"^<!-- END PASS-THROUGH FOOTER -->[ \t]*$")
-_SYNTHESIS_PASS_THROUGH_MARKER = re.compile(
-    r"<!--\s*(?:END\s+)?PASS-THROUGH FOOTER(?:(?!-->)[^\n])*?-->",
-    re.IGNORECASE,
-)
 # Line-by-line on purpose: no row inside the match may itself open or close a
 # fence, so an earlier ordinary ```text block cannot be stitched to the real
 # footer with the prose between them swallowed into the footer box.
@@ -446,7 +442,6 @@ def render_html(
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
     body = _markdown_to_html(md, untrusted_bounds=synthesis_bounds)
-    body = _wrap_engine_footer(body)
     body = _promote_meta_marker(body)
     colophon = _build_colophon(report)
     return _wrap_in_template(body, colophon, report.topic)
@@ -470,7 +465,6 @@ def render_html_comparison(
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
     body = _markdown_to_html(md, untrusted_bounds=synthesis_bounds)
-    body = _wrap_engine_footer(body)
     body = _promote_meta_marker(body)
     topic = " vs ".join(label for label, _ in entity_reports)
     colophon = _build_colophon(entity_reports[0][1], topic=topic)
@@ -488,7 +482,6 @@ def render_library_brief(entry: LibraryEntry, *, include_private: bool = True) -
     if entry.source_format == "finished-brief":
         md = _promote_prose_labels(md)
     body = _markdown_to_html(md)
-    body = _wrap_engine_footer(body)
     colophon = (
         '<footer class="colophon">'
         f"Saved research · {html.escape(entry.published_date.isoformat())} · "
@@ -611,13 +604,7 @@ def _prepare_synthesis_md(synthesis_md: str | None) -> str | None:
     cleaned = _strip_synthesis_invitation(synthesis_md)
     if cleaned is None:
         return None
-    cleaned = _strip_canonical_boundary(cleaned)
-    while True:
-        updated = _SYNTHESIS_PASS_THROUGH_MARKER.sub("", cleaned)
-        if updated == cleaned:
-            break
-        cleaned = updated
-    return cleaned
+    return _strip_canonical_boundary(cleaned)
 
 
 def _wrap_untrusted_synthesis(
@@ -648,6 +635,28 @@ def _promote_prose_labels(md: str) -> str:
     return md
 
 
+def _strip_non_meta_comments(text: str) -> str:
+    """Strip HTML comments except ``META:`` markers in strict O(N) time."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        start = text.find("<!--", pos)
+        if start == -1:
+            out.append(text[pos:])
+            break
+        end = text.find("-->", start + 4)
+        if end == -1:
+            out.append(text[pos:])
+            break
+        inner = text[start + 4 : end]
+        if inner.lstrip().startswith("META:"):
+            out.append(text[pos : end + 3])
+        else:
+            out.append(text[pos:start])
+        pos = end + 3
+    return "".join(out)
+
+
 def _strip_html_comments_outside_code(md: str) -> str:
     lines = md.splitlines(keepends=True)
     out: list[str] = []
@@ -656,8 +665,7 @@ def _strip_html_comments_outside_code(md: str) -> str:
 
     def flush_prose() -> None:
         if prose_chunk:
-            joined = "".join(prose_chunk)
-            out.append(re.sub(r"<!--(?!\s*META:).*?-->", "", joined, flags=re.DOTALL))
+            out.append(_strip_non_meta_comments("".join(prose_chunk)))
             prose_chunk.clear()
 
     for line in lines:
@@ -682,10 +690,12 @@ def _markdown_to_html(
     md: str,
     *,
     untrusted_bounds: tuple[str, str] | None = None,
+    allow_engine_footers: bool = True,
 ) -> str:
-    md, footers = _protect_engine_footers(md, untrusted_bounds=untrusted_bounds)
-    global _ENGINE_FOOTER_STORE
-    _ENGINE_FOOTER_STORE = {}
+    if allow_engine_footers:
+        md, footers = _protect_engine_footers(md, untrusted_bounds=untrusted_bounds)
+    else:
+        footers = {}
     md = _strip_html_comments_outside_code(md)
     lines = md.splitlines()
     out: list[str] = []
@@ -932,21 +942,8 @@ def _update_pre_code_depth(line: str, pre_depth: int, code_depth: int) -> tuple[
 
 
 def _wrap_engine_footer(body: str) -> str:
-    if not _ENGINE_FOOTER_STORE:
-        return body
-
-    out: list[str] = []
-    pre_depth = 0
-    code_depth = 0
-    for line in body.splitlines():
-        stripped = line.strip()
-        if pre_depth == 0 and code_depth == 0 and stripped in _ENGINE_FOOTER_STORE:
-            footer = html.escape(_ENGINE_FOOTER_STORE[stripped], quote=False)
-            out.append(f'<div class="engine-footer"><pre>{footer}</pre></div>')
-            continue
-        out.append(line)
-        pre_depth, code_depth = _update_pre_code_depth(line, pre_depth, code_depth)
-    return "\n".join(out)
+    """Compatibility shim: ``_markdown_to_html`` now renders protected footers inline."""
+    return body
 
 
 def _promote_meta_marker(body: str) -> str:
@@ -975,9 +972,6 @@ def _promote_meta_marker(body: str) -> str:
         out.append(line)
         pre_depth, code_depth = _update_pre_code_depth(line, pre_depth, code_depth)
     return "\n".join(out)
-
-
-_ENGINE_FOOTER_STORE: dict[str, str] = {}
 
 # Schemes allowed in synthesized markdown links. The HTML artifact is opened in
 # a browser, so a permissive link parser exposes a stored-XSS vector: a

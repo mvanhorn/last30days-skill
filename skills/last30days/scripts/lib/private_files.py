@@ -10,6 +10,55 @@ from pathlib import Path
 
 _WINDOWS_SHARING_VIOLATION = 32
 _IS_JUNCTION = getattr(os.path, "isjunction", None)
+_GETEUID = getattr(os, "geteuid", None)
+
+
+def _group_writable_by_other_user(st: os.stat_result, euid: int) -> bool:
+    """Return True if a group-writable mode grants write access to another non-root user."""
+    if not (st.st_mode & stat.S_IWGRP):
+        return False
+    try:
+        import grp
+        import pwd
+
+        pw = pwd.getpwuid(euid)
+        gr = grp.getgrgid(st.st_gid)
+    except (ImportError, KeyError):
+        return True
+    other_members = set(gr.gr_mem) - {pw.pw_name, "root"}
+    if st.st_gid == 0 and not other_members:
+        return False
+    if st.st_gid == pw.pw_gid and gr.gr_name == pw.pw_name and not other_members:
+        return False
+    return True
+
+
+def _verify_private_directory_chain(parent: Path) -> None:
+    """Verify the parent directory and its ancestors cannot be modified by other users."""
+    if _GETEUID is None:
+        return
+    euid = _GETEUID()
+    parent_st = parent.lstat()
+    if not stat.S_ISDIR(parent_st.st_mode):
+        raise OSError(f"Expected a directory for private file: {parent}")
+    if parent_st.st_uid not in (euid, 0):
+        raise OSError(f"Refusing to use private directory owned by another user: {parent}")
+    if (parent_st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(parent_st, euid):
+        raise OSError(f"Refusing to use private directory writable by other users: {parent}")
+
+    for ancestor in parent.parents:
+        anc_st = ancestor.lstat()
+        if not stat.S_ISDIR(anc_st.st_mode):
+            raise OSError(f"Expected a directory ancestor for private file: {ancestor}")
+        if anc_st.st_uid not in (euid, 0):
+            raise OSError(f"Refusing to use directory under untrusted owner: {ancestor}")
+        writable_by_others = bool(anc_st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(
+            anc_st, euid
+        )
+        if writable_by_others and not (anc_st.st_mode & stat.S_ISVTX):
+            raise OSError(
+                f"Refusing to use directory under writable non-sticky ancestor: {ancestor}"
+            )
 
 
 def _reject_symlink_or_nonregular(path: Path) -> None:
@@ -27,17 +76,23 @@ def _reject_symlink_or_nonregular(path: Path) -> None:
 
 
 def _resolve_parent_only(path: Path) -> Path:
-    """Resolve only the parent directory so a leaf symlink is never dereferenced."""
+    """Resolve and validate only the parent directory so a leaf symlink is never dereferenced."""
     path = Path(path)
     if path.name in ("", ".", ".."):
         raise OSError(f"Expected a regular private file path: {path}")
     _reject_symlink_or_nonregular(path)
-    return path.parent.resolve() / path.name
+    resolved_parent = path.parent.resolve()
+    _verify_private_directory_chain(resolved_parent)
+    resolved = resolved_parent / path.name
+    _reject_symlink_or_nonregular(resolved)
+    return resolved
 
 
 def replace_private_text(path: Path, content: str) -> None:
     """Publish UTF-8 text atomically from an owner-only temporary file."""
     _reject_symlink_or_nonregular(path)
+    if os.name == "posix":
+        _verify_private_directory_chain(path.parent.resolve())
     staged = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False,
     )
