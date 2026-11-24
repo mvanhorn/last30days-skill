@@ -29,6 +29,140 @@ def _first_of(*values, default=None):
             return v
     return default
 
+
+def _as_dict_list(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _extract_dict_list(
+    data: Any,
+    primary_key: str,
+    *,
+    context: str = "",
+) -> List[Dict[str, Any]]:
+    label = f"ScrapeCreators Reddit {context}" if context else "ScrapeCreators Reddit"
+    if not isinstance(data, dict):
+        http._record_failure(http.HTTPError(
+            f"{label} returned non-object JSON ({type(data).__name__}) (schema drift)",
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
+        return []
+    primary = data.get(primary_key)
+    raw: Any = None
+    drift_reason: Optional[str] = None
+    if isinstance(primary, list):
+        raw = primary
+    else:
+        fallback = data.get("data")
+        if isinstance(fallback, list):
+            raw = fallback
+            if primary is not None:
+                drift_reason = (
+                    f"{label} returned non-list '{primary_key}' ({type(primary).__name__}) "
+                    "(schema drift)"
+                )
+        else:
+            if primary_key in data:
+                drift_reason = (
+                    f"{label} returned non-list '{primary_key}' ({type(primary).__name__}) "
+                    "without usable 'data' list (schema drift)"
+                )
+            elif "data" in data:
+                drift_reason = (
+                    f"{label} returned non-list 'data' ({type(fallback).__name__}) (schema drift)"
+                )
+            else:
+                drift_reason = (
+                    f"{label} response missing '{primary_key}'/'data' list (schema drift)"
+                )
+    if raw is None:
+        http._record_failure(http.HTTPError(
+            drift_reason or f"{label} returned unexpected payload shape (schema drift)",
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
+        return []
+    valid = [item for item in raw if isinstance(item, dict)]
+    if drift_reason is not None:
+        http._record_failure(http.HTTPError(
+            drift_reason,
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
+    elif len(valid) < len(raw):
+        dropped = len(raw) - len(valid)
+        http._record_failure(http.HTTPError(
+            f"{label} dropped {dropped} non-object entries in '{primary_key}' (schema drift)",
+            outcome_state=health.SCHEMA_DRIFT,
+        ))
+    return valid
+
+
+def _is_finite_int(value: int) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _coerce_int_or_none(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if _is_finite_int(value) else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = int(text)
+        except ValueError:
+            return None
+        return parsed if _is_finite_int(parsed) else None
+    return None
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    coerced = _coerce_int_or_none(value)
+    return default if coerced is None else coerced
+
+
+def _first_int(*values: Any, default: int = 0) -> int:
+    for v in values:
+        coerced = _coerce_int_or_none(v)
+        if coerced is not None:
+            return coerced
+    return default
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            num = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return num if math.isfinite(num) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            num = float(text)
+        except (ValueError, OverflowError):
+            return None
+        return num if math.isfinite(num) else None
+    return None
+
+
+def _coerce_text(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    return value if isinstance(value, str) else str(value)
+
 from . import dates, health, http, log, snippet
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/reddit"
@@ -359,6 +493,8 @@ def discover_subreddits(
 
     scores = Counter()
     for post in results:
+        if not isinstance(post, dict):
+            continue
         sub = _extract_subreddit_name(post.get("subreddit", ""))
         if not sub:
             continue
@@ -376,8 +512,8 @@ def discover_subreddits(
             base *= 0.3
 
         # Bonus: post engagement (high-engagement posts = better sub)
-        ups = _first_of(post.get("ups"), post.get("score"), post.get("votes"), default=0)
-        if ups and ups > 100:
+        ups = _first_int(post.get("ups"), post.get("score"), post.get("votes"), default=0)
+        if ups > 100:
             base += 0.5
 
         scores[sub] += base
@@ -396,17 +532,26 @@ def _parse_date(value) -> Optional[str]:
     Falsy inputs (None, "", 0) return None, matching the original behavior
     where a Unix timestamp of 0 meant "no date" rather than epoch 0.
     """
-    if not value:
+    if not value or isinstance(value, bool):
         return None
-    dt = dates.parse_date(str(value))
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        dt = dates.parse_date(str(value))
+    except (ValueError, TypeError, OSError, OverflowError):
+        return None
     return dt.strftime("%Y-%m-%d") if dt else None
 
 
 def _extract_subreddit_name(value: Any) -> str:
     """Extract subreddit name from string or API object dict."""
     if isinstance(value, dict):
-        return str(value.get("name") or value.get("display_name") or "").strip()
-    return str(value).strip()
+        for key in ("name", "display_name"):
+            text = _coerce_text(value.get(key)).strip()
+            if text:
+                return text
+        return ""
+    return _coerce_text(value).strip()
 
 
 def _extract_score(post: Dict[str, Any]) -> int:
@@ -414,7 +559,7 @@ def _extract_score(post: Dict[str, Any]) -> int:
 
     Global search uses ``votes``; subreddit search uses ``ups``/``score``.
     """
-    return _first_of(post.get("ups"), post.get("score"), post.get("votes"), default=0)
+    return _first_int(post.get("ups"), post.get("score"), post.get("votes"), default=0)
 
 
 def _extract_date(post: Dict[str, Any]) -> Optional[str]:
@@ -422,14 +567,16 @@ def _extract_date(post: Dict[str, Any]) -> Optional[str]:
 
     Global search uses ``created_at`` (ISO); subreddit search uses ``created_utc`` (Unix).
     """
-    return _parse_date(
-        post.get("created_utc") or post.get("created_at") or post.get("created_at_iso")
-    )
+    for key in ("created_utc", "created_at", "created_at_iso"):
+        parsed = _parse_date(post.get(key))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _normalize_reddit_id(raw_id: str) -> str:
     """Strip Reddit fullname prefix (t3_) for consistent dedup."""
-    s = str(raw_id or "")
+    s = _coerce_text(raw_id)
     return s[3:] if s.startswith("t3_") else s
 
 
@@ -439,9 +586,11 @@ def _total_engagement(item: Dict[str, Any]) -> int:
     Used for selecting which threads to enrich with comments.
     Threads with lots of comments are high-value even if upvote score is low.
     """
-    eng = item.get("engagement", {})
-    score = eng.get("score", 0) or 0
-    num_comments = eng.get("num_comments", 0) or 0
+    eng = item.get("engagement")
+    if not isinstance(eng, dict):
+        return 0
+    score = _coerce_int(eng.get("score"), default=0)
+    num_comments = _coerce_int(eng.get("num_comments"), default=0)
     return score + num_comments
 
 
@@ -464,15 +613,17 @@ def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global"
     ``subreddit`` as dict) and the subreddit-search schema (``ups``/``score``,
     ``created_utc``, ``subreddit`` as string).
     """
-    permalink = post.get("permalink", "")
-    url = f"https://www.reddit.com{permalink}" if permalink else post.get("url", "")
+    raw_permalink = post.get("permalink")
+    permalink = raw_permalink if isinstance(raw_permalink, str) else ""
+    raw_url = post.get("url")
+    url = f"https://www.reddit.com{permalink}" if permalink else (raw_url if isinstance(raw_url, str) else "")
 
     # Ensure URL looks like a Reddit thread
     if url and "reddit.com" not in url:
         url = ""
 
-    title = str(post.get("title", "")).strip()
-    selftext = str(post.get("selftext", ""))
+    title = _coerce_text(post.get("title")).strip()
+    selftext = _coerce_text(post.get("selftext"))
 
     # Score the title first, then let the body provide limited support.
     # This keeps long selftexts from overpowering the visible topic signal.
@@ -487,12 +638,12 @@ def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global"
         "date": _extract_date(post),
         "engagement": {
             "score": _extract_score(post),
-            "num_comments": post.get("num_comments", 0),
-            "upvote_ratio": post.get("upvote_ratio"),
+            "num_comments": _coerce_int(post.get("num_comments"), default=0),
+            "upvote_ratio": _coerce_float(post.get("upvote_ratio")),
         },
         "relevance": relevance,
         "why_relevant": f"Reddit {source_label} search",
-        "selftext": str(post.get("selftext", ""))[:500],
+        "selftext": selftext[:500],
     }
 
 
@@ -550,7 +701,7 @@ def _global_search(
                 **extra,
             )
         _mark_sc_paid_started()
-        return data.get("posts", data.get("data", []))
+        return _extract_dict_list(data, "posts", context="global search")
     except http.DeadlineExceeded as e:
         if getattr(e, "dispatched", False):
             _mark_sc_paid_started()
@@ -614,7 +765,7 @@ def _subreddit_search(
                 **extra,
             )
         _mark_sc_paid_started()
-        return data.get("posts", data.get("data", []))
+        return _extract_dict_list(data, "posts", context=f"subreddit search r/{subreddit}")
     except http.DeadlineExceeded as e:
         if getattr(e, "dispatched", False):
             _mark_sc_paid_started()
@@ -663,7 +814,7 @@ def fetch_post_comments(
                 owned_get=eff_deadline is not None,
             )
         _mark_sc_paid_started()
-        return data.get("comments", data.get("data", []))
+        return _extract_dict_list(data, "comments", context="comment fetch")
     except http.DeadlineExceeded as e:
         if getattr(e, "dispatched", False):
             _mark_sc_paid_started()
@@ -823,6 +974,7 @@ def search_reddit(
                         )] = sub
                     batch_results, batch_incomplete = _collect_bounded(executor, futures)
                     for sub, sub_posts in batch_results:
+                        sub_posts = _as_dict_list(sub_posts)
                         _log(f"  -> {len(sub_posts)} results from pre-resolved r/{sub}")
                         for j, post in enumerate(sub_posts):
                             item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
@@ -866,6 +1018,7 @@ def search_reddit(
                         )] = query
                     batch_results, batch_incomplete = _collect_bounded(executor, futures)
                     for query, posts in batch_results:
+                        posts = _as_dict_list(posts)
                         _log(f"  -> {len(posts)} results for '{query}'")
                         all_raw_posts.extend(posts)
                         if posts:
@@ -916,6 +1069,7 @@ def search_reddit(
                             )] = sub
                         batch_results, batch_incomplete = _collect_bounded(executor, futures)
                         for sub, sub_posts in batch_results:
+                            sub_posts = _as_dict_list(sub_posts)
                             _log(f"  -> {len(sub_posts)} results from r/{sub}")
                             for j, post in enumerate(sub_posts):
                                 item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
@@ -1094,6 +1248,7 @@ def enrich_with_comments(
                         raw_comments = future.result(timeout=0)
                     except Exception:
                         continue
+                    raw_comments = _as_dict_list(raw_comments)
                     if not raw_comments:
                         continue
 
@@ -1101,13 +1256,14 @@ def enrich_with_comments(
                     insights = []
 
                     for ci, c in enumerate(raw_comments[:10]):
-                        body = c.get("body", "")
+                        body = _coerce_text(c.get("body"))
                         if not body or body in ("[deleted]", "[removed]"):
                             continue
 
-                        score = c.get("ups") or c.get("score", 0)
-                        author = c.get("author", "[deleted]")
-                        permalink = c.get("permalink", "")
+                        score = _first_int(c.get("ups"), c.get("score"), default=0)
+                        author = _coerce_text(c.get("author")) or "[deleted]"
+                        raw_permalink = c.get("permalink")
+                        permalink = raw_permalink if isinstance(raw_permalink, str) else ""
                         comment_url = f"https://reddit.com{permalink}" if permalink else ""
 
                         top_comments.append({
@@ -1135,7 +1291,7 @@ def enrich_with_comments(
                                     insight = insight.rstrip() + "..."
                             insights.append(insight)
 
-                    top_comments.sort(key=lambda c: c.get("score", 0), reverse=True)
+                    top_comments.sort(key=lambda c: _coerce_int(c.get("score"), default=0), reverse=True)
                     item["top_comments"] = top_comments[:10]
                     item["comment_insights"] = insights[:10]
                     enriched_count += 1
@@ -1340,4 +1496,6 @@ def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     Parse raw Reddit search output into the generic item shape.
     """
-    return response.get("items", [])
+    if not isinstance(response, dict):
+        return []
+    return _as_dict_list(response.get("items"))

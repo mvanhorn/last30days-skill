@@ -15,6 +15,7 @@ count rather than failing the Reddit source.
 """
 
 import inspect
+import math
 import re
 import sys
 import threading
@@ -182,6 +183,97 @@ def _report_failures(error: BaseException) -> None:
         http._record_failure(failure)
 
 
+def _is_finite_int(value: int) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value if _is_finite_int(value) else default
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else default
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return default
+        try:
+            parsed = int(text)
+        except ValueError:
+            return default
+        return parsed if _is_finite_int(parsed) else default
+    return default
+
+
+def _strict_int(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise TypeError("bool is not a valid integer")
+    if isinstance(value, int):
+        if not _is_finite_int(value):
+            raise OverflowError("integer exceeds float range")
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite float")
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0
+        parsed = int(text)
+        if not _is_finite_int(parsed):
+            raise OverflowError("integer exceeds float range")
+        return parsed
+    raise TypeError(f"unsupported numeric type: {type(value).__name__}")
+
+
+def _coerce_timestamp(value: Any) -> Optional[float | int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            num = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(num):
+            return None
+        ts: float | int = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            ts = float(text)
+        except (ValueError, OverflowError):
+            return None
+        if not math.isfinite(ts):
+            return None
+    else:
+        return None
+    try:
+        datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (ValueError, TypeError, OSError, OverflowError):
+        return None
+    return ts
+
+
+def _coerce_text(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    return value if isinstance(value, str) else str(value)
+
+
+def _coerce_author(value: Any) -> str:
+    text = _coerce_text(value)
+    return text or "[deleted]"
+
+
 def _search_once(url: str, deadline: float, retry_422: bool = True) -> Any:
     """Archive search shared across the run: memoized, one fetch in flight per URL.
 
@@ -207,7 +299,8 @@ def _search_once(url: str, deadline: float, retry_422: bool = True) -> Any:
         raise http.HTTPError(f"Shared archive request kept failing: {url}")
     try:
         data = _fetch_search(url, deadline, retry_422)
-        if isinstance((data or {}).get("data"), list):
+        rows = data.get("data") if isinstance(data, dict) else None
+        if isinstance(rows, list):
             with _memo_lock:
                 if len(_memo) < MEMO_MAX:
                     _memo[url] = data
@@ -312,7 +405,7 @@ def fetch_scores(
                         _log(f"lookup failed ({e}); {len(batch)} ids left unscored")
                         stop_fetching = True
                     else:
-                        rows = (data or {}).get("data")
+                        rows = data.get("data") if isinstance(data, dict) else None
                         if not isinstance(rows, list):
                             # arctic-shift returns {"error": "..."} on rate-limit / bad request.
                             _log(f"unexpected response (rate-limited?): {str(data)[:80]}")
@@ -322,15 +415,15 @@ def fetch_scores(
                             for row in rows:
                                 if not isinstance(row, dict):
                                     continue
-                                rid = str(row.get("id") or "").removeprefix("t3_")
+                                rid = _coerce_text(row.get("id")).removeprefix("t3_")
                                 if not rid:
                                     continue
                                 try:
                                     entries[rid] = {
-                                        "score": int(row.get("score") or 0),
-                                        "num_comments": int(row.get("num_comments") or 0),
+                                        "score": _strict_int(row.get("score")),
+                                        "num_comments": _strict_int(row.get("num_comments")),
                                     }
-                                except (TypeError, ValueError):
+                                except (TypeError, ValueError, OverflowError):
                                     continue
                             with _memo_lock:
                                 for rid, entry in entries.items():
@@ -412,9 +505,12 @@ def _parse_iso_date(value: Optional[str]) -> Optional[date]:
 
 def _epoch_to_date(value: Any) -> Optional[str]:
     """Epoch seconds -> YYYY-MM-DD (UTC), or None on garbage."""
+    ts = _coerce_timestamp(value)
+    if ts is None:
+        return None
     try:
-        return datetime.fromtimestamp(int(value), tz=timezone.utc).date().isoformat()
-    except (TypeError, ValueError, OSError):
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).date().isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
         return None
 
 
@@ -427,32 +523,30 @@ def _normalize_listing_row(row: Dict[str, Any], query: str = "") -> Dict[str, An
     """
     from .relevance import token_overlap_relevance
 
-    pid = str(row.get("id") or "").removeprefix("t3_")
-    permalink = row.get("permalink") or ""
-    title = row.get("title") or ""
-    try:
-        score = int(row.get("score") or 0)
-    except (TypeError, ValueError):
-        score = 0
-    try:
-        num_comments = int(row.get("num_comments") or 0)
-    except (TypeError, ValueError):
-        num_comments = 0
-    author = row.get("author") or "[deleted]"
+    pid = _coerce_text(row.get("id")).removeprefix("t3_")
+    raw_permalink = row.get("permalink")
+    permalink = raw_permalink if isinstance(raw_permalink, str) else ""
+    title = _coerce_text(row.get("title"))
+    score = _coerce_int(row.get("score"), default=0)
+    num_comments = _coerce_int(row.get("num_comments"), default=0)
+    author = _coerce_author(row.get("author"))
     if author in ("[deleted]", "[removed]"):
         author = "[deleted]"
-    url = f"https://www.reddit.com{permalink}" if permalink.startswith("/") else (permalink or "")
+    raw_sub = row.get("subreddit")
+    subreddit = raw_sub if isinstance(raw_sub, str) else ""
+    created_utc = _coerce_timestamp(row.get("created_utc"))
+    url = f"https://www.reddit.com{permalink}" if permalink.startswith("/") else permalink
     return {
         "id": "",
         "title": title,
         "url": url,
         "score": score,
         "num_comments": num_comments,
-        "subreddit": row.get("subreddit") or "",
-        "created_utc": row.get("created_utc"),
+        "subreddit": subreddit,
+        "created_utc": created_utc,
         "author": author,
-        "selftext": row.get("selftext") or "",
-        "date": _epoch_to_date(row.get("created_utc")),
+        "selftext": _coerce_text(row.get("selftext")),
+        "date": _epoch_to_date(created_utc),
         "engagement": {"score": score, "num_comments": num_comments, "upvote_ratio": None},
         "relevance": round(token_overlap_relevance(query, title), 3) if query else 0.0,
         "why_relevant": "Reddit listing (arctic-shift)",
@@ -559,7 +653,7 @@ def fetch_listings(
         return f"{SEARCH_API}?{urlencode(params)}"
 
     def keep(sub: str, data: Any) -> None:
-        rows = (data or {}).get("data")
+        rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):
             _log(f"unexpected listing response for r/{sub}: {str(data)[:80]}")
             return
@@ -709,10 +803,11 @@ def fetch_posts_by_ids(
             _log(f"post lookup failed ({exc}); {len(batch)} ids left")
             state = "down"
             continue
-        rows = (data or {}).get("data")
+        rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):
             _log(f"unexpected post lookup response: {str(data)[:80]}")
-            if "slow down" in str((data or {}).get("error") or "").lower():
+            err = data.get("error") if isinstance(data, dict) else None
+            if "slow down" in str(err or "").lower():
                 return out, "throttled"
             state = "down"
             continue
@@ -740,10 +835,24 @@ def _tree_rows(nodes: Any) -> List[Dict[str, Any]]:
             continue
         rows.append(data)
         replies = data.get("replies")
-        children = ((replies or {}).get("data") or {}).get("children") if isinstance(replies, dict) else None
+        replies_data = replies.get("data") if isinstance(replies, dict) else None
+        children = replies_data.get("children") if isinstance(replies_data, dict) else None
         if isinstance(children, list):
             stack.extend(reversed(children))
     return rows
+
+
+def _row_depth(row: Dict[str, Any]) -> int:
+    """A tree row's depth; without one, a reply to the post itself is top-level."""
+    raw_depth = row.get("depth")
+    if raw_depth is not None and not isinstance(raw_depth, bool):
+        if not (isinstance(raw_depth, str) and not raw_depth.strip()):
+            try:
+                return _strict_int(raw_depth)
+            except (TypeError, ValueError, OverflowError):
+                pass
+    parent_id = _coerce_text(row.get("parent_id")).strip()
+    return 0 if (not parent_id or parent_id.startswith("t3_")) else 1
 
 
 def _fetch_comment_tree_with_status(
@@ -769,7 +878,7 @@ def _fetch_comment_tree_with_status(
         _set_thread_tree_throttled(throttled)
         _log(f"comment tree failed t3_{pid}: {exc}")
         return None, throttled
-    nodes = (data or {}).get("data")
+    nodes = data.get("data") if isinstance(data, dict) else None
     if not isinstance(nodes, list):
         _log(f"unexpected comment tree response for t3_{pid}: {str(data)[:80]}")
         return None, False
@@ -778,28 +887,24 @@ def _fetch_comment_tree_with_status(
 
     comments: List[Dict[str, Any]] = []
     for row in _tree_rows(nodes):
-        author = row.get("author") or "[deleted]"
-        body = row.get("body") or ""
+        author = _coerce_author(row.get("author"))
+        body = _coerce_text(row.get("body"))
         if author in ("[deleted]", "[removed]") or body in ("[deleted]", "[removed]"):
             continue
-        try:
-            score = int(row.get("score") or 0)
-        except (TypeError, ValueError):
-            score = 0
-        try:
-            depth = int(row.get("depth") or 0)
-        except (TypeError, ValueError):
-            depth = 0
-        permalink = row.get("permalink") or ""
+        score = _coerce_int(row.get("score"), default=0)
+        depth = _row_depth(row)
+        raw_permalink = row.get("permalink")
+        permalink = raw_permalink if isinstance(raw_permalink, str) else ""
+        created_utc = _coerce_timestamp(row.get("created_utc"))
         entry: Dict[str, Any] = {
-            "id": str(row.get("id") or "").removeprefix("t1_"),
+            "id": _coerce_text(row.get("id")).removeprefix("t1_"),
             "score": score,
             "author": author,
             "body": body[:300],
             "excerpt": cut_quote(body),
             "permalink": permalink,
-            "date": _epoch_to_date(row.get("created_utc")),
-            "created_utc": row.get("created_utc"),
+            "date": _epoch_to_date(created_utc),
+            "created_utc": created_utc,
             "url": f"https://reddit.com{permalink}" if permalink else "",
             "depth": depth,
         }
@@ -825,14 +930,6 @@ def fetch_comment_tree(
 
 
 _ORIG_FETCH_COMMENT_TREE = fetch_comment_tree
-
-
-def _row_depth(row: Dict[str, Any]) -> int:
-    """A tree row's depth; without one, a reply to the post itself is top-level."""
-    try:
-        return int(row["depth"])
-    except (KeyError, TypeError, ValueError):
-        return 0 if str(row.get("parent_id") or "t3_").startswith("t3_") else 1
 
 
 def fetch_post_comments(
@@ -865,7 +962,7 @@ def fetch_post_comments(
     except Exception as e:  # network error / non-200 — degrade, never raise
         _log(f"comments lookup failed t3_{pid}: {e}")
         return []
-    rows = (data or {}).get("data")
+    rows = data.get("data") if isinstance(data, dict) else None
     if not isinstance(rows, list):
         _log(f"unexpected comments response for t3_{pid}: {str(data)[:80]}")
         return []
@@ -874,17 +971,15 @@ def fetch_post_comments(
 
     comments: List[Dict[str, Any]] = []
     for row in _tree_rows(rows):
-        author = row.get("author") or "[deleted]"
-        body = row.get("body") or ""
+        author = _coerce_author(row.get("author"))
+        body = _coerce_text(row.get("body"))
         if author in ("[deleted]", "[removed]") or body in ("[deleted]", "[removed]"):
             continue
         if skip_author and skip_author(author):
             continue
-        try:
-            score = int(row.get("score") or 0)
-        except (TypeError, ValueError):
-            score = 0
-        permalink = row.get("permalink") or ""
+        score = _coerce_int(row.get("score"), default=0)
+        raw_permalink = row.get("permalink")
+        permalink = raw_permalink if isinstance(raw_permalink, str) else ""
         entry: Dict[str, Any] = {
             "score": score,
             "author": author,
@@ -898,5 +993,5 @@ def fetch_post_comments(
         if isinstance(row.get("is_submitter"), bool):
             entry["is_uploader"] = row["is_submitter"]
         comments.append(entry)
-    comments.sort(key=lambda c: c.get("score", 0), reverse=True)
+    comments.sort(key=lambda c: _coerce_int(c.get("score"), default=0), reverse=True)
     return comments[:limit]
