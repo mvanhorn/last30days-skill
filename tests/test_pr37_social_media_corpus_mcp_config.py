@@ -29,7 +29,7 @@ from unittest import mock
 
 import pytest
 
-from lib import bluesky, corpus, env, http, linkedin, pipeline, youtube_yt
+from lib import backends, bluesky, corpus, doctor, env, health, http, linkedin, pipeline, youtube_yt
 from lib.subproc import SubprocResult
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -736,19 +736,93 @@ class TestHigh221And222McpManifestConfig:
             local_only=True,
         ) == ["xapi"]
 
-        # With MCP wrapper opt-in (LAST30DAYS_X_API_OPT_IN=1), xapi activates as
-        # a fallback without overriding explicit pins or higher-priority backends.
+        # With MCP wrapper opt-in (LAST30DAYS_X_API_OPT_IN=1), xapi joins the
+        # tail of x_policy(config).auto_chain without overriding explicit pins
+        # or higher-priority backends.
         monkeypatch.setenv(env.X_API_OPT_IN_VAR, "1")
+        assert env.x_policy({}).auto_chain == env.X_BACKEND_ORDER + ("xapi",)
         assert env.x_backend_chain({"X_BEARER_TOKEN": "dummy-bearer"}, local_only=True) == ["xapi"]
         assert env.x_backend_chain(
             {"X_BEARER_TOKEN": "dummy-bearer", "XAI_API_KEY": "dummy-xai"},
             local_only=True,
-        ) == ["xai"]
+        ) == ["xai", "xapi"]
         assert env.x_backend_chain(
             {"X_BEARER_TOKEN": "dummy-bearer", "XQUIK_API_KEY": "dummy-xquik"},
             local_only=True,
-        ) == ["xquik"]
+        ) == ["xquik", "xapi"]
         assert env.x_backend_chain(
             {"X_BEARER_TOKEN": "dummy-bearer", "LAST30DAYS_X_BACKEND": "bird"},
             local_only=True,
         ) == []
+
+    def test_high222_x_api_opt_in_parity_across_all_x_surfaces(self, monkeypatch) -> None:
+        bird_off = {"installed": True, "authenticated": False, "username": "", "can_install": True}
+
+        def _node_ok(name, timeout=health.PROBE_TIMEOUT):
+            return health.DependencyProbe(name=name, status=health.OK, detail=f"{name} 1.0.0")
+
+        with (
+            mock.patch("lib.bird_x.is_bird_installed", return_value=False),
+            mock.patch("lib.bird_x.get_bird_status", return_value=dict(bird_off)),
+            mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
+            mock.patch("lib.xurl_x.is_available", return_value=False),
+            mock.patch("lib.grok_x.has_stored_auth", return_value=False),
+            mock.patch("lib.backends.which", return_value=None),
+            mock.patch("lib.health.probe_dependency", _node_ok),
+        ):
+            cfg_bearer = {"X_BEARER_TOKEN": "dummy-bearer", "_BROWSER_COOKIE_MODE": "plan_only"}
+
+            # Baseline without opt-in: xapi stays opt-in everywhere.
+            monkeypatch.delenv(env.X_API_OPT_IN_VAR, raising=False)
+            fp_off = doctor._config_fingerprint(cfg_bearer)
+            assert env.x_backend_chain(cfg_bearer, local_only=True) == []
+            assert env.get_x_source_status(cfg_bearer)["source"] is None
+            assert env.get_x_source_with_method(cfg_bearer) == (None, "none")
+            assert backends.resolve("x", cfg_bearer).active_backend is None
+            assert doctor._x_record(cfg_bearer)["status"] == "unconfigured"
+            assert pipeline.diagnose(cfg_bearer, safe=True)["x_backend"] is None
+
+            # With LAST30DAYS_X_API_OPT_IN=1: all 6 surfaces agree on xapi.
+            monkeypatch.setenv(env.X_API_OPT_IN_VAR, "1")
+            fp_on = doctor._config_fingerprint(cfg_bearer)
+            assert fp_on != fp_off
+            assert env.x_backend_chain(cfg_bearer, local_only=True) == ["xapi"]
+            assert env.get_x_source_status(cfg_bearer)["source"] == "xapi"
+            assert env.get_x_source_with_method(cfg_bearer) == ("xapi", "bearer")
+            resolved = backends.resolve("x", cfg_bearer)
+            assert resolved.active_backend == "xapi"
+            assert resolved.tier == backends.TIER_OK
+            rec = doctor._x_record(cfg_bearer)
+            assert rec["status"] == health.OK
+            assert rec["active_backend"] == "xapi"
+            diag = pipeline.diagnose(cfg_bearer, safe=True)
+            assert diag["x_backend"] == "xapi"
+            assert "x" in diag["available_sources"]
+
+            # Higher-priority XAI_API_KEY still wins across all 6 surfaces.
+            cfg_xai = {**cfg_bearer, "XAI_API_KEY": "dummy-xai"}
+            assert env.x_backend_chain(cfg_xai, local_only=True)[0] == "xai"
+            assert env.get_x_source_status(cfg_xai)["source"] == "xai"
+            assert env.get_x_source_with_method(cfg_xai) == ("xai", "xai")
+            assert backends.resolve("x", cfg_xai).active_backend == "xai"
+            assert doctor._x_record(cfg_xai)["active_backend"] == "xai"
+            assert pipeline.diagnose(cfg_xai, safe=True)["x_backend"] == "xai"
+
+            # Higher-priority XQUIK_API_KEY still wins across all 6 surfaces.
+            cfg_xquik = {**cfg_bearer, "XQUIK_API_KEY": "dummy-xquik"}
+            assert env.x_backend_chain(cfg_xquik, local_only=True)[0] == "xquik"
+            assert env.get_x_source_status(cfg_xquik)["source"] == "xquik"
+            assert env.get_x_source_with_method(cfg_xquik) == ("xquik", "api_key")
+            assert backends.resolve("x", cfg_xquik).active_backend == "xquik"
+            assert doctor._x_record(cfg_xquik)["active_backend"] == "xquik"
+            assert pipeline.diagnose(cfg_xquik, safe=True)["x_backend"] == "xquik"
+
+            # Explicit LAST30DAYS_X_BACKEND=bird pin is never overridden by xapi opt-in.
+            cfg_pin = {**cfg_bearer, "LAST30DAYS_X_BACKEND": "bird"}
+            assert env.x_backend_chain(cfg_pin, local_only=True) == []
+            assert env.get_x_source_status(cfg_pin)["source"] is None
+            res_pin = backends.resolve("x", cfg_pin)
+            assert res_pin.pinned is True and res_pin.pin == "bird"
+            assert res_pin.active_backend is None
+            assert doctor._x_record(cfg_pin).get("active_backend") is None
+            assert pipeline.diagnose(cfg_pin, safe=True)["x_backend"] is None

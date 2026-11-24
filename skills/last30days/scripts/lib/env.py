@@ -2003,10 +2003,11 @@ def x_backend_pin(config: dict[str, Any]) -> str:
 
 
 def x_policy(config: dict[str, Any]) -> XPolicy:
-    """Resolve the X policy from ``LAST30DAYS_HOST`` and the pin.
+    """Resolve the X policy from ``LAST30DAYS_HOST``, ``LAST30DAYS_X_API_OPT_IN``, and the pin.
 
     This is the ONLY place the Grok Bot host string is compared. It reads
-    just the host key, the pin, and the config dict: no platform, PATH, home
+    just the host key, the pin, the process-env ``LAST30DAYS_X_API_OPT_IN``
+    fallback signal, and the config dict: no platform, PATH, home
     directory, or agent env-var inspection (the same rule ``x_extras_enabled``
     follows), and nothing imported from ``lib``. The pin keeps its exclusive
     semantics on every host and may name any known backend; a ``bird`` pin
@@ -2015,10 +2016,13 @@ def x_policy(config: dict[str, Any]) -> XPolicy:
     host = str(config.get(X_HOST_VAR) or '').strip().lower()
     official_only = host == GROK_BOT_HOST
     pin = x_backend_pin(config)
+    auto_chain = _X_OFFICIAL if official_only else _X_BACKEND_ORDER
+    if not official_only and x_api_opt_in() and 'xapi' not in auto_chain:
+        auto_chain = auto_chain + ('xapi',)
     return XPolicy(
         host=host,
         official_only=official_only,
-        auto_chain=_X_OFFICIAL if official_only else _X_BACKEND_ORDER,
+        auto_chain=auto_chain,
         cookie_discovery=(not official_only) or pin == 'bird',
     )
 
@@ -2120,12 +2124,6 @@ def x_backend_chain(config: dict[str, Any], local_only: bool = False) -> list[st
         # call, so every backend the user set up themselves goes first.
         if 'xai' in chain and config.get('XAI_API_KEY') == PROXY_SENTINEL:
             chain = [b for b in chain if b != 'xai'] + ['xai']
-        if (
-            not chain
-            and x_api_opt_in()
-            and _x_backend_available('xapi', config, has_bird_creds, local_only)
-        ):
-            chain = ['xapi']
 
     if 'bird' in chain:
         _inject_bird_credentials(config)
