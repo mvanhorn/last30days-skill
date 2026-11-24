@@ -271,22 +271,23 @@ def _scored_listings(
     return posts
 
 
-# Reserve room before the lane deadline so a stalled second web query still
-# leaves enough time to hydrate the refs the first query already found.
+# Reserve up to 8s (capped at 40% of remaining budget) before the lane deadline
+# so a slow second web query leaves room to hydrate query one's refs without
+# starving the first query when only a few seconds remain.
 _WEB_HYDRATION_RESERVE_SECONDS = 8.0
+_WEB_HYDRATION_MIN_SECONDS = 0.5
 
 
-def _web_discover_deadline(deadline: Optional[float]) -> Optional[float]:
+def _web_discover_deadline(
+    deadline: Optional[float], now: Optional[float] = None,
+) -> Optional[float]:
     if deadline is None:
         return None
-    remaining = deadline - time.monotonic()
-    if remaining <= MIN_STAGE_SECONDS:
+    current = time.monotonic() if now is None else now
+    remaining = deadline - current
+    if remaining <= _WEB_HYDRATION_MIN_SECONDS:
         return deadline
-    reserve = min(
-        _WEB_HYDRATION_RESERVE_SECONDS,
-        max(MIN_STAGE_SECONDS + 1.0, remaining * 0.4),
-    )
-    reserve = min(reserve, max(0.0, remaining - 0.1))
+    reserve = min(_WEB_HYDRATION_RESERVE_SECONDS, remaining * 0.4)
     return deadline - reserve
 
 
@@ -331,7 +332,7 @@ def _web_floor(
         _record_web_rungs(floor)
         if not floor.refs:
             return []
-        if _out_of_time(deadline):
+        if deadline is not None and deadline - time.monotonic() < _WEB_HYDRATION_MIN_SECONDS:
             _log("web floor hydration skipped: lane budget spent")
             return []
         session = reddit_session.current()

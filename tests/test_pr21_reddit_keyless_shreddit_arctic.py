@@ -710,9 +710,9 @@ class TestHigh123SearchDeadlinesAndElection:
                 uncached_calls["n"] += 1
             started.set()
             release.wait(timeout=5.0)
-            return [{"id": "R1", "url": "https://www.reddit.com/r/ghostty/comments/p1/"}]
+            return [{"id": "R1", "url": "https://www.reddit.com/r/ghostty/comments/p1/"}], True
 
-        with mock.patch.object(reddit_search, "_search_uncached", side_effect=slow_uncached):
+        with mock.patch.object(reddit_search, "_search_uncached_with_status", side_effect=slow_uncached):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 f_owner = pool.submit(reddit_search.search, "Ghostty", depth="deep", subreddits=["a", "b", "c"])
                 assert started.wait(timeout=3.0)
@@ -733,16 +733,16 @@ class TestHigh123SearchDeadlinesAndElection:
                 assert len(owner_res) == 1
 
     def test_election_loop_without_owner_returns_empty_instead_of_stampeding(self):
-        # Pre-seed an inflight gate that wakes without populating _run_results
-        # across both election rounds: waiter must return [] instead of running
-        # _search_uncached without holding _run_inflight[key].
+        # Pre-seed an inflight slot that never finishes across both election
+        # rounds: waiter must return [] instead of running uncached without
+        # holding _run_inflight[key].
         key = ("Ghostty", "quick", "month", ())
-        stuck_gate = threading.Event()
+        stuck_slot = reddit_search._InflightSearch()
         with reddit_search._run_lock:
-            reddit_search._run_inflight[key] = stuck_gate
+            reddit_search._run_inflight[key] = stuck_slot
 
         with mock.patch.object(reddit_search, "_result_timeout", return_value=0.02), \
-             mock.patch.object(reddit_search, "_search_uncached") as uncached:
+             mock.patch.object(reddit_search, "_search_uncached_with_status") as uncached:
             out = reddit_search.search("Ghostty", depth="quick")
 
         assert out == []
@@ -1038,11 +1038,11 @@ class TestGreptileFixes:
             ), mock.patch.object(
                 reddit_keyless.reddit_arctic, "fetch_comment_tree", return_value=[],
             ):
-                # 3.5s lane budget reserves 3.0s for hydration and gives discovery ~0.5s,
-                # so blocked query 2 cuts off early while query 1's ref is still hydrated.
+                # 1.8s lane budget gives discovery 60% (~1.08s) and reserves 40% (~0.72s)
+                # for hydration, so blocked query 2 cuts off early while query 1's ref is hydrated.
                 kept = reddit_keyless._web_floor(
                     "Ghostty", "quick", ["ghostty"], None, "2026-10-01", "2026-10-31",
-                    deadline=time.monotonic() + 3.5,
+                    deadline=time.monotonic() + 1.8,
                 )
         finally:
             release_query2.set()
@@ -1050,6 +1050,142 @@ class TestGreptileFixes:
         assert query2_started.is_set()
         assert time.monotonic() - t0 < 2.5
         assert [p["metadata"]["post_id"] for p in kept] == ["q1hit"]
+
+    def test_web_discover_deadline_keeps_meaningful_share_at_tight_budget_and_hydrates(self):
+        # At 2.9s remaining, web discovery must get 60% (1.74s, >= 1.5s) and
+        # reserve 40% (1.16s, >= 1.0s) for hydration rather than starving query 1.
+        now = 1000.0
+        cutoff_tight = reddit_keyless._web_discover_deadline(now + 2.9, now=now)
+        assert cutoff_tight is not None
+        assert cutoff_tight - now == pytest.approx(1.74)
+        assert (now + 2.9) - cutoff_tight == pytest.approx(1.16)
+
+        # At 20s remaining, reserve caps at _WEB_HYDRATION_RESERVE_SECONDS (8s).
+        cutoff_wide = reddit_keyless._web_discover_deadline(now + 20.0, now=now)
+        assert cutoff_wide == pytest.approx(now + 12.0)
+
+        # With a 2.9s budget where the single query takes 0.35s (> old 100ms cutoff),
+        # _web_floor must still find and hydrate query 1's thread.
+        def moderate_query(query, date_range, config, count=20, freshness=None):
+            time.sleep(0.35)
+            return (
+                [{
+                    "url": "https://www.reddit.com/r/ghostty/comments/tight1/ghostty_tight/",
+                    "title": "r/ghostty on Reddit: Ghostty tight budget",
+                    "snippet": "",
+                    "date": "2026-10-10",
+                }],
+                {"keyless_backend": "brave", "keyless_rungs": {"brave": "ok"}},
+            )
+
+        archived = {
+            "id": "",
+            "title": "Ghostty tight budget",
+            "url": "https://www.reddit.com/r/ghostty/comments/tight1/ghostty_tight/",
+            "score": 55,
+            "num_comments": 4,
+            "subreddit": "ghostty",
+            "created_utc": 1700000000,
+            "author": "op_user",
+            "selftext": "",
+            "date": "2026-10-10",
+            "engagement": {"score": 55, "num_comments": 4},
+            "relevance": 0.9,
+            "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "tight1"},
+        }
+
+        with mock.patch.object(
+            reddit_discover.web_search_keyless, "keyless_search", side_effect=moderate_query,
+        ), mock.patch.object(
+            reddit_keyless.reddit_arctic, "fetch_posts_by_ids",
+            return_value=({"tight1": dict(archived)}, "ok"),
+        ), mock.patch.object(
+            reddit_keyless.reddit_arctic, "fetch_comment_tree", return_value=[],
+        ):
+            kept = reddit_keyless._web_floor(
+                "Ghostty", "quick", None, None, "2026-10-01", "2026-10-31",
+                deadline=time.monotonic() + 2.9,
+            )
+
+        assert [p["metadata"]["post_id"] for p in kept] == ["tight1"]
+
+    def test_partial_search_is_not_cached_and_later_call_fetches_all_pages(self):
+        page2_attempts = {"n": 0}
+        release_first_page2 = threading.Event()
+        first_page2_started = threading.Event()
+
+        def fake_retry_get(url, **kwargs):
+            if "cursor=" not in url:
+                return _search_page_html("p1full", author="alice", cursor="cur2"), None
+            page2_attempts["n"] += 1
+            if page2_attempts["n"] == 1:
+                first_page2_started.set()
+                release_first_page2.wait(timeout=5.0)
+                return None, "deadline exceeded"
+            return _search_page_html("p2full", author="bob"), None
+
+        try:
+            with mock.patch.object(
+                reddit_search.http, "reddit_keyless_get_text_retry_429", side_effect=fake_retry_get,
+            ):
+                # Call 1 times out on page 2 and returns salvaged page-1 posts,
+                # without caching the truncated result in _run_results.
+                partial = reddit_search.search(
+                    "Ghostty", depth="quick", deadline=time.monotonic() + 0.15,
+                )
+                assert [p["metadata"]["post_id"] for p in partial] == ["p1full"]
+                assert reddit_search._run_results == {}
+
+                # Call 2 has ample time and fetches both page 1 and page 2, then caches.
+                full = reddit_search.search(
+                    "Ghostty", depth="quick", deadline=time.monotonic() + 5.0,
+                )
+                assert [p["metadata"]["post_id"] for p in full] == ["p1full", "p2full"]
+                assert len(reddit_search._run_results) == 1
+        finally:
+            release_first_page2.set()
+        assert first_page2_started.is_set()
+
+    def test_partial_search_hands_partial_fallback_to_concurrent_waiter(self):
+        owner_started = threading.Event()
+        release_owner = threading.Event()
+        calls = {"n": 0}
+        lock = threading.Lock()
+
+        def fake_uncached_status(*_args, **_kwargs):
+            with lock:
+                calls["n"] += 1
+                n = calls["n"]
+            if n == 1:
+                owner_started.set()
+                release_owner.wait(timeout=5.0)
+                return [{"id": "R1", "url": "https://www.reddit.com/r/ghostty/comments/part1/"}], False
+            # Waiter's retry yields nothing; it must fall back to the owner's partial list.
+            return [], False
+
+        with mock.patch.object(
+            reddit_search, "_search_uncached_with_status", side_effect=fake_uncached_status,
+        ):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f_owner = pool.submit(
+                    reddit_search.search, "Ghostty", depth="quick", deadline=time.monotonic() + 5.0,
+                )
+                assert owner_started.wait(timeout=3.0)
+                f_waiter = pool.submit(
+                    reddit_search.search, "Ghostty", depth="quick", deadline=time.monotonic() + 5.0,
+                )
+                time.sleep(0.05)
+                release_owner.set()
+                owner_res = f_owner.result(timeout=5.0)
+                waiter_res = f_waiter.result(timeout=5.0)
+
+        assert calls["n"] == 2
+        assert len(owner_res) == 1
+        assert len(waiter_res) == 1
+        assert waiter_res[0]["url"] == owner_res[0]["url"]
+        assert waiter_res[0] is not owner_res[0]
+        assert reddit_search._run_results == {}
 
     def test_fetch_scores_waiter_fetches_batch_two_when_owner_expires_after_batch_one(self):
         batch1_started = threading.Event()
