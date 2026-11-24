@@ -1246,3 +1246,62 @@ class TestGreptileRound3Regressions:
         assert "xAI API key" not in text
         assert "ScrapeCreators API key" not in text
         assert "last30days hosted/proxy API key" in text
+
+    def test_preflight_perplexity_search_type_matches_research_run_when_key_only_in_secret_store(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Agent host without --plan skips Keychain/pass before hosted dispatch;
+        --preflight --perplexity-search-type must agree with the real research run."""
+        from lib import hosted as hosted_mod
+
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://hosted.example/api/v1")
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-key-r4")
+        monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+        monkeypatch.delenv("LAST30DAYS_ALLOW_ENGINE_PLAN", raising=False)
+
+        with mock.patch.object(
+            env, "_load_keychain", return_value={"PERPLEXITY_API_KEY": "dummy-kc-pplx-key"}
+        ), mock.patch.object(env, "_load_pass", return_value={}):
+            # 1. --preflight with --perplexity-search-type=fast stays hosted because
+            #    the real research run won't query Keychain on an agent host without --plan.
+            monkeypatch.setattr(
+                sys,
+                "argv",
+                ["last30days.py", "--preflight", "--emit=json", "--perplexity-search-type=fast"],
+            )
+            assert cli.main() == 0
+            preflight_payload = json.loads(capsys.readouterr().out)
+            assert preflight_payload["network"]["hosted_mode"] is True
+            assert preflight_payload["network"]["available_sources"] == ["hosted"]
+
+            # 2. Verify the actual research run with the same flags also dispatches hosted!
+            hosted_calls: list[tuple] = []
+
+            def fake_run_hosted(*args, **kwargs):
+                hosted_calls.append((args, kwargs))
+                return 0
+
+            monkeypatch.setattr(
+                sys,
+                "argv",
+                ["last30days.py", "AI agents", "--perplexity-search-type=fast"],
+            )
+            with mock.patch.object(hosted_mod, "run_hosted", side_effect=fake_run_hosted):
+                assert cli.main() == 0
+            assert len(hosted_calls) == 1
+
+            # 3. When PERPLEXITY_API_KEY is in .env (available without secret stores),
+            #    --preflight --perplexity-search-type=fast DOES bypass hosted mode.
+            env_file = tmp_path / ".env"
+            env_file.write_text("PERPLEXITY_API_KEY=dummy-env-pplx-key\n", encoding="utf-8")
+            monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+            monkeypatch.setattr(
+                sys,
+                "argv",
+                ["last30days.py", "--preflight", "--emit=json", "--perplexity-search-type=fast"],
+            )
+            assert cli.main() == 0
+            env_payload = json.loads(capsys.readouterr().out)
+            assert env_payload["network"]["hosted_mode"] is False
+            assert "hosted" not in env_payload["network"]["available_sources"]
