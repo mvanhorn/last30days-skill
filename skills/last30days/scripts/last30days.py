@@ -3355,6 +3355,10 @@ def _setup_skips_secret_stores(extra_argv: list[str]) -> bool:
     install_target, uninstall_target, remaining = _split_hook_flags(remaining)
     if install_target is not None or uninstall_target is not None:
         return True
+    # Mirror setup dispatch precedence: --openclaw runs before --reddit-session
+    # and --github*/--device-auth, and reports stored provider keys.
+    if "--openclaw" in remaining:
+        return False
     return any(flag in _SETUP_NO_SECRET_STORE_FLAGS for flag in remaining)
 
 
@@ -5183,20 +5187,30 @@ def _main(
             "clarification, so they apply only to a hosted run.\n"
         )
         return 2
-    target_browser_mode: env.BrowserCookieMode = "off" if args.no_browser_cookies else "read"
+    law7_blocked = bool(_law7_host_plan_signal(args, topic))
+    may_reuse_html_cache = (
+        args.emit == "html"
+        and bool(args.synthesis_file)
+        and not args.deep_research
+        and not args.cached_report
+    )
+    target_browser_mode: env.BrowserCookieMode = (
+        "off" if (args.no_browser_cookies or law7_blocked) else "read"
+    )
     if (
         hosted_deferred_local_load
         and topic
         and not args.diagnose
         and not uses_hosted_api
-        and not _law7_host_plan_signal(args, topic)
+        and (not law7_blocked or may_reuse_html_cache)
         and (
             config_policy.browser_cookies != target_browser_mode
             or not config_policy.load_secret_stores
         )
     ):
         # Confirmed local fallback (corpus or direct Perplexity key); reload
-        # full config with local secret stores and permitted browser cookies.
+        # secret stores (and browser cookies only when research can run, never
+        # on a LAW-7-blocked HTML cache-reuse lookup).
         config = env.get_config(
             policy=env.ConfigLoadPolicy(
                 browser_cookies=target_browser_mode,

@@ -665,6 +665,124 @@ class TestConfigPolicyNoUnexpectedCookieReads:
         assert rc == 0, err
         assert "Cached export synthesis" in out
 
+    @pytest.mark.parametrize("secret_store", ["keychain", "pass"])
+    def test_hosted_corpus_agent_host_html_cache_reuse_reloads_secret_stores_without_cookies(
+        self, tmp_path: Path, monkeypatch, secret_store: str,
+    ):
+        notes = tmp_path / "notes"
+        notes.mkdir()
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            f"FROM_BROWSER=chrome\nBROWSER_CONSENT=true\nLAST30DAYS_CORPUS_DIRS={notes}\n",
+            encoding="utf-8",
+        )
+        env_file.chmod(0o600)
+        monkeypatch.setattr(env, "CONFIG_FILE", env_file)
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "sk_live_DUMMY_TEST_KEY_00000")
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://api.example.test/api/v1")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.delenv("LAST30DAYS_API_MODE", raising=False)
+        monkeypatch.delenv("LAST30DAYS_CORPUS_DIRS", raising=False)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+        monkeypatch.delenv("LAST30DAYS_ALLOW_ENGINE_PLAN", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+
+        syn = tmp_path / "syn.md"
+        syn.write_text("# Agent host cached synthesis\n", encoding="utf-8")
+        stored_secret = {"XAI_API_KEY": f"dummy-{secret_store}-xai-key"}
+        kc_return = stored_secret if secret_store == "keychain" else {}
+        pass_return = stored_secret if secret_store == "pass" else {}
+
+        # Build and save a cached report as produced by an earlier local run
+        # that had the Keychain/pass key loaded (without browser cookies).
+        with mock.patch.object(env, "_load_keychain", return_value=kc_return), \
+             mock.patch.object(env, "_load_pass", return_value=pass_return):
+            prior_config = env.get_config(
+                policy=env.ConfigLoadPolicy(browser_cookies="off", load_secret_stores=True)
+            )
+        prior_args = cli.build_parser().parse_args([
+            "OpenClaw", "--emit=html", "--synthesis-file", str(syn),
+        ])
+        prior_opts = cli._cache_research_options(
+            prior_args, prior_config, resolved_corpus_dirs=[notes],
+        )
+        prior_report = _sample_report("OpenClaw")
+        prior_report.range_from, prior_report.range_to = cli.dates.get_date_range(30)
+        assert cli._write_last_run("OpenClaw", prior_report, research_options=prior_opts)
+
+        kc_mock = mock.Mock(return_value=kc_return)
+        pass_mock = mock.Mock(return_value=pass_return)
+        with mock.patch.object(env, "_load_keychain", kc_mock), \
+             mock.patch.object(env, "_load_pass", pass_mock), \
+             mock.patch.object(
+                 env, "_discover_and_apply_x_credentials",
+                 side_effect=AssertionError("HTML cache reuse must not read browser cookies"),
+             ), \
+             mock.patch.object(
+                 cookie_extract, "extract_cookies",
+                 side_effect=AssertionError("HTML cache reuse must not read browser cookies"),
+             ), \
+             mock.patch.object(
+                 cli.pipeline, "run",
+                 side_effect=AssertionError("HTML cache reuse must not start research"),
+             ):
+            rc, out, err = _run_cli([
+                "OpenClaw", "--emit=html", "--synthesis-file", str(syn),
+            ])
+
+        assert rc == 0, err
+        assert "Reusing cached report data" in err
+        assert "Agent host cached synthesis" in out
+        # Initial tentative hosted load skipped secret stores; local HTML cache
+        # check reloaded them once without touching browser cookies.
+        assert kc_mock.call_count == 1
+        assert pass_mock.call_count == 1
+
+    @pytest.mark.parametrize(
+        ("argv", "expected_load_stores"),
+        [
+            (["setup", "--openclaw", "--github-start"], True),
+            (["setup", "--openclaw", "--device-auth"], True),
+            (["setup", "--openclaw", "--reddit-session"], True),
+            (["setup", "--github-start"], False),
+            (["setup", "--store-key", "XAI_API_KEY", "--openclaw"], False),
+            (["setup", "--install-hooks", "--openclaw"], False),
+        ],
+    )
+    def test_setup_openclaw_precedence_preserves_secret_stores_in_policy(
+        self, argv: list[str], expected_load_stores: bool,
+    ):
+        parser = cli.build_parser()
+        args, extra = parser.parse_known_args(argv)
+        policy = cli._config_policy_for_args(args, "setup", extra)
+        assert policy.browser_cookies == "off"
+        assert policy.load_secret_stores is expected_load_stores
+
+    def test_setup_openclaw_with_github_start_reports_keychain_keys(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        monkeypatch.setattr(env, "CONFIG_FILE", tmp_path / "missing.env")
+        monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.delenv("LAST30DAYS_SKIP_KEYCHAIN", raising=False)
+
+        with mock.patch.object(env, "_load_keychain", return_value={"XAI_API_KEY": "dummy-kc-xai"}) as kc, \
+             mock.patch.object(env, "_load_pass", return_value={}), \
+             mock.patch.object(
+                 env, "_discover_and_apply_x_credentials",
+                 side_effect=AssertionError("openclaw setup must not read browser cookies"),
+             ), \
+             mock.patch("lib.setup_wizard._install_digg_cli", return_value=(False, "no_npx", "", "")):
+            rc, out, err = _run_cli(["setup", "--openclaw", "--github-start"])
+
+        assert rc == 0, err
+        kc.assert_called_once()
+        payload = json.loads(out)
+        assert payload["keys"]["xai"] is True
+        assert payload["x_method"] == "xai"
+
     @pytest.mark.parametrize(
         "argv",
         [
