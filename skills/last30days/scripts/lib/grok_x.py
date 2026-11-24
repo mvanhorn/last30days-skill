@@ -37,6 +37,7 @@ fabricated post carries a plausible handle and a numeric id by construction.
 """
 
 import json
+import math
 import os
 import re
 import shutil
@@ -467,7 +468,7 @@ _FIELD_LINE = re.compile(
 # ("39K", "1.2M"). Parsing only the leading digits turns 1.2M into 1, which
 # does not merely lose precision -- it inverts ranking, placing a viral post
 # below one with 500 literal likes.
-_INT_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?)\s*([KMB])?", re.I)
+_INT_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?(?:e[+-]?\d+)?)\s*([KMB])?", re.I)
 _SUFFIX_MULTIPLIER = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 _STATUS_URL_RE = re.compile(
     r"(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/status/(\d+)",
@@ -487,7 +488,12 @@ def _as_int(value: str) -> Optional[int]:
         return None
     if suffix:
         parsed *= _SUFFIX_MULTIPLIER[suffix.lower()]
-    return int(parsed)
+    if not math.isfinite(parsed):
+        return None
+    try:
+        return int(parsed)
+    except (OverflowError, ValueError):
+        return None
 
 
 def _parse_date(value: str) -> Optional[str]:
@@ -530,13 +536,16 @@ def _fields_from_json_obj(obj: Any) -> Optional[Dict[str, Any]]:
     post_id_s = str(post_id or "").strip()
     if not post_id_s.isdigit():
         return None
+    handle_s = str(handle or "").strip().lstrip("@")
+    if not handle_s:
+        return None
     text = obj.get("text") or obj.get("full_text") or ""
     # `content` is often the CLI wrapper payload, not post text.
     if not text and "content" in obj and not isinstance(obj.get("content"), (dict, list)):
         text = obj.get("content") or ""
     return {
         "post_id": post_id_s,
-        "author_handle": str(handle or "").strip().lstrip("@"),
+        "author_handle": handle_s,
         "text": str(text or ""),
         "likes": obj.get("likes") if obj.get("likes") is not None else obj.get("favorite_count"),
         "reposts": obj.get("reposts") if obj.get("reposts") is not None else obj.get("retweets"),
@@ -581,14 +590,13 @@ def _extract_json_values(text: str) -> List[Any]:
 
 
 def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]]:
-    if depth > 4:
+    if depth > 6:
         return []
     if isinstance(value, list):
-        posts = []
+        posts: List[Dict[str, Any]] = []
         for item in value:
-            fields = _fields_from_json_obj(item)
-            if fields:
-                posts.append(fields)
+            if isinstance(item, (dict, list, str)):
+                posts.extend(_posts_from_json_value(item, depth=depth + 1))
         return posts
     if isinstance(value, str):
         for nested in _extract_json_values(value):
@@ -598,9 +606,6 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
         return []
     if not isinstance(value, dict):
         return []
-    direct = _fields_from_json_obj(value)
-    if direct:
-        return [direct]
     for key in ("posts", "items", "results", "data", "tweets"):
         if key in value:
             posts = _posts_from_json_value(value[key], depth=depth + 1)
@@ -608,10 +613,44 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
                 return posts
     for key in ("content", "message", "result", "text", "output"):
         inner = value.get(key)
-        if isinstance(inner, (str, list, dict)):
+        if isinstance(inner, (list, dict)):
             posts = _posts_from_json_value(inner, depth=depth + 1)
             if posts:
                 return posts
+    direct = _fields_from_json_obj(value)
+    if direct is not None:
+        return [direct]
+    for key in ("content", "message", "result", "text", "output"):
+        inner = value.get(key)
+        if isinstance(inner, str):
+            posts = _posts_from_json_value(inner, depth=depth + 1)
+            if posts:
+                return posts
+    return []
+
+
+def _fields_from_wrapped_text(value: Any, *, depth: int = 0) -> List[Dict[str, Any]]:
+    """Extract post records from JSON wrapper text fields without stopping on status strings."""
+    if depth > 4:
+        return []
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        return _fields_from_json_text(value) or _fields_from_blocks(value)
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, (str, dict, list)):
+                raw = _fields_from_wrapped_text(item, depth=depth + 1)
+                if raw:
+                    return raw
+        return []
+    if isinstance(value, dict):
+        for key in ("content", "message", "result", "text", "output"):
+            inner = value.get(key)
+            if isinstance(inner, (str, dict, list)):
+                raw = _fields_from_wrapped_text(inner, depth=depth + 1)
+                if raw:
+                    return raw
     return []
 
 
@@ -682,20 +721,14 @@ def _parse_x_response_with_reason(
     text = response.get("text") or ""
     raw = _fields_from_json_text(text)
     if not raw:
-        probe = text
         try:
             loaded = json.loads(text)
         except (json.JSONDecodeError, TypeError):
             loaded = None
-        if isinstance(loaded, dict):
-            for key in ("content", "message", "result", "text", "output"):
-                inner = loaded.get(key)
-                if isinstance(inner, str) and inner.strip():
-                    probe = inner
-                    raw = _fields_from_json_text(probe)
-                    break
+        if isinstance(loaded, (dict, list)):
+            raw = _fields_from_wrapped_text(loaded)
         if not raw:
-            raw = _fields_from_blocks(probe)
+            raw = _fields_from_blocks(text)
 
     kept, reason = _validate_items(raw, from_date, to_date) if from_date else (raw, "")
     if reason:
@@ -703,12 +736,9 @@ def _parse_x_response_with_reason(
         return [], reason
 
     items: List[Dict[str, Any]] = []
-    seen_ids = set()
-    for index, fields in enumerate(kept, start=1):
+    by_post_id: Dict[str, Dict[str, Any]] = {}
+    for fields in kept:
         post_id = str(fields.get("post_id") or "").strip()
-        if post_id in seen_ids:
-            continue
-        seen_ids.add(post_id)
         handle = _clean_handle(fields.get("author_handle"))
         if not handle:
             author = str(fields.get("author") or "")
@@ -723,16 +753,39 @@ def _parse_x_response_with_reason(
             "replies": _as_int(str(fields.get("replies", ""))),
             "quotes": _as_int(str(fields.get("quotes", ""))),
         }
-        items.append({
-            "id": f"GK{index}",
+        has_engagement = any(v is not None for v in engagement.values())
+        parsed_date = _parse_date(str(fields.get("created_at", "")))
+        existing = by_post_id.get(post_id)
+        if existing is not None:
+            if existing["author_handle"].lower() != handle.lower():
+                continue
+            if len(text) > len(existing["text"]):
+                existing["text"] = text
+                existing["relevance"] = _compute_relevance(topic, text) if topic else 0.7
+            if not existing["date"] and parsed_date:
+                existing["date"] = parsed_date
+            if has_engagement:
+                if existing["engagement"] is None:
+                    existing["engagement"] = engagement
+                else:
+                    for metric, value in engagement.items():
+                        if value is not None:
+                            prev = existing["engagement"].get(metric)
+                            if prev is None or value > prev:
+                                existing["engagement"][metric] = value
+            continue
+        item = {
+            "id": f"GK{len(items) + 1}",
             "text": text,
             "url": f"https://x.com/{handle}/status/{post_id}",
             "author_handle": handle,
-            "date": _parse_date(str(fields.get("created_at", ""))),
-            "engagement": engagement if any(v is not None for v in engagement.values()) else None,
+            "date": parsed_date,
+            "engagement": engagement if has_engagement else None,
             "why_relevant": "",
             "relevance": _compute_relevance(topic, text) if topic else 0.7,
-        })
+        }
+        by_post_id[post_id] = item
+        items.append(item)
     return items, ""
 
 

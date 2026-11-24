@@ -72,11 +72,13 @@ def _is_available_uncached() -> bool:
             ["xurl", "auth", "status"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         return (
             result.returncode == 0
-            and _BEARER_CONFIGURED_RE.search(result.stdout) is not None
+            and _BEARER_CONFIGURED_RE.search(result.stdout or "") is not None
         )
     except (OSError, subprocess.TimeoutExpired):
         # OSError covers FileNotFoundError (no xurl on PATH) and
@@ -417,6 +419,8 @@ def search_x(
             ["xurl", "search", search_query, "-n", str(max_results), "--auth", "app"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
 
