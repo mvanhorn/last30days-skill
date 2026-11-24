@@ -536,7 +536,7 @@ def _is_valid_linkedin_profile_url(url: Any) -> bool:
         return False
     if "\\" in parts.netloc or port not in (None, 443):
         return False
-    host = (parts.hostname or "").rstrip(".").lower()
+    host = (parts.hostname or "").removesuffix(".").lower()
     if not (host == "linkedin.com" or host.endswith(".linkedin.com")):
         return False
     if host.startswith(".") or ".." in host:
@@ -551,7 +551,16 @@ def _is_valid_linkedin_profile_url(url: Any) -> bool:
     ):
         return False
     slug = decoded_path[4:].strip("/")
-    if not slug or ".." in path.split("/") or ".." in decoded_path.split("/"):
+    path_segments = path.split("/")
+    decoded_segments = decoded_path.split("/")
+    if (
+        not slug
+        or slug == "."
+        or ".." in path_segments
+        or ".." in decoded_segments
+        or "." in path_segments
+        or "." in decoded_segments
+    ):
         return False
     return True
 

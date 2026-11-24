@@ -23,10 +23,12 @@ Covers:
 from __future__ import annotations
 
 import http.client as http_client
+import io
 import json
 import re
 import socket
 import threading
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -40,6 +42,7 @@ import pytest
 from lib import (
     auth_safety,
     bluesky,
+    env,
     github,
     http,
     linkedin,
@@ -162,27 +165,28 @@ class TestHigh177TranscribeMultipartBoundary:
             ("audio.mp3", "audio.mp3"),
             ("chunk_001.mp3", "chunk_001.mp3"),
             ('evil"; name="prompt.mp3', "audio.mp3"),
+            ("evil\r\nInjected: 1.mp3", "audio.mp3"),
             ("evil\nInjected: 1.mp3", "audio.mp3"),
             ("weird name.wav", "audio.mp3"),
             ("..hidden.mp3", "audio.mp3"),
         ],
     )
     def test_filename_header_is_strictly_sanitized(
-        self, tmp_path: Path, filename: str, expected_header_name: str,
+        self, filename: str, expected_header_name: str,
     ) -> None:
-        assert transcribe._safe_upload_filename(f"/tmp/{filename}") == expected_header_name
-        # Exercise _post_audio directly with a real file path carrying quotes/spaces.
-        safe_disk_name = filename.replace("\n", "_")
-        audio = tmp_path / safe_disk_name
-        audio.write_bytes(b"audio-data")
+        fake_path = f"/virtual/work/{filename}"
+        assert transcribe._safe_upload_filename(fake_path) == expected_header_name
         captured: list[urllib.request.Request] = []
 
         def fake_open(req, timeout):
             captured.append(req)
             return _FakeWhisperResp()
 
-        with mock.patch.object(transcribe.http, "open_request", side_effect=fake_open):
-            transcribe._post_audio("groq", str(audio), "dummy-groq-key", 10.0)
+        # Patch open() instead of touching disk so Windows-illegal characters
+        # like quotes, colons, and CR/LF stay portable across OSes.
+        with mock.patch("builtins.open", return_value=io.BytesIO(b"audio-data")), \
+                mock.patch.object(transcribe.http, "open_request", side_effect=fake_open):
+            transcribe._post_audio("groq", fake_path, "dummy-groq-key", 10.0)
 
         expected = (
             f'Content-Disposition: form-data; name="file"; filename="{expected_header_name}"\r\n'
@@ -551,9 +555,11 @@ class TestHigh184XiaohongshuBaseUrlValidation:
             assert guard("file:///etc/passwd") is False
             assert guard("https://evil.example/steal") is False
             if expected_local:
+                assert m.call_args.kwargs.get("local_bridge_only") is True
                 assert "public_only" not in m.call_args.kwargs
             else:
                 assert m.call_args.kwargs.get("public_only") is True
+                assert "local_bridge_only" not in m.call_args.kwargs
 
     def test_redirect_to_other_origin_is_blocked_unmocked(self) -> None:
         secret_hits: list[str] = []
@@ -612,6 +618,179 @@ class TestHigh184XiaohongshuBaseUrlValidation:
             xiaohongshu_api.search_feeds(
                 "matcha", "2026-06-01", "2026-07-01", "https://rebind.example.com",
             )
+
+    @pytest.mark.parametrize(
+        "rebound_ips",
+        [
+            ["169.254.169.254"],
+            ["100.100.100.200"],
+            ["fd00:ec2::254"],
+            ["0.0.0.0"],
+            ["93.184.216.34"],
+            ["192.168.1.50", "169.254.169.254"],
+            ["127.0.0.1", "93.184.216.34"],
+        ],
+    )
+    @pytest.mark.parametrize("bridge_base", ["http://custom.local:18060", "http://xhs-mcp:18060"])
+    def test_local_bridge_blocks_connect_time_dns_rebinding_to_disallowed_ips(
+        self, monkeypatch, bridge_base: str, rebound_ips: list[str],
+    ) -> None:
+        def fake_getaddrinfo(host, port, *_args, **_kwargs):
+            out = []
+            for ip in rebound_ips:
+                af = socket.AF_INET6 if ":" in ip else socket.AF_INET
+                sockaddr = (ip, port, 0, 0) if af == socket.AF_INET6 else (ip, port)
+                out.append((af, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr))
+            return out
+
+        monkeypatch.setattr(http.socket, "getaddrinfo", fake_getaddrinfo)
+        with pytest.raises(http.HTTPError):
+            xiaohongshu_api.search_feeds("matcha", "2026-06-01", "2026-07-01", bridge_base)
+        # env.is_xiaohongshu_available must also fail closed on the exact same DNS rebinding.
+        cfg = {"XIAOHONGSHU_API_BASE": bridge_base}
+        assert env.is_xiaohongshu_available(cfg) is False
+        assert env.XIAOHONGSHU_RESOLVED_API_BASE_KEY not in cfg
+
+    @pytest.mark.parametrize(
+        "allowed_ip",
+        ["127.0.0.1", "::1", "10.0.0.5", "172.16.4.2", "192.168.1.50", "fd12:3456:789a::1"],
+    )
+    def test_local_bridge_resolver_accepts_loopback_rfc1918_and_ula(
+        self, monkeypatch, allowed_ip: str,
+    ) -> None:
+        af = socket.AF_INET6 if ":" in allowed_ip else socket.AF_INET
+        sockaddr = (allowed_ip, 18060, 0, 0) if af == socket.AF_INET6 else (allowed_ip, 18060)
+        monkeypatch.setattr(
+            http.socket,
+            "getaddrinfo",
+            lambda host, port, *a, **kw: [(af, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)],
+        )
+        verified = http._resolve_local_bridge_addresses("custom.local", 18060)
+        assert len(verified) == 1
+        assert verified[0][4][0] == allowed_ip
+
+    def test_http_request_rejects_mutually_exclusive_pinning_flags(self) -> None:
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            http.request("GET", "https://example.com", public_only=True, local_bridge_only=True)
+
+    @pytest.mark.parametrize(
+        "bad_base",
+        [
+            "file:///etc/passwd",
+            "ftp://localhost:21/xhs",
+            "http://169.254.169.254",
+            "http://metadata.google.internal",
+            "http://evil.example:18060",
+            "http://localhost:18060?x=1",
+            "http://localhost:18060#frag",
+            "http://user:pass@localhost:18060",
+            "http://localhost..:18060",
+        ],
+    )
+    def test_env_is_xiaohongshu_available_blocks_unsafe_base_urls_before_network(
+        self, bad_base: str,
+    ) -> None:
+        with mock.patch.object(http, "get") as get_mock:
+            cfg = {"XIAOHONGSHU_API_BASE": bad_base}
+            assert env.is_xiaohongshu_available(cfg) is False
+            assert env._xiaohongshu_base_logged_in(bad_base, http) is False
+        get_mock.assert_not_called()
+        assert env.XIAOHONGSHU_RESOLVED_API_BASE_KEY not in cfg
+
+    def test_env_is_xiaohongshu_available_passes_pinning_and_caches_normalized_base(self) -> None:
+        seen_kwargs: list[dict[str, Any]] = []
+
+        def fake_get(url, **kwargs):
+            seen_kwargs.append(kwargs)
+            if url.endswith("/health"):
+                return {"success": True}
+            if url.endswith("/api/v1/login/status"):
+                return {"data": {"is_logged_in": True}}
+            raise AssertionError(f"unexpected URL: {url}")
+
+        with mock.patch.object(http, "get", side_effect=fake_get):
+            cfg_local = {"XIAOHONGSHU_API_BASE": "  HTTP://custom.local:18060/  "}
+            assert env.is_xiaohongshu_available(cfg_local) is True
+            assert cfg_local[env.XIAOHONGSHU_RESOLVED_API_BASE_KEY] == "http://custom.local:18060"
+
+            cfg_remote = {"XIAOHONGSHU_API_BASE": "https://xhs.example.com/bridge/"}
+            assert env.is_xiaohongshu_available(cfg_remote) is True
+            assert cfg_remote[env.XIAOHONGSHU_RESOLVED_API_BASE_KEY] == "https://xhs.example.com/bridge"
+
+        assert len(seen_kwargs) == 4
+        for kw in seen_kwargs[:2]:
+            assert kw.get("local_bridge_only") is True
+            assert callable(kw.get("redirect_guard"))
+            assert "public_only" not in kw
+        for kw in seen_kwargs[2:]:
+            assert kw.get("public_only") is True
+            assert callable(kw.get("redirect_guard"))
+            assert "local_bridge_only" not in kw
+
+    def test_env_is_xiaohongshu_available_blocks_cross_origin_redirect_unmocked(self) -> None:
+        secret_hits: list[str] = []
+
+        class SecretHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                secret_hits.append(self.path)
+                body = b'{"success":true,"data":{"is_logged_in":true}}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        secret_srv = ThreadingHTTPServer(("127.0.0.1", 0), SecretHandler)
+        secret_thread = threading.Thread(target=secret_srv.serve_forever, daemon=True)
+        secret_thread.start()
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{secret_srv.server_port}{self.path}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        front_srv = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        front_thread = threading.Thread(target=front_srv.serve_forever, daemon=True)
+        front_thread.start()
+        try:
+            cfg = {"XIAOHONGSHU_API_BASE": f"http://127.0.0.1:{front_srv.server_port}"}
+            assert env.is_xiaohongshu_available(cfg) is False
+            assert secret_hits == []
+        finally:
+            front_srv.shutdown()
+            front_srv.server_close()
+            front_thread.join(2)
+            secret_srv.shutdown()
+            secret_srv.server_close()
+            secret_thread.join(2)
+
+    @pytest.mark.parametrize(
+        "login_payload",
+        [
+            {"code": -1, "data": None},
+            {"code": -1, "data": []},
+            {"code": -1, "data": "err"},
+            None,
+        ],
+    )
+    def test_env_xiaohongshu_probe_handles_null_or_non_dict_data_without_crashing(
+        self, login_payload: Any,
+    ) -> None:
+        def fake_get(url, **kwargs):
+            if url.endswith("/health"):
+                return {"success": True}
+            return login_payload
+
+        with mock.patch.object(http, "get", side_effect=fake_get):
+            assert env._xiaohongshu_base_logged_in("http://localhost:18060", http) is False
+            assert env.is_xiaohongshu_available({"XIAOHONGSHU_API_BASE": "http://localhost:18060"}) is False
 
 
 class TestHigh186XiaohongshuNullDataPayloads:
@@ -681,8 +860,12 @@ class TestHigh185LinkedInAuthorUrlValidation:
             "https://www.linkedin.com/posts/janedoe_123",
             "https://www.linkedin.com/in/",
             "https://www.linkedin.com/in///",
+            "https://www.linkedin.com/in/.",
+            "https://www.linkedin.com/in/./",
+            "https://www.linkedin.com/in/%2e",
             "https://www.linkedin.com/in/../company/acme",
             "https://www.linkedin.com/in/%2e%2e/company/acme",
+            "https://www.linkedin.com../in/janedoe",
             "https://user:pass@www.linkedin.com/in/janedoe",
             "https://evil.com\\@www.linkedin.com/in/janedoe",
             "https://www.linkedin.com:8443/in/janedoe",
@@ -862,12 +1045,30 @@ class TestHigh190GitHubQualifierSanitization:
             ("auth draft:true status:pending reason:completed", "auth"),
             ("auth parent-issue:12 sub-issue:34 category:general answered:true", "auth"),
             ("auth sha:deadbeef owner:acme", "auth"),
+            # Wrapper-boundary bypasses: closing paren/bracket before qualifier.
+            ("(auth)-is:public", "(auth)"),
+            ("(auth)is:private", "(auth)"),
+            ("[auth]-is:public", "[auth]"),
+            ("[auth]org:secret", "[auth]"),
+            # Parenthesized qualifier values.
+            ("auth -is:(public)", "auth"),
+            ("auth is:(private)", "auth"),
+            ("auth label:(bug OR feat)", "auth"),
+            ("auth -org:(acme OR corp)", "auth"),
+            ("auth -is:(public", "auth"),
+            ("(auth)-is:(public)", "(auth)"),
+            # Negated wrapped qualifiers leave no stray '-'.
+            ('auth -"is:public"', "auth"),
+            ("auth -(is:public)", "auth"),
+            ("auth -[-is:public]", "auth"),
             # Wrapper-smuggling attempts where empty wrappers split qualifier tokens.
             ("auth is:()private", "auth"),
             ("auth -is:()public", "auth"),
             ("auth -()is:public", "auth"),
             ("auth is:[]private", "auth"),
-            ('auth is:""private', "auth private"),
+            ('auth is:""private', "auth"),
+            # Adjacent quoted phrases remain distinct (never merged).
+            ('"foo" "bar" -is:public', '"foo" "bar"'),
             # Qualifier-only negated inputs collapse to empty string.
             ("-is:public", ""),
             ("(-is:public)", ""),
@@ -888,10 +1089,28 @@ class TestHigh190GitHubQualifierSanitization:
     ) -> None:
         assert github.strip_search_qualifiers(raw_topic) == expected
 
+    def test_strip_search_qualifiers_linear_time_on_deeply_nested_wrappers(self) -> None:
+        payload = "(" * 5000 + "is:private" + ")" * 5000
+        start = time.monotonic()
+        result = github.strip_search_qualifiers(payload)
+        elapsed = time.monotonic() - start
+        assert result == ""
+        assert elapsed < 0.2, f"deeply nested wrappers took {elapsed:.3f}s (expected linear O(N) < 0.2s)"
+
+        mixed = "[(" * 2500 + "-is:public" + ")]" * 2500
+        start2 = time.monotonic()
+        assert github.strip_search_qualifiers(mixed) == ""
+        assert time.monotonic() - start2 < 0.2
+
     @pytest.mark.parametrize(
         "adversarial_topic",
         [
             "auth -is:public",
+            "(auth)-is:public",
+            "(auth)is:private",
+            "auth -is:(public)",
+            "auth label:(bug OR feat)",
+            'auth -"is:public"',
             "react -created:>2020-01-01",
             "foo -is:issue -is:pull-request",
             "(-is:public) auth -org:private-org -repo:acme/secret",

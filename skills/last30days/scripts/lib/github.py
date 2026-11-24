@@ -214,24 +214,64 @@ QUALIFIER_KEYS = frozenset({
 _QUALIFIER_KEYS_ALT = "|".join(sorted(QUALIFIER_KEYS, key=lambda k: (-len(k), k)))
 
 _QUALIFIER_RE = re.compile(
-    r"(?:(?<=[\s,;(\[\"'])|^)[-+]*?(?:" + _QUALIFIER_KEYS_ALT + r"):(?:[<>]=?)?(?:\"[^\"]*\"|[^\s,;()\[\]]+)[,;]?",
+    r"(?:(?<=[\s,;(\)\[\]\"'])|^)[-+]*?(?:"
+    + _QUALIFIER_KEYS_ALT
+    + r"):(?:[<>]=?)?(?:\([^)]*\)|\"[^\"]*\"|\([^\s,;()\[\]]+|[^\s,;()\[\]]+)[,;]?",
     re.IGNORECASE,
 )
 
 # A qualifier fully wrapped in a single pair of parens/brackets/quotes. The
 # wrapper pair is consumed with the qualifier, so stripping leaves no residue.
+# Optional leading +/- negation before the wrapper (e.g. `-(is:public)`,
+# `-"is:public"`) is consumed when bounded by whitespace/punctuation.
 # An unbalanced quote (e.g. `label:"bug`) is not a wrapper shape and is left
 # to _QUALIFIER_RE, which strips the qualifier as before.
 _WRAPPED_QUALIFIER_RE = re.compile(
-    r"[\(\[\"'][-+]*(?:" + _QUALIFIER_KEYS_ALT + r"):(?:[<>]=?)?(?:\"[^\"]*\"|[^\s,;()\[\]\"']+)[\)\]\"']",
+    r"(?:(?:(?<=[\s,;(\)\[\]\"'])|^)[-+]+)?[\(\[\"'][-+]*(?:"
+    + _QUALIFIER_KEYS_ALT
+    + r"):(?:[<>]=?)?(?:\([^)]*\)|\"[^\"]*\"|[^\s,;()\[\]\"']+)[\)\]\"']",
     re.IGNORECASE,
 )
 
-# Empty wrapper pairs left behind when a nested wrapper collapses (e.g. the
-# `()` from "((created:>2025-03-20))"). Removed to fixpoint; a pair enclosing
-# real text stays.
-_EMPTY_WRAPPER_RE = re.compile(r"\(\s*\)|\[\s*\]|\"\s*\"|'\s*'")
 _ESCAPED_QUOTE_RE = re.compile(r'\\+(?=")')
+_BRACKET_OPEN_FOR_CLOSE = {")": "(", "]": "["}
+
+
+def _collapse_empty_wrappers(text: str) -> str:
+    """Collapse nested empty (), [], "", '' pairs (ignoring inner whitespace) in O(N)."""
+    out: list[str] = []
+    non_ws_indices: list[int] = []
+    in_dquote = False
+    in_squote = False
+    for ch in text:
+        bracket_opener = _BRACKET_OPEN_FOR_CLOSE.get(ch)
+        if bracket_opener is not None:
+            if non_ws_indices and out[non_ws_indices[-1]] == bracket_opener:
+                open_idx = non_ws_indices.pop()
+                del out[open_idx:]
+                continue
+        elif ch == '"':
+            if in_dquote:
+                in_dquote = False
+                if non_ws_indices and out[non_ws_indices[-1]] == '"':
+                    open_idx = non_ws_indices.pop()
+                    del out[open_idx:]
+                    continue
+            else:
+                in_dquote = True
+        elif ch == "'":
+            if in_squote:
+                in_squote = False
+                if non_ws_indices and out[non_ws_indices[-1]] == "'":
+                    open_idx = non_ws_indices.pop()
+                    del out[open_idx:]
+                    continue
+            else:
+                in_squote = True
+        if not ch.isspace():
+            non_ws_indices.append(len(out))
+        out.append(ch)
+    return "".join(out)
 
 
 def strip_search_qualifiers(text: str) -> str:
@@ -246,13 +286,13 @@ def strip_search_qualifiers(text: str) -> str:
 
     def _strip_to_fixpoint(value: str) -> tuple[str, bool]:
         changed_qualifier = False
-        cur = value
+        cur = _collapse_empty_wrappers(value)
         while True:
             after_wrap = _WRAPPED_QUALIFIER_RE.sub(" ", cur)
             after_plain = _QUALIFIER_RE.sub(" ", after_wrap)
             if after_plain != cur:
                 changed_qualifier = True
-            cleaned = _EMPTY_WRAPPER_RE.sub("", after_plain)
+            cleaned = _collapse_empty_wrappers(after_plain)
             if cleaned == cur:
                 return cur, changed_qualifier
             cur = cleaned

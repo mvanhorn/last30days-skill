@@ -27,12 +27,6 @@ _BLOCKED_METADATA_IPS = frozenset({
     ipaddress.ip_address("100.100.100.200"),
     ipaddress.ip_address("fd00:ec2::254"),
 })
-_LOCAL_LAN_NETWORKS = (
-    ipaddress.IPv4Network("10.0.0.0/8"),
-    ipaddress.IPv4Network("172.16.0.0/12"),
-    ipaddress.IPv4Network("192.168.0.0/16"),
-    ipaddress.IPv6Network("fc00::/7"),
-)
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 _NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
 
@@ -65,9 +59,7 @@ def _is_local_bridge_host(
     ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None,
 ) -> bool:
     if ip is not None:
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-            return _is_local_bridge_host(str(ip.ipv4_mapped), ip.ipv4_mapped)
-        return ip.is_loopback or any(ip in net for net in _LOCAL_LAN_NETWORKS)
+        return http._is_local_bridge_ip(ip)
     return (
         host == "localhost"
         or host.endswith(".localhost")
@@ -111,8 +103,8 @@ def _validate_base_url(base_url: Any) -> tuple[str, bool]:
     if ".." in parts.path.split("/") or any(tok in lower_path for tok in ("%2e", "%2f", "%5c")):
         raise ValueError("Invalid Xiaohongshu API base URL path")
 
-    host = (parts.hostname or "").rstrip(".").lower()
-    if not host:
+    host = (parts.hostname or "").removesuffix(".").lower()
+    if not host or host.startswith(".") or host.endswith(".") or ".." in host:
         raise ValueError("Missing hostname in Xiaohongshu API base URL")
     if host in _BLOCKED_METADATA_HOSTS or host.endswith(".metadata.google.internal"):
         raise ValueError("Refused cloud metadata host in Xiaohongshu API base URL")
@@ -202,6 +194,19 @@ def _build_note_url(feed_id: str, xsec_token: str) -> str:
     return f"https://www.xiaohongshu.com/explore/{feed_id}"
 
 
+def _request_options(base_url: Any) -> tuple[str, Dict[str, Any]]:
+    """Validate ``base_url`` and build pinned HTTP kwargs for Xiaohongshu requests."""
+    base, is_local_bridge = _validate_base_url(base_url)
+    req_kwargs: Dict[str, Any] = {
+        "redirect_guard": _same_origin_redirect_guard(base),
+    }
+    if is_local_bridge:
+        req_kwargs["local_bridge_only"] = True
+    else:
+        req_kwargs["public_only"] = True
+    return base, req_kwargs
+
+
 def search_feeds(
     topic: str,
     from_date: str,
@@ -210,12 +215,7 @@ def search_feeds(
     depth: str = "default",
 ) -> List[Dict[str, Any]]:
     """Search Xiaohongshu feeds and normalize to web-item shape."""
-    base, is_local_bridge = _validate_base_url(base_url)
-    req_kwargs: Dict[str, Any] = {
-        "redirect_guard": _same_origin_redirect_guard(base),
-    }
-    if not is_local_bridge:
-        req_kwargs["public_only"] = True
+    base, req_kwargs = _request_options(base_url)
 
     # Quick login sanity check.
     login = http.get(f"{base}/api/v1/login/status", timeout=8, retries=1, **req_kwargs)

@@ -1,6 +1,7 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
 import http.client
+import ipaddress
 import json
 from collections import OrderedDict
 import math
@@ -127,7 +128,106 @@ def _request_origin(url: str) -> tuple[str, str, int]:
 # redirect to a private network before it is followed, not after.
 _REDIRECT_GUARD_ATTR = "_last30days_redirect_guard"
 _PUBLIC_ONLY_ATTR = "_last30days_public_only"
+_LOCAL_BRIDGE_ONLY_ATTR = "_last30days_local_bridge_only"
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
+
+_LOCAL_BRIDGE_BLOCKED_IPS = frozenset({
+    ipaddress.ip_address("100.100.100.200"),
+    ipaddress.ip_address("fd00:ec2::254"),
+})
+_LOCAL_BRIDGE_LAN_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+    ipaddress.IPv6Network("fc00::/7"),
+)
+_LOCAL_BRIDGE_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_LOCAL_BRIDGE_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+
+
+def _is_local_bridge_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True only for loopback, RFC1918 LAN, or non-IMDS IPv6 ULA addresses."""
+    if (
+        ip in _LOCAL_BRIDGE_BLOCKED_IPS
+        or ip.is_link_local
+        or ip.is_unspecified
+        or ip.is_multicast
+    ):
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return _is_local_bridge_ip(ip.ipv4_mapped)
+        if (
+            ip.sixtofour is not None
+            or ip.teredo is not None
+            or ip in _LOCAL_BRIDGE_NAT64_WELL_KNOWN
+            or ip in _LOCAL_BRIDGE_NAT64_LOCAL
+        ):
+            return False
+    return ip.is_loopback or any(ip in net for net in _LOCAL_BRIDGE_LAN_NETWORKS)
+
+
+def _resolve_local_bridge_addresses(host: str, port: int) -> list[tuple]:
+    """Resolve ``host`` fresh and allow only verified local/LAN bridge IPs."""
+    from . import public_host
+
+    bare = (host or "").strip()
+    if bare.startswith("[") and bare.endswith("]"):
+        bare = bare[1:-1]
+    bare = bare.removesuffix(".").lower()
+    if not bare:
+        raise public_host.NonPublicAddressError("refused disallowed local-bridge address")
+    literal = public_host._parse_ip_literal(bare)
+    if literal is not None:
+        if not _is_local_bridge_ip(literal):
+            raise public_host.NonPublicAddressError("refused disallowed local-bridge address")
+        family = socket.AF_INET6 if isinstance(literal, ipaddress.IPv6Address) else socket.AF_INET
+        sockaddr = (str(literal), port, 0, 0) if family == socket.AF_INET6 else (str(literal), port)
+        return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+    answers = socket.getaddrinfo(bare, port, 0, socket.SOCK_STREAM)
+    if not answers:
+        raise public_host.NonPublicAddressError("refused disallowed local-bridge address")
+    verified: list[tuple] = []
+    for family, socktype, proto, canonname, sockaddr in answers:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
+        except ValueError as exc:
+            raise public_host.NonPublicAddressError("refused disallowed local-bridge address") from exc
+        if not _is_local_bridge_ip(ip):
+            raise public_host.NonPublicAddressError("refused disallowed local-bridge address")
+        verified.append((family, socktype, proto, canonname, sockaddr))
+    return verified
+
+
+def _create_pinned_connection(
+    address: tuple[str, int],
+    resolver: Callable[[str, int], list[tuple]],
+    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+    source_address: Any = None,
+) -> socket.socket:
+    """Resolve ``address`` fresh via ``resolver`` and connect only to verified IPs."""
+    from . import public_host
+
+    host, port = address
+    verified = resolver(host, port)
+    last_err: Optional[OSError] = None
+    for af, socktype, proto, _canonname, sockaddr in verified:
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_err = exc
+            if sock is not None:
+                sock.close()
+    if last_err is not None:
+        raise last_err
+    raise public_host.NonPublicAddressError("refused disallowed address")
 
 
 def _check_http_scheme(url: str) -> str:
@@ -151,26 +251,20 @@ def _create_public_connection(
     """Resolve ``address`` fresh once and connect only to verified public IPs."""
     from . import public_host
 
-    host, port = address
-    verified = public_host.resolve_public_addresses(host, port)
-    last_err: Optional[OSError] = None
-    for af, socktype, proto, _canonname, sockaddr in verified:
-        sock = None
-        try:
-            sock = socket.socket(af, socktype, proto)
-            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
-                sock.settimeout(timeout)
-            if source_address:
-                sock.bind(source_address)
-            sock.connect(sockaddr)
-            return sock
-        except OSError as exc:
-            last_err = exc
-            if sock is not None:
-                sock.close()
-    if last_err is not None:
-        raise last_err
-    raise public_host.NonPublicAddressError("refused non-public address")
+    return _create_pinned_connection(
+        address, public_host.resolve_public_addresses, timeout=timeout, source_address=source_address,
+    )
+
+
+def _create_local_bridge_connection(
+    address: tuple[str, int],
+    timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+    source_address: Any = None,
+) -> socket.socket:
+    """Resolve ``address`` fresh once and connect only to verified local/LAN bridge IPs."""
+    return _create_pinned_connection(
+        address, _resolve_local_bridge_addresses, timeout=timeout, source_address=source_address,
+    )
 
 
 class _PublicHTTPConnection(http.client.HTTPConnection):
@@ -185,6 +279,21 @@ class _PublicHTTPConnection(http.client.HTTPConnection):
             from . import public_host
 
             raise public_host.NonPublicAddressError("refused proxied tunnel for public-only request")
+        return super().connect()
+
+
+class _LocalBridgeHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection pinned to verified loopback/RFC1918/ULA bridge IPs at connect time."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _create_local_bridge_connection
+
+    def connect(self):
+        if self._tunnel_host:
+            from . import public_host
+
+            raise public_host.NonPublicAddressError("refused proxied tunnel for local-bridge-only request")
         return super().connect()
 
 
@@ -204,10 +313,29 @@ if hasattr(http.client, "HTTPSConnection"):
                 raise public_host.NonPublicAddressError("refused proxied tunnel for public-only request")
             return super().connect()
 
+    class _LocalBridgeHTTPSConnection(http.client.HTTPSConnection):
+        """HTTPSConnection pinned to verified local/LAN bridge IPs while preserving TLS SNI."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._create_connection = _create_local_bridge_connection
+
+        def connect(self):
+            if self._tunnel_host:
+                from . import public_host
+
+                raise public_host.NonPublicAddressError("refused proxied tunnel for local-bridge-only request")
+            return super().connect()
+
 
 class _PublicHTTPHandler(urllib.request.HTTPHandler):
     def http_open(self, req):
         return self.do_open(_PublicHTTPConnection, req)
+
+
+class _LocalBridgeHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_LocalBridgeHTTPConnection, req)
 
 
 if hasattr(http.client, "HTTPSConnection"):
@@ -216,23 +344,39 @@ if hasattr(http.client, "HTTPSConnection"):
         def https_open(self, req):
             return self.do_open(_PublicHTTPSConnection, req, context=self._context)
 
+    class _LocalBridgeHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(_LocalBridgeHTTPSConnection, req, context=self._context)
+
 
 def _build_http_opener(
-    *, bypass_proxy: bool = False, public_only: bool = False,
+    *, bypass_proxy: bool = False, public_only: bool = False, local_bridge_only: bool = False,
 ) -> urllib.request.OpenerDirector:
     """Build an OpenerDirector restricted strictly to HTTP(S) — omitting urllib's
     default FileHandler, FTPHandler, and DataHandler."""
     opener = urllib.request.OpenerDirector()
+    pinned = public_only or local_bridge_only
+    if public_only:
+        http_handler = _PublicHTTPHandler()
+    elif local_bridge_only:
+        http_handler = _LocalBridgeHTTPHandler()
+    else:
+        http_handler = urllib.request.HTTPHandler()
     handlers = [
-        urllib.request.ProxyHandler({}) if (bypass_proxy or public_only) else urllib.request.ProxyHandler(),
+        urllib.request.ProxyHandler({}) if (bypass_proxy or pinned) else urllib.request.ProxyHandler(),
         urllib.request.UnknownHandler(),
-        _PublicHTTPHandler() if public_only else urllib.request.HTTPHandler(),
+        http_handler,
         urllib.request.HTTPDefaultErrorHandler(),
         _StripAuthOnCrossOriginRedirect(),
         urllib.request.HTTPErrorProcessor(),
     ]
     if hasattr(http.client, "HTTPSConnection"):
-        handlers.append(_PublicHTTPSHandler() if public_only else urllib.request.HTTPSHandler())
+        if public_only:
+            handlers.append(_PublicHTTPSHandler())
+        elif local_bridge_only:
+            handlers.append(_LocalBridgeHTTPSHandler())
+        else:
+            handlers.append(urllib.request.HTTPSHandler())
     for handler in handlers:
         opener.add_handler(handler)
     return opener
@@ -291,6 +435,7 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
                 req.full_url, 403, f"redirect refused: {exc}", headers, fp,
             ) from exc
         public_only = bool(getattr(req, _PUBLIC_ONLY_ATTR, False))
+        local_bridge_only = bool(getattr(req, _LOCAL_BRIDGE_ONLY_ATTR, False))
         if public_only:
             from . import public_host
 
@@ -310,6 +455,8 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
             setattr(new, _REDIRECT_GUARD_ATTR, guard)
         if public_only:
             setattr(new, _PUBLIC_ONLY_ATTR, True)
+        if local_bridge_only:
+            setattr(new, _LOCAL_BRIDGE_ONLY_ATTR, True)
         if _request_origin(req.full_url) != _request_origin(new.full_url):
             for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
                 if not store:
@@ -323,6 +470,7 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
 _opener = _build_http_opener(bypass_proxy=False)
 _direct_opener = _build_http_opener(bypass_proxy=True)
 _public_opener = _build_http_opener(bypass_proxy=True, public_only=True)
+_local_bridge_opener = _build_http_opener(bypass_proxy=True, local_bridge_only=True)
 _DEFAULT_URLOPEN = urllib.request.urlopen
 
 
@@ -344,6 +492,8 @@ def _open_request(req, timeout, *, bypass_proxy=False):
                 public_host.NonPublicAddressError("refused non-public address")
             )
         return _public_opener.open(req, timeout=timeout)
+    if getattr(req, _LOCAL_BRIDGE_ONLY_ATTR, False):
+        return _local_bridge_opener.open(req, timeout=timeout)
     opener = _direct_opener if bypass_proxy else _opener
     return opener.open(req, timeout=timeout)
 
@@ -1172,6 +1322,7 @@ def request(
     redirect_guard: Callable[[str], bool] | None = None,
     sensitive_url: bool = False,
     public_only: bool = False,
+    local_bridge_only: bool = False,
     max_bytes: Optional[int] = None,
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
@@ -1223,8 +1374,10 @@ def request(
         raise ValueError("owned GET does not support proxy bypass")
     if owned_get and return_headers:
         raise ValueError("owned GET does not report response headers")
-    if owned_get and (redirect_guard is not None or public_only):
-        raise ValueError("owned GET does not support redirect_guard or public_only")
+    if public_only and local_bridge_only:
+        raise ValueError("public_only and local_bridge_only are mutually exclusive")
+    if owned_get and (redirect_guard is not None or public_only or local_bridge_only):
+        raise ValueError("owned GET does not support redirect_guard, public_only, or local_bridge_only")
     try:
         _check_http_scheme(url)
     except ValueError as exc:
@@ -1291,6 +1444,8 @@ def request(
         setattr(req, _REDIRECT_GUARD_ATTR, redirect_guard)
     if public_only:
         setattr(req, _PUBLIC_ONLY_ATTR, True)
+    if local_bridge_only:
+        setattr(req, _LOCAL_BRIDGE_ONLY_ATTR, True)
 
     def log_request(message: str) -> None:
         if not sensitive_url:
