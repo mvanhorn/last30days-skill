@@ -871,3 +871,31 @@ def test_greptile2_stocktwits_skips_generic_finance_only_topics(topic):
     with patch.object(stocktwits, "_get_json") as mock_get:
         assert stocktwits.detect_symbols(topic, resolve=True) == []
         mock_get.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# PR #1611 Greptile round-3 regression (COIN stock vs crypto coin / CRYPTO COIN)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("topic", ["COIN stock", "COIN earnings"])
+def test_greptile3_stocktwits_allows_uppercase_ticker_matching_generic_word(topic):
+    captured_q: list[str] = []
+
+    def fake_get(url, timeout=20):
+        qs = parse_qs(urlsplit(url).query)
+        captured_q.extend(qs.get("q", []))
+        return {"results": [{"symbol": "COIN"}]}
+
+    with patch.object(stocktwits, "_get_json", side_effect=fake_get):
+        syms = stocktwits.detect_symbols(topic, resolve=True)
+
+    assert captured_q == ["COIN"]
+    assert syms == ["COIN"]
+
+
+@pytest.mark.parametrize("topic", ["crypto coin", "CRYPTO COIN"])
+def test_greptile3_stocktwits_still_blocks_generic_coin_phrases(topic):
+    with patch.object(stocktwits, "_get_json") as mock_get:
+        assert stocktwits.detect_symbols(topic, resolve=True) == []
+        mock_get.assert_not_called()

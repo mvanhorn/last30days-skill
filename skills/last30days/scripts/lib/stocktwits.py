@@ -161,13 +161,26 @@ def detect_symbols(topic: str, *, resolve: bool = True, max_symbols: int = 2) ->
     )
     if not name:
         return []
-    remaining_words = [
-        word for word in (tok.strip(".,!?;:\"'()[]{}") for tok in name.lower().split()) if word
+    raw_words = [
+        word for word in (tok.strip(".,!?;:\"'()[]{}") for tok in name.split()) if word
     ]
-    if not remaining_words or all(
-        word in _GENERIC_FINANCE_WORDS or bool(_FINANCE_HINTS.fullmatch(word))
-        for word in remaining_words
-    ):
+    mixed_case_topic = not topic.isupper()
+
+    def _is_generic_finance_word(raw_word: str) -> bool:
+        lowered = raw_word.lower()
+        # Preserve an uppercase ticker in a mixed-case financial query (e.g.
+        # "COIN stock", "COIN earnings") while still blocking generic phrases
+        # like "crypto coin" or all-caps "CRYPTO COIN".
+        if (
+            mixed_case_topic
+            and _EXPLICIT_TICKER.fullmatch(raw_word)
+            and lowered not in _CRYPTO_ALIASES
+            and not _FINANCE_HINTS.fullmatch(raw_word)
+        ):
+            return False
+        return lowered in _GENERIC_FINANCE_WORDS or bool(_FINANCE_HINTS.fullmatch(lowered))
+
+    if not raw_words or all(_is_generic_finance_word(word) for word in raw_words):
         return []
     try:
         url = _SEARCH_URL + "?" + urllib.parse.urlencode({"q": name})
