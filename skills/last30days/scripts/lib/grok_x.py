@@ -730,12 +730,9 @@ def _parse_x_response_with_reason(
         return [], reason
 
     items: List[Dict[str, Any]] = []
-    seen_ids = set()
-    for index, fields in enumerate(kept, start=1):
+    by_post_id: Dict[str, Dict[str, Any]] = {}
+    for fields in kept:
         post_id = str(fields.get("post_id") or "").strip()
-        if post_id in seen_ids:
-            continue
-        seen_ids.add(post_id)
         handle = _clean_handle(fields.get("author_handle"))
         if not handle:
             author = str(fields.get("author") or "")
@@ -750,16 +747,37 @@ def _parse_x_response_with_reason(
             "replies": _as_int(str(fields.get("replies", ""))),
             "quotes": _as_int(str(fields.get("quotes", ""))),
         }
-        items.append({
-            "id": f"GK{index}",
+        has_engagement = any(v is not None for v in engagement.values())
+        parsed_date = _parse_date(str(fields.get("created_at", "")))
+        existing = by_post_id.get(post_id)
+        if existing is not None:
+            if len(text) > len(existing["text"]):
+                existing["text"] = text
+                existing["relevance"] = _compute_relevance(topic, text) if topic else 0.7
+            if not existing["date"] and parsed_date:
+                existing["date"] = parsed_date
+            if has_engagement:
+                if existing["engagement"] is None:
+                    existing["engagement"] = engagement
+                else:
+                    for metric, value in engagement.items():
+                        if value is not None:
+                            prev = existing["engagement"].get(metric)
+                            if prev is None or value > prev:
+                                existing["engagement"][metric] = value
+            continue
+        item = {
+            "id": f"GK{len(items) + 1}",
             "text": text,
             "url": f"https://x.com/{handle}/status/{post_id}",
             "author_handle": handle,
-            "date": _parse_date(str(fields.get("created_at", ""))),
-            "engagement": engagement if any(v is not None for v in engagement.values()) else None,
+            "date": parsed_date,
+            "engagement": engagement if has_engagement else None,
             "why_relevant": "",
             "relevance": _compute_relevance(topic, text) if topic else 0.7,
-        })
+        }
+        by_post_id[post_id] = item
+        items.append(item)
     return items, ""
 
 

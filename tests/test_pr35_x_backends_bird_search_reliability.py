@@ -260,6 +260,40 @@ class TestHigh139GrokWrapperParsing:
         assert items_arr[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
         assert items_arr[0]["text"] == "wrapped inside structured result"
 
+    def test_duplicate_post_prefers_more_complete_copy_regardless_of_order(self):
+        wrapped_stub = {
+            "type": "preview",
+            "result": [
+                {
+                    "url": f"https://x.com/steipete/status/{IN_WINDOW_ID}",
+                    "text": "short",
+                }
+            ],
+        }
+        complete_post = {
+            "id": IN_WINDOW_ID,
+            "author_handle": "steipete",
+            "text": "steipete shipped the full post text with details.",
+            "likes": 1462,
+            "reposts": 48,
+            "replies": 95,
+            "quotes": 20,
+            "created_at": "Wed, 12 Aug 2026 15:55:18 GMT",
+        }
+        for payload in ([wrapped_stub, complete_post], [complete_post, wrapped_stub]):
+            items = grok_x.parse_x_response({"text": json.dumps(payload)}, "steipete", *WINDOW)
+            assert len(items) == 1
+            assert items[0]["author_handle"] == "steipete"
+            assert items[0]["text"] == "steipete shipped the full post text with details."
+            assert items[0]["date"] == "2026-08-12"
+            assert items[0]["engagement"] == {
+                "likes": 1462,
+                "reposts": 48,
+                "replies": 95,
+                "quotes": 20,
+            }
+            assert items[0]["relevance"] > 0.0
+
     def test_top_level_json_array_of_cli_wrappers_unwraps_prose_and_collections(self):
         prose_stream = [
             {"type": "system", "message": "init"},
