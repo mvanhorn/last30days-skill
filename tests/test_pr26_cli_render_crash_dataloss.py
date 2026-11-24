@@ -831,3 +831,180 @@ def test_high048_resolved_entities_block_handles_non_dict_resolved_artifact():
     assert "- **Acme**: X @acme | Subs r/acme" in rendered
     assert "- **Beta**: X - | Subs - | GitHub - | Context: -" in rendered
     assert "- **Gamma**: X - | Subs - | GitHub - | Ticker GAM (host search) | Context: 999" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Adversarial review regressions: huge integers, chained prefixes, Polymarket
+# non-string labels / metadata=None, defensive persist_report return handling
+# ---------------------------------------------------------------------------
+
+
+def test_review_huge_integers_do_not_overflow_or_exceed_str_digit_limit():
+    huge_400 = 10**400
+    huge_5000 = 10**5000
+    near_max = 10**308
+
+    assert render._is_finite_number(huge_400) is False
+    assert render._is_finite_number(huge_5000) is False
+    assert render._is_finite_number(near_max) is True
+
+    assert render._coerce_numeric(huge_400) is None
+    assert render._coerce_numeric(huge_5000) is None
+    assert render._coerce_numeric("1" + "0" * 5000) is None
+    assert render._coerce_numeric(near_max) == near_max
+
+    assert render._format_number(huge_400) == ""
+    assert render._format_number(huge_5000) == ""
+    assert render._format_number(float("inf")) == ""
+    assert render._format_number(float("nan")) == ""
+    assert render._fmt_pairs([(huge_5000, "likes"), (25, "rt")]) == "25rt"
+
+    # Two 10**308 items overflow when summed; huge_400 alone is skipped without hiding valid items.
+    assert render._aggregate_engagement(
+        "x",
+        [
+            _make_item("a", "x", engagement={"likes": huge_400}),
+            _make_item("b", "x", engagement={"likes": 42}),
+        ],
+    ) == "42likes"
+    assert render._aggregate_engagement(
+        "x",
+        [
+            _make_item("a", "x", engagement={"likes": near_max}),
+            _make_item("b", "x", engagement={"likes": near_max}),
+        ],
+    ) is None
+
+    # Market windows reject huge_400 / huge_5000 without OverflowError.
+    assert render._is_market_window(
+        {"symbol": "ACME", "start_close": huge_400, "end_close": 100.0, "change_pct": 1.0}
+    ) is False
+    window = {
+        "symbol": "ACME",
+        "company": "Acme Corp",
+        "currency": "USD",
+        "range_from": "2026-10-01",
+        "range_to": "2026-10-31",
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-31",
+        "start_close": 100.0,
+        "end_close": 110.0,
+        "change_pct": 10.0,
+        "benchmark": {"name": "S&P 500", "start_close": huge_400, "end_close": 100.0, "change_pct": 1.0},
+        "top_moves": [
+            {"date": "2026-10-05", "previous_close": huge_5000, "close": 100.0, "change_pct": 1.0},
+        ],
+    }
+    market_lines = "\n".join(render._market_window_lines(window))
+    assert "First close 100.00" in market_lines
+    assert "S&P 500 over the same window" not in market_lines
+    assert "Largest daily moves" not in market_lines
+
+    # Polymarket price=10**308 overflows price*100; huge_5000 comment score must not raise ValueError.
+    pm_overflow = _make_item(
+        "pm-huge",
+        "polymarket",
+        "Will Acme overflow?",
+        metadata={
+            "question": "Will Acme overflow?",
+            "outcome_prices": [
+                ("Overflow", near_max),
+                ("Huge", huge_400),
+                ("Yes", 0.42),
+            ],
+        },
+    )
+    yt_huge_comment = _make_item(
+        "yt-huge",
+        "youtube",
+        "Acme video",
+        metadata={
+            "top_comments": [
+                {"author": "alice", "score": huge_5000, "score_pending": True, "excerpt": "Pending huge score"},
+                {"author": "bob", "score": huge_5000, "excerpt": "Regular huge score"},
+            ]
+        },
+    )
+    cand = _make_candidate("c-huge", yt_huge_comment)
+    report = _make_report(
+        "Acme",
+        items_by_source={"polymarket": [pm_overflow], "youtube": [yt_huge_comment]},
+        candidates=[cand],
+    )
+    full = render.render_full(report)
+    assert "Odds: Yes: 42%" in full
+    assert "Overflow:" not in full
+    assert "Pending huge score" in full
+    cand_text = "\n".join(render._render_candidate(cand, prefix="1.", report=report))
+    assert "Pending huge score" in cand_text
+    assert render._polymarket_top_markets([pm_overflow]) == ["Acme overflow 42%"]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("u/@bot", "bot"),
+        ("/u/@AutoModerator", "AutoModerator"),
+        ("@u/@bot", "bot"),
+        ("u/@Alice", "Alice"),
+        ("  /u/u/@dependabot  ", "dependabot"),
+    ],
+)
+def test_review_strip_author_prefix_loops_until_stable(raw: str, expected: str):
+    assert render._strip_author_prefix(raw) == expected
+
+
+def test_review_chained_bot_prefixes_blocked_and_author_key_normalized():
+    item = _make_item("r1", "reddit", "Acme release", author="Alice", container="python")
+    for bot_author in ("u/@bot", "/u/@AutoModerator", "@u/@dependabot"):
+        assert render._is_community_comment(item, {"author": bot_author}, "Automated note.") is False
+    assert render._author_key("u/@Alice") == "alice"
+    assert render._is_community_comment(item, {"author": "u/@Alice"}, "OP reply here.") is False
+
+
+def test_review_polymarket_top_markets_handles_non_string_label_and_none_metadata():
+    non_string_label = _make_item(
+        "pm1",
+        "polymarket",
+        "Will Acme hit target?",
+        metadata={
+            "question": "Will Acme hit target?",
+            "outcome_prices": [(123, 0.5)],
+        },
+    )
+    none_metadata = _make_item("pm2", "polymarket", "Will Acme ship?")
+    none_metadata.metadata = None  # type: ignore[assignment]
+
+    summaries = render._polymarket_top_markets([non_string_label, none_metadata], topic="Acme")
+    assert summaries == ["Acme hit target: 123 50%"]
+
+
+def test_review_comparison_store_handles_none_or_partial_persist_report_return(
+    monkeypatch, tmp_path: Path, capsys
+):
+    from lib import fanout
+
+    entity_reports = [
+        ("OpenAI", _make_report("OpenAI")),
+        ("Anthropic", _make_report("Anthropic")),
+    ]
+    returns = iter([None, {"new": 3}])
+
+    monkeypatch.setattr(env, "get_config", lambda **kwargs: {})
+    monkeypatch.setattr(env, "hosted_backend_configured", lambda: False)
+    monkeypatch.setattr(cli, "_law7_host_plan_gate", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "_x_handle_decision_signal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "diagnose", lambda *args, **kwargs: {"available_sources": ["reddit"]})
+    monkeypatch.setattr(fanout, "run_competitor_fanout", lambda **kwargs: list(entity_reports))
+    monkeypatch.setattr(cli, "persist_report", lambda *args, **kwargs: next(returns))
+    monkeypatch.setattr(cli, "_render_save_and_print", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(cli, "_write_last_run", lambda *args, **kwargs: True)
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+
+    parser = cli.build_parser()
+    args, extra = parser.parse_known_args(
+        ["OpenAI vs Anthropic", "--mock", "--store", "--save-dir", str(tmp_path)]
+    )
+    rc = cli._main(parser, args, extra, command_started=1000.0)
+    assert rc == 0
+    assert "[last30days] Stored 3 new, 0 updated findings" in capsys.readouterr().err

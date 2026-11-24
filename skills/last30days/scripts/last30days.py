@@ -6278,9 +6278,9 @@ def _main(
             )
             counts = {"new": 0, "updated": 0}
             for current in reports_to_store:
-                current_counts = persist_report(current, store_db=store_db)
-                counts["new"] += current_counts["new"]
-                counts["updated"] += current_counts["updated"]
+                current_counts = persist_report(current, store_db=store_db) or {}
+                counts["new"] += int(current_counts.get("new") or 0)
+                counts["updated"] += int(current_counts.get("updated") or 0)
             sys.stderr.write(
                 f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"
             )

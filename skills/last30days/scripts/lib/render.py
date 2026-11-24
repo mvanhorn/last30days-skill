@@ -691,18 +691,23 @@ _FRESHNESS_PRIORITY = {
 
 
 def _is_finite_number(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _coerce_numeric(value: object) -> int | float | None:
     if isinstance(value, bool) or value in (None, ""):
         return None
     if isinstance(value, int):
-        return value
+        try:
+            fval = float(value)
+        except OverflowError:
+            return None
+        return value if math.isfinite(fval) else None
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, str):
@@ -711,12 +716,36 @@ def _coerce_numeric(value: object) -> int | float | None:
             return None
         try:
             numeric = float(text)
-        except ValueError:
+        except (ValueError, OverflowError):
             return None
         if not math.isfinite(numeric):
             return None
         return int(numeric) if numeric.is_integer() else numeric
     return None
+
+
+def _format_polymarket_pct(price: object) -> str | None:
+    if not _is_finite_number(price):
+        return None
+    try:
+        numeric = float(price)
+        scaled = numeric * 100.0
+    except OverflowError:
+        return None
+    if not math.isfinite(scaled):
+        return None
+    return f"{scaled:.0f}%" if numeric >= 0.1 else f"{scaled:.1f}%"
+
+
+def _format_vote_part(score: object, vote_label: str) -> str:
+    if score is None or score == "" or isinstance(score, bool):
+        return ""
+    if isinstance(score, (int, float)):
+        if not _is_finite_number(score):
+            return ""
+        return f" ({score} {vote_label})"
+    text = _safe_title(str(score))
+    return f" ({text} {vote_label})" if text else ""
 
 
 def _candidate_freshness_flag(report: schema.Report, candidate_id: str) -> str:
@@ -2097,7 +2126,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                     f"  {_format_untrusted_evidence(item.snippet, 500, continuation_indent='  ')}"
                 )
             # Top comments for Reddit, YouTube, TikTok, HackerNews.
-            metadata = item.metadata or {}
+            metadata = item.metadata if isinstance(item.metadata, dict) else {}
             raw_top_comments = metadata.get("top_comments")
             top_comments = (
                 [tc for tc in raw_top_comments if isinstance(tc, dict)][:3]
@@ -2110,13 +2139,8 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                     excerpt = str(
                         tc.get("excerpt") or tc.get("body") or tc.get("text") or ""
                     )
-                    tc_score = tc.get("score", "")
                     attribution = _comment_attribution(item.source, tc.get("author"))
-                    vote_part = (
-                        f" ({tc_score} {vote_label})"
-                        if tc_score is not None and tc_score != ""
-                        else ""
-                    )
+                    vote_part = _format_vote_part(tc.get("score", ""), vote_label)
                     lines.append(
                         f"  Top comment {attribution}{vote_part}: "
                         f"{_format_untrusted_evidence(excerpt, 200, continuation_indent='  ')}"
@@ -2177,14 +2201,12 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                     if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
                         continue
                     name, price = entry
-                    if not _is_finite_number(price):
+                    pct = _format_polymarket_pct(price)
+                    if pct is None:
                         continue
-                    pct = (
-                        f"{price * 100:.0f}%"
-                        if price >= 0.1
-                        else f"{price * 100:.1f}%"
+                    odds_parts.append(
+                        f"{_safe_title('' if name is None else str(name))}: {pct}"
                     )
-                    odds_parts.append(f"{_safe_title(str(name))}: {pct}")
                 if odds_parts:
                     lines.append(f"  Odds: {' | '.join(odds_parts)}")
                 remaining = metadata.get("outcomes_remaining") or 0
@@ -3213,15 +3235,10 @@ def _render_candidate(
         )
     for tc in _top_comments_list(primary):
         excerpt = str(tc.get("excerpt") or tc.get("body") or tc.get("text") or "")
-        score = tc.get("score", "")
         vote_label = _vote_label_for(primary.source) if primary else "upvotes"
         source = primary.source if primary else None
         attribution = _comment_attribution(source, tc.get("author"))
-        vote_part = (
-            f" ({score} {vote_label})"
-            if score is not None and score != ""
-            else ""
-        )
+        vote_part = _format_vote_part(tc.get("score", ""), vote_label)
         # HN comment lines carry their own link: the candidate URL above is
         # the article, not where the quote was said.
         hn_link = (
@@ -3321,7 +3338,7 @@ def _polymarket_name_key(text: str) -> str:
     return " ".join((text or "").casefold().split())
 
 
-def _polymarket_market_name(question: str, label: str) -> tuple[str, bool]:
+def _polymarket_market_name(question: str, label: object) -> tuple[str, bool]:
     """Name one market for the footer, saying each thing once.
 
     Returns the name and whether it is the bare descriptor, which drops the
@@ -3330,7 +3347,7 @@ def _polymarket_market_name(question: str, label: str) -> tuple[str, bool]:
     descriptor = _shorten_polymarket_title(question)
     if not descriptor:
         return "", True
-    label = (label or "").strip()
+    label = ("" if label is None else str(label)).strip()
     label_key = _polymarket_name_key(label)
     descriptor_key = _polymarket_name_key(descriptor)
     descriptor_lead = descriptor_key.split()[0] if descriptor_key else ""
@@ -3394,12 +3411,13 @@ def _polymarket_phrase(question: str) -> str:
 def _polymarket_headline(item: schema.SourceItem) -> tuple[str, float, str] | None:
     """The question, price and outcome label the parser chose to stand for the
     event, or None for an item saved before it chose one."""
-    headline = item.metadata.get("headline")
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    headline = metadata.get("headline")
     if not isinstance(headline, dict):
         return None
     question = str(headline.get("question") or "").strip()
     price = headline.get("price")
-    if not question or isinstance(price, bool) or not isinstance(price, (int, float)):
+    if not question or not _is_finite_number(price):
         return None
     return question, float(price), " ".join(str(headline.get("label") or "").split())
 
@@ -3409,12 +3427,13 @@ def _polymarket_names_topic(item: schema.SourceItem, topic: str) -> bool:
     question and its headline. An item carrying a matched market was already
     judged against the topic, its aliases and related names by the entity
     matcher, so it is kept; the word check covers items saved by older builds."""
-    if isinstance(item.metadata.get("matched_market"), dict):
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    if isinstance(metadata.get("matched_market"), dict):
         return True
     return polymarket.names_whole_topic(
         topic,
-        item.title,
-        str(item.metadata.get("question") or ""),
+        item.title or "",
+        str(metadata.get("question") or ""),
         (_polymarket_headline(item) or ("",))[0],
     )
 
@@ -3430,6 +3449,7 @@ def _polymarket_top_markets(
     listed. An item saved by an older build carries no chosen market and is
     named the older way: ['UK visit 5.5%', 'blocked from entering 36%'].
     """
+    items = [item for item in items if isinstance(item.metadata, dict)]
     if topic:
         items = [item for item in items if _polymarket_names_topic(item, topic)]
     sorted_items = polymarket.by_selection(items)
@@ -3441,7 +3461,8 @@ def _polymarket_top_markets(
     repeats: list[schema.SourceItem] = []
     seen_series: set[str] = set()
     for item in sorted_items:
-        texts = (item.title, str(item.metadata.get("question") or ""))
+        metadata = item.metadata if isinstance(item.metadata, dict) else {}
+        texts = (item.title or "", str(metadata.get("question") or ""))
         counted = polymarket.is_count_series(*texts)
         series = polymarket.series_key(*texts)
         if series and series in seen_series:
@@ -3451,7 +3472,9 @@ def _polymarket_top_markets(
         seen_series.add(series)
         firsts.append(item)
     firsts.sort(key=lambda it: polymarket.is_count_series(
-        it.title, str(it.metadata.get("question") or "")))
+        it.title or "",
+        str((it.metadata if isinstance(it.metadata, dict) else {}).get("question") or ""),
+    ))
     sorted_items = firsts + repeats
 
     # (name, pct, question, label when the name is not the bare descriptor)
@@ -3460,38 +3483,36 @@ def _polymarket_top_markets(
         headline = _polymarket_headline(item)
         if headline:
             question, price, label = headline
-            pct = f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%"
+            pct = _format_polymarket_pct(price)
+            if pct is None:
+                continue
             name = _polymarket_phrase(question)
             if name:
                 markets.append((f"{name}: {label}" if label else name, pct, question, label))
             continue
-        raw_outcomes = (item.metadata or {}).get("outcome_prices")
+        metadata = item.metadata if isinstance(item.metadata, dict) else {}
+        raw_outcomes = metadata.get("outcome_prices")
         outcome_prices = raw_outcomes if isinstance(raw_outcomes, (list, tuple)) else []
-        lead_pair = next(
+        lead_match = next(
             (
-                (entry[0], entry[1])
+                (entry[0], pct)
                 for entry in outcome_prices
                 if isinstance(entry, (list, tuple))
                 and len(entry) == 2
-                and _is_finite_number(entry[1])
+                and (pct := _format_polymarket_pct(entry[1])) is not None
             ),
             None,
         )
-        if lead_pair is None:
+        if lead_match is None:
             continue
-        lead_name, lead_price = lead_pair
+        lead_name, pct = lead_match
+        lead_name_str = "" if lead_name is None else str(lead_name)
 
-        pct = (
-            f"{lead_price * 100:.0f}%"
-            if lead_price >= 0.1
-            else f"{lead_price * 100:.1f}%"
-        )
-
-        question = (item.metadata.get("question") or item.title or "").strip()
-        name, is_descriptor = _polymarket_market_name(question, lead_name)
+        question = str(metadata.get("question") or item.title or "").strip()
+        name, is_descriptor = _polymarket_market_name(question, lead_name_str)
         if not name:
             continue
-        label = "" if is_descriptor else str(lead_name).strip()
+        label = "" if is_descriptor else lead_name_str.strip()
         markets.append((name, pct, question, label))
 
     # Different questions can shorten to one name (a deadline ladder:
@@ -4729,15 +4750,27 @@ def _fmt_pairs(pairs: list[tuple[object, str]]) -> str:
     for value, suffix in pairs:
         if value in (None, "", 0, 0.0):
             continue
-        rendered.append(f"{_format_number(value)}{suffix}")
+        formatted = _format_number(value)
+        if not formatted:
+            continue
+        rendered.append(f"{formatted}{suffix}")
     return ", ".join(rendered)
 
 
 def _format_number(value: object) -> str:
+    if isinstance(value, bool):
+        return str(value)
     try:
         numeric = float(value)
-    except (TypeError, ValueError):
-        return str(value)
+    except (TypeError, ValueError, OverflowError):
+        if isinstance(value, int):
+            return ""
+        try:
+            return str(value)
+        except ValueError:
+            return ""
+    if not math.isfinite(numeric):
+        return ""
     if numeric >= 1000 and numeric.is_integer():
         return f"{int(numeric):,}"
     if numeric.is_integer():
@@ -4758,14 +4791,19 @@ def _aggregate_engagement(source: str, items: list[schema.SourceItem]) -> str | 
             continue
         total: int | float = 0
         found = False
+        overflowed = False
         for item in items:
             engagement = item.engagement if isinstance(item.engagement, dict) else {}
             numeric = _coerce_numeric(engagement.get(field))
             if numeric is None:
                 continue
+            next_total = total + numeric
+            if not _is_finite_number(next_total):
+                overflowed = True
+                break
             found = True
-            total += numeric
-        totals.append((total if found else None, label))
+            total = next_total
+        totals.append((total if found and not overflowed else None, label))
     return _fmt_pairs(totals) or None
 
 
@@ -5069,7 +5107,7 @@ def _comment_community(item: schema.SourceItem) -> str:
 def _comment_count(score) -> str:
     """A vote count with thousands separators; other values print as they are."""
     if isinstance(score, int) and not isinstance(score, bool):
-        return f"{score:,}"
+        return f"{score:,}" if _is_finite_number(score) else ""
     return str(score)
 
 
@@ -5723,7 +5761,7 @@ def _render_polymarket_markets(
     items = polymarket.by_selection([
         item
         for item in report.items_by_source.get("polymarket") or []
-        if _polymarket_names_topic(item, report.topic)
+        if isinstance(item.metadata, dict) and _polymarket_names_topic(item, report.topic)
     ])
     window_year = str(report.range_to or "")[:4]
     lines: list[str] = []
@@ -5813,13 +5851,17 @@ _HTML_COMMENT_START = re.compile(r"^\s*<!-\s?-")
 
 
 def _strip_author_prefix(name: str) -> str:
-    bare = name.lstrip("@")
-    lower = bare.lower()
-    if lower.startswith("/u/"):
-        return bare[3:]
-    if lower.startswith("u/"):
-        return bare[2:]
-    return bare
+    bare = name.strip()
+    while True:
+        prev = bare
+        bare = bare.lstrip("@")
+        lower = bare.lower()
+        if lower.startswith("/u/"):
+            bare = bare[3:]
+        elif lower.startswith("u/"):
+            bare = bare[2:]
+        if bare == prev:
+            return bare
 
 
 def _author_key(name: str | None) -> str:
