@@ -19,6 +19,7 @@ code is unaffected.
 
 import copy
 import html as _html
+import inspect
 import json
 import re
 import sys
@@ -202,6 +203,9 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
 
         sub_ctx = ctx.get("subreddit")
         subreddit = str(sub_ctx.get("name") or "") if isinstance(sub_ctx, dict) else ""
+        profile_ctx = ctx.get("profile")
+        raw_author = profile_ctx.get("name") if isinstance(profile_ctx, dict) else None
+        author = raw_author.strip() if isinstance(raw_author, str) else ""
         title = str(ctx["post"].get("title") or "")
         href_match = _TITLE_HREF.search(chunk)
         href = _html.unescape((href_match.group(1) or href_match.group(2))) if href_match else ""
@@ -228,7 +232,7 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
             "num_comments": num_comments,
             "subreddit": subreddit,
             "created_utc": reddit_listing._to_epoch(ts),
-            "author": "",
+            "author": author,
             "selftext": "",
             "date": reddit_listing._to_date(ts),
             "engagement": {
@@ -243,15 +247,42 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
     return posts, _next_cursor(html_text)
 
 
-def _fetch_page(url: str) -> Tuple[Optional[str], Optional[str]]:
-    """(body, error). Shared limiter, run memo, one 429 retry, failure sink."""
+def _accepts_kwarg(fn: Any, name: str, *, allow_var_keyword: bool = False) -> bool:
+    target = getattr(fn, "side_effect", None)
+    if callable(target):
+        fn = target
     try:
-        return http.reddit_keyless_get_text_retry_429(
-            url,
-            timeout=SEARCH_TIMEOUT,
-            accept="text/html",
-            validate=unrecognized_body,
-        )
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return allow_var_keyword and any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def _fetch_page(
+    url: str, deadline: Optional[float] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """(body, error). Shared limiter, run memo, one 429 retry, failure sink."""
+    req_timeout: float = SEARCH_TIMEOUT
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, "deadline exceeded"
+        req_timeout = min(float(SEARCH_TIMEOUT), remaining)
+    kwargs: Dict[str, Any] = {
+        "timeout": req_timeout,
+        "accept": "text/html",
+        "validate": unrecognized_body,
+    }
+    if deadline is not None and _accepts_kwarg(
+        http.reddit_keyless_get_text_retry_429, "deadline_monotonic",
+    ):
+        kwargs["deadline_monotonic"] = deadline
+    try:
+        return http.reddit_keyless_get_text_retry_429(url, **kwargs)
     except Exception as e:  # defensive: one bad page must not sink the run
         _log(f"search fetch failed for {url}: {e}")
         return None, str(e)
@@ -262,6 +293,7 @@ def _search_stream(
     time_filter: str,
     max_pages: int,
     subreddit: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Page one search sequentially. Keeps earlier pages when a later one fails."""
     label = f"r/{subreddit}" if subreddit else "global"
@@ -272,7 +304,13 @@ def _search_stream(
     for page in range(1, max_pages + 1):
         if _blocked_reason:
             break
-        text, error = _fetch_page(search_url(query, time_filter, subreddit, cursor))
+        if deadline is not None and time.monotonic() >= deadline:
+            _log(f"{label} stopped before page {page}: deadline reached")
+            break
+        text, error = _fetch_page(
+            search_url(query, time_filter, subreddit, cursor),
+            deadline=deadline,
+        )
         if text is None:
             _log(f"{label} page {page} failed: {error or 'no response'}")
             _note_block(error)
@@ -329,10 +367,14 @@ def search(
             if sub and sub.lower() not in {s.lower() for s in subs}:
                 subs.append(sub)
         key = (query, depth, time_filter, tuple(sub.lower() for sub in subs))
+        owner = False
+        gate: Optional[threading.Event] = None
         for _round in range(2):
             with _run_lock:
                 if key in _run_results:
                     return copy.deepcopy(_run_results[key])
+                if deadline is not None and time.monotonic() >= deadline:
+                    return []
                 gate = _run_inflight.get(key)
                 owner = gate is None
                 if owner:
@@ -340,7 +382,23 @@ def search(
                     _run_inflight[key] = gate
             if owner:
                 break
-            gate.wait(timeout=_result_timeout(len(subs) + global_pages, global_pages))
+            wait = _result_timeout(len(subs) + global_pages, global_pages)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return []
+                wait = min(wait, remaining)
+            gate.wait(timeout=wait)
+            if deadline is not None and time.monotonic() >= deadline:
+                with _run_lock:
+                    if key in _run_results:
+                        return copy.deepcopy(_run_results[key])
+                return []
+        else:
+            with _run_lock:
+                if key in _run_results:
+                    return copy.deepcopy(_run_results[key])
+            return []
         try:
             unique = _search_uncached(query, depth, subs, time_filter, global_pages, deadline)
             # A clean empty page or a drifted one is asked for again by the
@@ -352,8 +410,10 @@ def search(
         finally:
             if owner:
                 with _run_lock:
-                    _run_inflight.pop(key, None)
-                gate.set()
+                    if _run_inflight.get(key) is gate:
+                        _run_inflight.pop(key, None)
+                if gate is not None:
+                    gate.set()
     except Exception as e:  # defensive: discovery must never raise into the pipeline
         _log(f"search failed: {e}")
         return []
@@ -370,10 +430,13 @@ def _search_uncached(
     """One run of the search streams; None when it raised."""
     global _failed_reason
     try:
+        if deadline is not None and time.monotonic() >= deadline:
+            return []
         limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
         jobs = [(sub, SUB_PAGE_CAP) for sub in subs] + [(None, global_pages)]
         batch = sum(pages for _sub, pages in jobs)
         streams: List[List[Dict[str, Any]]] = []
+        pass_deadline = _accepts_kwarg(_search_stream, "deadline", allow_var_keyword=True)
         executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)))
         try:
             # submit_with_context, not executor.submit: a plain submit starts the
@@ -381,7 +444,14 @@ def _search_uncached(
             # capture_failures() sink so a 429/403 or a challenge page is
             # silently discarded (issue #899).
             futures = [
-                (http.submit_with_context(executor, _search_stream, query, time_filter, pages, sub), sub, pages)
+                (
+                    http.submit_with_context(
+                        executor, _search_stream, query, time_filter, pages, sub,
+                        **({"deadline": deadline} if pass_deadline else {}),
+                    ),
+                    sub,
+                    pages,
+                )
                 for sub, pages in jobs
             ]
             for future, sub, pages in futures:

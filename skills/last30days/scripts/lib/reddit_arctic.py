@@ -79,7 +79,9 @@ MEMO_MAX = 512
 RETRY_422_PAUSE = 1.5
 _memo: Dict[str, Any] = {}
 _inflight: Dict[str, threading.Event] = {}
+_score_inflight: Dict[str, threading.Event] = {}
 _memo_lock = threading.Lock()
+_tree_state = threading.local()
 
 
 def _log(msg: str) -> None:
@@ -87,12 +89,29 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
+def _set_thread_tree_throttled(value: bool) -> None:
+    _tree_state.throttled = bool(value)
+
+
+def last_tree_was_throttled() -> bool:
+    """Whether this thread's last ``fetch_comment_tree`` call was throttled (422/429)."""
+    return bool(getattr(_tree_state, "throttled", False))
+
+
+def __getattr__(name: str) -> Any:
+    if name == "last_tree_throttled":
+        return last_tree_was_throttled()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def reset_memo() -> None:
     """Forget memoized archive responses. Called once per command, and by tests."""
     with _memo_lock:
         _memo.clear()
         _inflight.clear()
-    _cache.clear()
+        _cache.clear()
+        _score_inflight.clear()
+    _set_thread_tree_throttled(False)
 
 
 def _is_slow_down(error: BaseException) -> bool:
@@ -198,57 +217,111 @@ def fetch_scores(
     """
     out: Dict[str, Dict[str, int]] = {}
     todo: List[str] = []
-    for pid in post_ids:
-        clean = reddit_refs.normalize_post_id(pid)
-        if not clean:
-            continue
-        if clean in _cache:
-            out[clean] = _cache[clean]
-        elif clean not in todo:
-            todo.append(clean)
+    waiting: List[tuple[str, threading.Event]] = []
+    clean_ids = list(dict.fromkeys(
+        clean for pid in post_ids if (clean := reddit_refs.normalize_post_id(pid))
+    ))
+    with _memo_lock:
+        for clean in clean_ids:
+            if clean in _cache:
+                out[clean] = dict(_cache[clean])
+            elif clean in _score_inflight:
+                waiting.append((clean, _score_inflight[clean]))
+            else:
+                todo.append(clean)
+        batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)][:MAX_BATCHES]
+        batch_gates: List[tuple[List[str], threading.Event]] = []
+        for batch in batches:
+            gate = threading.Event()
+            for pid in batch:
+                _score_inflight[pid] = gate
+            batch_gates.append((batch, gate))
 
-    batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)][:MAX_BATCHES]
-    for n, batch in enumerate(batches):
-        if n:
-            time.sleep(PACE_SECONDS)
-        bound: Dict[str, Any] = {"timeout": TIMEOUT}
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                _log(f"lookup stopped at its deadline; {len(batch)} ids left unscored")
-                break
-            bound = {"timeout": min(TIMEOUT, remaining), "retries": 1, "deadline_monotonic": deadline}
-        try:
-            query = urlencode({"ids": ",".join(batch)}, safe=",")
-            data = http.get(
-                f"{API}?{query}",
-                headers={"User-Agent": http.BROWSER_USER_AGENT},
-                **bound,
-            )
-        except Exception as e:  # network error / non-200 — degrade, never raise
-            _log(f"lookup failed ({e}); {len(batch)} ids left unscored")
-            break
-        rows = (data or {}).get("data")
-        if not isinstance(rows, list):
-            # arctic-shift returns {"error": "..."} on rate-limit / bad request.
-            _log(f"unexpected response (rate-limited?): {str(data)[:80]}")
-            break
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            rid = str(row.get("id") or "").removeprefix("t3_")
-            if not rid:
-                continue
+    try:
+        for n, (batch, gate) in enumerate(batch_gates):
+            if n:
+                if deadline is not None:
+                    pace = min(PACE_SECONDS, max(0.0, deadline - time.monotonic()))
+                    if pace > 0:
+                        time.sleep(pace)
+                else:
+                    time.sleep(PACE_SECONDS)
+            bound: Dict[str, Any] = {"timeout": TIMEOUT}
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _log(f"lookup stopped at its deadline; {len(batch)} ids left unscored")
+                    break
+                bound = {"timeout": min(TIMEOUT, remaining), "retries": 1, "deadline_monotonic": deadline}
             try:
-                entry = {
-                    "score": int(row.get("score") or 0),
-                    "num_comments": int(row.get("num_comments") or 0),
-                }
-            except (TypeError, ValueError):
-                continue
-            if len(_cache) < CACHE_MAX:
-                _cache[rid] = entry
-            out[rid] = entry
+                query = urlencode({"ids": ",".join(batch)}, safe=",")
+                data = http.get(
+                    f"{API}?{query}",
+                    headers={"User-Agent": http.BROWSER_USER_AGENT},
+                    **bound,
+                )
+            except Exception as e:  # network error / non-200 — degrade, never raise
+                _log(f"lookup failed ({e}); {len(batch)} ids left unscored")
+                break
+            rows = (data or {}).get("data")
+            if not isinstance(rows, list):
+                # arctic-shift returns {"error": "..."} on rate-limit / bad request.
+                _log(f"unexpected response (rate-limited?): {str(data)[:80]}")
+                break
+            entries: Dict[str, Dict[str, int]] = {}
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                rid = str(row.get("id") or "").removeprefix("t3_")
+                if not rid:
+                    continue
+                try:
+                    entries[rid] = {
+                        "score": int(row.get("score") or 0),
+                        "num_comments": int(row.get("num_comments") or 0),
+                    }
+                except (TypeError, ValueError):
+                    continue
+            with _memo_lock:
+                for rid, entry in entries.items():
+                    if rid in _cache or len(_cache) < CACHE_MAX:
+                        _cache[rid] = dict(entry)
+                    out[rid] = dict(entry)
+                for pid in batch:
+                    if _score_inflight.get(pid) is gate:
+                        _score_inflight.pop(pid, None)
+            gate.set()
+    finally:
+        with _memo_lock:
+            for batch, gate in batch_gates:
+                for pid in batch:
+                    if _score_inflight.get(pid) is gate:
+                        _score_inflight.pop(pid, None)
+        for _batch, gate in batch_gates:
+            gate.set()
+
+    if waiting:
+        unique_gates: List[threading.Event] = []
+        seen_gate_ids: set[int] = set()
+        for _pid, gate in waiting:
+            gid = id(gate)
+            if gid not in seen_gate_ids:
+                seen_gate_ids.add(gid)
+                unique_gates.append(gate)
+        wait_end = (
+            deadline
+            if deadline is not None
+            else time.monotonic() + TIMEOUT * MAX_BATCHES + PACE_SECONDS * MAX_BATCHES
+        )
+        for gate in unique_gates:
+            remaining = wait_end - time.monotonic()
+            if remaining <= 0:
+                break
+            gate.wait(timeout=remaining)
+        with _memo_lock:
+            for pid, _gate in waiting:
+                if pid in _cache:
+                    out[pid] = dict(_cache[pid])
     return out
 
 
@@ -595,40 +668,33 @@ def _tree_rows(nodes: Any) -> List[Dict[str, Any]]:
     return rows
 
 
-# Whether the last fetch_comment_tree failure was the archive asking to slow
-# down (422 or 429) rather than an outage. Hydration fetches trees serially.
-last_tree_throttled = False
-
-
-def fetch_comment_tree(
+def _fetch_comment_tree_with_status(
     post_id: str, deadline: Optional[float] = None,
-) -> Optional[List[Dict[str, Any]]]:
-    """Comments of a post from the archive's ``/comments/tree``, flattened.
+) -> tuple[Optional[List[Dict[str, Any]]], bool]:
+    """Fetch comments of a post from ``/comments/tree``, returning ``(rows, throttled)``.
 
-    Each comment carries id, score, author, body, excerpt, permalink, url,
-    date, ``created_utc`` and ``depth`` (0 for a top-level comment). Deleted
-    and removed comments are left out. Returns ``None`` when the request
-    failed, so a caller can tell a failure from a thread with no comments.
+    Also updates the calling thread's ``last_tree_throttled`` state so concurrent
+    streams never overwrite each other's throttle classification.
     """
+    _set_thread_tree_throttled(False)
     pid = reddit_refs.normalize_post_id(post_id)
     if not pid:
-        return None
+        return None, False
     end = deadline if deadline is not None else time.monotonic() + TIMEOUT
     if end - time.monotonic() < 1:
-        return None
-    global last_tree_throttled
-    last_tree_throttled = False
+        return None, False
     try:
         query = urlencode({"link_id": f"t3_{pid}", "limit": MAX_COMMENT_ROWS})
         data = _archive_get(f"{COMMENTS_TREE_API}?{query}", end)
     except Exception as exc:  # network error / non-200 — degrade, never raise
-        last_tree_throttled = _is_slow_down(exc) or getattr(exc, "status_code", None) == 429
+        throttled = _is_slow_down(exc) or getattr(exc, "status_code", None) == 429
+        _set_thread_tree_throttled(throttled)
         _log(f"comment tree failed t3_{pid}: {exc}")
-        return None
+        return None, throttled
     nodes = (data or {}).get("data")
     if not isinstance(nodes, list):
         _log(f"unexpected comment tree response for t3_{pid}: {str(data)[:80]}")
-        return None
+        return None, False
 
     from .snippet import cut_quote
 
@@ -647,7 +713,7 @@ def fetch_comment_tree(
         except (TypeError, ValueError):
             depth = 0
         permalink = row.get("permalink") or ""
-        comments.append({
+        entry: Dict[str, Any] = {
             "id": str(row.get("id") or "").removeprefix("t1_"),
             "score": score,
             "author": author,
@@ -658,8 +724,29 @@ def fetch_comment_tree(
             "created_utc": row.get("created_utc"),
             "url": f"https://reddit.com{permalink}" if permalink else "",
             "depth": depth,
-        })
+        }
+        if isinstance(row.get("is_submitter"), bool):
+            entry["is_uploader"] = row["is_submitter"]
+        comments.append(entry)
+    return comments, False
+
+
+def fetch_comment_tree(
+    post_id: str, deadline: Optional[float] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Comments of a post from the archive's ``/comments/tree``, flattened.
+
+    Each comment carries id, score, author, body, excerpt, permalink, url,
+    date, ``created_utc`` and ``depth`` (0 for a top-level comment), plus
+    ``is_uploader`` when the archive supplies ``is_submitter``. Deleted
+    and removed comments are left out. Returns ``None`` when the request
+    failed, so a caller can tell a failure from a thread with no comments.
+    """
+    comments, _throttled = _fetch_comment_tree_with_status(post_id, deadline=deadline)
     return comments
+
+
+_ORIG_FETCH_COMMENT_TREE = fetch_comment_tree
 
 
 def _row_depth(row: Dict[str, Any]) -> int:
@@ -720,7 +807,7 @@ def fetch_post_comments(
         except (TypeError, ValueError):
             score = 0
         permalink = row.get("permalink") or ""
-        comments.append({
+        entry: Dict[str, Any] = {
             "score": score,
             "author": author,
             "body": body[:300],
@@ -729,6 +816,9 @@ def fetch_post_comments(
             "date": _epoch_to_date(row.get("created_utc")),
             "url": f"https://reddit.com{permalink}" if permalink else "",
             "depth": _row_depth(row),
-        })
+        }
+        if isinstance(row.get("is_submitter"), bool):
+            entry["is_uploader"] = row["is_submitter"]
+        comments.append(entry)
     comments.sort(key=lambda c: c.get("score", 0), reverse=True)
     return comments[:limit]

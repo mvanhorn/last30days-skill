@@ -52,6 +52,49 @@ class WebFloor:
     refs: list[ThreadRef] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     rungs: dict[str, str] = field(default_factory=dict)
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False,
+    )
+
+    def record_query(
+        self,
+        query: str,
+        rungs: Optional[dict[str, str]] = None,
+        refs: Optional[Iterable[ThreadRef]] = None,
+    ) -> None:
+        """Atomically record a completed web query, its rung states, and refs."""
+        with self._lock:
+            self.queries.append(query)
+            for rung, state in (rungs or {}).items():
+                # A rung skipped on a later query keeps the state that took it out.
+                if state != web_search_keyless.SKIPPED or rung not in self.rungs:
+                    self.rungs[rung] = state
+            if refs is not None:
+                self.refs = list(refs)
+
+    def record_rung(self, rung: str, state: str) -> None:
+        """Record one rung state under the floor lock."""
+        with self._lock:
+            if state != web_search_keyless.SKIPPED or rung not in self.rungs:
+                self.rungs[rung] = state
+
+    def add_refs(self, refs: Iterable[ThreadRef]) -> None:
+        """Merge thread refs under the floor lock, preserving first-seen order."""
+        with self._lock:
+            seen = {ref.post_id for ref in self.refs}
+            for ref in refs:
+                if ref.post_id not in seen:
+                    seen.add(ref.post_id)
+                    self.refs.append(ref)
+
+    def snapshot(self) -> WebFloor:
+        """Return a detached, thread-safe copy of this floor's current state."""
+        with self._lock:
+            return WebFloor(
+                refs=list(self.refs),
+                queries=list(self.queries),
+                rungs=dict(self.rungs),
+            )
 
 
 @dataclass
@@ -197,11 +240,6 @@ def web_refs(
         items, artifact = _ask(topic.lower(), query, search, date_range, freshness)
         if items is None:
             continue
-        floor.queries.append(query)
-        for rung, state in (artifact.get("keyless_rungs") or {}).items():
-            # A rung skipped on a later query keeps the state that took it out.
-            if state != web_search_keyless.SKIPPED or rung not in floor.rungs:
-                floor.rungs[rung] = state
         for item in items:
             ref = canonical_thread(str(item.get("url") or ""))
             if ref is None:
@@ -213,11 +251,12 @@ def web_refs(
             ref.title = _clean_title(str(item.get("title") or ""))
             ref.date = item.get("date") or None
             by_id[ref.post_id] = ref
-        floor.refs = list(by_id.values())
-    if floor.queries:
-        rungs = ", ".join(f"{rung} {state}" for rung, state in floor.rungs.items()) or "no rung"
+        floor.record_query(query, artifact.get("keyless_rungs"), by_id.values())
+    snap = floor.snapshot()
+    if snap.queries:
+        rungs = ", ".join(f"{rung} {state}" for rung, state in snap.rungs.items()) or "no rung"
         _log(
-            f"{len(floor.refs)} threads from {len(floor.queries)} web queries "
+            f"{len(snap.refs)} threads from {len(snap.queries)} web queries "
             f"({rungs}; {skipped_links} non-thread links skipped)"
         )
     return floor

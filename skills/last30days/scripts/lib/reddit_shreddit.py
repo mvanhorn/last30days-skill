@@ -15,8 +15,10 @@ cannot be recovered keylessly here (ScrapeCreators backup still provides it).
 """
 
 import html as _html
+import inspect
 import re
 import sys
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlencode
@@ -76,11 +78,41 @@ _PARA = re.compile(r"<p[^>]*>(.*?)</p>", re.S)
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
 _NEXT_RTJSON = re.compile(r'id="t1_[A-Za-z0-9]+-(?:comment|post)-rtjson-content"')
+_CHALLENGE_MARKERS = re.compile(
+    r"js-challenge|challenge-form|please wait for verification|"
+    r"checking that your connection is secure|blocked by network security|"
+    r"whoa there, pardner|captcha",
+    re.IGNORECASE,
+)
+_OP_ATTR_NAMES = ("is-op", "is-submitter", "is_op", "is_submitter")
 
 
 def _log(msg: str) -> None:
     sys.stderr.write(f"[RedditShreddit] {msg}\n")
     sys.stderr.flush()
+
+
+def _accepts_named_kwarg(fn: Any, name: str) -> bool:
+    target = getattr(fn, "side_effect", None)
+    if callable(target):
+        fn = target
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def unrecognized_comments_body(text: str) -> Optional[str]:
+    """Validator for shreddit comment fetches: None if recognized, else a reason."""
+    if not text or not text.strip():
+        return "empty shreddit comments response"
+    if _COMMENT_START.search(text) or _TOTAL_COMMENTS.search(text):
+        return None
+    if "<shreddit-comment-tree" in text.lower():
+        return None
+    if _CHALLENGE_MARKERS.search(text):
+        return "challenge page instead of Reddit comments"
+    return "not a Reddit shreddit comments page"
 
 
 def extract_post_ref(url: str) -> Optional[tuple]:
@@ -117,6 +149,23 @@ def _attr(tag: str, name: str) -> str:
     # either way; the value keeps its case.
     m = re.search(rf'\b{name}="([^"]*)"', tag, re.IGNORECASE)
     return _html.unescape(m.group(1)) if m else ""
+
+
+def _bool_attr(tag: str, names: tuple[str, ...]) -> Optional[bool]:
+    """Read an explicit HTML boolean/valued flag from a start tag, or None if absent."""
+    for name in names:
+        m = re.search(rf'(?:^|[\s<]){re.escape(name)}(?:="([^"]*)"|(?=[\s>/]))', tag, re.IGNORECASE)
+        if not m:
+            continue
+        raw = m.group(1)
+        if raw is None or raw.strip() == "":
+            return True
+        lowered = raw.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no"):
+            return False
+    return None
 
 
 def _iso_to_date(value: str) -> Optional[str]:
@@ -188,7 +237,7 @@ def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, 
         except ValueError:
             depth = 0
         permalink = _attr(tag, "permalink")
-        comments.append({
+        entry: Dict[str, Any] = {
             "depth": depth,
             "score": score,
             "author": author,
@@ -197,7 +246,11 @@ def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, 
             "permalink": permalink,
             "date": _iso_to_date(_attr(tag, "created")),
             "url": f"https://reddit.com{permalink}" if permalink else "",
-        })
+        }
+        is_op = _bool_attr(tag, _OP_ATTR_NAMES)
+        if isinstance(is_op, bool):
+            entry["is_uploader"] = is_op
+        comments.append(entry)
 
     comments.sort(key=lambda c: c.get("score", 0), reverse=True)
     return comments[:limit]
@@ -208,17 +261,24 @@ def _total_comments(html_text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def _clean_post_author(post_author: Optional[str]) -> str:
+    cleaned = str(post_author or "").strip().lower()
+    return "" if cleaned in ("", "[deleted]", "[removed]") else cleaned
+
+
 def fetch_comments(
     post_url: str,
     timeout: int = SVC_TIMEOUT,
     deadline: Optional[float] = None,
+    post_author: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fetch and parse top comments for a Reddit post via the shreddit endpoint.
 
     Args:
         post_url: Reddit thread URL (…/r/{sub}/comments/{id}/…)
         timeout: HTTP timeout in seconds
-        deadline: absolute ``time.monotonic()`` bound; applies only to the archive fallback
+        deadline: absolute ``time.monotonic()`` bound shared by shreddit and the archive fallback
+        post_author: optional OP username used to stamp ``is_uploader`` when a comment lacks one
 
     Returns:
         Dict with 'top_comments' (list, reddit_enrich shape), 'comment_insights'
@@ -230,14 +290,30 @@ def fetch_comments(
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
     sub, post_id = ref
 
+    html_text: Optional[str] = None
     if sub:
-        html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
+        remaining = (deadline - time.monotonic()) if deadline is not None else None
+        if remaining is None or remaining > 0:
+            req_timeout = min(timeout, remaining) if remaining is not None else timeout
+            get_kwargs: Dict[str, Any] = {
+                "timeout": req_timeout,
+                "retries": 1,
+                "accept": "text/html",
+                "validate": unrecognized_comments_body,
+            }
+            if deadline is not None and _accepts_named_kwarg(
+                http.reddit_keyless_get_text, "deadline_monotonic",
+            ):
+                get_kwargs["deadline_monotonic"] = deadline
+            html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), **get_kwargs)
         comments = parse_comments(html_text, limit=MAX_COMMENTS) if html_text else []
         total = _total_comments(html_text) if html_text else None
     else:
         comments = []
         total = None
-    if not comments:
+    # Skip Arctic Shift when shreddit returned a recognized 0-comment thread page.
+    skip_arctic = html_text is not None and total == 0
+    if not comments and not skip_arctic:
         # The shreddit comment partials 403 on some hosts (datacenter egress).
         # Fall back to the arctic-shift archive, which serves scored comments
         # from any IP keyless (ranked by score client-side).
@@ -251,19 +327,28 @@ def fetch_comments(
     if not comments:
         return {"top_comments": [], "comment_insights": [], "num_comments": total}
 
+    op_author = _clean_post_author(post_author)
+    top_comments: List[Dict[str, Any]] = []
+    for c in comments:
+        entry: Dict[str, Any] = {
+            "score": c["score"],
+            "date": c["date"],
+            "author": c["author"],
+            "excerpt": c["excerpt"],
+            "url": c["url"],
+            "depth": c.get("depth", 0),
+        }
+        if isinstance(c.get("is_uploader"), bool):
+            entry["is_uploader"] = c["is_uploader"]
+        elif op_author:
+            cname = str(c.get("author") or "").strip().lower()
+            if cname:
+                entry["is_uploader"] = cname == op_author
+        top_comments.append(entry)
+
     insights = reddit_enrich.extract_comment_insights(comments)
     return {
-        "top_comments": [
-            {
-                "score": c["score"],
-                "date": c["date"],
-                "author": c["author"],
-                "excerpt": c["excerpt"],
-                "url": c["url"],
-                "depth": c.get("depth", 0),
-            }
-            for c in comments
-        ],
+        "top_comments": top_comments,
         "comment_insights": insights,
         "num_comments": total,
     }
