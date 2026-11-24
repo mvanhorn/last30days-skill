@@ -115,7 +115,7 @@ class Test429RetryLimit(unittest.TestCase):
     ):
         response = _mock_response()
 
-        def slow_read():
+        def slow_read(size=-1):
             time.sleep(0.2)
             return b'{"ok": true}'
 

@@ -604,7 +604,7 @@ def test_tiktok_returns_videos_before_stalled_transport_is_released(monkeypatch)
         if len(calls) == 1:
             response.read.return_value = b'{"aweme_list": [{"aweme_id": "1", "desc": "travel storytelling", "author": {"unique_id": "traveler"}}]}'
         else:
-            def held_read():
+            def held_read(size=-1):
                 try:
                     release.wait(HANG_SECONDS)
                     return b"{}"
