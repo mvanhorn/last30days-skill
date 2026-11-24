@@ -242,7 +242,53 @@ func withBrowserCookiePolicy(args []string) []string {
 }
 
 func researchExtraEnv() []string {
-	return []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
+	extra := []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
+	if shouldAutoEnableXAPI() {
+		extra = append(extra, "LAST30DAYS_X_BACKEND=xapi")
+	}
+	return extra
+}
+
+// shouldAutoEnableXAPI opts into the xapi backend when X_BEARER_TOKEN is
+// explicitly configured in the MCP host environment without an explicit
+// LAST30DAYS_X_BACKEND override or a higher-priority X credential.
+func shouldAutoEnableXAPI() bool {
+	if !hasExplicitEnvValue("X_BEARER_TOKEN") {
+		return false
+	}
+	if hasExplicitEnvValue("LAST30DAYS_X_BACKEND") {
+		return false
+	}
+	if hasExplicitEnvValue("XAI_API_KEY") || hasExplicitEnvValue("XQUIK_API_KEY") {
+		return false
+	}
+	if hasExplicitEnvValue("AUTH_TOKEN") && hasExplicitEnvValue("CT0") {
+		return false
+	}
+	return true
+}
+
+func hasExplicitEnvValue(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	return value != "" && !isUnsubstitutedUserConfig(value)
+}
+
+func isUnsubstitutedUserConfig(value string) bool {
+	const prefix = "${user_config."
+	if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, "}") {
+		return false
+	}
+	inner := value[len(prefix) : len(value)-1]
+	if len(inner) == 0 {
+		return false
+	}
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func browserCookiesAllowed() bool {

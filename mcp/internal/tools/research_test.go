@@ -326,6 +326,10 @@ func TestIsDegradedReportRejectsTruncatedStdout(t *testing.T) {
 }
 
 func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
+	t.Setenv("X_BEARER_TOKEN", "")
+	t.Setenv("LAST30DAYS_X_BACKEND", "")
+	t.Setenv("XAI_API_KEY", "")
+	t.Setenv("XQUIK_API_KEY", "")
 	got := researchExtraEnv()
 	want := []string{
 		"LAST30DAYS_ALLOW_ENGINE_PLAN=1", "LAST30DAYS_NO_JOBS_DIGEST=1",
@@ -333,6 +337,86 @@ func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("researchExtraEnv() = %#v, want %#v", got, want)
+	}
+}
+
+func TestResearchExtraEnvXAPIAutoOptIn(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       map[string]string
+		wantXAPI  bool
+	}{
+		{
+			name:     "bearer set without backend or higher-priority key opts into xapi",
+			env:      map[string]string{"X_BEARER_TOKEN": "dummy-bearer"},
+			wantXAPI: true,
+		},
+		{
+			name: "unsubstituted backend and xai placeholders still opt into xapi",
+			env: map[string]string{
+				"X_BEARER_TOKEN":       "dummy-bearer",
+				"LAST30DAYS_X_BACKEND": "${user_config.last30days_x_backend}",
+				"XAI_API_KEY":          "${user_config.xai_api_key}",
+			},
+			wantXAPI: true,
+		},
+		{
+			name:     "unsubstituted bearer placeholder does not opt into xapi",
+			env:      map[string]string{"X_BEARER_TOKEN": "${user_config.x_bearer_token}"},
+			wantXAPI: false,
+		},
+		{
+			name: "explicit backend override is preserved",
+			env: map[string]string{
+				"X_BEARER_TOKEN":       "dummy-bearer",
+				"LAST30DAYS_X_BACKEND": "bird",
+			},
+			wantXAPI: false,
+		},
+		{
+			name: "higher-priority xai key suppresses xapi auto opt-in",
+			env: map[string]string{
+				"X_BEARER_TOKEN": "dummy-bearer",
+				"XAI_API_KEY":    "dummy-xai",
+			},
+			wantXAPI: false,
+		},
+		{
+			name: "higher-priority xquik key suppresses xapi auto opt-in",
+			env: map[string]string{
+				"X_BEARER_TOKEN": "dummy-bearer",
+				"XQUIK_API_KEY":  "dummy-xquik",
+			},
+			wantXAPI: false,
+		},
+		{
+			name: "static bird cookies suppress xapi auto opt-in",
+			env: map[string]string{
+				"X_BEARER_TOKEN": "dummy-bearer",
+				"AUTH_TOKEN":     "dummy-auth",
+				"CT0":            "dummy-ct0",
+			},
+			wantXAPI: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, key := range []string{
+				"X_BEARER_TOKEN", "LAST30DAYS_X_BACKEND",
+				"XAI_API_KEY", "XQUIK_API_KEY", "AUTH_TOKEN", "CT0",
+			} {
+				t.Setenv(key, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got := researchExtraEnv()
+			hasXAPI := slices.Contains(got, "LAST30DAYS_X_BACKEND=xapi")
+			if hasXAPI != tc.wantXAPI {
+				t.Fatalf("researchExtraEnv() = %#v (has xapi=%t), want %t", got, hasXAPI, tc.wantXAPI)
+			}
+		})
 	}
 }
 

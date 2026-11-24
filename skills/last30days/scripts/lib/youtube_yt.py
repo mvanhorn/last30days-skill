@@ -2309,7 +2309,12 @@ def _ytdlp_comments_result(
     """
     if not _is_valid_video_id(video_id) or not is_ytdlp_installed():
         return [], False
+    if max_comments <= 0:
+        return [], True
 
+    # Request top-level parents only (0 replies, 0 replies per thread) with a
+    # small buffer so empty-text entries do not starve the requested cap.
+    fetch_cap = max_comments + 2
     cmd = _wrap_ytdlp_cmd([
         "yt-dlp",
         "--write-comments",
@@ -2319,7 +2324,7 @@ def _ytdlp_comments_result(
         "--ignore-config",
         "--no-cookies-from-browser",
         "--extractor-args",
-        f"youtube:comment_sort=top;max_comments={max_comments},all,{max_comments}",
+        f"youtube:comment_sort=top;max_comments={fetch_cap},{fetch_cap},0,0",
         "--",
         _youtube_watch_url(video_id),
     ])
@@ -2340,10 +2345,29 @@ def _ytdlp_comments_result(
         _log(f"yt-dlp comment JSON parse failed for {video_id}: {exc}")
         return [], False
 
+    if not isinstance(payload, dict):
+        _log(f"yt-dlp comment JSON payload was not an object for {video_id}")
+        return [], False
+
+    raw_comments = payload.get("comments")
+    if not isinstance(raw_comments, list):
+        raw_comments = []
+
     channel_id = str(payload.get("channel_id") or "")
     comments = []
-    for c in (payload.get("comments") or [])[:max_comments]:
-        text = c.get("text") or ""
+    for c in raw_comments:
+        if len(comments) >= max_comments:
+            break
+        if not isinstance(c, dict):
+            continue
+        parent = c.get("parent")
+        if parent not in (None, "", "root"):
+            continue
+        raw_text = c.get("text")
+        if raw_text is None:
+            continue
+        text = raw_text if isinstance(raw_text, str) else str(raw_text)
+        text = text.strip()
         if not text:
             continue
         comment = {

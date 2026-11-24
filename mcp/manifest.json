@@ -41,11 +41,13 @@
         "GEMINI_API_KEY": "${user_config.gemini_api_key}",
         "GOOGLE_GENAI_API_KEY": "${user_config.google_genai_api_key}",
         "APIFY_API_TOKEN": "${user_config.apify_api_token}",
+        "BSKY_HANDLE": "${user_config.bsky_handle}",
         "BSKY_APP_PASSWORD": "${user_config.bsky_app_password}",
         "PARALLEL_API_KEY": "${user_config.parallel_api_key}",
         "SCRAPECREATORS_API_KEY": "${user_config.scrapecreators_api_key}",
         "OPENROUTER_API_KEY": "${user_config.openrouter_api_key}",
-        "X_BEARER_TOKEN": "${user_config.x_bearer_token}"
+        "X_BEARER_TOKEN": "${user_config.x_bearer_token}",
+        "LAST30DAYS_X_BACKEND": "${user_config.last30days_x_backend}"
       }
     }
   },
@@ -113,10 +115,17 @@
       "sensitive": true,
       "required": false
     },
+    "bsky_handle": {
+      "type": "string",
+      "title": "BSKY_HANDLE",
+      "description": "Bluesky handle (e.g. yourname.bsky.social). Required alongside BSKY_APP_PASSWORD for AT Protocol post search.",
+      "sensitive": false,
+      "required": false
+    },
     "bsky_app_password": {
       "type": "string",
       "title": "BSKY_APP_PASSWORD",
-      "description": "Bluesky app password (not your main password). Powers AT Protocol post search. Create at https://bsky.app/settings/app-passwords.",
+      "description": "Bluesky app password (not your main password). Used with BSKY_HANDLE for AT Protocol post search. Create at https://bsky.app/settings/app-passwords.",
       "sensitive": true,
       "required": false
     },
@@ -144,8 +153,15 @@
     "x_bearer_token": {
       "type": "string",
       "title": "X_BEARER_TOKEN",
-      "description": "X API v2 app-only bearer token. Searches X through the official X API (recent posts, about the last week, unless your X developer project has full-archive access). Create an app in the X developer console at https://developer.x.com/ and copy its bearer token.",
+      "description": "X API v2 app-only bearer token. Searches X through the official X API (recent posts, about the last week, unless your X developer project has full-archive access). Setting this in Claude Desktop selects the xapi backend automatically unless LAST30DAYS_X_BACKEND or another X key is configured. Create an app in the X developer console at https://developer.x.com/ and copy its bearer token.",
       "sensitive": true,
+      "required": false
+    },
+    "last30days_x_backend": {
+      "type": "string",
+      "title": "LAST30DAYS_X_BACKEND",
+      "description": "Optional X search backend override (xapi, xai, bird, xurl, xquik, grok). Leave blank for automatic selection (uses xapi when X_BEARER_TOKEN is configured without XAI_API_KEY).",
+      "sensitive": false,
       "required": false
     }
   },

@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,8 @@ MAX_TEXT_CHARS = 1_000_000
 MAX_CACHE_TEXT_CHARS = MAX_TEXT_CHARS
 MAX_CACHE_BYTES = 50 * 1024 * 1024
 MAX_CACHE_ENTRIES = 2_000
+PDF_TIMEOUT_SECONDS = 20.0
+_PDF_READ_CHUNK_BYTES = 65536
 CACHE_FILENAME = "corpus-cache.json"
 CACHE_SCHEMA_VERSION = "last30days-corpus-cache/v2"
 
@@ -158,7 +161,7 @@ def search(
                     continue
                 try:
                     text = _extract_text(path, pdftotext=pdf_available)
-                except (OSError, subprocess.SubprocessError) as exc:
+                except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
                     notes.append(f"Skipped {_display_path(path, root)}: {_safe_error(exc)}")
                     continue
                 _cache_entry_put(cache_entries, cache_entry_sizes, str(path), {
@@ -284,18 +287,118 @@ def _safe_mtime_ns(path: Path) -> int:
         return 0
 
 
+def _extract_pdf_text(path: Path, pdftotext: str) -> str:
+    cmd = [pdftotext, "-enc", "UTF-8", "--", str(path), "-"]
+    max_bytes = MAX_TEXT_CHARS * 4
+    timeout = PDF_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    chunks: list[bytes] = []
+    truncated = False
+    read_error: list[BaseException] = []
+
+    def _drain_stdout() -> None:
+        nonlocal truncated
+        assert proc.stdout is not None
+        total = 0
+        try:
+            while total < max_bytes:
+                chunk = proc.stdout.read(min(_PDF_READ_CHUNK_BYTES, max_bytes - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            if total >= max_bytes:
+                truncated = True
+        except BaseException as exc:
+            read_error.append(exc)
+        finally:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+
+    reader = threading.Thread(target=_drain_stdout, daemon=True)
+    reader.start()
+    try:
+        remaining = deadline - time.monotonic()
+        reader.join(timeout=max(0.0, remaining))
+        if reader.is_alive():
+            proc.kill()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+            reader.join(timeout=2.0)
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        if truncated:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        pass
+            if read_error:
+                raise read_error[0]
+            return b"".join(chunks).decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise subprocess.TimeoutExpired(cmd, timeout)
+        else:
+            try:
+                proc.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
+
+        if read_error:
+            raise read_error[0]
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+        return b"".join(chunks).decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+
+
 def _extract_text(path: Path, *, pdftotext: str | None) -> str:
     if path.suffix.lower() == ".pdf":
         if not pdftotext:
             return ""
-        completed = subprocess.run(
-            [pdftotext, str(path), "-"],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=20,
-        )
-        return completed.stdout[:MAX_TEXT_CHARS]
+        return _extract_pdf_text(path, pdftotext)
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         return handle.read(MAX_TEXT_CHARS)
 
