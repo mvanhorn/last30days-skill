@@ -2457,8 +2457,15 @@ def _xiaohongshu_api_base_candidates(config: dict[str, Any]) -> list[str]:
 
 
 def _xiaohongshu_base_logged_in(base: str, http_module: Any) -> bool:
+    from . import xiaohongshu_api
+
+    try:
+        normalized, req_kwargs = xiaohongshu_api._request_options(base)
+    except ValueError:
+        return False
+
     # Keep the health probe snappy, but allow one retry for transient hiccups.
-    health = http_module.get(f"{base}/health", timeout=3, retries=2)
+    health = http_module.get(f"{normalized}/health", timeout=3, retries=2, **req_kwargs)
     if not isinstance(health, dict):
         return False
     if not health.get("success"):
@@ -2466,30 +2473,37 @@ def _xiaohongshu_base_logged_in(base: str, http_module: Any) -> bool:
 
     # Login checks can be slower because some services consult the browser
     # profile/session, so use a slightly longer timeout than the health probe.
-    login = http_module.get(f"{base}/api/v1/login/status", timeout=8, retries=2)
-    is_logged_in = (
-        login.get("data", {}).get("is_logged_in")
-        if isinstance(login, dict) else False
+    login = http_module.get(
+        f"{normalized}/api/v1/login/status", timeout=8, retries=2, **req_kwargs
     )
-    return bool(is_logged_in)
+    login_data = login.get("data") if isinstance(login, dict) else None
+    is_logged_in = (
+        bool(login_data.get("is_logged_in"))
+        if isinstance(login_data, dict) else False
+    )
+    return is_logged_in
 
 
 def is_xiaohongshu_available(config: dict[str, Any]) -> bool:
     """Check whether Xiaohongshu HTTP API is reachable and logged in."""
     # Import here to avoid heavy imports at module load.
-    from . import http
+    from . import http, xiaohongshu_api
 
     for base in _xiaohongshu_api_base_candidates(config):
         try:
-            if _xiaohongshu_base_logged_in(base, http):
-                config[XIAOHONGSHU_RESOLVED_API_BASE_KEY] = base
+            normalized, _ = xiaohongshu_api._validate_base_url(base)
+        except ValueError:
+            continue
+        try:
+            if _xiaohongshu_base_logged_in(normalized, http):
+                config[XIAOHONGSHU_RESOLVED_API_BASE_KEY] = normalized
                 return True
         except (OSError, http.HTTPError):
             continue
         except Exception as exc:
             sys.stderr.write(
                 f"[last30days] WARNING: unexpected error checking Xiaohongshu "
-                f"at {base}: {type(exc).__name__}: {exc}\n"
+                f"at {normalized}: {type(exc).__name__}: {exc}\n"
             )
             sys.stderr.flush()
     return False

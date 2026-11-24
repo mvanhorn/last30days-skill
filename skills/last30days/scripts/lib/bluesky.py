@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode, urlsplit
 
-from . import http, log, public_host
+from . import auth_safety, http, log, public_host
 
 BSKY_SESSION_URL = "https://bsky.social/xrpc/com.atproto.server.createSession"
 BSKY_REFRESH_URL = "https://bsky.social/xrpc/com.atproto.server.refreshSession"
@@ -223,11 +223,13 @@ def _create_session(handle: str, app_password: str) -> Optional[str]:
         elif e.status_code == 401:
             _session_error = "Invalid credentials (401 Unauthorized). Check BSKY_HANDLE and BSKY_APP_PASSWORD."
         else:
-            _session_error = f"Session request failed: {e}"
+            safe_err = auth_safety.scrub_secrets(str(e), (app_password,))
+            _session_error = f"Session request failed: {safe_err}"
         _log(f"Session creation failed: {_session_error}")
         return None
     except Exception as e:
-        _session_error = f"Session request failed: {type(e).__name__}: {e}"
+        safe_err = auth_safety.scrub_secrets(str(e), (app_password,))
+        _session_error = f"Session request failed: {type(e).__name__}: {safe_err}"
         _log(f"Session creation failed: {_session_error}")
         return None
 
@@ -243,7 +245,12 @@ def _refresh_session(refresh_jwt: Optional[str]) -> Optional[str]:
     global _session_error, _refresh_error_status
 
     _refresh_error_status = None
-    if not refresh_jwt:
+    clean_refresh, token_err = auth_safety.normalize_header_token(refresh_jwt)
+    if token_err:
+        _session_error = f"Bluesky session refresh failed: {token_err}"
+        _log(f"Session refresh failed: {_session_error}")
+        return None
+    if not clean_refresh:
         _session_error = "No Bluesky refresh token is available"
         return None
 
@@ -251,7 +258,7 @@ def _refresh_session(refresh_jwt: Optional[str]) -> Optional[str]:
         response = http.request(
             "POST",
             BSKY_REFRESH_URL,
-            headers={"Authorization": f"Bearer {refresh_jwt}"},
+            headers={"Authorization": f"Bearer {clean_refresh}"},
             timeout=15,
             retries=0,
         )
@@ -260,7 +267,7 @@ def _refresh_session(refresh_jwt: Optional[str]) -> Optional[str]:
             _session_error = "No accessJwt in refresh session response"
             return None
         _cached_token = token
-        _cached_refresh_token = response.get("refreshJwt") or refresh_jwt
+        _cached_refresh_token = response.get("refreshJwt") or clean_refresh
         _token_created_at = time.monotonic()
         _session_error = None
         return token
@@ -393,15 +400,22 @@ def search_bluesky(
             "timeout": 30,
             "redirect_guard": redirect_guard,
         }
+        clean_token: Optional[str] = None
         if token is not None:
-            req_kwargs["headers"] = {"Authorization": f"Bearer {token}"}
+            clean_token, token_err = auth_safety.normalize_header_token(token)
+            if token_err or not clean_token:
+                err_msg = token_err or "Invalid token format"
+                _log(f"Search failed: {err_msg}")
+                return None, f"Bluesky search failed: {err_msg}"
+            req_kwargs["headers"] = {"Authorization": f"Bearer {clean_token}"}
         if not trusted_host:
             req_kwargs["public_only"] = True
         try:
             response = http.request("GET", url, **req_kwargs)
             return response, None
         except http.HTTPError as e:
-            _log(f"Search failed: {e}")
+            safe_err = auth_safety.scrub_secrets(str(e), (token, clean_token, app_password))
+            _log(f"Search failed: {safe_err}")
             if e.status_code == 401:
                 if token is None:
                     return None, (
@@ -411,10 +425,11 @@ def search_bluesky(
                 return None, "refresh"
             if e.status_code == 403 and e.body and "cloudflare" in e.body.lower():
                 return None, "Bluesky search blocked by Cloudflare (403). This is a network-level block - try a different network or VPN."
-            return None, f"Bluesky search failed: {e}"
+            return None, f"Bluesky search failed: {safe_err}"
         except Exception as e:
-            _log(f"Search failed: {e}")
-            return None, f"Bluesky search failed: {type(e).__name__}: {e}"
+            safe_err = auth_safety.scrub_secrets(str(e), (token, clean_token, app_password))
+            _log(f"Search failed: {type(e).__name__}: {safe_err}")
+            return None, f"Bluesky search failed: {type(e).__name__}: {safe_err}"
 
     def _auth_and_search() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         if not trusted_host:

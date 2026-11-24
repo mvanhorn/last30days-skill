@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import http, log
+from . import auth_safety, http, log
 
 TRUTHSOCIAL_SEARCH_URL = "https://truthsocial.com/api/v2/search"
 
@@ -68,8 +68,11 @@ def search_truthsocial(
         Dict with 'statuses' list from Mastodon API response.
     """
     config = config or {}
-    token = config.get("TRUTHSOCIAL_TOKEN", "")
-
+    raw_token = config.get("TRUTHSOCIAL_TOKEN", "")
+    token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err:
+        _log(f"Search failed: {token_err}")
+        return {"statuses": [], "error": token_err}
     if not token:
         return {"statuses": [], "error": "Truth Social token not configured"}
 
@@ -111,11 +114,13 @@ def search_truthsocial(
             _log("Rate limited")
             return {"statuses": [], "error": "Truth Social rate limited"}
         else:
-            _log(f"Search failed: {e}")
+            safe_err = auth_safety.scrub_secrets(str(e), (raw_token, token))
+            _log(f"Search failed: {safe_err}")
             return {"statuses": [], "error": f"Truth Social search failed: {e.status_code}"}
     except Exception as e:
-        _log(f"Search failed: {e}")
-        return {"statuses": [], "error": str(e)}
+        safe_err = auth_safety.scrub_secrets(str(e), (raw_token, token))
+        _log(f"Search failed: {type(e).__name__}: {safe_err}")
+        return {"statuses": [], "error": f"{type(e).__name__}: {safe_err}"}
 
     statuses = response.get("statuses", [])
     _log(f"Found {len(statuses)} posts")

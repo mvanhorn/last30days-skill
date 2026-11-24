@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import selectors
 import shutil
 import socket
@@ -29,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import urlsplit
 
-from . import env, health, http, log, public_host, subproc, usage
+from . import auth_safety, env, health, http, log, public_host, subproc, usage
 
 # Whisper's documented upload ceiling. We compress to stay under it and chunk
 # when a single clip still exceeds it.
@@ -742,6 +743,7 @@ def _chunk_audio(audio_path: str, workdir: str) -> list[str]:
         "-y",
         "-protocol_whitelist", "file",
         "-i", abs_audio,
+        "-map_metadata", "-1",
         "-f", "segment",
         "-segment_time", str(CHUNK_SECONDS),
         "-c", "copy",
@@ -753,6 +755,26 @@ def _chunk_audio(audio_path: str, workdir: str) -> list[str]:
         os.path.join(abs_workdir, f) for f in os.listdir(abs_workdir) if f.startswith("chunk_")
     )
     return chunks or [audio_path]
+
+
+_SAFE_UPLOAD_FILENAME_RE = re.compile(r"^[A-Za-z0-9_-]+\.mp3$")
+
+
+def _safe_upload_filename(path: str) -> str:
+    """Return a strictly sanitized ASCII upload filename for Content-Disposition."""
+    name = os.path.basename(path or "")
+    if _SAFE_UPLOAD_FILENAME_RE.fullmatch(name):
+        return name
+    return "audio.mp3"
+
+
+def _generate_multipart_boundary(audio: bytes) -> str:
+    """Generate a per-request CSPRNG multipart boundary absent from ``audio``."""
+    for _ in range(16):
+        candidate = f"----l30d-{secrets.token_hex(16)}"
+        if candidate.encode("ascii") not in audio:
+            return candidate
+    raise ValueError("Unable to generate collision-free multipart boundary")
 
 
 def _transcribe_chunk(
@@ -768,7 +790,8 @@ def _transcribe_chunk(
             # Surface the failing provider + error (e.g. Groq's Cloudflare 403,
             # "error code: 1010") under LAST30DAYS_DEBUG instead of silently
             # degrading to an empty transcript (#983).
-            log.debug(f"transcribe: provider {name} failed on a chunk: {exc!r}")
+            safe_exc = auth_safety.scrub_secrets(repr(exc), (key,))
+            log.debug(f"transcribe: provider {name} failed on a chunk: {safe_exc}")
             text = None
         if text is not None:
             return text, name
@@ -780,30 +803,37 @@ def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optio
     import json
     import urllib.request
 
+    clean_key, key_err = auth_safety.normalize_header_token(api_key)
+    if key_err or not clean_key:
+        raise ValueError(key_err or "Invalid token format")
+
     endpoint = _PROVIDER_ENDPOINTS[provider]
     model = _PROVIDER_MODELS[provider]
-    boundary = "----l30dTranscribeBoundary"
     with open(path, "rb") as fh:
         audio = fh.read()
+    boundary = _generate_multipart_boundary(audio)
+    filename = _safe_upload_filename(path)
 
     parts: list[bytes] = []
-    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(f"--{boundary}\r\n".encode("ascii"))
     parts.append(b'Content-Disposition: form-data; name="model"\r\n\r\n')
-    parts.append(f"{model}\r\n".encode())
-    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(f"{model}\r\n".encode("ascii"))
+    parts.append(f"--{boundary}\r\n".encode("ascii"))
     parts.append(
-        b'Content-Disposition: form-data; name="file"; filename="audio.mp3"\r\n'
-        b"Content-Type: audio/mpeg\r\n\r\n"
+        (
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: audio/mpeg\r\n\r\n"
+        ).encode("ascii")
     )
     parts.append(audio)
-    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    parts.append(f"\r\n--{boundary}--\r\n".encode("ascii"))
     body = b"".join(parts)
 
     req = urllib.request.Request(
         endpoint,
         data=body,
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {clean_key}",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             # A plain-urllib UA is fingerprinted and 403'd by Cloudflare-style
             # edges (Groq returns "error code: 1010", #983). Send the skill's

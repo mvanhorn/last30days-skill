@@ -11,7 +11,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Set
 
-from . import dates, http, log
+from . import auth_safety, dates, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/pinterest"
 
@@ -125,7 +125,12 @@ def search_pinterest(
     Returns:
         Dict with 'items' list and optional 'error'.
     """
-    if not token:
+    raw_token = token
+    clean_token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err:
+        _log(f"ScrapeCreators error: {token_err}")
+        return {"items": [], "error": token_err}
+    if not clean_token:
         return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
@@ -137,13 +142,14 @@ def search_pinterest(
         data = http.get(
             f"{_sc_base()}/search",
             params={"query": core_topic},
-            headers=http.scrapecreators_headers(token),
+            headers=http.scrapecreators_headers(clean_token),
             timeout=30,
             retries=2,
         )
     except Exception as e:
-        _log(f"ScrapeCreators error: {e}")
-        return {"items": [], "error": f"{type(e).__name__}: {e}"}
+        safe_err = auth_safety.scrub_secrets(str(e), (raw_token, clean_token))
+        _log(f"ScrapeCreators error: {type(e).__name__}: {safe_err}")
+        return {"items": [], "error": f"{type(e).__name__}: {safe_err}"}
 
     # Extract items from response - try common SC response shapes
     raw_items = data.get("pins") or data.get("results") or data.get("data") or data.get("items") or []

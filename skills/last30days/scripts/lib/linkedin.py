@@ -14,8 +14,9 @@ import hashlib
 import re
 import time
 from typing import Any, Dict, List
+from urllib.parse import unquote, urlsplit
 
-from . import http, log
+from . import auth_safety, http, log
 
 SC_BASE = "https://api.scrapecreators.com/v1/linkedin"
 
@@ -184,7 +185,12 @@ def search_linkedin(
     Returns:
         Dict with a 'posts' list of raw post dicts.
     """
-    if not token:
+    raw_token = token
+    clean_token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err:
+        _log(f"Search failed: {token_err}")
+        return {"posts": [], "error": token_err}
+    if not clean_token:
         _log("No SCRAPECREATORS_API_KEY — skipping")
         return {"posts": []}
 
@@ -244,7 +250,7 @@ def search_linkedin(
                 response = http.get(
                     f"{_sc_base()}/search/posts",
                     params=params,
-                    headers=http.scrapecreators_headers(token),
+                    headers=http.scrapecreators_headers(clean_token),
                     timeout=page_timeout,
                     retries=page_retries,
                 )
@@ -255,8 +261,9 @@ def search_linkedin(
                     # run partial and hide a real null behind a fake outage.
                     stop = "no posts found"
                     break
-                _log(f"Search failed (HTTP {exc.status_code}, {date_posted}): {exc}")
-                errors.append(f"{date_posted}: {exc}")
+                safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+                _log(f"Search failed (HTTP {exc.status_code}, {date_posted}): {safe_err}")
+                errors.append(f"{date_posted}: {safe_err}")
                 stop = f"HTTP {exc.status_code}"
                 if exc.status_code in FATAL_STATUS_CODES:
                     # Credential- or account-scoped: the next bucket would fail
@@ -264,8 +271,9 @@ def search_linkedin(
                     fatal = True
                 break
             except Exception as exc:
-                _log(f"Search failed ({date_posted}): {type(exc).__name__}: {exc}")
-                errors.append(f"{date_posted}: {type(exc).__name__}: {exc}")
+                safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+                _log(f"Search failed ({date_posted}): {type(exc).__name__}: {safe_err}")
+                errors.append(f"{date_posted}: {type(exc).__name__}: {safe_err}")
                 stop = type(exc).__name__
                 fatal = True
                 break
@@ -425,7 +433,9 @@ def parse_linkedin_response(
             author = str(
                 author_raw.get("name") or author_raw.get("full_name") or ""
             ).strip()
-            author_url = str(author_raw.get("url") or author_raw.get("link") or "").strip()
+            candidate_author_url = str(author_raw.get("url") or author_raw.get("link") or "").strip()
+            if _is_valid_linkedin_profile_url(candidate_author_url):
+                author_url = candidate_author_url
         else:
             author = str(author_raw).strip()
 
@@ -508,6 +518,47 @@ def _token_run(needle: List[str], haystack: List[str]) -> bool:
     return any(haystack[i : i + n] == needle for i in range(len(haystack) - n + 1))
 
 
+def _is_valid_linkedin_profile_url(url: Any) -> bool:
+    """Return True only for https://[*.]linkedin.com/in/<slug> URLs without credentials."""
+    if not isinstance(url, str):
+        return False
+    text = url.strip()
+    if not text or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return False
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme.lower() != "https":
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    if "\\" in parts.netloc or port not in (None, 443):
+        return False
+    host = (parts.hostname or "").removesuffix(".").lower()
+    if not (host == "linkedin.com" or host.endswith(".linkedin.com")):
+        return False
+    if host.startswith(".") or ".." in host:
+        return False
+    path = parts.path or ""
+    if not path.lower().startswith("/in/"):
+        return False
+    raw_slug = path[4:].removesuffix("/")
+    slug = unquote(raw_slug)
+    if (
+        not raw_slug
+        or not slug
+        or slug in (".", "..")
+        or "/" in raw_slug
+        or "/" in slug
+        or "\\" in slug
+        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in slug)
+    ):
+        return False
+    return True
+
+
 def _best_author_match(items: List[Dict[str, Any]], topic: str) -> str:
     """Return the profile URL of the post author whose name matches the topic.
 
@@ -525,7 +576,7 @@ def _best_author_match(items: List[Dict[str, Any]], topic: str) -> str:
     for item in items:
         name_tokens = _normalize_name(item.get("author", "")).split()
         url = (item.get("author_url") or "").strip()
-        if not url or len(name_tokens) < 2:
+        if not url or not _is_valid_linkedin_profile_url(url) or len(name_tokens) < 2:
             continue
         if _token_run(name_tokens, topic_tokens) or _token_run(topic_tokens, name_tokens):
             return url
@@ -534,21 +585,31 @@ def _best_author_match(items: List[Dict[str, Any]], topic: str) -> str:
 
 def search_profile(profile_url: str, token: str) -> Dict[str, Any]:
     """Fetch a LinkedIn profile (incl. `articles[]`) via ScrapeCreators."""
-    if not token or not profile_url:
+    raw_token = token
+    clean_token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err:
+        _log(f"Profile fetch failed: {token_err}")
         return {}
+    if not clean_token or not _is_valid_linkedin_profile_url(profile_url):
+        if profile_url and clean_token:
+            _log("Profile fetch refused: invalid LinkedIn profile URL")
+        return {}
+    clean_url = profile_url.strip()
     try:
         response = http.get(
             f"{_sc_base()}/profile",
-            params={"url": profile_url},
-            headers=http.scrapecreators_headers(token),
+            params={"url": clean_url},
+            headers=http.scrapecreators_headers(clean_token),
             timeout=30,
             retries=2,
         )
     except http.HTTPError as exc:
-        _log(f"Profile fetch failed (HTTP {exc.status_code}): {exc}")
+        safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+        _log(f"Profile fetch failed (HTTP {exc.status_code}): {safe_err}")
         return {}
     except Exception as exc:
-        _log(f"Profile fetch failed: {type(exc).__name__}: {exc}")
+        safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+        _log(f"Profile fetch failed: {type(exc).__name__}: {safe_err}")
         return {}
     return response if isinstance(response, dict) else {}
 
@@ -602,13 +663,14 @@ def enrich_articles(
     topic) and makes at most ONE profile API call. No-ops gracefully when
     there's no match, no token, no profile, or no articles.
     """
-    if not token:
+    clean_token, token_err = auth_safety.normalize_header_token(token)
+    if token_err or not clean_token:
         return []
     profile_url = _best_author_match(items, topic)
     if not profile_url:
         return []
     _log(f"Person topic — enriching articles from {profile_url}")
-    profile = search_profile(profile_url, token)
+    profile = search_profile(profile_url, clean_token)
     if not profile:
         return []
     articles = parse_profile_articles(profile, from_date=from_date, to_date=to_date)
@@ -637,6 +699,13 @@ def read_profile(
     Returns ``{"status", "data", "detail"}``: status "ok" with
     ``parse_person_profile`` output, else "failed" (never raises).
     """
+    clean_token, token_err = auth_safety.normalize_header_token(token)
+    if token_err or not clean_token:
+        return {"status": "failed", "data": None, "detail": token_err or "missing API key"}
+    if not _is_valid_linkedin_profile_url(profile_url):
+        _log("Person profile read refused: invalid LinkedIn profile URL")
+        return {"status": "failed", "data": None, "detail": "invalid LinkedIn profile URL"}
+    clean_url = profile_url.strip()
     timeout = PROFILE_TIMEOUT
     if deadline_monotonic is not None:
         timeout = min(timeout, deadline_monotonic - time.monotonic())
@@ -645,8 +714,8 @@ def read_profile(
     try:
         response = http.get(
             f"{SC_BASE}/profile",
-            params={"url": profile_url},
-            headers=http.scrapecreators_headers(token),
+            params={"url": clean_url},
+            headers=http.scrapecreators_headers(clean_token),
             timeout=timeout,
             retries=1,
             deadline_monotonic=deadline_monotonic,
