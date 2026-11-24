@@ -1870,6 +1870,13 @@ def request(
                 last_error = deadline_error()
                 break
             request_timeout = min(timeout, remaining)
+            usage_deadline = (
+                deadline_monotonic
+                if request_timeout == remaining
+                else (deadline_monotonic - remaining) + request_timeout
+            )
+        else:
+            usage_deadline = time.monotonic() + request_timeout
         try:
             if attempt > 0 and on_retry is not None:
                 on_retry()
@@ -1880,18 +1887,12 @@ def request(
                 except proxy.ProxyUnavailable as exc:
                     raise_recorded(HTTPError(f"API key proxy: {exc}", exc.status_code))
                 req.add_header(proxy.DEADLINE_HEADER, proxy.deadline_value(request_timeout))
-            with usage.with_deadline(deadline_monotonic):
-                charge = usage.begin_http(
-                    usage_url, method, deadline_monotonic=deadline_monotonic
-                )
+            with usage.with_deadline(usage_deadline):
+                charge = usage.begin_http(usage_url, method)
                 response_status, body, response_error = open_and_read_before_deadline(request_timeout)
                 if body:
                     try:
-                        usage.finish(
-                            charge,
-                            json.loads(body),
-                            deadline_monotonic=deadline_monotonic,
-                        )
+                        usage.finish(charge, json.loads(body))
                     except (ValueError, TypeError):
                         pass
             if (cancel is not None and cancel.is_set()) or (

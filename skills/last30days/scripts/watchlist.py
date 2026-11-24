@@ -8,6 +8,7 @@ from decimal import Decimal
 import json
 import math
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -296,19 +297,16 @@ def _budget_skip(topic: dict) -> dict | None:
     return {"topic": topic["name"], "status": "skipped", "reason": reason}
 
 
-def _has_unknown_cost_marker(*streams: object) -> bool:
-    for stream in streams:
-        if not stream:
-            continue
-        if isinstance(stream, bytes):
-            text = stream.decode("utf-8", errors="replace")
-        elif isinstance(stream, str):
-            text = stream
-        else:
-            continue
-        if usage.UNKNOWN_COST_MARKER in text:
-            return True
-    return False
+def _has_unknown_cost_marker(stderr: object, nonce: str | None = None) -> bool:
+    if not stderr:
+        return False
+    if isinstance(stderr, bytes):
+        text = stderr.decode("utf-8", errors="replace")
+    elif isinstance(stderr, str):
+        text = stderr
+    else:
+        return False
+    return usage.unknown_cost_marker(nonce) in text
 
 
 def _run_topic(topic: dict) -> dict:
@@ -316,17 +314,25 @@ def _run_topic(topic: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix="last30days-usage-") as temp_dir:
         journal = Path(temp_dir) / "usage.db"
         usage.create_journal(journal)
+        usage_nonce = secrets.token_hex(8)
         # A scheduled run: the logged-in Reddit session stays off (its Keychain
         # prompt cannot be answered unattended), and --no-browser-cookies below
         # keeps every cookie read off besides.
         child_env = dict(os.environ, **{
-            usage.JOURNAL_ENV: str(journal), "LAST30DAYS_STORE": "0", "LAST30DAYS_SCHEDULED_RUN": "1",
+            usage.JOURNAL_ENV: str(journal),
+            usage.NONCE_ENV: usage_nonce,
+            "LAST30DAYS_STORE": "0",
+            "LAST30DAYS_SCHEDULED_RUN": "1",
         })
         run_id = store.record_run(topic_id, source_mode="v3", status="running")
         unknown_cost_flag = [False]
         try:
             result = _research_topic(
-                topic, run_id, child_env, unknown_cost_flag=unknown_cost_flag
+                topic,
+                run_id,
+                child_env,
+                unknown_cost_flag=unknown_cost_flag,
+                usage_nonce=usage_nonce,
             )
         finally:
             costs = usage.read_journal(journal)
@@ -379,6 +385,7 @@ def _research_topic(
     child_env: dict,
     *,
     unknown_cost_flag: list[bool] | None = None,
+    usage_nonce: str | None = None,
 ) -> dict:
     start_time = time.time()
     topic_id = topic["id"]
@@ -411,7 +418,7 @@ def _research_topic(
             env={**child_env, envlib.ALLOW_ENGINE_PLAN_VAR: "1"},
         )
     except subprocess.TimeoutExpired as exc:
-        if unknown_cost_flag is not None and _has_unknown_cost_marker(exc.stderr, exc.stdout):
+        if unknown_cost_flag is not None and _has_unknown_cost_marker(exc.stderr, usage_nonce):
             unknown_cost_flag[0] = True
         duration = time.time() - start_time
         store.update_run(
@@ -430,7 +437,7 @@ def _research_topic(
         )
         return {"topic": topic["name"], "status": "failed", "error": f"parse error: {exc}"}
 
-    if unknown_cost_flag is not None and _has_unknown_cost_marker(result.stderr, result.stdout):
+    if unknown_cost_flag is not None and _has_unknown_cost_marker(result.stderr, usage_nonce):
         unknown_cost_flag[0] = True
 
     duration = time.time() - start_time

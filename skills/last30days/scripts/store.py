@@ -573,6 +573,9 @@ def get_latest_completed_runs(topic_id: int, limit: int = 2) -> List[Dict[str, A
 # --- Findings ---
 
 
+_SUPPORTS_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
+
+
 def _merge_finding_scores(target: Dict[str, Any], incoming: Dict[str, Any]) -> None:
     """Keep the higher engagement and relevance scores when collapsing duplicate URLs."""
     prev_eng = target.get("engagement_score") or 0
@@ -621,42 +624,60 @@ def store_findings(
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        new_count = 0
-        updated_count = 0
-        rows_by_url: Dict[str, sqlite3.Row] = {}
-        for url, f in with_urls:
-            new_engagement = f.get("engagement_score") or 0
-            row = conn.execute(
-                """INSERT INTO findings
-                   (run_id, topic_id, source, source_url, source_title,
-                    author, content, summary, engagement_score, relevance_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(source_url) DO UPDATE SET
-                       last_seen = datetime('now'),
-                       sighting_count = max(coalesce(sighting_count, 1), 1) + 1,
-                       engagement_score = max(
-                           coalesce(engagement_score, 0), excluded.engagement_score),
-                       run_id = excluded.run_id
-                   RETURNING id, source_url, sighting_count""",
-                (
-                    run_id,
-                    topic_id,
-                    f.get("source", "unknown"),
-                    url,
-                    f.get("source_title") or f.get("title", ""),
-                    f.get("author", ""),
-                    f.get("content") or f.get("text", ""),
-                    f.get("summary", ""),
-                    new_engagement,
-                    f.get("relevance_score", 0),
-                ),
-            ).fetchone()
-            rows_by_url[url] = row
-            if row["sighting_count"] == 1:
-                new_count += 1
-            else:
-                updated_count += 1
-        _record_sightings(conn, run_id, topic_id, with_urls, rows_by_url)
+        upsert_sql = """INSERT INTO findings
+               (run_id, topic_id, source, source_url, source_title,
+                author, content, summary, engagement_score, relevance_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source_url) DO UPDATE SET
+                   last_seen = datetime('now'),
+                   sighting_count = max(coalesce(sighting_count, 1), 1) + 1,
+                   engagement_score = max(
+                       coalesce(engagement_score, 0), excluded.engagement_score),
+                   run_id = excluded.run_id"""
+        upsert_rows = [
+            (
+                run_id,
+                topic_id,
+                f.get("source", "unknown"),
+                url,
+                f.get("source_title") or f.get("title", ""),
+                f.get("author", ""),
+                f.get("content") or f.get("text", ""),
+                f.get("summary", ""),
+                f.get("engagement_score") or 0,
+                f.get("relevance_score", 0),
+            )
+            for url, f in with_urls
+        ]
+        if _SUPPORTS_RETURNING:
+            new_count = 0
+            updated_count = 0
+            rows_by_url: Dict[str, sqlite3.Row] = {}
+            returning_sql = f"{upsert_sql} RETURNING id, source_url, sighting_count"
+            for params in upsert_rows:
+                row = conn.execute(returning_sql, params).fetchone()
+                rows_by_url[params[3]] = row
+                if row["sighting_count"] == 1:
+                    new_count += 1
+                else:
+                    updated_count += 1
+            _record_sightings(conn, run_id, topic_id, with_urls, rows_by_url)
+        else:
+            # SQLite < 3.35 fallback: BEGIN IMMEDIATE prevents concurrent
+            # inserts or deletes between this lookup and the upsert.
+            urls = [url for url, _ in with_urls]
+            placeholders = ",".join("?" for _ in urls)
+            existing_urls = {
+                row["source_url"]
+                for row in conn.execute(
+                    f"SELECT source_url FROM findings WHERE source_url IN ({placeholders})",
+                    urls,
+                ).fetchall()
+            }
+            updated_count = len(existing_urls)
+            new_count = len(with_urls) - updated_count
+            conn.executemany(upsert_sql, upsert_rows)
+            _record_sightings(conn, run_id, topic_id, with_urls)
         conn.execute(
             "UPDATE research_runs SET findings_new = ?, findings_updated = ? WHERE id = ?",
             (new_count, updated_count, run_id),

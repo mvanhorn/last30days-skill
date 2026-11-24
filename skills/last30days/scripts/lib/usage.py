@@ -17,9 +17,10 @@ from urllib.parse import urlsplit
 from . import log
 
 JOURNAL_ENV = "LAST30DAYS_USAGE_JOURNAL"
+NONCE_ENV = "LAST30DAYS_USAGE_NONCE"
 UNKNOWN_COST_MARKER = "[last30days:usage-cost-unknown]"
-_JOURNAL_TIMEOUT_SECONDS = 30.0
-_BUSY_TIMEOUT_MS = 30_000
+_JOURNAL_TIMEOUT_SECONDS = 5.0
+_BUSY_TIMEOUT_MS = 5_000
 _WRITE_LOCK = threading.Lock()
 _STATE_LOCK = threading.Lock()
 _BEGIN_FAILED_JOURNALS: set[str] = set()
@@ -81,6 +82,11 @@ def _remaining_budget(deadline_monotonic: float | None) -> float:
     return min(_JOURNAL_TIMEOUT_SECONDS, max(0.0, deadline_monotonic - time.monotonic()))
 
 
+def unknown_cost_marker(nonce: str | None = None) -> str:
+    token = os.environ.get(NONCE_ENV) if nonce is None else nonce
+    return f"{UNKNOWN_COST_MARKER}:{token}" if token else UNKNOWN_COST_MARKER
+
+
 def _mark_begin_failed(path: Path | str) -> None:
     """Record a fail-closed unknown-cost marker in-process, on disk, and on stderr."""
     key = _journal_key(path)
@@ -94,7 +100,7 @@ def _mark_begin_failed(path: Path | str) -> None:
     except OSError:
         pass
     try:
-        sys.stderr.write(f"{UNKNOWN_COST_MARKER}\n")
+        sys.stderr.write(f"{unknown_cost_marker()}\n")
         sys.stderr.flush()
     except OSError:
         pass
@@ -158,7 +164,10 @@ def _connection(path, *, write: bool = False, deadline_monotonic: float | None =
 def create_journal(path: Path) -> None:
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(fd)
-    with _WRITE_LOCK:
+    acquired = _WRITE_LOCK.acquire(timeout=_JOURNAL_TIMEOUT_SECONDS)
+    if not acquired:
+        raise sqlite3.OperationalError("usage journal lock wait timed out")
+    try:
         with _STATE_LOCK:
             _BEGIN_FAILED_JOURNALS.discard(_journal_key(path))
         try:
@@ -193,6 +202,8 @@ def create_journal(path: Path) -> None:
                 raise
         finally:
             conn.close()
+    finally:
+        _WRITE_LOCK.release()
 
 
 def begin(
@@ -232,7 +243,11 @@ def begin_http(
             if override and urlsplit(override).netloc == parts.netloc:
                 provider = name.lower()
                 break
-    return begin(provider, deadline_monotonic=deadline_monotonic) if provider else None
+    if not provider:
+        return None
+    if deadline_monotonic is None:
+        return begin(provider)
+    return begin(provider, deadline_monotonic=deadline_monotonic)
 
 
 def cancel(

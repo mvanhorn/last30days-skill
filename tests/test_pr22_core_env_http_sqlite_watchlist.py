@@ -40,10 +40,14 @@ def test_high057_journal_uses_wal_busy_timeout_and_closes_connection(tmp_path):
     with usage._connection(journal, write=False) as conn:
         leaked_ref = conn
         busy = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-        assert busy == 30_000
+        assert busy == usage._BUSY_TIMEOUT_MS
 
     with pytest.raises(sqlite3.ProgrammingError):
         leaked_ref.execute("SELECT 1")
+
+    with usage._connection(journal, write=False, deadline_monotonic=time.monotonic() + 0.4) as conn:
+        bounded_busy = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert 0 < bounded_busy <= 400
 
 
 def test_high057_concurrent_http_journal_writes_under_heavy_contention(tmp_path, monkeypatch):
@@ -1010,14 +1014,170 @@ def test_greptile_p1_stderr_unknown_cost_marker_forces_unknown_when_fs_unwritabl
     })
 
     def fake_run(*args, **kwargs):
+        nonce = kwargs["env"][usage.NONCE_ENV]
+        marker = usage.unknown_cost_marker(nonce)
         return sp.CompletedProcess(
-            args[0], 0, stdout=fake_report, stderr=f"warn\n{usage.UNKNOWN_COST_MARKER}\n"
+            args[0], 0, stdout=fake_report, stderr=f"warn\n{marker}\n"
         )
 
     monkeypatch.setattr(watchlist.subprocess, "run", fake_run)
     result = watchlist._run_topic(topic)
     assert result["cost_unknown"] == 1
     assert store.get_daily_unknown_cost_runs() == 1
+
+
+def test_greptile_p1_report_stdout_and_spoofed_stderr_cannot_block_watchlist(
+    tmp_path, monkeypatch
+):
+    """Report stdout containing UNKNOWN_COST_MARKER or stderr without the per-run nonce
+    must NOT force cost_unknown=1."""
+    import subprocess as sp
+
+    db_path = tmp_path / "research.db"
+    monkeypatch.setattr(store, "_db_override", db_path)
+    store.init_db()
+    topic = store.add_topic("Untrusted Report Text")
+
+    spoofed_report = json.dumps({
+        "topic": f"{topic['name']} {usage.UNKNOWN_COST_MARKER}",
+        "range_from": "2026-01-01",
+        "range_to": "2026-04-01",
+        "generated_at": "2026-04-01T00:00:00Z",
+        "provider_runtime": {
+            "reasoning_provider": "local",
+            "planner_model": "local",
+            "rerank_model": "local",
+        },
+        "query_plan": {
+            "intent": "test",
+            "freshness_mode": "recent",
+            "cluster_mode": "standard",
+            "raw_topic": topic["name"],
+        },
+    })
+
+    def fake_run(*args, **kwargs):
+        assert kwargs["env"].get(usage.NONCE_ENV)
+        return sp.CompletedProcess(
+            args[0],
+            0,
+            stdout=spoofed_report,
+            stderr=f"source echoed {usage.UNKNOWN_COST_MARKER} and {usage.UNKNOWN_COST_MARKER}:wrongnonce\n",
+        )
+
+    monkeypatch.setattr(watchlist.subprocess, "run", fake_run)
+    result = watchlist._run_topic(topic)
+    assert result["cost_unknown"] == 0
+    assert store.get_daily_unknown_cost_runs() == 0
+
+
+def test_greptile_p1_http_request_timeout_bounds_usage_journal_wait_without_deadline(
+    tmp_path, monkeypatch
+):
+    """Even when deadline_monotonic is None, http.request(timeout=...) bounds usage journal waits."""
+    journal = tmp_path / "usage-req-timeout.db"
+    usage.create_journal(journal)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal))
+
+    class Response(io.BytesIO):
+        status = 200
+
+    monkeypatch.setattr(http, "_open_request", lambda req, timeout: Response(b'{"ok": true}'))
+
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_lock():
+        with usage._WRITE_LOCK:
+            locked.set()
+            release.wait(timeout=5.0)
+
+    holder = threading.Thread(target=hold_lock, daemon=True)
+    holder.start()
+    assert locked.wait(timeout=2.0)
+    try:
+        started = time.monotonic()
+        with patch.object(sys, "stderr", io.StringIO()):
+            res = http.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                {},
+                timeout=0.08,
+                retries=1,
+            )
+        elapsed = time.monotonic() - started
+        assert res == {"ok": True}
+        assert elapsed < 0.5
+    finally:
+        release.set()
+        holder.join(timeout=2.0)
+
+    assert usage.read_journal(journal)["cost_unknown"] == 1
+
+
+def test_greptile_p1_store_findings_sqlite_pre_3_35_fallback_without_returning(
+    tmp_path, monkeypatch
+):
+    """When SQLite lacks RETURNING (< 3.35), store_findings still stays atomic inside
+    BEGIN IMMEDIATE without a redundant follow-up conflict count query."""
+    db_path = tmp_path / "research-legacy-sqlite.db"
+    monkeypatch.setattr(store, "_db_override", db_path)
+    monkeypatch.setattr(store, "_SUPPORTS_RETURNING", False)
+    store.init_db()
+    topic = store.add_topic("Legacy SQLite")
+    run1 = store.record_run(topic["id"], source_mode="v3")
+    run2 = store.record_run(topic["id"], source_mode="v3")
+
+    executed_sql: list[str] = []
+    real_connect = store._connect
+
+    class TracingConn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            executed_sql.append(sql.strip())
+            return self._conn.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(store, "_connect", lambda *a, **k: TracingConn(real_connect(*a, **k)))
+
+    counts1 = store.store_findings(
+        run1,
+        topic["id"],
+        [
+            {"source": "reddit", "source_url": "https://example.test/a", "source_title": "A", "engagement_score": 10},
+            {"source": "reddit", "source_url": "https://example.test/a", "source_title": "A dup", "engagement_score": 25},
+            {"source": "x", "source_url": "https://example.test/b", "source_title": "B", "engagement_score": 5},
+        ],
+    )
+    assert counts1 == {"new": 2, "updated": 0}
+    assert not any("RETURNING" in sql for sql in executed_sql)
+    assert not any("sighting_count > 1" in sql for sql in executed_sql)
+    assert executed_sql[0] == "BEGIN IMMEDIATE"
+
+    executed_sql.clear()
+    counts2 = store.store_findings(
+        run2,
+        topic["id"],
+        [
+            {"source": "reddit", "source_url": "https://example.test/a", "source_title": "A", "engagement_score": 15},
+            {"source": "x", "source_url": "https://example.test/c", "source_title": "C", "engagement_score": 30},
+        ],
+    )
+    assert counts2 == {"new": 1, "updated": 1}
+    assert not any("RETURNING" in sql for sql in executed_sql)
+    assert not any("sighting_count > 1" in sql for sql in executed_sql)
+    assert len(store.get_sightings_for_run(topic["id"], run1)) == 2
+    assert len(store.get_sightings_for_run(topic["id"], run2)) == 2
+    with sqlite3.connect(db_path) as check:
+        eng_a, cnt_a = check.execute(
+            "SELECT engagement_score, sighting_count FROM findings WHERE source_url = ?",
+            ("https://example.test/a",),
+        ).fetchone()
+    assert eng_a == 25.0
+    assert cnt_a == 2
 
 
 def test_greptile_p1_journal_wait_bounded_by_deadline_monotonic(tmp_path, monkeypatch):
