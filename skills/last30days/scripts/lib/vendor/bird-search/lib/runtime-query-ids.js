@@ -100,6 +100,20 @@ export function validateDiscoveryUrl(rawUrl) {
     }
     return parsed;
 }
+function truncateUtf8Bytes(buf, maxBytes) {
+    if (maxBytes <= 0) {
+        return '';
+    }
+    let end = Math.min(buf.byteLength, maxBytes);
+    if (end < buf.byteLength && (buf[end] & 0xc0) === 0x80) {
+        let start = end - 1;
+        while (start > 0 && (buf[start] & 0xc0) === 0x80) {
+            start -= 1;
+        }
+        end = start;
+    }
+    return buf.subarray(0, end).toString('utf8');
+}
 export async function readResponseTextBounded(response, maxBytes, signal, { truncateOnLimit = false } = {}) {
     if (signal?.aborted) {
         await response.body?.cancel().catch(() => {});
@@ -168,14 +182,22 @@ export async function readResponseTextBounded(response, maxBytes, signal, { trun
             }
         }
     }
+    let text = null;
     if (typeof response.text === 'function') {
-        const text = await raceWithAbort(response.text(), signal);
+        text = await raceWithAbort(response.text(), signal);
+    }
+    else if (typeof response.json === 'function') {
+        const parsed = await raceWithAbort(response.json(), signal);
+        text = JSON.stringify(parsed ?? null);
+    }
+    if (text !== null) {
         if (signal?.aborted) {
             throw createAbortError(signal.reason);
         }
-        if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+        const buf = Buffer.from(text, 'utf8');
+        if (buf.byteLength > maxBytes) {
             if (truncateOnLimit) {
-                return text.slice(0, maxBytes);
+                return truncateUtf8Bytes(buf, maxBytes);
             }
             throw new Error(`Response exceeded ${maxBytes} byte limit`);
         }
@@ -246,12 +268,20 @@ async function fetchText(fetchImpl, url, opts = {}) {
                 continue;
             }
             if (!response.ok) {
-                const body = await readResponseTextBounded(
-                    response,
-                    512,
-                    controller.signal,
-                    { truncateOnLimit: true },
-                ).catch(() => '');
+                let body = '';
+                try {
+                    body = await readResponseTextBounded(
+                        response,
+                        512,
+                        controller.signal,
+                        { truncateOnLimit: true },
+                    );
+                }
+                catch (err) {
+                    if (controller.signal.aborted || err?.name === 'AbortError') {
+                        throw err;
+                    }
+                }
                 throw new Error(`HTTP ${response.status} for ${currentUrl}: ${body.slice(0, 120)}`);
             }
             return await readResponseTextBounded(response, maxBytes, controller.signal);

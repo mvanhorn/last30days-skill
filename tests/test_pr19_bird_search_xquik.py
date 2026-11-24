@@ -113,7 +113,10 @@ class TestHigh150XquikSecurityAndParsing:
             seen_queries.append(parse_qs(urlsplit(url).query)["q"][0])
             return {"tweets": []}
 
-        bad_and_good = [None, "", "   ", " @alice ", "alice OR from:bob", "bad;handle", "a" * 16, 12345]
+        bad_and_good = [
+            None, "", "   ", " @alice ", "ALICE", "@Alice",
+            "alice OR from:bob", "bad;handle", "a" * 16, 12345,
+        ]
         with mock.patch("lib.xquik.http.get", side_effect=fake_get):
             xquik.search_handles(bad_and_good, "topic", "2026-05-01", "2026-05-31", token="dummy-key")
             xquik.search_mentions(bad_and_good, "2026-05-01", "2026-05-31", token="dummy-key")
@@ -136,6 +139,11 @@ class TestHigh150XquikSecurityAndParsing:
             ("foo since:2020-01-01 until:2020-12-31", "foo"),
             ('"since:2020" foo', '"since:2020" foo'),
             ("OR foo OR", "foo"),
+            ("from:evil to:victim filter:links lang:en -spam ai agents", "ai agents"),
+            ("from:evil OR alice", "alice"),
+            ('Python: "Mission: Impossible" -is:retweet', 'Python "Mission: Impossible"'),
+            ('"hello\\" OR from:evil', '"hello"'),
+            ('foo \\"bar baz', "foo bar baz"),
         ],
     )
     def test_topic_query_sanitization_and_or_parenthesization(self, raw_query, expected_prefix):
@@ -192,6 +200,9 @@ class TestHigh150XquikSecurityAndParsing:
 
         malformed_tweets = [
             {"id": None, "text": "null id", "author": {"username": "alice"}},
+            {"id": "0", "text": "zero str id", "author": {"username": "alice"}},
+            {"id": 0, "text": "zero int id", "author": {"username": "alice"}},
+            {"id": "000", "text": "zeros id", "author": {"username": "alice"}},
             {"id": "None", "text": "str none id", "author": {"username": "alice"}},
             {"id": "123abc", "text": "alpha id", "author": {"username": "alice"}},
             {"id": "١٢٣٤٥", "text": "non-ascii digits", "author": {"username": "alice"}},
@@ -200,7 +211,14 @@ class TestHigh150XquikSecurityAndParsing:
             {"id": "1002", "text": "bad username", "author": {"username": "alice/../../evil"}},
             {"id": "1003", "text": "string author", "author": "alice"},
             {"id": "1004", "text": "list author", "author": ["alice"]},
-            {"id": "1005", "text": None, "createdAt": 12345, "author": {"username": " @valid_user "}},
+            {
+                "id": "1005",
+                "text": None,
+                "createdAt": 12345,
+                "likeCount": True,
+                "retweetCount": False,
+                "author": {"username": " @valid_user "},
+            },
         ]
         with mock.patch("lib.xquik.http.get", return_value={"tweets": malformed_tweets}):
             res = xquik.search_xquik("test", "2026-05-01", "2026-05-31", depth="quick", token="k")
@@ -211,6 +229,10 @@ class TestHigh150XquikSecurityAndParsing:
         assert item["author_handle"] == "valid_user"
         assert item["text"] == ""
         assert item["date"] is None
+        assert item["engagement"]["likes"] is None
+        assert item["engagement"]["reposts"] is None
+        assert xquik._safe_int(True) is None
+        assert xquik._safe_int(False) is None
         assert xquik.parse_xquik_response("not-a-dict") == []  # type: ignore[arg-type]
 
 
@@ -432,6 +454,84 @@ class TestHigh156QueryIdDiscoverySecurity:
         # First chunk of concurrency 6 finds SearchTimeline in b0.js and stops before chunks 2-3 (18 total).
         assert data["clientBundlesFetchedCount"] <= 6
 
+    def test_read_response_text_json_fallback_utf8_truncation_and_non_ok_abort_rethrow(self, tmp_path):
+        script = textwrap.dedent(
+            f"""
+            import {{ createRuntimeQueryIdStore, readResponseTextBounded }} from './skills/last30days/scripts/lib/vendor/bird-search/lib/runtime-query-ids.js';
+
+            // 1) .json()-only response fallback bounded by UTF-8 bytes
+            const jsonOnly = await readResponseTextBounded({{ json: async () => ({{ ok: true }}) }}, 64, null);
+            let jsonOverErr = null;
+            try {{
+              await readResponseTextBounded({{ json: async () => ({{ big: 'a'.repeat(100) }}) }}, 32, null);
+            }} catch (e) {{
+              jsonOverErr = e.message;
+            }}
+
+            // 2) .text()-only UTF-8 byte truncation never splits multi-byte chars or exceeds maxBytes
+            const truncEmoji = await readResponseTextBounded(
+              {{ text: async () => '🔥a' }},
+              2,
+              null,
+              {{ truncateOnLimit: true }},
+            );
+            const truncAccent = await readResponseTextBounded(
+              {{ text: async () => 'éé' }},
+              3,
+              null,
+              {{ truncateOnLimit: true }},
+            );
+
+            // 3) Stalled non-OK (500) body in discovery fetchText aborts promptly (rethrows AbortError, doesn't hang)
+            let nonOkCancelled = false;
+            const nonOkStore = createRuntimeQueryIdStore({{
+              cachePath: {json.dumps(str(tmp_path / "non-ok.json"))},
+              fetchTimeoutMs: 80,
+              refreshTimeoutMs: 250,
+              fetchImpl: async () => new Response(new ReadableStream({{
+                start(controller) {{
+                  controller.enqueue(new TextEncoder().encode('err'));
+                }},
+                cancel() {{
+                  nonOkCancelled = true;
+                }},
+              }}), {{ status: 500 }}),
+            }});
+            const t0 = Date.now();
+            let nonOkErr = null;
+            try {{
+              await nonOkStore.refresh(['SearchTimeline'], {{ force: true }});
+            }} catch (e) {{
+              nonOkErr = e.message;
+            }}
+            const nonOkElapsed = Date.now() - t0;
+
+            process.stdout.write(JSON.stringify({{
+              jsonOnly,
+              jsonOverErr,
+              truncEmoji,
+              truncEmojiBytes: Buffer.byteLength(truncEmoji, 'utf8'),
+              truncAccent,
+              truncAccentBytes: Buffer.byteLength(truncAccent, 'utf8'),
+              nonOkCancelled,
+              nonOkErr,
+              nonOkElapsed,
+            }}));
+            """
+        )
+        res = _node_eval(script)
+        assert res.returncode == 0, res.stderr
+        data = json.loads(res.stdout)
+        assert data["jsonOnly"] == '{"ok":true}'
+        assert data["jsonOverErr"] and "byte limit" in data["jsonOverErr"].lower()
+        assert data["truncEmoji"] == ""
+        assert data["truncEmojiBytes"] <= 2
+        assert data["truncAccent"] == "é"
+        assert data["truncAccentBytes"] == 2
+        assert data["nonOkCancelled"] is True
+        assert data["nonOkErr"] is not None
+        assert data["nonOkElapsed"] < 2000
+
 
 # ---------------------------------------------------------------------------
 # HIGH-157: fetch body timeout, byte cap, signal composition, 404 cancel, abort loop, --timeout-ms
@@ -616,7 +716,14 @@ class TestHigh157FetchLifecycleAndTimeoutCli:
         payload = json.loads(res.stdout)
         assert "150ms" in payload["error"]
 
-        for bad in (["--timeout-ms", "0"], ["--timeout-ms", "-5"], ["--timeout-ms", "abc"], ["--timeout-ms"]):
+        for bad in (
+            ["--timeout-ms", "0"],
+            ["--timeout-ms", "-5"],
+            ["--timeout-ms", "abc"],
+            ["--timeout-ms", "2147483648"],
+            ["--timeout-ms", "999999999999"],
+            ["--timeout-ms"],
+        ):
             bad_res = subprocess.run(
                 ["node", str(BIRD_MJS), *bad, "--json", "--", "hello"],
                 cwd=REPO_ROOT,
@@ -628,7 +735,8 @@ class TestHigh157FetchLifecycleAndTimeoutCli:
             assert bad_res.returncode == 1
             assert bad_res.stdout == ""
 
-        # Verify bird_x.py passes --timeout-ms matching clamped subprocess budget on all 3 lanes
+        # Verify bird_x.py passes --timeout-ms matching clamped subprocess budget on all 3 lanes,
+        # including sub-second remaining deadlines (< 1000ms).
         captured_cmds: list[list[str]] = []
 
         def fake_run(cmd, **_kwargs):
@@ -637,16 +745,20 @@ class TestHigh157FetchLifecycleAndTimeoutCli:
 
         with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=fake_run):
             bird_x._invoke_bird_subprocess("hello", count=5, timeout=8)
+            bird_x._invoke_bird_subprocess("hello", count=5, timeout=8, deadline=time.monotonic() + 0.35)
             bird_x.search_handles(["alice"], "topic", "2026-05-01", count_per=2)
             bird_x.search_mentions(["alice"], "2026-05-01", count_per=2)
 
-        assert len(captured_cmds) == 3
-        expected_ms = ["8000", "15000", "15000"]
-        for cmd, want in zip(captured_cmds, expected_ms):
+        assert len(captured_cmds) == 4
+        for cmd in captured_cmds:
             sep = cmd.index("--")
             idx = cmd.index("--timeout-ms")
             assert idx < sep
-            assert cmd[idx + 1] == want
+        assert captured_cmds[0][captured_cmds[0].index("--timeout-ms") + 1] == "8000"
+        sub_second_ms = int(captured_cmds[1][captured_cmds[1].index("--timeout-ms") + 1])
+        assert 1 <= sub_second_ms <= 400
+        assert captured_cmds[2][captured_cmds[2].index("--timeout-ms") + 1] == "15000"
+        assert captured_cmds[3][captured_cmds[3].index("--timeout-ms") + 1] == "15000"
 
 
 # ---------------------------------------------------------------------------
@@ -656,24 +768,14 @@ class TestHigh157FetchLifecycleAndTimeoutCli:
 
 @pytest.mark.skipif(not HAS_NODE, reason="node is required")
 class TestHigh158AtomicPrivateCacheWrites:
-    def test_private_permissions_and_symlink_refusal_for_query_ids_and_features(self, tmp_path):
+    def test_private_permissions_and_atomic_writes_for_query_ids_and_features(self, tmp_path):
         nested_dir = tmp_path / "private_cache_dir"
         qid_cache = nested_dir / "query-ids-cache.json"
         feat_cache = nested_dir / "features.json"
 
-        victim = tmp_path / "victim.txt"
-        victim.write_text("DO_NOT_OVERWRITE", encoding="utf-8")
-        symlink_target = tmp_path / "symlink-cache.json"
-        symlink_target.symlink_to(victim)
-
-        real_dir = tmp_path / "real_dir"
-        real_dir.mkdir()
-        symlink_dir = tmp_path / "symlink_dir"
-        symlink_dir.symlink_to(real_dir)
-
         script = textwrap.dedent(
             f"""
-            import {{ createRuntimeQueryIdStore, writeFileAtomicPrivate }} from './skills/last30days/scripts/lib/vendor/bird-search/lib/runtime-query-ids.js';
+            import {{ createRuntimeQueryIdStore }} from './skills/last30days/scripts/lib/vendor/bird-search/lib/runtime-query-ids.js';
             import {{ refreshFeatureOverridesCache }} from './skills/last30days/scripts/lib/vendor/bird-search/lib/runtime-features.js';
 
             const fetchImpl = async (url) => {{
@@ -691,6 +793,35 @@ class TestHigh158AtomicPrivateCacheWrites:
 
             process.env.BIRD_FEATURES_CACHE = {json.dumps(str(feat_cache))};
             await refreshFeatureOverridesCache();
+            """
+        )
+        res = _node_eval(script)
+        assert res.returncode == 0, res.stderr
+        assert json.loads(qid_cache.read_text(encoding="utf-8"))["ids"]["SearchTimeline"] == "AtomicId_1"
+        assert feat_cache.is_file()
+
+        if os.name != "nt":
+            assert stat.S_IMODE(nested_dir.stat().st_mode) == 0o700
+            assert stat.S_IMODE(qid_cache.stat().st_mode) == 0o600
+            assert stat.S_IMODE(feat_cache.stat().st_mode) == 0o600
+        # No leftover .tmp sibling files
+        assert not [p for p in nested_dir.iterdir() if p.name.endswith(".tmp")]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks require elevated privileges on Windows")
+    def test_symlink_target_and_dir_refusal_for_query_ids_and_features(self, tmp_path):
+        victim = tmp_path / "victim.txt"
+        victim.write_text("DO_NOT_OVERWRITE", encoding="utf-8")
+        symlink_target = tmp_path / "symlink-cache.json"
+        symlink_target.symlink_to(victim)
+
+        real_dir = tmp_path / "real_dir"
+        real_dir.mkdir()
+        symlink_dir = tmp_path / "symlink_dir"
+        symlink_dir.symlink_to(real_dir)
+
+        script = textwrap.dedent(
+            f"""
+            import {{ writeFileAtomicPrivate }} from './skills/last30days/scripts/lib/vendor/bird-search/lib/runtime-query-ids.js';
 
             let symlinkTargetErr = null;
             try {{
@@ -716,13 +847,6 @@ class TestHigh158AtomicPrivateCacheWrites:
         assert data["symlinkDirErr"] and "symlink" in data["symlinkDirErr"].lower()
         assert victim.read_text(encoding="utf-8") == "DO_NOT_OVERWRITE"
         assert not (real_dir / "out.json").exists()
-
-        if os.name != "nt":
-            assert stat.S_IMODE(nested_dir.stat().st_mode) == 0o700
-            assert stat.S_IMODE(qid_cache.stat().st_mode) == 0o600
-            assert stat.S_IMODE(feat_cache.stat().st_mode) == 0o600
-        # No leftover .tmp sibling files
-        assert not [p for p in nested_dir.iterdir() if p.name.endswith(".tmp")]
 
     def test_concurrent_node_processes_never_corrupt_query_ids_cache(self, tmp_path):
         cache_file = tmp_path / "concurrent" / "query-ids-cache.json"
@@ -754,7 +878,10 @@ class TestHigh158AtomicPrivateCacheWrites:
         assert parsed["ids"]["SearchTimeline"].startswith("ConcurrentId_")
         assert not [p for p in cache_file.parent.iterdir() if p.name.endswith(".tmp")]
 
-    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX non-root chmod test")
+    @pytest.mark.skipif(
+        os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+        reason="POSIX non-root chmod test",
+    )
     def test_readonly_cache_dir_still_refreshes_memory_snapshot(self, tmp_path):
         ro_dir = tmp_path / "readonly_home"
         ro_dir.mkdir(mode=0o700)
@@ -993,6 +1120,174 @@ class TestHigh159PaginationGuards:
         assert data["partialSuccess"] is False
         assert data["partialIds"] == ["501"]
         assert data["partialNextCursor"] == "page2"
+
+    def test_bird_x_end_to_end_preserves_page1_partial_tweets_on_page2_failure(self, tmp_path):
+        stub = tmp_path / "stub-page2-fail.mjs"
+        stub.write_text(
+            textwrap.dedent(
+                """
+                let calls = 0;
+                globalThis.fetch = async (url) => {
+                  calls += 1;
+                  if (calls === 1) {
+                    const body = {
+                      data: {
+                        search_by_raw_query: {
+                          search_timeline: {
+                            timeline: {
+                              instructions: [{
+                                type: 'TimelineAddEntries',
+                                entries: [
+                                  {
+                                    entryId: 'tweet-701',
+                                    content: {
+                                      itemContent: {
+                                        tweet_results: {
+                                          result: {
+                                            __typename: 'Tweet',
+                                            rest_id: '701',
+                                            legacy: {
+                                              id_str: '701',
+                                              full_text: 'partial page1 mention of @target',
+                                              created_at: 'Wed May 15 12:00:00 +0000 2026',
+                                            },
+                                            core: {
+                                              user_results: {
+                                                result: {
+                                                  rest_id: '10',
+                                                  legacy: { screen_name: 'observer', name: 'Observer' },
+                                                },
+                                              },
+                                            },
+                                          },
+                                        },
+                                      },
+                                    },
+                                  },
+                                  {
+                                    entryId: 'tweet-702',
+                                    content: {
+                                      itemContent: {
+                                        tweet_results: {
+                                          result: {
+                                            __typename: 'Tweet',
+                                            rest_id: '702',
+                                            legacy: {
+                                              id_str: '702',
+                                              full_text: 'own post by target',
+                                              created_at: 'Wed May 15 12:01:00 +0000 2026',
+                                            },
+                                            core: {
+                                              user_results: {
+                                                result: {
+                                                  rest_id: '11',
+                                                  legacy: { screen_name: 'target', name: 'Target' },
+                                                },
+                                              },
+                                            },
+                                          },
+                                        },
+                                      },
+                                    },
+                                  },
+                                  {
+                                    entryId: 'cursor-bottom-0',
+                                    content: { cursorType: 'Bottom', value: 'cursor-page-2' },
+                                  },
+                                ],
+                              }],
+                            },
+                          },
+                        },
+                      },
+                    };
+                    return new Response(JSON.stringify(body), {
+                      status: 200,
+                      headers: { 'content-type': 'application/json' },
+                    });
+                  }
+                  return new Response('page 2 upstream error', { status: 500 });
+                };
+                """
+            ),
+            encoding="utf-8",
+        )
+        run_env = os.environ.copy()
+        run_env.update(
+            AUTH_TOKEN="dummy-auth-token-1234",
+            CT0="dummy-ct0-token-5678",
+            BIRD_DISABLE_BROWSER_COOKIES="1",
+            NODE_OPTIONS=f"--import={stub.as_uri()}",
+        )
+        real_run = bird_x.subproc.run_with_timeout
+        spawn_count = 0
+
+        def wrapped_run(cmd, **kwargs):
+            nonlocal spawn_count
+            spawn_count += 1
+            env_copy = dict(kwargs.get("env") or {})
+            env_copy["NODE_OPTIONS"] = f"--import={stub.as_uri()}"
+            env_copy["AUTH_TOKEN"] = "dummy-auth-token-1234"
+            env_copy["CT0"] = "dummy-ct0-token-5678"
+            kwargs["env"] = env_copy
+            return real_run(cmd, **kwargs)
+
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=wrapped_run):
+            # 1) search_x preserves partial tweets and skips zero-result fallback retries
+            topic_resp = bird_x.search_x(
+                "multi-word partial topic test",
+                "2026-05-01",
+                "2026-05-31",
+                depth="default",
+            )
+            assert spawn_count == 1
+            assert "500" in topic_resp.get("error", "")
+            parsed_topic = bird_x.parse_bird_response(topic_resp, query="partial")
+            assert [it["url"] for it in parsed_topic] == [
+                "https://x.com/observer/status/701",
+                "https://x.com/target/status/702",
+            ]
+
+            # 2) search_handles preserves page-1 tweets AND records error in failure_out
+            handle_failures: list[str] = []
+            handle_items = bird_x.search_handles(
+                ["target"],
+                "partial",
+                "2026-05-01",
+                count_per=25,
+                failure_out=handle_failures,
+            )
+            assert len(handle_items) == 2
+            assert handle_failures and any("500" in msg for msg in handle_failures)
+
+            # 3) search_mentions inspects stdout before returncode!=0, preserves third-party
+            #    mentions (dropping own tweet), AND records error in failure_out
+            mention_failures: list[str] = []
+            mention_items = bird_x.search_mentions(
+                ["target"],
+                "2026-05-01",
+                count_per=25,
+                failure_out=mention_failures,
+            )
+            assert [it["url"] for it in mention_items] == ["https://x.com/observer/status/701"]
+            assert mention_failures and any("500" in msg for msg in mention_failures)
+
+        # 4) search_x retry returning partial items after an initial clean empty response
+        #    keeps the partial items instead of reverting to last_clean_response
+        partial_retry = {
+            "error": "HTTP 500: page 2 boom",
+            "items": [{"id": "801", "text": "partial retry hit", "author": {"username": "alice"}}],
+        }
+        with mock.patch.object(
+            bird_x,
+            "_run_bird_search",
+            side_effect=[{"items": []}, partial_retry],
+        ):
+            retry_resp = bird_x.search_x("alpha-beta gamma delta", "2026-05-01", "2026-05-31")
+        assert retry_resp is partial_retry
+        assert [it["url"] for it in bird_x.parse_bird_response(retry_resp)] == ["https://x.com/alice/status/801"]
+        # Zero-item error still returns [] from parse_bird_response
+        assert bird_x.parse_bird_response({"error": "HTTP 500", "items": []}) == []
 
 
 # ---------------------------------------------------------------------------

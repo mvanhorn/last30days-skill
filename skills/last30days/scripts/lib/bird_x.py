@@ -441,6 +441,18 @@ def get_bird_status() -> Dict[str, Any]:
     }
 
 
+_MAX_NODE_TIMEOUT_MS = 2_147_483_647
+
+
+def _bird_timeout_ms(timeout: int, deadline: Optional[float]) -> int:
+    """Compute a positive Node --timeout-ms bounded by timeout and remaining deadline."""
+    budget_ms = max(1, int(timeout * 1000))
+    if deadline is not None:
+        remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+        budget_ms = min(budget_ms, remaining_ms)
+    return min(budget_ms, _MAX_NODE_TIMEOUT_MS)
+
+
 def _invoke_bird_subprocess(
     query: str,
     count: int,
@@ -458,7 +470,7 @@ def _invoke_bird_subprocess(
     and `result` is the SubprocResult; the caller decides whether to retry
     based on the result.stdout content.
     """
-    timeout_ms = max(1000, int(timeout * 1000))
+    timeout_ms = _bird_timeout_ms(timeout, deadline)
     cmd = [
         "node", str(_BIRD_SEARCH_MJS),
         "--count", str(count),
@@ -874,10 +886,11 @@ def search_x(
             response = _run_bird_search(query, count, timeout, deadline=deadline, **search_kwargs)
             if not response.get("error"):
                 last_clean_response = response
+            items = parse_bird_response(response, query=core_topic)
 
     if cancel is not None and cancel.is_set():
         return {**response, "error": "bird: research cancelled"}
-    if response.get("error") and last_clean_response is not None:
+    if response.get("error") and not items and last_clean_response is not None:
         _log("Optional retry failed after a clean empty response; preserving no-results outcome")
         return last_clean_response
     return response
@@ -933,7 +946,7 @@ def search_handles(
         # Always unfiltered: pull the timeline, rank by topic relevance below.
         query = f"from:{handle} {date_filters}"
 
-        timeout_ms = max(1000, int(timeout * 1000))
+        timeout_ms = _bird_timeout_ms(timeout, deadline)
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
             "--count", str(count_per),
@@ -975,8 +988,8 @@ def search_handles(
                     f"({_scrub_credentials(result.stderr.strip())[:160] or 'no stderr'})"
                 )
                 return []
-            # Windows/Node 24: benign libuv assertion can cause non-zero exit
-            # AFTER valid JSON is written to stdout. Trust stdout content.
+            # Windows/Node 24 benign libuv assertion or partial-page JSON error:
+            # stdout carries the JSON payload.
 
         if not output:
             return []
@@ -987,6 +1000,10 @@ def search_handles(
             _log(f"Invalid JSON from handle search for @{handle}")
             _note(f"@{handle}: bird-search returned invalid JSON")
             return []
+        if isinstance(response, dict) and response.get("error"):
+            err = _scrub_credentials(str(response["error"]))
+            _log(f"Handle search error for @{handle}: {err}")
+            _note(f"@{handle}: {err[:160]}")
         items = parse_bird_response(response, query=core_topic)
         # Log on success/empty too (not only on failure): a silent handle search
         # made the from: query look like it never ran and caused wrong diagnoses.
@@ -1048,7 +1065,7 @@ def search_mentions(
             return []
         handle = handle.lstrip("@")
         query = f"@{handle} {date_filters}"
-        timeout_ms = max(1000, int(timeout * 1000))
+        timeout_ms = _bird_timeout_ms(timeout, deadline)
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
             "--count", str(count_per),
@@ -1079,14 +1096,17 @@ def search_mentions(
             _log(f"Mention search error for @{handle}: {err}")
             _note(f"@{handle}: could not spawn bird-search ({err})")
             return []
-        if result.returncode != 0:
-            _log(f"Mention search failed for @{handle}: {_scrub_credentials(result.stderr.strip())}")
-            _note(
-                f"@{handle}: bird-search exited {result.returncode} "
-                f"({_scrub_credentials(result.stderr.strip())[:160] or 'no stderr'})"
-            )
-            return []
         output = result.stdout.strip()
+        if result.returncode != 0:
+            if not output:
+                _log(f"Mention search failed for @{handle}: {_scrub_credentials(result.stderr.strip())}")
+                _note(
+                    f"@{handle}: bird-search exited {result.returncode} "
+                    f"({_scrub_credentials(result.stderr.strip())[:160] or 'no stderr'})"
+                )
+                return []
+            # Windows/Node 24 benign libuv assertion or partial-page JSON error:
+            # stdout carries the JSON payload.
         if not output:
             return []
         try:
@@ -1095,6 +1115,10 @@ def search_mentions(
             _log(f"Invalid JSON from mention search for @{handle}")
             _note(f"@{handle}: bird-search returned invalid JSON")
             return []
+        if isinstance(response, dict) and response.get("error"):
+            err = _scrub_credentials(str(response["error"]))
+            _log(f"Mention search error for @{handle}: {err}")
+            _note(f"@{handle}: {err[:160]}")
         items = parse_bird_response(response, query=None)
         # ABOUT lane = OTHERS mentioning the handle. Drop the handle's own tweets
         # (the FROM lane already covers those); identify by the status URL author.
@@ -1130,13 +1154,15 @@ def parse_bird_response(response: Dict[str, Any], query: str = "") -> List[Dict[
     """
     items = []
 
-    # Check for errors
+    # Log any reported error (scrubbed), while still parsing partial items when
+    # a multi-page search succeeded on page 1 before failing on page 2+.
     if isinstance(response, dict) and "error" in response and response["error"]:
         _log(f"Bird error: {_scrub_credentials(str(response['error']))}")
-        return items
 
     # Bird returns a list of tweets directly or under a key
-    raw_items = response if isinstance(response, list) else response.get("items", response.get("tweets", []))
+    raw_items = response if isinstance(response, list) else (
+        response.get("items", response.get("tweets", [])) if isinstance(response, dict) else []
+    )
 
     if not isinstance(raw_items, list):
         return items

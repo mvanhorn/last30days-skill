@@ -27,6 +27,8 @@ function writeStderr(text) {
   if (text) process.stderr.write(text);
 }
 
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 function parsePositiveCount(raw) {
   if (typeof raw !== 'string' || !/^\d+$/.test(raw)) {
     return null;
@@ -77,8 +79,8 @@ async function main() {
       i++;
     } else if (arg === '--timeout-ms') {
       const parsedTimeoutMs = parsePositiveCount(args[i + 1]);
-      if (parsedTimeoutMs === null) {
-        writeStderr(`Error: Invalid ${arg} value (expected positive integer)\n`);
+      if (parsedTimeoutMs === null || parsedTimeoutMs > MAX_TIMEOUT_MS) {
+        writeStderr(`Error: Invalid ${arg} value (expected positive integer <= ${MAX_TIMEOUT_MS})\n`);
         return 1;
       }
       timeoutMs = parsedTimeoutMs;

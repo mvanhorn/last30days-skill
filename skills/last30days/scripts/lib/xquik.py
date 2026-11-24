@@ -42,28 +42,33 @@ def _extract_core_subject(topic: str) -> str:
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
-_DATE_OPERATOR_RE = re.compile(r"^-?(?:since|until):", re.IGNORECASE)
 
 
 def _clean_tweet_id(value: Any) -> str:
-    """Return an ASCII numeric tweet id, or '' when invalid."""
+    """Return a positive ASCII numeric tweet id, or '' when invalid."""
     if value is None or isinstance(value, bool):
         return ""
     candidate = str(value).strip()
-    return candidate if (candidate.isascii() and candidate.isdigit()) else ""
+    if not (candidate.isascii() and candidate.isdigit()):
+        return ""
+    return candidate if int(candidate) > 0 else ""
 
 
 def _sanitize_topic_query(query_text: str) -> str:
     """Sanitize a topic query before appending engine-owned date filters.
 
-    Balances quotes and parentheses, strips unquoted date-window overrides
-    (``since:`` / ``until:``), drops empty groups or dangling ``OR`` operators,
-    and parenthesizes top-level ``OR`` expressions so trailing date filters
-    apply to every branch.
+    Neutralizes backslashes, balances quotes and parentheses, drops unquoted X
+    search operators (colon-containing tokens and leading-``-`` negations,
+    preserving trailing-colon subject punctuation), drops empty groups or
+    dangling ``OR`` operators, and parenthesizes top-level ``OR`` expressions
+    so trailing date filters apply to every branch.
     """
     if not isinstance(query_text, str):
         return ""
-    cleaned = _CONTROL_CHARS_RE.sub(" ", query_text.replace("“", '"').replace("”", '"')).strip()
+    cleaned = _CONTROL_CHARS_RE.sub(
+        " ",
+        query_text.replace("\\", " ").replace("“", '"').replace("”", '"'),
+    ).strip()
     if not cleaned:
         return ""
 
@@ -123,7 +128,9 @@ def _sanitize_topic_query(query_text: str) -> str:
         while i < n and not balanced[i].isspace() and balanced[i] not in ('"', "(", ")"):
             i += 1
         word = balanced[start:i]
-        if _DATE_OPERATOR_RE.match(word):
+        if word.endswith(":") and word.count(":") == 1:
+            word = word[:-1]
+        if not word or ":" in word or word.startswith("-"):
             continue
         tokens.append(word)
 
@@ -422,6 +429,7 @@ def search_handles(
         return []
     items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
+    seen_handles: set[str] = set()
     window = (from_date, to_date)
     date_filters = x_date_filters(from_date, to_date)
     for raw in handles:
@@ -432,6 +440,10 @@ def search_handles(
         handle = _validated_handle(raw, "from:")
         if not handle:
             continue
+        handle_key = handle.lower()
+        if handle_key in seen_handles:
+            continue
+        seen_handles.add(handle_key)
         q = f"from:{handle} {date_filters}"
         got, auth_error = _execute_search(
             q, count_per, token,
@@ -481,6 +493,7 @@ def search_mentions(
         return []
     items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
+    seen_handles: set[str] = set()
     window = (from_date, to_date)
     date_filters = x_date_filters(from_date, to_date)
     for raw in handles:
@@ -491,6 +504,10 @@ def search_mentions(
         handle = _validated_handle(raw, "@")
         if not handle:
             continue
+        handle_key = handle.lower()
+        if handle_key in seen_handles:
+            continue
+        seen_handles.add(handle_key)
         q = f"@{handle} -from:{handle} {date_filters}"
         got, auth_error = _execute_search(
             q, count_per, token,
@@ -662,7 +679,7 @@ def _parse_tweet(
 
 def _safe_int(value: Any) -> int | None:
     """Convert value to int, returning None on failure."""
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
         return int(value)
