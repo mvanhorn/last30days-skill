@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 from urllib.parse import urlparse
 
@@ -1145,6 +1146,13 @@ def _normalize_grounding(
     enriched_via = item.get("enriched_via")
     if enriched_via:
         metadata["enriched_via"] = enriched_via
+    reddit_thread_score = item.get("reddit_thread_score")
+    if (
+        isinstance(reddit_thread_score, (int, float))
+        and not isinstance(reddit_thread_score, bool)
+        and math.isfinite(reddit_thread_score)
+    ):
+        metadata["reddit_thread_score"] = reddit_thread_score
     return _source_item(
         item_id=str(item.get("id") or f"W{index + 1}"),
         source=source,

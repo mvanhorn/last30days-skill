@@ -260,6 +260,18 @@ UNTRUSTED_CONTENT_NOTICE = (
 )
 
 
+def candidate_sort_key(candidate: schema.Candidate) -> tuple:
+    """Global ordering for ranked candidates: in-window first, then final_score,
+    measured engagement (0 ahead of unknown None), best native rank, title."""
+    return (
+        1 if schema.candidate_out_of_window(candidate) else 0,
+        -candidate.final_score,
+        -(candidate.engagement if candidate.engagement is not None else -1),
+        min(candidate.native_ranks.values(), default=999),
+        candidate.title,
+    )
+
+
 def rerank_candidates(
     *,
     topic: str,
@@ -341,16 +353,7 @@ def rerank_candidates(
         primary_handle=primary_handle,
     )
 
-    return sorted(
-        candidates,
-        key=lambda candidate: (
-            1 if schema.candidate_out_of_window(candidate) else 0,
-            -candidate.final_score,
-            -(candidate.engagement if candidate.engagement is not None else -1),
-            min(candidate.native_ranks.values(), default=999),
-            candidate.title,
-        ),
-    )
+    return sorted(candidates, key=candidate_sort_key)
 
 
 def _intent_hint_block(plan: schema.QueryPlan) -> str:

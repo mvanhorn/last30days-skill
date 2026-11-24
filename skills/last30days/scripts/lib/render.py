@@ -5611,12 +5611,24 @@ def _render_polymarket_markets(
     return ["## Polymarket Markets", "", *lines] if lines else []
 
 
+def _comment_source(item: schema.SourceItem) -> str:
+    meta = item.metadata if isinstance(item.metadata, dict) else {}
+    if item.source != "reddit" and meta.get("enriched_via") == "arctic":
+        return "reddit"
+    return item.source
+
+
 def _quote_pool_item_floor(item: schema.SourceItem) -> int:
     """Votes an item's top community comment needs for the item to join the pool."""
-    if item.source != "reddit":
+    if _comment_source(item) != "reddit":
         return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
     score = (item.engagement or {}).get("score")
-    if not isinstance(score, (int, float)) or isinstance(score, bool):
+    if (
+        (not isinstance(score, (int, float)) or isinstance(score, bool))
+        and isinstance(item.metadata, dict)
+    ):
+        score = item.metadata.get("reddit_thread_score")
+    if not isinstance(score, (int, float)) or isinstance(score, bool) or not math.isfinite(score):
         return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
     return min(
         _QUOTE_POOL_ITEM_MIN_TOP_VOTES,
@@ -5833,6 +5845,7 @@ def _render_top_comments(
         funny = (cand.fun_score or 0.0) >= _QUOTE_POOL_FUNNY_FLOOR
         rows: list[dict] = []
         for item in cand.source_items:
+            comment_source = _comment_source(item)
             # The item's community comments, in its own order. A bot's, the
             # item author's own, or one with nothing quotable in it is not a
             # reaction to quote, so the next comment takes its position.
@@ -5844,7 +5857,7 @@ def _render_top_comments(
                 raw = str(tc.get("excerpt") or tc.get("text") or tc.get("body") or "")
                 if not _is_community_comment(item, tc, raw):
                     continue
-                if item.source == "reddit":
+                if comment_source == "reddit":
                     tags = _comment_entity_tags(
                         item, tc, raw, compared_entities, comment_entity
                     )
@@ -5858,7 +5871,7 @@ def _render_top_comments(
             # has no vote count to clear the vote floors with; it is quoted
             # without one, after every scored line.
             scored = [(tc, body) for tc, body in community if not tc.get("score_pending")]
-            if scored and item.source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
+            if scored and comment_source in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
                 top_score = scored[0][0].get("score")
                 if not (
                     isinstance(top_score, (int, float))
@@ -5874,13 +5887,13 @@ def _render_top_comments(
             ):
                 score = tc.get("score")
                 pending = bool(tc.get("score_pending"))
-                if not pending and not _quote_pool_has_vote(item.source, score):
+                if not pending and not _quote_pool_has_vote(comment_source, score):
                     continue
                 rows.append({
                     "pending": pending,
                     "position": position, "cand": cand, "item": item, "funny": funny,
                     "author": tc.get("author"), "score": score,
-                    "vote_label": _vote_label_for(item.source), "body": body,
+                    "vote_label": _vote_label_for(comment_source), "body": body,
                     "entities": entity_tags.get(id(tc), []),
                     # A comment with no link of its own is cited by the item it
                     # sits on. The candidate's URL is another item's whenever

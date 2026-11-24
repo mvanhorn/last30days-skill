@@ -82,7 +82,13 @@ _ENRICHMENT_KEYS = (
 def _clone_source_item(item: schema.SourceItem) -> schema.SourceItem:
     """Shallow-copy a SourceItem and its mutable engagement/metadata containers."""
     metadata = {
-        k: list(v) if isinstance(v, list) else dict(v) if isinstance(v, dict) else v
+        k: (
+            [dict(e) if isinstance(e, dict) else e for e in v]
+            if isinstance(v, list)
+            else dict(v)
+            if isinstance(v, dict)
+            else v
+        )
         for k, v in (item.metadata or {}).items()
     }
     return dataclasses.replace(
@@ -146,7 +152,11 @@ def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem)
             or (isinstance(theirs, list) and isinstance(mine, list) and len(theirs) > len(mine))
             or (isinstance(theirs, str) and isinstance(mine, str) and len(theirs.strip()) > len(mine.strip()))
         ):
-            existing.metadata[key] = list(theirs) if isinstance(theirs, list) else theirs
+            existing.metadata[key] = (
+                [dict(e) if isinstance(e, dict) else e for e in theirs]
+                if isinstance(theirs, list)
+                else theirs
+            )
     for field_name, value in (incoming.engagement or {}).items():
         if reddit and field_name == "score":
             continue
@@ -657,12 +667,20 @@ def weighted_rrf(
                 candidate.subquery_labels.append(label)
             if item.source not in candidate.sources:
                 candidate.sources.append(item.source)
+            promoted = incoming_primary_score > primary_scores[key]
             item_key = source_item_key(item)
             existing_item = seen_source_items[key].get(item_key)
             if existing_item is None:
                 attached = _clone_source_item(item)
                 seen_source_items[key][item_key] = attached
                 candidate.source_items.append(attached)
+            elif promoted:
+                new_primary = _clone_source_item(item)
+                merge_source_items(new_primary, existing_item)
+                idx = candidate.source_items.index(existing_item)
+                candidate.source_items[idx] = new_primary
+                seen_source_items[key][item_key] = new_primary
+                attached = new_primary
             else:
                 merge_source_items(existing_item, item)
                 attached = existing_item
@@ -675,13 +693,12 @@ def weighted_rrf(
                     "item_id": item.item_id,
                 }
             )
-            promoted = incoming_primary_score > primary_scores[key]
             if promoted:
                 primary_scores[key] = incoming_primary_score
-                candidate.item_id = item.item_id
-                candidate.source = item.source
-                candidate.title = item.title
-                candidate.url = item.url
+                candidate.item_id = attached.item_id
+                candidate.source = attached.source
+                candidate.title = attached.title
+                candidate.url = attached.url
                 if candidate.source_items and candidate.source_items[0] is not attached:
                     candidate.source_items.remove(attached)
                     candidate.source_items.insert(0, attached)
@@ -690,7 +707,7 @@ def weighted_rrf(
                 candidate_spoken[key] = True
             elif incoming_spoken == candidate_spoken[key]:
                 if promoted:
-                    candidate.snippet = item.snippet
+                    candidate.snippet = attached.snippet
                 elif len((candidate.snippet or "").split()) < len((item.snippet or "").split()):
                     candidate.snippet = item.snippet
 

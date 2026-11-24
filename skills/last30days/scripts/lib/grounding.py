@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 import threading
@@ -645,6 +646,15 @@ def _enrich_reddit_items(
         selftext = thread.get("selftext") or ""
         if selftext:
             item["snippet"] = selftext[:2000]
+        thread_eng = thread.get("engagement")
+        if isinstance(thread_eng, dict):
+            thread_score = thread_eng.get("score")
+            if (
+                isinstance(thread_score, (int, float))
+                and not isinstance(thread_score, bool)
+                and math.isfinite(thread_score)
+            ):
+                item["reddit_thread_score"] = thread_score
         top = thread.get("top_comments") or []
         if top:
             enriched_comments: list[dict] = []
@@ -653,7 +663,7 @@ def _enrich_reddit_items(
                     continue
                 entry: dict = {
                     "score": c.get("score"),
-                    "excerpt": (c.get("body") or c.get("excerpt") or "")[:200],
+                    "excerpt": str(c.get("body") or c.get("excerpt") or "")[:200],
                     "depth": c.get("depth", 0),
                 }
                 if c.get("id"):
@@ -665,7 +675,9 @@ def _enrich_reddit_items(
                 comment_url = c.get("url")
                 if not comment_url:
                     permalink = str(c.get("permalink") or "")
-                    if permalink.startswith("/"):
+                    if permalink.startswith(("http://", "https://")):
+                        comment_url = permalink
+                    elif permalink.startswith("/"):
                         comment_url = f"https://reddit.com{permalink}"
                 if comment_url:
                     entry["url"] = str(comment_url)

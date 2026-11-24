@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lib import fusion, grounding, normalize, reddit_hydrate, reddit_refs, render, rerank, schema, signals
+from lib import fusion, grounding, normalize, pipeline, reddit_hydrate, reddit_refs, render, rerank, schema, signals
 
 
 def _plan(topic: str = "Hermes Agent", sources: list[str] | None = None) -> schema.QueryPlan:
@@ -261,6 +261,47 @@ class TestHigh099OutOfWindowAndTieBreaker:
         )
         assert measured_zero.final_score == pytest.approx(unknown_none.final_score)
         assert [c.candidate_id for c in ranked] == ["z-measured", "a-unknown"]
+
+    def test_pipeline_final_sort_shares_candidate_sort_key_zero_beats_none(self):
+        measured_zero = _cand(
+            "measured-zero",
+            source="reddit",
+            title="ZZZ Hermes Agent thread",
+            engagement=0,
+            local_relevance=0.5,
+            freshness=70,
+        )
+        measured_zero.native_ranks = {"primary:reddit": 5}
+        measured_zero.final_score = 45.0
+
+        unknown_none = _cand(
+            "unknown-none",
+            source="reddit",
+            title="AAA Hermes Agent thread",
+            engagement=None,
+            local_relevance=0.5,
+            freshness=70,
+        )
+        unknown_none.native_ranks = {"primary:reddit": 1}
+        unknown_none.final_score = 45.0
+
+        assert rerank.candidate_sort_key(measured_zero) < rerank.candidate_sort_key(unknown_none)
+
+        with patch.object(pipeline, "_retrieve_stream", return_value=([], {})), \
+             patch.object(rerank, "rerank_candidates", side_effect=[[unknown_none, measured_zero], []]):
+            report = pipeline.run(
+                topic="Hermes Agent",
+                config={},
+                depth="quick",
+                mock=True,
+                requested_sources=["reddit"],
+                web_backend="none",
+                as_of_date="2026-10-31",
+            )
+        assert [c.candidate_id for c in report.ranked_candidates] == [
+            "measured-zero",
+            "unknown-none",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +626,72 @@ class TestHigh105FusionMultiItemIntegrity:
             assert cand.source_items[0].snippet == spoken_text, order
             assert cand.source_items[0].metadata.get("spoken_caption") is True, order
 
+    def test_same_key_reddit_promotion_syncs_primary_item_and_preserves_enrichment(self):
+        comment_url = "https://www.reddit.com/r/ghostty/comments/abc123/release/c999/"
+        thread_url = "https://www.reddit.com/r/ghostty/comments/abc123/release/"
+        comment_copy = self._item(
+            "R1",
+            "reddit",
+            comment_url,
+            "Comment permalink title",
+            rel=0.3,
+            fresh=60,
+            qual=0.6,
+            snippet="Earlier comment copy snippet",
+            engagement={"score": 412, "num_comments": 25},
+            metadata={
+                "engagement_source": reddit_refs.LIVE,
+                "top_comments": [
+                    {"id": "c1", "score": 80, "author": "alice", "excerpt": "great release", "depth": 0}
+                ],
+            },
+        )
+        thread_copy = self._item(
+            "R2",
+            "reddit",
+            thread_url,
+            "Ghostty 2.0 Released",
+            rel=0.9,
+            fresh=90,
+            qual=0.6,
+            snippet="Canonical thread snippet with full context",
+            engagement={"score": None, "num_comments": 0},
+            metadata={
+                "engagement_source": reddit_refs.ARCTIC_PENDING,
+                "top_comments": [
+                    {"id": "c2", "score": 30, "author": "bob", "excerpt": "fast rendering", "depth": 0}
+                ],
+            },
+        )
+        assert fusion.source_item_key(comment_copy) == fusion.source_item_key(thread_copy)
+
+        plan = _plan("ghostty", ["reddit"])
+        streams = {
+            ("primary", "reddit"): [comment_copy],
+            ("secondary", "reddit"): [thread_copy],
+        }
+        [cand] = fusion.weighted_rrf(streams, plan, pool_limit=10)
+
+        assert len(cand.source_items) == 1
+        primary = schema.candidate_primary_item(cand)
+        assert primary is cand.source_items[0]
+        # Finding and citation agree on the promoted winning copy.
+        assert cand.item_id == primary.item_id == "R2"
+        assert cand.title == primary.title == "Ghostty 2.0 Released"
+        assert cand.url == primary.url == thread_url
+        # Live engagement and comments from the demoted copy were folded into primary.
+        assert primary.engagement["score"] == 412
+        assert primary.engagement["num_comments"] == 25
+        assert primary.metadata["engagement_source"] == reddit_refs.LIVE
+        assert [c["id"] for c in primary.metadata["top_comments"]] == ["c1", "c2"]
+        expected_score = signals.engagement_score(primary)
+        assert primary.engagement_score == expected_score
+        assert cand.engagement == expected_score
+        # Caller-owned top_comments dicts are isolated from candidate mutations.
+        primary.metadata["top_comments"][0]["author"] = "mutated"
+        assert comment_copy.metadata["top_comments"][0]["author"] == "alice"
+        assert thread_copy.metadata["top_comments"][0]["author"] == "bob"
+
 
 # ---------------------------------------------------------------------------
 # HIGH-106: Recompute engagement_score, longer enrichment strings, no input mutation
@@ -897,6 +1004,188 @@ class TestHigh107GroundingRedditCommentsAndDates:
         with patch.object(reddit_hydrate, "hydrate", return_value=hydrated):
             out = grounding._enrich_reddit_items(items)
         assert out[0]["date"] == "2026-10-19"
+
+    def test_arctic_web_reddit_comments_enforce_reddit_topic_and_vote_floors(self):
+        hydrated = reddit_hydrate.Hydration(
+            items=[
+                {
+                    "engagement_source": reddit_refs.ARCTIC,
+                    "metadata": {"post_id": "small1"},
+                    "date": "2026-10-20",
+                    "selftext": "Small Hermes Agent thread body",
+                    "engagement": {"score": 40, "num_comments": 10},
+                    "top_comments": [
+                        {
+                            "id": "offtopic_nested",
+                            "score": 50,
+                            "author": "tangent",
+                            "date": "2026-10-20",
+                            "permalink": "https://www.reddit.com/r/python/comments/small1/t/offtopic_nested/",
+                            "is_uploader": False,
+                            "body": "Totally unrelated lunch recipe with great sourdough crust.",
+                            "depth": 1,
+                        },
+                        {
+                            "id": "good1",
+                            "score": 3,
+                            "author": "alice",
+                            "date": "2026-10-20",
+                            "permalink": "https://www.reddit.com/r/python/comments/small1/t/good1/",
+                            "is_uploader": False,
+                            "body": "Hermes Agent works reliably on small workflows.",
+                            "depth": 0,
+                        },
+                        {
+                            "id": "zero_vote",
+                            "score": 0,
+                            "author": "zero_user",
+                            "date": "2026-10-20",
+                            "permalink": "/r/python/comments/small1/t/zero_vote/",
+                            "is_uploader": False,
+                            "body": "Hermes Agent zero-vote comment should be filtered out.",
+                            "depth": 0,
+                        },
+                        {
+                            # Non-string body must not raise TypeError during enrichment.
+                            "id": "non_str",
+                            "score": 1,
+                            "author": "num_user",
+                            "body": 12345,
+                            "depth": 0,
+                        },
+                    ],
+                },
+                {
+                    "engagement_source": reddit_refs.ARCTIC,
+                    "metadata": {"post_id": "small3"},
+                    "date": "2026-10-20",
+                    "selftext": "Second small Hermes Agent thread",
+                    "engagement": {"score": 20, "num_comments": 4},
+                    "top_comments": [
+                        {
+                            "id": "good2",
+                            "score": 2,
+                            "author": "bob",
+                            "date": "2026-10-20",
+                            "permalink": "/r/python/comments/small3/t/good2/",
+                            "is_uploader": False,
+                            "body": "Second reply on Hermes Agent memory behavior.",
+                            "depth": 0,
+                        },
+                    ],
+                },
+                {
+                    "engagement_source": reddit_refs.ARCTIC,
+                    "metadata": {"post_id": "big2"},
+                    "date": "2026-10-20",
+                    "selftext": "Big Hermes Agent thread body",
+                    "engagement": {"score": 200, "num_comments": 50},
+                    "top_comments": [
+                        {
+                            "id": "under_floor",
+                            "score": 3,
+                            "author": "carol",
+                            "date": "2026-10-20",
+                            "permalink": "/r/python/comments/big2/t/under_floor/",
+                            "is_uploader": False,
+                            "body": "Hermes Agent comment below 5-vote floor for large thread.",
+                            "depth": 0,
+                        },
+                    ],
+                },
+            ],
+            detail="arctic served 3",
+            arctic_state="ok",
+        )
+        raw_items = [
+            {
+                "id": "W1",
+                "title": "Hermes Agent small thread",
+                "url": "https://www.reddit.com/r/python/comments/small1/t/",
+                "snippet": "search snippet",
+                "date": None,
+                "metadata": {"date_window_basis": "server_bounds"},
+            },
+            {
+                "id": "W2",
+                "title": "Hermes Agent second small thread",
+                "url": "https://www.reddit.com/r/python/comments/small3/t/",
+                "snippet": "search snippet",
+                "date": None,
+                "metadata": {"date_window_basis": "server_bounds"},
+            },
+            {
+                "id": "W3",
+                "title": "Hermes Agent big thread",
+                "url": "https://www.reddit.com/r/python/comments/big2/t/",
+                "snippet": "search snippet",
+                "date": None,
+                "metadata": {"date_window_basis": "server_bounds"},
+            },
+        ]
+        with patch.object(reddit_hydrate, "hydrate", return_value=hydrated):
+            enriched = grounding._enrich_reddit_items(raw_items)
+
+        assert enriched[0]["reddit_thread_score"] == 40
+        assert "engagement" not in enriched[0]
+        assert enriched[0]["top_comments"][0]["url"] == (
+            "https://www.reddit.com/r/python/comments/small1/t/offtopic_nested/"
+        )
+        assert enriched[0]["top_comments"][3]["excerpt"] == "12345"
+
+        normalized = normalize.normalize_source_items(
+            "grounding", enriched, "2026-10-01", "2026-10-31"
+        )
+        assert len(normalized) == 3
+        small_si, small3_si, big_si = normalized
+        assert small_si.source == "grounding"
+        assert small_si.metadata["reddit_thread_score"] == 40
+        assert big_si.metadata["reddit_thread_score"] == 200
+        assert render._quote_pool_item_floor(small_si) == 2
+        assert render._quote_pool_item_floor(small3_si) == 2
+        assert render._quote_pool_item_floor(big_si) == 5
+
+        report = schema.Report(
+            topic="Hermes Agent",
+            range_from="2026-10-01",
+            range_to="2026-10-31",
+            generated_at="2026-10-31T00:00:00Z",
+            provider_runtime=schema.ProviderRuntime("local", "m", "m"),
+            query_plan=_plan("Hermes Agent", ["grounding"]),
+            clusters=[],
+            ranked_candidates=[
+                schema.Candidate(
+                    candidate_id=si.url, item_id=si.item_id, source="grounding",
+                    title=si.title, url=si.url, snippet=si.snippet,
+                    subquery_labels=["primary"], native_ranks={"primary:grounding": idx},
+                    local_relevance=0.8, freshness=80, engagement=None,
+                    source_quality=1.0, rrf_score=0.02, sources=["grounding"],
+                    source_items=[si], final_score=60.0 - idx,
+                )
+                for idx, si in enumerate(normalized, start=1)
+            ],
+            items_by_source={"grounding": normalized},
+            errors_by_source={},
+        )
+        lines = render._render_top_comments(report, limit=10)
+        joined = "\n".join(lines)
+        # Nested off-topic reply, 0-vote comment, and big-thread under-floor comment are excluded.
+        assert "sourdough crust" not in joined
+        assert "zero-vote comment" not in joined
+        assert "below 5-vote floor" not in joined
+        # Valid top-level comments on the small threads clear the scaled floor (2) and use 'upvotes'.
+        assert any(
+            "Hermes Agent works reliably on small workflows." in ln
+            and "alice" in ln
+            and "3 upvotes" in ln
+            for ln in lines
+        )
+        assert any(
+            "Second reply on Hermes Agent memory behavior." in ln
+            and "bob" in ln
+            and "2 upvotes" in ln
+            for ln in lines
+        )
 
 
 # ---------------------------------------------------------------------------
