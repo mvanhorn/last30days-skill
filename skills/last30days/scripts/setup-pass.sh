@@ -65,19 +65,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+matches_regex() {
+  local LC_ALL=C
+  local value="$1"
+  local pattern="$2"
+  [[ "$value" =~ $pattern ]]
+}
+
 # Validate PREFIX: relative segments only (no leading '/', '-', or '.'; no '..'
 # or hidden segments; no control chars or whitespace), normalized with trailing '/'.
-if [[ "$PREFIX" == *$'\n'* || "$PREFIX" == *$'\r'* ]] || \
-   ! [[ "$PREFIX" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*/?$ ]]; then
+# Regexes live in variables because macOS Bash 3.2 rejects inline (...) in `=~`.
+prefix_re='^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*/?$'
+if [[ "$PREFIX" == *$'\n'* || "$PREFIX" == *$'\r'* ]] || ! matches_regex "$PREFIX" "$prefix_re"; then
   echo "invalid LAST30DAYS_PASS_PREFIX: must be a relative path prefix like 'last30days/'" >&2
   exit 2
 fi
 PREFIX="${PREFIX%/}/"
 
+key_re='^[A-Z0-9_]+$'
 is_valid_key() {
   local candidate="$1"
   local allowed
-  if ! [[ "$candidate" =~ ^[A-Z0-9_]+$ ]]; then
+  if ! matches_regex "$candidate" "$key_re"; then
     return 1
   fi
   for allowed in "${ALL_KEYS[@]}"; do
@@ -145,7 +154,12 @@ for key in "${TARGETS[@]}"; do
     continue
   fi
   printf "  %-28s " "$key"
-  IFS= read -rs value
+  value=""
+  if ! IFS= read -rs value && [[ -z "$value" ]]; then
+    echo
+    skipped=$((skipped + 1))
+    continue
+  fi
   echo
   if [[ -z "$value" ]]; then
     skipped=$((skipped + 1))

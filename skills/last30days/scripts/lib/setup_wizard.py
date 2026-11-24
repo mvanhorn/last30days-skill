@@ -17,9 +17,20 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request
+from urllib.request import (
+    HTTPDefaultErrorHandler,
+    HTTPErrorProcessor,
+    HTTPHandler,
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    OpenerDirector,
+    ProxyHandler,
+    Request,
+    UnknownHandler,
+    getproxies,
+)
 
-from . import brightdata, health, http
+from . import brightdata, health, providers
 from .private_files import replace_private_text, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -1134,7 +1145,6 @@ def _device_base() -> str:
 # or key-shaped value (e.g. a returning-account server response) is never
 # mislabeled as a device code or leaked to stdout/clipboard.
 _DEVICE_CODE_RE = re.compile(r"^[0-9A-Z]{4}-[0-9A-Z]{4}$")
-_GITHUB_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 _GITHUB_TOKEN_RE = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b"
@@ -1143,25 +1153,112 @@ _SECRET_FIELD_RE = re.compile(
     r"""(["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}&;]+)""",
     re.IGNORECASE,
 )
-_URL_USERINFO_RE = re.compile(r"(https?://)[^/\s@]+@", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/]+@", re.IGNORECASE)
+_MAX_DEVICE_RESPONSE_BYTES = 64 * 1024
+
+
+class _DeviceNoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            try:
+                fp.close()
+            except Exception:
+                pass
+        raise HTTPError(
+            req.full_url,
+            403,
+            "redirect refused for device auth endpoint",
+            headers,
+            None,
+        )
+
+
+def _build_device_opener(*, loopback_http: bool = False) -> OpenerDirector:
+    """Build a no-redirect opener for device-auth endpoints.
+
+    Omits FileHandler, FTPHandler, and DataHandler. Remote targets are HTTPS-only
+    (honoring only the ``https`` proxy entry); loopback HTTP test targets bypass
+    ambient proxies directly.
+    """
+    opener = OpenerDirector()
+    if loopback_http:
+        handlers = [
+            ProxyHandler({}),
+            UnknownHandler(),
+            HTTPHandler(),
+            HTTPDefaultErrorHandler(),
+            _DeviceNoRedirectHandler(),
+            HTTPErrorProcessor(),
+        ]
+    else:
+        https_proxy = getproxies().get("https")
+        proxies = {"https": https_proxy} if https_proxy else {}
+        handlers = [
+            ProxyHandler(proxies),
+            UnknownHandler(),
+            HTTPSHandler(),
+            HTTPDefaultErrorHandler(),
+            _DeviceNoRedirectHandler(),
+            HTTPErrorProcessor(),
+        ]
+    for handler in handlers:
+        opener.add_handler(handler)
+    return opener
 
 
 def _default_urlopen(req: Request, timeout: int = 15):
-    return http.open_request(req, timeout=timeout)
+    url = getattr(req, "full_url", None) or str(req)
+    if not isinstance(url, str) or not url or url != url.strip():
+        raise URLError("unsupported URL scheme: <empty>")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        raise URLError("unsupported URL control characters")
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise URLError(f"invalid URL: {exc}") from exc
+    scheme = parts.scheme.lower()
+    if scheme == "https" and parts.hostname:
+        return _build_device_opener(loopback_http=False).open(req, timeout=timeout)
+    if scheme == "http" and providers.is_loopback_http_endpoint(url):
+        return _build_device_opener(loopback_http=True).open(req, timeout=timeout)
+    raise URLError(f"unsupported URL scheme or non-loopback http: {scheme or '<empty>'}")
 
 
-# Test compatibility seam for patches targeting ``lib.setup_wizard.urlopen``;
-# production requests flow through ``http.open_request`` with redirects blocked.
+# Sole test compatibility seam for patches targeting ``lib.setup_wizard.urlopen``;
+# production requests always use the dedicated no-redirect opener above and never
+# delegate to ``urllib.request.urlopen``.
 urlopen = _default_urlopen
 
 
 def _open_device_request(req: Request, *, timeout: int = 15):
-    setattr(req, http._REDIRECT_GUARD_ATTR, lambda _newurl: False)
     return urlopen(req, timeout=timeout)
 
 
+def _close_http_error(exc: HTTPError) -> None:
+    close = getattr(exc, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _read_bounded_json_dict(resp: Any) -> Optional[Dict[str, Any]]:
+    try:
+        raw = resp.read(_MAX_DEVICE_RESPONSE_BYTES + 1)
+    except TypeError:
+        raw = resp.read()
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) > _MAX_DEVICE_RESPONSE_BYTES:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _is_valid_verification_uri(uri: Any) -> bool:
-    """Return True only for HTTPS GitHub device-login verification URIs."""
+    """Return True only for exact HTTPS ``github.com`` device-login verification URIs."""
     if not isinstance(uri, str) or not uri:
         return False
     if "\\" in uri or any(ord(ch) <= 0x20 or ord(ch) >= 0x7F for ch in uri):
@@ -1177,14 +1274,10 @@ def _is_valid_verification_uri(uri: Any) -> bool:
         return False
     if port not in (None, 443):
         return False
-    host = (parts.hostname or "").lower()
-    if host != "github.com":
-        if not host.endswith(".github.com"):
-            return False
-        prefix = host[: -len(".github.com")]
-        labels = prefix.split(".")
-        if not labels or not all(_GITHUB_HOST_LABEL_RE.match(label) for label in labels):
-            return False
+    if (parts.hostname or "").lower() != "github.com":
+        return False
+    if parts.query or parts.fragment:
+        return False
     path = parts.path
     if path != "/login/device" and not path.startswith("/login/device/"):
         return False
@@ -1201,7 +1294,7 @@ def _scrub_error_text(text: str, *, secrets: Tuple[str, ...] = ()) -> str:
         if not isinstance(secret, str):
             continue
         for candidate in {secret, secret.strip()}:
-            if candidate:
+            if candidate and candidate.strip():
                 scrubbed = scrubbed.replace(candidate, "[REDACTED]")
     scrubbed = _URL_USERINFO_RE.sub(r"\1", scrubbed)
     scrubbed = _AUTH_HEADER_RE.sub(r"\1 [REDACTED]", scrubbed)
@@ -1251,9 +1344,19 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
         req = Request(f"{_device_base()}/code", data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         with _open_device_request(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-    except (HTTPError, URLError, OSError) as exc:
+            data = _read_bounded_json_dict(resp)
+    except HTTPError as exc:
+        try:
+            logger.warning("Device auth code request failed: %s", _scrub_error_text(str(exc)))
+        finally:
+            _close_http_error(exc)
+        return None
+    except (URLError, OSError) as exc:
         logger.warning("Device auth code request failed: %s", _scrub_error_text(str(exc)))
+        return None
+
+    if data is None:
+        logger.warning("Device auth code request returned invalid or oversized JSON.")
         return None
 
     device_code = data.get("device_code")
@@ -1330,18 +1433,25 @@ def poll_device_auth(
             req = Request(f"{_device_base()}/token", data=body, method="POST")
             req.add_header("Content-Type", "application/json")
             with _open_device_request(req, timeout=15) as resp:
-                data = json.loads(resp.read())
+                data = _read_bounded_json_dict(resp)
         except HTTPError as exc:
-            reason = str(getattr(exc, "reason", "") or "").lower()
-            if exc.code in (400, 403, 428) and "redirect refused" not in reason:
-                continue
-            logger.warning(
-                "Device auth poll error: %s",
-                _scrub_error_text(str(exc), secrets=(device_code,)),
-            )
-            return None
+            try:
+                reason = str(getattr(exc, "reason", "") or "").lower()
+                if exc.code in (400, 403, 428) and "redirect refused" not in reason:
+                    continue
+                logger.warning(
+                    "Device auth poll error: %s",
+                    _scrub_error_text(str(exc), secrets=(device_code,)),
+                )
+                return None
+            finally:
+                _close_http_error(exc)
         except (URLError, OSError):
             continue
+
+        if data is None:
+            logger.warning("Device auth poll returned invalid or oversized JSON.")
+            return None
 
         if data.get("access_token"):
             return data["access_token"]
@@ -1390,6 +1500,8 @@ def _http_error_detail(
             raw = exc.read() or b""
     except Exception:
         return base
+    finally:
+        _close_http_error(exc)
     if not raw:
         return base
     text = raw.decode("utf-8", errors="replace").strip()
@@ -1439,11 +1551,22 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
             req = Request(f"{_device_base()}/profile")
             req.add_header("Authorization", f"Bearer {access_token}")
             with _open_device_request(req, timeout=15) as resp:
-                data = json.loads(resp.read())
+                data = _read_bounded_json_dict(resp)
+            if data is None:
+                logger.warning("Failed to fetch API key: invalid or oversized JSON response")
+                return {
+                    "ok": False,
+                    "reason": "request_failed",
+                    "detail": "Invalid or oversized profile response",
+                }
             break
         except HTTPError as exc:
-            detail = _http_error_detail(exc, secrets=(access_token,))
-            if 500 <= int(exc.code) <= 599:
+            try:
+                detail = _http_error_detail(exc, secrets=(access_token,))
+                status_code = int(exc.code)
+            finally:
+                _close_http_error(exc)
+            if 500 <= status_code <= 599:
                 logger.warning(
                     "Device auth /profile upstream error (attempt %s/%s): %s",
                     attempt + 1,
@@ -1453,7 +1576,7 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
                 last_upstream = {
                     "ok": False,
                     "reason": "upstream_error",
-                    "http_status": int(exc.code),
+                    "http_status": status_code,
                     "detail": detail,
                 }
                 if attempt + 1 < _PROFILE_FETCH_ATTEMPTS:
@@ -1464,7 +1587,7 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
             return {
                 "ok": False,
                 "reason": "http_error",
-                "http_status": int(exc.code),
+                "http_status": status_code,
                 "detail": detail,
             }
         except (URLError, OSError) as exc:

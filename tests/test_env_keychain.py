@@ -54,7 +54,10 @@ def test_presence_guard_detects_multiline_password_flags():
     (False, False, "DUMMY-VALUE\n", "added=1 replaced=0 skipped=0"),
     (True, True, "DUMMY-VALUE\n", "added=0 replaced=1 skipped=0"),
 ])
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell fixture")
+@pytest.mark.skipif(
+    os.name == "nt" or Path("/usr/bin/security").exists(),
+    reason="POSIX non-macOS shell fixture (macOS pins /usr/bin/security unconditionally)",
+)
 def test_setup_presence_and_counters_use_stub_security(tmp_path, existed, replace, value, summary):
     stub = tmp_path / "security"
     stub.write_text(
@@ -84,7 +87,8 @@ def test_setup_presence_and_counters_use_stub_security(tmp_path, existed, replac
     command.append("OPENAI_API_KEY")
     result = subprocess.run(
         command, input=value, text=True, capture_output=True, timeout=5,
-        env={"PATH": str(tmp_path), "SECURITY_BIN": str(stub), "USER": "fixture-user", "OSTYPE": "darwin",
+        env={"PATH": str(tmp_path), "LAST30DAYS_TEST_SECURITY_BIN": str(stub),
+             "USER": "fixture-user", "OSTYPE": "darwin",
              "STUB_LOG": str(log_path), "STUB_STATUS": "0" if existed else "44"},
     )
     assert result.returncode == 0, result.stderr

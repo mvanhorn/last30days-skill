@@ -51,11 +51,22 @@ if [[ "${OSTYPE:-}" != darwin* ]]; then
   exit 1
 fi
 
-SECURITY_BIN="${SECURITY_BIN:-/usr/bin/security}"
+if [[ -x /usr/bin/security ]]; then
+  SECURITY_BIN="/usr/bin/security"
+else
+  SECURITY_BIN="${LAST30DAYS_TEST_SECURITY_BIN:-/usr/bin/security}"
+fi
 if [[ "$SECURITY_BIN" != /* || ! -x "$SECURITY_BIN" ]]; then
   echo "security binary not found at ${SECURITY_BIN}" >&2
   exit 1
 fi
+
+matches_regex() {
+  local LC_ALL=C
+  local value="$1"
+  local pattern="$2"
+  [[ "$value" =~ $pattern ]]
+}
 
 USER_NAME="${USER:-}"
 if [[ -z "$USER_NAME" && -x /usr/bin/id ]]; then
@@ -65,7 +76,8 @@ if [[ -z "$USER_NAME" ]]; then
   echo "Unable to determine current username (set USER)." >&2
   exit 1
 fi
-if [[ "$USER_NAME" == *$'\n'* || "$USER_NAME" == *$'\r'* || "$USER_NAME" =~ [[:cntrl:]] ]]; then
+cntrl_re='[[:cntrl:]]'
+if [[ "$USER_NAME" == *$'\n'* || "$USER_NAME" == *$'\r'* ]] || matches_regex "$USER_NAME" "$cntrl_re"; then
   echo "Invalid USER value." >&2
   exit 1
 fi
@@ -163,7 +175,12 @@ for key in "${TARGETS[@]}"; do
     continue
   fi
   printf "  %-28s " "$key"
-  IFS= read -rs value
+  value=""
+  if ! IFS= read -rs value && [[ -z "$value" ]]; then
+    echo
+    skipped=$((skipped + 1))
+    continue
+  fi
   echo
   if [[ -z "$value" ]]; then
     skipped=$((skipped + 1))
@@ -171,6 +188,7 @@ for key in "${TARGETS[@]}"; do
   fi
   # Hex-encode in pure bash builtins and pipe via stdin to `security -i` so the
   # secret never enters argv or a bash-3.2 heredoc temp file in /tmp.
+  HEX_VALUE=""
   hex_encode "$value"
   printf 'add-generic-password -U -a "%s" -s "%s" -X %s\n' \
     "$escaped_user" "${PREFIX}${key}" "$HEX_VALUE" | "$SECURITY_BIN" -i

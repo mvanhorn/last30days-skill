@@ -194,11 +194,14 @@ def test_hosted_catches_putheader_value_error_without_echoing_secret(monkeypatch
     "bad_base,secret_marker",
     [
         ("https://alice:topsecretpass@api.example.test/api/v1", "topsecretpass"),
+        ("https://alice:p@ss@word@api.example.test/api/v1", "p@ss@word"),
         ("https://tokenonly@api.example.test/api/v1", "tokenonly"),
         ("https://api.example.test/api/v1?secret=qval", "qval"),
         ("https://api.example.test/api/v1#fragsecret", "fragsecret"),
         ("https://api.example.test/api/v1\r\nX-Injected: 1", "X-Injected"),
         ("https://api.example.test/api/v1 bad", "bad"),
+        ("https://evil.example\\@good.example/api/v1", "evil.example"),
+        ("https://api.example.test:99999/api/v1", "99999"),
     ],
 )
 def test_hosted_api_base_rejects_userinfo_query_fragment_and_control_chars(
@@ -216,25 +219,94 @@ def test_hosted_api_base_rejects_userinfo_query_fragment_and_control_chars(
     assert secret_marker not in captured.out + captured.err
 
 
-def test_hosted_scrub_url_userinfo_handles_ipv6_and_billing_log(monkeypatch, capsys):
+def test_hosted_scrub_url_userinfo_handles_ipv6_at_passwords_and_server_errors(monkeypatch, capsys):
     assert hosted._scrub_url_userinfo("https://u:p@api.example.test:8443/api/v1") == "https://api.example.test:8443/api/v1"
+    assert hosted._scrub_url_userinfo("https://u:p@ss@word@api.example.test/api/v1") == "https://api.example.test/api/v1"
     assert hosted._scrub_url_userinfo("http://u:p@[::1]:8080/api/v1") == "http://[::1]:8080/api/v1"
     assert hosted._scrub_url_userinfo("https://api.example.test/api/v1") == "https://api.example.test/api/v1"
 
-    # Defense-in-depth: even if _api_base is monkeypatched to include userinfo, logs scrub it.
-    monkeypatch.setenv("LAST30DAYS_API_KEY", "sk_live_dummy_key")
+    # Whitespace-only LAST30DAYS_API_KEY must not redact ordinary spaces.
+    monkeypatch.setenv("LAST30DAYS_API_KEY", "   ")
+    assert hosted._scrub_error_text("hello world https://u:p@ss@api.example.test/v1") == "hello world https://api.example.test/v1"
+
+    # Defense-in-depth: even if _api_base is monkeypatched to include userinfo, logs scrub it,
+    # and server-returned balance/needed, unexpected submit payloads, and error rows scrub the key.
+    secret = "sk_live_HOSTED_ECHO_9999"
+    monkeypatch.setenv("LAST30DAYS_API_KEY", secret)
     monkeypatch.setattr(hosted, "_api_base", lambda: "https://alice:leakpw@api.example.test/api/v1")
     monkeypatch.setattr(
         hosted.http,
         "post",
-        mock.Mock(side_effect=http.HTTPError("HTTP 402", 402, json.dumps({"error": "No credits"}))),
+        mock.Mock(
+            side_effect=http.HTTPError(
+                "HTTP 402",
+                402,
+                json.dumps({"error": f"No credits for {secret}", "balance": secret, "needed": secret}),
+            )
+        ),
     )
     rc = hosted.run_hosted("topic", "quick")
     captured = capsys.readouterr()
     assert rc == 1
     assert "leakpw" not in captured.err
     assert "alice@" not in captured.err
+    assert secret not in captured.err
     assert "https://api.example.test/dashboard/billing" in captured.err
+
+    # Unexpected response without search_id scrubs API key.
+    monkeypatch.setattr(hosted.http, "post", mock.Mock(return_value={"oops": secret}))
+    assert hosted.run_hosted("topic", "quick") == 1
+    assert secret not in capsys.readouterr().err
+
+    # Terminal error row scrubs API key.
+    monkeypatch.setattr(hosted.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(hosted.http, "post", mock.Mock(return_value={"search_id": "sid-1"}))
+    monkeypatch.setattr(hosted.http, "get", mock.Mock(return_value={"status": "error", "error": f"bad {secret}"}))
+    assert hosted.run_hosted("topic", "quick") == 1
+    assert secret not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("code", [302, 307, 308])
+def test_hosted_submit_and_poll_refuse_cross_origin_redirects(monkeypatch, serve, code):
+    attacker_url, attacker_requests = serve(payload={"search_id": "stolen", "status": "complete"})
+
+    class RedirectHandler(stdlib_http.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            if length:
+                self.rfile.read(length)
+            self._redirect()
+
+        def do_GET(self):
+            self._redirect()
+
+        def _redirect(self):
+            self.send_response(code)
+            self.send_header("Location", f"{attacker_url}/steal")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = stdlib_http.ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("LAST30DAYS_API_BASE", f"http://127.0.0.1:{server.server_port}/api/v1")
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "sk_live_never_redirect_key")
+        with pytest.raises(http.HTTPError) as sub_err:
+            hosted.submit("sensitive query", "quick")
+        assert sub_err.value.status_code == 403
+        with pytest.raises(http.HTTPError) as poll_err:
+            hosted.poll("sid-1")
+        assert poll_err.value.status_code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert attacker_requests == []
 
 
 # ---------------------------------------------------------------------------
@@ -247,10 +319,8 @@ def test_hosted_scrub_url_userinfo_handles_ipv6_and_billing_log(monkeypatch, cap
     [
         "https://github.com/login/device",
         "https://github.com/login/device/",
-        "https://github.com/login/device?user_code=ABCD-1234",
         "https://github.com/login/device/confirmation",
         "https://github.com:443/login/device",
-        "https://enterprise.github.com/login/device",
     ],
 )
 def test_verification_uri_validator_accepts_legitimate_github_uris(uri):
@@ -266,6 +336,9 @@ def test_verification_uri_validator_accepts_legitimate_github_uris(uri):
         "javascript:alert(1)",
         "http://github.com/login/device",
         "https://evil.example/login/device",
+        "https://enterprise.github.com/login/device",
+        "https://gist.github.com/login/device",
+        "https://evil.github.com/login/device",
         "https://github.com.evil.example/login/device",
         "https://evilgithub.com/login/device",
         "https://.github.com/login/device",
@@ -273,6 +346,9 @@ def test_verification_uri_validator_accepts_legitimate_github_uris(uri):
         "https://user:pass@github.com/login/device",
         "https://github.com:8443/login/device",
         "https://github.com/evil",
+        "https://github.com/login/device?user_code=ABCD-1234",
+        "https://github.com/login/device?return_to=https://evil.example",
+        "https://github.com/login/device#frag",
         "https://github.com/login/device-evil",
         "https://github.com/login/device/../../evil",
         "https://github.com/login/device/%2e%2e/evil",
@@ -380,17 +456,89 @@ def test_run_device_auth_and_poll_refuse_redirects(monkeypatch, serve):
     assert attacker_requests == []
 
 
-def test_setup_wizard_preserves_urllib_request_urlopen_patches():
-    resp = mock.MagicMock()
-    resp.read.return_value = json.dumps({"api_key": "sc_patched_key"}).encode("utf-8")
-    resp.__enter__.return_value = resp
-    resp.__exit__.return_value = False
+def test_device_auth_refuses_redirects_and_ignores_wrapped_urllib_urlopen(monkeypatch, serve):
+    attacker_url, attacker_requests = serve(payload={"api_key": "sc_stolen"})
+    victim_url, _victim_requests = serve(redirect_to=f"{attacker_url}/steal")
+    monkeypatch.setattr(setup_wizard, "_DEVICE_BASE", f"{victim_url}/v1/github/device")
 
-    with mock.patch("urllib.request.urlopen", return_value=resp) as patched_urlopen:
-        result = setup_wizard.fetch_api_key("gho_valid_token")
+    def forbidden_urlopen(*_args, **_kwargs):
+        raise AssertionError("setup_wizard must not delegate through urllib.request.urlopen")
 
-    assert result == {"ok": True, "api_key": "sc_patched_key"}
-    patched_urlopen.assert_called_once()
+    with mock.patch("urllib.request.urlopen", side_effect=forbidden_urlopen):
+        res = setup_wizard.fetch_api_key("gho_secret_oauth_token_wrapped")
+        assert res["ok"] is False
+        assert res["http_status"] == 403
+        assert setup_wizard.run_device_auth() is None
+        with mock.patch("lib.setup_wizard.time.sleep"), \
+             mock.patch("lib.setup_wizard.time.time", return_value=0):
+            assert setup_wizard.poll_device_auth("dc-123", interval=1, timeout=300) is None
+
+    assert attacker_requests == []
+
+
+def test_device_opener_enforces_https_only_and_drops_non_https_handlers(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.test:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://https-proxy.example.test:8443")
+    opener = setup_wizard._build_device_opener(loopback_http=False)
+    for scheme in ("http", "file", "ftp", "data"):
+        assert scheme not in opener.handle_open
+    assert "https" in opener.handle_open
+    proxy_handlers = [h for h in opener.handlers if isinstance(h, urllib.request.ProxyHandler)]
+    assert len(proxy_handlers) == 1
+    assert set(proxy_handlers[0].proxies.keys()) <= {"https"}
+
+    for bad_url in ("http://remote.example.test/v1/github/device/profile", "file:///etc/passwd", "ftp://example.test/x"):
+        with pytest.raises(urllib.error.URLError):
+            setup_wizard._default_urlopen(urllib.request.Request(bad_url), timeout=1)
+
+
+def test_device_auth_bounds_response_size_validates_json_and_closes_http_errors():
+    oversized = b'{"api_key":"' + (b"a" * (setup_wizard._MAX_DEVICE_RESPONSE_BYTES + 10)) + b'"}'
+    for bad_payload in (oversized, b"not-json", b'["not-a-dict"]'):
+        resp = mock.MagicMock()
+        resp.read.side_effect = lambda n=-1, data=bad_payload: data[:n] if n >= 0 else data
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        with mock.patch("lib.setup_wizard.urlopen", return_value=resp):
+            assert setup_wizard.run_device_auth() is None
+            res = setup_wizard.fetch_api_key("gho_valid_tok")
+            assert res["ok"] is False and res["reason"] == "request_failed"
+            with mock.patch("lib.setup_wizard.time.sleep"), \
+                 mock.patch("lib.setup_wizard.time.time", return_value=0):
+                assert setup_wizard.poll_device_auth("dc-1", interval=1, timeout=300) is None
+
+    # Verify HTTPError streams are always closed across all three callers.
+    closed_flags = []
+
+    class TrackingBytesIO(io.BytesIO):
+        def close(self):
+            closed_flags.append(True)
+            super().close()
+
+    def make_err(code=401):
+        return urllib.error.HTTPError(
+            "https://api.scrapecreators.com/v1/github/device/profile",
+            code,
+            "Err",
+            {},
+            TrackingBytesIO(b'{"error":"fail"}'),
+        )
+
+    with mock.patch("lib.setup_wizard.urlopen", side_effect=lambda *a, **k: (_ for _ in ()).throw(make_err(401))):
+        setup_wizard.run_device_auth()
+        setup_wizard.fetch_api_key("gho_valid_tok")
+        with mock.patch("lib.setup_wizard.time.sleep"), \
+             mock.patch("lib.setup_wizard.time.time", return_value=0):
+            setup_wizard.poll_device_auth("dc-1", interval=1, timeout=300)
+
+    assert len(closed_flags) >= 3
+
+
+def test_setup_wizard_scrub_handles_at_password_and_whitespace_secret():
+    assert setup_wizard._scrub_error_text(
+        "https://alice:p@ss@word@api.scrapecreators.com/profile", secrets=("   ",)
+    ) == "https://api.scrapecreators.com/profile"
+    assert setup_wizard._scrub_error_text("plain message with spaces", secrets=("   ",)) == "plain message with spaces"
 
 
 def test_fetch_api_key_scrubs_access_token_and_secrets_from_http_error_bodies(caplog):
@@ -458,31 +606,34 @@ def test_setup_keychain_bash_syntax_and_no_argv_secret_flag():
     script = SETUP_KEYCHAIN_SH.read_text(encoding="utf-8")
     assert '-w "$value"' not in script
     assert "command -v security" not in script
-    assert "/usr/bin/security" in script
+    assert 'if [[ -x /usr/bin/security ]]; then\n  SECURITY_BIN="/usr/bin/security"' in script
+    assert 'SECURITY_BIN="${SECURITY_BIN:-' not in script
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell script")
+@pytest.mark.skipif(
+    os.name == "nt" or Path("/usr/bin/security").exists(),
+    reason="POSIX non-macOS shell fixture (macOS pins /usr/bin/security unconditionally)",
+)
 def test_setup_keychain_ignores_path_shadow_and_passes_hex_via_stdin(tmp_path):
-    # 1. A shadowed `security` on PATH must never be executed when /usr/bin/security is absent.
-    if not Path("/usr/bin/security").exists():
-        rogue_dir = tmp_path / "rogue"
-        rogue_dir.mkdir()
-        rogue = rogue_dir / "security"
-        rogue_marker = tmp_path / "rogue-ran"
-        rogue.write_text(f"#!/bin/sh\necho PWNED > {shlex.quote(str(rogue_marker))}\nexit 0\n", encoding="utf-8")
-        rogue.chmod(0o755)
-        res = subprocess.run(
-            ["/bin/bash", str(SETUP_KEYCHAIN_SH), "OPENAI_API_KEY"],
-            input="dummy-secret\n",
-            text=True,
-            capture_output=True,
-            timeout=10,
-            env={"PATH": str(rogue_dir), "USER": "alice", "OSTYPE": "darwin"},
-        )
-        assert res.returncode != 0
-        assert not rogue_marker.exists()
+    # 1. A shadowed `security` on PATH (or SECURITY_BIN env var) must never be executed.
+    rogue_dir = tmp_path / "rogue"
+    rogue_dir.mkdir()
+    rogue = rogue_dir / "security"
+    rogue_marker = tmp_path / "rogue-ran"
+    rogue.write_text(f"#!/bin/sh\necho PWNED > {shlex.quote(str(rogue_marker))}\nexit 0\n", encoding="utf-8")
+    rogue.chmod(0o755)
+    res = subprocess.run(
+        ["/bin/bash", str(SETUP_KEYCHAIN_SH), "OPENAI_API_KEY"],
+        input="dummy-secret\n",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env={"PATH": str(rogue_dir), "SECURITY_BIN": str(rogue), "USER": "alice", "OSTYPE": "darwin"},
+    )
+    assert res.returncode != 0
+    assert not rogue_marker.exists()
 
-    # 2. With SECURITY_BIN stubbed, secret with quotes/spaces/backslashes/$/!/UTF-8
+    # 2. With LAST30DAYS_TEST_SECURITY_BIN stubbed, secret with quotes/spaces/backslashes/$/!/UTF-8
     #    never appears in argv and decodes identically from `-X <hex>` on stdin.
     records = tmp_path / "security-records.jsonl"
     stub = tmp_path / "security-stub"
@@ -513,7 +664,7 @@ def test_setup_keychain_ignores_path_shadow_and_passes_hex_via_stdin(tmp_path):
         timeout=10,
         env={
             "PATH": str(tmp_path),
-            "SECURITY_BIN": str(stub),
+            "LAST30DAYS_TEST_SECURITY_BIN": str(stub),
             "USER": "alice",
             "OSTYPE": "darwin",
             "RECORDS": str(records),
@@ -542,14 +693,41 @@ def test_setup_keychain_ignores_path_shadow_and_passes_hex_via_stdin(tmp_path):
     decoded = bytes.fromhex(tokens[7]).decode("utf-8")
     assert decoded == tricky_secret
 
-    # 3. Unknown / injection keys are rejected with exit 2 before calling security.
+    # 3. EOF without trailing newline still stores value; empty EOF skips cleanly under set -e.
+    records.unlink()
+    eof_val = subprocess.run(
+        ["/bin/bash", str(SETUP_KEYCHAIN_SH), "OPENAI_API_KEY"],
+        input="eof-no-newline-secret",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env={"PATH": str(tmp_path), "LAST30DAYS_TEST_SECURITY_BIN": str(stub), "USER": "alice", "OSTYPE": "darwin", "RECORDS": str(records)},
+    )
+    assert eof_val.returncode == 0, eof_val.stderr
+    assert "added=1 replaced=0 skipped=0" in eof_val.stdout
+    eof_calls = [json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()]
+    assert bytes.fromhex(shlex.split(eof_calls[1]["stdin"].strip())[7]).decode("utf-8") == "eof-no-newline-secret"
+
+    records.unlink()
+    eof_empty = subprocess.run(
+        ["/bin/bash", str(SETUP_KEYCHAIN_SH), "OPENAI_API_KEY"],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env={"PATH": str(tmp_path), "LAST30DAYS_TEST_SECURITY_BIN": str(stub), "USER": "alice", "OSTYPE": "darwin", "RECORDS": str(records)},
+    )
+    assert eof_empty.returncode == 0, eof_empty.stderr
+    assert "added=0 replaced=0 skipped=1" in eof_empty.stdout
+
+    # 4. Unknown / injection keys are rejected with exit 2 before calling security.
     records.unlink()
     bad_res = subprocess.run(
         ["/bin/bash", str(SETUP_KEYCHAIN_SH), "--delete", "../evil"],
         text=True,
         capture_output=True,
         timeout=10,
-        env={"PATH": str(tmp_path), "SECURITY_BIN": str(stub), "USER": "alice", "OSTYPE": "darwin", "RECORDS": str(records)},
+        env={"PATH": str(tmp_path), "LAST30DAYS_TEST_SECURITY_BIN": str(stub), "USER": "alice", "OSTYPE": "darwin", "RECORDS": str(records)},
     )
     assert bad_res.returncode == 2
     assert not records.exists()
@@ -561,9 +739,16 @@ def test_setup_keychain_ignores_path_shadow_and_passes_hex_via_stdin(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell script")
-def test_setup_pass_bash_syntax():
+def test_setup_pass_bash_syntax_and_bash32_safe_regexes():
     check = subprocess.run(["bash", "-n", str(SETUP_PASS_SH)], capture_output=True, text=True, timeout=10)
     assert check.returncode == 0, check.stderr
+    for script_path in (SETUP_PASS_SH, SETUP_KEYCHAIN_SH):
+        text = script_path.read_text(encoding="utf-8")
+        # Ensure every `=~` uses a variable RHS (Bash 3.2 rejects inline parentheses).
+        for line in text.splitlines():
+            stripped = line.strip()
+            if "=~" in stripped and not stripped.startswith("#"):
+                assert "=~ $" in stripped, f"inline regex in {script_path.name}: {line}"
 
 
 @pytest.fixture
@@ -718,3 +903,26 @@ def test_setup_pass_uses_end_of_options_and_normalizes_prefix(mock_pass_env):
     assert ["insert", "-m", "--", "secrets/l30/OPENAI_API_KEY"] in calls
     assert ["show", "--", "secrets/l30/OPENAI_API_KEY"] in calls
     assert ["rm", "-f", "--", "secrets/l30/OPENAI_API_KEY"] in calls
+
+    # EOF without trailing newline stores value cleanly; empty EOF skips without crashing.
+    eof_ins = subprocess.run(
+        ["bash", str(SETUP_PASS_SH), "XAI_API_KEY"],
+        input="xai-no-newline",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=env_vars,
+    )
+    assert eof_ins.returncode == 0, eof_ins.stderr
+    assert (store / "secrets" / "l30" / "XAI_API_KEY.gpg").read_text(encoding="utf-8") == "xai-no-newline\n"
+
+    eof_empty = subprocess.run(
+        ["bash", str(SETUP_PASS_SH), "BRAVE_API_KEY"],
+        input="",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=env_vars,
+    )
+    assert eof_empty.returncode == 0, eof_empty.stderr
+    assert "added=0 replaced=0 skipped=1" in eof_empty.stdout

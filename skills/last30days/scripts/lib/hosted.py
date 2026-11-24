@@ -57,7 +57,7 @@ NARRATE_PREFIX = "[narrate] step="
 TERMINAL_STATUSES = {"complete", "error"}
 
 
-_URL_USERINFO_RE = re.compile(r"(https?://)[^/\s@]+@", re.IGNORECASE)
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/]+@", re.IGNORECASE)
 
 
 def _err(msg: str) -> None:
@@ -81,7 +81,7 @@ def _scrub_error_text(text: str) -> str:
     scrubbed = _URL_USERINFO_RE.sub(r"\1", text)
     raw_key = env.read_secret_env("LAST30DAYS_API_KEY") or ""
     for candidate in {raw_key, raw_key.strip()}:
-        if candidate:
+        if candidate and candidate.strip():
             scrubbed = scrubbed.replace(candidate, "[REDACTED]")
     return scrubbed
 
@@ -101,6 +101,14 @@ def _api_base() -> str:
             "(http:// is allowed only for loopback hosts)."
         )
     parts = urlsplit(raw)
+    if "\\" in parts.netloc:
+        raise ValueError(
+            "LAST30DAYS_API_BASE must not contain backslashes in the authority."
+        )
+    try:
+        _ = parts.port
+    except ValueError:
+        raise ValueError("LAST30DAYS_API_BASE contains an invalid port.") from None
     if parts.username is not None or parts.password is not None or "@" in parts.netloc:
         raise ValueError(
             "LAST30DAYS_API_BASE must not include embedded credentials (userinfo)."
@@ -135,6 +143,11 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
+def _same_origin_redirect_guard(base: str):
+    expected_origin = http._request_origin(base)
+    return lambda newurl: http._request_origin(newurl) == expected_origin
+
+
 def submit(query: str, depth: str, register: str = "default", clarify: dict | None = None) -> dict:
     """POST the search. retries=1: a blind POST retry could double-submit."""
     base = _api_base()
@@ -152,6 +165,7 @@ def submit(query: str, depth: str, register: str = "default", clarify: dict | No
             headers=headers,
             retries=1,
             bypass_proxy=providers.is_loopback_http_endpoint(base),
+            redirect_guard=_same_origin_redirect_guard(base),
         )
     except ValueError:
         raise ValueError("Invalid hosted API request header or URL.") from None
@@ -168,6 +182,7 @@ def poll(search_id: str) -> dict:
             params={"id": search_id},
             retries=1,
             bypass_proxy=providers.is_loopback_http_endpoint(base),
+            redirect_guard=_same_origin_redirect_guard(base),
         )
     except ValueError:
         raise ValueError("Invalid hosted API request header or URL.") from None
@@ -196,8 +211,10 @@ def _handle_http_error(exc: http.HTTPError) -> int:
         _err(f"API: {_scrub_error_text(str(body.get('error') or 'insufficient credits.'))}")
         if body.get("balance") is not None or body.get("needed") is not None:
             _err(
-                f"Balance: {body.get('balance')} credits. "
-                f"Needed for this search: {body.get('needed')} credits."
+                _scrub_error_text(
+                    f"Balance: {body.get('balance')} credits. "
+                    f"Needed for this search: {body.get('needed')} credits."
+                )
             )
         _err(f"Add credits at {_billing_url()}")
         return 1
@@ -427,7 +444,7 @@ def run_hosted(
 
     search_id = resp.get("search_id")
     if not search_id:
-        _err(f"Unexpected API response (no search_id): {json.dumps(resp)[:200]}")
+        _err(f"Unexpected API response (no search_id): {_scrub_error_text(json.dumps(resp))[:200]}")
         return 1
     _err(f"Search submitted (id: {search_id}). Polling for results...")
 
@@ -463,7 +480,7 @@ def run_hosted(
         if status in TERMINAL_STATUSES:
             _note_engine_version(row)
         if status == "error":
-            _err(f"Search failed: {_failure_reason(row)}")
+            _err(f"Search failed: {_scrub_error_text(_failure_reason(row))}")
             return 1
         if status == "complete":
             _err(f"Search complete in {int(elapsed)}s.")
