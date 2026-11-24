@@ -825,6 +825,9 @@ def _apply_first_party_floor(
             c.explanation = _FIRST_PARTY_EXPLANATION
 
 
+_ENGAGEMENT_SCORE_CAP = 100.0
+
+
 def _apply_engagement_rescue(
     candidates: list[schema.Candidate],
     *,
@@ -846,9 +849,17 @@ def _apply_engagement_rescue(
     if len(x_cands) < 2:
         return
     subject = _subject_handles(primary_handle, topic)
-    engagements = sorted(_candidate_engagement(c) for c in x_cands)
-    n = len(engagements)
+    engagements: list[float] = []
     for c in x_cands:
+        raw = _candidate_engagement(c)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            engagements.append(0.0)
+        else:
+            engagements.append(float(raw))
+    n = len(engagements)
+    for c, e in zip(x_cands, engagements):
+        if e <= 0:
+            continue
         # A first-party post qualifies only through _first_party_floor_eligible
         # (which needs positive grounding); the bare grounding pass below would
         # wave a related handle's off-topic post through on a short topic.
@@ -860,9 +871,14 @@ def _apply_engagement_rescue(
             qualifies = _is_entity_grounded(c, primary_entity)
         if not qualifies:
             continue
-        e = _candidate_engagement(c)
-        # Percentile rank in [0, 1]: fraction of the X pool strictly below e.
-        percentile = sum(1 for v in engagements if v < e) / (n - 1)
+        below = sum(1 for v in engagements if v < e)
+        equal = sum(1 for v in engagements if v == e)
+        if e >= _ENGAGEMENT_SCORE_CAP:
+            # Posts clamped at the 0-100 engagement ceiling represent distinct
+            # viral counts; upper-rank preserves their top-tier rescue floor.
+            percentile = (below + equal - 1) / (n - 1)
+        else:
+            percentile = (below + 0.5 * (equal - 1)) / (n - 1)
         floor = _rescue_floor(percentile)
         if floor > c.final_score:
             c.final_score = floor

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import math
 import re
@@ -32,28 +33,57 @@ def _candidate_sort_key(c: schema.Candidate) -> tuple:
 
 
 def _normalize_url(url: str) -> str:
-    """Normalize URL for dedup: lowercase host, strip www/old/m prefixes, remove tracking params."""
-    parsed = urlparse(url.strip())
+    """Normalize URL for dedup: lowercase scheme/host, strip www/old/m prefixes,
+    drop fragments and utm_* params, and sort remaining query parameters."""
+    cleaned = url.strip()
+    try:
+        parsed = urlparse(cleaned)
+    except ValueError:
+        return cleaned
     netloc = parsed.netloc.lower()
-    for prefix in ("www.", "old.", "m."):
-        if netloc.startswith(prefix):
-            netloc = netloc[len(prefix):]
-    # Strip tracking params
-    params = parse_qs(parsed.query)
-    clean_params = {k: v for k, v in params.items() if not k.lower().startswith("utm_")}
+    changed = True
+    while changed:
+        changed = False
+        for prefix in ("www.", "old.", "m."):
+            if netloc.startswith(prefix):
+                netloc = netloc[len(prefix):]
+                changed = True
+    # Strip tracking params and canonicalize parameter name order while
+    # preserving value order for repeated parameter names.
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    clean_params = sorted(
+        (
+            (k, v)
+            for k, v in params.items()
+            if not k.lower().startswith("utm_")
+        ),
+        key=lambda kv: kv[0],
+    )
     query = urlencode(clean_params, doseq=True)
     return urlunparse((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", query, ""))
 
 
-def candidate_key(item: schema.SourceItem) -> str:
+def candidate_key(
+    item: schema.SourceItem,
+    *,
+    polymarket_eids_by_url: dict[str, set[str]] | None = None,
+) -> str:
     if item.url:
+        if item.source == "polymarket" and polymarket_eids_by_url:
+            poly_key = polymarket_url_key(item, polymarket_eids_by_url)
+            if poly_key is not None:
+                return poly_key
         # Every URL form of one Reddit thread (old., redd.it, a comment
         # permalink) is one candidate, keyed by the thread id.
         return reddit_refs.thread_key(item.url) or _normalize_url(item.url)
     return f"{item.source}:{item.item_id}"
 
 
-def source_item_key(item: schema.SourceItem) -> tuple[str, str]:
+def source_item_key(
+    item: schema.SourceItem,
+    *,
+    polymarket_eids_by_url: dict[str, set[str]] | None = None,
+) -> tuple[str, str]:
     """Identity of one source item, for same-source de-duplication.
 
     Usually the normalized URL (see :func:`candidate_key`). A Hacker News
@@ -66,7 +96,7 @@ def source_item_key(item: schema.SourceItem) -> tuple[str, str]:
         hn_url = item.metadata.get("hn_url")
         if hn_url:
             return (item.source, _normalize_url(str(hn_url)))
-    return (item.source, candidate_key(item))
+    return (item.source, candidate_key(item, polymarket_eids_by_url=polymarket_eids_by_url))
 
 
 # Enrichment that one copy of a thread may carry and another may lack. When
@@ -169,6 +199,118 @@ def _sanitize_reddit_matched_comment(
         item.metadata.pop("matched_comment_url", None)
 
 
+# Polymarket display and ranking fields that belong to a matched-market verdict
+# and must move together so a merged item never mixes one market's price with
+# another market's question/odds/close date or loses its selection ranking.
+_POLYMARKET_MATCH_BUNDLE_KEYS = (
+    "matched_market",
+    "odds",
+    "headline",
+    "end_date",
+    "question",
+    "outcome_prices",
+    "outcome_questions",
+    "outcome_market_ids",
+    "outcomes_remaining",
+    "price_movement",
+    "selection_score",
+    "selection_tier",
+)
+
+
+def _polymarket_event_id(item: schema.SourceItem) -> str:
+    if item.source != "polymarket":
+        return ""
+    return str((item.metadata or {}).get("event_id") or "").strip()
+
+
+def _polymarket_event_ids_conflict(
+    a: schema.SourceItem,
+    b: schema.SourceItem,
+) -> bool:
+    """True when two Polymarket items carry distinct known Gamma event IDs."""
+    id_a = _polymarket_event_id(a)
+    id_b = _polymarket_event_id(b)
+    return bool(id_a and id_b and id_a != id_b)
+
+
+def polymarket_event_ids_by_url(
+    items: Iterable[schema.SourceItem],
+) -> dict[str, set[str]]:
+    """Map each normalized Polymarket URL to all distinct non-empty event IDs seen."""
+    by_url: dict[str, set[str]] = {}
+    for item in items:
+        if item.source != "polymarket":
+            continue
+        url = (item.url or "").strip()
+        if not url:
+            continue
+        eid = _polymarket_event_id(item)
+        if eid:
+            by_url.setdefault(_normalize_url(url), set()).add(eid)
+    return by_url
+
+
+def polymarket_url_key(
+    item: schema.SourceItem,
+    eids_by_url: dict[str, set[str]] | None = None,
+) -> str | None:
+    """Collision-safe URL key for a Polymarket item, or None if not Polymarket/URL-less.
+
+    When multiple distinct ``event_id`` values share one reused slug URL:
+    - items with a known ``event_id`` key under ``"{norm_url}\\x1fevent={eid}"``
+    - ID-less items key under ``"{norm_url}\\x1fidless"`` so they never merge
+      with or bridge conflicting events.
+    When zero or one ``event_id`` exists at ``norm_url``, every copy shares
+    ``norm_url`` so ID-less copies merge cleanly and inherit the sole ``event_id``.
+    """
+    if item.source != "polymarket":
+        return None
+    url = (item.url or "").strip()
+    if not url:
+        return None
+    norm = _normalize_url(url)
+    eids = (eids_by_url or {}).get(norm)
+    if eids and len(eids) > 1:
+        eid = _polymarket_event_id(item)
+        return f"{norm}\x1fevent={eid}" if eid else f"{norm}\x1fidless"
+    return norm
+
+
+def _merge_polymarket_match_bundle(
+    existing: schema.SourceItem,
+    incoming: schema.SourceItem,
+) -> bool:
+    """Keep Polymarket's display and ranking fields coherent across copies.
+
+    Returns True for any non-conflicting Polymarket pair so the caller keeps
+    the winning copy's ``body`` and ``snippet`` (including an empty
+    ``price_movement`` snippet when a fresh fetch reported no move) paired
+    with its own odds, headline, and close date.
+    """
+    if existing.source != "polymarket" or incoming.source != "polymarket":
+        return False
+    if _polymarket_event_ids_conflict(existing, incoming):
+        return False
+    in_meta = incoming.metadata or {}
+    mine_matched = bool(existing.metadata.get("matched_market"))
+    theirs_matched = bool(in_meta.get("matched_market"))
+    if not mine_matched and theirs_matched:
+        for key in _POLYMARKET_MATCH_BUNDLE_KEYS:
+            if key in in_meta and in_meta[key] is not None:
+                existing.metadata[key] = copy.deepcopy(in_meta[key])
+            else:
+                existing.metadata.pop(key, None)
+        if in_meta.get("event_id") and not existing.metadata.get("event_id"):
+            existing.metadata["event_id"] = in_meta["event_id"]
+        if incoming.title:
+            existing.title = incoming.title
+        if incoming.body:
+            existing.body = incoming.body
+        existing.snippet = incoming.snippet
+    return True
+
+
 def merge_source_items(
     existing: schema.SourceItem,
     incoming: schema.SourceItem,
@@ -190,6 +332,8 @@ def merge_source_items(
         existing.engagement = {}
     if existing.metadata is None:
         existing.metadata = {}
+    if _polymarket_event_ids_conflict(existing, incoming):
+        return existing
     eng_before = dict(existing.engagement)
     eng_src_before = existing.metadata.get("engagement_source")
     comments_before = existing.metadata.get("top_comments")
@@ -199,7 +343,12 @@ def merge_source_items(
         _merge_reddit_fields(
             existing, incoming, range_from=range_from, range_to=range_to,
         )
+    polymarket_match_preserved = _merge_polymarket_match_bundle(existing, incoming)
     in_meta = incoming.metadata or {}
+    if existing.source == "polymarket" and incoming.source == "polymarket":
+        incoming_eid = _polymarket_event_id(incoming)
+        if incoming_eid and not _polymarket_event_id(existing):
+            existing.metadata["event_id"] = incoming_eid
     for meta_key in ("enriched_via", "reddit_subreddit"):
         val = in_meta.get(meta_key)
         if val and not existing.metadata.get(meta_key):
@@ -254,22 +403,53 @@ def merge_source_items(
         from . import signals
 
         existing.engagement_score = signals.engagement_score(existing)
-    if len(incoming.body or "") > len(existing.body or ""):
-        existing.body = incoming.body
-    # A reel or TikTok fetched twice can come back once with its spoken
-    # transcript and once with only its written description. `spoken_caption`
-    # says which one the snippet is, so the two move together: the transcript
-    # wins whatever its length, and a longer written description never takes
-    # its place.
-    theirs_spoken = bool(incoming.metadata.get("spoken_caption"))
-    mine_spoken = bool(existing.metadata.get("spoken_caption"))
-    if theirs_spoken != mine_spoken:
-        if theirs_spoken and (incoming.snippet or "").strip():
+    if not polymarket_match_preserved:
+        if len(incoming.body or "") > len(existing.body or ""):
+            existing.body = incoming.body
+        # A reel or TikTok fetched twice can come back once with its spoken
+        # transcript and once with only its written description. `spoken_caption`
+        # says which one the snippet is, so the two move together: the transcript
+        # wins whatever its length, and a longer written description never takes
+        # its place.
+        theirs_spoken = bool(incoming.metadata.get("spoken_caption"))
+        mine_spoken = bool(existing.metadata.get("spoken_caption"))
+        if theirs_spoken != mine_spoken:
+            if theirs_spoken and (incoming.snippet or "").strip():
+                existing.snippet = incoming.snippet
+                existing.metadata["spoken_caption"] = True
+        elif len(incoming.snippet or "") > len(existing.snippet or ""):
             existing.snippet = incoming.snippet
-            existing.metadata["spoken_caption"] = True
-    elif len(incoming.snippet or "") > len(existing.snippet or ""):
-        existing.snippet = incoming.snippet
     return existing
+
+
+def _reddit_score_key(score: object, source: str | None) -> tuple[int, float]:
+    """Order-independent rank for a Reddit copy's ``(score, engagement_source)``.
+
+    Higher wins regardless of merge order:
+      3 — measured live score (explicit ``LIVE`` with any finite number,
+          including measured ``0``; or unlabeled copy with a non-zero number)
+      2 — measured archive score (``ARCTIC`` with any finite number)
+      1 — explicitly withheld fresh archive score (``ARCTIC_PENDING``)
+      0 — unmeasured / ``UNKNOWN`` / placeholder ``0`` or ``None``
+    """
+    numeric = (
+        isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and math.isfinite(score)
+    )
+    if source == reddit_refs.ARCTIC_PENDING:
+        return (1, 0.0)
+    if source == reddit_refs.UNKNOWN:
+        return (0, 0.0)
+    if source == reddit_refs.ARCTIC:
+        return (2, float(score)) if numeric else (0, 0.0)
+    if source == reddit_refs.LIVE:
+        return (3, float(score)) if numeric else (0, 0.0)
+    if not source:
+        # Unlabeled copy: a non-zero number is treated as live (matching
+        # reddit_hydrate._effective_score_rank); placeholder 0 or None is unmeasured.
+        return (3, float(score)) if (numeric and score != 0) else (0, 0.0)
+    return (reddit_refs.score_rank(source), float(score)) if numeric else (0, 0.0)
 
 
 def _merge_reddit_fields(
@@ -284,15 +464,7 @@ def _merge_reddit_fields(
     theirs_source = incoming.metadata.get("engagement_source")
     mine_score = existing.engagement.get("score")
     theirs_score = (incoming.engagement or {}).get("score")
-    mine_rank = reddit_refs.score_rank(mine_source)
-    theirs_rank = reddit_refs.score_rank(theirs_source)
-    numeric = isinstance(theirs_score, (int, float)) and not isinstance(theirs_score, bool)
-    take = theirs_rank > mine_rank or (
-        theirs_rank == mine_rank
-        and numeric
-        and not (isinstance(mine_score, (int, float)) and not isinstance(mine_score, bool) and mine_score >= theirs_score)
-    )
-    if take:
+    if _reddit_score_key(theirs_score, theirs_source) > _reddit_score_key(mine_score, mine_source):
         existing.engagement["score"] = theirs_score
         if theirs_source:
             existing.metadata["engagement_source"] = theirs_source
@@ -341,13 +513,16 @@ def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.Sourc
 
     Per-stream item ids (``R1``, ``X1``) collide across subqueries, so identity
     is :func:`source_item_key` (the normalized URL, or the HN discussion URL),
-    not the id. The first occurrence stays in place and
-    absorbs later copies via :func:`merge_source_items`.
+    not the id. The first occurrence stays in place and absorbs later copies
+    via :func:`merge_source_items`. Reused Polymarket slug URLs carrying
+    distinct known ``event_id`` values (and ID-less copies at those URLs) are
+    kept separate so conflicting events never merge or bridge.
     """
+    poly_eids = polymarket_event_ids_by_url(items)
     first_by_key: dict[tuple[str, str], schema.SourceItem] = {}
     kept: list[schema.SourceItem] = []
     for item in items:
-        key = source_item_key(item)
+        key = source_item_key(item, polymarket_eids_by_url=poly_eids)
         existing = first_by_key.get(key)
         if existing is None:
             first_by_key[key] = item
@@ -700,6 +875,16 @@ def weighted_rrf(
     # per-stream ids collide across subqueries, and
     # a repeat copy may carry enrichment the first one lacks.
     seen_source_items: dict[str, dict[tuple[str, str], schema.SourceItem]] = {}
+    poly_eids = polymarket_event_ids_by_url(
+        item
+        for items in streams.values()
+        for item in items
+        if item.source == "polymarket"
+        and entity_extract.matches_person_identity(
+            item, plan.person_identity_anchors, primary_handle,
+            person_run=getattr(plan, "person_run", False),
+        )
+    )
 
     for (label, source), items in streams.items():
         subquery = subqueries[label]
@@ -712,7 +897,7 @@ def weighted_rrf(
                 person_run=getattr(plan, "person_run", False),
             ):
                 continue
-            key = candidate_key(item)
+            key = candidate_key(item, polymarket_eids_by_url=poly_eids)
             score = weight / (RRF_K + rank)
             item_local_relevance = item.local_relevance if item.local_relevance is not None else float(item.metadata.get("local_relevance", item.relevance_hint))
             item_freshness = item.freshness if item.freshness is not None else int(item.metadata.get("freshness", 0))
@@ -756,7 +941,9 @@ def weighted_rrf(
                 )
                 primary_scores[key] = incoming_primary_score
                 candidate_spoken[key] = incoming_spoken
-                seen_source_items[key] = {source_item_key(attached): attached}
+                seen_source_items[key] = {
+                    source_item_key(attached, polymarket_eids_by_url=poly_eids): attached,
+                }
                 continue
 
             candidate = candidates[key]
@@ -780,7 +967,7 @@ def weighted_rrf(
             if item.source not in candidate.sources:
                 candidate.sources.append(item.source)
             promoted = incoming_primary_score > primary_scores[key]
-            item_key = source_item_key(item)
+            item_key = source_item_key(item, polymarket_eids_by_url=poly_eids)
             existing_item = seen_source_items[key].get(item_key)
             if existing_item is None:
                 attached = _clone_source_item(item)
@@ -821,11 +1008,20 @@ def weighted_rrf(
                 if candidate.source_items and candidate.source_items[0] is not attached:
                     candidate.source_items.remove(attached)
                     candidate.source_items.insert(0, attached)
+            elif (
+                attached.source == "polymarket"
+                and candidate.source == "polymarket"
+                and (attached.metadata or {}).get("matched_market")
+            ):
+                candidate.title = attached.title
             if incoming_spoken and not candidate_spoken[key]:
                 candidate.snippet = item.snippet
                 candidate_spoken[key] = True
             elif incoming_spoken == candidate_spoken[key]:
-                if promoted:
+                if promoted or (
+                    attached.source == "polymarket"
+                    and candidate.source == "polymarket"
+                ):
                     candidate.snippet = attached.snippet
                 elif len((candidate.snippet or "").split()) < len((item.snippet or "").split()):
                     candidate.snippet = item.snippet

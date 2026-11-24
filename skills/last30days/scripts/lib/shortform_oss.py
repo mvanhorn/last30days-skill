@@ -510,7 +510,7 @@ def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optiona
         )
         label = "TikTok"
         engagement = {
-            "views": raw.get("view_count") or 0,
+            "views": raw.get("view_count"),
             "likes": raw.get("like_count") or 0,
             "comments": raw.get("comment_count") or 0,
             "shares": raw.get("repost_count") or 0,
@@ -521,7 +521,7 @@ def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optiona
         )
         label = "Instagram"
         engagement = {
-            "views": raw.get("view_count") or 0,
+            "views": raw.get("view_count"),
             "likes": raw.get("like_count") or 0,
             "comments": raw.get("comment_count") or 0,
         }
