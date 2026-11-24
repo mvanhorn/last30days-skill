@@ -40,7 +40,8 @@ NOMINATIONS_BUNDLE_FILENAME = "discover-nominations.json"
 PENDING_REPORT_FILENAME = "discover-pending.json"
 
 _VALID_TIERS = ("deep", "shallow")
-_MAX_LOOKBACK_DAYS = 3650
+MAX_LOOKBACK_DAYS = 3650
+_MAX_LOOKBACK_DAYS = MAX_LOOKBACK_DAYS
 
 _RESWEEP_REMEDY = "Run a fresh `--discover --nominate-only` re-sweep."
 
@@ -237,6 +238,32 @@ def _searched_lines(searched: list[Path]) -> str:
     return "\n".join(f"  - {path}" for path in searched)
 
 
+def validate_lookback_days(
+    value: object,
+    *,
+    field_name: str = "lookback_days",
+    source_desc: str | None = None,
+    remedy: str = "",
+) -> int:
+    """Validate a discovery handoff lookback window (integer in 1..MAX_LOOKBACK_DAYS).
+
+    Shared across leg-1 pre-sweep CLI entry, bundle writing, and leg-2 bundle
+    reading so leg 1 can never sweep or write a bundle that leg 2 rejects.
+    """
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 1
+        or value > MAX_LOOKBACK_DAYS
+    ):
+        prefix = f"{source_desc} has invalid {field_name}" if source_desc else f"Invalid {field_name}"
+        suffix = f" {remedy}" if remedy else ""
+        raise HandoffContractError(
+            f"{prefix} (expected integer in 1..{MAX_LOOKBACK_DAYS}).{suffix}"
+        )
+    return value
+
+
 def write_nominations_bundle(
     entries: Sequence[PoolEntry],
     *,
@@ -267,6 +294,7 @@ def write_nominations_bundle(
     """
     if tier not in _VALID_TIERS:
         raise ValueError(f"tier must be one of {_VALID_TIERS}, got {tier!r}")
+    lookback_days = validate_lookback_days(lookback_days)
     state_dir = handoff_state_dir(save_dir, config_dir)
     if state_dir is None:
         raise HandoffContractError(
@@ -458,6 +486,50 @@ def _parse_mock_flag(payload: dict[str, Any], path: Path, *, label: str, remedy:
     return raw_mock
 
 
+def _validate_nomination(nomination: pipeline.Nomination) -> None:
+    """Validate deserialized nomination and seed-item field types so one
+    corrupt row is skipped cleanly instead of crashing resume/digest/sorting."""
+    if not isinstance(nomination.name, str):
+        raise TypeError("nomination.name must be a string")
+    if not isinstance(nomination.summary, str):
+        raise TypeError("nomination.summary must be a string")
+    if not math.isfinite(nomination.seed_score):
+        raise ValueError("nomination.seed_score must be finite")
+    if nomination.worthiness is not None and not math.isfinite(nomination.worthiness):
+        raise ValueError("nomination.worthiness must be finite")
+    for item in nomination.items:
+        if not isinstance(item.item_id, str):
+            raise TypeError("item.item_id must be a string")
+        if not isinstance(item.source, str) or not item.source.strip():
+            raise TypeError("item.source must be a non-empty string")
+        for attr in ("title", "body", "url", "snippet", "why_relevant", "date_confidence"):
+            if not isinstance(getattr(item, attr), str):
+                raise TypeError(f"item.{attr} must be a string")
+        for attr in ("author", "container", "published_at"):
+            val = getattr(item, attr)
+            if val is not None and not isinstance(val, str):
+                raise TypeError(f"item.{attr} must be a string or null")
+        if not math.isfinite(item.relevance_hint):
+            raise ValueError("item.relevance_hint must be finite")
+        for key, val in item.engagement.items():
+            if not isinstance(key, str):
+                raise TypeError("item.engagement keys must be strings")
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                if not math.isfinite(float(val)):
+                    raise ValueError(f"item.engagement[{key!r}] must be finite")
+        top_comments = item.metadata.get("top_comments")
+        if top_comments is not None:
+            if not isinstance(top_comments, list):
+                raise TypeError("item.metadata.top_comments must be a list")
+            for comment in top_comments:
+                if not isinstance(comment, dict):
+                    continue
+                for text_key in ("excerpt", "text", "body"):
+                    text_val = comment.get(text_key)
+                    if text_val is not None and not isinstance(text_val, str):
+                        raise TypeError(f"comment.{text_key} must be a string or null")
+
+
 def _parse_bundle_file(path: Path) -> NominationsBundle:
     payload, bundle_id, generated_at = _parse_handoff_envelope(
         path,
@@ -504,18 +576,13 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
     raw_lookback = context.get("lookback_days")
     if raw_lookback is None:
         lookback_days = 30
-    elif (
-        isinstance(raw_lookback, bool)
-        or not isinstance(raw_lookback, int)
-        or raw_lookback < 1
-        or raw_lookback > _MAX_LOOKBACK_DAYS
-    ):
-        raise HandoffContractError(
-            f"Nominations bundle {path} has invalid context.lookback_days "
-            f"(expected integer in 1..{_MAX_LOOKBACK_DAYS}). {_RESWEEP_REMEDY}"
-        )
     else:
-        lookback_days = raw_lookback
+        lookback_days = validate_lookback_days(
+            raw_lookback,
+            field_name="context.lookback_days",
+            source_desc=f"Nominations bundle {path}",
+            remedy=_RESWEEP_REMEDY,
+        )
 
     rows_raw = payload.get("nominations")
     if not isinstance(rows_raw, list):
@@ -551,15 +618,17 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
             )
             continue
         try:
+            for item_raw in items_raw or ():
+                if not isinstance(item_raw, dict):
+                    raise TypeError("nomination item must be an object")
+                if item_raw.get("engagement") is not None and not isinstance(item_raw.get("engagement"), dict):
+                    raise TypeError("nomination item.engagement must be an object")
+                if item_raw.get("metadata") is not None and not isinstance(item_raw.get("metadata"), dict):
+                    raise TypeError("nomination item.metadata must be an object")
             nomination = pipeline.Nomination(
                 **schema.nomination_kwargs_from_dict(nom_raw)
             )
-            if not isinstance(nomination.name, str):
-                raise TypeError("nomination.name must be a string")
-            if not math.isfinite(nomination.seed_score):
-                raise ValueError("nomination.seed_score must be finite")
-            if nomination.worthiness is not None and not math.isfinite(nomination.worthiness):
-                raise ValueError("nomination.worthiness must be finite")
+            _validate_nomination(nomination)
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
             _warn(
                 f"skipping unparseable nomination row {position} in "
@@ -997,7 +1066,9 @@ def resolve_name_collisions(
             title=nomination.name,
             candidate_ids=candidate_ids,
             representative_ids=candidate_ids[:1],
-            sources=sorted({item.source for item in nomination.items}),
+            sources=sorted({
+                item.source for item in nomination.items if isinstance(item.source, str)
+            }),
             score=nomination.seed_score,
         ))
 

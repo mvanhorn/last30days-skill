@@ -690,3 +690,311 @@ def test_high093_bundle_malformed_context_source_lists_rejected(tmp_path: Path, 
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(handoff.HandoffContractError, match=field):
         handoff.read_nominations_bundle(config_dir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Greptile Round 1 fixes (Findings 1-5)
+# ---------------------------------------------------------------------------
+
+
+def test_greptile_f1_lookback_days_3650_round_trips_and_over_limit_rejected_before_write_and_sweep(
+    tmp_path: Path,
+):
+    import argparse
+    import last30days as cli
+
+    # (a) Boundary value 3650 writes and reads back cleanly.
+    item = schema.SourceItem(
+        item_id="hn1",
+        source="hackernews",
+        title="Max Lookback Story",
+        body="Max Lookback Story",
+        url="https://hackernews.example/hn1",
+        published_at="2026-07-18",
+        engagement={"points": 100},
+        snippet="Snippet",
+        metadata={},
+    )
+    entry = handoff.PoolEntry(
+        nomination=pipeline.Nomination(
+            name="Max Lookback Story",
+            seed_score=42.0,
+            items=[item],
+            summary="Summary",
+        ),
+        cluster_id="c1",
+        heuristic_name="Max Lookback Story",
+        heuristic_junk=False,
+    )
+    written = handoff.write_nominations_bundle(
+        [entry],
+        domain="AI",
+        tier="deep",
+        from_date="2016-07-23",
+        to_date="2026-07-21",
+        lookback_days=handoff.MAX_LOOKBACK_DAYS,
+        enrichment_source_boundary=None,
+        requested_sources=["hackernews"],
+        config_dir=tmp_path,
+    )
+    reread = handoff.read_nominations_bundle(config_dir=tmp_path)
+    assert written.lookback_days == 3650
+    assert reread.lookback_days == 3650
+
+    # (b) Out-of-bounds / invalid lookback_days rejected before writing a bundle.
+    for bad_days in (4000, 0, -1, 1.5, True):
+        out_dir = tmp_path / f"bad_{type(bad_days).__name__}_{bad_days}"
+        with pytest.raises(handoff.HandoffContractError, match="lookback_days"):
+            handoff.write_nominations_bundle(
+                [entry],
+                domain="AI",
+                tier="deep",
+                from_date="2026-06-21",
+                to_date="2026-07-21",
+                lookback_days=bad_days,  # type: ignore[arg-type]
+                enrichment_source_boundary=None,
+                requested_sources=["hackernews"],
+                config_dir=out_dir,
+            )
+        assert not (out_dir / handoff.NOMINATIONS_BUNDLE_FILENAME).exists()
+
+    # (c) CLI leg-1 entry rejects --days 4000 / 0 / -1 BEFORE running the sweep.
+    for bad_days in (4000, 0, -1):
+        args = argparse.Namespace(
+            discover="AI",
+            nominate_only=True,
+            judgments=None,
+            finalize=False,
+            lookback_days=bad_days,
+            deep=False,
+            quick=False,
+            mock=True,
+            subreddits=None,
+            as_of_date=None,
+            discover_shallow=False,
+            save_dir=str(tmp_path / "cli_reject"),
+            search=None,
+            exclude_sources=None,
+        )
+        err = io.StringIO()
+        with mock.patch.object(
+            cli, "_resolve_discovery_source_boundary", return_value=(None, None),
+        ), mock.patch.object(
+            cli.pipeline, "run_discover_nominate",
+        ) as mock_sweep, redirect_stderr(err):
+            rc = cli._run_discover_protocol_leg(args, {})
+        assert rc == 2
+        mock_sweep.assert_not_called()
+        assert "lookback_days" in err.getvalue()
+
+
+@pytest.mark.parametrize(
+    "topic,expected_phrase",
+    [
+        ("New Balance", "New Balance"),
+        ("On Running", "On Running"),
+        ("Best Buy", "Best Buy"),
+        ("The Verge", "The Verge"),
+        ("Open AI", "Open AI"),
+        ("New Balance shoes", "New Balance"),
+        ("On Running review", "On Running"),
+        ("New York Times", "New York Times"),
+        ("On Running Cloudmonster", "On Running Cloudmonster"),
+    ],
+)
+def test_greptile_f2_query_preserves_noise_prefixed_brand_names(
+    topic: str, expected_phrase: str,
+):
+    compounds = query.extract_compound_terms(topic)
+    assert expected_phrase in compounds
+
+
+def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparisons():
+    assert query.extract_compound_terms("what are the best Claude Code skills") == [
+        "Claude Code"
+    ]
+    assert query.extract_compound_terms("latest OpenClaw releases") == []
+    assert query.extract_compound_terms("Best GitHub Actions workflows for Python") == [
+        "GitHub Actions"
+    ]
+    assert query.extract_compound_terms("Best AI Tools") == []
+    assert query.extract_compound_terms("New Balance vs On Running") == [
+        "New Balance",
+        "On Running",
+    ]
+
+
+@pytest.mark.parametrize("brand", ["New Balance", "On Running", "Best Buy"])
+def test_greptile_f2_planner_keeps_full_brand_intact_in_fallback_queries(brand: str):
+    core = query.extract_core_subject(brand, max_words=6, strip_suffixes=True)
+    kw = planner._keyword_query(brand, core)
+    assert f'"{brand}"' == kw
+
+    plan = planner._fallback_plan(
+        topic=brand,
+        available_sources=["reddit", "x"],
+        requested_sources=None,
+        depth="default",
+    )
+    assert plan.subqueries
+    assert f'"{brand}"' in plan.subqueries[0].search_query
+
+
+def test_greptile_f3_competitors_filters_multiword_spaced_self_brand_variants():
+    coke_tokens = competitors._topic_tokens("Coca-Cola")
+    for self_variant in (
+        "Coca Cola Zero",
+        "Diet Coca Cola",
+        "CocaCola Zero",
+        "The Official Coca Cola Zero Beverage Company",
+    ):
+        assert not competitors._candidate_ok(self_variant, coke_tokens), (
+            f"Self-brand variant {self_variant!r} leaked for Coca-Cola"
+        )
+    assert competitors._candidate_ok("Pepsi", coke_tokens)
+    assert competitors._candidate_ok("Pepsi-Cola", coke_tokens)
+
+    serp = [
+        {
+            "title": "Coca Cola Zero vs Pepsi",
+            "snippet": "Coca Cola Zero and Pepsi compete for sugar-free soda drinkers.",
+            "url": "https://example.test/soda",
+        },
+    ]
+    peers = competitors._extract_peer_entities(serp, "Coca-Cola", limit=3)
+    assert "Coca Cola Zero" not in peers
+    assert "Pepsi" in peers
+
+    assert not competitors._candidate_ok("AT T Fiber", competitors._topic_tokens("AT&T"))
+    assert not competitors._candidate_ok(
+        "T Mobile Home Internet", competitors._topic_tokens("T-Mobile")
+    )
+    assert not competitors._candidate_ok("Node JS Runtime", competitors._topic_tokens("Node.js"))
+
+    # No substring false positives inside unrelated words.
+    on_tokens = competitors._topic_tokens("On")
+    assert competitors._candidate_ok("Notion", on_tokens)
+    assert competitors._candidate_ok("Discord", on_tokens)
+    assert competitors._candidate_ok("OpenAI", competitors._topic_tokens("Open"))
+
+
+def test_greptile_f4_bad_item_source_null_row_skipped_without_crashing_resume(
+    tmp_path: Path,
+):
+    _sample_bundle(tmp_path)
+    path = tmp_path / handoff.NOMINATIONS_BUNDLE_FILENAME
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    valid_row = payload["nominations"][0]
+    valid_item = valid_row["nomination"]["items"][0]
+
+    # Row with mixed null + string item.source (used to crash sorted(...) in
+    # resolve_name_collisions with TypeError).
+    null_source_row = {
+        "id": "n_bad_source",
+        "cluster_id": "c-bad",
+        "heuristic_name": "Broken Source Row",
+        "heuristic_junk": False,
+        "sources": ["reddit"],
+        "nomination": {
+            "name": "Broken Source Row",
+            "seed_score": 30.0,
+            "summary": "Summary",
+            "items": [
+                dict(valid_item, item_id="i1", source=None),
+                dict(valid_item, item_id="i2", source="reddit"),
+            ],
+        },
+    }
+    bad_title_row = {
+        "id": "n_bad_title",
+        "nomination": {
+            "name": "Bad Title Row",
+            "seed_score": 25.0,
+            "items": [dict(valid_item, item_id="i3", title=123)],
+        },
+    }
+    bad_summary_row = {
+        "id": "n_bad_summary",
+        "nomination": {
+            "name": "Bad Summary Row",
+            "seed_score": 20.0,
+            "summary": ["not-a-str"],
+            "items": [valid_item],
+        },
+    }
+    bad_comments_row = {
+        "id": "n_bad_comments",
+        "nomination": {
+            "name": "Bad Comments Row",
+            "seed_score": 15.0,
+            "items": [dict(valid_item, metadata={"top_comments": 42})],
+        },
+    }
+
+    payload["nominations"] = [
+        null_source_row,
+        bad_title_row,
+        bad_summary_row,
+        bad_comments_row,
+        valid_row,
+    ]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    err = io.StringIO()
+    with redirect_stderr(err):
+        bundle = handoff.read_nominations_bundle(config_dir=tmp_path)
+
+    assert [row.nomination_id for row in bundle.nominations] == ["n1"]
+    warnings_out = err.getvalue()
+    assert "skipping unparseable nomination row 1" in warnings_out
+    assert "skipping unparseable nomination row 2" in warnings_out
+    assert "skipping unparseable nomination row 3" in warnings_out
+    assert "skipping unparseable nomination row 4" in warnings_out
+
+    # Downstream resume helpers run cleanly over the surviving healthy rows.
+    resolved = handoff.resolve_name_collisions(
+        [(row.nomination, row.heuristic_name) for row in bundle.nominations]
+    )
+    assert resolved == ["Sample Story"]
+    digest = handoff.build_host_digest(bundle)
+    assert "Sample Story" in digest
+
+
+def test_greptile_f5_resolve_github_and_prose_url_segment_boundaries():
+    # Dotted segment must NOT be truncated to "team".
+    dotted_snippet = [
+        {"title": "Docs", "snippet": "See https://github.com/team.example/project", "url": ""},
+    ]
+    dotted_url = [
+        {"title": "Docs", "snippet": "", "url": "https://github.com/team.example/project"},
+    ]
+    assert resolve._extract_github_user(dotted_snippet) == ""
+    assert resolve._extract_github_user(dotted_url) == ""
+    assert resolve._extract_github_repos(dotted_snippet) == []
+    assert resolve._extract_github_repos(dotted_url) == []
+
+    # Trailing prose punctuation and normal repo paths MUST still match "team".
+    assert resolve._extract_github_user([
+        {"title": "Profile", "snippet": "See https://github.com/team.", "url": ""},
+    ]) == "team"
+    assert resolve._extract_github_user([
+        {"title": "Profile", "snippet": "(https://github.com/team)", "url": ""},
+    ]) == "team"
+    assert resolve._extract_github_user([
+        {"title": "Repo", "snippet": "Check https://github.com/team/repo", "url": ""},
+    ]) == "team"
+    assert resolve._extract_github_repos([
+        {"title": "Repo", "snippet": "Check https://github.com/team/repo.", "url": ""},
+    ]) == ["team/repo"]
+    assert resolve._extract_github_repos([
+        {"title": "Repo", "snippet": "See https://github.com/vercel/next.js.", "url": ""},
+    ]) == ["vercel/next.js"]
+
+    # Same path-segment discipline on Reddit prose URLs and dotted @handles.
+    assert resolve._extract_subreddits([
+        {"title": "Link", "snippet": "See https://reddit.com/r/team.example/comments/1", "url": ""},
+    ]) == []
+    assert resolve._extract_x_handle([
+        {"title": "Bluesky", "snippet": "Follow @alice.bsky.social on Bluesky", "url": ""},
+    ]) == ""
+

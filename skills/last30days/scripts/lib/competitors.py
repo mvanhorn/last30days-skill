@@ -103,7 +103,13 @@ def _identity_token_set(tokens: list[str]) -> set[str]:
                 base, suffix = tok.rsplit(".", 1)
                 if suffix in _BRAND_SUFFIX_TOKENS and len(base) >= 2 and base not in _STOPWORD_TOKENS:
                     keys.add(base)
-    if len(tokens) >= 2:
+    max_span = min(len(tokens), 4)
+    for span in range(2, max_span + 1):
+        for start in range(len(tokens) - span + 1):
+            joined_slice = re.sub(r"[^a-z0-9]", "", "".join(tokens[start : start + span]))
+            if len(joined_slice) >= 2:
+                keys.add(joined_slice)
+    if len(tokens) > max_span:
         whole_joined = re.sub(r"[^a-z0-9]", "", "".join(tokens))
         if len(whole_joined) >= 2:
             keys.add(whole_joined)

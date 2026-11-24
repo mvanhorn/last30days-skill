@@ -188,6 +188,33 @@ _COMPOUND_EDGE_NOISE = NOISE_WORDS | frozenset({
     'practice', 'production',
     'case', 'cases',
 })
+# Unambiguous prompt/question/meta words safe to strip from the start of any
+# capitalized run even when doing so reduces a 2-word run below length 2.
+_STRICT_LEADING_NOISE = frozenset({
+    'how', 'what', 'which', 'who', 'why', 'when', 'where',
+    'does', 'do', 'did', 'should', 'could', 'would', 'can',
+    'is', 'are', 'was', 'were',
+    'i', 'you', 'we', 'my', 'your', 'our', 'me',
+    'using', 'uses', 'use',
+    'latest', 'trending', 'trendiest', 'hottest', 'popular', 'viral',
+    'practices', 'features', 'guide', 'tutorial', 'tutorials',
+    'recommendations', 'advice', 'review', 'reviews',
+    'usecases', 'example', 'examples', 'comparison', 'versus', 'vs',
+    'alternative', 'alternatives', 'workflow', 'workflows',
+    'application', 'applications', 'practice', 'production', 'case', 'cases',
+    'prompt', 'prompts', 'prompting', 'techniques', 'tips', 'tricks',
+    'methods', 'strategies', 'approaches',
+    'people', 'saying', 'think', 'said', 'lately',
+    'news', 'update', 'updates',
+})
+# Brand-capable leading words (e.g., "Best Buy", "The Verge", "Top Gun") that
+# trim only when a 3+ word run still retains a full 2+ word entity (e.g.,
+# "Best GitHub Actions" -> "GitHub Actions", "Best AI Tools" -> dropped).
+# "new" and "on" stay out so multi-word brands like "New Balance", "New York
+# Times", "On Running", and "On Running Cloudmonster" keep their leading word.
+_SOFT_LEADING_NOISE = (_COMPOUND_EDGE_NOISE - _STRICT_LEADING_NOISE) - frozenset({
+    'new', 'on',
+})
 _TITLE_CASE_CONNECTORS = frozenset({
     'a', 'an', 'the', 'for', 'of', 'in', 'on', 'to', 'with', 'and', 'or', 'vs',
 })
@@ -205,8 +232,8 @@ def _is_title_cased_prompt(topic: str) -> bool:
     Recognizes both strict every-word Title Case ("Best AI Coding Tools For
     Python Developers") and standard English Title Case with lowercase minor
     connectors ("Best AI Coding Tools for Python Developers"), while keeping
-    bare multi-entity pairs like "Claude Code and React Native" or "React
-    Server Components vs Astro Islands" eligible for extraction.
+    bare multi-entity pairs like "Claude Code and React Native", "New Balance
+    vs On Running", or "React Server Components vs Astro Islands" eligible.
     """
     alpha_words = [
         tok for tok in re.findall(r"\w+(?:['\u2019-]\w+)*", topic)
@@ -221,10 +248,10 @@ def _is_title_cased_prompt(topic: str) -> bool:
         return False
     # All non-connector words are capitalized. Treat as a Title-Cased prompt
     # unless the only lowercase words are entity list/comparison joiners
-    # ("and"/"or"/"vs") with no prompt/noise framing words among the rest.
+    # ("and"/"or"/"vs") with no strict prompt/meta framing words among the rest.
     non_connector_words = [tok for tok in alpha_words if tok not in _TITLE_CASE_CONNECTORS]
     if all(tok in _ENTITY_JOINERS for tok in lowercase_words) and not any(
-        tok.lower() in _COMPOUND_EDGE_NOISE for tok in non_connector_words
+        tok.lower() in _STRICT_LEADING_NOISE for tok in non_connector_words
     ):
         return False
     return True
@@ -236,7 +263,8 @@ def extract_compound_terms(topic: str) -> List[str]:
     Identifies:
     - Hyphenated terms: "multi-agent", "vc-backed"
     - Short capitalized/brand multi-word names (2-3 words): "Claude Code",
-      "React Native", "GitHub Actions", "MacBook Pro", "iPhone Pro"
+      "React Native", "GitHub Actions", "MacBook Pro", "iPhone Pro",
+      "New Balance", "On Running", "Best Buy"
 
     Anchored to full word boundaries so PascalCase/camelCase brands are never
     sliced mid-word, and skips full Title-Cased prompts or runs longer than 3
@@ -254,11 +282,20 @@ def extract_compound_terms(topic: str) -> List[str]:
     # Word-bounded capitalized / brand sequences (2-3 words after edge trim)
     for match in _COMPOUND_CAPITALIZED_RUN_RE.finditer(topic):
         words = match.group().split()
-        while words and words[0].lower() in _COMPOUND_EDGE_NOISE:
+        # Drop leading unambiguous prompt/meta words unconditionally, and drop
+        # soft leading fillers ("Best", "The", ...) only while 3+ words remain
+        # so 2-word brands like "New Balance", "On Running", "Best Buy", and
+        # "The Verge" stay intact.
+        while words and (
+            words[0].lower() in _STRICT_LEADING_NOISE
+            or (len(words) > 2 and words[0].lower() in _SOFT_LEADING_NOISE)
+        ):
             words.pop(0)
         while words and words[-1].lower() in _COMPOUND_EDGE_NOISE:
             words.pop()
-        if 2 <= len(words) <= 3:
+        if 2 <= len(words) <= 3 and not all(
+            w.lower() in _COMPOUND_EDGE_NOISE for w in words
+        ):
             phrase = " ".join(words)
             if phrase not in terms:
                 terms.append(phrase)

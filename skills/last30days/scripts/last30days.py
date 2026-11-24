@@ -2761,7 +2761,8 @@ def _run_discover_nominate(args: argparse.Namespace, config: dict[str, object]) 
     if boundary is None:
         return 2
     requested_sources, enrich_requested_sources = boundary
-    lookback_days = args.lookback_days or 30
+    lookback_days = 30 if args.lookback_days is None else args.lookback_days
+    discovery_handoff.validate_lookback_days(lookback_days)
     try:
         result = pipeline.run_discover_nominate(
             domain=domain,

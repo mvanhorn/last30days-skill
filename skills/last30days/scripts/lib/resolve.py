@@ -75,15 +75,23 @@ def _has_backend(config: dict) -> bool:
     return grounding.configured_backend(config) is not None
 
 
+# Prose URL / mention path-segment terminator: allows next path segment (/),
+# query/fragment (?/#), whitespace, end-of-string, prose delimiters, or a
+# trailing sentence period NOT followed by another URL path character. Rejects
+# dotted segments like "github.com/team.example/project" or "@alice.bsky.social".
+_PROSE_SEG_END = r"(?=[/?#\s)\]\"'`,;:!]|$|\.(?=$|[\s)\]\"'`,;:!?]))"
+
 _REDDIT_URL_SUBREDDIT_RE = re.compile(
     r"^(?:https?://)?(?:[A-Za-z0-9-]+\.)*reddit\.com/r/([A-Za-z0-9_]{2,21})(?=[/?#]|$)",
     re.IGNORECASE,
 )
 _TEXT_SUBREDDIT_RE = re.compile(
     r"(?:(?i:(?<![A-Za-z0-9./-])(?:https?://)?(?:[a-z0-9-]+\.)*reddit\.com/r/)"
-    r"|(?:^|(?<=[\s(\[\"'`,]))/?r/)([A-Za-z0-9_]{2,21})(?![A-Za-z0-9_])"
+    rf"|(?:^|(?<=[\s(\[\"'`,]))/?r/)([A-Za-z0-9_]{{2,21}}){_PROSE_SEG_END}"
 )
-_X_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.+-])@([A-Za-z0-9_]{1,15})(?![A-Za-z0-9_])")
+_X_MENTION_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.+-])@([A-Za-z0-9_]{{1,15}}){_PROSE_SEG_END}"
+)
 _X_URL_HANDLE_RE = re.compile(
     r"^(?:https?://)?(?:www\.|mobile\.)?(?:twitter|x)\.com/([A-Za-z0-9_]{1,15})(?:/|$|\?|#)",
     re.IGNORECASE,
@@ -93,15 +101,15 @@ _GITHUB_URL_USER_RE = re.compile(
     re.IGNORECASE,
 )
 _GITHUB_TEXT_USER_RE = re.compile(
-    r"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{1,39})(?![A-Za-z0-9_-])",
+    rf"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{{1,39}}){_PROSE_SEG_END}",
     re.IGNORECASE,
 )
 _GITHUB_URL_REPO_RE = re.compile(
-    r"^(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/|$|\?|#)",
+    r"^(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{1,39}/[A-Za-z0-9_.-]*[A-Za-z0-9_-])(?:/|$|\?|#)",
     re.IGNORECASE,
 )
 _GITHUB_TEXT_REPO_RE = re.compile(
-    r"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+    rf"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{{1,39}}/[A-Za-z0-9_.-]*[A-Za-z0-9_-]){_PROSE_SEG_END}",
     re.IGNORECASE,
 )
 
