@@ -369,8 +369,43 @@ def _inside_protected(real: Path) -> bool:
     return _is_under(real, _protected_roots())
 
 
+def _win32_fd_real_path(fd: int) -> Optional[Path]:
+    """Canonical path of an open Windows file descriptor via ``GetFinalPathNameByHandleW``."""
+    try:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(fd)
+        kernel32 = ctypes.windll.kernel32
+        get_path = kernel32.GetFinalPathNameByHandleW
+        get_path.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
+        get_path.restype = ctypes.c_uint32
+        needed = get_path(handle, None, 0, 0)
+        if not needed:
+            return None
+        buf = ctypes.create_unicode_buffer(needed + 1)
+        written = get_path(handle, buf, len(buf), 0)
+        if not written or written >= len(buf):
+            return None
+        raw = buf.value
+    except (AttributeError, ImportError, OSError, ValueError):
+        return None
+    if raw.startswith("\\\\?\\UNC\\"):
+        raw = "\\\\" + raw[8:]
+    elif raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    if not raw:
+        return None
+    try:
+        return Path(os.path.realpath(raw))
+    except (OSError, ValueError):
+        return None
+
+
 def _fd_real_path(fd: int) -> Optional[Path]:
-    """Canonical path of an open descriptor (``F_GETPATH`` on macOS, ``/proc/self/fd`` on Linux)."""
+    """Canonical path of an open descriptor (Windows handle, macOS ``F_GETPATH``, Linux ``/proc/self/fd``)."""
+    if sys.platform == "win32":
+        return _win32_fd_real_path(fd)
     target: Optional[str] = None
     if sys.platform == "darwin" and fcntl is not None:
         f_getpath = getattr(fcntl, "F_GETPATH", _DARWIN_F_GETPATH)
@@ -499,7 +534,9 @@ def _read_bytes(raw_path: str, fail: Callable[[str], EnvelopeContractError]) -> 
             if (finfo.st_dev, finfo.st_ino) != (info.st_dev, info.st_ino):
                 raise fail("changed while being read")
             fd_real = _fd_real_path(fd)
-            if fd_real is not None and _inside_protected(fd_real):
+            if fd_real is None:
+                raise fail("could not be verified safely")
+            if _inside_protected(fd_real):
                 raise fail("is inside a configuration or credential directory")
             if finfo.st_size > MAX_BYTES:
                 raise fail(f"exceeds the {MAX_BYTES // 1024} KiB limit")

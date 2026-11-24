@@ -718,7 +718,11 @@ class TestEnvelopeReadSecurity:
             assert len(set(templates)) == 1
 
         # Sibling directory sharing only a string prefix (.aws-public vs .aws) stays allowed.
-        with redirect_stderr(io.StringIO()):
+        benign_fcntl = mock.Mock(
+            F_GETPATH=50,
+            fcntl=mock.Mock(return_value=os.fsencode(str(ok_file)) + b"\x00" * 16),
+        )
+        with mock.patch.object(reddit_envelope, "fcntl", benign_fcntl), redirect_stderr(io.StringIO()):
             env_obj = reddit_envelope.read(ok_file, TOPIC)
         assert [r.post_id for r in env_obj.refs] == ["ok1111"]
 
@@ -758,7 +762,302 @@ class TestEnvelopeReadSecurity:
             env_obj = reddit_envelope.read(target, TOPIC)
         assert [r.post_id for r in env_obj.refs] == ["ok1111"]
 
-        # When F_GETPATH fails with OSError, _fd_real_path returns None cleanly.
+        # When F_GETPATH fails with OSError, _fd_real_path returns None and
+        # _read_bytes fails closed rather than reading an unverified descriptor.
         err_mod = mock.Mock(F_GETPATH=50, fcntl=mock.Mock(side_effect=OSError("ENOTSUP")))
         with mock.patch.object(reddit_envelope, "fcntl", err_mod):
             assert reddit_envelope._fd_real_path(99999) is None
+            with pytest.raises(reddit_envelope.EnvelopeContractError, match="could not be verified safely"):
+                reddit_envelope.read(target, TOPIC)
+
+    def test_linux_proc_fd_unavailable_fails_closed(self, tmp_path, monkeypatch):
+        target = _write_json(tmp_path / "threads.json", _envelope_payload([{"id": "ok1111"}]))
+        monkeypatch.setattr(sys, "platform", "linux")
+        with mock.patch.object(reddit_envelope.os, "readlink", side_effect=FileNotFoundError("/proc unavailable")), \
+             pytest.raises(reddit_envelope.EnvelopeContractError, match="could not be verified safely"):
+            reddit_envelope.read(target, TOPIC)
+
+    def test_win32_fd_real_path_strips_extended_prefix_and_fails_closed(self, tmp_path, monkeypatch):
+        import ctypes
+        import types
+
+        cfg = tmp_path / "cfg"
+        cfg.mkdir()
+        target = _write_json(tmp_path / "threads.json", _envelope_payload([{"id": "ok1111"}]))
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(reddit_envelope.env, "CONFIG_DIR", cfg)
+        monkeypatch.setattr(reddit_envelope.env, "CONFIG_FILE", cfg / ".env")
+
+        def _make_fake_kernel32(returned_path: str):
+            def fake_get_path(_handle, buf, size, _flags):
+                if not returned_path:
+                    return 0
+                if buf is None or size == 0:
+                    return len(returned_path) + 1
+                buf.value = returned_path
+                return len(returned_path)
+
+            return types.SimpleNamespace(
+                kernel32=types.SimpleNamespace(GetFinalPathNameByHandleW=fake_get_path),
+            )
+
+        fake_msvcrt = types.SimpleNamespace(get_osfhandle=lambda fd: fd)
+        monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+        # Extended-length \\?\ path inside protected dir is stripped and blocked.
+        with mock.patch.object(
+            ctypes, "windll", _make_fake_kernel32(r"\\?\\"[:-1] + str(cfg / "threads.json")), create=True,
+        ):
+            with pytest.raises(reddit_envelope.EnvelopeContractError, match="credential directory"):
+                reddit_envelope.read(target, TOPIC)
+
+        # Benign extended-length \\?\ path succeeds.
+        with mock.patch.object(
+            ctypes, "windll", _make_fake_kernel32(r"\\?\\"[:-1] + str(target)), create=True,
+        ), redirect_stderr(io.StringIO()):
+            env_obj = reddit_envelope.read(target, TOPIC)
+        assert [r.post_id for r in env_obj.refs] == ["ok1111"]
+
+        # Handle lookup failure (return 0) fails closed.
+        with mock.patch.object(ctypes, "windll", _make_fake_kernel32(""), create=True), \
+             pytest.raises(reddit_envelope.EnvelopeContractError, match="could not be verified safely"):
+            reddit_envelope.read(target, TOPIC)
+
+
+# ---------------------------------------------------------------------------
+# Greptile follow-ups: auto-discovered peer allowlist & archive matched_comment
+# ---------------------------------------------------------------------------
+
+
+class TestAutoDiscoveredPeerAndArchiveMatchedComment:
+    def test_auto_discovered_peer_cannot_grant_named_subreddit_access(self, tmp_path, monkeypatch, no_archive):
+        """An Exa/SERP-discovered peer containing r/<sub_name> must receive an
+        empty named allowlist so it cannot expose private/quarantined threads."""
+        from lib import competitors as competitors_mod, fanout, resolve as resolve_mod, schema
+
+        captured_configs: dict[str, dict] = {}
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+
+        def fake_report(label: str) -> schema.Report:
+            return schema.Report(
+                topic=label,
+                range_from=FROM,
+                range_to=TO,
+                generated_at="2026-11-15T00:00:00+00:00",
+                provider_runtime=schema.ProviderRuntime(
+                    reasoning_provider="local", planner_model="d", rerank_model="l",
+                ),
+                query_plan=schema.QueryPlan(
+                    intent="general", freshness_mode="balanced_recent", cluster_mode="story",
+                    raw_topic=label, subqueries=[], source_weights={},
+                ),
+                clusters=[],
+                ranked_candidates=[],
+                items_by_source={},
+                errors_by_source={},
+            )
+
+        def fake_run(**kwargs):
+            captured_configs[kwargs["topic"]] = dict(kwargs["config"])
+            return fake_report(kwargs["topic"])
+
+        # Drive CLI --competitors 1 where Exa returns an untrusted title containing r/secret_sub.
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(cli.env, "get_config", return_value={}))
+            stack.enter_context(mock.patch.object(cli.env, "CONFIG_DIR", cfg_dir))
+            stack.enter_context(mock.patch.object(cli.env, "CONFIG_FILE", cfg_dir / ".env"))
+            stack.enter_context(mock.patch.object(cli.ui, "ProgressDisplay", return_value=mock.Mock()))
+            stack.enter_context(mock.patch.dict(os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}))
+            stack.enter_context(mock.patch.object(
+                sys, "argv", ["last30days.py", "MainApp r/user_private", "--competitors", "1", "--emit", "compact"],
+            ))
+            stack.enter_context(mock.patch.object(cli.pipeline, "diagnose", return_value={
+                "available_sources": ["reddit"], "x_pending_browser_auth": False,
+                "native_search": False, "bird_installed": False, "bird_authenticated": False,
+                "bird_username": None, "native_web_backend": None, "safe": False,
+            }))
+            stack.enter_context(mock.patch.object(cli.pipeline, "run", side_effect=fake_run))
+            stack.enter_context(mock.patch.object(
+                competitors_mod, "discover_competitors", return_value=["Acme r/secret_sub"],
+            ))
+            stack.enter_context(mock.patch.object(resolve_mod, "_has_backend", return_value=True))
+            stack.enter_context(mock.patch.object(resolve_mod, "auto_resolve", return_value={}))
+            stack.enter_context(mock.patch.object(
+                fanout, "run_competitor_fanout",
+                side_effect=lambda *, main_topic, main_runner, competitors, competitor_runner: [
+                    (main_topic, main_runner()),
+                    *[(c, competitor_runner(c)) for c in competitors],
+                ],
+            ))
+            stack.enter_context(mock.patch.object(cli, "_render_save_and_print", return_value=0))
+            stack.enter_context(redirect_stdout(out))
+            stack.enter_context(redirect_stderr(err))
+            rc = cli.main()
+
+        assert rc == 0, err.getvalue()
+        assert "MainApp r/user_private" in captured_configs
+        assert "Acme r/secret_sub" in captured_configs
+        assert "_reddit_named_subreddits" not in captured_configs["MainApp r/user_private"]
+        assert captured_configs["Acme r/secret_sub"]["_reddit_named_subreddits"] == frozenset()
+
+        # Verify pipeline + session_for enforce the empty allowlist for that peer
+        # even when the peer runs first and its topic contains r/secret_sub.
+        reddit_session.reset_run_state()
+        peer_cfg = {
+            "_BROWSER_COOKIE_MODE": "read",
+            env.REDDIT_CONSENT_VAR: "true",
+            env.REDDIT_FROM_BROWSER_VAR: "chrome",
+            "_reddit_named_subreddits": frozenset(),
+        }
+        monkeypatch.setattr(env, "read_reddit_session_cookie", lambda *_a, **_k: (DUMMY_COOKIE, "ok"))
+        secret_thread = _thread_json(
+            "1sec001", clear_comments=True, subreddit="secret_sub", subreddit_type="private",
+            title="Acme secret_sub internal roadmap details",
+            selftext="Acme r/secret_sub roadmap",
+        )
+        monkeypatch.setattr(
+            http,
+            "reddit_session_get",
+            lambda url, _c, **_k: (
+                (200, secret_thread, False) if ".json" in url
+                else (200, "user-logged-in", False) if "type=posts" in url
+                else (200, NO_COMMENTS_FIXTURE, False)
+            ),
+        )
+        monkeypatch.setattr(
+            reddit_search, "parse_page",
+            lambda _b, _t: ([{
+                "title": "Acme secret_sub internal roadmap details",
+                "url": "https://www.reddit.com/r/secret_sub/comments/1sec001/",
+                "subreddit": "secret_sub",
+                "date": "2026-11-11",
+                "metadata": {"post_id": "1sec001"},
+            }], None),
+        )
+        monkeypatch.setattr(reddit_search, "unrecognized_body", lambda _b: None)
+        monkeypatch.setattr(reddit_search, "next_cursor", lambda _b: None)
+        monkeypatch.setattr(reddit_search, "search", lambda *_a, **_k: [])
+        monkeypatch.setattr(reddit_keyless, "_enrich", lambda posts, *_a, **_k: posts)
+        monkeypatch.setattr(reddit_keyless, "_scored_listings", lambda *_a, **_k: [])
+
+        plan = {
+            "intent": "opinion", "freshness_mode": "balanced_recent", "cluster_mode": "story",
+            "subqueries": [
+                {"label": "primary", "search_query": "Acme", "ranking_query": "Acme", "sources": ["reddit"]},
+            ],
+            "source_weights": {"reddit": 1.0},
+        }
+        with redirect_stderr(io.StringIO()):
+            report = pipeline.run(
+                topic="Acme r/secret_sub",
+                config=peer_cfg,
+                depth="quick",
+                requested_sources=["reddit"],
+                mock=False,
+                external_plan=plan,
+                web_backend="none",
+                save_dir="",
+                as_of_date=TO,
+            )
+        assert (report.items_by_source.get("reddit") or []) == []
+        singleton = reddit_session.session_for(peer_cfg, topic="Acme r/secret_sub")
+        assert singleton is not None and singleton.named == frozenset()
+
+    def test_unverified_archive_copy_omits_logged_in_matched_comment(self, monkeypatch):
+        """When session budget runs out before thread_post checks a thread and
+        Arctic Shift returns an archived copy, keep the archive copy but omit
+        logged-in matched_comment details unless visibility was confirmed or
+        the subreddit was explicitly named."""
+        from lib.reddit_refs import MatchedComment
+
+        def make_archive_post(pid: str, sub: str, created_utc: int = IN_WINDOW_UTC) -> dict:
+            return {
+                "id": "",
+                "title": f"Ghostty terminal thread in {sub}",
+                "url": f"https://www.reddit.com/r/{sub}/comments/{pid}/",
+                "score": 42,
+                "num_comments": 5,
+                "subreddit": sub,
+                "created_utc": created_utc,
+                "author": "op",
+                "selftext": "",
+                "date": dates.timestamp_to_date(created_utc),
+                "engagement": {"score": 42, "num_comments": 5, "upvote_ratio": 0.9},
+                "metadata": {"post_id": pid},
+            }
+
+        archive_rows = {
+            "1arc001": make_archive_post("1arc001", "FormerlyPublic"),
+            "1arc002": make_archive_post("1arc002", "Ghostty"),
+            "1arc003": make_archive_post("1arc003", "UserNamedSub"),
+            "1arc004": make_archive_post("1arc004", "FormerlyPublic", created_utc=1789516800),  # 60d old
+            "1arc005": make_archive_post("1arc005", "ActualPrivateSub"),
+        }
+        monkeypatch.setattr(
+            reddit_arctic,
+            "fetch_posts_by_ids",
+            lambda ids, **_k: ({pid: dict(archive_rows[pid]) for pid in ids if pid in archive_rows}, "ok"),
+        )
+        monkeypatch.setattr(reddit_arctic, "fetch_comment_tree", lambda *_a, **_k: None)
+        monkeypatch.setattr(reddit_shreddit, "fetch_comments", lambda *_a, **_k: {})
+
+        def make_ref(pid: str, sub: str) -> object:
+            ref = _ref(pid, sub, provenance="session")
+            ref.matched_comment = MatchedComment(
+                comment_id=f"c_{pid}",
+                created_utc=1794700800,  # 2026-11-15 (fresh, in-window)
+                permalink=f"https://www.reddit.com/r/{sub}/comments/{pid}/t/c_{pid}/",
+            )
+            return ref
+
+        # Cap=0 simulates budget exhausted before thread_post checked any ref.
+        session = _session(cap=0)
+        session.mark_public_sub("Ghostty")
+
+        refs = [
+            make_ref("1arc001", "FormerlyPublic"),  # unverified + unnamed -> omit matched_comment
+            make_ref("1arc002", "Ghostty"),         # confirmed public -> keep matched_comment
+            make_ref("1arc003", "UserNamedSub"),    # user-named -> keep matched_comment
+            make_ref("1arc004", "FormerlyPublic"),  # old archive + unverified comment -> out of window
+            make_ref("1arc005", "Ghostty"),         # spoofed ref sub vs Arctic ActualPrivateSub -> omit
+        ]
+        with reddit_session.lane(session, "Ghostty r/UserNamedSub", named=frozenset({"usernamedsub"})):
+            hydrated = reddit_hydrate.hydrate(
+                refs,
+                topic=TOPIC,
+                from_date=FROM,
+                to_date=TO,
+                comments=False,
+                session_hydrator=reddit_session.hydrator(session),
+                now=1.9e9,
+            )
+
+        by_id = {item["metadata"]["post_id"]: item for item in hydrated.items}
+        # 1arc001 archive copy survives, but logged-in matched_comment is omitted.
+        assert "1arc001" in by_id
+        assert "matched_comment" not in by_id["1arc001"]
+        # 1arc004 (60 days old) must NOT be kept in window by an unverified logged-in comment.
+        assert "1arc004" not in by_id
+        # 1arc002 (confirmed public) and 1arc003 (user-named) keep matched_comment.
+        assert by_id["1arc002"]["matched_comment"]["id"] == "c_1arc002"
+        assert by_id["1arc003"]["matched_comment"]["id"] == "c_1arc003"
+        # 1arc005 (ref claimed Ghostty, Arctic revealed ActualPrivateSub) omits matched_comment.
+        assert "1arc005" in by_id
+        assert "matched_comment" not in by_id["1arc005"]
+
+        # Expired session before hydrator runs also strips unverified matched_comment.
+        expired = _session(cap=10)
+        expired.state = reddit_session.EXPIRED
+        hydrated_expired = reddit_hydrate.hydrate(
+            [make_ref("1arc001", "FormerlyPublic")],
+            topic=TOPIC,
+            from_date=FROM,
+            to_date=TO,
+            comments=False,
+            session_hydrator=reddit_session.hydrator(expired),
+            now=1.9e9,
+        )
+        assert len(hydrated_expired.items) == 1
+        assert "matched_comment" not in hydrated_expired.items[0]

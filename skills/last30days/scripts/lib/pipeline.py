@@ -7303,7 +7303,10 @@ def _retrieve_stream_impl(
         # run; None otherwise). Its budget is spent per entity.
         lane_topic = raw_topic or reddit_query
         lane_session = reddit_session.session_for(config, topic=lane_topic)
-        lane_named = reddit_session.named_subreddits(lane_topic, dedicated_subreddits or ())
+        if "_reddit_named_subreddits" in config:
+            lane_named = reddit_session.named_subreddits("", config.get("_reddit_named_subreddits") or ())
+        else:
+            lane_named = reddit_session.named_subreddits(lane_topic, dedicated_subreddits or ())
         try:
             with reddit_keyless.lane_deadline(lane_deadline), \
                     reddit_keyless.lane_notes() as lane_notes, \

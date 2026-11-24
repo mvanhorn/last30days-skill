@@ -278,12 +278,16 @@ def session_for(
             }.get(read_status, f"could not read the reddit.com login from {browser}")
             _log(f"session off this run: {hint}")
             return None
+        if "_reddit_named_subreddits" in config:
+            session_named = named_subreddits("", config.get("_reddit_named_subreddits") or ())
+        else:
+            session_named = named_subreddits(topic, config.get("_dedicated_subreddits") or [])
         session = Session(
             cookie,
             browser=str(config.get(env.REDDIT_FROM_BROWSER_VAR) or ""),
             entity_count=int(config.get("_comparison_entity_count") or 1),
             sc_floor=env.reddit_sc_min_items(dict(config)),
-            named=named_subreddits(topic, config.get("_dedicated_subreddits") or []),
+            named=session_named,
         )
         skip = reddit_health.skip_reason(PATH, cookie_fp=session.fp)
         if skip:
@@ -746,59 +750,72 @@ def hydrator(
 
     def run(refs: list[ThreadRef]) -> dict[str, dict]:
         out: dict[str, dict] = {}
-        if not session.alive:
-            return out
         named_token = _named.set(bound_named) if bound_named is not None and _named.get() is None else None
         try:
-            ordered = sorted(refs, key=lambda r: (PATH not in r.provenance, r.matched_comment is None))
-            forbidden: list[str] = []
-            answered = 0
-            for ref in ordered[:limit]:
-                if not session.alive or not session.room():
-                    break
-                status, body = session.fetch(thread_url(ref.post_id), accept="application/json", deadline=deadline)
-                if status is None and body is None:
-                    break
-                if status == 403:
-                    forbidden.append(ref.post_id)
-                    if not answered and len(forbidden) >= _EXPIRED_AFTER_FORBIDDEN:
-                        _record(session, EXPIRED, "thread JSON refused")
+            if session.alive:
+                ordered = sorted(refs, key=lambda r: (PATH not in r.provenance, r.matched_comment is None))
+                forbidden: list[str] = []
+                answered = 0
+                for ref in ordered[:limit]:
+                    if not session.alive or not session.room():
                         break
-                    continue
-                if status == 429:
-                    _record(session, THROTTLED, "thread JSON 429")
-                    break
-                if status != 200:
-                    continue
-                try:
-                    post = thread_post(json.loads(body or ""), session)
-                except ValueError:
-                    post = None
-                if post is None:
-                    continue
-                answered += 1
-                out[ref.post_id] = post
-            if session.state == EXPIRED and not answered:
-                # The session, not these threads, was refused: the free chain takes them.
-                forbidden = []
-            for pid in forbidden:
-                out[pid] = dict(DROP)
+                    status, body = session.fetch(thread_url(ref.post_id), accept="application/json", deadline=deadline)
+                    if status is None and body is None:
+                        break
+                    if status == 403:
+                        forbidden.append(ref.post_id)
+                        if not answered and len(forbidden) >= _EXPIRED_AFTER_FORBIDDEN:
+                            _record(session, EXPIRED, "thread JSON refused")
+                            break
+                        continue
+                    if status == 429:
+                        _record(session, THROTTLED, "thread JSON 429")
+                        break
+                    if status != 200:
+                        continue
+                    try:
+                        post = thread_post(json.loads(body or ""), session)
+                    except ValueError:
+                        post = None
+                    if post is None:
+                        continue
+                    answered += 1
+                    out[ref.post_id] = post
+                if session.state == EXPIRED and not answered:
+                    # The session, not these threads, was refused: the free chain takes them.
+                    forbidden = []
+                for pid in forbidden:
+                    out[pid] = dict(DROP)
+                for ref in refs:
+                    pid = ref.post_id
+                    post = out.get(pid)
+                    matched = found.comments.get(pid)
+                    if post is None and pid in found.hits and session.is_public_sub(found.hits[pid].get("subreddit")):
+                        post = out[pid] = dict(found.hits[pid])
+                    if post is None or post.get("_drop") or not matched:
+                        continue
+                    kept = post.setdefault("top_comments", [])
+                    if not any(str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or "") for c in kept):
+                        kept.append(dict(matched))
+                        post["comments_source"] = post.get("comments_source") or PATH
+                    else:
+                        for c in kept:
+                            if str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or ""):
+                                c["matched"] = True
+            # Omit logged-in matched_comment details on refs that thread_post
+            # never verified (e.g. cap reached or session expired) before the
+            # archive fallback runs, unless visibility is already confirmed or
+            # the user explicitly named the subreddit.
+            allowed_named = _effective_named(session)
             for ref in refs:
-                pid = ref.post_id
-                post = out.get(pid)
-                matched = found.comments.get(pid)
-                if post is None and pid in found.hits and session.is_public_sub(found.hits[pid].get("subreddit")):
-                    post = out[pid] = dict(found.hits[pid])
-                if post is None or post.get("_drop") or not matched:
+                post = out.get(ref.post_id)
+                if post is not None and not post.get("_drop"):
                     continue
-                kept = post.setdefault("top_comments", [])
-                if not any(str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or "") for c in kept):
-                    kept.append(dict(matched))
-                    post["comments_source"] = post.get("comments_source") or PATH
-                else:
-                    for c in kept:
-                        if str(c.get("id") or "") == matched["id"] or matched["id"] in str(c.get("url") or ""):
-                            c["matched"] = True
+                if ref.matched_comment is not None and not (
+                    session.is_public_sub(ref.subreddit)
+                    or _sub_key(ref.subreddit) in allowed_named
+                ):
+                    ref.matched_comment = None
             return out
         finally:
             if named_token is not None:

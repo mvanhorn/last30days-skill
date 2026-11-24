@@ -5669,6 +5669,7 @@ def _main(
             from lib import competitors as competitors_mod
             from lib import fanout, resolve as resolve_mod
 
+            peers_auto_discovered = not comp_explicit
             if comp_explicit:
                 discovered = comp_explicit
             else:
@@ -5772,6 +5773,13 @@ def _main(
                 # place it would render one brand's ads as every peer's.
                 entity_config.pop("_meta_ads_page", None)
                 entity_config.pop("_dedicated_subreddits", None)
+                # Auto-discovered peers come from external search titles (e.g. Exa),
+                # never from user input, so an r/<name> mention in a peer title
+                # must not grant access to private or quarantined subreddits.
+                if peers_auto_discovered:
+                    entity_config["_reddit_named_subreddits"] = frozenset()
+                else:
+                    entity_config.pop("_reddit_named_subreddits", None)
                 # Polymarket keywords and hints name the main topic's subject;
                 # a peer searches on its own name plus its own plan entry hints.
                 entity_config.pop("_polymarket_keywords", None)

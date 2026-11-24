@@ -442,6 +442,11 @@ def hydrate(
         for pid, post in found.items():
             if pid in by_id:
                 label_archive_post(post, now)
+                ref = by_id[pid]
+                actual_sub = str(post.get("subreddit") or "").strip().lower()
+                ref_sub = str(ref.subreddit or "").strip().lower()
+                if ref.matched_comment is not None and (not actual_sub or actual_sub != ref_sub):
+                    ref.matched_comment = None
                 posts[pid] = post
         if found:
             served.add("arctic")
