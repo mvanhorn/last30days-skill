@@ -239,17 +239,20 @@ def _wait_for_research(futures, config: dict[str, Any]):
 
 
 def _delayed_retry(
-    delay_seconds: float,
+    retry_at: float,
     retry_config: dict[str, Any],
     fn: Callable[..., Any],
     kwargs: dict[str, Any],
 ) -> Any:
     cancel = retry_config.get("_enrich_cancel")
-    if delay_seconds > 0:
+    deadline = retry_config.get("_research_deadline")
+    wait_until = min(retry_at, deadline) if deadline is not None else retry_at
+    wait_seconds = max(0.0, wait_until - time.monotonic())
+    if wait_seconds > 0:
         if cancel is None:
-            time.sleep(delay_seconds)
+            time.sleep(wait_seconds)
         else:
-            cancel.wait(delay_seconds)
+            cancel.wait(wait_seconds)
     _check_research(retry_config)
     return fn(**kwargs)
 
@@ -449,10 +452,10 @@ def _source_fetch_cap(source: str, config: dict[str, Any]) -> int | None:
     """
     override = config.get("_max_source_fetches")
     if source in _SINGLE_FETCH_ONLY_SOURCES:
-        return 1 if override is None else min(1, int(override))
+        return 1 if override is None else max(0, min(1, int(override)))
     cap = MAX_SOURCE_FETCHES.get(source)
     if cap is not None and override is not None:
-        return int(override)
+        return max(0, int(override))
     return cap
 
 
@@ -2958,14 +2961,18 @@ def run(
     # Project-mode or person-mode GitHub: run once before the main subquery loop
     _github_custom_done = False
     _github_enriched_repos: set[str] = set()
-    _github_planned = (
+    _github_in_plan = any("github" in sq.sources for sq in plan.subqueries)
+    _github_pinned_allowed = (
         not mock
         and "github" in available
-        and any("github" in sq.sources for sq in plan.subqueries)
+        and (
+            _github_in_plan
+            or (not host_plan and "drill-mode" not in plan.notes)
+        )
     )
 
     # Project mode takes priority over person mode
-    if github_repos and _github_planned:
+    if github_repos and _github_pinned_allowed:
         bundle.mark_attempted("github")
         _github_custom_done = True
         try:
@@ -2983,10 +2990,18 @@ def run(
                 primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                 bundle.add_items(primary_label, "github", normalized)
                 _github_enriched_repos = {r.lower() for r in github_repos}
+            elif not github.resolve_token(config.get("GITHUB_TOKEN")):
+                bundle.record_failure(
+                    "github",
+                    schema.SKIPPED_UNCONFIGURED,
+                    f"Project mode could not check {', '.join(github_repos)}: "
+                    "no GitHub token or gh login available",
+                    attempted=False,
+                )
             else:
                 bundle.record_failure(
                     "github",
-                    "no-results",
+                    schema.NO_RESULTS,
                     f"Project mode found no activity for {', '.join(github_repos)} in the window",
                 )
         except Exception as exc:
@@ -2995,7 +3010,7 @@ def run(
             bundle.record_failure("github", state, str(exc), attempted=attempted)
 
     _github_person_done = False
-    if github_user and _github_planned and not _github_custom_done:
+    if github_user and _github_pinned_allowed and not _github_custom_done:
         bundle.mark_attempted("github")
         _github_person_done = True
         try:
@@ -3017,13 +3032,21 @@ def run(
                 # Use the first subquery's label so RRF can look up the weight
                 primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                 bundle.add_items(primary_label, "github", normalized)
+            elif not github.resolve_token(config.get("GITHUB_TOKEN")):
+                bundle.record_failure(
+                    "github",
+                    schema.SKIPPED_UNCONFIGURED,
+                    f"Person mode could not check @{github_user}: "
+                    "no GitHub token or gh login available",
+                    attempted=False,
+                )
             else:
                 # A pinned --github-user that yields nothing must not be
                 # silently backfilled by generic keyword search: the report
                 # would then present unrelated repos as this person's work.
                 bundle.record_failure(
                     "github",
-                    "no-results",
+                    schema.NO_RESULTS,
                     f"Person mode found no activity for @{github_user} in the window",
                 )
         except Exception as exc:
@@ -3115,6 +3138,7 @@ def run(
     background_futures = {}
     with contextlib.ExitStack() as stack:
         executor = stack.enter_context(_abandoning_executor(max_workers=max_workers))
+        retry_executor: Any = None
         for subquery in plan.subqueries:
             for source in subquery.sources:
                 if source not in available:
@@ -3275,7 +3299,8 @@ def run(
                     and source != PERSON_POSTS_SOURCE
                     and _is_transient_error(exc)
                 ):
-                    remaining = stream_config["_research_deadline"] - time.monotonic()
+                    now = time.monotonic()
+                    remaining = stream_config["_research_deadline"] - now
                     if (
                         budget_expired
                         or _research_stopped(stream_config)
@@ -3285,6 +3310,11 @@ def run(
                         state, attempted = _classify_source_failure(exc)
                         bundle.record_failure(source, state, str(exc), attempted=attempted)
                         continue
+                    retry_at = now + _TRANSIENT_RETRY_DELAY_SECONDS
+                    if retry_executor is None:
+                        retry_executor = stack.enter_context(
+                            _abandoning_executor(max_workers=min(4, max(1, len(futures))))
+                        )
                     retry_kwargs = dict(
                         topic=topic, subquery=subquery, source=source,
                         config=stream_config, depth=depth, date_range=(from_date, to_date),
@@ -3302,9 +3332,9 @@ def run(
                         run_started=run_started,
                         freshness_mode=plan.freshness_mode,
                     )
-                    retry_future = executor.submit(
+                    retry_future = retry_executor.submit(
                         _delayed_retry,
-                        _TRANSIENT_RETRY_DELAY_SECONDS,
+                        retry_at,
                         stream_config,
                         _retrieve_stream,
                         retry_kwargs,

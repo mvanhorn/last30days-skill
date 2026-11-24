@@ -962,7 +962,7 @@ class TestPinnedGithubPersonAuthority(unittest.TestCase):
 
         report = pipeline.run(
             topic="octocat",
-            config={},
+            config={"GITHUB_TOKEN": "dummy-token"},
             depth="default",
             requested_sources=["github"],
             mock=False,
