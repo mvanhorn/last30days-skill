@@ -193,6 +193,58 @@ class TestHigh139GrokWrapperParsing:
         }
         assert grok_x.parse_x_response({"text": json.dumps(placeholder)}, "steipete", *WINDOW) == []
 
+    def test_real_tweet_embedding_json_in_text_is_not_hijacked_by_inner_snippet(self):
+        tweet_with_embedded_json = {
+            "id": IN_WINDOW_ID,
+            "author_handle": "alice",
+            "text": 'Debugging API payload: {"id": "123", "user": "bob", "text": "err"}',
+            "likes": 17,
+        }
+        items = grok_x.parse_x_response({"text": json.dumps(tweet_with_embedded_json)}, "alice", *WINDOW)
+        assert len(items) == 1
+        assert items[0]["author_handle"] == "alice"
+        assert items[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
+        assert "Debugging API payload:" in items[0]["text"]
+
+        # Same protection when author uses `username` (no `author_handle`/`handle`/`url`).
+        username_tweet = {
+            "id": IN_WINDOW_ID,
+            "username": "alice",
+            "text": 'Debugging API payload: {"id": "123", "user": "bob", "text": "err"}',
+        }
+        items_u = grok_x.parse_x_response({"text": json.dumps(username_tweet)}, "alice", *WINDOW)
+        assert len(items_u) == 1
+        assert items_u[0]["author_handle"] == "alice"
+        assert items_u[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
+
+    def test_top_level_json_array_of_cli_wrappers_unwraps_prose_and_collections(self):
+        prose_stream = [
+            {"type": "system", "message": "init"},
+            {"type": "result", "id": 11, "result": _grok_block(text="from top-level array prose wrapper")},
+        ]
+        items = grok_x.parse_x_response({"text": json.dumps(prose_stream)}, "steipete", *WINDOW)
+        assert len(items) == 1
+        assert items[0]["author_handle"] == "steipete"
+        assert items[0]["text"] == "from top-level array prose wrapper"
+
+        json_stream = [
+            {"type": "system", "message": "init"},
+            {
+                "type": "result",
+                "id": 12,
+                "posts": [
+                    {
+                        "url": f"https://x.com/steipete/status/{IN_WINDOW_ID}",
+                        "text": "from top-level array collection wrapper",
+                        "likes": 42,
+                    }
+                ],
+            },
+        ]
+        items_json = grok_x.parse_x_response({"text": json.dumps(json_stream)}, "steipete", *WINDOW)
+        assert len(items_json) == 1
+        assert items_json[0]["text"] == "from top-level array collection wrapper"
+
 
 # ---------------------------------------------------------------------------
 # HIGH-145: xai_x envelope null-safety & engagement/relevance robustness
@@ -314,6 +366,25 @@ class TestHigh145XaiXRobustParsing:
         items_choices = xai_x.parse_x_response(resp_choices, *WINDOW)
         assert len(items_choices) == 1
         assert items_choices[0]["author_handle"] == "steipete"
+
+        # Whitespace-only message content / output string must not short-circuit valid siblings.
+        resp_ws_content = {
+            "output": [
+                {"type": "message", "content": "   \n\t  "},
+                {"type": "message", "content": [{"type": "output_text", "text": valid_payload}]},
+            ]
+        }
+        items_ws = xai_x.parse_x_response(resp_ws_content, *WINDOW)
+        assert len(items_ws) == 1
+        assert items_ws[0]["author_handle"] == "steipete"
+
+        resp_ws_output = {
+            "output": "   ",
+            "choices": [{"message": {"content": valid_payload}}],
+        }
+        items_ws_out = xai_x.parse_x_response(resp_ws_output, *WINDOW)
+        assert len(items_ws_out) == 1
+        assert items_ws_out[0]["author_handle"] == "steipete"
 
     def test_malformed_xai_response_fails_over_cleanly_in_attempt_x_backend(self, monkeypatch):
         monkeypatch.setattr(
@@ -618,6 +689,19 @@ class TestHigh149XquikRateLimitAndErrorSurfacing:
         assert mock_get.call_count == 1
         assert result["items"] == []
         assert "error" in result
+        assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
+
+    def test_429_bare_code_with_forbidden_topic_still_classifies_rate_limited(self):
+        with mock.patch("lib.xquik.expand_xquik_queries", return_value=["forbidden city", "q2"]), \
+             mock.patch(
+                 "lib.xquik.http.get",
+                 side_effect=http.HTTPError("throttled (429)", status_code=429),
+             ) as mock_get:
+            result = xquik.search_xquik("forbidden city", FROM, TO, depth="default", token="dummy-key")
+
+        assert mock_get.call_count == 1
+        assert result["items"] == []
+        assert "HTTP 429 rate limit" in result["error"]
         assert http.classify_failure(message=result["error"]) == health.RATE_LIMITED
 
     def test_429_after_503_stops_and_preserves_rate_limited_specificity(self):

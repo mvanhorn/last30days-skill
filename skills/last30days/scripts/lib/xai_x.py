@@ -312,14 +312,14 @@ def parse_x_response(
     output_text = ""
     if "output" in response:
         output = response["output"]
-        if isinstance(output, str):
+        if isinstance(output, str) and output.strip():
             output_text = output
         elif isinstance(output, list):
             for item in output:
                 if isinstance(item, dict):
                     if item.get("type") == "message":
                         content = item.get("content")
-                        if isinstance(content, str):
+                        if isinstance(content, str) and content.strip():
                             output_text = content
                         elif isinstance(content, list):
                             for c in content:

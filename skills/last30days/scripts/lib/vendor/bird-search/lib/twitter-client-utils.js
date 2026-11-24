@@ -188,7 +188,7 @@ function renderBlockText(block, entityMap) {
         if (!range || typeof range !== 'object') {
             return false;
         }
-        if (typeof range.offset !== 'number' || typeof range.length !== 'number') {
+        if (!Number.isInteger(range.offset) || !Number.isInteger(range.length) || range.offset < 0 || range.length < 0) {
             return false;
         }
         const entity = entityMap.get(range.key);

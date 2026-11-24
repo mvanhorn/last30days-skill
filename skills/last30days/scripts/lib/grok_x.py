@@ -592,7 +592,14 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
             fields = _fields_from_json_obj(item)
             if fields:
                 posts.append(fields)
-        return posts
+        if posts:
+            return posts
+        for item in value:
+            if isinstance(item, (dict, list, str)):
+                nested_posts = _posts_from_json_value(item, depth=depth + 1)
+                if nested_posts:
+                    return nested_posts
+        return []
     if isinstance(value, str):
         for nested in _extract_json_values(value):
             posts = _posts_from_json_value(nested, depth=depth + 1)
@@ -606,13 +613,26 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
             posts = _posts_from_json_value(value[key], depth=depth + 1)
             if posts:
                 return posts
-    for key in ("content", "message", "result", "text", "output"):
+    direct = _fields_from_json_obj(value)
+    if direct:
+        url = str(value.get("url") or value.get("link") or "")
+        if (
+            value.get("author_handle")
+            or value.get("handle")
+            or _STATUS_URL_RE.search(url)
+        ):
+            return [direct]
+    wrapper_keys = (
+        ("content", "message", "result", "output")
+        if direct is not None
+        else ("content", "message", "result", "text", "output")
+    )
+    for key in wrapper_keys:
         inner = value.get(key)
         if isinstance(inner, (str, list, dict)):
             posts = _posts_from_json_value(inner, depth=depth + 1)
             if posts:
                 return posts
-    direct = _fields_from_json_obj(value)
     if direct:
         return [direct]
     return []
@@ -714,7 +734,7 @@ def _parse_x_response_with_reason(
             loaded = json.loads(text)
         except (json.JSONDecodeError, TypeError):
             loaded = None
-        if isinstance(loaded, dict):
+        if isinstance(loaded, (dict, list)):
             raw = _fields_from_wrapped_text(loaded)
         if not raw:
             raw = _fields_from_blocks(text)

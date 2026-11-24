@@ -156,6 +156,11 @@ test('HIGH-162: renderContentState handles malformed blocks, entityMap, link ran
           { key: 0, offset: 14, length: 6 }, // missing entity.data
           { key: 1, offset: 5, length: 4 }, // valid LINK
           { key: 1, offset: 'bad', length: 4 }, // non-numeric offset
+          { key: 1, offset: -2, length: 4 }, // negative offset
+          { key: 1, offset: 0, length: -1 }, // negative length
+          { key: 1, offset: Number.NaN, length: 4 }, // NaN offset
+          { key: 1, offset: 0, length: Number.POSITIVE_INFINITY }, // Infinity length
+          { key: 1, offset: 1.5, length: 2 }, // non-integer offset
         ],
       },
       { type: 'atomic', entityRanges: [null] },

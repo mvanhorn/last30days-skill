@@ -367,9 +367,13 @@ def _execute_search(
         if status == 429:
             exc_text = str(exc)
             lowered = exc_text.lower()
+            has_rate_limit_marker = any(
+                marker in lowered
+                for marker in ("http 429", "status 429", "rate limit", "too many requests")
+            )
             msg = (
                 f"Xquik HTTP error for '{label}': {exc_text}"
-                if "429" in exc_text or "rate limit" in lowered or "too many requests" in lowered
+                if has_rate_limit_marker
                 else f"Xquik HTTP 429 rate limit for '{label}': {exc_text}"
             )
             if failure_out is not None:
