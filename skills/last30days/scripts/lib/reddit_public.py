@@ -27,6 +27,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 from lib import http
+from . import reddit_refs
 
 
 USER_AGENT = (
@@ -203,19 +204,33 @@ def search(
         List of normalized post dicts. Empty list on any failure.
     """
     limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
-    encoded_query = _url_encode(query)
 
     if subreddit:
-        sub = subreddit.removeprefix("r/").strip()
+        sub = reddit_refs.normalize_subreddit(subreddit, allow_all=True)
+        if not sub:
+            _log(f"Invalid subreddit rejected: {subreddit!r}")
+            return []
+        params = [
+            ("q", str(query or "")),
+            ("restrict_sr", "on"),
+            ("sort", "relevance"),
+            ("t", "month"),
+            ("limit", str(limit)),
+            ("raw_json", "1"),
+        ]
         url = (
-            f"https://www.reddit.com/r/{sub}/search.json"
-            f"?q={encoded_query}&restrict_sr=on&sort=relevance&t=month&limit={limit}&raw_json=1"
+            f"https://www.reddit.com/r/{urllib.parse.quote(sub, safe='')}/search.json"
+            f"?{urllib.parse.urlencode(params)}"
         )
     else:
-        url = (
-            f"https://www.reddit.com/search.json"
-            f"?q={encoded_query}&sort=relevance&t=month&limit={limit}&raw_json=1"
-        )
+        params = [
+            ("q", str(query or "")),
+            ("sort", "relevance"),
+            ("t", "month"),
+            ("limit", str(limit)),
+            ("raw_json", "1"),
+        ]
+        url = f"https://www.reddit.com/search.json?{urllib.parse.urlencode(params)}"
 
     data = _fetch_json(url, timeout=timeout)
     posts = _parse_posts(data)

@@ -20,8 +20,9 @@ import sys
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import quote, urlencode
 
-from . import http
+from . import http, reddit_refs
 from .relevance import token_overlap_relevance, tokenize
 
 # Generic domain terms that are excluded from the keyword gate — matches
@@ -173,23 +174,49 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
     return posts
 
 
+_VALID_SORTS = frozenset({"top", "hot", "new", "rising", "controversial", "best"})
+_VALID_TIMEFRAMES = frozenset({"hour", "day", "week", "month", "year", "all"})
+
+
+def _valid_subreddits(subreddits: List[str]) -> List[str]:
+    valid: List[str] = []
+    seen: Set[str] = set()
+    for raw in subreddits or []:
+        sub = reddit_refs.normalize_subreddit(raw, allow_all=True)
+        if sub and sub.lower() not in seen:
+            seen.add(sub.lower())
+            valid.append(sub)
+    return valid
+
+
 def _listing_url(subreddit: str, sort: str, timeframe: str = TIMEFRAME) -> str:
-    sub = subreddit.removeprefix("r/").strip()
+    sub = reddit_refs.normalize_subreddit(subreddit, allow_all=True)
+    if not sub:
+        raise ValueError(f"Invalid subreddit for listing URL: {subreddit!r}")
+    clean_sort = str(sort or "").strip().lower()
+    if clean_sort not in _VALID_SORTS:
+        raise ValueError(f"Invalid sort for listing URL: {sort!r}")
+    clean_tf = str(timeframe or TIMEFRAME).strip().lower()
+    if clean_sort == "top" and clean_tf not in _VALID_TIMEFRAMES:
+        raise ValueError(f"Invalid timeframe for listing URL: {timeframe!r}")
     if sub.lower() == "all":
-        url = f"https://www.reddit.com/r/all/{sort}/"
-        if sort == "top":
-            url += f"?t={timeframe}"
+        url = f"https://www.reddit.com/r/all/{quote(clean_sort, safe='')}/"
+        if clean_sort == "top":
+            url += f"?{urlencode({'t': clean_tf})}"
         return url
-    url = f"https://www.reddit.com/svc/shreddit/community-more-posts/{sort}/?name={sub}"
-    if sort == "top":
-        url += f"&t={timeframe}"
-    return url
+    params = [("name", sub)]
+    if clean_sort == "top":
+        params.append(("t", clean_tf))
+    return (
+        f"https://www.reddit.com/svc/shreddit/community-more-posts/"
+        f"{quote(clean_sort, safe='')}/?{urlencode(params)}"
+    )
 
 
 def _listing_body_problem(subreddit: str, body: str) -> Optional[str]:
     lower = body.lower()
     is_blocked = any(marker in lower for marker in _BLOCK_MARKERS)
-    is_all = subreddit.removeprefix("r/").strip().lower() == "all"
+    is_all = (reddit_refs.normalize_subreddit(subreddit, allow_all=True) or "").lower() == "all"
     if not is_all and not is_blocked:
         return None
     if parse_cards(body):
@@ -258,10 +285,11 @@ def fetch_listings(
     pass ``["top", "hot", "new"]`` so fresh threads (which the top-of-month
     listing misses) are caught with their scores regardless of depth.
     """
-    if not subreddits:
+    valid_subs = _valid_subreddits(subreddits)
+    if not valid_subs:
         return []
     sorts = sorts or LISTING_SORTS.get(depth, LISTING_SORTS["default"])
-    jobs = [(sub, sort) for sub in subreddits for sort in sorts]
+    jobs = [(sub, sort) for sub in valid_subs for sort in sorts]
     all_posts: List[Dict[str, Any]] = []
     executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1)
     try:
@@ -303,9 +331,10 @@ def fetch_discovery_listings(
     ``--discover`` with no domain), the gate is skipped and any arctic result
     counts as recovery.
     """
-    if not subreddits:
+    valid_subs = _valid_subreddits(subreddits)
+    if not valid_subs:
         return {"items": [], "errors": []}
-    jobs = [(subreddit, sort) for subreddit in subreddits for sort in ("rising", "top")]
+    jobs = [(subreddit, sort) for subreddit in valid_subs for sort in ("rising", "top")]
     items: List[Dict[str, Any]] = []
     errors: List[str] = []
     # Track which (sub, sort) pairs shreddit successfully delivered posts for.
@@ -350,7 +379,7 @@ def fetch_discovery_listings(
     # Deduplication ensures no redundant posts when shreddit fully succeeded.
     from . import reddit_arctic
     arctic_items = reddit_arctic.fetch_listings(
-        subreddits, depth=depth, query=query, sorts=("rising", "top")
+        valid_subs, depth=depth, query=query, sorts=("rising", "top")
     )
     if arctic_items:
         _log(f"discovery arctic supplement: {len(arctic_items)} posts")

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import hashlib
 import html as _html
 import json
@@ -65,9 +66,14 @@ POST_PAGES = {"quick": 1, "default": 2, "deep": 3}
 HYDRATE_LIMITS = {"quick": 8, "default": 15, "deep": 25}
 COMMUNITY_SEARCHES = 3
 COMMENTS_PER_THREAD = 10
-# Two thread 403s before any thread answered means the session, not the
-# threads, is refused.
+# Two consecutive thread 403s mean the session, not the threads, is refused.
 _EXPIRED_AFTER_FORBIDDEN = 2
+_DISCOVER_CACHE_MAX = 64
+_LOGGED_OUT_403_MARKERS = (
+    "try logging in or creating an account",
+    "your request has been blocked due to a network policy",
+)
+_PRIVATE_403_REASONS = frozenset({"private", "quarantined", "gated", "banned"})
 
 COMMENT_UNIT_MARKER = 'view-events="search/view/comment"'
 COMMUNITY_UNIT_MARKER = 'view-events="search/view/subreddit"'
@@ -132,6 +138,53 @@ def named_subreddits(topic: str, dedicated: Iterable[str] = ()) -> frozenset[str
     return frozenset(named - {""})
 
 
+def _wait_event(
+    event: threading.Event,
+    deadline: Optional[float],
+    cancel: Optional[threading.Event] = None,
+) -> bool:
+    """Wait until ``event`` is set, returning False on deadline or cancel."""
+    if event.is_set():
+        return True
+    if cancel is not None and cancel.is_set():
+        return False
+    if cancel is None:
+        if deadline is None:
+            return event.wait()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return event.is_set()
+        return event.wait(timeout=remaining)
+    while not event.is_set():
+        if cancel.is_set():
+            return False
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return event.is_set()
+            step = min(0.05, remaining)
+        else:
+            step = 0.05
+        if event.wait(timeout=step):
+            return True
+    return True
+
+
+@dataclass
+class _InflightFetch:
+    done: threading.Event = field(default_factory=threading.Event)
+    status: Optional[int] = None
+    body: Optional[str] = None
+    shareable: bool = False
+
+
+@dataclass
+class _InflightDiscovery:
+    done: threading.Event = field(default_factory=threading.Event)
+    result: Optional["Discovery"] = None
+    cacheable: bool = False
+
+
 class Session:
     """One run's consented session. Holds the cookie; never shows it."""
 
@@ -160,6 +213,10 @@ class Session:
         self._lock = threading.Lock()
         self._total = 0
         self._per_entity: dict[str, int] = {}
+        self._fetch_inflight: dict[tuple[str, str], _InflightFetch] = {}
+        self._discover_lock = threading.Lock()
+        self._discover_cache: dict[tuple, "Discovery"] = {}
+        self._discover_inflight: dict[tuple, _InflightDiscovery] = {}
 
     def __repr__(self) -> str:  # never the cookie
         return f"<reddit Session fp={self.fp} state={self.state}>"
@@ -195,25 +252,58 @@ class Session:
         return self.state == OK
 
     def fetch(
-        self, url: str, *, accept: str = "text/html", deadline: Optional[float] = None,
+        self,
+        url: str,
+        *,
+        accept: str = "text/html",
+        deadline: Optional[float] = None,
+        cancel: Optional[threading.Event] = None,
     ) -> tuple[Optional[int], Optional[str]]:
         """One session GET within the run's cap: ``(status, body)``.
 
-        ``(None, None)`` when the cap or the deadline leaves no room. A memo
-        hit costs nothing.
+        ``(None, None)`` when the cap, deadline, or cancel event leaves no
+        room. Concurrent callers for the same ``(url, accept)`` coalesce onto
+        the in-flight request at zero extra budget cost; memo hits also cost
+        nothing.
         """
-        if deadline is not None and deadline - time.monotonic() < 1:
-            return None, None
-        entity = _entity.get()
-        if not self._take(entity):
-            return None, None
-        status, body, from_memo = http.reddit_session_get(
-            url, f"reddit_session={self._cookie}", accept=accept,
-            deadline_monotonic=deadline, limiter=self.limiter,
-        )
-        if from_memo:
-            self._refund(entity)
-        return status, body
+        key = (url, accept)
+        for _round in range(2):
+            if cancel is not None and cancel.is_set():
+                return None, None
+            if deadline is not None and deadline - time.monotonic() < 1:
+                return None, None
+            with self._lock:
+                inflight = self._fetch_inflight.get(key)
+                owner = inflight is None
+                if owner:
+                    inflight = _InflightFetch()
+                    self._fetch_inflight[key] = inflight
+            if not owner:
+                if not _wait_event(inflight.done, deadline, cancel):
+                    return None, None
+                if inflight.shareable:
+                    return inflight.status, inflight.body
+                continue
+            try:
+                entity = _entity.get()
+                if not self._take(entity):
+                    return None, None
+                status, body, from_memo = http.reddit_session_get(
+                    url, f"reddit_session={self._cookie}", accept=accept,
+                    deadline_monotonic=deadline, limiter=self.limiter,
+                )
+                if from_memo:
+                    self._refund(entity)
+                inflight.status = status
+                inflight.body = body
+                inflight.shareable = status in (200, 403, 429)
+                return status, body
+            finally:
+                with self._lock:
+                    if self._fetch_inflight.get(key) is inflight:
+                        self._fetch_inflight.pop(key, None)
+                inflight.done.set()
+        return None, None
 
     def room(self) -> bool:
         entity = _entity.get()
@@ -519,15 +609,18 @@ def _record(session: Session, state: str, reason: str = "") -> None:
 
 
 def _search_page(
-    session: Session, url: str, deadline: Optional[float],
+    session: Session,
+    url: str,
+    deadline: Optional[float],
+    cancel: Optional[threading.Event] = None,
 ) -> tuple[str, Optional[str]]:
     """One search page: ``(state, body)``. A 429 is retried once."""
-    status, body = session.fetch(url, deadline=deadline)
+    status, body = session.fetch(url, deadline=deadline, cancel=cancel)
     if status is None and body is None:
         return ERROR, None
     state = page_state(status, body)
     if state == THROTTLED:
-        status, body = session.fetch(url, deadline=deadline)
+        status, body = session.fetch(url, deadline=deadline, cancel=cancel)
         state = page_state(status, body) if status is not None else THROTTLED
     if state == OK:
         _record(session, OK)
@@ -602,34 +695,99 @@ def discover(
     deadline: Optional[float] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> Discovery:
     """Session search for ``topic``: posts, comments, communities, then posts
     inside the top communities. Stops at the first page that says the session
-    is gone, at the request cap, or at ``deadline``. Never raises."""
-    found = Discovery()
+    is gone, at the request cap, at ``deadline``, or on ``cancel``. Concurrent
+    callers on the same session for the same ``(topic, depth, window, named)``
+    share one in-flight run. Never raises."""
     if not session.alive:
-        found.state = session.state
-        return found
+        return Discovery(state=session.state)
+    if cancel is not None and cancel.is_set():
+        return Discovery(state=ERROR)
     try:
         window = reddit_search._time_filter(from_date, to_date)
-        _discover(session, topic, depth, deadline, found, window)
-    except Exception as exc:  # the session must never break the lane
+    except Exception as exc:  # defensive: discovery must never raise
         _log(f"session search failed: {type(exc).__name__}")
-        found.state = found.state or ERROR
-    if found.state is None:
-        found.state = reddit_health.OK if found.refs else reddit_health.EMPTY
-    if found.dropped_private:
-        _log(f"dropped {found.dropped_private} over-18, private or quarantined results")
-    return found
+        return Discovery(state=ERROR)
+    key = (str(topic or ""), depth, window, _effective_named(session))
+    for _round in range(2):
+        if not session.alive:
+            return Discovery(state=session.state)
+        if cancel is not None and cancel.is_set():
+            return Discovery(state=ERROR)
+        with session._discover_lock:
+            cached = session._discover_cache.get(key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+            slot = session._discover_inflight.get(key)
+            owner = slot is None
+            if owner:
+                slot = _InflightDiscovery()
+                session._discover_inflight[key] = slot
+        if not owner:
+            if not _wait_event(slot.done, deadline, cancel):
+                return Discovery(state=ERROR)
+            if slot.result is not None and (
+                slot.cacheable or slot.result.state in (EXPIRED, THROTTLED)
+            ):
+                return copy.deepcopy(slot.result)
+            continue
+        found = Discovery()
+        cancelled = False
+        try:
+            _discover(session, topic, depth, deadline, found, window, cancel=cancel)
+            cancelled = bool(cancel is not None and cancel.is_set())
+        except Exception as exc:  # the session must never break the lane
+            _log(f"session search failed: {type(exc).__name__}")
+            found.state = found.state or ERROR
+        finally:
+            try:
+                if cancelled:
+                    found.state = ERROR
+                elif found.state is None:
+                    found.state = reddit_health.OK if found.refs else reddit_health.EMPTY
+                cacheable = (
+                    not cancelled
+                    and found.pages > 0
+                    and found.state in (reddit_health.OK, reddit_health.EMPTY)
+                )
+                snapshot = copy.deepcopy(found)
+                slot.result = snapshot
+                slot.cacheable = cacheable
+                with session._discover_lock:
+                    if cacheable and len(session._discover_cache) < _DISCOVER_CACHE_MAX:
+                        session._discover_cache[key] = snapshot
+            finally:
+                with session._discover_lock:
+                    if session._discover_inflight.get(key) is slot:
+                        session._discover_inflight.pop(key, None)
+                slot.done.set()
+        if found.dropped_private:
+            _log(f"dropped {found.dropped_private} over-18, private or quarantined results")
+        return found
+    return Discovery(state=ERROR)
 
 
 def _discover(
-    session: Session, topic: str, depth: str, deadline: Optional[float], found: Discovery,
+    session: Session,
+    topic: str,
+    depth: str,
+    deadline: Optional[float],
+    found: Discovery,
     window: str = "month",
+    *,
+    cancel: Optional[threading.Event] = None,
 ) -> None:
     cursor: Optional[str] = None
     for _page in range(POST_PAGES.get(depth, POST_PAGES["default"])):
-        state, body = _search_page(session, reddit_search.search_url(topic, window, cursor=cursor), deadline)
+        if cancel is not None and cancel.is_set():
+            found.state = ERROR
+            return
+        state, body = _search_page(
+            session, reddit_search.search_url(topic, window, cursor=cursor), deadline, cancel=cancel,
+        )
         if state != OK:
             found.state = state if state != ERROR or not found.refs else None
             return
@@ -640,18 +798,22 @@ def _discover(
         cursor = reddit_search.next_cursor(body or "")
         if not cursor:
             break
-    if not session.room():
+    if not session.room() or (cancel is not None and cancel.is_set()):
         return
-    state, body = _search_page(session, reddit_search.search_url(topic, window, kind="comments", sort="new"), deadline)
+    state, body = _search_page(
+        session, reddit_search.search_url(topic, window, kind="comments", sort="new"), deadline, cancel=cancel,
+    )
     if state != OK:
         found.state = state if state in (EXPIRED, THROTTLED) else None
         return
     found.pages += 1
     if not unrecognized_comments(body or ""):
         _comment_hits(session, body or "", found)
-    if not session.room():
+    if not session.room() or (cancel is not None and cancel.is_set()):
         return
-    state, body = _search_page(session, reddit_search.search_url(topic, kind="communities"), deadline)
+    state, body = _search_page(
+        session, reddit_search.search_url(topic, kind="communities"), deadline, cancel=cancel,
+    )
     if state != OK:
         found.state = state if state in (EXPIRED, THROTTLED) else None
         return
@@ -659,9 +821,11 @@ def _discover(
     communities = [] if unrecognized_communities(body or "") else parse_communities(body or "")
     chosen = [c["name"] for c in communities if _allowed(session, c["name"], c["over_18"], c["quarantined"])]
     for name in chosen[:COMMUNITY_SEARCHES]:
-        if not session.room():
+        if not session.room() or (cancel is not None and cancel.is_set()):
             return
-        state, body = _search_page(session, reddit_search.search_url(topic, window, subreddit=name), deadline)
+        state, body = _search_page(
+            session, reddit_search.search_url(topic, window, subreddit=name), deadline, cancel=cancel,
+        )
         if state != OK:
             found.state = state if state in (EXPIRED, THROTTLED) else None
             return
@@ -730,6 +894,24 @@ def thread_post(data: Any, session: Session) -> Optional[dict]:
     return post
 
 
+def _is_logged_out_403(body: Optional[str]) -> bool:
+    lower = (body or "").lower()
+    return any(marker in lower for marker in _LOGGED_OUT_403_MARKERS)
+
+
+def _is_private_403(body: Optional[str]) -> bool:
+    text = (body or "").strip()
+    if not text.startswith("{"):
+        return False
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("reason") or "").strip().lower() in _PRIVATE_403_REASONS
+
+
 def hydrator(
     session: Session,
     found: Optional[Discovery] = None,
@@ -754,7 +936,10 @@ def hydrator(
         try:
             if session.alive:
                 ordered = sorted(refs, key=lambda r: (PATH not in r.provenance, r.matched_comment is None))
+                ref_by_id = {ref.post_id: ref for ref in refs}
                 forbidden: list[str] = []
+                consecutive_403: list[str] = []
+                logged_out_403: set[str] = set()
                 answered = 0
                 for ref in ordered[:limit]:
                     if not session.alive or not session.room():
@@ -764,9 +949,13 @@ def hydrator(
                         break
                     if status == 403:
                         forbidden.append(ref.post_id)
-                        if not answered and len(forbidden) >= _EXPIRED_AFTER_FORBIDDEN:
-                            _record(session, EXPIRED, "thread JSON refused")
-                            break
+                        if not _is_private_403(body):
+                            consecutive_403.append(ref.post_id)
+                            if _is_logged_out_403(body):
+                                logged_out_403.add(ref.post_id)
+                            if len(consecutive_403) >= _EXPIRED_AFTER_FORBIDDEN:
+                                _record(session, EXPIRED, "thread JSON refused")
+                                break
                         continue
                     if status == 429:
                         _record(session, THROTTLED, "thread JSON 429")
@@ -775,15 +964,28 @@ def hydrator(
                         continue
                     try:
                         post = thread_post(json.loads(body or ""), session)
-                    except ValueError:
+                    except Exception as exc:
+                        _log(f"thread JSON parse failed for {ref.post_id}: {type(exc).__name__}")
                         post = None
                     if post is None:
                         continue
                     answered += 1
+                    consecutive_403.clear()
                     out[ref.post_id] = post
-                if session.state == EXPIRED and not answered:
-                    # The session, not these threads, was refused: the free chain takes them.
-                    forbidden = []
+                if session.state == EXPIRED and consecutive_403:
+                    # The session, not this trailing streak of threads, was refused:
+                    # release only the trailing 403s to the free chain while preserving
+                    # any earlier per-thread DROP verdicts.
+                    trailing = set(consecutive_403)
+                    forbidden = [pid for pid in forbidden if pid not in trailing]
+                elif not answered and not session.verified and len(consecutive_403) == 1:
+                    only_pid = consecutive_403[0]
+                    only_ref = ref_by_id.get(only_pid)
+                    if only_pid in logged_out_403:
+                        _record(session, EXPIRED, "thread JSON refused")
+                        forbidden = [pid for pid in forbidden if pid != only_pid]
+                    elif only_ref is not None and PATH not in only_ref.provenance:
+                        forbidden = [pid for pid in forbidden if pid != only_pid]
                 for pid in forbidden:
                     out[pid] = dict(DROP)
                 for ref in refs:

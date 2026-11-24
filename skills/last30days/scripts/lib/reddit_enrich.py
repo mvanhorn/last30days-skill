@@ -7,24 +7,73 @@ Supports two backends:
 
 import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlsplit
 
-from . import http, dates, snippet
+from . import http, dates, reddit_refs, snippet
+
+_SAFE_SLUG_SEG = re.compile(r"^[A-Za-z0-9_.~%-]{1,200}\Z")
 
 
 def extract_reddit_path(url: str) -> Optional[str]:
-    """Extract the path from a Reddit URL.
+    """Extract a validated thread path from a Reddit URL.
 
     Args:
-        url: Reddit URL
+        url: Reddit thread URL
 
     Returns:
         Path component or None
     """
-    parsed = urlparse(url)
-    if "reddit.com" not in parsed.netloc:
+    if not isinstance(url, str):
         return None
-    return parsed.path
+    text = url.strip()
+    if not text or "://" not in text:
+        return None
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except (ValueError, AttributeError):
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        return None
+    default_port = 443 if parsed.scheme == "https" else 80
+    if port is not None and port != default_port:
+        return None
+    host = (parsed.hostname or "").lower()
+    if host not in reddit_refs._HOSTS:
+        return None
+    ref = reddit_refs.canonical_thread_url(text)
+    if ref is None:
+        return None
+    raw_path = parsed.path or ""
+    if not raw_path.startswith("/") or raw_path.startswith("//") or "\\" in raw_path:
+        return None
+    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in raw_path):
+        return None
+    segments = [seg for seg in raw_path.split("/") if seg]
+    if not segments:
+        return None
+    for seg in segments:
+        if not _SAFE_SLUG_SEG.match(seg):
+            return None
+        decoded = unquote(seg)
+        decoded_twice = unquote(decoded)
+        if (
+            seg in (".", "..")
+            or decoded in (".", "..")
+            or decoded_twice in (".", "..")
+            or "/" in decoded
+            or "\\" in decoded
+            or "/" in decoded_twice
+            or "\\" in decoded_twice
+        ):
+            return None
+    # Tail segments after /r/<sub>/comments/<id> or /comments/<id> are at most slug + comment_id.
+    tail_start = 4 if ref.subreddit else 2
+    if len(segments) < tail_start or len(segments) > tail_start + 2:
+        return None
+    return raw_path
 
 
 class RedditRateLimitError(Exception):

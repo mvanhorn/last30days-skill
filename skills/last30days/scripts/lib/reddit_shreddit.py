@@ -19,10 +19,12 @@ import re
 import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote, urlencode
 
 from . import http
 from . import reddit_arctic
 from . import reddit_enrich
+from . import reddit_refs
 from . import snippet
 
 # Up to N posts enriched per subquery, by depth. Raised from 3/5/8 once the
@@ -82,20 +84,30 @@ def _log(msg: str) -> None:
 
 
 def extract_post_ref(url: str) -> Optional[tuple]:
-    """Return (subreddit, post_id) from a Reddit thread URL, or None."""
-    m = re.search(r"/r/([^/]+)/comments/([A-Za-z0-9]+)", url or "")
-    if not m:
+    """Return (subreddit, post_id) from a Reddit thread URL, or None.
+
+    ``subreddit`` is ``""`` for valid subreddit-less canonical URLs
+    (``/comments/{id}/`` or ``redd.it/{id}``) so callers can still fall back
+    to the archive by ``post_id``.
+    """
+    ref = reddit_refs.canonical_thread_url(url)
+    if ref is None:
         return None
-    return m.group(1), m.group(2)
+    return ref.subreddit, ref.post_id
 
 
 def _svc_url(subreddit: str, post_id: str) -> str:
     # sort=top guarantees Reddit front-loads the highest-scored comments on the
     # first page, so the true top comments are captured even on huge threads
     # (we still re-sort by score locally as a backstop).
+    sub = reddit_refs.normalize_subreddit(subreddit, allow_all=True)
+    pid = reddit_refs.normalize_post_id(post_id)
+    if not sub or not pid:
+        raise ValueError(f"Invalid Reddit post reference: subreddit={subreddit!r}, post_id={post_id!r}")
+    query = urlencode({"sort": "top"})
     return (
-        f"https://www.reddit.com/svc/shreddit/comments/r/{subreddit}/t3_{post_id}"
-        f"?sort=top"
+        f"https://www.reddit.com/svc/shreddit/comments/r/{quote(sub, safe='')}/t3_{quote(pid, safe='')}"
+        f"?{query}"
     )
 
 
@@ -218,9 +230,13 @@ def fetch_comments(
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
     sub, post_id = ref
 
-    html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
-    comments = parse_comments(html_text, limit=MAX_COMMENTS) if html_text else []
-    total = _total_comments(html_text) if html_text else None
+    if sub:
+        html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
+        comments = parse_comments(html_text, limit=MAX_COMMENTS) if html_text else []
+        total = _total_comments(html_text) if html_text else None
+    else:
+        comments = []
+        total = None
     if not comments:
         # The shreddit comment partials 403 on some hosts (datacenter egress).
         # Fall back to the arctic-shift archive, which serves scored comments

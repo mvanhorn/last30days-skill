@@ -15,13 +15,17 @@ count rather than failing the Reddit source.
 """
 
 import inspect
+import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlencode
 
-from . import http
+from . import http, reddit_refs
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
 
 API = "https://arctic-shift.photon-reddit.com/api/posts/ids"
 SEARCH_API = "https://arctic-shift.photon-reddit.com/api/posts/search"
@@ -195,12 +199,13 @@ def fetch_scores(
     out: Dict[str, Dict[str, int]] = {}
     todo: List[str] = []
     for pid in post_ids:
-        if not pid:
+        clean = reddit_refs.normalize_post_id(pid)
+        if not clean:
             continue
-        if pid in _cache:
-            out[pid] = _cache[pid]
-        elif pid not in todo:
-            todo.append(pid)
+        if clean in _cache:
+            out[clean] = _cache[clean]
+        elif clean not in todo:
+            todo.append(clean)
 
     batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)][:MAX_BATCHES]
     for n, batch in enumerate(batches):
@@ -214,8 +219,9 @@ def fetch_scores(
                 break
             bound = {"timeout": min(TIMEOUT, remaining), "retries": 1, "deadline_monotonic": deadline}
         try:
+            query = urlencode({"ids": ",".join(batch)}, safe=",")
             data = http.get(
-                f"{API}?ids={','.join(batch)}",
+                f"{API}?{query}",
                 headers={"User-Agent": http.BROWSER_USER_AGENT},
                 **bound,
             )
@@ -244,6 +250,18 @@ def fetch_scores(
                 _cache[rid] = entry
             out[rid] = entry
     return out
+
+
+def _parse_iso_date(value: Optional[str]) -> Optional[date]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not _ISO_DATE.match(text):
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _epoch_to_date(value: Any) -> Optional[str]:
@@ -337,32 +355,33 @@ def fetch_listings(
     # window into ~7-day chunks (API caps 100 rows/request, newest-first, so
     # one request only covers the last day of a month window), and keep the
     # highest-scored n per subreddit (sort has no top lane — only asc/desc).
-    window = bool(from_date or to_date)
+    start = _parse_iso_date(from_date)
+    parsed_to = _parse_iso_date(to_date)
+    clean_from = start.isoformat() if start else None
+    clean_to = parsed_to.isoformat() if parsed_to else None
+    window = bool(clean_from or clean_to)
     slices: Optional[List[tuple]] = None
     if window:
-        from datetime import date as _date, timedelta as _timedelta
-        try:
-            start = _date.fromisoformat(from_date) if from_date else None
-            end = _date.fromisoformat(to_date) if to_date else _date.today()
-        except ValueError:
-            start, end = None, None
-        if end and not start:
-            start = end - _timedelta(days=30)
-        if start and end and start < end:
-            span = (end - start).days
+        from datetime import timedelta as _timedelta
+        end = parsed_to if parsed_to is not None else date.today()
+        win_start = start if start is not None else end - _timedelta(days=30)
+        if win_start < end:
+            span = (end - win_start).days
             n_slices = min(4, max(1, span // 7))
             step = max(1, -(-span // n_slices))
             slices = []
-            cursor = start
+            cursor = win_start
             while cursor < end:
                 slices.append((cursor, min(cursor + _timedelta(days=step), end)))
                 cursor += _timedelta(days=step)
     req_limit = 100 if window else n
     posts_by_sub: Dict[str, List[Dict[str, Any]]] = {}
-    for sub in subreddits:
-        sub = sub.removeprefix("r/").strip()
-        if sub and sub.lower() != "all":
+    for raw_sub in subreddits:
+        sub = reddit_refs.normalize_subreddit(raw_sub, allow_all=False)
+        if sub:
             posts_by_sub.setdefault(sub, [])
+    if not posts_by_sub:
+        return []
     seen_by_sub = {sub: set() for sub in posts_by_sub}
     # Give every subreddit a slice before spending the shared budget on more
     # slices for any one subreddit.
@@ -378,12 +397,20 @@ def fetch_listings(
         deadline = min(deadline, lane_deadline)
 
     def url_for(sub: str, span_pair: Optional[tuple]) -> str:
+        params: List[tuple[str, Any]] = [
+            ("subreddit", sub),
+            ("limit", req_limit),
+            ("sort", "desc"),
+        ]
         if span_pair:
-            win = f"&after={span_pair[0].isoformat()}&before={span_pair[1].isoformat()}"
+            params.append(("after", span_pair[0].isoformat()))
+            params.append(("before", span_pair[1].isoformat()))
         else:
-            win = f"&after={from_date}" if from_date else ""
-            win += f"&before={to_date}" if to_date else ""
-        return f"{SEARCH_API}?subreddit={sub}&limit={req_limit}&sort=desc{win}"
+            if clean_from:
+                params.append(("after", clean_from))
+            if clean_to:
+                params.append(("before", clean_to))
+        return f"{SEARCH_API}?{urlencode(params)}"
 
     def keep(sub: str, data: Any) -> None:
         rows = (data or {}).get("data")
@@ -491,7 +518,9 @@ def fetch_posts_by_ids(
     batch is sent), or ``"down"`` when a batch failed any other way (later
     batches are still tried). Never raises.
     """
-    todo = list(dict.fromkeys(p for p in post_ids if p))
+    todo = list(dict.fromkeys(
+        clean for p in post_ids if (clean := reddit_refs.normalize_post_id(p))
+    ))
     end = deadline if deadline is not None else time.monotonic() + _LISTING_DEADLINE_SECONDS
     out: Dict[str, Dict[str, Any]] = {}
     state = "ok"
@@ -511,7 +540,8 @@ def fetch_posts_by_ids(
                 state = "down"
             break
         try:
-            data = _fetch_search(f"{API}?ids={','.join(batch)}", end, retry_422=True)
+            query = urlencode({"ids": ",".join(batch)}, safe=",")
+            data = _fetch_search(f"{API}?{query}", end, retry_422=True)
         except http.DeadlineExceeded as exc:
             if time.monotonic() >= end:
                 _log(f"post lookup stopped at its deadline; {len(todo) - start} ids left")
@@ -580,7 +610,7 @@ def fetch_comment_tree(
     and removed comments are left out. Returns ``None`` when the request
     failed, so a caller can tell a failure from a thread with no comments.
     """
-    pid = str(post_id or "").removeprefix("t3_")
+    pid = reddit_refs.normalize_post_id(post_id)
     if not pid:
         return None
     end = deadline if deadline is not None else time.monotonic() + TIMEOUT
@@ -589,7 +619,8 @@ def fetch_comment_tree(
     global last_tree_throttled
     last_tree_throttled = False
     try:
-        data = _archive_get(f"{COMMENTS_TREE_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}", end)
+        query = urlencode({"link_id": f"t3_{pid}", "limit": MAX_COMMENT_ROWS})
+        data = _archive_get(f"{COMMENTS_TREE_API}?{query}", end)
     except Exception as exc:  # network error / non-200 — degrade, never raise
         last_tree_throttled = _is_slow_down(exc) or getattr(exc, "status_code", None) == 429
         _log(f"comment tree failed t3_{pid}: {exc}")
@@ -655,7 +686,7 @@ def fetch_post_comments(
     ``time.monotonic()`` bound shared with the caller's budget. Best-effort, never raises:
     returns ``[]`` on any failure so the caller keeps whatever it had.
     """
-    pid = str(post_id or "").removeprefix("t3_")
+    pid = reddit_refs.normalize_post_id(post_id)
     if not pid:
         return []
     now = time.monotonic()
@@ -664,9 +695,8 @@ def fetch_post_comments(
         _log(f"comments lookup skipped t3_{pid}: enrichment budget spent")
         return []
     try:
-        data = _search_once(
-            f"{COMMENTS_TREE_API}?link_id=t3_{pid}&limit={FALLBACK_COMMENT_ROWS}", end,
-        )
+        query = urlencode({"link_id": f"t3_{pid}", "limit": FALLBACK_COMMENT_ROWS})
+        data = _search_once(f"{COMMENTS_TREE_API}?{query}", end)
     except Exception as e:  # network error / non-200 — degrade, never raise
         _log(f"comments lookup failed t3_{pid}: {e}")
         return []
