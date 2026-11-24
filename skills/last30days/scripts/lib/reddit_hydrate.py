@@ -333,11 +333,28 @@ def on_topic_count(items: Iterable[dict], topic: str) -> int:
     return sum(names_topic(str(item.get("title") or ""), topic) for item in items)
 
 
+def _effective_score_rank(post: dict) -> int:
+    """Rank a post's score trustworthiness.
+
+    An explicit ``engagement_source`` (including ``LIVE`` with a measured 0)
+    uses ``score_rank``. An unlabeled dict with a placeholder 0/None score
+    ranks as ``UNKNOWN`` so missing votes never overwrite measured scores.
+    """
+    source = post.get("engagement_source")
+    if source:
+        return score_rank(source)
+    engagement = post.get("engagement") or {}
+    score = engagement.get("score") if engagement.get("score") is not None else post.get("score")
+    if _is_number(score) and score != 0:
+        return score_rank(LIVE)
+    return score_rank(UNKNOWN)
+
+
 def merge_post(existing: dict, incoming: dict) -> None:
     """Fold another layer's copy of a thread into ``existing``, field by field."""
     mine = existing.setdefault("engagement", {})
     theirs = incoming.get("engagement") or {}
-    if score_rank(incoming.get("engagement_source")) > score_rank(existing.get("engagement_source")):
+    if _effective_score_rank(incoming) > _effective_score_rank(existing):
         mine["score"] = theirs.get("score")
         existing["score"] = theirs.get("score")
         existing["engagement_source"] = incoming.get("engagement_source") or LIVE

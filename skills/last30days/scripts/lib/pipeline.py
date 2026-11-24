@@ -678,6 +678,12 @@ MOCK_AVAILABLE_SOURCES = [
     "devto",
 ]
 
+# Full set of searchable source names accepted by --search /
+# LAST30DAYS_DEFAULT_SEARCH. Superset of MOCK_AVAILABLE_SOURCES so live-only
+# sources without mock fixtures (e.g. StockTwits) are accepted on the CLI
+# without altering mock-mode source availability.
+KNOWN_SEARCH_SOURCES: frozenset[str] = frozenset(MOCK_AVAILABLE_SOURCES) | {"stocktwits"}
+
 
 def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
     if not sources:
@@ -691,11 +697,7 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
 
 
 def _excluded_sources(config: dict[str, Any]) -> set[str]:
-    return {
-        source.strip().lower()
-        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
-        if source.strip()
-    }
+    return env.exclude_sources(config)
 
 
 def with_plan_source_omissions(
@@ -763,8 +765,8 @@ def available_sources(
         # diagnose() precomputes the predicate and passes it via x_pending to
         # avoid evaluating it twice in one diagnose() call.
         if x_pending is None:
-            x_pending = env.x_pending_browser_auth(config)
-        if x_pending:
+            x_pending = env.x_pending_browser_auth(config, local_only=local_only)
+        if x_pending and health.probe_dependency("node").status == health.OK:
             available.append("x")
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
@@ -844,8 +846,13 @@ def available_sources(
     # consent pattern as Perplexity/LinkedIn). Off by default -- unlike arXiv and
     # Techmeme, which are zero-auth, it can spawn a one-time headless-Chrome WAF
     # cookie harvest on a brand topic, so activating it is the user's choice.
-    if which("trustpilot-pp-cli") and (
-        "trustpilot" in include_sources or (requested_sources and "trustpilot" in requested_sources)
+    if (
+        which("trustpilot-pp-cli")
+        and trustpilot._harvest_allowed(config)
+        and (
+            "trustpilot" in include_sources
+            or (requested_sources and "trustpilot" in requested_sources)
+        )
     ):
         available.append("trustpilot")
     # Amazon: opt-in additive source, dual-gated. The Bright Data CLI must be
@@ -869,10 +876,15 @@ def available_sources(
         or (requested_sources and "meta_ads" in requested_sources)
     ):
         available.append("meta_ads")
+    exclude = _excluded_sources(config)
     if (
-        "xiaohongshu" in include_sources
-        or (requested_sources and "xiaohongshu" in requested_sources)
-    ) and env.is_xiaohongshu_available(config):
+        "xiaohongshu" not in exclude
+        and (
+            "xiaohongshu" in include_sources
+            or (requested_sources and "xiaohongshu" in requested_sources)
+        )
+        and env.is_xiaohongshu_available(config)
+    ):
         available.append("xiaohongshu")
     # Threads: opt-in via INCLUDE_SOURCES (same pattern as perplexity/linkedin).
     # Was auto-on with the key; gated so the onboarding "Everything" tier is a
@@ -898,7 +910,6 @@ def available_sources(
             available.append("telegram")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.
-    exclude = _excluded_sources(config)
     if exclude:
         available = [s for s in available if s not in exclude]
     return available
@@ -2439,7 +2450,10 @@ def diagnose(
     x_status = env.get_x_source_status(config, probe=probe_x)
     # Compute once and reuse for both the diag flag and available_sources below.
     # safe=True (doctor/--diagnose/--preflight) must stay network-free.
-    x_pending = env.x_pending_browser_auth(config, local_only=not probe_x)
+    x_pending = (
+        env.x_pending_browser_auth(config, local_only=not probe_x)
+        and health.probe_dependency("node").status == health.OK
+    )
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"
@@ -2550,15 +2564,72 @@ def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
     return max(4, min(16, stream_count or 1))
 
 
+def is_blank_save_dir(save_dir: Path | str | None) -> bool:
+    """True when ``save_dir`` is a non-empty whitespace-only path string."""
+    if save_dir is None:
+        return False
+    text = str(save_dir)
+    return text != "" and not text.strip()
+
+
+def is_scoped_save_dir(save_dir: Path | str | None) -> bool:
+    """True when ``save_dir`` points to a directory other than DEFAULT_MEMORY_DIR.
+
+    Preserves non-empty paths verbatim (never strips leading/trailing spaces).
+    Whitespace-only inputs and resolution failures fail closed as scoped (True)
+    so they never select the shared default library or global briefing archive.
+    """
+    if save_dir is None or str(save_dir) == "":
+        return False
+    if is_blank_save_dir(save_dir):
+        return True
+    try:
+        return (
+            Path(save_dir).expanduser().resolve()
+            != Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve()
+        )
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return True
+
+
+def scoped_store_db_path(save_dir: Path | str | None) -> Path | None:
+    """Return the scoped research.db path, or None to use the shared default store.
+
+    Preserves non-empty paths verbatim and preserves an existing legacy
+    ``DEFAULT_MEMORY_DIR/research.db`` created by earlier builds rather than
+    abandoning its saved findings and discovery queue.
+    """
+    if save_dir is None or str(save_dir) == "":
+        return None
+    if is_blank_save_dir(save_dir):
+        raise ValueError("--save-dir / LAST30DAYS_MEMORY_DIR cannot be whitespace-only.")
+    try:
+        resolved = Path(save_dir).expanduser().resolve()
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return Path(save_dir).expanduser() / "research.db"
+    candidate = resolved / "research.db"
+    if is_scoped_save_dir(resolved):
+        return candidate
+    if candidate.is_file():
+        return candidate
+    return None
+
+
 def library_context_index_path(
     config: dict[str, Any], save_dir: Path | str | None,
 ) -> Path | None:
     setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
-    if setting in {"0", "false", "no", "off"} or save_dir == "":
+    if (
+        setting in {"0", "false", "no", "off"}
+        or save_dir == ""
+        or is_blank_save_dir(save_dir)
+        or (save_dir is None and is_blank_save_dir(config.get("LAST30DAYS_MEMORY_DIR")))
+    ):
         return None
     if path := config.get("_LAST30DAYS_LIBRARY_DB"):
         return Path(path).expanduser()
-    if save_dir is not None:
+    if is_scoped_save_dir(save_dir):
+        assert save_dir is not None
         return Path(save_dir).expanduser().resolve() / ".last30days-library.db"
     return library_index.DEFAULT_LIBRARY_DB
 
@@ -2581,6 +2652,7 @@ def _load_library_context(
     if db_path is None:
         return [], None
 
+    scoped = is_scoped_save_dir(save_dir)
     memory_dir = (
         save_dir
         if save_dir is not None
@@ -2588,7 +2660,7 @@ def _load_library_context(
     )
     briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or (
         Path(memory_dir).expanduser() / "briefings"
-        if save_dir is not None
+        if scoped
         else library.DEFAULT_BRIEFS_DIR
     )
     store_db = config.get("_LAST30DAYS_STORE_DB")
@@ -2596,9 +2668,8 @@ def _load_library_context(
         # Scoped runs read only a store inside the save dir (usually absent);
         # the shared store would leak other scopes' sightings into this one.
         store_db = (
-            Path(memory_dir).expanduser().resolve() / "research.db"
-            if save_dir is not None
-            else library_index.DEFAULT_STORE_DB
+            scoped_store_db_path(save_dir)
+            or library_index.DEFAULT_STORE_DB
         )
     queries = [topic, x_handle or "", github_user or "", *(github_repos or [])]
     queries = list(dict.fromkeys(value.strip() for value in queries if value and value.strip()))
@@ -3429,6 +3500,7 @@ def run(
             try:
                 raw_items, artifact = future.result(timeout=0)
             except Exception as exc:
+                _record_reddit_exception_notes(bundle, source, exc)
                 # Share 429 signal immediately (even if it came from a 5xx retry)
                 # so pending futures skip this source.
                 if _is_rate_limit_error(exc):
@@ -5682,9 +5754,16 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 class SourceRunError(RuntimeError):
     """Source-specific failure that survived a module's fallback logic."""
 
-    def __init__(self, message: str, state: schema.RunOutcomeState | None = None):
+    def __init__(
+        self,
+        message: str,
+        state: schema.RunOutcomeState | None = None,
+        lane_notes: Iterable[str] = (),
+    ):
         super().__init__(message)
         self.outcome_state = state or http.classify_failure(message=message)
+        # Display notes the lane observed. They never decide the state or the reason.
+        self.lane_notes = tuple(dict.fromkeys(lane_notes))
 
 
 def _classify_source_failure(exc: Exception) -> tuple[schema.RunOutcomeState, bool]:
@@ -5816,6 +5895,18 @@ def _with_reddit_lane_notes(artifact: dict[str, Any], notes: list[str]) -> dict[
     prior = artifact.get("_source_outcome_detail")
     artifact["_source_outcome_detail"] = "; ".join([prior, *notes] if prior else notes)
     return artifact
+
+
+def _record_reddit_exception_notes(
+    bundle: schema.RetrievalBundle, source: str, exc: BaseException,
+) -> None:
+    """Keep the lane notes a failed Reddit stream carried, so the final report can show them."""
+    if source != "reddit":
+        return
+    known = reddit_keyless.searxng_note_texts()
+    for note in getattr(exc, "lane_notes", ()):
+        if note in known:
+            bundle.record_detail(source, note)
 
 
 def _attach_reddit_lane_notes(
@@ -6876,6 +6967,7 @@ def _retry_thin_sources(
                 ) = future.result(timeout=0)
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
+                _record_reddit_exception_notes(bundle, source, exc)
                 state, attempted = _classify_source_failure(exc)
                 bundle.record_failure(
                     source,
@@ -7736,7 +7828,7 @@ def _retrieve_stream_impl(
                 )
             primary_failure: Exception | None = None
             try:
-                with reddit.sc_spend_until(
+                with http.tee_failures() as sc_primary_failures, reddit.sc_spend_until(
                     deadline=config.get("_research_deadline"),
                     cancel=config.get("_enrich_cancel"),
                 ):
@@ -7760,6 +7852,15 @@ def _retrieve_stream_impl(
                     )
                     sys.stderr.write(
                         f"[Reddit] ScrapeCreators primary incomplete with no usable items "
+                        f"({primary_failure}), using public fallback\n"
+                    )
+                elif sc_primary_failures:
+                    primary_failure = min(
+                        sc_primary_failures,
+                        key=lambda f: _FAILURE_SPECIFICITY.get(f.outcome_state, 9),
+                    )
+                    sys.stderr.write(
+                        f"[Reddit] ScrapeCreators primary failed with no usable items "
                         f"({primary_failure}), using public fallback\n"
                     )
                 else:
@@ -7796,10 +7897,19 @@ def _retrieve_stream_impl(
                 if public_results:
                     if primary_failure is not None:
                         state = (
-                            health.TIMEOUT
-                            if isinstance(primary_failure, TimeoutError)
-                            else reddit.classify_run_failure(str(primary_failure))
+                            getattr(primary_failure, "outcome_state", None)
+                            or (
+                                health.TIMEOUT
+                                if isinstance(primary_failure, TimeoutError)
+                                else reddit.classify_run_failure(str(primary_failure))
+                            )
                         )
+                        if state == health.RATE_LIMITED:
+                            # ScrapeCreators 429 does not mean reddit.com's public
+                            # fallback is rate-limited; reporting RATE_LIMITED here
+                            # puts "reddit" in rate_limited_sources and skips later
+                            # subqueries before they can use the working fallback.
+                            state = health.PARTIAL
                         return public_results, _with_reddit_lane_notes(_outcome_artifact(
                             state,
                             f"Reddit primary failed; public fallback returned "
@@ -7819,13 +7929,17 @@ def _retrieve_stream_impl(
             failure = public_failure or primary_failure
             if failure is not None:
                 state = (
-                    health.TIMEOUT
-                    if isinstance(failure, TimeoutError)
-                    else reddit.classify_run_failure(str(failure))
+                    getattr(failure, "outcome_state", None)
+                    or (
+                        health.TIMEOUT
+                        if isinstance(failure, TimeoutError)
+                        else reddit.classify_run_failure(str(failure))
+                    )
                 )
                 raise SourceRunError(
                     f"Reddit primary and fallback produced no results after failure: {failure}",
                     state,
+                    lane_notes=fallback_notes,
                 )
             if lane_paths.get("web") == health.TIMEOUT or reddit_keyless._out_of_time(public_deadline):
                 return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), fallback_notes)
@@ -7886,7 +8000,9 @@ def _retrieve_stream_impl(
                     if isinstance(exc, TimeoutError)
                     else reddit.classify_run_failure(str(exc))
                 )
-                raise SourceRunError(f"Reddit public search failed: {exc}", state) from exc
+                raise SourceRunError(
+                    f"Reddit public search failed: {exc}", state, lane_notes=lane_notes,
+                ) from exc
             sys.stderr.write(", using ScrapeCreators backup\n")
         # An actual web cutoff outranks completed failures; running inside the
         # return margin does not (every path may have finished and failed).
@@ -8656,6 +8772,10 @@ def _retrieve_stream_impl(
                     "attempted": True,
                 }
             }
+        elif result.get("outcome_state") and result.get("error"):
+            artifact = _outcome_artifact(
+                result["outcome_state"], str(result["error"]), attempted=True
+            )
         else:
             artifact = dict(_result_outcome_artifact(source, result) or {})
         # The footer needs the resolved advertiser and the pre-truncation

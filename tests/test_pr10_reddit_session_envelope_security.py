@@ -415,7 +415,11 @@ class TestPerEntityNamedSubreddits:
         monkeypatch.setattr(reddit_search, "next_cursor", lambda _b: None)
         monkeypatch.setattr(reddit_search, "search", lambda *_a, **_k: [])
         monkeypatch.setattr(reddit_keyless, "_enrich", lambda posts, *_a, **_k: posts)
-        monkeypatch.setattr(reddit_keyless, "_scored_listings", lambda *_a, **_k: [])
+        monkeypatch.setattr(
+            reddit_keyless,
+            "_scored_listings_with_state",
+            lambda *_a, **_k: ([], reddit_keyless.reddit_health.EMPTY),
+        )
 
         def _plan(topic: str) -> dict:
             return {
@@ -940,7 +944,11 @@ class TestAutoDiscoveredPeerAndArchiveMatchedComment:
         monkeypatch.setattr(reddit_search, "next_cursor", lambda _b: None)
         monkeypatch.setattr(reddit_search, "search", lambda *_a, **_k: [])
         monkeypatch.setattr(reddit_keyless, "_enrich", lambda posts, *_a, **_k: posts)
-        monkeypatch.setattr(reddit_keyless, "_scored_listings", lambda *_a, **_k: [])
+        monkeypatch.setattr(
+            reddit_keyless,
+            "_scored_listings_with_state",
+            lambda *_a, **_k: ([], reddit_keyless.reddit_health.EMPTY),
+        )
 
         plan = {
             "intent": "opinion", "freshness_mode": "balanced_recent", "cluster_mode": "story",

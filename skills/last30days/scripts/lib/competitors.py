@@ -73,23 +73,72 @@ def _log(msg: str) -> None:
     log.source_log("Competitors", msg, tty_only=False)
 
 
+_BRAND_SUFFIX_TOKENS: frozenset[str] = frozenset({
+    "com", "org", "net", "io", "co", "ai", "dev", "js", "ts", "py",
+    "app", "so", "gg", "sh", "tv", "me", "us", "uk", "de", "fr",
+    "inc", "llc", "ltd", "corp",
+})
+
+
+def _brand_tokens(text: str) -> list[str]:
+    """Extract lowercase brand-preserving tokens, trimming stray edge punctuation."""
+    return [
+        cleaned
+        for raw in re.findall(r"[A-Za-z0-9&.\-]+", text.lower())
+        if (cleaned := raw.strip(".-&"))
+    ]
+
+
+def _identity_token_set(tokens: list[str]) -> set[str]:
+    """Expand brand tokens into comparable self-identity keys without leaking
+    generic suffixes (.com/.js/.io/.dev/.ai) or single-letter fragments."""
+    keys: set[str] = set()
+    for tok in tokens:
+        keys.add(tok)
+        if any(ch in tok for ch in "&.-"):
+            joined = re.sub(r"[^a-z0-9]", "", tok)
+            if len(joined) >= 2:
+                keys.add(joined)
+            if "." in tok:
+                base, suffix = tok.rsplit(".", 1)
+                if suffix in _BRAND_SUFFIX_TOKENS and len(base) >= 2 and base not in _STOPWORD_TOKENS:
+                    keys.add(base)
+    max_span = min(len(tokens), 4)
+    for span in range(2, max_span + 1):
+        for start in range(len(tokens) - span + 1):
+            joined_slice = re.sub(r"[^a-z0-9]", "", "".join(tokens[start : start + span]))
+            if len(joined_slice) >= 2:
+                keys.add(joined_slice)
+    if len(tokens) > max_span:
+        whole_joined = re.sub(r"[^a-z0-9]", "", "".join(tokens))
+        if len(whole_joined) >= 2:
+            keys.add(whole_joined)
+    return keys
+
+
 def _topic_tokens(topic: str) -> set[str]:
-    """Return lowercase alphanumeric tokens of the topic for filtering."""
-    return {tok for tok in re.findall(r"[A-Za-z0-9]+", topic.lower()) if tok}
+    """Return comparable lowercase identity tokens of the topic, excluding
+    stopwords unless every topic token is a stopword."""
+    tokens = _brand_tokens(topic)
+    if not tokens:
+        return set()
+    all_keys = _identity_token_set(tokens)
+    filtered = {tok for tok in all_keys if tok not in _STOPWORD_TOKENS}
+    return filtered or all_keys
 
 
 def _candidate_ok(candidate: str, topic_tokens: set[str]) -> bool:
     """Filter a candidate phrase against stopwords and topic overlap."""
-    tokens = [t for t in re.findall(r"[A-Za-z0-9&.\-]+", candidate) if t]
+    tokens = _brand_tokens(candidate)
     if not tokens:
         return False
     # Reject candidates made entirely of stopwords (e.g., "Top Alternatives").
-    if all(tok.lower() in _STOPWORD_TOKENS for tok in tokens):
+    if all(tok in _STOPWORD_TOKENS for tok in tokens):
         return False
     # Reject candidates that overlap with the topic (e.g., topic="OpenAI"
-    # should not return "OpenAI Alternatives" or "OpenAI").
-    lower_tokens = {tok.lower() for tok in tokens}
-    if lower_tokens & topic_tokens:
+    # should not return "OpenAI Alternatives" or "OpenAI", and punctuated
+    # brands like "AT&T", "Node.js", or "Coca-Cola" must not match themselves).
+    if _identity_token_set(tokens) & topic_tokens:
         return False
     # Reject too-short one-letter tokens like "I" or single digits.
     if len(tokens) == 1 and len(tokens[0]) < 2:

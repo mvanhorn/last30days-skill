@@ -96,11 +96,10 @@ def search_hackernews(
     from_ts = _date_to_unix(from_date)
     to_ts = _date_to_unix(to_date) + 86400  # Include the end date
 
-    # Use extracted core subject instead of raw topic for cleaner Algolia matching
-    core = extract_core_subject(topic)
-    # Hyphens and commas tokenize awkwardly in Algolia; flatten them so themed
-    # queries like "ts-bun-node" or "claude, personal agents" become plain words.
-    core_flat = _flatten_query_for_algolia(core)
+    # Use extracted core subject instead of raw topic for cleaner Algolia matching.
+    # Strip quotes/edge punctuation before and after core extraction so planner-quoted
+    # proper nouns like '"Claude Code"' never leak unbalanced quotes into optionalWords.
+    core_flat = _normalize_query(topic)
     _log(f"Searching for '{core_flat}' (raw: '{topic}', since {from_date}, count={count})")
 
     # Use relevance-sorted search. The HN Algolia index only allows
@@ -193,24 +192,59 @@ def fetch_discovery_listings(
 
 
 _WORD_BOUNDARY_RE_CACHE: Dict[str, "re.Pattern[str]"] = {}
+_EDGE_PUNCT_LEFT = '"\'?!;:()[]{}“”‘’'
+_EDGE_PUNCT_RIGHT = '"\'?!.;:()[]{}“”‘’'
+
+
+def _clean_query_token(token: str) -> str:
+    """Strip quotes and edge punctuation while keeping tech symbols (C++, C#, .NET)."""
+    cleaned = token.lstrip(_EDGE_PUNCT_LEFT).rstrip(_EDGE_PUNCT_RIGHT)
+    if cleaned.startswith(".."):
+        cleaned = cleaned.lstrip(".")
+    return "" if cleaned == "." else cleaned
 
 
 def _flatten_query_for_algolia(text: str) -> str:
     """Normalise query for Algolia + post-filter comparison.
 
-    Multi-keyword theme queries frequently contain commas (delimiters) or
-    hyphens (compound terms like ``ts-bun-node``); both tokenize awkwardly.
-    Flatten them to spaces and collapse runs of whitespace so the search
-    parameter and the post-filter operate on the same shape.
+    Multi-keyword theme queries frequently contain commas (delimiters),
+    hyphens (compound terms like ``ts-bun-node``), planner quotes
+    (``"Claude Code"``), or trailing punctuation (``What is Rust?``).
+    Flatten them to spaces and strip quotes/edge punctuation so the search
+    parameter and the post-filter operate on the same shape while preserving
+    symbol-edged tech terms like ``C++``, ``C#``, ``F#``, and ``.NET``.
     """
-    return " ".join(text.replace(",", " ").replace("-", " ").split())
+    raw_tokens = text.replace(",", " ").replace("-", " ").split()
+    tokens = [cleaned for tok in raw_tokens if (cleaned := _clean_query_token(tok))]
+    return " ".join(tokens)
+
+
+def _normalize_query(text: str) -> str:
+    """Extract core subject and flatten/strip quotes and edge punctuation."""
+    flat = _flatten_query_for_algolia(text)
+    if not flat:
+        return ""
+    return _flatten_query_for_algolia(extract_core_subject(flat))
+
+
+def _word_boundary_pattern(word: str) -> "re.Pattern[str]":
+    """Build a cached whole-token regex that works on symbol-edged terms."""
+    pattern = _WORD_BOUNDARY_RE_CACHE.get(word)
+    if pattern is None:
+        if word[-1].isalnum() or word[-1] == "_":
+            trailing = r"(?!\w)"
+        else:
+            trailing = rf"(?![A-Za-z_{re.escape(word[-1])}])"
+        pattern = re.compile(rf"(?<!\w){re.escape(word)}{trailing}")
+        _WORD_BOUNDARY_RE_CACHE[word] = pattern
+    return pattern
 
 
 def _title_matches_query(title: str, query: str, author: str = "") -> bool:
-    """Check if any query token appears as a whole word in the title.
+    """Check if any query token appears as a whole token in the title.
 
     Returns True when the query is empty (no filter), or when at least one
-    query token matches as a whole word in the title after stripping
+    query token matches as a whole token in the title after stripping
     "Tell HN:", "Show HN:", "Ask HN:", "Launch HN:" prefixes.
 
     We previously required *every* token to appear (all-words), which killed
@@ -221,9 +255,10 @@ def _title_matches_query(title: str, query: str, author: str = "") -> bool:
     demotes hits where only one weak token matched, so the loosened gate
     won't surface noise to the top of the ranking.
 
-    Word-boundary matching (rather than naive substring) prevents short
-    tokens like ``ai`` or ``ts`` from matching unrelated words like
-    ``email`` or ``artists``.
+    Word-character lookarounds (rather than ``\\b`` or naive substring) prevent
+    short tokens like ``ai`` or ``ts`` from matching unrelated words like
+    ``email`` or ``artists`` while still matching symbol-edged tech terms like
+    ``C++``, ``C#``, ``F#``, and ``.NET``.
     """
     if not query:
         return True
@@ -231,15 +266,11 @@ def _title_matches_query(title: str, query: str, author: str = "") -> bool:
     check_text = stripped.lower()
     # Normalise the query the same way search_hackernews does so post-filter
     # tokens line up with what Algolia actually saw.
-    query_words = [w for w in _flatten_query_for_algolia(query.lower()).split() if w]
+    query_words = [w for w in _normalize_query(query).lower().split() if w]
     if not query_words:
         return True
     for word in query_words:
-        pattern = _WORD_BOUNDARY_RE_CACHE.get(word)
-        if pattern is None:
-            pattern = re.compile(rf"\b{re.escape(word)}\b")
-            _WORD_BOUNDARY_RE_CACHE[word] = pattern
-        if pattern.search(check_text):
+        if _word_boundary_pattern(word).search(check_text):
             return True
     return False
 

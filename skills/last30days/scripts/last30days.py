@@ -108,7 +108,7 @@ def parse_search_flag(raw: str, flag_name: str = "--search") -> list[str]:
         if not source:
             continue
         normalized = pipeline.SEARCH_ALIAS.get(source, source)
-        if normalized not in pipeline.MOCK_AVAILABLE_SOURCES:
+        if normalized not in pipeline.KNOWN_SEARCH_SOURCES:
             raise SystemExit(f"Unknown search source in {flag_name}: {source}")
         if normalized not in sources:
             sources.append(normalized)
@@ -335,6 +335,8 @@ def save_output(
     render_fn: Callable[[Path], str] | None = None,
 ) -> Path:
     from datetime import datetime
+    if save_dir is None or str(save_dir) == "" or pipeline.is_blank_save_dir(save_dir):
+        raise ValueError("save_output requires a non-empty save_dir")
     path = Path(save_dir).expanduser().resolve()
     slug = slugify(topic_override or report.topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
@@ -397,7 +399,7 @@ def save_output(
                 # A scoped save must sync a per-directory index with the
                 # same paths scoped search uses; syncing the shared DB
                 # from one scope's scan would prune other scopes' rows.
-                if db_path == library_index.DEFAULT_LIBRARY_DB:
+                if not _is_scoped_save_dir(save_root):
                     library_index.sync_library(save_root)
                 else:
                     library_index.sync_library(save_root, save_root / "briefings", db_path=db_path)
@@ -618,12 +620,23 @@ def read_synthesis_file(path: str) -> str:
         raise SystemExit(2)
 
 
+def _validate_save_dir(save_dir: Path | str | None) -> int | None:
+    if pipeline.is_blank_save_dir(save_dir):
+        sys.stderr.write(
+            "[last30days] --save-dir / LAST30DAYS_MEMORY_DIR cannot be whitespace-only.\n"
+        )
+        return 2
+    return None
+
+
+def _is_scoped_save_dir(save_dir: Path | str | None) -> bool:
+    """True when ``save_dir`` is set and resolves to a dir other than DEFAULT_MEMORY_DIR."""
+    return pipeline.is_scoped_save_dir(save_dir)
+
+
 def _scoped_store_db(args: argparse.Namespace) -> Path | None:
     """Scoped runs write findings inside the save dir, matching scoped reads."""
-    save_dir = getattr(args, "save_dir", None)
-    if save_dir:
-        return Path(save_dir).expanduser().resolve() / "research.db"
-    return None
+    return pipeline.scoped_store_db_path(getattr(args, "save_dir", None))
 
 
 def _research_store_enabled(args: argparse.Namespace, config: dict[str, object]) -> bool:
@@ -643,7 +656,7 @@ def _add_preflight_library_writes(
     if context_db is not None:
         write = {"kind": "library_index_on_save" if on_save else "library_index", "path": str(context_db)}
         (conditional if on_save else local).append(write)
-    if save_dir and args.emit != "html":
+    if save_dir and not pipeline.is_blank_save_dir(save_dir) and args.emit != "html":
         markdown_db = library_index.saved_report_index_path(Path(save_dir).expanduser().resolve())
         if markdown_db != context_db:
             conditional.append({"kind": "library_index_on_markdown_save", "path": str(markdown_db)})
@@ -2137,6 +2150,16 @@ def _validate_publish_html(args: argparse.Namespace) -> int | None:
     return None
 
 
+def _validate_comparison_emit(args: argparse.Namespace, *, is_comparison: bool) -> int | None:
+    if is_comparison and args.emit == "brief":
+        sys.stderr.write(
+            "[last30days] --emit=brief is not supported for comparison or competitor runs; "
+            "use --emit=compact, md, context, json, or html.\n"
+        )
+        return 2
+    return None
+
+
 def _resolve_synthesis_md(args: argparse.Namespace) -> str | None:
     if not args.synthesis_file:
         return None
@@ -2155,11 +2178,17 @@ def _run_cached_freshness(
     publish_exit = _validate_publish_html(args)
     if publish_exit is not None:
         return publish_exit
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     synthesis_md = _resolve_synthesis_md(args)
     cached = _load_followup_report(args, config)
     if cached is None:
         return 2
     report, entity_reports, cache_path = cached.report, cached.entity_reports, cached.path
+    comp_emit_exit = _validate_comparison_emit(args, is_comparison=bool(entity_reports))
+    if comp_emit_exit is not None:
+        return comp_emit_exit
     _verify_report_set(report, entity_reports, allow_network=not args.mock)
     if _update_cached_freshness(cached):
         sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
@@ -2497,7 +2526,7 @@ def _emit_and_save_discovery_report(
     if args.output:
         output_path = save_rendered_output(rendered, args.output)
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
-    if args.save_dir:
+    if args.save_dir and not pipeline.is_blank_save_dir(args.save_dir):
         save_path = _save_discovery_output(
             rendered,
             domain=domain or "trending",
@@ -2568,6 +2597,9 @@ def _run_queue_list(args: argparse.Namespace, config: dict[str, object]) -> int:
     """List uncovered surfaced topics from the persistent discovery queue."""
     import store
 
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     db_path = _scoped_store_db(args)
     if not Path(db_path or store.DB_PATH).exists():
         print("Discovery queue is empty - no discovery run has recorded topics yet.")
@@ -2625,6 +2657,9 @@ def _run_queue_cover(
             'queue cover "<topic name>".\n'
         )
         return 2
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     db_path = _scoped_store_db(args)
     if not Path(db_path or store.DB_PATH).exists():
         sys.stderr.write(
@@ -2761,7 +2796,8 @@ def _run_discover_nominate(args: argparse.Namespace, config: dict[str, object]) 
     if boundary is None:
         return 2
     requested_sources, enrich_requested_sources = boundary
-    lookback_days = args.lookback_days or 30
+    lookback_days = 30 if args.lookback_days is None else args.lookback_days
+    discovery_handoff.validate_lookback_days(lookback_days)
     try:
         result = pipeline.run_discover_nominate(
             domain=domain,
@@ -3097,6 +3133,12 @@ def _render_save_and_print(
     publish_exit = _validate_publish_html(args)
     if publish_exit is not None:
         return publish_exit
+    comp_emit_exit = _validate_comparison_emit(args, is_comparison=bool(entity_reports))
+    if comp_emit_exit is not None:
+        return comp_emit_exit
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
     try:
         audience = _audience_register_for_run(args, config, entity_reports)
@@ -3180,7 +3222,7 @@ def _render_save_and_print(
                     json_profile=args.json_profile,
                     register=audience.name,
                 )
-            if args.emit not in {"json", "html"} and not entity_reports:
+            if args.emit not in {"json", "html"}:
                 # Markdown saves keep the complete debug artifact (all clusters
                 # and per-source items), matching the render_fn-less path in
                 # save_output and the comparison peer saves. Saving the compact
@@ -4157,6 +4199,10 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         )
         return 2
 
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
+    scoped = _is_scoped_save_dir(args.save_dir)
     memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
     output_dir = memory_dir.resolve()
     # Scoped libraries (--save-dir) must not mix in the global briefing
@@ -4164,7 +4210,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     # briefings could publish them publicly. The default library keeps the
     # archive; a scoped one reads only its own directory.
     briefs_dir = (
-        library.DEFAULT_BRIEFS_DIR if not args.save_dir else memory_dir / "briefings"
+        memory_dir / "briefings" if scoped else library.DEFAULT_BRIEFS_DIR
     )
     entries, notes = library.scan_library(memory_dir, briefs_dir)
     feed_author = str(
@@ -4342,25 +4388,30 @@ def _run_library_search(
         )
         return 2
 
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
+    scoped = _is_scoped_save_dir(args.save_dir)
     memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    store_db = (
+        pipeline.scoped_store_db_path(args.save_dir)
+        or library_index.DEFAULT_STORE_DB
+    )
     try:
         matches, synced = library_index.sync_and_search(
             query,
             memory_dir=memory_dir,
             briefs_dir=(
-                memory_dir / "briefings" if args.save_dir else library.DEFAULT_BRIEFS_DIR
+                memory_dir / "briefings" if scoped else library.DEFAULT_BRIEFS_DIR
             ),
             db_path=(
                 memory_dir.resolve() / ".last30days-library.db"
-                if args.save_dir else library_index.DEFAULT_LIBRARY_DB
+                if scoped else library_index.DEFAULT_LIBRARY_DB
             ),
             # A scoped search must never merge in the shared store: one
             # client's sightings would leak into another client's scope. A
             # scoped store is read only if it exists inside the save dir.
-            store_db_path=(
-                memory_dir.resolve() / "research.db"
-                if args.save_dir else library_index.DEFAULT_STORE_DB
-            ),
+            store_db_path=store_db,
         )
     except library_index.LibrarySearchUnavailable as exc:
         sys.stderr.write(f"[last30days] Library search unavailable: {exc}.\n")
@@ -4403,6 +4454,9 @@ def _run_library_harvest(
             )
             return 2
 
+    save_dir_exit = _validate_save_dir(args.save_dir)
+    if save_dir_exit is not None:
+        return save_dir_exit
     if args.save_dir == "":
         sys.stderr.write(
             "[last30days] saving is disabled (--save-dir / LAST30DAYS_MEMORY_DIR is empty); "
@@ -4426,7 +4480,7 @@ def _run_library_harvest(
         try:
             save_root = memory_dir.resolve()
             db_path = library_index.saved_report_index_path(save_root)
-            if db_path == library_index.DEFAULT_LIBRARY_DB:
+            if not _is_scoped_save_dir(save_root):
                 library_index.sync_library(save_root)
             else:
                 library_index.sync_library(save_root, save_root / "briefings", db_path=db_path)
@@ -4684,7 +4738,11 @@ def _main(
     command_topic = "" if args.research_only or args.cached_report else topic.lower()
     _validate_extra_argv(parser, command_topic, extra_argv)
     if args.resolve_save_dir:
-        print(env.resolve_memory_dir(args.save_dir))
+        try:
+            print(env.resolve_memory_dir(args.save_dir))
+        except ValueError as exc:
+            sys.stderr.write(f"[last30days] {exc}\n")
+            return 2
         return 0
     if args.resolve_browser_consent:
         granted = not args.no_browser_cookies and env.has_recorded_browser_consent()
@@ -4867,6 +4925,9 @@ def _main(
         os.environ["YT_PROXY"] = config["YT_PROXY"]
 
     if args.preflight:
+        save_dir_exit = _validate_save_dir(args.save_dir)
+        if save_dir_exit is not None:
+            return save_dir_exit
         requested_sources = resolve_requested_sources(args.search, config)
         preflight_config = pipeline.with_plan_source_omissions(config, external_plan)
         diag = pipeline.diagnose(preflight_config, requested_sources, safe=True)
@@ -5008,6 +5069,15 @@ def _main(
             return 1
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
+
+    # Reject whitespace-only save dirs for commands that consume save_dir
+    # (discover, drill, cached freshness, hosted/local research), while letting
+    # diagnostic/setup commands (doctor, --diagnose, setup) run and report the
+    # misconfiguration.
+    if not args.diagnose:
+        save_dir_exit = _validate_save_dir(args.save_dir)
+        if save_dir_exit is not None:
+            return save_dir_exit
 
     # Bare --discover (no domain) is global trending, so the dispatch keys on
     # "flag present" (is not None), never on the domain string's truthiness.
@@ -5528,6 +5598,11 @@ def _main(
     publish_exit = _validate_publish_html(args)
     if publish_exit is not None:
         return publish_exit
+    comp_emit_exit = _validate_comparison_emit(
+        args, is_comparison=_comparison_requested(args, topic)
+    )
+    if comp_emit_exit is not None:
+        return comp_emit_exit
 
     synthesis_md = _resolve_synthesis_md(args)
 

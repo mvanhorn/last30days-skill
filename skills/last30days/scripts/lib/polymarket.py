@@ -970,6 +970,53 @@ def _ladder_ends(
 ODDS_LINE_OUTCOMES = 3
 
 
+def _market_id(market: Dict[str, Any]) -> str:
+    for key in ("id", "conditionId", "slug"):
+        value = str(market.get(key) or "").strip()
+        if value:
+            return value
+    question = " ".join(str(market.get("question") or "").split())
+    group = " ".join(str(market.get("groupItemTitle") or "").split())
+    if question and group:
+        return f"{question}\x1f{group}"
+    return question or group
+
+
+def _parse_clob_token_ids(market: Dict[str, Any]) -> List[str]:
+    raw = market.get("clobTokenIds")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [str(tok).strip() for tok in raw if tok is not None and str(tok).strip()]
+
+
+def _outcome_id(market: Dict[str, Any], outcome_name: Optional[str]) -> str:
+    """Stable identifier for one outcome within ``market``.
+
+    Uses the matching ``clobTokenIds`` entry when aligned with the market's
+    ``outcomes`` list; otherwise falls back to the normalized outcome name.
+    """
+    raw_outcomes = market.get("outcomes")
+    if isinstance(raw_outcomes, str):
+        try:
+            raw_outcomes = json.loads(raw_outcomes)
+        except (json.JSONDecodeError, TypeError):
+            raw_outcomes = []
+    outcomes = [str(name) for name in raw_outcomes] if isinstance(raw_outcomes, list) else []
+    target = outcome_name if outcome_name is not None else (outcomes[0] if outcomes else "")
+    tokens = _parse_clob_token_ids(market)
+    if target and outcomes and len(tokens) == len(outcomes):
+        target_cf = target.casefold()
+        for idx, name in enumerate(outcomes):
+            if name.casefold() == target_cf:
+                return tokens[idx]
+    return " ".join(str(target or "").split())
+
+
 def _odds_summary(
     title: str,
     top_market: Dict[str, Any],
@@ -990,12 +1037,24 @@ def _odds_summary(
     if not outcome_prices:
         return None
 
+    def _part_ids(market: Dict[str, Any], outcome_name: Optional[str]) -> Dict[str, Any]:
+        extra_ids: Dict[str, Any] = {}
+        mid = _market_id(market)
+        if mid:
+            extra_ids["market_id"] = mid
+        oid = _outcome_id(market, outcome_name)
+        if oid:
+            extra_ids["outcome_id"] = oid
+        return extra_ids
+
     def part(index: int, **extra: Any) -> Dict[str, Any]:
         market = outcome_markets[index]
         priced_alone = outcome_questions[index] is not None
+        outcome_name = "Yes" if priced_alone else str(outcome_prices[index][0])
         return {
             "price": outcome_prices[index][1],
             "move": _price_movement_points(market) if priced_alone else None,
+            **_part_ids(market, outcome_name),
             **extra,
         }
 
@@ -1024,16 +1083,31 @@ def _odds_summary(
     question = str(top_market.get("question") or title)
     by_name = {str(name).casefold(): price for name, price in outcome_prices}
     if set(by_name) == {"yes", "no"}:
+        yes_label = next(
+            (str(name) for name, _price in outcome_prices if str(name).casefold() == "yes"),
+            "Yes",
+        )
         return {
             "kind": "single",
             "subject": question,
-            "parts": [{"price": by_name["yes"], "move": _price_movement_points(top_market)}],
+            "parts": [
+                {
+                    "price": by_name["yes"],
+                    "move": _price_movement_points(top_market),
+                    **_part_ids(top_market, yes_label),
+                }
+            ],
         }
     return {
         "kind": "outcomes",
         "subject": question,
         "parts": [
-            {"label": str(name), "price": price, "move": None}
+            {
+                "label": str(name),
+                "price": price,
+                "move": None,
+                **_part_ids(top_market, str(name)),
+            }
             for name, price in outcome_prices[:ODDS_LINE_OUTCOMES]
         ],
     }
@@ -1226,6 +1300,7 @@ class _EntityMarket:
     race_outcome: bool = False
     in_band: bool = False
     contender: bool = False
+    priced_outcome: Optional[str] = None
 
     @property
     def label(self) -> str:
@@ -1290,11 +1365,14 @@ def _event_entities(
         pairs = _parse_outcome_prices(market)
         if outcome is not None:
             price = next((p for name, p in pairs if str(name) == outcome), None)
+            priced_outcome = outcome
         else:
             price = pairs[0][1] if pairs else None
+            priced_outcome = str(pairs[0][0]) if pairs else None
         entity = _EntityMarket(
             market=market, match=match, outcome=outcome, price=price,
             volume=_market_volume(market), days=_days_to_close(market, event, today),
+            priced_outcome=priced_outcome,
         )
         kind = matcher.outcome_kind(market, match, title, title_text=title_text) if race else None
         entity.race_outcome = kind is not None
@@ -1674,7 +1752,7 @@ def parse_polymarket_response(
         if entity is not None:
             item["selection_score"] = score
             item["selection_tier"] = tier
-            item["matched_market"] = {
+            matched_payload = {
                 "label": entity.label,
                 "question": str(entity.market.get("question") or ""),
                 "price": entity.price,
@@ -1688,6 +1766,13 @@ def parse_polymarket_response(
                 "related_name": entity.match.related,
                 "relation": entity.match.relation or None,
             }
+            matched_mid = _market_id(entity.market)
+            if matched_mid:
+                matched_payload["market_id"] = matched_mid
+            matched_oid = _outcome_id(entity.market, entity.priced_outcome or entity.outcome)
+            if matched_oid:
+                matched_payload["outcome_id"] = matched_oid
+            item["matched_market"] = matched_payload
         items.append(item)
 
     if filtered_count:

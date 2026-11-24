@@ -664,12 +664,21 @@ def test_doctor_record_says_when_trustpilot_cannot_run_now(monkeypatch):
         doctor, "_cli_gated_record",
         lambda config, cli, purpose: doctor._record(status=health.OK, requires=cli),
     )
+    # Without INCLUDE_SOURCES=trustpilot, doctor mirrors pipeline.available_sources() as opt-in.
+    optin = doctor._trustpilot_record({})
+    assert optin["status"] == "opt-in"
+    assert optin["tier"] == doctor.TIER_OFF
+
+    opted_in = {"INCLUDE_SOURCES": "trustpilot"}
     _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "doctor-tp": {"companies": 0}})
-    record = doctor._trustpilot_record({})
-    assert record["status"] == health.OK
+    record = doctor._trustpilot_record(opted_in)
+    assert record["status"] == health.DEGRADED
+    assert record["tier"] == doctor.TIER_WARN
     assert "cannot run now" in record["note"] and "never opens a browser" in record["note"]
     _capture_cli(monkeypatch, {"auth status": {"isFresh": False}, "doctor-tp": {"companies": 3}})
-    assert "3 cached company records" in doctor._trustpilot_record({})["note"]
+    cached = doctor._trustpilot_record(opted_in)
+    assert cached["status"] == health.OK
+    assert "3 cached company records" in cached["note"]
 
 
 def test_runbook_resolves_the_domain_only_when_trustpilot_can_run():

@@ -536,6 +536,9 @@ def public_briefing_archives(tmp_path, monkeypatch):
 
 def test_scoped_library_ignores_global_briefing_archive(public_briefing_archives, monkeypatch):
     memory, local_title, foreign_title = public_briefing_archives
+    # Point DEFAULT_MEMORY_DIR elsewhere so `--save-dir str(memory)` exercises a
+    # genuinely scoped library rather than the normalized default memory dir.
+    monkeypatch.setattr(library, "DEFAULT_MEMORY_DIR", memory.parent / "default-memory")
     monkeypatch.setattr(sys, "argv", [
         "last30days.py", "library", "feed", "--save-dir", str(memory),
     ])
