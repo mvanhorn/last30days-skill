@@ -476,7 +476,15 @@ class RetrievalBundle:
             elif set(existing_clauses).issubset(incoming_clauses):
                 detail = "; ".join(dict.fromkeys(incoming_clauses))
             else:
-                detail = "; ".join(dict.fromkeys(existing_clauses + incoming_clauses))
+                # Order merged clauses longest-first (Python's stable sort
+                # preserves arrival order on ties) so concurrent subqueries
+                # produce a deterministic leading detail regardless of finish order.
+                detail = "; ".join(
+                    sorted(
+                        dict.fromkeys(existing_clauses + incoming_clauses),
+                        key=lambda clause: -len(clause),
+                    )
+                )
         self.detail_by_source[source] = detail
         if state:
             prev_lane_state = self.lane_state_by_source.get(source)

@@ -1251,12 +1251,12 @@ class TestHigh031RecordDetailPreservationAndSpecificity:
         assert bundle.detail_by_source["reddit"] == f"{twelve}; {two}"
         assert bundle.source_status["reddit"].detail == f"{twelve}; {two}"
 
-        # Reverse order preserves both clauses too.
+        # Reverse order preserves both clauses too, with the longer clause leading.
         bundle_rev = schema.RetrievalBundle()
         bundle_rev.mark_attempted("reddit")
         bundle_rev.record_detail("reddit", two, state=schema.RATE_LIMITED)
         bundle_rev.record_detail("reddit", twelve, state=schema.RATE_LIMITED)
-        assert bundle_rev.detail_by_source["reddit"] == f"{two}; {twelve}"
+        assert bundle_rev.detail_by_source["reddit"] == f"{twelve}; {two}"
 
         # Overlapping multi-clause details deduplicate exact clauses without losing distinct ones.
         bundle_overlap = schema.RetrievalBundle()
@@ -1265,16 +1265,29 @@ class TestHigh031RecordDetailPreservationAndSpecificity:
         bundle_overlap.record_detail("reddit", "clause B; clause C")
         assert bundle_overlap.detail_by_source["reddit"] == "clause A; clause B; clause C"
 
+    def test_merged_detail_orders_longest_clause_first_regardless_of_arrival_order(self):
+        short_clause = "host kept 2 of 2"
+        long_clause = "host+arctic served 1"
+        expected = f"{long_clause}; {short_clause}"
+
+        for first, second in ((short_clause, long_clause), (long_clause, short_clause)):
+            bundle = schema.RetrievalBundle()
+            bundle.mark_attempted("reddit")
+            bundle.record_detail("reddit", first)
+            bundle.record_detail("reddit", second)
+            assert bundle.detail_by_source["reddit"] == expected
+            assert bundle.source_status["reddit"].detail == expected
+
     def test_distinct_detail_appends_and_exact_repeat_does_not_duplicate(self):
         bundle = schema.RetrievalBundle()
         bundle.mark_attempted("reddit")
         bundle.record_detail("reddit", "first note")
-        bundle.record_detail("reddit", "second note")
+        bundle.record_detail("reddit", "other note")
         bundle.record_detail("reddit", "first note")
-        bundle.record_detail("reddit", "second note")
+        bundle.record_detail("reddit", "other note")
 
-        assert bundle.detail_by_source["reddit"] == "first note; second note"
-        assert bundle.source_status["reddit"].detail == "first note; second note"
+        assert bundle.detail_by_source["reddit"] == "first note; other note"
+        assert bundle.source_status["reddit"].detail == "first note; other note"
 
     def test_lane_failure_state_respects_failure_specificity(self):
         bundle = schema.RetrievalBundle()
