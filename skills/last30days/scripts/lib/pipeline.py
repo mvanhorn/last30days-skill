@@ -8680,6 +8680,10 @@ def _retrieve_stream_impl(
                     "attempted": True,
                 }
             }
+        elif result.get("outcome_state") and result.get("error"):
+            artifact = _outcome_artifact(
+                result["outcome_state"], str(result["error"]), attempted=True
+            )
         else:
             artifact = dict(_result_outcome_artifact(source, result) or {})
         # The footer needs the resolved advertiser and the pre-truncation
