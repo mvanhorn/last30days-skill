@@ -903,8 +903,8 @@ def _sibling_outcome_labels(sibling_markets: List[Dict[str, Any]]) -> Dict[int, 
         " ".join(str(market.get("groupItemTitle") or "").split()) for market in sibling_markets
     ]
     title_counts: Dict[str, int] = {}
-    for title in group_titles:
-        if title:
+    for title, is_subject in zip(group_titles, subjects):
+        if is_subject and title:
             title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
     labels = [
         title
@@ -2195,20 +2195,23 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         if _parse_outcome_prices(market) or not _parse_outcome_prices(market, book_aware=False):
             continue
         question = str(market["question"])
+        is_subject = _question_subject(question.strip().rstrip("?")) is not None
         full_label = sibling_labels.get(id(market))
         if full_label:
             dropped_current.add(full_label.strip().casefold())
         else:
             dropped_current.add(_shorten_question(question).strip().casefold())
-        group_title = " ".join(str(market.get("groupItemTitle") or "").split())
-        if group_title:
-            dropped_current.add(group_title.casefold())
+        if is_subject:
+            group_title = " ".join(str(market.get("groupItemTitle") or "").split())
+            if group_title:
+                dropped_current.add(group_title.casefold())
         dropped_legacy.add(_legacy_shorten_question(question).strip().casefold())
-    # If another child market claims a legacy cut name via its groupItemTitle,
-    # shortened subject, or current label, an older report could have saved
-    # that other market under that label. Drop such cross-market ambiguous
-    # labels from legacy_values so verification returns unsupported instead of
-    # switching markets.
+    # If another child market could have claimed a legacy cut name via its
+    # groupItemTitle (only when it has a question subject), shortened subject,
+    # or current label, an older report could have saved that other market
+    # under that label. Drop such cross-market ambiguous labels from
+    # legacy_values so verification returns unsupported instead of switching
+    # markets.
     active_question_markets = [
         m
         for m in markets
@@ -2227,9 +2230,13 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
                 legacy_owners.setdefault(legacy_name, set()).add(idx)
             other_names = {
                 _shorten_question(question).strip().casefold(),
-                " ".join(str(market.get("groupItemTitle") or "").split()).casefold(),
                 (sibling_labels.get(id(market)) or "").strip().casefold(),
-            } - {""}
+            }
+            if _question_subject(question.strip().rstrip("?")) is not None:
+                other_names.add(
+                    " ".join(str(market.get("groupItemTitle") or "").split()).casefold()
+                )
+            other_names.discard("")
             for name in other_names:
                 other_owners.setdefault(name, set()).add(idx)
         ambiguous_legacy = {

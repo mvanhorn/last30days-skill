@@ -1345,6 +1345,68 @@ def test_greptile_r4_cross_market_group_title_vs_legacy_subject_returns_unsuppor
     assert polymarket.refetch_datum(item_3, "Sora")["value"] == 0.20
 
 
+def test_greptile_r5_unused_group_title_on_non_subject_question_does_not_block_sibling(
+    monkeypatch,
+):
+    """Greptile R5 P2:
+    'Does Alice qualify?' has no 'Will ...' question subject, so the parser never
+    names Alice's market from its groupItemTitle ('Bob'). That unused groupItemTitle
+    must NOT block saved 'Bob' odds for 'Will Bob win?' (either directly or via
+    legacy_values when Bob's own current label is its groupItemTitle)."""
+    # Variant 1: Bob has no groupItemTitle (current label is 'Bob').
+    event_plain = {
+        "id": "712",
+        "slug": "qualify-plain",
+        "title": "Qualification?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            _binary_submarket("Does Alice qualify?", "Bob", 0.60),
+            _binary_submarket("Will Bob win?", "", 0.35),
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event_plain)
+    item_plain = SimpleNamespace(metadata={"event_id": "712"}, url="", item_id="pm-712")
+    assert polymarket.refetch_datum(item_plain, "Bob")["value"] == 0.35
+
+    # Variant 2: Bob has groupItemTitle='Bob Winner', so legacy 'Bob' MUST resolve
+    # through legacy_values—proving Alice's unused groupItemTitle='Bob' did not purge it.
+    event_legacy = {
+        "id": "713",
+        "slug": "qualify-legacy",
+        "title": "Qualification?",
+        "active": True,
+        "closed": False,
+        "updatedAt": "2026-11-24T12:00:00Z",
+        "markets": [
+            _binary_submarket("Does Alice qualify?", "Bob", 0.60),
+            _binary_submarket("Will Bob win?", "Bob Winner", 0.35),
+        ],
+    }
+    monkeypatch.setattr(polymarket.http, "request", lambda *_a, **_k: event_legacy)
+    item_legacy = SimpleNamespace(metadata={"event_id": "713"}, url="", item_id="pm-713")
+    assert polymarket.refetch_datum(item_legacy, "Bob")["value"] == 0.35
+
+    saved = _item(
+        "polymarket",
+        title="Qualification?",
+        url="https://polymarket.com/event/qualify-legacy",
+        metadata={
+            "event_id": "713",
+            "outcome_prices": [["Does Alice qualify", 0.60], ["Bob", 0.35]],
+        },
+    )
+    verdicts = freshness.verify_report(
+        _report(saved),
+        checked_at="2026-11-24T12:05:00Z",
+        refetchers={"polymarket": polymarket.refetch_datum},
+    )
+    assert [v.verdict for v in verdicts] == ["current", "current"]
+    assert verdicts[1].current_value == 0.35
+
+
+
 
 def test_greptile3_bad_price_on_top_binary_market_does_not_hide_valid_siblings():
     """If the highest-volume Yes/No market has a bad price (e.g., bool True),
