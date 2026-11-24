@@ -910,8 +910,22 @@ def get_new_findings(
         conn.close()
 
 
+_FTS_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _fts_query_expression(query: str) -> str:
+    """Build a literal FTS5 AND-query expression from arbitrary user text."""
+    if not isinstance(query, str):
+        return ""
+    tokens = _FTS_TOKEN.findall(query)
+    return " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+
+
 def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
     """FTS5 search across all findings with BM25 ranking."""
+    expression = _fts_query_expression(query)
+    if not expression or limit <= 0:
+        return []
     conn = _connect()
     try:
         rows = conn.execute(
@@ -919,12 +933,14 @@ def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
                FROM findings_fts
                JOIN findings f ON f.id = findings_fts.rowid
                LEFT JOIN topics t ON t.id = f.topic_id
-               WHERE findings_fts MATCH ?
+               WHERE findings_fts MATCH ? AND f.dismissed = 0
                ORDER BY rank
                LIMIT ?""",
-            (query, limit),
+            (expression, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
     finally:
         conn.close()
 

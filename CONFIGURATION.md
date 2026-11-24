@@ -907,7 +907,7 @@ Both respect `--save-dir` scoping.
 
 ### `watchlist.py` - recurring topics
 
-[`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) manages topics that should be researched on a schedule. Subcommands: `add`, `remove`, `list`, `run-one`, `run-all`, `config`. Built-in delivery to Slack incoming webhooks (`hooks.slack.com/...`) or any HTTPS endpoint, fired only when new findings appear.
+[`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) manages topics that should be researched on a schedule. Subcommands: `add`, `remove`, `list`, `run-one`, `run-all`, `config`. Built-in delivery to Slack incoming webhooks (`hooks.slack.com/...`) or any public HTTPS endpoint, fired only when new findings appear. Webhook delivery requires a public `https://` endpoint (no embedded credentials, localhost, private/link-local IPs, or reserved internal hostnames), refuses HTTP redirects, and connects directly to resolved public IPs (bypassing `HTTP_PROXY` and `HTTPS_PROXY`).
 
 Two-step flow (the watchlist holds the topic; an external scheduler invokes the run):
 
