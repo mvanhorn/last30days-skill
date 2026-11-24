@@ -164,6 +164,8 @@ def test_high036_site_name_strips_userinfo_and_ports(url: str, expected: str):
         "https://user:secret@/",
         "https:///secret?token=abc",
         "/user:secret@foo",
+        "//user:secret@example.com/path",
+        "//user:sec\nret@example.com/path",
         "user:secret_token@internal.example.com/article",
         "javascript:alert(1)",
         "javascript:1234",
@@ -285,6 +287,11 @@ def test_high037_sanitize_url_strips_userinfo_and_preserves_path_query_fragment_
         ("postgres://admin:secret@db.internal:5432/app", ("admin", "secret"), False),
         ("wss://user:secret@example.com/ws", ("user", "secret"), False),
         ("prefix ftp://user:secret@ftp.example.com/file", ("user", "secret"), False),
+        ("//user:secret@example.com/path", ("user", "secret"), False),
+        ("//user:sec\nret@example.com/path", ("user", "sec", "ret"), False),
+        ("/\n/user:secret@example.com/path", ("user", "secret"), False),
+        ("prefix //user:secret@example.com/path", ("user", "secret"), False),
+        ("https://a.com/x\n//user:secret@example.com/y", ("user", "secret"), False),
         ("https://example.com/p?next=postgres://admin:secret@db.internal/app", ("admin", "secret"), True),
     ],
 )
@@ -304,6 +311,21 @@ def test_high037_sanitize_url_and_markdown_link_strip_whitespace_and_non_http_us
             assert secret not in out, f"{secret!r} leaked in {out!r}"
     is_link = linked.startswith("[") and "](" in linked and linked.endswith(")")
     assert is_link is expect_link
+
+
+def test_high037_protocol_relative_preserves_path_query_fragment_at():
+    assert (
+        render._sanitize_url_for_single_line_output("//tiktok.com/@creator/video/123")
+        == "//tiktok.com/@creator/video/123"
+    )
+    assert (
+        render._sanitize_url_for_single_line_output("//example.com/path?email=a@b.com#ref@2")
+        == "//example.com/path?email=a@b.com#ref@2"
+    )
+    assert (
+        render._sanitize_url_for_single_line_output("//user:secret@example.com/path?email=a@b.com#ref@2")
+        == "//example.com/path?email=a@b.com#ref@2"
+    )
 
 
 @pytest.mark.parametrize(
@@ -348,6 +370,21 @@ def test_high037_markdown_url_link_strips_userinfo_and_rejects_defanged_tilde_sp
     tilde_url = render._markdown_url_link("https://example.com/~~~~~text")
     assert "~~~" not in tilde_url
     assert not (tilde_url.startswith("[") and "](" in tilde_url and tilde_url.endswith(")"))
+
+    mutated_url = render._markdown_url_link(
+        "https://example.com/search?q=last30days:library-context"
+    )
+    assert "last30days:library-context" not in mutated_url
+    assert "last30days\\:library\\_context" in mutated_url
+    assert not (mutated_url.startswith("[") and "](" in mutated_url and mutated_url.endswith(")"))
+
+    mutated_labeled = render._markdown_url_link(
+        "https://example.com/search?q=last30days:library-context",
+        label="Search",
+    )
+    assert "last30days:library-context" not in mutated_labeled
+    assert not mutated_labeled.startswith("[Search](")
+    assert mutated_labeled.startswith("Search (")
 
 
 def test_high037_hn_comment_subject_posts_polymarket_and_top_comments_cannot_escape_envelope():
@@ -509,6 +546,64 @@ def test_high038_freshness_table_defangs_sentinels_escapes_pipes_and_blocks_unsa
         assert "secret_tok" not in out
         assert "~~~" not in out
         assert out.count("<!-- END EVIDENCE FOR SYNTHESIS -->") <= 1
+
+
+def test_high038_html_render_preserves_four_columns_for_escaped_pipes_and_backslashes():
+    verdicts = [
+        schema.FreshnessVerdict(
+            claim_id="h1",
+            candidate_id="c1",
+            source="github",
+            source_item_id="i1",
+            claim="Alpha | Beta",
+            verdict="current",
+            checked_at="2026-07-10",
+            evidence_url="https://example.com/1",
+            evidence_timestamp="2026-07-10",
+        ),
+        schema.FreshnessVerdict(
+            claim_id="h2",
+            candidate_id="c1",
+            source="github",
+            source_item_id="i1",
+            claim=r"SlashPipe \| Keep",
+            verdict="stale",
+            checked_at="2026-07-10",
+            evidence_url="https://example.com/2",
+            evidence_timestamp="2026-07-10",
+            detail=r"moved \| 10 -> 20",
+        ),
+        schema.FreshnessVerdict(
+            claim_id="h3",
+            candidate_id="c1",
+            source="github",
+            source_item_id="i1",
+            claim=r"DoubleSlashPipe \\| <tag>",
+            verdict="contradicted",
+            checked_at="2026-07-10",
+            evidence_url="https://example.com/3",
+            evidence_timestamp="2026-07-10",
+        ),
+    ]
+    report = _base_report(freshness_verdicts=verdicts)
+    rendered_html = html_render.render_html(report)
+
+    tbody_match = re.search(r"<tbody>(.*?)</tbody>", rendered_html, re.DOTALL)
+    assert tbody_match is not None
+    rows = re.findall(r"<tr>(.*?)</tr>", tbody_match.group(1), re.DOTALL)
+    assert len(rows) == 3
+
+    expected_claims = [
+        "Alpha | Beta",
+        r"SlashPipe \| Keep (moved \| 10 -&gt; 20)",
+        r"DoubleSlashPipe \\| &lt;tag&gt;",
+    ]
+    for row_html, expected_claim in zip(rows, expected_claims):
+        cells = re.findall(r"<td>(.*?)</td>", row_html, re.DOTALL)
+        assert len(cells) == 4, f"expected 4 <td> cells, got {len(cells)}: {row_html}"
+        assert cells[1] == expected_claim
+        assert cells[3] == "2026-07-10"
+        assert "<tag>" not in cells[1]
 
 
 @pytest.mark.parametrize("private_drill", [False, True], ids=["public-drill", "private-drill"])

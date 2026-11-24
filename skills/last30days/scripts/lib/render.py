@@ -1799,17 +1799,40 @@ def render_comparison_multi_context(
 _SAFE_MARKDOWN_LINK_SCHEMES = ("http", "https")
 _MARKDOWN_LINK_UNSAFE_CHARS = ("(", ")", "[", "]", "\\", "<", ">", "`")
 _MARKDOWN_PLAIN_TEXT_ESCAPES = re.compile(r"([\\`*_{}\[\]()#+\-.!|~:])")
-# Strip authority userinfo for any leading scheme URL even when scheme/userinfo
-# contains control or whitespace chars, and for any embedded scheme:// URL
-# without crossing whitespace or path/query/fragment delimiters.
+# Strip authority userinfo for any leading scheme or protocol-relative URL even
+# when scheme/userinfo contains control or whitespace chars, and for any
+# embedded scheme:// or whitespace-preceded // URL without crossing whitespace
+# or path/query/fragment delimiters.
 _LEADING_URL_USERINFO_RE = re.compile(
     r"^([\s\x00-\x1f\x7f-\x9f]*(?!corpus://)[A-Za-z][A-Za-z0-9+.\t\r\n-]{0,40}:[\t\r\n]*/[\t\r\n]*/)[^/?#]+@",
     re.IGNORECASE,
+)
+_LEADING_PROTOCOL_RELATIVE_USERINFO_RE = re.compile(
+    r"^([\s\x00-\x1f\x7f-\x9f]*/[\t\r\n]*/)[^/?#]+@",
 )
 _EMBEDDED_URL_USERINFO_RE = re.compile(
     r"(?<![A-Za-z0-9+.-])((?!corpus://)[A-Za-z][A-Za-z0-9+.-]{0,31}://)[^\s/?#]+@",
     re.IGNORECASE,
 )
+_EMBEDDED_PROTOCOL_RELATIVE_USERINFO_RE = re.compile(
+    r"(?:^|(?<=\s))(//)[^\s/?#]+@",
+)
+
+
+def _scrub_url_for_single_line(url: str) -> str:
+    """Scrub URL userinfo and collapse whitespace/control chars before sentinel defanging."""
+    scrubbed = _LEADING_URL_USERINFO_RE.sub(r"\1", url)
+    scrubbed = _LEADING_PROTOCOL_RELATIVE_USERINFO_RE.sub(r"\1", scrubbed)
+    scrubbed = _EMBEDDED_URL_USERINFO_RE.sub(r"\1", scrubbed)
+    scrubbed = _EMBEDDED_PROTOCOL_RELATIVE_USERINFO_RE.sub(r"\1", scrubbed)
+    collapsed = "".join(
+        " "
+        if ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
+        else ch
+        for ch in scrubbed
+    )
+    collapsed = _EMBEDDED_URL_USERINFO_RE.sub(r"\1", collapsed)
+    return _EMBEDDED_PROTOCOL_RELATIVE_USERINFO_RE.sub(r"\1", collapsed)
 
 
 def _sanitize_url_for_single_line_output(url: str) -> str:
@@ -1823,16 +1846,7 @@ def _sanitize_url_for_single_line_output(url: str) -> str:
     fallback below, so this closes the injection at the root rather than only
     for links.
     """
-    scrubbed = _LEADING_URL_USERINFO_RE.sub(r"\1", url)
-    scrubbed = _EMBEDDED_URL_USERINFO_RE.sub(r"\1", scrubbed)
-    collapsed = "".join(
-        " "
-        if ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
-        else ch
-        for ch in scrubbed
-    )
-    collapsed = _EMBEDDED_URL_USERINFO_RE.sub(r"\1", collapsed)
-    return _defang_engine_sentinels(collapsed)
+    return _defang_engine_sentinels(_scrub_url_for_single_line(url))
 
 
 def _escape_markdown_plain_text(value: str) -> str:
@@ -1850,21 +1864,27 @@ def _markdown_url_link(url: str, *, label: str | None = None) -> str:
     ``javascript:``) would become an active link with none of the safety
     filtering ``html_render.py`` already applies via
     ``html.escape(url, quote=True)``. Falls back to escaped plain text so
-    rejected input cannot remain active Markdown or raw HTML.
+    rejected input cannot remain active Markdown or raw HTML, and also falls
+    back whenever sentinel defanging had to mutate the destination URL so a
+    citation never points to an altered address.
     """
     if not url:
         return ""
-    sanitized_url = _sanitize_url_for_single_line_output(url)
+    pre_defang_url = _scrub_url_for_single_line(url)
+    sanitized_url = _defang_engine_sentinels(pre_defang_url)
     if not sanitized_url.strip():
         return ""
 
+    sentinel_mutated = sanitized_url != pre_defang_url
     has_whitespace_or_control = any(
         ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
         for ch in url
     ) or any(ch.isspace() for ch in sanitized_url)
     safe_destination = False
-    if not has_whitespace_or_control and not any(
-        ch in sanitized_url for ch in _MARKDOWN_LINK_UNSAFE_CHARS
+    if (
+        not sentinel_mutated
+        and not has_whitespace_or_control
+        and not any(ch in sanitized_url for ch in _MARKDOWN_LINK_UNSAFE_CHARS)
     ):
         try:
             parsed = urlparse(sanitized_url)

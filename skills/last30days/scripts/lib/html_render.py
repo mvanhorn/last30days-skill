@@ -1121,7 +1121,35 @@ def _is_table_separator(line: str) -> bool:
 
 
 def _split_table_cells(line: str) -> list[str]:
-    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+    """Split a Markdown table row on unescaped ``|`` and unescape ``\\|`` and ``\\\\``."""
+    stripped = line.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(stripped)
+    ended_with_delimiter = False
+    while i < n:
+        ch = stripped[i]
+        if ch == "\\" and i + 1 < n and stripped[i + 1] in ("|", "\\"):
+            buf.append(stripped[i + 1])
+            i += 2
+            ended_with_delimiter = False
+        elif ch == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+            i += 1
+            ended_with_delimiter = True
+        else:
+            buf.append(ch)
+            i += 1
+            ended_with_delimiter = False
+    if not ended_with_delimiter:
+        cells.append("".join(buf).strip())
+    return cells
 
 
 def _render_table(rows: list[str]) -> str:
