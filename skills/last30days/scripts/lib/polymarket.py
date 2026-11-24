@@ -880,50 +880,30 @@ def _whole_question_name(q: str) -> str:
 _ARTICLES = frozenset({"a", "an", "the"})
 
 
-def _own_outcome_labels(
-    outcome_prices: List[tuple],
-    outcome_questions: List[Optional[str]],
-    outcome_markets: List[Dict[str, Any]],
-    sibling_names: Optional[List[str]] = None,
-    sibling_group_titles: Optional[List[str]] = None,
-) -> List[tuple]:
-    """Give each sub-market of an event a label of its own.
+def _sibling_outcome_labels(sibling_markets: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Compute unambiguous per-market labels across all child markets in an event.
 
-    ``_shorten_question`` names a sub-market by its question's subject, which
-    tells teams apart ("Will Arizona win ...") but not the brackets, cities
-    or prices of one subject: every "Will Waymo operate in N cities ..."
-    market came out as "Waymo". A subject name is replaced by the label
-    Polymarket gives that sub-market (``groupItemTitle``: "San Francisco
-    49ers", "12-15", "Denver, CO") when that label is its own across the
-    event's child markets. A subject that repeats within the event, or is a
-    bare article, is replaced by that label even so, or by the whole question
-    when it has none or the label repeats.
-
-    ``sibling_names`` and ``sibling_group_titles`` cover every sub-market of
-    the event, priced or above-floor or not, so a subject or ``groupItemTitle``
-    still counts as repeated when filtering leaves only one of its markets.
-
-    Only subject names are replaced, and the order is kept, so every name an
-    older build saved still reads its own market through
-    ``_legacy_shorten_question``.
+    Running label disambiguation across the entire event before price filtering
+    guarantees that a market keeps the same label during display parsing
+    (``include_all_outcomes=False``) and verification (``include_all_outcomes=True``),
+    even when a sub-floor sibling shares its ``groupItemTitle`` or another
+    market's ``groupItemTitle`` collides with its question subject.
     """
-    names = [str(name) for name, _price in outcome_prices]
-    subjects = [
-        question is not None and _question_subject(question.strip().rstrip("?")) is not None
-        for question in outcome_questions
-    ]
+    questions = [str(market["question"]) for market in sibling_markets]
+    names = [_shorten_question(q) for q in questions]
+    subjects = [_question_subject(q.strip().rstrip("?")) is not None for q in questions]
     repeats: Dict[str, int] = {}
-    for name in names if sibling_names is None else sibling_names:
+    for name in names:
         repeats[name.casefold()] = repeats.get(name.casefold(), 0) + 1
     relabel = [
         is_subject and (repeats.get(name.casefold(), 0) > 1 or name.casefold() in _ARTICLES)
         for name, is_subject in zip(names, subjects)
     ]
     group_titles = [
-        " ".join(str(market.get("groupItemTitle") or "").split()) for market in outcome_markets
+        " ".join(str(market.get("groupItemTitle") or "").split()) for market in sibling_markets
     ]
     title_counts: Dict[str, int] = {}
-    for title in group_titles if sibling_group_titles is None else sibling_group_titles:
+    for title in group_titles:
         if title:
             title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
     labels = [
@@ -934,20 +914,77 @@ def _own_outcome_labels(
     ]
     taken: Dict[str, int] = {}
     for label in labels:
-        taken[label.casefold()] = taken.get(label.casefold(), 0) + 1
+        if label:
+            taken[label.casefold()] = taken.get(label.casefold(), 0) + 1
+    resolved: Dict[int, str] = {}
+    for market, label, change, question in zip(sibling_markets, labels, relabel, questions):
+        if (
+            not label
+            or taken.get(label.casefold(), 0) > 1
+            or (change and title_counts.get(label.casefold(), 0) > 1)
+        ):
+            resolved[id(market)] = _whole_question_name(question)
+        else:
+            resolved[id(market)] = label
+    final_counts: Dict[str, int] = {}
+    for label in resolved.values():
+        if label:
+            final_counts[label.casefold()] = final_counts.get(label.casefold(), 0) + 1
+    for market, question in zip(sibling_markets, questions):
+        label = resolved[id(market)]
+        if final_counts.get(label.casefold(), 0) > 1:
+            resolved[id(market)] = _whole_question_name(question)
+    return resolved
+
+
+def _own_outcome_labels(
+    outcome_prices: List[tuple],
+    outcome_questions: List[Optional[str]],
+    outcome_markets: List[Dict[str, Any]],
+    sibling_markets: Optional[List[Dict[str, Any]]] = None,
+) -> List[tuple]:
+    """Give each sub-market of an event a label of its own.
+
+    ``_shorten_question`` names a sub-market by its question's subject, which
+    tells teams apart ("Will Arizona win ...") but not the brackets, cities
+    or prices of one subject: every "Will Waymo operate in N cities ..."
+    market came out as "Waymo". A subject name is replaced by the label
+    Polymarket gives that sub-market (``groupItemTitle``: "San Francisco
+    49ers", "12-15", "Denver, CO") when that label is its own across the
+    event's child markets. Any collision across all child markets—whether
+    from repeated subjects, repeated ``groupItemTitle``s, or a subject
+    colliding with another market's ``groupItemTitle``—falls back to
+    ``_whole_question_name``.
+
+    ``sibling_markets`` covers every child market of the event, priced or
+    above-floor or not, so labels never shift when filtering or verification
+    changes which markets are kept.
+
+    Only subject names are replaced, and the order is kept, so every name an
+    older build saved still reads its own market through
+    ``_legacy_shorten_question``.
+    """
+    if not any(question is not None for question in outcome_questions):
+        return list(outcome_prices)
+    pool = (
+        sibling_markets
+        if sibling_markets is not None
+        else [
+            market
+            for market, question in zip(outcome_markets, outcome_questions)
+            if question is not None and market.get("question")
+        ]
+    )
+    resolved = _sibling_outcome_labels(pool)
     return [
         (
-            _whole_question_name(question)
-            if change and (
-                not label
-                or taken[label.casefold()] > 1
-                or title_counts.get(label.casefold(), 0) > 1
-            )
-            else label,
+            resolved[id(market)]
+            if question is not None and id(market) in resolved
+            else name,
             price,
         )
-        for label, change, question, (_name, price) in zip(
-            labels, relabel, outcome_questions, outcome_prices,
+        for (name, price), question, market in zip(
+            outcome_prices, outcome_questions, outcome_markets,
         )
     ]
 
@@ -1658,14 +1695,12 @@ def parse_polymarket_response(
             len(raw_top_outcomes) == 2 and set(raw_top_outcomes) == {"yes", "no"}
         )
         impossible_set = False
-        sibling_names: Optional[List[str]] = None
-        sibling_group_titles: Optional[List[str]] = None
+        sibling_markets: Optional[List[Dict[str, Any]]] = None
         if top_outcomes_are_binary and len(active_markets) > 1:
+            sibling_markets = [m for m in active_markets if m.get("question")]
             synth_outcomes = []
-            for m in active_markets:
-                q = m.get("question", "")
-                if not q:
-                    continue
+            for m in sibling_markets:
+                q = m["question"]
                 pairs = _parse_outcome_prices(m)
                 yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
                 if yes_price is not None and (
@@ -1674,14 +1709,6 @@ def parse_polymarket_response(
                     or id(m) in chosen_ids
                 ):
                     synth_outcomes.append((q, yes_price, m))
-            sibling_names = [
-                _shorten_question(m["question"]) for m in active_markets if m.get("question")
-            ]
-            sibling_group_titles = [
-                " ".join(str(m.get("groupItemTitle") or "").split())
-                for m in active_markets
-                if m.get("question")
-            ]
             if synth_outcomes:
                 synth_outcomes.sort(key=lambda x: x[1], reverse=True)
                 outcome_prices = [(_shorten_question(q), p) for q, p, _m in synth_outcomes]
@@ -1780,8 +1807,7 @@ def parse_polymarket_response(
             outcome_prices,
             outcome_questions,
             outcome_markets,
-            sibling_names,
-            sibling_group_titles,
+            sibling_markets,
         )
         if entity is not None and entity.price is None:
             headline = None
@@ -1883,6 +1909,13 @@ def _normalize_snapshot_key(key: str) -> str:
     return key.strip().casefold()
 
 
+def _has_base_in_map(normalized_values: Dict[str, Any], base: str) -> bool:
+    if base in normalized_values:
+        return True
+    prefix = f"{base}\x1f"
+    return any(key.startswith(prefix) for key in normalized_values)
+
+
 def _resolve_value_in_map(
     values: Dict[str, Any],
     datum_key: str,
@@ -1930,9 +1963,13 @@ def _resolve_value_in_map(
     if target in normalized_values:
         return normalized_values[target]
     if not has_suffix and base not in blocked_repeats:
-        occ0_key = f"{base}\x1f0"
-        if occ0_key in normalized_values:
-            return normalized_values[occ0_key]
+        # Resolve an unsuffixed name against \x1f0 only when no sibling
+        # occurrence exists; when multiple occurrences share the label, an
+        # unsuffixed name cannot identify which market it came from.
+        prefix = f"{base}\x1f"
+        occ_keys = [key for key in normalized_values if key.startswith(prefix)]
+        if occ_keys == [f"{base}\x1f0"]:
+            return normalized_values[occ_keys[0]]
     elif has_suffix and occurrence == 0 and base in normalized_values:
         return normalized_values[base]
     return None
@@ -1944,13 +1981,14 @@ def resolve_snapshot_value(
     *,
     legacy_values: Optional[Dict[str, Any]] = None,
     blocked_repeats: frozenset[str] = frozenset(),
+    legacy_blocked_repeats: Optional[frozenset[str]] = None,
     allow_occurrence_zero: bool = True,
 ) -> Any:
     """Resolve ``datum_key`` against current ``values`` first, then ``legacy_values``.
 
     Shared by both ``refetch_datum`` (direct fetch) and ``freshness._lookup_cached_datum``
     (cached hit) so direct and cached verification always produce identical results
-    and legacy cut names never shadow a current outcome name.
+    and legacy cut names never shadow or leak into a current outcome name.
     """
     value = _resolve_value_in_map(
         values,
@@ -1961,10 +1999,24 @@ def resolve_snapshot_value(
     if value is not None:
         return value
     if legacy_values and datum_key != "end_date" and allow_occurrence_zero:
+        base = (
+            datum_key.rsplit("\x1f", 1)[0].strip().casefold()
+            if "\x1f" in datum_key
+            else datum_key.strip().casefold()
+        )
+        normalized_current = {
+            _normalize_snapshot_key(str(k)): v for k, v in values.items()
+        }
+        if _has_base_in_map(normalized_current, base):
+            return None
         return _resolve_value_in_map(
             legacy_values,
             datum_key,
-            blocked_repeats=blocked_repeats,
+            blocked_repeats=(
+                blocked_repeats
+                if legacy_blocked_repeats is None
+                else legacy_blocked_repeats
+            ),
             allow_occurrence_zero=allow_occurrence_zero,
         )
     return None
@@ -2121,8 +2173,20 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     # A repeated name is told apart by its rank among the priced markets. When
     # the book check drops one market carrying that name, the ranks shift and a
     # saved occurrence could read a sibling's price, so repeated names of a
-    # dropped market are not answered at all.
-    dropped_names: set[str] = set()
+    # dropped market are not answered at all. Track current and legacy dropped
+    # labels separately so a dropped market's legacy cut cannot block an
+    # unrelated current outcome name.
+    live_event_markets = _live_markets(event, include_closed=not has_active)
+    sibling_event_markets = [
+        m for m in live_event_markets if isinstance(m, dict) and m.get("question")
+    ]
+    sibling_labels = (
+        _sibling_outcome_labels(sibling_event_markets)
+        if len(sibling_event_markets) > 1
+        else {}
+    )
+    dropped_current: set[str] = set()
+    dropped_legacy: set[str] = set()
     for market in markets:
         if not isinstance(market, dict) or not market.get("question"):
             continue
@@ -2131,27 +2195,39 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         if _parse_outcome_prices(market) or not _parse_outcome_prices(market, book_aware=False):
             continue
         question = str(market["question"])
-        dropped_names.add(_shorten_question(question).strip().casefold())
-        dropped_names.add(_legacy_shorten_question(question).strip().casefold())
-    for mapping in (values, legacy_values):
-        for key in [k for k in mapping if "\x1f" in k]:
-            if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_names:
-                del mapping[key]
+        full_label = sibling_labels.get(id(market))
+        if full_label:
+            dropped_current.add(full_label.strip().casefold())
+        else:
+            dropped_current.add(_shorten_question(question).strip().casefold())
+        group_title = " ".join(str(market.get("groupItemTitle") or "").split())
+        if group_title:
+            dropped_current.add(group_title.casefold())
+        dropped_legacy.add(_legacy_shorten_question(question).strip().casefold())
+    for key in [k for k in values if "\x1f" in k]:
+        if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_current:
+            del values[key]
+    for key in [k for k in legacy_values if "\x1f" in k]:
+        if key.rsplit("\x1f", 1)[0].strip().casefold() in dropped_legacy:
+            del legacy_values[key]
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
-    blocked_repeats = frozenset(dropped_names)
+    blocked_current = frozenset(dropped_current)
+    blocked_legacy = frozenset(dropped_legacy)
     value = resolve_snapshot_value(
         values,
         datum_key,
         legacy_values=legacy_values,
-        blocked_repeats=blocked_repeats,
+        blocked_repeats=blocked_current,
+        legacy_blocked_repeats=blocked_legacy,
         allow_occurrence_zero=(datum_key != "end_date"),
     )
     snapshot = {
         "values": values,
         "legacy_values": legacy_values,
-        "blocked_repeats": sorted(blocked_repeats),
+        "blocked_repeats": sorted(blocked_current),
+        "legacy_blocked_repeats": sorted(blocked_legacy),
         "url": str(getattr(item, "url", "")),
         "timestamp": event.get("updatedAt"),
     }

@@ -37,6 +37,7 @@ class RefetchedDatum:
     values: dict[str, Any] | None = None
     legacy_values: dict[str, Any] | None = None
     blocked_repeats: frozenset[str] = frozenset()
+    legacy_blocked_repeats: frozenset[str] | None = None
 
 
 Refetcher = Callable[[schema.SourceItem | None, str], RefetchedDatum | dict[str, Any] | Any]
@@ -278,6 +279,7 @@ def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url
     if isinstance(value, RefetchedDatum):
         return value
     if isinstance(value, dict) and "value" in value:
+        raw_legacy_blocked = value.get("legacy_blocked_repeats")
         return RefetchedDatum(
             value=value["value"],
             url=str(value.get("url") or fallback_url),
@@ -289,6 +291,11 @@ def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url
                 else None
             ),
             blocked_repeats=_coerce_blocked_repeats(value.get("blocked_repeats")),
+            legacy_blocked_repeats=(
+                _coerce_blocked_repeats(raw_legacy_blocked)
+                if raw_legacy_blocked is not None
+                else None
+            ),
         )
     return RefetchedDatum(value=value, url=fallback_url)
 
@@ -456,6 +463,7 @@ def _lookup_cached_datum(
             claim.datum_key,
             legacy_values=legacy_values,
             blocked_repeats=cached_datum.blocked_repeats,
+            legacy_blocked_repeats=cached_datum.legacy_blocked_repeats,
             allow_occurrence_zero=(claim.datum_kind == "polymarket_probability"),
         )
         if value is not None:
@@ -466,6 +474,7 @@ def _lookup_cached_datum(
                 values=values,
                 legacy_values=legacy_values,
                 blocked_repeats=cached_datum.blocked_repeats,
+                legacy_blocked_repeats=cached_datum.legacy_blocked_repeats,
             )
         return None
     if cached_key is not None and _normalize_datum_key(cached_key) == _normalize_datum_key(claim.datum_key):
@@ -711,6 +720,7 @@ def verify_report(
             elif cache_key not in point_cache and getattr(exc, "snapshot", None):
                 # Keep the fetched snapshot so sibling claims reuse it.
                 snapshot = exc.snapshot
+                raw_legacy_blocked = snapshot.get("legacy_blocked_repeats")
                 point_cache[cache_key] = (
                     None,
                     RefetchedDatum(
@@ -724,6 +734,11 @@ def verify_report(
                             else None
                         ),
                         blocked_repeats=_coerce_blocked_repeats(snapshot.get("blocked_repeats")),
+                        legacy_blocked_repeats=(
+                            _coerce_blocked_repeats(raw_legacy_blocked)
+                            if raw_legacy_blocked is not None
+                            else None
+                        ),
                     ),
                 )
             verdicts.append(_unsupported(claim, checked, detail))
