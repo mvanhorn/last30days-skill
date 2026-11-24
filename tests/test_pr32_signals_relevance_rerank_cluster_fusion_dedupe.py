@@ -226,18 +226,25 @@ class TestHigh097EngagementMonotonicity:
         assert signals.engagement_raw(item) is None
         assert signals.engagement_score(item) is None
 
-    def test_generic_engagement_is_monotonic_on_fixed_schema_and_handles_edge_values(self):
-        none_secondary = _source_item("g0", "custom_src", engagement={"a": 1000, "b": None, "c": 0})
-        zero_secondary = _source_item("g1", "custom_src", engagement={"a": 1000, "b": 0, "c": 0})
-        one_secondary = _source_item("g2", "custom_src", engagement={"a": 1000, "b": 1, "c": 1})
+    def test_generic_engagement_is_monotonic_on_sparse_and_fixed_schemas(self):
+        sparse = _source_item("gs", "custom_src", engagement={"likes": 1000})
+        with_none = _source_item("g0", "custom_src", engagement={"likes": 1000, "replies": None})
+        with_zero = _source_item("g1", "custom_src", engagement={"likes": 1000, "replies": 0})
+        with_one = _source_item("g2", "custom_src", engagement={"likes": 1000, "replies": 1})
+        with_two = _source_item("g3", "custom_src", engagement={"likes": 1000, "replies": 1, "reposts": 1})
 
-        raw0 = signals.engagement_raw(none_secondary)
-        raw1 = signals.engagement_raw(zero_secondary)
-        raw2 = signals.engagement_raw(one_secondary)
-        assert raw0 == pytest.approx(raw1)
-        assert raw2 > raw1
+        raw_sparse = signals.engagement_raw(sparse)
+        raw_none = signals.engagement_raw(with_none)
+        raw_zero = signals.engagement_raw(with_zero)
+        raw_one = signals.engagement_raw(with_one)
+        raw_two = signals.engagement_raw(with_two)
+        assert raw_sparse == pytest.approx(math.log1p(1000))
+        assert raw_none == pytest.approx(raw_sparse)
+        assert raw_zero == pytest.approx(raw_sparse)
+        assert raw_one > raw_zero
+        assert raw_two > raw_one
 
-        # Non-numeric / bool / NaN keys do not inflate denominator or crash.
+        # Non-numeric / bool / NaN keys do not affect the score or crash.
         mixed = _source_item(
             "gm",
             "custom_src",
@@ -280,6 +287,31 @@ class TestHigh098VideoSpamFloor:
         ]
         assert len(signals.prune_low_relevance(clips, passing_only=False)) == 3
         assert signals.prune_low_relevance(clips, passing_only=True) == []
+
+    @pytest.mark.parametrize("source", ["tiktok", "instagram"])
+    def test_single_source_all_low_views_mixed_relevance_drops_off_topic_items(self, source):
+        off_topic = _source_item(
+            "off", source, local_relevance=0.01, engagement={"views": 200, "likes": 5}
+        )
+        on_topic = _source_item(
+            "on", source, local_relevance=0.60, engagement={"views": 300, "likes": 10}
+        )
+        kept = signals.prune_low_relevance([off_topic, on_topic], passing_only=False)
+        assert [i.item_id for i in kept] == ["on"]
+        assert signals.prune_low_relevance([off_topic, on_topic], passing_only=True) == []
+
+    def test_multi_source_all_low_views_mixed_relevance_drops_off_topic_items(self):
+        tt_off = _source_item("tt-off", "tiktok", local_relevance=0.01, engagement={"views": 250, "likes": 3})
+        ig_on = _source_item("ig-on", "instagram", local_relevance=0.60, engagement={"views": 400, "likes": 12})
+        kept = signals.prune_low_relevance([tt_off, ig_on], passing_only=False)
+        assert [i.item_id for i in kept] == ["ig-on"]
+        assert signals.prune_low_relevance([tt_off, ig_on], passing_only=True) == []
+
+        # When every item fails relevance AND views, keep-all fallback still prevents empty output.
+        tt_off2 = _source_item("tt-off2", "tiktok", local_relevance=0.02, engagement={"views": 100, "likes": 1})
+        assert [i.item_id for i in signals.prune_low_relevance([tt_off, tt_off2], passing_only=False)] == [
+            "tt-off", "tt-off2",
+        ]
 
     def test_first_party_creator_still_exempt_from_video_floor_scoped_by_source(self):
         ig_creator = _source_item(

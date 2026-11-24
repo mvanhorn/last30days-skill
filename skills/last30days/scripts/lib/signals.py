@@ -280,26 +280,16 @@ def _instagram_engagement(item: schema.SourceItem) -> float | None:
     return (0.45 * views) + (0.27 * likes) + (0.18 * comments) + (0.10 * top_comment)
 
 
-def _is_engagement_slot(value: object) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, bool):
-        return False
-    try:
-        return math.isfinite(float(value))
-    except (TypeError, ValueError, OverflowError):
-        return False
-
-
 def _generic_engagement(item: schema.SourceItem) -> float | None:
     if not item.engagement:
         return None
-    # Divide by all numeric/None schema fields rather than only positive ones
-    # so increasing a secondary count from 0/None to 1 never drops the average.
-    slots = [log1p_safe(v) for v in item.engagement.values() if _is_engagement_slot(v)]
-    if not slots or not any(slots):
+    # Key-count-invariant peak + secondary bonus: adding optional keys (0, None,
+    # or positive) to a sparse dict is always non-decreasing.
+    pos = [logged for v in item.engagement.values() if (logged := log1p_safe(v)) > 0]
+    if not pos:
         return None
-    return sum(slots) / len(slots)
+    peak = max(pos)
+    return peak + 0.1 * (sum(pos) - peak)
 
 
 def engagement_raw(item: schema.SourceItem) -> float | None:
@@ -504,8 +494,8 @@ def _passes_engagement_floor(item: schema.SourceItem) -> bool:
     """Check whether a TikTok/Instagram item meets the minimum view floor.
 
     Items from sources not in _VIDEO_ENGAGEMENT_FLOOR_SOURCES always pass.
-    Empty-batch protection is handled by ``prune_low_relevance``'s
-    ``filtered or items`` fallback rather than a per-source bypass.
+    Empty-batch protection is handled by ``prune_low_relevance``'s cascaded
+    ``filtered or rel_filtered or items`` fallback rather than a per-source bypass.
     """
     if item.source not in _VIDEO_ENGAGEMENT_FLOOR_SOURCES:
         return True
@@ -530,8 +520,8 @@ def prune_low_relevance(
     signal.
 
     TikTok and Instagram items with fewer than 1000 views are pruned
-    (falling back to keeping all items when nothing passes and
-    ``passing_only`` is False).
+    (falling back to relevance-passing items when none meets the view floor,
+    or all items when none passes relevance, if ``passing_only`` is False).
 
     ``first_party_handles`` names accounts this run is explicitly searching
     (the subject of the topic). Their own posts are exempt from the floor: a
@@ -572,7 +562,7 @@ def prune_low_relevance(
             return True
         return author in scoped_first_party.get(item.source, frozenset())
 
-    def passes(item: schema.SourceItem) -> bool:
+    def passes_relevance(item: schema.SourceItem) -> bool:
         # YouTube items with successfully extracted transcripts should not
         # be pruned by title-only relevance scoring — the transcript content
         # already proves substantive topical coverage.
@@ -603,11 +593,13 @@ def prune_low_relevance(
         ):
             if rel < minimum * 1.5:
                 return False
-        if not _passes_engagement_floor(item):
-            return False
         return True
 
-    filtered = [item for item in items if passes(item)]
+    rel_filtered = [item for item in items if passes_relevance(item)]
+    filtered = [
+        item for item in rel_filtered
+        if _is_first_party(item) or _passes_engagement_floor(item)
+    ]
     if passing_only:
         return filtered
-    return filtered or items
+    return filtered or rel_filtered or items
