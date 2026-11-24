@@ -924,6 +924,76 @@ class TestSearxngConfigHandoff:
         if backfill == "rate-limited":
             assert artifact["_source_outcome"]["detail"] == "HTTP 429: paid backfill throttled"
 
+    @pytest.mark.parametrize("backfill, state, detail", [
+        ("incomplete", health.TIMEOUT, "paid backfill stopped at its deadline before completing"),
+        ("incomplete-429", health.RATE_LIMITED, "HTTP 429: paid backfill throttled"),
+        ("complete-empty", health.TIMEOUT, "Reddit ran out of search time before it found threads"),
+    ])
+    def test_actual_cutoff_keeps_the_incomplete_backfill_note(self, backfill, state, detail):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        lanes = []
+        note = "paid backfill stopped at its deadline before completing"
+        # 170s budget: the free lane ends at 135 and the web stage's own cutoff is 127.
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 170.0,
+               "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        real_lane = reddit_keyless.lane_deadline
+
+        def record_lane(deadline):
+            lanes.append(deadline)
+            return real_lane(deadline)
+
+        def clean_empty_html(*args, **kwargs):
+            clock[0] = 128.0  # Past the discovery cutoff (127), before the lane deadline (135).
+            return ""
+
+        def sc_search(*args, **kwargs):
+            if backfill == "complete-empty":
+                return {}
+            if backfill == "incomplete-429":
+                http._record_failure(http.HTTPError("HTTP 429: paid backfill throttled", 429))
+            return {"items": [], "incomplete": True, "incomplete_note": note}
+
+        def run_inline(_wait_until, _stage, _default, call, /, *args, **kwargs):
+            return call(*args, **kwargs)
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]),              mock.patch.object(reddit_keyless, "_within", side_effect=run_inline),              mock.patch.object(reddit_keyless, "lane_deadline", side_effect=record_lane):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=sc_search, html_fetch=clean_empty_html,
+            )
+
+        # The site search answered cleanly and empty, so no path failed; the web stage hit its
+        # real cutoff and the paid backfill ended empty. A captured paid failure keeps precedence.
+        assert lanes == [135.0] and clock[0] == 128.0 and not seen_urls and not items
+        outcome = artifact["_source_outcome"]
+        assert outcome["state"] == state and outcome["detail"] == detail
+
+    def test_completed_failures_precede_the_incomplete_backfill_note(self):
+        from lib import reddit_keyless
+
+        note = "paid backfill stopped at its deadline before completing"
+
+        def web_floor(*args, **kwargs):
+            return []
+
+        def run_inline(_wait_until, _stage, _default, call, /, *args, **kwargs):
+            return call(*args, **kwargs)
+
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 170.0}
+        with mock.patch("time.monotonic", return_value=100.0), \
+             mock.patch.object(reddit_keyless, "_within", side_effect=run_inline), \
+             mock.patch.object(reddit_keyless, "_web_floor", side_effect=web_floor), \
+             mock.patch.object(reddit_keyless.reddit_search, "_blocked_reason", "offline 403"):
+            items, artifact, seen_urls = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=lambda *a, **k: {"items": [], "incomplete": True, "incomplete_note": note},
+            )
+
+        # Every asked path failed and nothing was cut off: the failure, not the paid note, is reported.
+        assert not items and not seen_urls
+        outcome = artifact["_source_outcome"]
+        assert outcome["state"] == health.UNREACHABLE and "search blocked" in outcome["detail"]
+
     @pytest.mark.parametrize("backfill", ["empty", "rate-limited", "result"])
     def test_return_margin_alone_keeps_completed_failures_after_backfill(self, backfill):
         from lib import reddit_keyless

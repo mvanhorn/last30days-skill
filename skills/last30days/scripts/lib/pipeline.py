@@ -7953,18 +7953,26 @@ def _retrieve_stream_impl(
             )
         merged = _merge_reddit_items(public_results, sc_items)
         sc_notes = _reddit_sc_incomplete_notes(result)
-        if not merged and free_cut_off:
-            return [], _reddit_timeout_artifact()
-        if not merged and free_failed:
-            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
-        if not merged and isinstance(result, dict) and result.get("incomplete"):
-            return [], _outcome_artifact(
+        backfill_timeout = (
+            _outcome_artifact(
                 health.TIMEOUT,
                 str(
                     result.get("incomplete_note")
                     or "Reddit ScrapeCreators backfill timed out before completing"
                 ),
             )
+            if isinstance(result, dict) and result.get("incomplete") else None
+        )
+        if not merged and free_cut_off:
+            # Both stages ran out of time: the paid backfill's own note is the specific
+            # one, unless a captured HTTP failure is left to the stream resolver.
+            if backfill_timeout is not None and not http.has_captured_failures():
+                return [], backfill_timeout
+            return [], _reddit_timeout_artifact()
+        if not merged and free_failed:
+            return [], _outcome_artifact(*reddit_health.failure_outcome(lane_paths))
+        if not merged and backfill_timeout is not None:
+            return [], backfill_timeout
         if not merged and free_timed_out:
             return [], _reddit_timeout_artifact()
         if public_failure is not None:
