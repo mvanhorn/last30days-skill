@@ -46,8 +46,12 @@ JSON never names a non-official backend there unless it is pinned.
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import stat
 from dataclasses import dataclass
+from pathlib import Path
 from shutil import which
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -393,34 +397,130 @@ def _probe_xapi(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+_YAML_EMPTY_VALUES = frozenset({"", "''", '""', "null", "~", "{}"})
+_BEARER_KEY_LINE_RE = re.compile(r"^(\s*)['\"]?bearer_token['\"]?\s*:\s*(.*)$")
+
+
+def _json_has_bearer_token(obj: Any) -> bool:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "bearer_token":
+                if isinstance(value, str) and value.strip():
+                    return True
+                if isinstance(value, dict) and any(
+                    isinstance(subval, str) and subval.strip()
+                    for subval in value.values()
+                ):
+                    return True
+            elif _json_has_bearer_token(value):
+                return True
+    elif isinstance(obj, list):
+        return any(_json_has_bearer_token(item) for item in obj)
+    return False
+
+
+def _content_has_bearer_token(content: str) -> bool:
+    stripped = content.lstrip()
+    if stripped.startswith(("{", "[")):
+        try:
+            return _json_has_bearer_token(json.loads(content))
+        except (ValueError, TypeError):
+            pass
+    lines = content.splitlines()
+    for idx, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            continue
+        match = _BEARER_KEY_LINE_RE.match(line)
+        if not match:
+            continue
+        indent = len(match.group(1))
+        rest = match.group(2).split("#", 1)[0].strip()
+        if rest.lower() not in _YAML_EMPTY_VALUES:
+            return True
+        if rest:
+            continue
+        for child in lines[idx + 1 :]:
+            child_stripped = child.strip()
+            if not child_stripped or child_stripped.startswith("#"):
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            if child_indent <= indent:
+                break
+            if ":" in child_stripped:
+                child_val = child_stripped.split(":", 1)[1].split("#", 1)[0].strip()
+                if child_val.lower() not in _YAML_EMPTY_VALUES:
+                    return True
+    return False
+
+
+def _xurl_store_lacks_bearer(store_detail: str) -> bool:
+    """Return True when a real on-disk xurl token store has no app-only bearer token."""
+    if " in " not in store_detail:
+        return False
+    candidate = Path(store_detail.rsplit(" in ", 1)[-1].strip())
+    try:
+        if os.name == "posix":
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            fd = os.open(candidate, flags)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    return False
+                with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as stream:
+                    fd = -1
+                    content = stream.read(65536)
+            finally:
+                if fd != -1:
+                    os.close(fd)
+        else:
+            if not candidate.is_file():
+                return False
+            content = candidate.read_text(encoding="utf-8", errors="replace")[:65536]
+    except OSError:
+        return False
+    return not _content_has_bearer_token(content)
+
+
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
-    """xurl = official X API v2 CLI (OAuth2). Free lane; LOCAL-ONLY probe.
+    """xurl = official X API v2 CLI (app-only bearer). Free lane; LOCAL-ONLY probe.
 
     Doctor's no-network guarantee forbids the live ``xurl whoami`` check
-    (``xurl_x.is_available()`` — an authenticated X API call, reserved for
-    research time). This probe keys on local evidence instead: the binary
-    on PATH plus xurl's on-disk token store (~/.xurl). Stored credentials
-    read as OK with an explicit "not live-verified" caveat; an unreadable
+    (``xurl_x.is_available()`` — reserved for research time). This probe keys
+    on local evidence instead: the binary on PATH plus xurl's on-disk token
+    store (~/.xurl/auth.yml or legacy ~/.xurl). Stored app-only bearer
+    credentials read as OK with an explicit "not live-verified" caveat; a store
+    holding only OAuth user tokens without ``bearer_token`` is reported as
+    MISSING because ``xurl_x.search_x`` pins ``--auth app``; an unreadable
     token store is a typed ERROR (broken, not unconfigured).
     """
     from . import xurl_x
 
-    requires = "xurl CLI installed + OAuth2 login"
+    requires = "xurl CLI installed + app-only bearer auth"
     if which("xurl") is None:
         return BackendFinding(
             name="xurl",
             status=health.MISSING,
             detail="xurl CLI not found on PATH",
-            prescription="npm install -g xurl && xurl auth oauth2 login",
+            prescription="npm install -g @xdevplatform/xurl && xurl auth app-only <bearer-token>",
             requires=requires,
         )
     store_status, store_detail = xurl_x.stored_auth_status()
     if store_status == xurl_x.AUTH_OK:
+        if _xurl_store_lacks_bearer(store_detail):
+            return BackendFinding(
+                name="xurl",
+                status=health.MISSING,
+                detail=(
+                    "xurl token store has OAuth user tokens only; "
+                    "search requires app-only bearer auth"
+                ),
+                prescription="xurl auth app-only <bearer-token>",
+                requires=requires,
+            )
         return BackendFinding(
             name="xurl",
             status=health.OK,
             detail=(
-                "installed; stored OAuth2 credentials present; "
+                "installed; stored app-only bearer credentials present; "
                 "auth not live-verified (no network)"
             ),
             requires=requires,
@@ -430,14 +530,14 @@ def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
             name="xurl",
             status=health.ERROR,
             detail=store_detail,
-            prescription="xurl auth oauth2 login",
+            prescription="xurl auth app-only <bearer-token>",
             requires=requires,
         )
     return BackendFinding(
         name="xurl",
         status=health.MISSING,
         detail="xurl installed but not authenticated",
-        prescription="xurl auth oauth2 login",
+        prescription="xurl auth app-only <bearer-token>",
         requires=requires,
     )
 
@@ -544,7 +644,7 @@ _X_REQUIRES: Dict[str, str] = {
     "xai": "XAI_API_KEY (xAI/Grok live search)",
     "grok": "grok CLI installed + signed in (opt-in only; pin to enable)",
     "bird": "X browser cookies (AUTH_TOKEN/CT0) + node",
-    "xurl": "xurl CLI installed + OAuth2 login",
+    "xurl": "xurl CLI installed + app-only bearer auth",
     "xquik": "XQUIK_API_KEY (xquik.com)",
     "xapi": "X_BEARER_TOKEN (X API v2)",
 }

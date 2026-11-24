@@ -54,7 +54,21 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, deepline, digg, env, health, http, prescriptions, proxy, reddit_health, trustpilot, x_api
+from . import (
+    backends,
+    brightdata,
+    deepline,
+    digg,
+    env,
+    health,
+    http,
+    prescriptions,
+    private_files,
+    proxy,
+    reddit_health,
+    trustpilot,
+    x_api,
+)
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -216,6 +230,7 @@ KEY_PRESENCE_VARS = (
     "XQUIK_API_KEY",
     "X_BEARER_TOKEN",
     "DEEPLINE_API_KEY",
+    "BRIGHTDATA_API_KEY",
     "BRAVE_API_KEY",
     "EXA_API_KEY",
     "SERPER_API_KEY",
@@ -224,6 +239,7 @@ KEY_PRESENCE_VARS = (
     "OPENAI_API_KEY",
     "GOOGLE_API_KEY",
     "GEMINI_API_KEY",
+    "GOOGLE_GENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "PERPLEXITY_API_KEY",
     "GITHUB_TOKEN",
@@ -1307,7 +1323,7 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     elif source == "xai":
         note = "XAI_API_KEY licensed path (console.x.ai)"
     elif source == "xurl":
-        note = "X API through the xurl CLI (stored OAuth2 login)"
+        note = "X API through the xurl CLI (stored app-only bearer)"
     elif source:
         note = "explicit backend pin"
     else:
@@ -2064,7 +2080,12 @@ DEFAULT_CACHE_TTL_SECONDS = 900
 # carries no secrets by design (key presence is booleans only); this belt-and-
 # suspenders check refuses to persist the cache if a seeded value ever leaks.
 _SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
-    "AUTH_TOKEN", "CT0", "APIFY_API_TOKEN", "GOOGLE_GENAI_API_KEY", env.REDDIT_SESSION_COOKIE_VAR,
+    "AUTH_TOKEN",
+    "CT0",
+    "APIFY_API_TOKEN",
+    "LAST30DAYS_PUBLISH_PASSWORD",
+    "LAST30DAYS_API_KEY",
+    env.REDDIT_SESSION_COOKIE_VAR,
 )
 
 # Backend pin vars folded into the config fingerprint. Pin values are
@@ -2116,27 +2137,38 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
 
     Inputs are key-presence BOOLEANS (never credential values — the same
     ``keys_present`` set the setup block renders), backend pin values
-    (backend names, not secrets), and INCLUDE_SOURCES (not a secret).
-    Adding or removing a credential, changing a pin, or toggling an opt-in
-    source yields a new fingerprint, so ``read_cached_report`` treats the
-    old cache as stale instead of serving pre-change conclusions.
+    (backend names, not secrets), and non-secret switches affecting doctor's
+    conclusions. Adding or removing a credential, changing a pin, or toggling
+    any tracked source/host/storage knob yields a new fingerprint, so
+    ``read_cached_report`` treats the old cache as stale.
     """
     config = config or {}
+
+    def _cfg_or_env(key: str) -> str:
+        raw = config.get(key)
+        if raw is None:
+            raw = os.environ.get(key)
+        return str(raw or "")
+
     signals = {
         "keys_present": _setup_block(config)["keys_present"],
         "via_api_key": proxy.via_api_key(config),
         "pins": {var: str(config.get(var) or "") for var in _FINGERPRINT_PIN_VARS},
         "include_sources": str(config.get("INCLUDE_SOURCES") or ""),
+        "exclude_sources": str(config.get("EXCLUDE_SOURCES") or ""),
+        "telegram_sources": _cfg_or_env("TELEGRAM_SOURCES"),
+        "xiaohongshu_api_base": str(config.get("XIAOHONGSHU_API_BASE") or ""),
+        "native_search": _cfg_or_env("LAST30DAYS_NATIVE_SEARCH"),
+        "claudecode": _cfg_or_env("CLAUDECODE"),
+        "setup_complete": str(config.get("SETUP_COMPLETE") or ""),
+        "reddit_sc_min_items": str(config.get("LAST30DAYS_REDDIT_SC_MIN_ITEMS") or ""),
+        "memory_dir": str(config.get("LAST30DAYS_MEMORY_DIR") or ""),
+        "library_context": str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or ""),
         "x_cookie_access_denied": str(config.get("LAST30DAYS_X_COOKIE_ACCESS_DENIED") or ""),
         "browser_consent": str(config.get("BROWSER_CONSENT") or ""),
         "from_browser": str(config.get("FROM_BROWSER") or ""),
         "agentcookie": str(config.get("AGENTCOOKIE") or env.read_secret_env("AGENTCOOKIE") or ""),
     }
-    # Proxy mode moves lanes on and off without a key changing; only present
-    # when used, so every other fingerprint stays what it was.
-    via_key = proxy.via_api_key(config)
-    if via_key:
-        signals["via_api_key"] = via_key
     canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -2185,6 +2217,7 @@ def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if path is None:
         return None
     try:
+        private_files._reject_symlink_or_nonregular(path)
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
@@ -2202,6 +2235,22 @@ def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     report["generated_at"] = payload.get("timestamp")
     report["from_cache"] = True
     return report
+
+
+def _cache_secret_values(config: Dict[str, Any]) -> set[str]:
+    secrets: set[str] = set()
+    cfg = config or {}
+    for var in _SECRET_CONFIG_VARS:
+        value = cfg.get(var)
+        if isinstance(value, str) and value and not proxy.is_sentinel(value):
+            secrets.add(value)
+    env_api_key = env.read_secret_env("LAST30DAYS_API_KEY")
+    if isinstance(env_api_key, str) and env_api_key and not proxy.is_sentinel(env_api_key):
+        secrets.add(env_api_key)
+    for value in http.config_secret_values(cfg):
+        if value and not proxy.is_sentinel(value):
+            secrets.add(value)
+    return secrets
 
 
 def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
@@ -2222,12 +2271,11 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
             "report": report,
         }
         raw = json.dumps(payload, indent=2, sort_keys=True)
-        for var in _SECRET_CONFIG_VARS:
-            value = (config or {}).get(var)
-            if isinstance(value, str) and value and value in raw:
+        for value in _cache_secret_values(config):
+            if value in raw:
                 return False  # never write a cache containing a secret
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(raw, encoding="utf-8")
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_files.replace_private_text(path, raw)
         return True
     except Exception as exc:
         sys.stderr.write(

@@ -10,11 +10,13 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import (
@@ -30,7 +32,7 @@ from urllib.request import (
     getproxies,
 )
 
-from . import brightdata, health, providers
+from . import brightdata, health, private_files, providers
 from .private_files import replace_private_text, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -610,18 +612,28 @@ def install_default_pp_sources() -> Dict[str, Dict[str, Any]]:
 def _open_secret_append(path: Path):
     """Open ``path`` for appending as a 0o600 secret file with no readable window.
 
-    ``os.open`` with ``O_CREAT|O_WRONLY|O_APPEND`` and mode ``0o600`` sets
-    restrictive permissions at creation (umask can only further restrict, never
-    widen, so the file is never world-readable even transiently). An explicit
-    ``chmod`` afterwards also tightens a pre-existing loose file. This matters
-    because the .env stores API keys, cookies, and tokens.
+    Uses ``O_NOFOLLOW`` and parent verification on POSIX (and junction/symlink
+    checks on Windows), tightens the open file descriptor with ``os.fchmod``,
+    and closes the descriptor if post-open setup or ``os.fdopen`` raises.
     """
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    path = Path(path)
+    flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND
+    if os.name == "posix":
+        path = private_files._resolve_parent_only(path)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    else:
+        private_files._reject_symlink_or_nonregular(path)
+    fd = os.open(path, flags, 0o600)
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-    return os.fdopen(fd, "a", encoding="utf-8")
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"Expected a regular private file: {path}")
+        if os.name == "posix" and hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "a", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _env_line_key(stripped: str) -> str:
@@ -675,10 +687,11 @@ def _replace_env_line(env_path: Path, content: str, key_name: str, value: str) -
     if not replaced:
         lines.append(new_line)
     replace_private_text(env_path, "\n".join(lines) + "\n")
-    try:
-        os.chmod(env_path, 0o600)
-    except OSError:
-        pass
+    if os.name != "posix":
+        try:
+            os.chmod(env_path, 0o600)
+        except OSError:
+            pass
     return True
 
 
@@ -712,7 +725,7 @@ def _format_env_value(value: str) -> str:
 
 
 def write_setup_config(
-    env_path: Path,
+    env_path: Optional[Path],
     from_browser: str | None = None,
     *,
     browser_consent: bool | None = None,
@@ -739,11 +752,12 @@ def write_setup_config(
     Returns:
         True if config was written successfully, False on error.
     """
-    if not env_path:
+    if not env_path or not isinstance(env_path, (str, os.PathLike)):
         return False
     try:
         env_path = Path(env_path)
-        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_files._reject_symlink_or_nonregular(env_path)
         if browser_consent is not None:
             if not write_api_key(
                 env_path, "true" if browser_consent else "false",
@@ -792,7 +806,7 @@ def write_setup_config(
 
 
 def write_api_key(
-    env_path: Path,
+    env_path: Optional[Path],
     api_key: str,
     key_name: str = "SCRAPECREATORS_API_KEY",
     *,
@@ -821,6 +835,7 @@ def write_api_key(
     """
     if (
         not env_path
+        or not isinstance(env_path, (str, os.PathLike))
         or not api_key
         or not isinstance(api_key, str)
         or not isinstance(key_name, str)
@@ -830,7 +845,8 @@ def write_api_key(
         return False
     try:
         env_path = Path(env_path)
-        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_files._reject_symlink_or_nonregular(env_path)
 
         existing_content = ""
         if env_path.exists():
@@ -1701,11 +1717,20 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
     return {"ok": True, "api_key": api_key}
 
 
+def _device_handle_fallback_dir() -> Path:
+    """Return a per-user private fallback directory for the GitHub device handle."""
+    if os.name == "posix":
+        uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+        return Path(tempfile.gettempdir()) / f"last30days-{uid}"
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "last30days"
+
+
 def _device_handle_path() -> Path:
     """Where run_github_start persists the device_code/interval for run_github_poll.
 
-    Kept next to the .env in the config dir; falls back to the OS temp dir when
-    no config dir is resolvable (clean/no-config mode).
+    Kept next to the .env in the config dir; falls back to a per-user private
+    directory when no config dir is resolvable (clean/no-config mode).
     """
     try:
         from . import env as _env
@@ -1714,21 +1739,104 @@ def _device_handle_path() -> Path:
             return _env.CONFIG_FILE.parent / ".github-device-handle.json"
     except Exception:
         pass
-    import tempfile
-
-    return Path(tempfile.gettempdir()) / "last30days-github-device-handle.json"
+    return _device_handle_fallback_dir() / "github-device-handle.json"
 
 
-def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
+def _ensure_private_handle_dir(directory: Path) -> None:
+    """Create and verify a private directory for persisting the device handle."""
+    directory = Path(directory)
+    is_junction = getattr(os.path, "isjunction", None)
+    if is_junction is not None and is_junction(directory):
+        raise OSError(f"Refusing to use junction directory: {directory}")
+    try:
+        st = os.lstat(directory)
+    except FileNotFoundError:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        st = os.lstat(directory)
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(f"Refusing to use symlink directory: {directory}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Expected a directory for device handle: {directory}")
+    if os.name == "posix":
+        euid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+        if st.st_uid != euid:
+            raise OSError(f"Refusing to use device handle directory owned by another user: {directory}")
+        if directory == _device_handle_fallback_dir() and stat.S_IMODE(st.st_mode) != 0o700:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            fd = os.open(directory, flags)
+            try:
+                fd_st = os.fstat(fd)
+                if not stat.S_ISDIR(fd_st.st_mode) or fd_st.st_uid != euid:
+                    raise OSError(f"Refusing to tighten untrusted device handle directory: {directory}")
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o700)
+            finally:
+                os.close(fd)
+
+
+def _persist_device_handle(handle: Dict[str, Any]) -> Path:
+    """Atomically persist the private GitHub device-flow handle with 0o600 permissions."""
+    path = _device_handle_path()
+    _ensure_private_handle_dir(path.parent)
+    replace_private_text(path, json.dumps(handle))
+    if os.name != "posix":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return path
+
+
+def _read_device_handle(path: Path) -> Dict[str, Any]:
+    """Read a persisted device handle without following symlinks or trusting foreign files."""
+    path = Path(path)
+    if os.name == "posix":
+        path = private_files._resolve_parent_only(path)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(path, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular device handle file: {path}")
+            euid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+            if st.st_uid != euid:
+                raise OSError(f"Refusing device handle owned by another user: {path}")
+            if private_files._is_writable_by_others(st, euid):
+                raise OSError(f"Refusing device handle writable by other users: {path}")
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                fd = -1
+                raw = stream.read(65536)
+        finally:
+            if fd != -1:
+                os.close(fd)
+    else:
+        private_files._reject_symlink_or_nonregular(path)
+        raw = path.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not data.get("device_code"):
+        raise ValueError("Invalid device handle payload")
+    return data
+
+
+def _start_device_flow(
+    *,
+    persist_handle: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
     """Submit the GitHub device flow and surface the code, without polling.
 
     Returns ``(public_result, handle)``. ``handle`` is None for the
     already-registered and error cases (nothing to poll); otherwise it carries
     the private poll state (``device_code``/``interval``/``user_code``/
     ``clipboard_ok``) that never belongs in the public, stdout-printed result.
-    Callers either persist the handle to a file (``run_github_start``, for a
-    separate poll process) or hand it straight to ``run_github_poll`` in-memory
-    (``run_full_device_auth``, so a failed file write can't strand the one-shot).
+    Callers either supply ``persist_handle`` (``run_github_start``, persisting
+    before printing the code or opening the browser so a write failure never
+    strands ``--github-poll``) or hand the handle straight to ``run_github_poll``
+    in-memory (``run_full_device_auth``).
     """
     import sys
     import webbrowser
@@ -1778,6 +1886,40 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
             None,
         )
 
+    # Copy the code to the clipboard BEFORE opening the browser.
+    clipboard_ok = False
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(["pbcopy"], input=user_code.encode(), check=True, timeout=5)
+            clipboard_ok = True
+        except Exception:
+            pass  # pbcopy unavailable or failed, fall through
+
+    public = {
+        "status": "awaiting_authorization",
+        "user_code": user_code,
+        "verification_uri": verification_uri,
+        "clipboard_ok": clipboard_ok,
+    }
+    handle = {
+        "device_code": device_code,
+        "interval": interval,
+        "user_code": user_code,
+        "clipboard_ok": clipboard_ok,
+    }
+    if persist_handle is not None:
+        try:
+            persist_handle(handle)
+        except Exception as exc:
+            logger.warning("Could not persist device handle: %s", exc)
+            return (
+                {
+                    "status": "error",
+                    "message": "Could not persist GitHub device flow handle.",
+                },
+                None,
+            )
+
     # Structured stdout line for machine consumers.
     print(
         json.dumps(
@@ -1789,15 +1931,6 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
         ),
         flush=True,
     )
-
-    # Copy the code to the clipboard BEFORE opening the browser.
-    clipboard_ok = False
-    if sys.platform == "darwin":
-        try:
-            subprocess.run(["pbcopy"], input=user_code.encode(), check=True, timeout=5)
-            clipboard_ok = True
-        except Exception:
-            pass  # pbcopy unavailable or failed, fall through
 
     # Print the code as a plain HUMAN line on stdout too, so a foreground caller
     # sees it in the returned output even without reading the JSON. The clipboard
@@ -1827,38 +1960,31 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
         except Exception:
             print(f"Open: {verification_uri}", file=sys.stderr)
 
-    public = {
-        "status": "awaiting_authorization",
-        "user_code": user_code,
-        "verification_uri": verification_uri,
-        "clipboard_ok": clipboard_ok,
-    }
-    handle = {
-        "device_code": device_code,
-        "interval": interval,
-        "user_code": user_code,
-        "clipboard_ok": clipboard_ok,
-    }
     return (public, handle)
 
 
 def run_github_start() -> Dict[str, Any]:
     """Start the device flow and persist the poll handle for a later
     ``run_github_poll`` process. Returns the public result (never the private
-    device_code). See ``_start_device_flow`` for the returned statuses."""
-    public, handle = _start_device_flow()
-    if handle is not None:
-        # Persist the poll handle (0o600) so a separate --github-poll process can
-        # resume it. Best-effort: the in-memory one-shot path does not depend on
-        # this write succeeding.
-        path = _device_handle_path()
+    device_code). Fails closed with ``status="error"`` if handle persistence
+    fails so ``--github-poll`` is never stranded."""
+    persisted = False
+
+    def _persist(handle: Dict[str, Any]) -> None:
+        nonlocal persisted
+        _persist_device_handle(handle)
+        persisted = True
+
+    public, handle = _start_device_flow(persist_handle=_persist)
+    if handle is not None and not persisted:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            write_private_text(path, json.dumps(handle), encoding="utf-8")
-            if os.name != "posix":
-                os.chmod(path, 0o600)
+            _persist_device_handle(handle)
         except Exception as exc:
             logger.warning("Could not persist device handle: %s", exc)
+            return {
+                "status": "error",
+                "message": "Could not persist GitHub device flow handle.",
+            }
     return public
 
 
@@ -1876,7 +2002,7 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
         data = _handle
     else:
         try:
-            data = json.loads(_device_handle_path().read_text(encoding="utf-8"))
+            data = _read_device_handle(_device_handle_path())
         except Exception:
             return {
                 "status": "error",
@@ -1898,7 +2024,9 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
 
     def _cleanup() -> None:
         try:
-            _device_handle_path().unlink()
+            target = _device_handle_path()
+            private_files._reject_symlink_or_nonregular(target)
+            target.unlink()
         except Exception:
             pass
 
@@ -2003,7 +2131,7 @@ def _reddit_scan_order(config: Dict[str, Any]) -> list[str]:
 
 def run_reddit_session_setup(
     config: Dict[str, Any],
-    env_path: Path,
+    env_path: Optional[Path],
     *,
     consent: bool,
     reader: Optional[Any] = None,
@@ -2024,10 +2152,13 @@ def run_reddit_session_setup(
     host = str(config.get(_env.X_HOST_VAR) or os.environ.get(_env.X_HOST_VAR) or "").strip().lower()
     if host == _env.GROK_BOT_HOST:
         return {"status": "unavailable", "note": "The Reddit session is never used on a Grok Bot host."}
-    written = write_api_key(env_path, "true", key_name=_env.REDDIT_OFFERED_VAR, replace=True)
-    written = write_api_key(
-        env_path, "true" if consent else "false", key_name=_env.REDDIT_CONSENT_VAR, replace=True,
-    ) and written
+    if env_path:
+        written = write_api_key(env_path, "true", key_name=_env.REDDIT_OFFERED_VAR, replace=True)
+        written = write_api_key(
+            env_path, "true" if consent else "false", key_name=_env.REDDIT_CONSENT_VAR, replace=True,
+        ) and written
+    else:
+        written = False
     if not consent:
         return {"status": "declined", "consent": False, "env_written": written}
     result: Dict[str, Any] = {"consent": True, "env_written": written, "note": REDDIT_SESSION_NOTE}
@@ -2043,9 +2174,13 @@ def run_reddit_session_setup(
         cookie, state = (reader or _env.read_reddit_session_cookie)(config, browser)
         checked.append({"browser": browser, "result": state})
         if cookie:
-            result["env_written"] = write_api_key(
-                env_path, browser, key_name=_env.REDDIT_FROM_BROWSER_VAR, replace=True,
-            ) and written
+            result["env_written"] = bool(
+                env_path
+                and write_api_key(
+                    env_path, browser, key_name=_env.REDDIT_FROM_BROWSER_VAR, replace=True,
+                )
+                and written
+            )
             result.update(status="found", browser=browser, checked=checked)
             return result
     result.update(status="not-found", checked=checked)
